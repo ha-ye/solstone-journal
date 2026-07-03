@@ -359,9 +359,20 @@ def segment_path(day: str, segment: str, stream: str, *, create: bool = True) ->
     -------
     Path
         Absolute path to the segment directory.
+
+    Raises
+    ------
+    ValueError
+        If a create=True path escapes the day directory.
     """
-    path = day_path(day, create=create) / stream / segment
+    day_dir = day_path(day, create=create)
+    path = day_dir / stream / segment
     if create:
+        if not path.resolve().is_relative_to(day_dir.resolve()):
+            raise ValueError(
+                f"segment path escapes day directory "
+                f"(stream={stream!r}, segment={segment!r})"
+            )
         path.mkdir(parents=True, exist_ok=True)
     return path
 

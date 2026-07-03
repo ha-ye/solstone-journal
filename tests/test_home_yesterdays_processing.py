@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -25,7 +24,6 @@ from solstone.apps.home.routes import (
     _format_duration,
     _format_gap_links,
     _format_heatmap_summary,
-    _knowledge_graph_freshness,
     _newsletter_attempts_from_think_logs,
     _summarize_yesterday_processing,
 )
@@ -103,11 +101,6 @@ def _seed_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     )
 
     for rel_path in [
-        "chronicle/20260415/talents/knowledge_graph.md",
-    ]:
-        _copy_fixture_file(journal, rel_path)
-
-    for rel_path in [
         "facets/work/activities/20260415.jsonl",
         "facets/personal/activities/20260415.jsonl",
         "facets/work/news/20260415.md",
@@ -122,14 +115,21 @@ def _seed_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def _write_briefing(
-    journal: Path, generated: str, *, metadata_type: str = "morning_briefing"
+    day: str,
+    generated: str,
+    *,
+    metadata_type: str = "morning_briefing",
+    date: str | None = None,
 ) -> None:
-    path = journal / "identity" / "briefing.md"
+    from solstone.think.talent import morning_briefing_path
+
+    path = morning_briefing_path(day)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         (
             f"---\n"
             f"type: {metadata_type}\n"
+            f"date: {date if date is not None else day}\n"
             f'generated: "{generated}"\n'
             f"---\n\n"
             "## Your Day\n\n"
@@ -155,6 +155,7 @@ def _append_think_log(
             "mode": "daily",
             "name": name,
             "state": "error",
+            "ts": 1,
         }
         if facet is not None:
             record["facet"] = facet
@@ -217,14 +218,9 @@ def _patch_minimal_pulse_context(monkeypatch, pipeline_status):
     )
 
 
-def _set_mtime(path: Path, dt: datetime) -> None:
-    ts = dt.timestamp()
-    os.utime(path, (ts, ts))
-
-
 def test_yesterdays_card_hidden_when_stats_missing(tmp_path, monkeypatch):
-    journal = _seed_journal(tmp_path, monkeypatch)
-    _write_briefing(journal, "2026-04-17T06:45:00")
+    _seed_journal(tmp_path, monkeypatch)
+    _write_briefing("20260417", "2026-04-16T21:00:00")
 
     monkeypatch.setattr("solstone.apps.home.routes._today", lambda: "20260417")
 
@@ -233,7 +229,7 @@ def test_yesterdays_card_hidden_when_stats_missing(tmp_path, monkeypatch):
 
 def test_yesterdays_card_hidden_when_all_zero(tmp_path, monkeypatch):
     journal = _seed_journal(tmp_path, monkeypatch)
-    _write_briefing(journal, "2026-04-17T06:45:00")
+    _write_briefing("20260417", "2026-04-16T21:00:00")
     (journal / "chronicle" / "20260416" / "stats.json").write_text(
         json.dumps(
             {
@@ -316,14 +312,10 @@ def test_collect_anticipated_activities_surfaces_only_anticipated_records(
 
 
 def test_yesterdays_card_sparse_mode_copy(tmp_path, monkeypatch):
-    journal = _seed_journal(tmp_path, monkeypatch)
-    _write_briefing(journal, "2026-04-15T06:45:00")
+    _seed_journal(tmp_path, monkeypatch)
+    _write_briefing("20260415", "2026-04-14T21:00:00")
 
     monkeypatch.setattr("solstone.apps.home.routes._today", lambda: "20260415")
-    monkeypatch.setattr(
-        "solstone.apps.home.routes._knowledge_graph_freshness",
-        lambda _day: {"fresh": True},
-    )
 
     summary = _summarize_yesterday_processing("20260414", 2)
 
@@ -338,8 +330,8 @@ def test_yesterdays_card_sparse_mode_copy(tmp_path, monkeypatch):
 
 
 def test_yesterdays_card_healthy_collapsed_on_day_8_plus(tmp_path, monkeypatch):
-    journal = _seed_journal(tmp_path, monkeypatch)
-    _write_briefing(journal, "2026-04-16T06:45:00")
+    _seed_journal(tmp_path, monkeypatch)
+    _write_briefing("20260416", "2026-04-15T21:00:00")
 
     monkeypatch.setattr("solstone.apps.home.routes._today", lambda: "20260416")
 
@@ -351,15 +343,16 @@ def test_yesterdays_card_healthy_collapsed_on_day_8_plus(tmp_path, monkeypatch):
     assert summary["first_week_framing"] is None
     assert (
         summary["summary_line"]
-        == "I wrote 2 newsletters, refreshed your knowledge graph, and prepared your morning briefing."
+        == "I wrote 2 newsletters and prepared your morning briefing."
     )
+    assert summary["gap_links"] == []
 
 
 def test_yesterdays_card_healthy_expanded_with_framing_on_days_1_to_7(
     tmp_path, monkeypatch
 ):
-    journal = _seed_journal(tmp_path, monkeypatch)
-    _write_briefing(journal, "2026-04-16T06:45:00")
+    _seed_journal(tmp_path, monkeypatch)
+    _write_briefing("20260416", "2026-04-15T21:00:00")
 
     monkeypatch.setattr("solstone.apps.home.routes._today", lambda: "20260416")
 
@@ -377,7 +370,7 @@ def test_yesterdays_card_degraded_shows_warning_and_partial_count(
     tmp_path, monkeypatch
 ):
     journal = _seed_journal(tmp_path, monkeypatch)
-    _write_briefing(journal, "2026-04-16T06:45:00")
+    _write_briefing("20260416", "2026-04-15T21:00:00")
     _append_think_log(journal, "20260415", "facet_newsletter", facet="personal")
 
     monkeypatch.setattr("solstone.apps.home.routes._today", lambda: "20260416")
@@ -463,19 +456,6 @@ def test_activity_bullet_title_duration_facet(tmp_path, monkeypatch):
     )
 
 
-def test_knowledge_graph_refresh_detection_yesterday_and_overnight(
-    tmp_path, monkeypatch
-):
-    journal = _seed_journal(tmp_path, monkeypatch)
-    path = journal / "chronicle" / "20260415" / "talents" / "knowledge_graph.md"
-
-    _set_mtime(path, datetime(2026, 4, 15, 12, 0, 0))
-    assert _knowledge_graph_freshness("20260415")["fresh"] is True
-
-    _set_mtime(path, datetime(2026, 4, 16, 2, 0, 0))
-    assert _knowledge_graph_freshness("20260415")["fresh"] is True
-
-
 def test_briefing_frontmatter_missing_counts_as_gap(tmp_path, monkeypatch):
     _seed_journal(tmp_path, monkeypatch)
 
@@ -496,6 +476,78 @@ def test_briefing_frontmatter_missing_counts_as_gap(tmp_path, monkeypatch):
     }
 
 
+def test_briefing_freshness_valid_with_prior_evening_generated(tmp_path, monkeypatch):
+    _seed_journal(tmp_path, monkeypatch)
+    _write_briefing("20260416", "2026-04-15T21:30:00")
+
+    result = _briefing_freshness("20260416")
+
+    assert result == {"exists": True, "valid": True, "generated_label": "9:30pm"}
+
+
+def test_briefing_freshness_accepts_unquoted_int_date(tmp_path, monkeypatch):
+    import frontmatter
+
+    from solstone.think.talent import morning_briefing_path
+
+    _seed_journal(tmp_path, monkeypatch)
+    _write_briefing("20260702", "2026-07-01T20:00:00")
+
+    meta = frontmatter.load(str(morning_briefing_path("20260702"))).metadata
+
+    assert isinstance(meta["date"], int)
+    assert _briefing_freshness("20260702")["valid"] is True
+
+
+def test_briefing_freshness_invalid_when_missing(tmp_path, monkeypatch):
+    _seed_journal(tmp_path, monkeypatch)
+
+    assert _briefing_freshness("20260416") == {
+        "exists": False,
+        "valid": False,
+        "generated_label": None,
+    }
+
+
+def test_briefing_freshness_invalid_when_wrong_type(tmp_path, monkeypatch):
+    _seed_journal(tmp_path, monkeypatch)
+    _write_briefing(
+        "20260416",
+        "2026-04-15T21:00:00",
+        metadata_type="daily_summary",
+    )
+
+    result = _briefing_freshness("20260416")
+
+    assert result["exists"] is True
+    assert result["valid"] is False
+
+
+def test_briefing_freshness_invalid_when_date_mismatch(tmp_path, monkeypatch):
+    _seed_journal(tmp_path, monkeypatch)
+    _write_briefing("20260416", "2026-04-15T21:00:00", date="20260415")
+
+    assert _briefing_freshness("20260416")["valid"] is False
+
+
+def test_briefing_freshness_invalid_when_frontmatter_unparseable(tmp_path, monkeypatch):
+    from solstone.think.talent import morning_briefing_path
+
+    _seed_journal(tmp_path, monkeypatch)
+    path = morning_briefing_path("20260416")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "---\ntype: morning_briefing\ndate: [unclosed\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+
+    assert _briefing_freshness("20260416") == {
+        "exists": True,
+        "valid": False,
+        "generated_label": None,
+    }
+
+
 def test_gap_links_show_specific_daily_and_activity_without_generic():
     links = _format_gap_links(
         {
@@ -505,7 +557,6 @@ def test_gap_links_show_specific_daily_and_activity_without_generic():
                 {"kind": "talent_failure"},
             ]
         },
-        {"fresh": True},
         {"valid": True},
         "20260415",
         "20260416",
@@ -524,11 +575,10 @@ def test_gap_links_show_specific_daily_and_activity_without_generic():
 
 
 @pytest.mark.parametrize(
-    ("anomalies", "knowledge_graph", "briefing", "expected"),
+    ("anomalies", "briefing", "expected"),
     [
         (
             [{"kind": "daily_agents_missing"}],
-            {"fresh": True},
             {"valid": True},
             {
                 "text": "I didn't finish the full overnight review.",
@@ -537,7 +587,6 @@ def test_gap_links_show_specific_daily_and_activity_without_generic():
         ),
         (
             [{"kind": "activity_agents_missing"}],
-            {"fresh": True},
             {"valid": True},
             {
                 "text": "I didn't finish writing all of yesterday's notes.",
@@ -546,7 +595,6 @@ def test_gap_links_show_specific_daily_and_activity_without_generic():
         ),
         (
             [{"kind": "talent_failure", "name": "flow", "use_id": "run-1"}],
-            {"fresh": True},
             {"valid": True},
             {
                 "text": "The flow run didn't finish.",
@@ -554,8 +602,22 @@ def test_gap_links_show_specific_daily_and_activity_without_generic():
             },
         ),
         (
+            [
+                {
+                    "kind": "talent_failure",
+                    "name": "flow",
+                    "use_id": "run-1",
+                    "state": "request_lost",
+                }
+            ],
+            {"valid": True},
+            {
+                "text": "The flow run couldn't start.",
+                "href": "/app/sol/20260415#flow/run-1",
+            },
+        ),
+        (
             [{"kind": "talent_failure", "name": "facet_newsletter"}],
-            {"fresh": True},
             {"valid": True},
             {
                 "text": "The facet newsletter run didn't finish.",
@@ -564,7 +626,6 @@ def test_gap_links_show_specific_daily_and_activity_without_generic():
         ),
         (
             [{"kind": "talent_failure"}],
-            {"fresh": True},
             {"valid": True},
             {
                 "text": "Some of my overnight work didn't finish.",
@@ -573,16 +634,6 @@ def test_gap_links_show_specific_daily_and_activity_without_generic():
         ),
         (
             [],
-            {"fresh": False},
-            {"valid": True},
-            {
-                "text": "I didn't refresh your knowledge graph overnight.",
-                "href": "/app/sol/20260415#knowledge_graph",
-            },
-        ),
-        (
-            [],
-            {"fresh": True},
             {"valid": False},
             {
                 "text": "I didn't prepare your morning briefing overnight.",
@@ -591,16 +642,100 @@ def test_gap_links_show_specific_daily_and_activity_without_generic():
         ),
     ],
 )
-def test_gap_links_href_for_each_anomaly_kind(
-    anomalies, knowledge_graph, briefing, expected
-):
+def test_gap_links_href_for_each_anomaly_kind(anomalies, briefing, expected):
     assert expected in _format_gap_links(
         {"anomalies": anomalies},
-        knowledge_graph,
         briefing,
         "20260415",
         "20260416",
     )
+
+
+def test_gap_links_group_failures_by_name():
+    links = _format_gap_links(
+        {
+            "anomalies": [
+                {
+                    "kind": "talent_failure",
+                    "name": "facet_newsletter",
+                    "use_id": "run-1",
+                    "state": "timeout",
+                },
+                {
+                    "kind": "talent_failure",
+                    "name": "facet_newsletter",
+                    "use_id": "run-2",
+                    "state": "error",
+                },
+            ]
+        },
+        {"valid": True},
+        "20260415",
+        "20260416",
+    )
+
+    assert links == [
+        {
+            "text": "2 facet newsletter runs didn't finish.",
+            "href": "/app/sol/20260415#facet_newsletter",
+        }
+    ]
+
+
+def test_gap_links_group_request_lost_failures_by_name():
+    links = _format_gap_links(
+        {
+            "anomalies": [
+                {
+                    "kind": "talent_failure",
+                    "name": "flow",
+                    "use_id": "run-1",
+                    "state": "request_lost",
+                },
+                {
+                    "kind": "talent_failure",
+                    "name": "flow",
+                    "use_id": "run-2",
+                    "state": "request_lost",
+                },
+            ]
+        },
+        {"valid": True},
+        "20260415",
+        "20260416",
+    )
+
+    assert links == [
+        {
+            "text": "2 flow runs couldn't start.",
+            "href": "/app/sol/20260415#flow",
+        }
+    ]
+
+
+def test_gap_links_show_truncated_failures_count():
+    anomalies = [
+        {"kind": "talent_failure", "name": f"agent_{idx}", "state": "error"}
+        for idx in range(20)
+    ]
+
+    links = _format_gap_links(
+        {
+            "anomalies": anomalies,
+            "talents": {
+                "outstanding_failed": 25,
+                "failed_list_truncated": True,
+            },
+        },
+        {"valid": True},
+        "20260415",
+        "20260416",
+    )
+
+    assert links[-1] == {
+        "text": "…and 5 more didn't finish.",
+        "href": "/app/sol/20260415",
+    }
 
 
 def test_briefing_lateness_threshold():
@@ -627,7 +762,7 @@ def test_newsletter_attempts_option_a_matches_facet_newsletter_failures_only(
 ):
     journal = _seed_journal(tmp_path, monkeypatch)
     _append_think_log(journal, "20260415", "facet_newsletter", facet="work")
-    _append_think_log(journal, "20260415", "knowledge_graph", facet="work")
+    _append_think_log(journal, "20260415", "flow", facet="work")
     _append_think_log(journal, "20260415", "facet_newsletter")
 
     assert _newsletter_attempts_from_think_logs("20260415") == (2, 3)

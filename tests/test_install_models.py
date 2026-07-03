@@ -30,6 +30,8 @@ def _write_model_files(base_dir: Path, relative_paths: tuple[str, ...]) -> None:
         ("cpu", "cuda", "linux", "x86_64", "cpu"),
         ("auto", "cpu", "linux", "x86_64", "cpu"),
         ("auto", "cuda", "linux", "x86_64", "cuda"),
+        ("auto", None, "linux", "aarch64", "cpu"),
+        ("cpu", None, "linux", "aarch64", "cpu"),
         ("auto", None, "darwin", "arm64", "coreml"),
         ("auto", None, "windows", "amd64", None),
     ],
@@ -57,7 +59,7 @@ def test_resolve_variant_autodetects_linux_gpu(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_resolve_variant_rejects_invalid_env_value():
-    with pytest.raises(SystemExit, match="invalid PARAKEET_ONNX_VARIANT='bogus'"):
+    with pytest.raises(SystemExit, match="invalid JOURNAL_VARIANT='bogus'"):
         install_models._resolve_variant("auto", "bogus", "linux", "x86_64")
 
 
@@ -66,6 +68,8 @@ def test_resolve_variant_rejects_incompatible_explicit_variant():
         install_models._resolve_variant("coreml", None, "linux", "x86_64")
     with pytest.raises(SystemExit, match="variant 'cpu' not supported on darwin"):
         install_models._resolve_variant("cpu", None, "darwin", "arm64")
+    with pytest.raises(SystemExit, match="variant 'cuda' not supported"):
+        install_models._resolve_variant("cuda", None, "linux", "aarch64")
 
 
 def test_verify_bundled_assets_returns_when_hashes_match(
@@ -186,48 +190,48 @@ def test_helper_path_falls_back_to_swift_build(
     assert install_models._helper_path() == expected
 
 
-def _prepare_check_main(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> tuple[Path, Path]:
-    sentinel_path = tmp_path / "sentinel.json"
-    cache_dir = tmp_path / "cache"
+def _ready_paths(tmp_path: Path) -> dict[str, Path]:
+    return {
+        "binary_cpu": tmp_path / "bin" / "cpu" / "parakeet-server",
+        "binary_vulkan": tmp_path / "bin" / "vulkan" / "parakeet-server",
+        "model": tmp_path / "models" / "model.gguf",
+    }
+
+
+def _prepare_check_main(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "argv", ["sol install-models", "--check"])
-    monkeypatch.delenv(install_models.PARAKEET_ONNX_VARIANT_ENV, raising=False)
+    monkeypatch.delenv(install_models.JOURNAL_VARIANT_ENV, raising=False)
     monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
     monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
     monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
-    monkeypatch.setattr(install_models, "_sentinel_path", lambda variant: sentinel_path)
-    monkeypatch.setattr(install_models, "_cache_dir", lambda variant: cache_dir)
-    return sentinel_path, cache_dir
 
 
-def test_main_check_missing_sentinel_returns_nonzero(
+def test_main_check_missing_cpp_artifacts_returns_nonzero(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    _prepare_check_main(monkeypatch, tmp_path)
+    _prepare_check_main(monkeypatch)
+    monkeypatch.setattr(
+        install_models,
+        "_check_linux_cpp_ready",
+        lambda: (_ for _ in ()).throw(RuntimeError("model missing")),
+    )
 
     assert install_models.main() == 1
-    assert "parakeet check failed: sentinel not ready" in capsys.readouterr().err
+    assert "model missing" in capsys.readouterr().err
 
 
-def test_main_check_ready_cache_returns_zero(
+def test_main_check_ready_cpp_artifacts_returns_zero(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    sentinel_path, cache_dir = _prepare_check_main(monkeypatch, tmp_path)
-    cache_dir.mkdir()
-    install_models._write_sentinel(
-        sentinel_path,
-        install_models._build_payload("linux", "x86_64", "cpu", cache_dir),
-    )
-    monkeypatch.setattr(parakeet_readiness, "_verify_linux_cache", lambda path: True)
+    paths = _ready_paths(tmp_path)
+    _prepare_check_main(monkeypatch)
+    monkeypatch.setattr(install_models, "_check_linux_cpp_ready", lambda: paths)
 
     assert install_models.main() == 0
-    assert f"model ready: {cache_dir}" in capsys.readouterr().out
+    assert f"model ready: {paths['model']}" in capsys.readouterr().out
 
 
 def test_run_mac_helper_soft_fails_on_packaged_install(
@@ -254,40 +258,65 @@ def test_run_mac_helper_soft_fails_on_packaged_install(
     assert install_models._install_models("darwin", "arm64", "coreml") == 0
 
 
-def test_fetch_linux_model_soft_fails_on_packaged_install(
+def test_install_models_linux_routes_through_parakeet_provider(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
 ):
-    cache_dir = tmp_path / "cache"
-    sentinel_path = tmp_path / "sentinel.json"
+    from solstone.think.providers import parakeet_install
 
-    monkeypatch.setitem(sys.modules, "onnx_asr", None)
-    monkeypatch.setattr(install_models, "is_packaged_install", lambda: True)
-    monkeypatch.setattr(install_models, "_sentinel_path", lambda variant: sentinel_path)
-    monkeypatch.setattr(install_models, "_cache_dir", lambda variant: cache_dir)
+    calls = []
+    paths = _ready_paths(tmp_path)
 
-    assert install_models._fetch_linux_model(cache_dir) is False
-    stderr = capsys.readouterr().err
-    assert "packaged installs on Linux don't include the parakeet-onnx" in stderr
-    assert "Whisper, Gemini, OpenAI" in stderr
+    monkeypatch.setattr(
+        parakeet_install, "install_parakeet", lambda: calls.append("install")
+    )
+    monkeypatch.setattr(install_models, "_check_linux_cpp_ready", lambda: paths)
 
     assert install_models._install_models("linux", "x86_64", "cpu") == 0
-    assert not sentinel_path.exists()
+    assert calls == ["install"]
+    assert f"model ready: {paths['model']}" in capsys.readouterr().out
 
 
-def test_fetch_linux_model_raises_on_source_checkout(
+def test_main_force_reinstalls_linux_cpp(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
 ):
-    cache_dir = tmp_path / "cache"
-    sentinel_path = tmp_path / "sentinel.json"
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["sol install-models", "--force"])
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
+    monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        install_models, "_check_linux_cpp_ready", lambda: _ready_paths(tmp_path)
+    )
+    monkeypatch.setattr(
+        install_models,
+        "_install_models",
+        lambda os_name, arch, variant, **kwargs: (
+            calls.append((os_name, arch, variant, kwargs)) or 0
+        ),
+    )
 
-    monkeypatch.setitem(sys.modules, "onnx_asr", None)
-    monkeypatch.setattr(install_models, "is_packaged_install", lambda: False)
-    monkeypatch.setattr(install_models, "_sentinel_path", lambda variant: sentinel_path)
-    monkeypatch.setattr(install_models, "_cache_dir", lambda variant: cache_dir)
+    assert install_models.main() == 0
+    assert calls == [("linux", "x86_64", "cpu", {"force": True})]
 
-    assert install_models._install_models("linux", "x86_64", "cpu") == 1
-    assert "parakeet install failed" in capsys.readouterr().err
+
+def test_main_skips_install_when_linux_cpp_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    monkeypatch.setattr(sys, "argv", ["sol install-models"])
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
+    monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        install_models, "_check_linux_cpp_ready", lambda: _ready_paths(tmp_path)
+    )
+    monkeypatch.setattr(
+        install_models,
+        "_install_models",
+        lambda *_args: pytest.fail("ready artifacts should not reinstall"),
+    )
+
+    assert install_models.main() == 0

@@ -15,7 +15,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from solstone.think.entities.activity import parse_knowledge_graph_entities
 from solstone.think.entities.core import entity_slug
 from solstone.think.entities.loading import load_entities
 from solstone.think.entities.matching import find_matching_entity
@@ -31,7 +30,6 @@ TRANSCRIPT_LINES_PER_SEGMENT = 12
 TRANSCRIPT_LINES_FLOOR = 4
 TRANSCRIPT_LINES_STEP = 2
 MAX_SEARCH_SNIPPETS = 4
-MAX_KG_CHUNKS = 3
 PER_ENTITY_CHAR_BUDGET = 6000
 TOTAL_CHAR_BUDGET = 24000
 NOISE_AGENTS = {
@@ -44,21 +42,13 @@ NOISE_AGENTS = {
     "_todos_todo",
 }
 THIN_SOURCE_MARKER = (
-    "Thin source: no fresh sense, transcript, search, or knowledge-graph "
-    "evidence available."
+    "Thin source: no fresh sense, transcript, or search evidence available."
 )
 SEGMENT_SOURCE_UNAVAILABLE = "(segment {composite}: source unavailable)"
 
 
 def _active_entity_ids(facet: str, day: str, attached: list[dict]) -> set[str]:
     active_ids: set[str] = set()
-
-    for name in parse_knowledge_graph_entities(day):
-        match = find_matching_entity(name, attached)
-        if match:
-            entity_id = match.get("id")
-            if entity_id:
-                active_ids.add(entity_id)
 
     for detected in load_entities(facet, day):
         match = find_matching_entity(detected.get("name", ""), attached)
@@ -281,31 +271,6 @@ def _search_related_snippets(
     return snippets
 
 
-def _search_kg_chunks(entity_name: str, day: str) -> list[str]:
-    try:
-        _, results = search_journal(
-            entity_name, agent="knowledge_graph", day=day, limit=MAX_KG_CHUNKS
-        )
-    except Exception as exc:
-        logger.warning(
-            "entity_observer: knowledge graph search failed for %s: %s",
-            entity_name,
-            exc,
-        )
-        return []
-
-    chunks: list[str] = []
-    for result in results:
-        if not isinstance(result, dict):
-            continue
-        text = str(result.get("text") or "").strip()
-        if text:
-            chunks.append(f"- {text}")
-        if len(chunks) >= MAX_KG_CHUNKS:
-            break
-    return chunks
-
-
 def _transcript_line_cap(active_count: int) -> int:
     return max(
         TRANSCRIPT_LINES_FLOOR,
@@ -319,7 +284,6 @@ def _build_section_lines(
     source_notes: list[str],
     transcript_lines: list[str],
     search_lines: list[str],
-    kg_lines: list[str],
     rich_present: bool,
 ) -> list[str]:
     lines = list(mandatory_lines)
@@ -335,9 +299,6 @@ def _build_section_lines(
     if search_lines:
         lines.extend(["", "Related journal evidence:"])
         lines.extend(search_lines)
-    if kg_lines:
-        lines.extend(["", "Knowledge graph chunks:"])
-        lines.extend(kg_lines)
     if not rich_present:
         lines.extend(["", THIN_SOURCE_MARKER])
     return lines
@@ -387,8 +348,7 @@ def _format_entity_section(
             source_notes.append(SEGMENT_SOURCE_UNAVAILABLE.format(composite=composite))
 
     search_lines = _search_related_snippets(entity_name, day, facet, selected_segments)
-    kg_lines = _search_kg_chunks(entity_name, day)
-    rich_present = bool(sense_lines or transcript_lines or search_lines or kg_lines)
+    rich_present = bool(sense_lines or transcript_lines or search_lines)
 
     section_lines = _build_section_lines(
         mandatory_lines,
@@ -396,18 +356,15 @@ def _format_entity_section(
         source_notes,
         transcript_lines,
         search_lines,
-        kg_lines,
         rich_present,
     )
-    for lever in ("transcript", "search", "kg"):
+    for lever in ("transcript", "search"):
         if len("\n".join(section_lines)) <= PER_ENTITY_CHAR_BUDGET:
             break
         if lever == "transcript" and transcript_lines:
             transcript_lines = []
         elif lever == "search" and search_lines:
             search_lines = []
-        elif lever == "kg" and kg_lines:
-            kg_lines = []
         else:
             continue
         section_lines = _build_section_lines(
@@ -416,7 +373,6 @@ def _format_entity_section(
             source_notes,
             transcript_lines,
             search_lines,
-            kg_lines,
             rich_present,
         )
 

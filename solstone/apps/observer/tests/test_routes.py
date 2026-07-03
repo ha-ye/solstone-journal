@@ -1909,6 +1909,39 @@ def test_segments_endpoint_lists_uploads(observer_env):
     )  # Original name preserved
 
 
+def test_segments_endpoint_omits_submitted_name_when_name_unchanged(observer_env):
+    """Test segments endpoint omits submitted_name when no filename rewrite occurred."""
+    env = observer_env()
+
+    resp = env.client.post(
+        "/app/observer/api/create",
+        json={"name": "segments-no-rewrite-test"},
+        content_type="application/json",
+    )
+    key = resp.get_json()["key"]
+
+    test_data = b"test audio content"
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": (io.BytesIO(test_data), "audio.flac"),
+        },
+    )
+    assert resp.status_code == 200
+
+    resp = env.client.get(
+        "/app/observer/ingest/segments/20250103",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    file_info = data[0]["files"][0]
+    assert "submitted_name" not in file_info
+
+
 def test_segments_endpoint_v2_empty(observer_env):
     """Test v2 segments endpoint returns collection envelope for no uploads."""
     env = observer_env()

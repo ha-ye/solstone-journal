@@ -24,19 +24,19 @@ VENV := .venv
 VENV_BIN := $(VENV)/bin
 VENV_PY := $(VENV_BIN)/python
 PYTHON := $(VENV_PY)
-# Pick the GPU (CUDA) transcription runtime only on x86_64 NVIDIA hosts. The
+# Pick the GPU (CUDA) journal runtime only on x86_64 NVIDIA hosts. The
 # CUDA bundle resolves onnxruntime-gpu, which ships NO aarch64 wheel on PyPI, so
 # an aarch64 NVIDIA host (e.g. DGX Spark / GB10) that auto-selected `cuda` would
 # die in the `.installed` `uv sync` below — before the per-arch `install` guard
 # (which correctly skips non-x86_64 Linux) ever runs. Gating on x86_64 also
-# keeps this coherent with the STT arch decision (aarch64-linux transcribes on
-# whisper/CPU). Everything non-x86_64 falls to the CPU `journal` bundle, whose
+# keeps this coherent with the STT arch decision (aarch64-linux uses the
+# parakeet.cpp CPU/Vulkan bundle). Everything non-x86_64 falls to the CPU `journal` bundle, whose
 # onnxruntime has aarch64 wheels. Guarded by tests/test_makefile_journal_extra.py.
-PARAKEET_ONNX_VARIANT ?= $(shell if [ "$$(uname -m)" = "x86_64" ] && nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
+JOURNAL_VARIANT ?= $(shell if [ "$$(uname -m)" = "x86_64" ] && nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
 
 # Dev install extras: install exactly ONE journal-host bundle for this host.
 # [journal] (CPU) and [journal-cuda] (GPU) are the SAME stack and differ only in
-# the transcription ONNX runtime, so NEVER install both and NEVER use
+# the ONNX runtime package, so NEVER install both and NEVER use
 # --all-extras:
 #   - [journal] pulls onnxruntime; [journal-cuda] pulls onnxruntime-gpu. Both
 #     packages own the SAME onnxruntime/ import dir and clobber each other ->
@@ -46,7 +46,7 @@ PARAKEET_ONNX_VARIANT ?= $(shell if [ "$$(uname -m)" = "x86_64" ] && nvidia-smi 
 #   - on Darwin, --all-extras also forces resolution of cuda's nvidia-* wheels,
 #     which have no arm64 builds, so `uv sync` errors out outright.
 # Pick the GPU bundle only on NVIDIA hosts; everyone else gets the CPU bundle.
-JOURNAL_EXTRA := $(if $(filter cuda,$(PARAKEET_ONNX_VARIANT)),journal-cuda,journal)
+JOURNAL_EXTRA := $(if $(filter cuda,$(JOURNAL_VARIANT)),journal-cuda,journal)
 EXTRAS_ARGS := --extra $(JOURNAL_EXTRA)
 
 # Require uv only for goals that actually use it. `preflight` is a pure
@@ -83,8 +83,7 @@ USER_BIN := $(HOME)/.local/bin
 		$(UV) pip install --pre --no-deps --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/ onnxruntime; \
 	fi
 	@# The `--extra $(JOURNAL_EXTRA)` sync above already pulls the right
-	@# transcription ONNX runtime ([journal] = CPU, [journal-cuda] = GPU), so no
-	@# separate per-host parakeet sync is needed here anymore.
+	@# ONNX runtime package ([journal] = CPU, [journal-cuda] = GPU).
 	@$(MAKE) --no-print-directory skills
 	@touch .installed
 
@@ -113,9 +112,9 @@ install: .installed
 		if [ "$$ARCH" = "x86_64" ]; then \
 			echo "journal install: JOURNAL_EXTRA=$(JOURNAL_EXTRA)"; \
 			$(UV) sync --group dev $(EXTRAS_ARGS) || { echo "journal install: uv sync --group dev $(EXTRAS_ARGS) failed" >&2; exit 1; }; \
-			if [ "$(PARAKEET_ONNX_VARIANT)" = "cuda" ]; then \
-				$(UV) sync --group dev $(EXTRAS_ARGS) --reinstall-package onnxruntime-gpu || { echo "parakeet install: failed to force-reinstall onnxruntime-gpu" >&2; exit 1; }; \
-				$(VENV_PY) -c "import onnxruntime as ort; ort.preload_dlls(cuda=True, cudnn=True); assert 'CUDAExecutionProvider' in ort.get_available_providers(), 'CUDAExecutionProvider missing after install'; print('parakeet install: CUDA runtime ready')" || { echo "parakeet install: CUDA runtime validation failed" >&2; exit 1; }; \
+			if [ "$(JOURNAL_VARIANT)" = "cuda" ]; then \
+				$(UV) sync --group dev $(EXTRAS_ARGS) --reinstall-package onnxruntime-gpu || { echo "journal install: failed to force-reinstall onnxruntime-gpu" >&2; exit 1; }; \
+				$(VENV_PY) -c "import onnxruntime as ort; ort.preload_dlls(cuda=True, cudnn=True); assert 'CUDAExecutionProvider' in ort.get_available_providers(), 'CUDAExecutionProvider missing after install'; print('journal install: CUDA runtime ready')" || { echo "journal install: CUDA runtime validation failed" >&2; exit 1; }; \
 			fi; \
 		else \
 			echo "journal install: skipping unsupported Linux arch $$ARCH"; \
@@ -551,13 +550,14 @@ check-contract: .installed
 	$(VENV_BIN)/python -m solstone.think.contract_cli check
 	$(VENV_BIN)/python -m solstone.think.contract_cli build --check
 
-# Re-run the live four-backend integrated-façade cogitate smoke. Spawns the
-# archived runner (extro `vpe/workspace/archived/`) against this venv so the
-# real openhands-sdk Agent path is exercised end-to-end. Requires real API
-# keys in env (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`) and
-# `llama-server` on PATH for the `local` backend. Catches v1.23-style Agent
-# schema regressions that the openhands-fake unit tests cannot.
-COGITATE_SMOKE_RUNNER ?= /home/jer/projects/extro/vpe/workspace/archived/cogitate-integrated-facade-smoke-260523.py
+# Re-run the live four-backend integrated-façade cogitate smoke. Spawns an
+# external runner script against this venv so the real openhands-sdk Agent path
+# is exercised end-to-end. Requires real API keys in env (`ANTHROPIC_API_KEY`,
+# `OPENAI_API_KEY`, `GOOGLE_API_KEY`) and `llama-server` on PATH for the `local`
+# backend. Catches v1.23-style Agent schema regressions that the openhands-fake
+# unit tests cannot. Set COGITATE_SMOKE_RUNNER=/path/to/script to point at the
+# runner; there is no default.
+COGITATE_SMOKE_RUNNER ?=
 
 smoke-cogitate: .installed
 	@test -f "$(COGITATE_SMOKE_RUNNER)" || { echo "cogitate smoke runner not found: $(COGITATE_SMOKE_RUNNER)" >&2; echo "set COGITATE_SMOKE_RUNNER=/path/to/script to override" >&2; exit 1; }

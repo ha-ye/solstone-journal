@@ -47,6 +47,18 @@ print(json.dumps([
     }
 
 
+def test_warm_names_keep_onnxruntime_without_removed_stt_import(monkeypatch):
+    from solstone.think import warm
+
+    monkeypatch.setattr(warm.sys, "platform", "linux")
+    monkeypatch.setattr(warm.platform, "machine", lambda: "x86_64")
+
+    names = warm.warm_module_names()
+
+    assert "onnxruntime" in names
+    assert "onnx" + "_asr" not in names
+
+
 def test_warm_genuine_import_failure_names_module(monkeypatch, caplog):
     from solstone.think import warm
 

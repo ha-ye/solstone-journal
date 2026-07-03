@@ -21,6 +21,7 @@ tests/fixtures/journal/chronicle/*/health/*.jsonl
 .installed
 .python-version-hash
 /journal/*
+/identity.md
 .agents/
 .claude/
 .sandbox.pid

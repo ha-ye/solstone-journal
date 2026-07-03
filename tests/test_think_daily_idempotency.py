@@ -94,7 +94,7 @@ def _install_daily_mocks(
     def mock_drain(spawned, *_args, **_kwargs):
         return (len(spawned), 0, [])
 
-    monkeypatch.setattr(mod, "_cortex_request_with_retry", mock_cortex_request)
+    monkeypatch.setattr(mod, "_dispatch_cortex_request", mock_cortex_request)
     monkeypatch.setattr(mod, "_drain_priority_batch", mock_drain)
 
 

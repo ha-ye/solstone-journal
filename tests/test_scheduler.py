@@ -56,6 +56,7 @@ def reset_scheduler_state():
     mod._weekly_day = None
     mod._weekly_time = None
     mod._last_weekly_mark = None
+    mod._pending_retry = set()
     yield
     mod._entries = {}
     mod._state = {}
@@ -67,6 +68,7 @@ def reset_scheduler_state():
     mod._weekly_day = None
     mod._weekly_time = None
     mod._last_weekly_mark = None
+    mod._pending_retry = set()
 
 
 @pytest.fixture
@@ -142,6 +144,19 @@ class TestLoadConfig:
         from solstone.think.scheduler import load_config
 
         assert load_config() == {}
+
+    def test_unknown_every_warning_names_minute_form(self, journal_path, caplog):
+        _write_config(
+            journal_path,
+            {
+                "bad": {"cmd": ["sol", "noop"], "every": "biweekly"},
+            },
+        )
+        from solstone.think.scheduler import load_config
+
+        assert load_config() == {}
+        assert "daily/hourly/weekly" in caplog.text
+        assert "Nm" in caplog.text
 
     def test_minute_every_accepted(self, journal_path):
         _write_config(
@@ -330,7 +345,7 @@ class TestLoadConfig:
 
 
 # ---------------------------------------------------------------------------
-# load_state / save_state
+# load_state
 # ---------------------------------------------------------------------------
 
 
@@ -338,8 +353,7 @@ class TestState:
     def test_round_trip(self, journal_path):
         import solstone.think.scheduler as mod
 
-        mod._state = {"sync:plaud": {"last_run": 1700000000.0}}
-        mod.save_state()
+        _write_state(journal_path, {"sync:plaud": {"last_run": 1700000000.0}})
 
         loaded = mod.load_state()
         assert loaded["sync:plaud"]["last_run"] == 1700000000.0
@@ -349,12 +363,11 @@ class TestState:
 
         assert load_state() == {}
 
-    def test_atomic_write_no_partial(self, journal_path):
-        """State file shouldn't have leftover tmp files on success."""
+    def test_load_state_is_read_only(self, journal_path):
         import solstone.think.scheduler as mod
 
-        mod._state = {"a": {"last_run": 1.0}}
-        mod.save_state()
+        _write_state(journal_path, {"a": {"last_run": 1.0}})
+        mod.load_state()
 
         tmps = list((journal_path / "health").glob(".scheduler_*"))
         assert tmps == []
@@ -1057,6 +1070,64 @@ class TestCheck:
         callosum.emit.assert_called_once()
         assert callosum.emit.call_args[1]["cmd"] == ["sol", "daily-thing"]
 
+    def test_daily_emit_failure_retries_on_later_minute_tick(self, journal_path):
+        import solstone.think.scheduler as mod
+
+        callosum = Mock()
+        callosum.emit = Mock(return_value=False)
+
+        _write_config(
+            journal_path,
+            {
+                "d": {"cmd": ["sol", "daily-thing"], "every": "daily"},
+            },
+        )
+
+        mod.init(callosum)
+        mod._last_hour = datetime(2026, 2, 16, 23, 0)
+        mod._last_daily_mark = datetime(2026, 2, 16, 0, 0)
+
+        with _fake_now(datetime(2026, 2, 17, 0, 1)):
+            mod.check()
+
+        assert callosum.emit.call_count == 1
+        assert "d" in mod._pending_retry
+
+        callosum.emit.return_value = True
+
+        with _fake_now(datetime(2026, 2, 17, 0, 2)):
+            mod.check()
+
+        assert callosum.emit.call_count == 2
+        assert "d" not in mod._pending_retry
+
+    def test_daily_success_does_not_repeat_on_later_minute_ticks(self, journal_path):
+        import solstone.think.scheduler as mod
+
+        callosum = Mock()
+        callosum.emit = Mock(return_value=True)
+
+        _write_config(
+            journal_path,
+            {
+                "d": {"cmd": ["sol", "daily-thing"], "every": "daily"},
+            },
+        )
+
+        mod.init(callosum)
+        mod._last_hour = datetime(2026, 2, 16, 23, 0)
+        mod._last_daily_mark = datetime(2026, 2, 16, 0, 0)
+
+        with _fake_now(datetime(2026, 2, 17, 0, 1)):
+            mod.check()
+
+        for minute in (2, 3, 4):
+            with _fake_now(datetime(2026, 2, 17, 0, minute)):
+                mod.check()
+
+        assert callosum.emit.call_count == 1
+        assert mod._pending_retry == set()
+
     def test_submits_on_new_hour_after_previous_run(self, journal_path):
         """Task ran in hour 14; crossing to hour 15 triggers resubmission."""
         import solstone.think.scheduler as mod
@@ -1397,6 +1468,16 @@ class TestCollectStatus:
         assert status[0]["next_run"] == expected
         assert status[0]["due"] is False
 
+    def test_status_displays_effective_minute_interval(self, journal_path):
+        import solstone.think.scheduler as mod
+
+        mod._entries = {"c": {"cmd": ["journal", "think", "--cadence"], "every": "1m"}}
+        mod._state = {}
+
+        status = mod.collect_status()
+
+        assert status[0]["every"] == "5m"
+
     def test_format_next_due_minute_interval(self, journal_path):
         import solstone.think.scheduler as mod
 
@@ -1647,3 +1728,25 @@ class TestCLI:
         cadence_line = next(line for line in out.splitlines() if "cadence" in line)
         assert "5m" in cadence_line
         assert "?" not in cadence_line
+
+    def test_sub_floor_minute_interval_prints_effective_interval(
+        self, journal_path, capsys, monkeypatch
+    ):
+        monkeypatch.setattr("sys.argv", ["sol schedule"])
+        _write_config(
+            journal_path,
+            {
+                "cadence": {
+                    "cmd": ["journal", "think", "--cadence"],
+                    "every": "1m",
+                },
+            },
+        )
+
+        from solstone.think.scheduler import main
+
+        main()
+        out = capsys.readouterr().out
+        cadence_line = next(line for line in out.splitlines() if "cadence" in line)
+        assert "5m" in cadence_line
+        assert "1m" not in cadence_line

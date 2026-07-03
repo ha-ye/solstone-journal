@@ -111,7 +111,8 @@ from solstone.think.utils import get_journal, now_ms
 logger = logging.getLogger(__name__)
 _SENDER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 VALID_ROLES = {"", "phone", "observer", "peer"}
-# The watcher emits only lan/ula today; vpn stays empty until a scope is wired.
+# Overlay (Tailscale/CGNAT) endpoints the watcher scopes `vpn`; surfaced via
+# /api/status and ordered after lan/ula in pair-link candidates.
 VPN_SCOPES = {"vpn"}
 _HEALTH_FRESHNESS_MS = 90_000
 journal_sources = import_module("solstone.apps.import.journal_sources")
@@ -188,21 +189,30 @@ def _current_local_endpoints() -> list[LocalEndpoint]:
 
 
 def _list_pair_link_candidates() -> list[str]:
-    """Return up to 4 watcher IPv4 candidates, detect-ip hinted, deduped then capped."""
-    candidates: list[str] = []
+    """Return up to 4 watcher IPv4 candidates.
+
+    vpn-scoped candidates always order after lan/ula ones, and the default-route
+    promotion happens only within the route IP's own scope group — a vpn route IP
+    never displaces an available lan candidate. Results are deduped and capped.
+    """
+    non_vpn: list[str] = []
+    vpn: list[str] = []
     for endpoint in _current_local_endpoints():
         address = ipaddress.ip_address(endpoint.ip)
-        if isinstance(address, ipaddress.IPv4Address):
-            candidates.append(str(address))
+        if not isinstance(address, ipaddress.IPv4Address):
+            continue
+        (vpn if endpoint.scope in VPN_SCOPES else non_vpn).append(str(address))
 
     route_ip = _detect_lan_ip()
-    if route_ip in candidates:
-        candidates.remove(route_ip)
-        candidates.insert(0, route_ip)
+    for group in (non_vpn, vpn):
+        if route_ip in group:
+            group.remove(route_ip)
+            group.insert(0, route_ip)
+            break
 
     deduped: list[str] = []
     seen: set[str] = set()
-    for candidate in candidates:
+    for candidate in (*non_vpn, *vpn):
         if candidate not in seen:
             deduped.append(candidate)
             seen.add(candidate)

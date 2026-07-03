@@ -14,6 +14,7 @@ import pytest
 
 from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.cortex_client import (
+    CortexNotClaimed,
     CortexSpawnUnavailable,
     cortex_request,
     cortex_uses,
@@ -82,9 +83,12 @@ def callosum_listener(callosum_server):
     listener.stop()
 
 
-def test_cortex_request_broadcasts_to_callosum(callosum_listener):
+def test_cortex_request_broadcasts_to_callosum(callosum_listener, monkeypatch):
     """Test that cortex_request broadcasts request to Callosum."""
     messages = callosum_listener
+    monkeypatch.setattr(
+        "solstone.think.cortex_client.get_use_log_status", lambda uid: "running"
+    )
 
     # Create a request
     use_id = cortex_request(
@@ -109,9 +113,12 @@ def test_cortex_request_broadcasts_to_callosum(callosum_listener):
     assert "ts" in msg
 
 
-def test_cortex_request_returns_agent_id(callosum_server):
+def test_cortex_request_returns_agent_id(callosum_server, monkeypatch):
     """Test that cortex_request returns use_id string."""
     _ = callosum_server  # Needed for side effects only
+    monkeypatch.setattr(
+        "solstone.think.cortex_client.get_use_log_status", lambda uid: "running"
+    )
 
     use_id = cortex_request(prompt="Test", name="chat", provider="openai")
 
@@ -121,8 +128,11 @@ def test_cortex_request_returns_agent_id(callosum_server):
     assert len(use_id) == 13  # Millisecond timestamp
 
 
-def test_cortex_request_uses_explicit_use_id(callosum_listener):
+def test_cortex_request_uses_explicit_use_id(callosum_listener, monkeypatch):
     messages = callosum_listener
+    monkeypatch.setattr(
+        "solstone.think.cortex_client.get_use_log_status", lambda uid: "running"
+    )
 
     use_id = cortex_request(
         prompt="Test prompt",
@@ -137,9 +147,12 @@ def test_cortex_request_uses_explicit_use_id(callosum_listener):
     assert messages[-1]["use_id"] == "1713629000000"
 
 
-def test_cortex_request_unique_agent_ids(callosum_server):
+def test_cortex_request_unique_agent_ids(callosum_server, monkeypatch):
     """Test that cortex_request generates unique agent IDs."""
     _ = callosum_server  # Needed for side effects only
+    monkeypatch.setattr(
+        "solstone.think.cortex_client.get_use_log_status", lambda uid: "running"
+    )
 
     agent_ids = []
     for i in range(3):
@@ -170,11 +183,104 @@ def test_cortex_request_empty_journal(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "solstone.think.cortex_client.callosum_send_classified", lambda *a, **kw: ""
     )
+    monkeypatch.setattr(
+        "solstone.think.cortex_client.get_use_log_status", lambda uid: "running"
+    )
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
     use_id = cortex_request("test", "chat", "openai")
     assert use_id is not None
     assert len(use_id) > 0
+
+
+def _install_fake_claim_clock(monkeypatch):
+    import solstone.think.cortex_client as cc
+
+    now = {"value": 0.0}
+    monkeypatch.setattr(cc.time, "monotonic", lambda: now["value"])
+
+    def fake_sleep(seconds):
+        now["value"] += seconds
+
+    monkeypatch.setattr(cc.time, "sleep", fake_sleep)
+    monkeypatch.setattr(cc, "_CLAIM_POLL_INTERVAL_S", 0.01)
+    monkeypatch.setattr(cc, "_CLAIM_WINDOW_S", 0.02)
+    return cc
+
+
+def test_cortex_request_returns_when_claim_appears_after_poll(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    cc = _install_fake_claim_clock(monkeypatch)
+    monkeypatch.setattr(cc, "callosum_send_classified", lambda *a, **kw: "")
+    statuses = iter(["not_found", "running"])
+
+    def fake_status(use_id):
+        return next(statuses, "running")
+
+    monkeypatch.setattr(cc, "get_use_log_status", fake_status)
+
+    use_id = cortex_request("test", "chat", "openai", use_id="1713629000001")
+
+    assert use_id == "1713629000001"
+
+
+def test_cortex_request_rebroadcast_reuses_same_use_id(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    cc = _install_fake_claim_clock(monkeypatch)
+    send_calls = []
+
+    def fake_send(*args, **kwargs):
+        send_calls.append(kwargs)
+        return ""
+
+    monkeypatch.setattr(cc, "callosum_send_classified", fake_send)
+    monkeypatch.setattr(
+        cc,
+        "get_use_log_status",
+        lambda use_id: "running" if len(send_calls) >= 2 else "not_found",
+    )
+
+    use_id = cortex_request("test", "chat", "openai", use_id="1713629000002")
+
+    assert use_id == "1713629000002"
+    assert len(send_calls) >= 2
+    assert {call["use_id"] for call in send_calls} == {"1713629000002"}
+
+
+def test_cortex_request_raises_when_not_claimed(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    cc = _install_fake_claim_clock(monkeypatch)
+    send_calls = []
+
+    def fake_send(*args, **kwargs):
+        send_calls.append(kwargs)
+        return ""
+
+    monkeypatch.setattr(cc, "callosum_send_classified", fake_send)
+    monkeypatch.setattr(cc, "get_use_log_status", lambda use_id: "not_found")
+
+    with pytest.raises(CortexNotClaimed) as excinfo:
+        cortex_request("test", "chat", "openai", use_id="1713629000003")
+
+    assert excinfo.value.use_id == "1713629000003"
+    assert len(send_calls) == 3
+
+
+def test_cortex_request_immediate_claim_does_not_sleep(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    import solstone.think.cortex_client as cc
+
+    monkeypatch.setattr(cc, "callosum_send_classified", lambda *a, **kw: "")
+    monkeypatch.setattr(cc, "get_use_log_status", lambda use_id: "running")
+
+    def fail_sleep(seconds):
+        raise AssertionError("sleep should not be called")
+
+    monkeypatch.setattr(cc.time, "sleep", fail_sleep)
+
+    use_id = cortex_request("test", "chat", "openai", use_id="1713629000004")
+
+    assert use_id == "1713629000004"
 
 
 # Tests for cortex_uses remain mostly unchanged as they read from files

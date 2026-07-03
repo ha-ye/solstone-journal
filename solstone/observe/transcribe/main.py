@@ -16,7 +16,7 @@ Output files:
 - <stem>.npz: Sentence-level voice embeddings indexed by statement id
 
 Configuration (journal config transcribe section):
-- transcribe.backend: STT backend ("parakeet", "whisper", "revai", "gemini"). If unset, auto-selected by free memory.
+- transcribe.backend: STT backend ("parakeet", "parakeet-cpp", "revai", "gemini"). If unset, auto-selected by free memory.
 - transcribe.enrich: Enable/disable LLM enrichment (default: true)
 - transcribe.preserve_all: Keep audio files even when no speech detected (default: false)
 - transcribe.min_speech_seconds: Minimum speech duration to proceed. Default: 1.0
@@ -24,16 +24,9 @@ Configuration (journal config transcribe section):
 - transcribe.noise_upgrade_min_speech_ratio: Min speech/loud ratio required for noisy upgrade (default: 0.3). Filters out music and other non-speech noise.
 
 Parakeet backend settings (transcribe.parakeet):
-- model_version: Parakeet model version ("v2", "v3"). Default: "v3"
+- model_version: Parakeet model version ("v3"). Default: "v3"
 - cache_dir: Optional helper cache directory
 - timeout_sec: Helper timeout in seconds. Default: 120.0
-
-Whisper backend settings (transcribe.whisper):
-- device: Device for inference ("auto", "cpu", "cuda"). Default: "auto"
-- model: Whisper model size (e.g., "medium.en"). Default: "medium.en"
-- compute_type: Precision ("default", "float32", "float16", "int8"). Default: "default"
-  Auto-selects: float16 for CUDA, int8 for CPU (including Apple Silicon).
-- Whisper remains available as the rollback/local alternative backend.
 
 Rev.ai backend settings (transcribe.revai):
 - model: Rev.ai transcriber ("fusion", "machine", "low_cost"). Default: "fusion"
@@ -43,10 +36,9 @@ Gemini backend settings (transcribe.gemini):
 - No configuration needed (model resolved by think.models context system)
 - Includes speaker diarization
 
-Platform optimizations (Whisper):
-- CUDA GPU: Uses float16 for GPU-optimized inference
-- Apple hosts: Uses int8 for Whisper on CPU and CoreML/CPU for embeddings
-- Other CPU: Uses int8 for best performance
+Platform optimizations:
+- Apple Silicon hosts use the CoreML Parakeet helper.
+- Linux hosts use a supervised parakeet.cpp server.
 """
 
 from __future__ import annotations
@@ -57,6 +49,7 @@ import json
 import logging
 import os
 import platform
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -94,11 +87,6 @@ from solstone.observe.transcribe.resource import (
     select_stt_backend,
     stt_local_floor_bytes,
 )
-from solstone.observe.transcribe.whisper import (
-    DEFAULT_COMPUTE,
-    DEFAULT_DEVICE,
-    DEFAULT_MODEL,
-)
 from solstone.observe.utils import (
     SAMPLE_RATE,
     AudioDecodeError,
@@ -110,6 +98,7 @@ from solstone.think.journal_io import write_text
 from solstone.think.journal_io.npz import write_npz
 from solstone.think.media import AUDIO_EXTENSIONS as SUPPORTED_AUDIO_FORMATS
 from solstone.think.providers.memory import gb, read_available_bytes
+from solstone.think.providers.parakeet_server import ParakeetServerNotReady
 from solstone.think.utils import (
     day_dirs,
     day_from_path,
@@ -130,9 +119,6 @@ if TYPE_CHECKING:
 
 # Re-export defaults for backwards compatibility
 __all__ = [
-    "DEFAULT_MODEL",
-    "DEFAULT_DEVICE",
-    "DEFAULT_COMPUTE",
     "DEFAULT_MIN_SPEECH_SECONDS",
     "MIN_STATEMENT_DURATION",
     "main",
@@ -174,11 +160,17 @@ def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -
     local_backend = local_stt_backend()
     google_key_present = bool(os.getenv("GOOGLE_API_KEY"))
     configured_backend = transcribe_config.get("backend")
-    if args.backend or configured_backend:
-        _warn_if_local_below_floor(
-            args.backend or configured_backend, available_bytes, floor_bytes
-        )
-        return configured_backend or DEFAULT_BACKEND
+    explicit_backend = args.backend or configured_backend
+    if explicit_backend:
+        if explicit_backend not in BACKEND_REGISTRY:
+            logging.warning(
+                "Configured STT backend %r is unavailable; using %s",
+                explicit_backend,
+                DEFAULT_BACKEND,
+            )
+            explicit_backend = DEFAULT_BACKEND
+        _warn_if_local_below_floor(explicit_backend, available_bytes, floor_bytes)
+        return explicit_backend
     backend = select_stt_backend(
         available_bytes,
         google_key_present=google_key_present,
@@ -195,7 +187,7 @@ def _warn_if_local_below_floor(
     backend: str, available_bytes: int | None, floor_bytes: int | None
 ) -> None:
     if (
-        backend in {"parakeet", "whisper"}
+        backend == "parakeet"
         and floor_bytes is not None
         and available_bytes is not None
         and available_bytes < floor_bytes
@@ -496,7 +488,7 @@ def _statements_to_jsonl(
         vad_result: Optional VAD result for noise detection metadata
         segment_meta: Optional metadata dict from SEGMENT_META env var
             (facet, setting, host, platform, etc.). Setting overrides enrichment.
-        backend: Optional STT backend name (e.g., "whisper", "revai")
+        backend: Optional STT backend name (e.g., "parakeet", "revai")
 
     Returns:
         List of JSON strings (metadata line first, then entries)
@@ -821,7 +813,7 @@ def process_audio(
         # speech and diarization adds no value.  Otherwise reuse the pyannote
         # log-probs computed above so the diarizer skips its own pyannote pass.
         _DIARIZE_MIN_OVERLAP = 0.05
-        if resolved_backend in {"parakeet", "whisper"}:
+        if resolved_backend == "parakeet":
             if overlap_fraction_value < _DIARIZE_MIN_OVERLAP:
                 logging.info(
                     "  Skipping diarization: overlap=%.2f (threshold %.2f)",
@@ -924,6 +916,14 @@ def process_audio(
         event["output"] = rel_output
 
         callosum_send("observe", "transcribed", **event)
+
+    except ParakeetServerNotReady as e:
+        logging.info(
+            "Parakeet server not ready for %s; leaving audio for retry: %s",
+            raw_path,
+            e,
+        )
+        return
 
     except Exception as e:
         logging.error(f"Failed to transcribe {raw_path}: {e}", exc_info=True)
@@ -1089,21 +1089,7 @@ def _process_one(
             backend = "revai"
 
     # Get backend-specific config from nested structure
-    if backend == "whisper":
-        whisper_config = transcribe_config.get("whisper", {})
-        if args.cpu:
-            device = "cpu"
-            compute_type = "int8"
-        else:
-            device = whisper_config.get("device", DEFAULT_DEVICE)
-            compute_type = whisper_config.get("compute_type", DEFAULT_COMPUTE)
-        model = args.model or whisper_config.get("model", DEFAULT_MODEL)
-        backend_config = {
-            "model": model,
-            "device": device,
-            "compute_type": compute_type,
-        }
-    elif backend == "revai":
+    if backend == "revai":
         from solstone.observe.transcribe.revai import (
             DEFAULT_MODEL as REVAI_DEFAULT_MODEL,
         )
@@ -1117,19 +1103,28 @@ def _process_one(
         if entity_names:
             backend_config["entities"] = entity_names
     elif backend == "parakeet":
-        parakeet_config = transcribe_config.get("parakeet", {})
-        backend_config = {
-            k: v
-            for k, v in parakeet_config.items()
-            if k
-            in (
-                "model_version",
-                "cache_dir",
-                "timeout_sec",
-                "device",
-                "quantization",
-            )
-        }
+        if sys.platform.startswith("linux"):
+            parakeet_cpp_config = transcribe_config.get("parakeet-cpp", {})
+            backend_config = {
+                k: v for k, v in parakeet_cpp_config.items() if k == "device"
+            }
+        else:
+            parakeet_config = transcribe_config.get("parakeet", {})
+            backend_config = {
+                k: v
+                for k, v in parakeet_config.items()
+                if k
+                in (
+                    "model_version",
+                    "cache_dir",
+                    "timeout_sec",
+                    "device",
+                    "quantization",
+                )
+            }
+    elif backend == "parakeet-cpp":
+        parakeet_cpp_config = transcribe_config.get("parakeet-cpp", {})
+        backend_config = {k: v for k, v in parakeet_cpp_config.items() if k == "device"}
     elif backend == "gemini":
         # Gemini backend - model resolved by think.models based on context
         # Entity names handled by enrich step, not passed to transcription
@@ -1172,16 +1167,6 @@ def main():
         "--redo",
         action="store_true",
         help="Reprocess file, overwriting existing outputs",
-    )
-    parser.add_argument(
-        "--cpu",
-        action="store_true",
-        help="Force CPU mode (overrides config, uses int8 compute)",
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        help=f"Whisper model to use (overrides config, default: {DEFAULT_MODEL})",
     )
     parser.add_argument(
         "--backend",

@@ -13,7 +13,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from solstone.think.steward import append_steward_event, run_recipe_pass
+from solstone.think.steward import (
+    append_steward_event,
+    prune_steward_log,
+    run_recipe_pass,
+)
 from solstone.think.utils import get_journal, require_solstone, setup_cli
 
 logger = logging.getLogger(__name__)
@@ -110,6 +114,7 @@ def main() -> None:
                 escalated_targets=result["escalated_targets"],
                 data_source_errors=result["data_source_errors"],
             )
+            prune_steward_log()
             logger.info("Heartbeat repair pass complete")
             _log_run(health_dir, start_time, "success")
             sys.exit(0)

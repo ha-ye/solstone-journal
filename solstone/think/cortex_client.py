@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 # Bounded interval (seconds) for polling durable use logs in wait_for_uses()
 # while Callosum events remain the fast wake path. Monkeypatched small in tests.
 _POLL_INTERVAL_S = 0.5
+_CLAIM_POLL_INTERVAL_S = 0.1
+_CLAIM_WINDOW_S = 1.0
+# Total sends including the initial broadcast.
+_CLAIM_MAX_BROADCASTS = 3
 
 
 class CortexSpawnUnavailable(Exception):
@@ -25,6 +29,15 @@ class CortexSpawnUnavailable(Exception):
 
     def __init__(self, detail: str = "") -> None:
         super().__init__("cortex spawn unavailable")
+        self.detail = detail
+
+
+class CortexNotClaimed(Exception):
+    """Raised when Cortex does not durably claim a sent request."""
+
+    def __init__(self, use_id: str, detail: str = "") -> None:
+        super().__init__("cortex request not claimed")
+        self.use_id = use_id
         self.detail = detail
 
 
@@ -53,7 +66,7 @@ def cortex_request(
     provider: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
     use_id: Optional[str] = None,
-) -> str | None:
+) -> str:
     """Create a Cortex talent request via Callosum broadcast.
 
     Args:
@@ -64,7 +77,11 @@ def cortex_request(
         use_id: Optional pre-reserved use_id. When omitted, a unique timestamp is allocated.
 
     Returns:
-        Use ID (timestamp-based string), or None if the Callosum send failed.
+        Use ID (timestamp-based string).
+
+    Raises:
+        CortexSpawnUnavailable: If the request cannot reach Callosum.
+        CortexNotClaimed: If Cortex does not claim the request.
     """
     # Get journal path (for use_id uniqueness check)
     journal_path = get_journal()
@@ -117,7 +134,36 @@ def cortex_request(
         logger.info("Failed to send cortex request for talent '%s'", name)
         raise CortexSpawnUnavailable(detail=unavailable_detail)
 
-    return use_id
+    broadcasts = 1
+    while True:
+        if get_use_log_status(use_id) in ("running", "completed"):
+            return use_id
+
+        deadline = time.monotonic() + _CLAIM_WINDOW_S
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            sleep_for = min(_CLAIM_POLL_INTERVAL_S, remaining)
+            if sleep_for <= 0:
+                break
+            time.sleep(sleep_for)
+            if get_use_log_status(use_id) in ("running", "completed"):
+                return use_id
+
+        if broadcasts >= _CLAIM_MAX_BROADCASTS:
+            break
+
+        broadcasts += 1
+        unavailable_detail = callosum_send_classified(
+            "cortex", "request", **request_fields
+        )
+        if unavailable_detail:
+            logger.info("Failed to send cortex request for talent '%s'", name)
+            raise CortexSpawnUnavailable(detail=unavailable_detail)
+
+    detail = f"cortex did not claim use_id {use_id} after {broadcasts} broadcasts"
+    raise CortexNotClaimed(use_id=use_id, detail=detail)
 
 
 def get_use_log_status(use_id: str) -> str:

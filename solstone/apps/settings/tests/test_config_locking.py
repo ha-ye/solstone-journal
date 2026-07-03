@@ -79,7 +79,7 @@ def test_settings_config_routes_serialize_concurrent_writes(settings_env, monkey
                 "/app/settings/api/config",
                 json={
                     "section": "transcribe",
-                    "data": {"backend": "whisper"},
+                    "data": {"backend": "gemini"},
                 },
             )
             assert response.status_code == 200
@@ -111,4 +111,4 @@ def test_settings_config_routes_serialize_concurrent_writes(settings_env, monkey
 
     final_config = get_config()
     assert final_config["describe"]["max_extractions"] == 42
-    assert final_config["transcribe"]["backend"] == "whisper"
+    assert final_config["transcribe"]["backend"] == "gemini"

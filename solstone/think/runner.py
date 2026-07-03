@@ -354,11 +354,10 @@ class DailyLogWriter:
         self._fh = self._open_log()
         self._update_symlinks()
 
-    def _open_log(self):
-        """Open log file for current day."""
-        log_path = _day_health_log_path(
-            self._journal_root, self._current_day, self._ref, self._name
-        )
+    def _open_log(self, day: str | None = None):
+        """Open the log file for ``day`` (defaults to the current day)."""
+        day = day or self._current_day
+        log_path = _day_health_log_path(self._journal_root, day, self._ref, self._name)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         return log_path.open("a", encoding="utf-8")
 
@@ -387,16 +386,30 @@ class DailyLogWriter:
                 # Check for day change
                 day_now = _current_day()
                 if day_now != self._current_day:
-                    # Close old log
-                    if not self._fh.closed:
-                        self._fh.close()
-                    # Open new log for new day — keep old handle on failure
+                    # Open the new day's log BEFORE touching the old handle.
+                    # A failed open must leave the old (open) handle and the
+                    # tracked day untouched, so the next write re-attempts the
+                    # rollover — nothing here may propagate out of write() and
+                    # kill the drain thread.
                     try:
-                        self._fh = self._open_log()
-                        self._current_day = day_now
-                        self._update_symlinks()
+                        new_fh = self._open_log(day_now)
                     except OSError:
-                        pass
+                        new_fh = None
+                    if new_fh is not None:
+                        old_fh = self._fh
+                        self._fh = new_fh
+                        self._current_day = day_now
+                        # Best-effort after the swap: neither the symlink
+                        # refresh nor closing the old handle may raise out.
+                        try:
+                            self._update_symlinks()
+                        except OSError:
+                            pass
+                        try:
+                            if not old_fh.closed:
+                                old_fh.close()
+                        except OSError:
+                            pass
 
             # Write and flush — swallow disk-full so output threads survive
             try:

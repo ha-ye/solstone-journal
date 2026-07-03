@@ -276,7 +276,6 @@ def test_role_skip_without_local_journal(doctor, monkeypatch, tmp_path, home_roo
     assert by_name["disk_space"].status in {"ok", "warn"}
     assert by_name["config_dir_readable"].status == "ok"
     assert by_name["feature:pdf"].status in {"ok", "warn"}
-    assert by_name["feature:whisper"].status in {"ok", "warn"}
 
 
 def test_skill_state_no_local_journal_skips(doctor, monkeypatch, tmp_path):

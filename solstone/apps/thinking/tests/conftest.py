@@ -90,11 +90,6 @@ def settings_env(tmp_path, monkeypatch):
                         "device": "auto",
                         "timeout_sec": 120.0,
                     },
-                    "whisper": {
-                        "device": "auto",
-                        "model": "medium.en",
-                        "compute_type": "default",
-                    },
                     "revai": {
                         "model": "fusion",
                     },

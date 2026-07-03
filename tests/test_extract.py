@@ -53,21 +53,21 @@ def test_exactly_max_returns_all():
     assert result == list(range(1, 11))
 
 
-def test_more_than_max_returns_around_max():
-    """Test that more than max frames returns approximately max count."""
+def test_more_than_max_returns_exactly_max():
+    """Test that more than max frames returns max count."""
     frames = _make_frames(30)
     result = select_frames_for_extraction(frames, max_extractions=5)
-    # May be max or max+1 if first frame wasn't in random selection
-    assert 5 <= len(result) <= 6
+    assert len(result) == 5
+    assert 1 in result
+    assert 30 in result
 
 
 def test_first_frame_always_included():
     """Test that first frame is always in selection."""
     frames = _make_frames(100)
-    # Run multiple times to account for randomness
-    for _ in range(10):
-        result = select_frames_for_extraction(frames, max_extractions=10)
-        assert 1 in result, "First frame must always be included"
+    result = select_frames_for_extraction(frames, max_extractions=10)
+    assert 1 in result, "First frame must always be included"
+    assert len(result) == 10
 
 
 def test_results_sorted():
@@ -89,9 +89,7 @@ def test_max_extractions_of_one():
     """Test edge case of max_extractions=1."""
     frames = _make_frames(10)
     result = select_frames_for_extraction(frames, max_extractions=1)
-    # First frame always included, plus possibly one random
-    assert 1 in result
-    assert 1 <= len(result) <= 2
+    assert result == [1]
 
 
 def test_non_sequential_frame_ids():

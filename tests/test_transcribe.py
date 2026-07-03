@@ -16,10 +16,7 @@ import soundfile as sf
 
 from solstone.observe import utils as observe_utils
 from solstone.observe.transcribe import (
-    DEFAULT_COMPUTE,
-    DEFAULT_DEVICE,
     DEFAULT_MIN_SPEECH_SECONDS,
-    DEFAULT_MODEL,
     MIN_STATEMENT_DURATION,
     SENTENCE_ENDINGS,
     build_statement,
@@ -238,9 +235,6 @@ class TestConstants:
 
     def test_default_transcription_settings(self):
         """Default transcription settings should be valid."""
-        assert DEFAULT_MODEL == "medium.en"
-        assert DEFAULT_DEVICE == "auto"
-        assert DEFAULT_COMPUTE == "default"
         assert DEFAULT_MIN_SPEECH_SECONDS == 1.0
 
 
@@ -577,7 +571,7 @@ def test_process_audio_failed_embeddings_write_emits_failed_event(tmp_path):
         ),
     ):
         with pytest.raises(SystemExit) as exc:
-            process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+            process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     assert exc.value.code == 1
     assert mock_send.call_args.args[:2] == ("observe", "transcribed")
@@ -641,7 +635,7 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
-        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     loaded = load_npz(embeddings_path)
     assert embeddings_path.exists()
@@ -711,7 +705,7 @@ def test_process_audio_records_analyzed_processing(tmp_path):
         ),
         patch("solstone.observe.transcribe.main.callosum_send"),
     ):
-        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     jsonl_path = raw_path.with_suffix(".jsonl")
     header = json.loads(jsonl_path.read_text().splitlines()[0])
@@ -762,7 +756,7 @@ def test_process_audio_silent_filtered_writes_no_processing_record(tmp_path):
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
-        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     assert not raw_path.with_suffix(".jsonl").exists()
     assert not raw_path.exists()
@@ -818,7 +812,7 @@ def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
-        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     assert mock_send.call_args.args[:2] == ("observe", "transcribed")
     assert mock_send.call_args.kwargs["outcome"] == "transcribed"

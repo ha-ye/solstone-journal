@@ -38,6 +38,17 @@ def _split_v05(pair_link: str) -> tuple[int, list[str], str, str]:
     return port, addresses, nonce, ca_pin
 
 
+def _split_v04(pair_link: str) -> tuple[str, int, str, str]:
+    blob = _decode_blob(pair_link)
+    assert blob[0:2] == b"\x04\x01"
+    host = str(ipaddress.IPv4Address(blob[2:6]))
+    port = int.from_bytes(blob[6:8], "big")
+    nonce = blob[8:24].hex()
+    ca_pin = blob[24:40].hex()
+    assert len(blob) == 40
+    return host, port, nonce, ca_pin
+
+
 def _post_pair_start(env) -> dict:
     response = env.client.post(
         "/app/network/pair-start",
@@ -107,6 +118,20 @@ def test_pair_start_emit_switch_v04_then_v05(link_env) -> None:
     assert multiple[0] == 0x05
 
 
+def test_pair_start_vpn_only_uses_v04_candidate(link_env, monkeypatch) -> None:
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
+    env = link_env(
+        local_endpoints=[LocalEndpoint(ip="100.64.0.5", port=7657, scope="vpn")]
+    )
+
+    pair_link = _post_pair_start(env)["pair_link"]
+    host, port, _, _ = _split_v04(pair_link)
+
+    assert pair_link
+    assert host == "100.64.0.5"
+    assert port == 7657
+
+
 def test_pair_start_candidates_sourced_from_snapshot_not_detect(
     link_env,
     monkeypatch,
@@ -137,6 +162,41 @@ def test_pair_start_default_route_moved_first(link_env, monkeypatch) -> None:
     _, addresses, _, _ = _split_v05(_post_pair_start(env)["pair_link"])
 
     assert addresses == ["198.51.100.20", "192.0.2.10"]
+
+
+def test_pair_start_vpn_route_ip_does_not_displace_lan(
+    link_env,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "100.64.0.5")
+    env = link_env(
+        local_endpoints=[
+            LocalEndpoint(ip="192.168.1.10", port=7657, scope="lan"),
+            LocalEndpoint(ip="100.64.0.5", port=7657, scope="vpn"),
+        ]
+    )
+
+    _, addresses, _, _ = _split_v05(_post_pair_start(env)["pair_link"])
+
+    assert addresses == ["192.168.1.10", "100.64.0.5"]
+
+
+def test_pair_start_orders_vpn_after_non_vpn_input_order(
+    link_env,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
+    env = link_env(
+        local_endpoints=[
+            LocalEndpoint(ip="100.64.0.5", port=7657, scope="vpn"),
+            LocalEndpoint(ip="192.0.2.10", port=7657, scope="lan"),
+            LocalEndpoint(ip="192.0.2.11", port=7657, scope="lan"),
+        ]
+    )
+
+    _, addresses, _, _ = _split_v05(_post_pair_start(env)["pair_link"])
+
+    assert addresses == ["192.0.2.10", "192.0.2.11", "100.64.0.5"]
 
 
 def test_pair_start_v05_uses_secure_listener_port_not_endpoint_ports(

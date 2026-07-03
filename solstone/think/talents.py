@@ -19,6 +19,7 @@ import errno
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import traceback
@@ -565,6 +566,16 @@ def prepare_config(request: dict) -> dict:
     talent_path = Path(config["path"]) if config.get("path") else None
     sources = config.get("sources", {})
     talent_cwd = config.get("cwd")
+    # Capture the security-relevant fields from the talent definition BEFORE the
+    # request merge. access_tier selects tool capability; type steers provider/
+    # model resolution and the local-lane runtime promise. A request may not
+    # override either (same as cwd). Pin on PRESENCE, not just value:
+    # access_tier is populated only for cogitate talents (absent otherwise), so
+    # a request that introduces access_tier on a talent that declares none is
+    # itself the conflict to reject.
+    definition_has_access_tier = "access_tier" in config
+    definition_access_tier = config.get("access_tier")
+    definition_type = config.get("type")
 
     # Merge request values (request overrides talent defaults)
     config.update({k: v for k, v in request.items() if v is not None})
@@ -573,6 +584,22 @@ def prepare_config(request: dict) -> dict:
         raise ValueError(
             f"Request overrides 'cwd' for talent '{name}' are not allowed "
             f"({talent_cwd!r} != {request_cwd!r})"
+        )
+
+    request_access_tier = request.get("access_tier")
+    if request_access_tier is not None and (
+        not definition_has_access_tier or request_access_tier != definition_access_tier
+    ):
+        raise ValueError(
+            f"Request overrides 'access_tier' for talent '{name}' are not allowed "
+            f"({definition_access_tier!r} != {request_access_tier!r})"
+        )
+
+    request_type = request.get("type")
+    if request_type is not None and request_type != definition_type:
+        raise ValueError(
+            f"Request overrides 'type' for talent '{name}' are not allowed "
+            f"({definition_type!r} != {request_type!r})"
         )
 
     cwd_value = config.get("cwd")
@@ -866,6 +893,38 @@ def _write_output(output_path: Path, result: str) -> bool:
         f.write(payload)
     LOG.info("Wrote output to %s", output_path)
     return True
+
+
+_MD_FENCE_LINE = re.compile(r"^```[A-Za-z0-9_-]*$")
+
+
+def _strip_outer_markdown_fence(text: str) -> tuple[str, bool]:
+    """Strip a single whole-output code fence wrapping markdown text.
+
+    Returns (text, stripped). Only strips when the output is wrapped as a
+    whole in exactly one outer fence: the opener is the first non-whitespace
+    line (```  or ```lang) and the closer is the last non-whitespace line and
+    is a bare ```. Requires the opener and closer to be the ONLY fence-delimiter
+    lines in the output, so an interior code block never triggers a strip.
+    On any non-match returns the original text unchanged with stripped=False.
+    """
+    lines = text.split("\n")
+    fence_indices = [
+        index for index, line in enumerate(lines) if _MD_FENCE_LINE.match(line.strip())
+    ]
+    if len(fence_indices) != 2:
+        return text, False
+
+    opener_idx, closer_idx = fence_indices
+    if any(line.strip() for line in lines[:opener_idx]):
+        return text, False
+    if any(line.strip() for line in lines[closer_idx + 1 :]):
+        return text, False
+    if lines[closer_idx].strip() != "```":
+        return text, False
+
+    interior = "\n".join(lines[opener_idx + 1 : closer_idx])
+    return interior, True
 
 
 def _build_generation_contents(config: dict) -> list[Any]:
@@ -1503,6 +1562,16 @@ async def _execute_generate(
             config["health_stale"] = False
 
     raw_result = gen_result["text"]
+    if output_format == "md":
+        stripped_text, fence_stripped = _strip_outer_markdown_fence(raw_result)
+        if fence_stripped:
+            LOG.info(
+                "Stripped whole-output markdown fence from talent %s (day=%s, schedule=%s)",
+                name,
+                config.get("day"),
+                config.get("schedule"),
+            )
+            raw_result = stripped_text
     usage_data = gen_result.get("usage")
 
     # Run post-hooks

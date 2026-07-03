@@ -1751,6 +1751,9 @@ def test_cli_pipeline_relocated_behavior(tmp_path, monkeypatch):
     assert day_payload["day"] == day
     assert day_payload["runs"]["segment"]["count"] == 1
     assert day_payload["talents"]["dispatched"] >= 1
+    assert day_payload["talents"]["outstanding_failed"] == 0
+    assert day_payload["talents"]["failed_list"] == []
+    assert day_payload["talents"]["failed_list_truncated"] is False
     assert yesterday_result.exit_code == 0
     assert json.loads(yesterday_result.stdout)["day"] == expected_yesterday
     assert error_result.exit_code == 1

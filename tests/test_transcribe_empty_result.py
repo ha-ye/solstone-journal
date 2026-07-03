@@ -63,7 +63,7 @@ def test_empty_statements_filter_path(raw_path, audio_buffer, vad_result):
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
-        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     assert not raw_path.exists()
     assert not raw_path.with_suffix(".jsonl").exists()
@@ -96,7 +96,7 @@ def test_empty_statements_preserve_path(raw_path, audio_buffer, vad_result):
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
-        process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     assert raw_path.exists()
     jsonl_path = raw_path.with_suffix(".jsonl")
@@ -133,7 +133,7 @@ def test_vad_no_speech_preserve_path_writes_empty_record(raw_path):
             raw_path,
             args,
             {"preserve_all": True},
-            "whisper",
+            "parakeet",
             [],
         )
 
@@ -165,13 +165,13 @@ def test_backend_raise_propagates(raw_path, audio_buffer, vad_result):
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
         with pytest.raises(SystemExit) as exc_info:
-            process_audio(raw_path, audio_buffer, vad_result, {}, backend="whisper")
+            process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     assert exc_info.value.code == 1
     assert raw_path.exists()
     assert mock_send.call_args.args[:2] == ("observe", "transcribed")
     assert mock_send.call_args.kwargs["outcome"] == "failed"
-    assert mock_send.call_args.kwargs["backend"] == "whisper"
+    assert mock_send.call_args.kwargs["backend"] == "parakeet"
     assert (
         mock_send.call_args.kwargs["input"] == "20260416/default/120000_300/audio.m4a"
     )

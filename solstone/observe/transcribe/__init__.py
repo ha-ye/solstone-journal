@@ -13,8 +13,7 @@ Terminology:
 - "segment" = journal directory (HHMMSS_LEN/ time window) - NOT used here
 
 Available backends:
-- parakeet: Default local backend via Apple Silicon helper or Linux ONNX
-- whisper: Local faster-whisper (rollback/local alternative, GPU/CPU)
+- parakeet: Default local backend via Apple Silicon helper or Linux parakeet.cpp
 - revai: Rev.ai cloud API (speaker diarization)
 - gemini: Google Gemini API (speaker diarization)
 
@@ -61,10 +60,10 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 BACKEND_REGISTRY: dict[str, str] = {
-    "whisper": "solstone.observe.transcribe.whisper",
     "revai": "solstone.observe.transcribe.revai",
     "gemini": "solstone.observe.transcribe.gemini",
     "parakeet": "solstone.observe.transcribe.parakeet",
+    "parakeet-cpp": "solstone.observe.transcribe._parakeet_cpp",
 }
 
 # ---------------------------------------------------------------------------
@@ -75,12 +74,6 @@ BACKEND_REGISTRY: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 BACKEND_METADATA: dict[str, dict] = {
-    "whisper": {
-        "label": "Whisper - Local processing",
-        "description": "Local speech recognition using faster-whisper",
-        "env_key": None,
-        "settings": ["device", "model", "compute_type"],
-    },
     "revai": {
         "label": "Rev.ai - Cloud with speaker diarization",
         "description": "Cloud-based transcription with speaker identification",
@@ -94,10 +87,16 @@ BACKEND_METADATA: dict[str, dict] = {
         "settings": [],
     },
     "parakeet": {
-        "label": "Parakeet - Local processing (Apple Silicon CoreML or Linux ONNX)",
-        "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses onnx-asr + onnxruntime. Requires `make install`.",
+        "label": "Parakeet - Local processing (Apple Silicon CoreML or Linux parakeet.cpp)",
+        "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses the supervised parakeet.cpp server. Requires `make install`.",
         "env_key": None,
         "settings": ["model_version", "device", "timeout_sec"],
+    },
+    "parakeet-cpp": {
+        "label": "Parakeet.cpp - Local processing (Linux)",
+        "description": "On-device speech recognition via a supervised parakeet.cpp server (mudler/parakeet.cpp). Linux only; install with `journal install-provider parakeet`.",
+        "env_key": None,
+        "settings": ["device"],
     },
 }
 
@@ -106,7 +105,7 @@ def get_backend(name: str) -> ModuleType:
     """Get STT backend module by name.
 
     Args:
-        name: Backend name (e.g., "whisper")
+        name: Backend name (e.g., "parakeet")
 
     Returns:
         Backend module with transcribe() function
@@ -126,7 +125,7 @@ def get_backend_list() -> list[dict]:
 
     Returns:
         List of backend info dicts, each containing:
-        - name: Backend identifier (e.g., "whisper")
+        - name: Backend identifier (e.g., "parakeet")
         - label: Display label
         - description: Short description
         - env_key: Environment variable for API key (None for local backends)
@@ -148,7 +147,7 @@ def transcribe(
     """Dispatch transcription to the specified backend.
 
     Args:
-        backend: Backend name (e.g., "whisper")
+        backend: Backend name (e.g., "parakeet")
         audio: Audio buffer (float32, mono)
         sample_rate: Sample rate in Hz (typically 16000)
         config: Backend-specific configuration dict
@@ -183,11 +182,6 @@ from solstone.observe.transcribe.utils import (
     build_statements_from_acoustic,
     is_apple_silicon,
 )
-from solstone.observe.transcribe.whisper import (
-    DEFAULT_COMPUTE,
-    DEFAULT_DEVICE,
-    DEFAULT_MODEL,
-)
 
 __all__ = [
     # Registry
@@ -204,10 +198,6 @@ __all__ = [
     # Main entry point
     "main",
     "process_audio",
-    # Constants (backwards compatibility)
-    "DEFAULT_MODEL",
-    "DEFAULT_DEVICE",
-    "DEFAULT_COMPUTE",
     "DEFAULT_MIN_SPEECH_SECONDS",
     "MIN_STATEMENT_DURATION",
 ]

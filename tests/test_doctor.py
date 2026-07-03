@@ -208,66 +208,75 @@ class TestDefaultSttReady:
             "_platform_info",
             lambda: ("linux", "x86_64"),
         )
-        monkeypatch.setattr(
-            doctor.parakeet_readiness,
-            "_sentinel_path",
-            lambda variant: tmp_path / f"{variant}.sentinel",
-        )
         return journal
 
+    @staticmethod
+    def make_ready_files(doctor, cache_root: Path, artifact_key: str) -> None:
+        for backend in doctor.parakeet_readiness.PARAKEET_CPP_BINARY_BACKENDS:
+            path = doctor.parakeet_readiness.parakeet_cpp_binary_path(
+                cache_root, artifact_key, backend
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/sh\n", encoding="utf-8")
+            path.chmod(0o755)
+        model_path = doctor.parakeet_readiness.parakeet_cpp_model_path(cache_root)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_path.write_text("model", encoding="utf-8")
+
     def test_ok_when_linux_runtime_and_model_ready(self, doctor, monkeypatch, tmp_path):
-        ready_cache = tmp_path / "cache"
-        self.setup_linux_parakeet_default(doctor, monkeypatch, tmp_path)
-        monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object())
+        from solstone.think.providers import parakeet_server
 
-        def fake_check_ready(os_name, arch, variant, sentinel_path):
-            assert (os_name, arch, variant) == ("linux", "x86_64", "cpu")
-            assert sentinel_path == tmp_path / "cpu.sentinel"
-            return ready_cache
-
+        journal = self.setup_linux_parakeet_default(doctor, monkeypatch, tmp_path)
+        artifact_key = "x86_64-unknown-linux-gnu"
+        cache_root = doctor.parakeet_readiness.parakeet_cpp_cache_root(journal)
+        self.make_ready_files(doctor, cache_root, artifact_key)
         monkeypatch.setattr(
-            doctor.parakeet_readiness,
-            "_check_parakeet_ready",
-            fake_check_ready,
+            parakeet_server,
+            "probe_state",
+            lambda: (parakeet_server.STATE_READY, None),
         )
 
         result = doctor.default_stt_ready_check(args(doctor))
 
         assert result.status == "ok"
-        assert str(ready_cache) in result.detail
+        assert result.detail == (
+            "parakeet-cpp ready (binaries + model installed, server reachable)"
+        )
 
-    def test_warns_when_linux_runtime_missing(self, doctor, monkeypatch, tmp_path):
+    def test_warns_when_linux_cpp_artifacts_missing(
+        self, doctor, monkeypatch, tmp_path
+    ):
         self.setup_linux_parakeet_default(doctor, monkeypatch, tmp_path)
-        monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: None)
+
+        result = doctor.default_stt_ready_check(args(doctor))
+
+        assert result.status == "warn"
+        assert "missing" in result.detail
+        assert result.fix == doctor._PARAKEET_CPP_INSTALL_FIX
+
+    def test_warns_when_linux_cpp_server_not_started(
+        self, doctor, monkeypatch, tmp_path
+    ):
+        from solstone.think.providers import parakeet_server
+
+        journal = self.setup_linux_parakeet_default(doctor, monkeypatch, tmp_path)
+        artifact_key = "x86_64-unknown-linux-gnu"
+        cache_root = doctor.parakeet_readiness.parakeet_cpp_cache_root(journal)
+        self.make_ready_files(doctor, cache_root, artifact_key)
         monkeypatch.setattr(
-            doctor.parakeet_readiness,
-            "_check_parakeet_ready",
-            lambda *_args: pytest.fail("model readiness should not run"),
+            parakeet_server,
+            "probe_state",
+            lambda: (parakeet_server.STATE_FAILED, "no port"),
         )
 
         result = doctor.default_stt_ready_check(args(doctor))
 
         assert result.status == "warn"
-        assert result.detail == "onnx-asr runtime not installed"
-        assert result.fix == doctor._DEFAULT_STT_RUNTIME_FIX
-
-    def test_warns_when_linux_model_missing(self, doctor, monkeypatch, tmp_path):
-        self.setup_linux_parakeet_default(doctor, monkeypatch, tmp_path)
-        monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object())
-        monkeypatch.setattr(
-            doctor.parakeet_readiness,
-            "_check_parakeet_ready",
-            lambda *_args: (_ for _ in ()).throw(RuntimeError("sentinel missing")),
-        )
-
-        result = doctor.default_stt_ready_check(args(doctor))
-
-        assert result.status == "warn"
-        assert result.detail == "sentinel missing"
-        assert result.fix == doctor._DEFAULT_STT_MODEL_FIX
+        assert result.detail == "parakeet-server not reachable: no port"
+        assert result.fix == doctor._PARAKEET_CPP_START_FIX
 
     def test_default_stt_fix_strings_are_distinct(self, doctor):
-        assert doctor._DEFAULT_STT_RUNTIME_FIX != doctor._DEFAULT_STT_MODEL_FIX
+        assert doctor._PARAKEET_CPP_INSTALL_FIX != doctor._PARAKEET_CPP_START_FIX
 
     def test_skips_when_configured_backend_is_not_parakeet(
         self, doctor, monkeypatch, tmp_path
@@ -295,23 +304,17 @@ class TestDefaultSttReady:
         self, doctor, monkeypatch, tmp_path
     ):
         journal = tmp_path / "missing-journal"
-        ready_cache = tmp_path / "cache"
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
         monkeypatch.setattr(
             doctor.parakeet_readiness,
             "_platform_info",
             lambda: ("linux", "x86_64"),
         )
-        monkeypatch.setattr(doctor.importlib.util, "find_spec", lambda name: object())
-        monkeypatch.setattr(
-            doctor.parakeet_readiness,
-            "_check_parakeet_ready",
-            lambda *_args: ready_cache,
-        )
 
         result = doctor.default_stt_ready_check(args(doctor))
 
-        assert result.status == "ok"
+        assert result.status == "warn"
+        assert "missing" in result.detail
         assert "configured backend" not in result.detail
         assert not journal.exists()
 
@@ -321,11 +324,6 @@ class TestDefaultSttReady:
             doctor.parakeet_readiness,
             "_platform_info",
             lambda: ("linux", "aarch64"),
-        )
-        monkeypatch.setattr(
-            doctor.importlib.util,
-            "find_spec",
-            lambda name: pytest.fail("runtime should not be checked"),
         )
 
         result = doctor.default_stt_ready_check(args(doctor))
@@ -357,6 +355,151 @@ class TestDefaultSttReady:
         assert doctor.CHECK_MAP["default_stt_ready"].severity == "advisory"
 
 
+class TestParakeetCppSttReady:
+    @staticmethod
+    def make_ready_files(doctor, cache_root: Path, artifact_key: str) -> None:
+        for backend in doctor.parakeet_readiness.PARAKEET_CPP_BINARY_BACKENDS:
+            path = doctor.parakeet_readiness.parakeet_cpp_binary_path(
+                cache_root, artifact_key, backend
+            )
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("#!/bin/sh\n", encoding="utf-8")
+            path.chmod(0o755)
+        model_path = doctor.parakeet_readiness.parakeet_cpp_model_path(cache_root)
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        model_path.write_text("model", encoding="utf-8")
+
+    def test_registered_for_journal_and_journal_readiness_only(self, doctor):
+        pair = (
+            doctor.PARAKEET_CPP_STT_READY_CHECK,
+            doctor.parakeet_cpp_stt_ready_check,
+        )
+
+        assert doctor.PARAKEET_CPP_STT_READY_CHECK.name in doctor.CHECK_MAP
+        assert pair in doctor.JOURNAL_CHECKS
+        assert pair in doctor.JOURNAL_READINESS_CHECKS
+        assert pair not in doctor.UNIVERSAL_CHECKS
+        assert pair not in doctor.READINESS_CHECKS
+
+    def test_skips_when_backend_is_not_parakeet_cpp(self, doctor, monkeypatch):
+        monkeypatch.setattr(doctor, "_resolve_configured_backend", lambda: "parakeet")
+
+        result = doctor.parakeet_cpp_stt_ready_check(args(doctor))
+
+        assert result.status == "skip"
+        assert (
+            result.detail
+            == "configured backend is not parakeet-cpp; check not applicable"
+        )
+
+    def test_skips_off_linux(self, doctor, monkeypatch):
+        monkeypatch.setattr(
+            doctor, "_resolve_configured_backend", lambda: "parakeet-cpp"
+        )
+        monkeypatch.setattr(
+            doctor.parakeet_readiness,
+            "_platform_info",
+            lambda: ("darwin", "arm64"),
+        )
+
+        result = doctor.parakeet_cpp_stt_ready_check(args(doctor))
+
+        assert result.status == "skip"
+        assert result.detail == "parakeet-cpp is only supported on Linux"
+
+    def test_warns_with_install_fix_when_files_missing(
+        self, doctor, monkeypatch, tmp_path
+    ):
+        journal = tmp_path / "journal"
+        monkeypatch.setattr(
+            doctor, "_resolve_configured_backend", lambda: "parakeet-cpp"
+        )
+        monkeypatch.setattr(
+            doctor.parakeet_readiness,
+            "_platform_info",
+            lambda: ("linux", "x86_64"),
+        )
+        monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
+
+        result = doctor.parakeet_cpp_stt_ready_check(args(doctor))
+
+        assert result.status == "warn"
+        assert "missing" in result.detail
+        assert result.fix == doctor._PARAKEET_CPP_INSTALL_FIX
+
+    def test_warns_with_start_fix_when_server_not_ready(
+        self, doctor, monkeypatch, tmp_path
+    ):
+        from solstone.think.providers import parakeet_server
+
+        journal = tmp_path / "journal"
+        artifact_key = "x86_64-unknown-linux-gnu"
+        cache_root = doctor.parakeet_readiness.parakeet_cpp_cache_root(journal)
+        self.make_ready_files(doctor, cache_root, artifact_key)
+        monkeypatch.setattr(
+            doctor, "_resolve_configured_backend", lambda: "parakeet-cpp"
+        )
+        monkeypatch.setattr(
+            doctor.parakeet_readiness,
+            "_platform_info",
+            lambda: ("linux", "x86_64"),
+        )
+        monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
+        monkeypatch.setattr(
+            parakeet_server,
+            "probe_state",
+            lambda: (parakeet_server.STATE_FAILED, "no port"),
+        )
+
+        result = doctor.parakeet_cpp_stt_ready_check(args(doctor))
+
+        assert result.status == "warn"
+        assert result.detail == "parakeet-server not reachable: no port"
+        assert result.fix == doctor._PARAKEET_CPP_START_FIX
+
+    def test_ok_when_files_present_and_server_ready(
+        self, doctor, monkeypatch, tmp_path
+    ):
+        from solstone.think.providers import parakeet_server
+
+        journal = tmp_path / "journal"
+        artifact_key = "x86_64-unknown-linux-gnu"
+        cache_root = doctor.parakeet_readiness.parakeet_cpp_cache_root(journal)
+        self.make_ready_files(doctor, cache_root, artifact_key)
+        monkeypatch.setattr(
+            doctor, "_resolve_configured_backend", lambda: "parakeet-cpp"
+        )
+        monkeypatch.setattr(
+            doctor.parakeet_readiness,
+            "_platform_info",
+            lambda: ("linux", "x86_64"),
+        )
+        monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
+        monkeypatch.setattr(
+            parakeet_server,
+            "probe_state",
+            lambda: (parakeet_server.STATE_READY, None),
+        )
+
+        result = doctor.parakeet_cpp_stt_ready_check(args(doctor))
+
+        assert result.status == "ok"
+        assert result.detail == (
+            "parakeet-cpp ready (binaries + model installed, server reachable)"
+        )
+
+    def test_does_not_create_absent_journal_when_not_configured(
+        self, doctor, monkeypatch, tmp_path
+    ):
+        journal = tmp_path / "missing-journal"
+        monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
+
+        result = doctor.parakeet_cpp_stt_ready_check(args(doctor))
+
+        assert result.status == "skip"
+        assert not journal.exists()
+
+
 class TestHostDependencies:
     def test_client_readiness_battery_is_host_free(self, doctor, monkeypatch):
         expected = [
@@ -374,7 +517,6 @@ class TestHostDependencies:
             "host_dependencies",
             "default_stt_ready",
             "feature:pdf",
-            "feature:whisper",
         ]:
             assert name not in readiness_names
 
@@ -400,7 +542,6 @@ class TestHostDependencies:
         assert selected[0][0].name == "host_dependencies"
         assert "default_stt_ready" in {check.name for check, _runner in selected}
         assert "feature:pdf" in {check.name for check, _runner in selected}
-        assert "feature:whisper" in {check.name for check, _runner in selected}
 
     def test_host_dependencies_registered_in_journal_and_check_map(self, doctor):
         assert "host_dependencies" in {

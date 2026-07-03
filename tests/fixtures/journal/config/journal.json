@@ -9,8 +9,13 @@
       "possessive": "their",
       "reflexive": "themselves"
     },
-    "aliases": ["Tester", "test"],
-    "email_addresses": ["test@example.com"],
+    "aliases": [
+      "Tester",
+      "test"
+    ],
+    "email_addresses": [
+      "test@example.com"
+    ],
     "timezone": "America/Denver"
   },
   "convey": {
@@ -31,11 +36,6 @@
       "device": "auto",
       "timeout_sec": 120.0
     },
-    "whisper": {
-      "device": "auto",
-      "model": "medium.en",
-      "compute_type": "default"
-    },
     "revai": {
       "model": "fusion"
     }
@@ -52,23 +52,59 @@
       "backup": "anthropic"
     },
     "contexts": {
-      "test.openai": {"provider": "openai", "model": "gpt-5-mini"},
-      "test.anthropic": {"provider": "anthropic", "model": "claude-sonnet-4-5"},
-      "test.tier": {"provider": "google", "tier": 1},
-      "test.tier.inherit": {"tier": 3},
-      "test.tier.override": {"provider": "openai", "tier": 2},
-      "test.config.override": {"provider": "google", "tier": 2},
-      "observe.*": {"provider": "google", "tier": 3},
-      "test.local": {"provider": "local", "model": "local/qwen3.5-4b"}
+      "test.openai": {
+        "provider": "openai",
+        "model": "gpt-5-mini"
+      },
+      "test.anthropic": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5"
+      },
+      "test.tier": {
+        "provider": "google",
+        "tier": 1
+      },
+      "test.tier.inherit": {
+        "tier": 3
+      },
+      "test.tier.override": {
+        "provider": "openai",
+        "tier": 2
+      },
+      "test.config.override": {
+        "provider": "google",
+        "tier": 2
+      },
+      "observe.*": {
+        "provider": "google",
+        "tier": 3
+      },
+      "test.local": {
+        "provider": "local",
+        "model": "local/qwen3.5-4b"
+      }
     },
     "models": {
       "google": {
         "2": "gemini-custom-flash-test"
       }
+    },
+    "bundled": {
+      "parakeet": {
+        "install_state": "verifying",
+        "last_transition_at": "2026-07-02T05:54:24.150672+00:00",
+        "last_progress_at": "2026-07-02T05:54:25.212650+00:00",
+        "install_error": null,
+        "progress_bytes_received": 244845,
+        "progress_bytes_total": 2031016,
+        "binary_artifact_cpu": "parakeet-v0.4.0-bin-linux-cpu-x64.tar.gz"
+      }
     }
   },
   "describe": {
-    "redact": ["replace test-secret-key with ***"]
+    "redact": [
+      "replace test-secret-key with ***"
+    ]
   },
   "env": {
     "TEST_CONFIG_ENV_VAR": "from_config"

@@ -20,12 +20,14 @@ from solstone.think.utils import (
     DEFAULT_STREAM,
     SolstoneNotConfigured,
     day_from_path,
+    day_path,
     get_journal,
     get_journal_info,
     get_project_root,
     iter_segments,
     segment_key,
     segment_parse,
+    segment_path,
     setup_cli,
 )
 
@@ -55,6 +57,24 @@ class TestDayFromPath:
         """Segment directory (no file)."""
         p = Path("/journal/20260212/default/150304_300")
         assert day_from_path(p) == "20260212"
+
+
+def test_segment_path_create_rejects_escaping_components(monkeypatch, tmp_path):
+    """segment_path creates valid dirs and rejects create-time escapes."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+
+    path = segment_path("20240101", "143022_300", "test")
+    expected = day_path("20240101", create=False) / "test" / "143022_300"
+    assert path == expected
+    assert path.is_dir()
+
+    with pytest.raises(ValueError, match="segment path escapes day directory"):
+        segment_path("20240101", "143022_300", "../../outside")
+
+    assert not (tmp_path / "outside").exists()
 
 
 def setup_entities_new_structure(

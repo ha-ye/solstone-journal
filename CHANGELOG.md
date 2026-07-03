@@ -4,6 +4,33 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.22] - 2026-07-03
+
+### Added
+- you can now pair a device to your journal over a Tailscale network, not only a shared wi-fi. if your phone and your journal are on the same Tailscale network but different wi-fi, that direct connection now works for pairing.
+
+### Fixed
+- sol's summary of a day's processing now reflects what actually happened. the 'yesterday's processing' view used to flag problems on nearly every normal day, counting work that had already retried and finished, or that belonged to a different day, and cutting long lists short. it now shows only what genuinely didn't finish for that day, grouped by name with an honest count.
+- sol gets through a full day's processing more reliably. scheduled work that didn't run at its set time is now retried instead of waiting out a full cycle, the switch to a new day at midnight no longer gets stuck, and if one step runs into trouble sol keeps going with the rest instead of stalling. work that sol used to occasionally lose track of now either finishes or is recorded as a clear failure.
+
+## [0.6.21] - 2026-07-02
+
+### Changed
+- on linux, sol now uses a single local engine to turn your speech into text. it runs entirely on your own machine, and your audio never leaves it.
+- the first time that engine runs, it downloads the model files it needs to work, the same as the previous engine did. that download only brings files in; nothing from your journal goes out.
+
+## [0.6.20] - 2026-07-01
+
+### Added
+- on linux, you can now opt into an alternative local transcription engine. the default engine is unchanged.
+
+### Changed
+- sol now does less repeated work on the video and on-screen activity it takes in. it skips near-identical moments while keeping the ones where something on screen changed, so nothing that changed gets missed.
+
+### Fixed
+- catching up on past days is steadier. sol re-does only the parts of a day that didn't finish rather than walking the whole day from the start, and it skips audio it has already turned into text.
+- if one audio file in your day couldn't be read, it used to be able to stop the rest of the day from being transcribed. now sol sets that one file aside and keeps going, so the rest of your day still becomes text in your journal.
+
 ## [0.6.19] - 2026-07-01
 
 ### Fixed

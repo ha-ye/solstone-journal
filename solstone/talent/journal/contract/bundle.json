@@ -165,6 +165,7 @@
         "additionalProperties": true,
         "properties": {
           "day": {
+            "description": "Device-local wall-clock calendar day (YYYYMMDD) on the observing device at capture start; not normalized to UTC.",
             "pattern": "^\\d{8}$",
             "type": "string"
           },
@@ -212,6 +213,7 @@
             "type": "string"
           },
           "segment": {
+            "description": "Device-local wall-clock capture window keyed HHMMSS_LEN: HHMMSS is the wall-clock start time on the observing device; LEN is the real captured whole-second media duration, stamped when the capture window finishes. LEN is bounded by the segment rotation ceiling (300 seconds standard) and, after crash recovery, never exceeds the real media duration. These bounds are descriptive; the envelope grammar does not enforce them.",
             "pattern": "^\\d{6}_\\d+$",
             "type": "string"
           },
@@ -244,6 +246,12 @@
             "files[].written",
             "files[].sha256"
           ],
+          "key_semantics": {
+            "day": "YYYYMMDD device-local calendar day at capture start",
+            "segment": "HHMMSS_LEN; HHMMSS device-local wall-clock start",
+            "segment_len": "real captured whole-second media duration; stamped at capture finish; bounded by the segment rotation ceiling (300 seconds standard); crash-recovered LEN <= real media duration; descriptive only, not grammar-enforced",
+            "timezone": "device-local wall-clock; not UTC-normalized"
+          },
           "producer_write_paths": [
             "POST /app/observer/ingest"
           ],

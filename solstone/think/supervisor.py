@@ -11,6 +11,7 @@ import getpass
 import json
 import logging
 import os
+import platform
 import signal
 import socket
 import stat
@@ -20,6 +21,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict, deque
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -27,10 +29,15 @@ from typing import Any, Callable, Iterable, NoReturn
 
 import psutil
 
+from solstone.observe.transcribe.resource import (
+    local_stt_backend,
+    select_stt_backend,
+    stt_local_floor_bytes,
+)
 from solstone.think import maintenance, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
 from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
-from solstone.think.callosum import CallosumConnection, CallosumServer
+from solstone.think.callosum import CallosumConnection, CallosumServer, callosum_send
 from solstone.think.catchup_state import (
     KIND_DAILY_CATCHUP,
     KIND_SEGMENT_REPAIR,
@@ -44,6 +51,7 @@ from solstone.think.display_powersave import (
     poll_display_powersave,
     reset_display_powersave_monitor,
 )
+from solstone.think.journal_config import read_journal_config
 from solstone.think.maint import run_pending_tasks
 from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
 from solstone.think.processing import (
@@ -51,6 +59,7 @@ from solstone.think.processing import (
     evaluate_drain_gate,
     load_processing_settings,
 )
+from solstone.think.providers.memory import read_available_bytes
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
 from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, _command_partition
@@ -87,8 +96,6 @@ REACTIVE_TASK_CAPS = {
     "indexer": 7200,  # 2h indexer, above the code's own 1h rescan allotment
     "importer": 3600,  # 1h importer
 }
-DEFAULT_THRESHOLD = 60
-CHECK_INTERVAL = 30
 GATE_TICK_INTERVAL_S = 60
 MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
@@ -107,6 +114,9 @@ LOCAL_WEDGE_RECYCLE_GRACE_S = 120.0
 LOCAL_WEDGE_PROVIDER_MAP_CAP = 512
 LOCAL_SERVER_READY_TIMEOUT_S = 300.0
 LOCAL_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
+PARAKEET_SERVER_PROCESS_NAME = "parakeet-server"
+PARAKEET_SERVER_READY_TIMEOUT_S = 300.0
+PARAKEET_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
 LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
 # supervisor.log is size-rotated with a bounded on-disk footprint.
 # Hard ceiling = SUPERVISOR_LOG_MAX_BYTES * (SUPERVISOR_LOG_BACKUP_COUNT + 1)
@@ -114,6 +124,42 @@ LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
 SUPERVISOR_LOG_MAX_BYTES = 16 * 1024 * 1024
 SUPERVISOR_LOG_BACKUP_COUNT = 5
 logger = logging.getLogger(__name__)
+
+
+def linux_stt_uses_parakeet_cpp() -> bool:
+    """Return whether this host's effective STT path needs parakeet-server."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        from solstone.think import parakeet_readiness
+
+        parakeet_readiness.parakeet_cpp_artifact_key(
+            "linux", platform.machine().lower()
+        )
+    except RuntimeError:
+        return False
+
+    config = read_journal_config()
+    transcribe = config.get("transcribe", {})
+    backend = transcribe.get("backend") if isinstance(transcribe, dict) else None
+    if isinstance(backend, str):
+        return backend not in {"revai", "gemini"}
+
+    selected = select_stt_backend(
+        read_available_bytes(),
+        google_key_present=bool(os.getenv("GOOGLE_API_KEY")),
+        floor_bytes=stt_local_floor_bytes(),
+        local_backend=local_stt_backend(),
+    )
+    return selected in {"parakeet", "parakeet-cpp"}
+
+
+def _configured_parakeet_device() -> str:
+    config = read_journal_config()
+    transcribe = config.get("transcribe", {})
+    nested = transcribe.get("parakeet-cpp", {}) if isinstance(transcribe, dict) else {}
+    device = nested.get("device") if isinstance(nested, dict) else None
+    return device if device in {"auto", "cpu"} else "auto"
 
 
 def _compact_log_if_oversized(log_path: Path, max_bytes: int) -> None:
@@ -191,6 +237,8 @@ _sync_conflict_shutdown: bool = False
 _supervisor_ref: str | None = None
 _supervisor_start: float | None = None
 _parent_death_sigterm_sent = threading.Event()
+_parakeet_bootstrap_lock = threading.Lock()
+_parakeet_bootstrap_thread: threading.Thread | None = None
 
 
 def app_supervised_graceful_budget_s() -> float:
@@ -399,13 +447,14 @@ def _candidate_journal(proc: "psutil.Process") -> Path | None:
 # (f"{binary}:{cmd}"). setproctitle is in-process and persists until the
 # process exits, so an orphaned service or task child still reports its title
 # via proc.name() after the supervisor dies, which is what lets the sweep find
-# it. The supervisor-owned `llama-server` reports its own bare binary name (no
-# colon prefix) and is included here so the sweep reaps it too.
+# it. Supervisor-owned local provider servers report their own bare binary names
+# (no colon prefix) and are included here so the sweep reaps them too.
 # The mlx-vlm server is a Python process, but our launcher sets the same
 # managed proctitle so proc.name() is stable for orphan sweeping.
 _LOCAL_SERVER_PROCTITLES = frozenset(
     {
         LOCAL_SERVER_PROCESS_NAME,
+        PARAKEET_SERVER_PROCESS_NAME,
         MLX_SERVER_PROCESS_NAME,
     }
 )
@@ -712,60 +761,97 @@ class TaskQueue:
         return None
 
     def enforce_deadlines(self, now: float) -> None:
-        """Enforce configured task runtime caps without blocking the supervisor tick."""
+        """Enforce configured task runtime caps without blocking the supervisor tick.
+
+        Phase A snapshots active tasks under the lock. Phase B does all psutil
+        probing and outcome decisions with NO lock held. Phase C applies the state
+        mutations under the lock. Phase D starts termination threads with NO lock
+        held. Threads start only after Phase C so a cap/stopped-terminated ref is
+        recorded in _cap_terminated before its process can exit (preserving the
+        "timeout" exit-status labeling in _run_task's completion handler).
+        """
+        # Phase A: snapshot under lock.
         with self._lock:
-            for ref, managed in list(self._active.items()):
-                cmd_name = self.get_command_name(managed.cmd)
-                cap = self._effective_cap(cmd_name)
+            snapshot = [
+                (ref, managed, self._effective_cap(self.get_command_name(managed.cmd)))
+                for ref, managed in self._active.items()
+            ]
+            already_cap_terminated = set(self._cap_terminated)
+            stopped_ticks = dict(self._stopped_ticks)
 
-                elapsed = now - managed.start_time
-                if elapsed <= cap:
-                    continue
+        # Phase B: probe + decide, no lock, no mutation, no thread starts.
+        newly_cap_terminated: set[str] = set()
+        to_terminate: list[tuple[str, RunnerManagedProcess, str]] = []
+        stopped_updates: dict[str, int | None] = {}  # ref -> new count, or None to pop
 
-                elapsed_seconds = int(elapsed)
-                logging.warning(
-                    "Task %s (cmd=%s, ref=%s) exceeded max_runtime of %ds "
-                    "(elapsed=%ds); terminating",
-                    cmd_name,
-                    " ".join(managed.cmd),
-                    ref,
-                    cap,
-                    elapsed_seconds,
-                )
-                self._cap_terminated.add(ref)
-                _start_termination_thread(ref, managed, timeout=2.0, reason="cap")
+        # Cap loop first (populates newly_cap_terminated for the stopped skip set).
+        for ref, managed, cap in snapshot:
+            elapsed = now - managed.start_time
+            if elapsed <= cap:
+                continue
 
-            for ref, managed in list(self._active.items()):
-                if ref in self._cap_terminated:
-                    continue
+            cmd_name = self.get_command_name(managed.cmd)
+            logging.warning(
+                "Task %s (cmd=%s, ref=%s) exceeded max_runtime of %ds "
+                "(elapsed=%ds); terminating",
+                cmd_name,
+                " ".join(managed.cmd),
+                ref,
+                cap,
+                int(elapsed),
+            )
+            newly_cap_terminated.add(ref)
+            to_terminate.append((ref, managed, "cap"))
 
-                try:
-                    state = psutil.Process(managed.process.pid).status()
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    self._stopped_ticks.pop(ref, None)
-                    continue
+        # Stopped loop, skipping anything cap-terminated (prior ticks or this tick).
+        skip = already_cap_terminated | newly_cap_terminated
+        for ref, managed, _cap in snapshot:
+            if ref in skip:
+                continue
+            try:
+                state = psutil.Process(managed.process.pid).status()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                stopped_updates[ref] = None
+                continue
 
-                if state in (psutil.STATUS_STOPPED, psutil.STATUS_TRACING_STOP):
-                    ticks = self._stopped_ticks.get(ref, 0) + 1
-                    self._stopped_ticks[ref] = ticks
-                    if ticks >= STOPPED_TICKS_THRESHOLD:
-                        cmd_name = self.get_command_name(managed.cmd)
-                        logging.warning(
-                            "Task %s (cmd=%s, ref=%s) was stopped (state=%s) "
-                            "for %d consecutive ticks; terminating",
-                            cmd_name,
-                            " ".join(managed.cmd),
-                            ref,
-                            state,
-                            ticks,
-                        )
-                        self._cap_terminated.add(ref)
-                        _start_termination_thread(
-                            ref, managed, timeout=2.0, reason="stopped"
-                        )
-                        self._stopped_ticks.pop(ref, None)
+            if state in (psutil.STATUS_STOPPED, psutil.STATUS_TRACING_STOP):
+                ticks = stopped_ticks.get(ref, 0) + 1
+                if ticks >= STOPPED_TICKS_THRESHOLD:
+                    cmd_name = self.get_command_name(managed.cmd)
+                    logging.warning(
+                        "Task %s (cmd=%s, ref=%s) was stopped (state=%s) "
+                        "for %d consecutive ticks; terminating",
+                        cmd_name,
+                        " ".join(managed.cmd),
+                        ref,
+                        state,
+                        ticks,
+                    )
+                    newly_cap_terminated.add(ref)
+                    to_terminate.append((ref, managed, "stopped"))
+                    stopped_updates[ref] = None
                 else:
+                    stopped_updates[ref] = ticks
+            else:
+                stopped_updates[ref] = None
+
+        # Phase C: apply state mutations under lock. Guard additions/sets with
+        # `ref in self._active` so a task that completed during the unlocked probe
+        # window (already popped its own _cap_terminated/_stopped_ticks entries in
+        # _run_task) is not resurrected. Pops are unconditional.
+        with self._lock:
+            for ref in newly_cap_terminated:
+                if ref in self._active:
+                    self._cap_terminated.add(ref)
+            for ref, val in stopped_updates.items():
+                if val is None:
                     self._stopped_ticks.pop(ref, None)
+                elif ref in self._active:
+                    self._stopped_ticks[ref] = val
+
+        # Phase D: start termination threads, no lock held.
+        for ref, managed, reason in to_terminate:
+            _start_termination_thread(ref, managed, timeout=2.0, reason=reason)
 
     def set_ready(self) -> None:
         """Allow buffered tasks to start dispatching through the normal queue path."""
@@ -968,25 +1054,6 @@ class TaskQueue:
                 daemon=True,
             ).start()
 
-    def cancel(self, ref: str) -> bool:
-        """Cancel a running task.
-
-        Returns:
-            True if task was found and terminated, False otherwise
-        """
-        if ref not in self._active:
-            logging.warning(f"Cannot cancel task {ref}: not found")
-            return False
-
-        managed = self._active[ref]
-        if not managed.is_running():
-            logging.debug(f"Task {ref} already finished")
-            return False
-
-        logging.info(f"Cancelling task {ref}...")
-        managed.terminate()
-        return True
-
     def shutdown(self, timeout: float = 10.0) -> int:
         with self._lock:
             active = list(self._active.items())
@@ -1008,25 +1075,13 @@ class TaskQueue:
             list(executor.map(_terminate, active))
         return len(active)
 
-    def get_status(self, ref: str) -> dict:
-        """Get status of a task."""
-        if ref not in self._active:
-            return {"status": "not_found"}
-
-        managed = self._active[ref]
-        return {
-            "status": "running" if managed.is_running() else "finished",
-            "pid": managed.pid,
-            "returncode": managed.returncode,
-            "log_path": str(managed.log_writer.path),
-            "cmd": managed.cmd,
-        }
-
     def collect_task_status(self) -> list[dict]:
         """Collect status of all running tasks for supervisor status."""
         now = time.time()
+        with self._lock:
+            snapshot = list(self._active.items())
         tasks = []
-        for ref, managed in self._active.items():
+        for ref, managed in snapshot:
             if managed.is_running():
                 duration = int(now - managed.start_time)
                 cmd_name = TaskQueue.get_command_name(managed.cmd)
@@ -1373,7 +1428,6 @@ def _emit_catchup_backoff(
             "show",
             title="Catchup stuck",
             message=message,
-            icon="⚠️",
             action="/app/health",
         )
     except Exception:
@@ -1524,6 +1578,24 @@ def _handle_supervisor_start_local(message: dict) -> None:
         logging.info("started local server from start_local request")
 
 
+def _handle_supervisor_start_parakeet(message: dict) -> None:
+    """Handle incoming parakeet-server start requests after provider install."""
+    if message.get("tract") != "supervisor" or message.get("event") != "start_parakeet":
+        return
+    if _is_remote_mode:
+        return
+
+    for proc in _managed_procs:
+        if proc.name == PARAKEET_SERVER_PROCESS_NAME and proc.is_running():
+            logging.info("parakeet-server already running; ignoring start_parakeet")
+            return
+
+    proc = start_parakeet_server()
+    if proc is not None:
+        _managed_procs.append(proc)
+        logging.info("started parakeet-server from start_parakeet request")
+
+
 def _handle_cortex_outcome(message: dict) -> None:
     """Recycle a wedged local model server after sustained generation failures."""
     if message.get("tract") != "cortex":
@@ -1609,20 +1681,6 @@ def _handle_cortex_outcome(message: dict) -> None:
     else:
         logging.warning("local server wedge: recycle deferred; service not running")
         failures.clear()
-
-
-def get_task_status(ref: str) -> dict:
-    """Get status of a task.
-
-    Args:
-        ref: Task correlation ID
-
-    Returns:
-        Dict with status info, or {"status": "not_found"} if task doesn't exist
-    """
-    if _task_queue:
-        return _task_queue.get_status(ref)
-    return {"status": "not_found"}
 
 
 def collect_status(procs: list[RunnerManagedProcess]) -> dict:
@@ -1814,6 +1872,367 @@ def _log_context_assertion(
         logging.info("llama-server slot count not reported; skipped")
 
 
+def parakeet_physical_thread_count() -> int:
+    physical = psutil.cpu_count(logical=False)
+    if isinstance(physical, int) and physical > 0:
+        return physical
+    return max(1, (os.cpu_count() or 2) // 2)
+
+
+@dataclass(frozen=True)
+class ParakeetServerLaunchPlan:
+    binary_backend: str
+    env_updates: dict[str, str]
+    gpu_index: int | None
+
+
+def resolve_parakeet_server_launch_plan(
+    config_device: str, selected_gpu: Any
+) -> ParakeetServerLaunchPlan:
+    if config_device not in {"auto", "cpu"}:
+        raise ValueError(
+            f"parakeet device must be 'auto' or 'cpu', got {config_device!r}"
+        )
+    if config_device == "cpu":
+        return ParakeetServerLaunchPlan("cpu", {}, None)
+    if selected_gpu is not None:
+        return ParakeetServerLaunchPlan(
+            "vulkan",
+            {"GGML_VK_VISIBLE_DEVICES": str(selected_gpu.index)},
+            selected_gpu.index,
+        )
+    return ParakeetServerLaunchPlan("cpu", {}, None)
+
+
+def _request_parakeet_server_start() -> None:
+    """Best-effort: ask this supervisor to retry parakeet-server startup."""
+    try:
+        if not callosum_send("supervisor", "start_parakeet"):
+            logging.warning(
+                "could not request parakeet-server start: callosum send failed"
+            )
+    except Exception:
+        logging.exception("could not request parakeet-server start")
+
+
+def _run_parakeet_bootstrap_worker(journal_path: Path | None = None) -> None:
+    """Install parakeet.cpp artifacts in the background, then retry startup."""
+    current_thread = threading.current_thread()
+    try:
+        from solstone.think.providers import parakeet_install
+
+        if journal_path is None:
+            parakeet_install.install_parakeet()
+        else:
+            parakeet_install.install_parakeet(journal_path=journal_path)
+    except Exception:
+        logging.exception("parakeet.cpp provider bootstrap failed")
+    else:
+        logging.info("parakeet.cpp provider bootstrap complete; requesting startup")
+        _request_parakeet_server_start()
+    finally:
+        global _parakeet_bootstrap_thread
+        with _parakeet_bootstrap_lock:
+            if _parakeet_bootstrap_thread is current_thread:
+                _parakeet_bootstrap_thread = None
+
+
+def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
+    """Start one non-blocking parakeet.cpp install worker when artifacts are absent."""
+    global _parakeet_bootstrap_thread
+    from solstone.think.providers import parakeet_install
+    from solstone.think.providers.install_state import IN_FLIGHT_STATES
+
+    try:
+        readiness = parakeet_install.inspect_readiness()
+    except Exception as exc:
+        logging.info(
+            "could not inspect parakeet.cpp readiness before bootstrap: %s", exc
+        )
+        readiness = {}
+
+    if readiness.get("binary_installed") and readiness.get("model_installed"):
+        return
+    if readiness.get("install_state") in IN_FLIGHT_STATES:
+        logging.info(
+            "parakeet.cpp provider install already %s; not starting another worker",
+            readiness.get("install_state"),
+        )
+        return
+
+    with _parakeet_bootstrap_lock:
+        if (
+            _parakeet_bootstrap_thread is not None
+            and _parakeet_bootstrap_thread.is_alive()
+        ):
+            logging.info("parakeet.cpp provider bootstrap already running")
+            return
+        journal_path = Path(get_journal())
+        thread = threading.Thread(
+            target=lambda: _run_parakeet_bootstrap_worker(journal_path),
+            name="parakeet-cpp-provider-bootstrap",
+            daemon=True,
+        )
+        _parakeet_bootstrap_thread = thread
+
+    logging.info(
+        "Parakeet artifacts not ready; starting background provider install: %s",
+        reason,
+    )
+    try:
+        thread.start()
+    except Exception:
+        with _parakeet_bootstrap_lock:
+            if _parakeet_bootstrap_thread is thread:
+                _parakeet_bootstrap_thread = None
+        logging.exception("could not start parakeet.cpp provider bootstrap worker")
+
+
+def _build_parakeet_cmd(
+    binary_path: Path, gguf_path: Path, port: int, threads: int
+) -> list[str]:
+    # Re-verify exact parakeet.cpp v0.4.0 CLI flag spellings at live bring-up.
+    cmd = [
+        str(binary_path),
+        "--model",
+        str(gguf_path),
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--threads",
+        str(threads),
+    ]
+    if "0.0.0.0" in cmd:
+        raise RuntimeError("parakeet server may not bind 0.0.0.0.")
+    return cmd
+
+
+def _site_package_search_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    for raw in sys.path:
+        if not raw:
+            continue
+        path = Path(raw)
+        if path.is_dir() and path not in dirs:
+            dirs.append(path)
+    return dirs
+
+
+def _find_bundled_libgomp() -> Path | None:
+    for site_dir in _site_package_search_dirs():
+        for libs_dir in (site_dir / "scikit_learn.libs", site_dir / "scipy.libs"):
+            if not libs_dir.is_dir():
+                continue
+            candidates = sorted(libs_dir.glob("libgomp*.so*"))
+            if candidates:
+                return candidates[0]
+    return None
+
+
+def _parakeet_runtime_library_dirs() -> list[Path]:
+    """Return library dirs needed by downloaded parakeet.cpp binaries."""
+    from solstone.think import parakeet_readiness
+
+    libgomp = _find_bundled_libgomp()
+    if libgomp is None:
+        return []
+
+    try:
+        lib_dir = (
+            parakeet_readiness.parakeet_cpp_cache_root(Path(get_journal())) / "lib"
+        )
+        lib_dir.mkdir(parents=True, exist_ok=True)
+        alias = lib_dir / "libgomp.so.1"
+        if alias.is_symlink() or alias.exists():
+            if alias.resolve() != libgomp.resolve():
+                alias.unlink()
+        if not alias.exists():
+            alias.symlink_to(libgomp)
+        return [lib_dir]
+    except Exception:
+        logging.exception("could not prepare parakeet-server OpenMP runtime alias")
+        return []
+
+
+def _with_library_path(env: dict[str, str], dirs: Iterable[Path]) -> dict[str, str]:
+    additions = [str(path) for path in dirs]
+    if not additions:
+        return env
+    existing = env.get("LD_LIBRARY_PATH") or ""
+    paths = additions + ([existing] if existing else [])
+    return env | {"LD_LIBRARY_PATH": ":".join(paths)}
+
+
+def _launch_and_warm_parakeet(
+    backend: str,
+    binary_path: Path,
+    gguf_path: Path,
+    port: int,
+    threads: int,
+    env: dict[str, str],
+) -> tuple[str, RunnerManagedProcess]:
+    """Launch one parakeet-server backend and warm it.
+
+    Returns (status, managed), where status is "ready", "crashed", or
+    "timeout". Does not clean up on failure; the caller owns termination.
+    """
+    from solstone.think.providers import parakeet_server
+
+    cmd = _build_parakeet_cmd(binary_path, gguf_path, port, threads)
+    managed = _launch_process(PARAKEET_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
+    deadline = time.monotonic() + PARAKEET_SERVER_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if managed.process.poll() is not None:
+            logging.warning(
+                "parakeet-server %s exited during warmup with code %s",
+                backend,
+                managed.process.returncode,
+            )
+            return "crashed", managed
+        state, error = parakeet_server.probe_state()
+        if state == parakeet_server.STATE_READY:
+            logging.info("parakeet-server ready on port %s", port)
+            return "ready", managed
+        if state == parakeet_server.STATE_FAILED and error:
+            logging.debug(
+                "parakeet-server health probe failed during warmup: %s", error
+            )
+        time.sleep(PARAKEET_SERVER_HEALTH_POLL_INTERVAL_S)
+    logging.warning(
+        "parakeet-server %s did not become ready within %.0fs",
+        backend,
+        PARAKEET_SERVER_READY_TIMEOUT_S,
+    )
+    return "timeout", managed
+
+
+def _cleanup_parakeet_launch(managed: RunnerManagedProcess, reason: str) -> None:
+    timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
+    _SERVICE_STATE.pop(managed.name, None)
+    _terminate_managed(managed, timeout, reason=reason)
+    managed.cleanup()
+
+
+def _start_cuda_local_server(
+    artifacts: Any,
+    binary_path: Path,
+    gguf_path: Path,
+    mmproj_path: Path | None,
+) -> RunnerManagedProcess | None:
+    """Launch the CUDA llama-server path after backend selection chose CUDA."""
+    from solstone.think.providers import local_cuda, local_install, local_server
+
+    pin = local_install.CUDA_SERVER_PIN
+    probe = local_cuda.probe_nvidia_gpu()
+    gpu_index = probe.index if probe.index is not None else 0
+    port = find_available_port()
+    write_service_port("local", port)
+    if probe.tiering_memory_mib is None:
+        tier = local_server.select_server_tier(0)
+        logging.info(
+            "local server CUDA tiering memory unavailable (source=%s); "
+            "using floor tier",
+            probe.memory_source,
+        )
+    else:
+        tier = local_server.select_server_tier(probe.tiering_memory_mib)
+    local_server.write_local_context_window(tier.context_tokens)
+    logging.info(
+        "local server backend=cuda tier=%s context=%d parallel=%d cache=%d MiB "
+        "(tiering_memory=%s MiB source=%s discrete_vram=%s)",
+        tier.name,
+        tier.context_tokens,
+        tier.parallel_slots,
+        tier.prompt_cache_mib,
+        (
+            str(probe.tiering_memory_mib)
+            if probe.tiering_memory_mib is not None
+            else "unavailable"
+        ),
+        probe.memory_source,
+        probe.vram_mib if probe.vram_mib is not None else "unavailable",
+    )
+    cmd = [
+        str(binary_path),
+        "-m",
+        str(gguf_path),
+        "--alias",
+        LOCAL_MODEL,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--jinja",
+        "--n-gpu-layers",
+        "999",
+        "-c",
+        str(tier.context_tokens),
+        "--parallel",
+        str(tier.parallel_slots),
+        "--kv-unified",
+        "--cache-ram",
+        str(tier.prompt_cache_mib),
+        "--no-context-shift",
+        "--device",
+        # TODO(AC10): confirm --device CUDA0 spelling on the CUDA build.
+        pin.device_flag_value,
+    ]
+    if mmproj_path is not None:
+        cmd.extend(["--mmproj", str(mmproj_path)])
+    if "0.0.0.0" in cmd:
+        raise RuntimeError("Local server may not bind 0.0.0.0.")
+
+    lib_dir = str(artifacts.lib_dir)
+    existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
+    ld_library_path = f"{lib_dir}:{existing_ld}" if existing_ld else lib_dir
+    env = os.environ | {
+        # TODO(AC10): confirm CUDA_VISIBLE_DEVICES env name on the CUDA build.
+        pin.visible_devices_env: str(gpu_index),
+        "LD_LIBRARY_PATH": ld_library_path,
+    }
+    managed = _launch_process(LOCAL_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
+    print(f"  {LOCAL_MODEL_WARMING_UP_COPY}", flush=True)
+
+    def fail_cuda_server_launch(reason: str) -> None:
+        logging.error("CUDA local server launch failed: %s", reason)
+        timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
+        _SERVICE_STATE.pop(managed.name, None)
+        _terminate_managed(
+            managed,
+            timeout,
+            reason="CUDA local server launch failed",
+        )
+        managed.cleanup()
+
+    deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if managed.process.poll() is not None:
+            fail_cuda_server_launch(
+                f"llama-server exited during warmup with code "
+                f"{managed.process.returncode}"
+            )
+            return None
+        state, error = local_server._probe_health(port)
+        if state == local_server.STATE_READY:
+            props = local_server.fetch_props(port)
+            n_ctx = local_server._extract_n_ctx(props) if props is not None else None
+            total_slots = props.get("total_slots") if isinstance(props, dict) else None
+            _log_context_assertion(tier, n_ctx, total_slots)
+            logging.info("llama-server ready on port %s", port)
+            return managed
+        if state == local_server.STATE_FAILED and error:
+            logging.debug("llama-server health probe failed during warmup: %s", error)
+        time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
+
+    fail_cuda_server_launch(
+        "CUDA llama-server did not become ready within "
+        f"{LOCAL_SERVER_READY_TIMEOUT_S:.0f}s; the covered-arch CUDA build may be "
+        "crashing on this GPU"
+    )
+    return None
+
+
 def start_local_server() -> RunnerManagedProcess | None:
     """Launch the supervisor-owned local llama-server when artifacts are present."""
     from solstone.think.providers.local_endpoint import resolve_local_endpoint
@@ -1824,12 +2243,17 @@ def start_local_server() -> RunnerManagedProcess | None:
     if sys.platform == "darwin":
         return _start_mlx_local_server()
 
-    from solstone.think.providers import local_install, local_server, local_vulkan
+    from solstone.think.providers import (
+        local_install,
+        local_server,
+        local_vulkan,
+    )
 
     try:
-        binary_path, gguf_path, mmproj_path = local_install.ensure_artifacts_installed(
-            LOCAL_MODEL
-        )
+        artifacts = local_install.ensure_artifacts_installed(LOCAL_MODEL)
+        binary_path = artifacts.binary_path
+        gguf_path = artifacts.gguf_path
+        mmproj_path = artifacts.mmproj_path
         # Defense in depth: refuse to launch a gguf/mmproj pair that does not
         # belong to the selected model, even if readiness ever regresses. A
         # mixed pair (e.g. a stale gguf from a prior model + the current mmproj)
@@ -1846,6 +2270,14 @@ def start_local_server() -> RunnerManagedProcess | None:
     except Exception as exc:
         logging.info("Local model not ready; skipping llama-server startup: %s", exc)
         return None
+
+    logging.info(
+        "local backend selected: backend=%s reason=%s",
+        artifacts.backend,
+        artifacts.backend_reason,
+    )
+    if artifacts.backend == "cuda":
+        return _start_cuda_local_server(artifacts, binary_path, gguf_path, mmproj_path)
 
     devices = local_vulkan.detect_gpus()
     override = local_install.gpu_device_override()
@@ -1961,6 +2393,107 @@ def start_local_server() -> RunnerManagedProcess | None:
         "llama-server did not become ready within %.0fs; continuing startup",
         LOCAL_SERVER_READY_TIMEOUT_S,
     )
+    return managed
+
+
+def start_parakeet_server() -> RunnerManagedProcess | None:
+    """Launch the supervisor-owned parakeet-server when STT opts into it."""
+    if not linux_stt_uses_parakeet_cpp():
+        return None
+
+    from solstone.think.providers import local_vulkan, parakeet_install
+
+    config_device = _configured_parakeet_device()
+    selected = None
+    if config_device == "auto":
+        devices = local_vulkan.detect_gpus()
+        selected = local_vulkan.select_device(devices)
+        logging.info(
+            "Vulkan GPU probe: devices=%s; selected=%s",
+            _format_vulkan_devices(devices, local_vulkan),
+            (
+                f"raw_index={selected.index} name={selected.name!r} "
+                f"type={local_vulkan.classify(selected)}"
+                if selected is not None
+                else "none"
+            ),
+        )
+
+    plan = resolve_parakeet_server_launch_plan(config_device, selected)
+    try:
+        binary_path, gguf_path = parakeet_install.ensure_artifacts_installed(
+            plan.binary_backend
+        )
+    except Exception as exc:
+        _start_parakeet_bootstrap_if_needed(str(exc))
+        return None
+
+    port = find_available_port()
+    write_service_port("parakeet-cpp", port)
+    threads = parakeet_physical_thread_count()
+    logging.info("parakeet-server threads=%d", threads)
+    library_dirs = _parakeet_runtime_library_dirs()
+    env = _with_library_path(os.environ | plan.env_updates, library_dirs)
+    status, managed = _launch_and_warm_parakeet(
+        plan.binary_backend,
+        binary_path,
+        gguf_path,
+        port,
+        threads,
+        env,
+    )
+    if status == "ready":
+        return managed
+
+    if plan.binary_backend == "vulkan" and status in {"crashed", "timeout"}:
+        logging.warning("parakeet-server vulkan warmup %s; falling back to CPU", status)
+        _cleanup_parakeet_launch(
+            managed, reason=f"parakeet-server vulkan warmup {status}"
+        )
+        try:
+            cpu_binary, _ = parakeet_install.ensure_artifacts_installed("cpu")
+        except Exception as exc:
+            logging.info(
+                "Parakeet CPU artifacts not ready; skipping fallback startup: %s", exc
+            )
+            return None
+        cpu_status, cpu_managed = _launch_and_warm_parakeet(
+            "cpu",
+            cpu_binary,
+            gguf_path,
+            port,
+            threads,
+            _with_library_path(os.environ | {}, library_dirs),
+        )
+        if cpu_status == "crashed":
+            logging.warning("parakeet-server cpu exited during warmup")
+            _cleanup_parakeet_launch(
+                cpu_managed, reason="parakeet-server cpu warmup crashed"
+            )
+            return None
+        if cpu_status == "timeout":
+            logging.warning(
+                "parakeet-server cpu did not become ready within %.0fs; "
+                "continuing startup",
+                PARAKEET_SERVER_READY_TIMEOUT_S,
+            )
+        return cpu_managed
+
+    if plan.binary_backend == "cpu":
+        if status == "crashed":
+            logging.warning("parakeet-server cpu exited during warmup")
+            _cleanup_parakeet_launch(
+                managed, reason="parakeet-server cpu warmup crashed"
+            )
+            return None
+        if status == "timeout":
+            logging.warning(
+                "parakeet-server cpu did not become ready within %.0fs; "
+                "continuing startup",
+                PARAKEET_SERVER_READY_TIMEOUT_S,
+            )
+            return managed
+
     return managed
 
 
@@ -2529,6 +3062,7 @@ def _handle_callosum_message(message: dict) -> None:
     _handle_supervisor_request(message)
     _handle_supervisor_drain(message)
     _handle_supervisor_start_local(message)
+    _handle_supervisor_start_parakeet(message)
     _handle_segment_observed(message)
     _handle_activity_recorded(message)
     _handle_think_daily_complete(message)
@@ -2611,6 +3145,48 @@ def _run_gate_tick(now: float) -> None:
     run_catchup_drain()
 
 
+_FATAL_TICK_EXCEPTIONS = (KeyboardInterrupt, asyncio.CancelledError, SystemExit)
+
+# Consecutive-duplicate suppression for tick-step failure logging.
+_last_tick_step_failure: tuple[str, str] | None = None
+
+
+def _log_tick_step_failure(step: str, exc: Exception) -> None:
+    """Log a guarded tick-step failure, debouncing identical consecutive repeats.
+
+    The first occurrence of any distinct (step, message) always logs at ERROR
+    with a full traceback; an immediately-repeated identical failure downgrades
+    to DEBUG so a persistently-failing step cannot flood the log.
+    """
+    global _last_tick_step_failure
+    signature = (step, f"{type(exc).__name__}: {exc}")
+    if signature == _last_tick_step_failure:
+        logging.debug("Supervision step %r still failing: %s", step, exc)
+        return
+    _last_tick_step_failure = signature
+    logging.error("Supervision step %r failed; continuing", step, exc_info=True)
+
+
+def _guarded_tick_step(step: str, fn: Callable[[], None]) -> None:
+    """Run a synchronous tick step, swallowing non-fatal exceptions."""
+    try:
+        fn()
+    except _FATAL_TICK_EXCEPTIONS:
+        raise
+    except Exception as exc:
+        _log_tick_step_failure(step, exc)
+
+
+async def _guarded_tick_step_async(step: str, coro_factory) -> None:
+    """Run an awaited tick step, swallowing non-fatal exceptions."""
+    try:
+        await coro_factory()
+    except _FATAL_TICK_EXCEPTIONS:
+        raise
+    except Exception as exc:
+        _log_tick_step_failure(step, exc)
+
+
 async def supervise(
     *,
     daily: bool = True,
@@ -2637,12 +3213,19 @@ async def supervise(
             not shutdown_requested
         ):  # pragma: no cover - loop checked via unit tests by patching
             if _task_queue:
-                _task_queue.enforce_deadlines(time.time())
+                _guarded_tick_step(
+                    "enforce_deadlines",
+                    lambda: _task_queue.enforce_deadlines(time.time()),
+                )
 
             # Check for runner exits first (immediate alert)
             if procs:
-                await handle_runner_exits(procs)
-                await _check_local_server_recovery()
+                await _guarded_tick_step_async(
+                    "handle_runner_exits", lambda: handle_runner_exits(procs)
+                )
+                await _guarded_tick_step_async(
+                    "check_local_server_recovery", _check_local_server_recovery
+                )
 
             # Emit status every 5 seconds
             now = time.time()
@@ -2656,7 +3239,7 @@ async def supervise(
                 last_status_emit = now
 
             # Check for segment flush (non-blocking, submits via task queue)
-            _check_segment_flush()
+            _guarded_tick_step("check_segment_flush", _check_segment_flush)
 
             # Check for journal sync conflicts (usually just heartbeat IO)
             if not _run_sync_tick(now):
@@ -2664,12 +3247,12 @@ async def supervise(
 
             # Check for daily processing (non-blocking, submits via task queue)
             if daily:
-                handle_daily_tasks()
-                _run_gate_tick(now)
+                _guarded_tick_step("handle_daily_tasks", handle_daily_tasks)
+                _guarded_tick_step("run_gate_tick", lambda: _run_gate_tick(now))
 
             # Check periodic task schedules (non-blocking, submits via callosum)
             if schedule:
-                scheduler.check()
+                _guarded_tick_step("scheduler_check", scheduler.check)
 
             # Sleep 1 second before next iteration (responsive to shutdown)
             await asyncio.sleep(1)
@@ -2685,15 +3268,6 @@ def parse_args() -> argparse.ArgumentParser:
         type=int,
         default=0,
         help="Convey port (0 = auto-select available port)",
-    )
-    parser.add_argument(
-        "--threshold",
-        type=int,
-        default=DEFAULT_THRESHOLD,
-        help="Seconds before heartbeat considered stale",
-    )
-    parser.add_argument(
-        "--interval", type=int, default=CHECK_INTERVAL, help="Polling interval seconds"
     )
     parser.add_argument(
         "--no-daily",
@@ -2809,6 +3383,23 @@ def register_baseline_caps(queue: TaskQueue) -> None:
         TaskQueue.get_command_name(BACKUP_RUN_CMD),
         parse_duration_seconds(BACKUP_MAX_RUNTIME),
     )
+
+
+def _register_scheduler_defaults() -> None:
+    """Register built-in scheduler defaults, tolerating a malformed config file.
+
+    scheduler.register_defaults() reads config/schedules.json with
+    RAISE-on-malformed semantics; a hand-corrupted or truncated file must
+    degrade to "no built-in defaults" rather than abort supervisor boot.
+    """
+    try:
+        scheduler.register_defaults()
+    except Exception:
+        logging.error(
+            "Failed to register scheduler defaults (malformed schedules.json?); "
+            "continuing without built-in defaults",
+            exc_info=True,
+        )
 
 
 def main() -> None:
@@ -2997,6 +3588,10 @@ def main() -> None:
             proc = start_local_server()
             if proc is not None:
                 procs.append(proc)
+        if linux_stt_uses_parakeet_cpp():
+            parakeet_proc = start_parakeet_server()
+            if parakeet_proc is not None:
+                procs.append(parakeet_proc)
         # Sense handles file processing
         print("  Starting sense...", flush=True)
         procs.append(start_sense())
@@ -3023,7 +3618,7 @@ def main() -> None:
         except Exception:
             logging.error("Failed to register maintenance schedules", exc_info=True)
         scheduler.init(_supervisor_callosum)
-        scheduler.register_defaults()
+        _register_scheduler_defaults()
         if _task_queue:
             for cmd, seconds in scheduler.collect_runtime_caps():
                 cmd_name = TaskQueue.get_command_name(cmd)

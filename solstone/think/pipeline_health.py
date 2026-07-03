@@ -36,6 +36,16 @@ _now = datetime.now
 
 _MODES = ("segment", "daily", "activity", "weekly", "flush", "cadence")
 _FAILED_LIST_CAP = 20
+_ACTIVITY_WORK_EVENTS = frozenset(
+    {
+        "run.start",
+        "run.complete",
+        "talent.dispatch",
+        "talent.complete",
+        "talent.fail",
+        "talent.skip",
+    }
+)
 SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("documents",)
 SEGMENT_NONGATING_TALENTS: tuple[str, ...] = ("entities:detection",)
 # Floor talents are capped after repeated failures spanning at least two hours.
@@ -130,6 +140,8 @@ class TerminalState:
     trailing_fail_count: int
     deterministic_fail_count: int
     last_fail_ts: int | None
+    use_id: str | None
+    state: str | None
     reason_code: str | None
     provider: str | None
     model: str | None
@@ -241,6 +253,7 @@ def summarize_pipeline_day(day: str) -> dict:
             "dispatched": 0,
             "completed": 0,
             "failed": 0,
+            "outstanding_failed": 0,
             "skipped": 0,
             "capped": 0,
             "failed_list": [],
@@ -287,24 +300,20 @@ def summarize_pipeline_day(day: str) -> dict:
                         )
                         continue
 
+                    rec_day = rec.get("day")
+                    if isinstance(rec_day, str) and rec_day != day:
+                        continue
+
                     event = rec["event"]
+                    if event in _ACTIVITY_WORK_EVENTS and rec.get("mode") == "activity":
+                        summary["activities"]["talents_fired"] = True
+
                     if event == "talent.dispatch":
                         summary["talents"]["dispatched"] += 1
                     elif event == "talent.complete":
                         summary["talents"]["completed"] += 1
                     elif event == "talent.fail":
                         summary["talents"]["failed"] += 1
-                        if len(summary["talents"]["failed_list"]) < _FAILED_LIST_CAP:
-                            summary["talents"]["failed_list"].append(
-                                {
-                                    "mode": rec.get("mode") or mode,
-                                    "name": rec.get("name"),
-                                    "use_id": rec.get("use_id"),
-                                    "state": rec.get("state"),
-                                }
-                            )
-                        else:
-                            summary["talents"]["failed_list_truncated"] = True
                     elif event == "talent.skip":
                         if rec.get("reason") == "capped":
                             summary["talents"]["capped"] += 1
@@ -320,10 +329,6 @@ def summarize_pipeline_day(day: str) -> dict:
                         except (TypeError, ValueError):
                             duration_ms = 0
                         summary["runs"][mode]["duration_ms_total"] += duration_ms
-                    elif (
-                        event == "run.start" and (rec.get("mode") or mode) == "activity"
-                    ):
-                        summary["activities"]["talents_fired"] = True
     except Exception:
         logger.warning(
             "pipeline_health: unexpected error summarizing %s",
@@ -332,12 +337,33 @@ def summarize_pipeline_day(day: str) -> dict:
         )
         return summary
 
+    outstanding = [
+        {
+            "mode": unit.mode,
+            "name": unit.name,
+            "use_id": state.use_id,
+            "state": state.state,
+        }
+        for unit, state in read_terminal_states(day, scope_to_day=True).items()
+        if state.latest_event == TERMINAL_FAIL
+    ]
+    outstanding.sort(
+        key=lambda failure: (
+            failure.get("name") or "",
+            failure.get("mode") or "",
+            failure.get("use_id") or "",
+        )
+    )
+    summary["talents"]["outstanding_failed"] = len(outstanding)
+    summary["talents"]["failed_list"] = outstanding[:_FAILED_LIST_CAP]
+    summary["talents"]["failed_list_truncated"] = len(outstanding) > _FAILED_LIST_CAP
+
     for failure in summary["talents"]["failed_list"]:
         summary["anomalies"].append({"kind": "talent_failure", **failure})
 
     if (
         summary["activities"]["detected"] > 0
-        and summary["runs"]["activity"]["count"] == 0
+        and not summary["activities"]["talents_fired"]
     ):
         summary["anomalies"].append({"kind": "activity_agents_missing"})
 
@@ -360,7 +386,7 @@ def summarize_pipeline_day(day: str) -> dict:
             # The kind now means segments sensed-but-not-thought, not zero runs.
             summary["anomalies"].append(
                 {
-                    "kind": "segment_runs_missing",
+                    "kind": "segments_not_thought",
                     "not_thought": completion.not_thought,
                     "not_sensed": completion.not_sensed,
                     "total": completion.total,
@@ -373,12 +399,12 @@ def summarize_pipeline_day(day: str) -> dict:
             exc_info=True,
         )
         summary["anomalies"].append(
-            {"kind": "segment_runs_missing", "error": "fold_failed"}
+            {"kind": "segments_not_thought", "error": "fold_failed"}
         )
 
     has_stale = any(
         anomaly["kind"]
-        in {"activity_agents_missing", "daily_agents_missing", "segment_runs_missing"}
+        in {"activity_agents_missing", "daily_agents_missing", "segments_not_thought"}
         for anomaly in summary["anomalies"]
     )
     has_failure = any(
@@ -396,11 +422,25 @@ def _str_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
+def read_terminal_states(
+    day: str, *, scope_to_day: bool = False
+) -> dict[TerminalUnit, TerminalState]:
     """Return latest terminal talent state per unit for one day."""
     records: dict[
         TerminalUnit,
-        list[tuple[int, int, str, str | None, str | None, str | None, bool]],
+        list[
+            tuple[
+                int,
+                int,
+                str,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                str | None,
+                bool,
+            ]
+        ],
     ] = {}
     sequence = 0
 
@@ -426,6 +466,11 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
                             "pipeline_health: skipping invalid record in %s", path
                         )
                         continue
+
+                    if scope_to_day:
+                        rec_day = rec.get("day")
+                        if isinstance(rec_day, str) and rec_day != day:
+                            continue
 
                     event = rec.get("event")
                     if event not in {"talent.complete", "talent.fail"}:
@@ -470,6 +515,8 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
                             ts,
                             sequence,
                             latest_event,
+                            _str_or_none(rec.get("use_id")),
+                            _str_or_none(rec.get("state")),
                             _str_or_none(rec.get("reason_code")),
                             _str_or_none(rec.get("provider")),
                             _str_or_none(rec.get("model")),
@@ -487,12 +534,30 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
     states: dict[TerminalUnit, TerminalState] = {}
     for unit, unit_records in records.items():
         ordered = sorted(unit_records, key=lambda item: (item[0], item[1]))
-        latest_ts, _seq, latest_event, _reason_code, _provider, _model, _cache_hit = (
-            ordered[-1]
-        )
+        (
+            latest_ts,
+            _seq,
+            latest_event,
+            _use_id,
+            _state,
+            _reason_code,
+            _provider,
+            _model,
+            _cache_hit,
+        ) = ordered[-1]
         real_complete_ts = [
             ts
-            for ts, _seq, event, _reason_code, _provider, _model, cache_hit in ordered
+            for (
+                ts,
+                _seq,
+                event,
+                _use_id,
+                _state,
+                _reason_code,
+                _provider,
+                _model,
+                cache_hit,
+            ) in ordered
             if event == TERMINAL_COMPLETE and not cache_hit
         ]
         last_real_complete_ts = max(real_complete_ts) if real_complete_ts else None
@@ -502,6 +567,8 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             ts,
             _seq,
             event,
+            _use_id,
+            _state,
             _reason_code,
             _provider,
             _model,
@@ -516,6 +583,8 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             _ts,
             _seq,
             event,
+            _use_id,
+            _state,
             reason_code,
             _provider,
             _model,
@@ -539,9 +608,11 @@ def read_terminal_states(day: str) -> dict[TerminalUnit, TerminalState]:
             trailing_fail_count=trailing_fail_count,
             deterministic_fail_count=deterministic_fail_count,
             last_fail_ts=last_fail[0] if last_fail else None,
-            reason_code=last_fail[3] if last_fail else None,
-            provider=last_fail[4] if last_fail else None,
-            model=last_fail[5] if last_fail else None,
+            use_id=last_fail[3] if last_fail else None,
+            state=last_fail[4] if last_fail else None,
+            reason_code=last_fail[5] if last_fail else None,
+            provider=last_fail[6] if last_fail else None,
+            model=last_fail[7] if last_fail else None,
             oldest_trailing_fail_ts=oldest_trailing_fail_ts,
         )
     return states
@@ -1499,7 +1570,7 @@ def pipeline_status_message(summary: dict) -> dict | None:
         (
             anomaly
             for anomaly in anomalies
-            if anomaly.get("kind") == "segment_runs_missing"
+            if anomaly.get("kind") == "segments_not_thought"
         ),
         None,
     )
@@ -1516,7 +1587,7 @@ def pipeline_status_message(summary: dict) -> dict | None:
             "message": f"{count} segment{plural} awaiting thinking",
         }
     if any(anomaly.get("kind") == "talent_failure" for anomaly in anomalies):
-        count = summary.get("talents", {}).get("failed", 0)
+        count = summary.get("talents", {}).get("outstanding_failed", 0)
         plural = "s" if count != 1 else ""
         return {
             "status": "warning",

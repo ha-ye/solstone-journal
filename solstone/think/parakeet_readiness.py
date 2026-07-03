@@ -1,17 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Examine-only parakeet readiness checks shared by doctor and install_models.
+"""Examine-only parakeet readiness checks shared by doctor and provider setup.
 
 Stdlib-only by contract. Must NOT import solstone.observe.* (inference),
-solstone.think.install_models (installer), any third-party package, or anything
-that downloads, installs, or loads inference code. doctor depends on this
+installer modules, any third-party package, or anything that downloads,
+installs, or loads inference code. doctor depends on this
 boundary to stay fast and diagnostic-only — do not add heavy imports here.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import platform
 import sys
 from pathlib import Path
@@ -23,22 +24,18 @@ MAC_CACHE_DIR = Path.home() / "Library/Application Support/solstone/parakeet/mod
 # FluidAudio's downloadAndLoad(to:) treats the passed dir as the parent and writes into <parent>/<repo-folder>; verified empirically against FluidAudio v0.14.0 v3 on Apple Silicon (helper invocation against a fresh cache dir wrote to <parent>/parakeet-tdt-0.6b-v3/).
 MAC_FLUIDAUDIO_REPO_NAME = "parakeet-tdt-0.6b-v3"
 MAC_SENTINEL = MAC_CACHE_DIR / ".install-complete"
-LINUX_HUB_DIR = Path.home() / ".cache/huggingface/hub"
-LINUX_MODEL_DIR = LINUX_HUB_DIR / "models--istupakov--parakeet-tdt-0.6b-v3-onnx"
-LINUX_SENTINEL = LINUX_HUB_DIR / ".solstone-install-complete"
-LINUX_MODEL_FILES = (
-    "encoder-model.onnx",
-    "decoder_joint-model.onnx",
-    "config.json",
-    "vocab.txt",
-)
-LINUX_MIN_CACHE_BYTES = 2_400_000_000
 MAC_MODEL_FILES = (
     "Encoder.mlmodelc/weights/weight.bin",
     "Decoder.mlmodelc/weights/weight.bin",
     "JointDecision.mlmodelc/weights/weight.bin",
     "Preprocessor.mlmodelc/weights/weight.bin",
 )
+PARAKEET_CPP_RELEASE_TAG = "v0.4.0"
+PARAKEET_CPP_BINARY_NAME = "parakeet-server"
+PARAKEET_CPP_BINARY_BACKENDS = ("cpu", "vulkan")
+PARAKEET_CPP_MODEL_REPO = "mudler/parakeet-cpp-gguf"
+PARAKEET_CPP_MODEL_FILENAME = "tdt-0.6b-v3-q8_0.gguf"
+PARAKEET_CPP_MODEL_REVISION = "bf0af9f425fa01809cadec671b3cb672709d13e9"
 
 
 def _platform_info() -> tuple[str, str]:
@@ -46,12 +43,85 @@ def _platform_info() -> tuple[str, str]:
     return os_name, platform.machine().lower()
 
 
+def parakeet_cpp_artifact_key(
+    os_name: str | None = None, arch: str | None = None
+) -> str:
+    if os_name is None or arch is None:
+        detected_os, detected_arch = _platform_info()
+        os_name = os_name or detected_os
+        arch = arch or detected_arch
+
+    if os_name != "linux":
+        raise RuntimeError(f"parakeet-cpp is unsupported on {os_name}/{arch}")
+
+    normalized_arch = arch.lower()
+    if normalized_arch in {"amd64", "x64", "x86_64"}:
+        return "x86_64-unknown-linux-gnu"
+    if normalized_arch in {"arm64", "aarch64"}:
+        return "aarch64-unknown-linux-gnu"
+    raise RuntimeError(f"parakeet-cpp is unsupported on {os_name}/{arch}")
+
+
+def parakeet_cpp_cache_root(journal_path: Path) -> Path:
+    return journal_path / "cache" / "providers" / "parakeet"
+
+
+def parakeet_cpp_binary_install_dir(
+    cache_root: Path, artifact_key: str, backend: str
+) -> Path:
+    return cache_root / "bin" / artifact_key / backend / PARAKEET_CPP_RELEASE_TAG
+
+
+def parakeet_cpp_binary_path(cache_root: Path, artifact_key: str, backend: str) -> Path:
+    return (
+        parakeet_cpp_binary_install_dir(cache_root, artifact_key, backend)
+        / PARAKEET_CPP_BINARY_NAME
+    )
+
+
+def parakeet_cpp_model_dir(cache_root: Path) -> Path:
+    return (
+        cache_root
+        / "models"
+        / PARAKEET_CPP_MODEL_REPO.replace("/", "__")
+        / PARAKEET_CPP_MODEL_REVISION
+    )
+
+
+def parakeet_cpp_model_path(cache_root: Path) -> Path:
+    return parakeet_cpp_model_dir(cache_root) / PARAKEET_CPP_MODEL_FILENAME
+
+
+def check_parakeet_cpp_files(cache_root: Path, artifact_key: str) -> dict[str, Path]:
+    paths = {
+        "binary_cpu": parakeet_cpp_binary_path(cache_root, artifact_key, "cpu"),
+        "binary_vulkan": parakeet_cpp_binary_path(cache_root, artifact_key, "vulkan"),
+        "model": parakeet_cpp_model_path(cache_root),
+    }
+    for key in ("binary_cpu", "binary_vulkan"):
+        path = paths[key]
+        if not path.is_file():
+            raise RuntimeError(f"parakeet-cpp check failed: {key} missing at {path}")
+        if not os.access(path, os.X_OK):
+            raise RuntimeError(
+                f"parakeet-cpp check failed: {key} not executable at {path}"
+            )
+    model_path = paths["model"]
+    if not model_path.is_file():
+        raise RuntimeError(f"parakeet-cpp check failed: model missing at {model_path}")
+    return paths
+
+
 def _sentinel_path(variant: str) -> Path:
-    return MAC_SENTINEL if variant == "coreml" else LINUX_SENTINEL
+    if variant != "coreml":
+        raise RuntimeError(f"parakeet sentinel is unsupported for variant {variant!r}")
+    return MAC_SENTINEL
 
 
 def _cache_dir(variant: str) -> Path:
-    return MAC_CACHE_DIR if variant == "coreml" else LINUX_MODEL_DIR
+    if variant != "coreml":
+        raise RuntimeError(f"parakeet cache is unsupported for variant {variant!r}")
+    return MAC_CACHE_DIR
 
 
 def _load_sentinel(path: Path) -> dict[str, Any] | None:
@@ -94,25 +164,6 @@ def _sentinel_ready(
     return resolved if resolved.exists() else None
 
 
-def _verify_linux_cache(cache_dir: Path) -> bool:
-    snapshots_dir = cache_dir / "snapshots"
-    if not snapshots_dir.is_dir():
-        return False
-    for child in snapshots_dir.iterdir():
-        if not child.is_dir():
-            continue
-        if not all(
-            (child / relative_path).is_file() for relative_path in LINUX_MODEL_FILES
-        ):
-            continue
-        total_bytes = sum(
-            path.stat().st_size for path in child.rglob("*") if path.is_file()
-        )
-        if total_bytes >= LINUX_MIN_CACHE_BYTES:
-            return True
-    return False
-
-
 def _verify_mac_cache(cache_dir: Path) -> bool:
     return all(
         (cache_dir.parent / MAC_FLUIDAUDIO_REPO_NAME / relative_path).is_file()
@@ -121,8 +172,10 @@ def _verify_mac_cache(cache_dir: Path) -> bool:
 
 
 def _verify_variant_cache(variant: str, cache_dir: Path) -> bool:
-    if variant in {"cpu", "cuda"}:
-        return _verify_linux_cache(cache_dir)
+    if variant != "coreml":
+        raise RuntimeError(
+            f"parakeet cache verification is unsupported for variant {variant!r}"
+        )
     return _verify_mac_cache(cache_dir)
 
 
@@ -132,6 +185,8 @@ def _check_parakeet_ready(
     variant: str,
     sentinel_path: Path,
 ) -> Path:
+    if variant != "coreml":
+        raise RuntimeError(f"parakeet readiness is unsupported for variant {variant!r}")
     ready_cache = _sentinel_ready(
         _load_sentinel(sentinel_path),
         os_name,

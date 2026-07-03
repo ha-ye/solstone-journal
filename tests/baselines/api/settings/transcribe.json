@@ -2,8 +2,8 @@
   "api_keys": {
     "gemini": false,
     "parakeet": false,
-    "revai": false,
-    "whisper": false
+    "parakeet-cpp": false,
+    "revai": false
   },
   "backends": [
     {
@@ -23,25 +23,23 @@
       ]
     },
     {
-      "description": "Local speech recognition using faster-whisper",
+      "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses the supervised parakeet.cpp server. Requires `make install`.",
       "env_key": null,
-      "label": "Whisper - Local processing",
-      "name": "whisper",
-      "settings": [
-        "device",
-        "model",
-        "compute_type"
-      ]
-    },
-    {
-      "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses onnx-asr + onnxruntime. Requires `make install`.",
-      "env_key": null,
-      "label": "Parakeet - Local processing (Apple Silicon CoreML or Linux ONNX)",
+      "label": "Parakeet - Local processing (Apple Silicon CoreML or Linux parakeet.cpp)",
       "name": "parakeet",
       "settings": [
         "model_version",
         "device",
         "timeout_sec"
+      ]
+    },
+    {
+      "description": "On-device speech recognition via a supervised parakeet.cpp server (mudler/parakeet.cpp). Linux only; install with `journal install-provider parakeet`.",
+      "env_key": null,
+      "label": "Parakeet.cpp - Local processing (Linux)",
+      "name": "parakeet-cpp",
+      "settings": [
+        "device"
       ]
     }
   ],
@@ -56,11 +54,6 @@
     },
     "revai": {
       "model": "fusion"
-    },
-    "whisper": {
-      "compute_type": "default",
-      "device": "auto",
-      "model": "medium.en"
     }
   },
   "resource": {
@@ -73,5 +66,6 @@
     "notice": "<normalized>",
     "requirement": "<normalized>"
   },
-  "runtime_label": "Linux ONNX (CPU fp32)"
+  "parakeet_uses_cpp": true,
+  "runtime_label": "Linux parakeet.cpp"
 }

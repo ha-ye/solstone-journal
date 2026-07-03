@@ -6,6 +6,7 @@
 These tests use mocks to test logic in isolation without real I/O.
 """
 
+import logging
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -108,6 +109,26 @@ def test_server_broadcast_removes_dead_clients():
     dead_client.close.assert_called_once()
 
 
+def test_server_handle_client_warns_on_utf8_split(caplog):
+    server = CallosumServer()
+    survivor = Mock()
+    bad_conn = Mock()
+    bad_conn.settimeout = Mock()
+    # First recv returns the first byte of a 3-byte char (invalid on its own);
+    # decode raises UnicodeDecodeError. b"" is a safety net to end the loop.
+    bad_conn.recv.side_effect = ["⚠️".encode("utf-8")[:1], b""]
+    server.clients = [survivor]
+    with caplog.at_level(logging.WARNING, logger="solstone.think.callosum"):
+        server._handle_client(bad_conn)
+    assert "utf-8 split" in caplog.text
+    assert "[server]" in caplog.text
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    # Offending client dropped + closed (existing finally cleanup); survivor kept.
+    assert bad_conn not in server.clients
+    assert survivor in server.clients
+    bad_conn.close.assert_called_once()
+
+
 def test_client_emit_returns_false_when_not_started():
     """Test that emit() returns False and logs warning if start() not called yet."""
     client = CallosumConnection()
@@ -160,6 +181,28 @@ def test_client_emit_returns_false_when_queue_full():
         assert result is False
         mock_logger.warning.assert_called()
         assert "Queue full" in mock_logger.warning.call_args[0][0]
+
+
+def test_client_run_loop_warns_on_utf8_split(caplog):
+    client = CallosumConnection()
+    mock_sock = Mock()
+
+    def fake_recv(_n):
+        client.stop_event.set()  # loop exits at next queue-drain
+        return "⚠️".encode("utf-8")[:1]
+
+    mock_sock.recv.side_effect = fake_recv
+    with (
+        patch("solstone.think.callosum.socket.socket", return_value=mock_sock),
+        patch("solstone.think.callosum.time.time", return_value=2.0),
+        caplog.at_level(logging.WARNING, logger="solstone.think.callosum"),
+    ):
+        client._run_loop()
+    assert "utf-8 split" in caplog.text
+    assert "[client]" in caplog.text
+    assert any(r.levelno == logging.WARNING for r in caplog.records)
+    # Socket dropped/closed as part of the reset.
+    mock_sock.close.assert_called()
 
 
 def test_client_start_creates_thread():

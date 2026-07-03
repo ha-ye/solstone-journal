@@ -53,11 +53,6 @@
     },
     "revai": {
       "model": "fusion"
-    },
-    "whisper": {
-      "compute_type": "default",
-      "device": "auto",
-      "model": "medium.en"
     }
   }
 }

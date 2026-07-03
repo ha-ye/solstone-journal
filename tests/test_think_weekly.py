@@ -90,7 +90,7 @@ def _patch_weekly_runtime(
         return f"use-{len(captured)}"
 
     monkeypatch.setattr(
-        "solstone.think.thinking._cortex_request_with_retry", fake_request
+        "solstone.think.thinking._dispatch_cortex_request", fake_request
     )
     monkeypatch.setattr(
         "solstone.think.thinking._drain_priority_batch",

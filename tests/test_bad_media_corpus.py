@@ -304,7 +304,7 @@ def _drive_transcribe(
         audio_path,
         argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
         {"preserve_all": preserve_all},
-        "whisper",
+        "parakeet",
         [],
     )
 
@@ -534,7 +534,7 @@ def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
         audio_path,
         argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
         {"preserve_all": True},
-        "whisper",
+        "parakeet",
         [],
     )
 
@@ -560,7 +560,7 @@ def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
         audio_path,
         argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
         {"preserve_all": True},
-        "whisper",
+        "parakeet",
         [],
     )
 

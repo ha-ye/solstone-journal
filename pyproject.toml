@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "solstone"
-version = "0.6.19"
+version = "0.6.22"
 description = "Navigate Life Intelligently"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -64,8 +64,8 @@ dependencies = [
 #   pip install 'solstone[journal-cuda]'   # journal with GPU transcription
 #
 # [journal] and [journal-cuda] are the same stack; they differ ONLY in the
-# transcription ONNX runtime (CPU vs CUDA). They share [journal-host] (the
-# heavy core minus the runtime). Install ONE of them, never both — onnxruntime
+# ONNX runtime package (CPU vs CUDA). They share [journal-host] (the heavy core
+# minus the runtime). Install ONE of them, never both — onnxruntime
 # and onnxruntime-gpu own the same `onnxruntime/` import dir and clobber each
 # other (see the Makefile note on --all-extras).
 #
@@ -74,11 +74,10 @@ dependencies = [
 # packages/solstone-journal-host/. That shim owns the host-only `journal` and
 # `mlx-vlm-server` console scripts; base solstone keeps only `sol`/`solstone`.
 #
-# [pdf] / [whisper] / [parakeet-onnx-cpu|cuda] remain as internal building
-# blocks: they back the per-feature install hints (think/features.py,
-# observe/transcribe/parakeet_hints.py) and the lazy-import boundaries, and
-# [journal-host]/[journal] compose them. They are NOT part of the advertised
-# menu — INSTALL.md documents only `solstone` and `solstone[journal]`.
+# [pdf] remains an internal building block: it backs the per-feature install
+# hints (think/features.py), and [journal-host]/[journal] compose it. It is NOT
+# part of the advertised menu — INSTALL.md documents only `solstone` and
+# `solstone[journal]`.
 # ---------------------------------------------------------------------------
 pdf = [
     "weasyprint>=60.0",
@@ -86,30 +85,8 @@ pdf = [
     "pdf2image>=1.16.0",
 ]
 
-whisper = [
-    "faster-whisper>=1.0.0",
-]
-
-parakeet-onnx-cpu = [
-    "onnx-asr>=0.11.0",
-    "onnxruntime>=1.25.0",
-    "huggingface-hub>=0.24",
-]
-parakeet-onnx-cuda = [
-    "onnx-asr>=0.11.0",
-    "onnxruntime-gpu>=1.25.0",
-    "huggingface-hub>=0.24",
-    "nvidia-cuda-runtime-cu12",
-    "nvidia-cudnn-cu12",
-    "nvidia-cublas-cu12",
-    "nvidia-cufft-cu12",
-    "nvidia-curand-cu12",
-    "nvidia-cuda-nvrtc-cu12",
-    "nvidia-nvjitlink-cu12",
-]
-
-# The full journal-host stack EXCEPT the transcription ONNX runtime (which is
-# the CPU-vs-CUDA choice deferred to [journal]/[journal-cuda] below). Not a
+# The full journal-host stack EXCEPT the ONNX runtime package (which is the
+# CPU-vs-CUDA choice deferred to [journal]/[journal-cuda] below). Not a
 # user-facing extra — always pulled in via [journal] or [journal-cuda].
 journal-host = [
     "python-dotenv",
@@ -119,7 +96,7 @@ journal-host = [
     "mistune",
     "python-frontmatter",
     "packaging",
-    "Pillow",
+    "Pillow>=11.0.0",
     "numpy",
     "av",
     "openai>=1.2.0",
@@ -156,38 +133,35 @@ journal-host = [
     "rapidfuzz",
     # Audio processing
     "soundfile",
-    # Linux/x86_64 default-STT (parakeet) ride-along: pull onnx-asr in and let
-    # the [journal]/[journal-cuda] runtime line supply onnxruntime.
-    "onnx-asr>=0.11.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "kaldi-native-fbank>=1.22",
     # solstone/apps/speakers/{owner,discovery}.py use sklearn.cluster.HDBSCAN.
     # Previously pulled transitively via resemblyzer; now a direct dep.
     "scikit-learn>=1.3",
     # Media processing
     "opencv-python-headless",
-    # PDF + faster-whisper fold into the journal host ("choose journal, get it
-    # all"). Referenced via the building-block extras so the per-feature hints
-    # stay in sync.
+    # PDF folds into the journal host ("choose journal, get it all"). Referenced
+    # via the building-block extra so the per-feature hints stay in sync.
     "solstone[pdf]",
-    "solstone[whisper]",
 ]
 
-# Run a journal here — the full host stack with CPU transcription (default).
+# Run a journal here — the full host stack with CPU ONNX runtime.
 journal = [
-    "solstone-journal-host==0.6.19",
-    # CPU ONNX runtime: covers VAD + the WeSpeaker embedder everywhere, and the
-    # parakeet STT on Linux/x86_64. Floor raised on x86_64 for the parakeet
-    # backend; !=1.24.1 across the board (known-bad wheel).
+    "solstone-journal-host==0.6.22",
+    # CPU ONNX runtime: covers VAD, diarization, and the WeSpeaker embedder;
+    # !=1.24.1 across the board (known-bad wheel).
     "onnxruntime>=1.20.0,!=1.24.1",
+    # Linux/x86_64 keeps the higher floor for current VAD/diarization/WeSpeaker
+    # wheel behavior; scripts/check_extras_consistency.py pins this floor.
     "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
-# Run a journal here with GPU-accelerated transcription (NVIDIA / Linux x86_64).
+# Run a journal here with GPU ONNX runtime (NVIDIA / Linux x86_64).
 # Same stack as [journal] but onnxruntime-gpu in place of the CPU runtime — the
 # GPU wheel supplies the `onnxruntime` namespace (incl. CPU providers) for
-# VAD/embedder. Install this instead of [journal], not alongside it.
+# VAD, diarization, and WeSpeaker. Install this instead of [journal], not
+# alongside it.
 journal-cuda = [
-    "solstone-journal-host==0.6.19",
+    "solstone-journal-host==0.6.22",
     "onnxruntime-gpu>=1.25.0",
     "nvidia-cuda-runtime-cu12",
     "nvidia-cudnn-cu12",

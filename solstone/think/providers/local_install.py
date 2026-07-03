@@ -15,6 +15,7 @@ import platform
 import shutil
 import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
@@ -52,6 +53,38 @@ _LOCAL_METADATA_KEYS = frozenset(
     }
 )
 
+
+@dataclass(frozen=True)
+class CudaServerPin:
+    image_ref: str
+    cuda_version: int
+    embedded_arch_set: frozenset[str]
+    binary_name: str
+    device_flag_value: str
+    visible_devices_env: str
+    shared_wanted_files: tuple[str, ...]
+    cpu_wanted_files_by_arch: dict[str, tuple[str, ...]]
+
+    def wanted_files_for_arch(self, arch: str) -> tuple[str, ...]:
+        cpu_wanted_files = self.cpu_wanted_files_by_arch.get(arch)
+        if cpu_wanted_files is None:
+            raise LocalProviderError(
+                "unsupported_platform",
+                f"No CUDA wanted-files set for OCI architecture {arch}",
+            )
+        return self.shared_wanted_files + cpu_wanted_files
+
+
+@dataclass(frozen=True)
+class LocalArtifacts:
+    backend: str
+    backend_reason: str
+    binary_path: Path
+    lib_dir: Path | None
+    gguf_path: Path
+    mmproj_path: Path | None
+
+
 LLAMA_SERVER_PINS: dict[str, dict[str, str]] = {
     "aarch64-apple-darwin": {
         "release_tag": "b9291",
@@ -72,6 +105,65 @@ LLAMA_SERVER_PINS: dict[str, dict[str, str]] = {
         "binary_name": "llama-server",
     },
 }
+
+CUDA_SERVER_PIN = CudaServerPin(
+    # TODO(AC10): confirm pinned server-cuda13 digest (build b9853) on the
+    # Spark GB10.
+    image_ref=(
+        "ghcr.io/ggml-org/llama.cpp@sha256:"
+        "bc998878c040cf2095b4c5cf3b1cf56df3984053e2a2650e5c4c66a4953e10cb"
+    ),
+    cuda_version=13,
+    # TODO(AC10): confirm via cuobjdump --list-elf libggml-cuda.so on hardware.
+    embedded_arch_set=frozenset({"sm_86", "sm_89", "sm_120a", "sm_121a"}),
+    binary_name="llama-server",
+    # TODO(AC10): confirm CUDA device flag + visible-devices env on the CUDA build.
+    device_flag_value="CUDA0",
+    visible_devices_env="CUDA_VISIBLE_DEVICES",
+    shared_wanted_files=(
+        "llama-server",
+        "libllama-server-impl.so",
+        "libllama-common.so.0",
+        "libmtmd.so.0",
+        "libllama.so.0",
+        "libggml.so.0",
+        "libggml-base.so.0",
+        "libggml-cuda.so",
+        "libcudart.so.13",
+        "libcublas.so.13",
+        "libcublasLt.so.13",
+    ),
+    # Keep the CPU dispatcher libs explicit per upstream image arch. The CUDA
+    # runtime libs share basenames; only the libggml-cpu-* variants differ.
+    cpu_wanted_files_by_arch={
+        "amd64": (
+            "libggml-cpu-x64.so",
+            "libggml-cpu-sse42.so",
+            "libggml-cpu-sandybridge.so",
+            "libggml-cpu-ivybridge.so",
+            "libggml-cpu-piledriver.so",
+            "libggml-cpu-haswell.so",
+            "libggml-cpu-skylakex.so",
+            "libggml-cpu-cannonlake.so",
+            "libggml-cpu-cascadelake.so",
+            "libggml-cpu-icelake.so",
+            "libggml-cpu-cooperlake.so",
+            "libggml-cpu-zen4.so",
+            "libggml-cpu-alderlake.so",
+            "libggml-cpu-sapphirerapids.so",
+        ),
+        "arm64": (
+            "libggml-cpu-armv8.0_1.so",
+            "libggml-cpu-armv8.2_1.so",
+            "libggml-cpu-armv8.2_2.so",
+            "libggml-cpu-armv8.2_3.so",
+            "libggml-cpu-armv8.6_1.so",
+            "libggml-cpu-armv8.6_2.so",
+            "libggml-cpu-armv9.2_1.so",
+            "libggml-cpu-armv9.2_2.so",
+        ),
+    },
+)
 
 
 def llama_server_artifact_key() -> str:
@@ -118,6 +210,30 @@ def binary_path_for_pin(
 ) -> Path:
     pin = pin or pin_for_current_platform()
     return binary_install_dir(artifact_key, pin) / pin["binary_name"]
+
+
+def _oci_arch() -> str:
+    machine = platform.machine().lower()
+    if machine in {"x86_64", "amd64", "x64"}:
+        return "amd64"
+    if machine in {"aarch64", "arm64"}:
+        return "arm64"
+    raise LocalProviderError(
+        "unsupported_platform",
+        f"No OCI platform architecture mapping for machine {machine}",
+    )
+
+
+def _cuda_digest_hex() -> str:
+    return CUDA_SERVER_PIN.image_ref.rsplit("@sha256:", 1)[1]
+
+
+def cuda_binary_dir() -> Path:
+    return cache_root() / "cuda" / llama_server_artifact_key() / _cuda_digest_hex()
+
+
+def cuda_binary_path() -> Path:
+    return cuda_binary_dir() / CUDA_SERVER_PIN.binary_name
 
 
 def model_dir(model_id: str) -> Path:
@@ -311,6 +427,12 @@ def probe_binary_runnable(binary_path: str | Path) -> tuple[bool, str | None]:
 
 
 def install_llama_server() -> dict[str, Any]:
+    from solstone.think.providers import local_cuda
+
+    choice = local_cuda.resolve_local_backend(CUDA_SERVER_PIN)
+    if choice.backend == "cuda":
+        return _install_cuda_llama_server()
+
     artifact_key = llama_server_artifact_key()
     pin = pin_for_current_platform()
     url = (
@@ -354,6 +476,35 @@ def install_llama_server() -> dict[str, Any]:
                 "binary_path": str(final_path),
             }
         )
+        return _write_local_status(
+            transition_state(_read_local_status(), new_state="installed")
+        )
+    except Exception as exc:
+        _write_local_status(
+            transition_state(_read_local_status(), new_state="failed", error=str(exc))
+        )
+        raise
+
+
+def _install_cuda_llama_server() -> dict[str, Any]:
+    from solstone.think.providers import oci_image
+
+    try:
+        arch = _oci_arch()
+        wanted_files = CUDA_SERVER_PIN.wanted_files_for_arch(arch)
+        _write_local_status(
+            transition_state(_read_local_status(), new_state="downloading")
+        )
+        oci_image.pull_and_install(
+            CUDA_SERVER_PIN.image_ref,
+            arch,
+            wanted_files,
+            cuda_binary_dir(),
+        )
+        _write_local_status(
+            transition_state(_read_local_status(), new_state="verifying")
+        )
+        _chmod_executable(cuda_binary_path())
         return _write_local_status(
             transition_state(_read_local_status(), new_state="installed")
         )
@@ -412,8 +563,9 @@ def install_local(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
 
 
 def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
-    from solstone.think.providers import local_vulkan
+    from solstone.think.providers import local_cuda, oci_image
 
+    choice = local_cuda.resolve_local_backend(CUDA_SERVER_PIN)
     config = read_journal_config()
     record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
     if not isinstance(record, dict):
@@ -423,7 +575,6 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
         model_id or record.get("model_id") or LOCAL_MODEL
     )
     spec = LOCAL_MODEL_SPECS[selected_model]
-    binary_path = Path(record.get("binary_path") or binary_path_for_pin())
 
     # The persisted record is a cache keyed by model_id. Trust a recorded
     # artifact path only when the record is for the selected model AND the path
@@ -448,28 +599,54 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
     )
     mmproj_installed = resolved_mmproj is None or resolved_mmproj.exists()
     memory_verdict = assess_memory(spec.min_ram_bytes, block_below_floor=False)
-    selected_gpu = local_vulkan.select_device(
-        local_vulkan.detect_gpus(), override_index=gpu_device_override()
-    )
-    gpu_available = selected_gpu is not None
+
+    if choice.backend == "cuda":
+        arch = _oci_arch()
+        wanted_files = CUDA_SERVER_PIN.wanted_files_for_arch(arch)
+        binary_path = cuda_binary_path()
+        binary_installed = (
+            oci_image.verify_sidecar_install(
+                CUDA_SERVER_PIN.image_ref,
+                arch,
+                wanted_files,
+                cuda_binary_dir(),
+            )
+            and binary_path.exists()
+            and os.access(binary_path, os.X_OK)
+        )
+        gpu_available = True
+        gpu_probe_ok = True
+    else:
+        from solstone.think.providers import local_vulkan
+
+        binary_path = Path(record.get("binary_path") or binary_path_for_pin())
+        binary_installed = binary_path.exists() and os.access(binary_path, os.X_OK)
+        selected_gpu = local_vulkan.select_device(
+            local_vulkan.detect_gpus(), override_index=gpu_device_override()
+        )
+        gpu_available = selected_gpu is not None
+        gpu_probe_ok = local_vulkan.gpu_probe_ok()
+
     return {
         "install_state": status["install_state"],
-        "binary_installed": binary_path.exists() and os.access(binary_path, os.X_OK),
+        "binary_installed": binary_installed,
         "model_installed": gguf_path.exists() and mmproj_installed,
         "gguf_installed": gguf_path.exists(),
         "mmproj_installed": mmproj_installed,
         "ram_sufficient": memory_verdict.severity != "blocked",
         "gpu_available": gpu_available,
-        "gpu_probe_ok": local_vulkan.gpu_probe_ok(),
+        "gpu_probe_ok": gpu_probe_ok,
         "binary_path": str(binary_path),
         "model_path": str(gguf_path),
         "mmproj_path": str(resolved_mmproj) if resolved_mmproj is not None else None,
         "model_id": selected_model,
         "install_error": status["install_error"],
+        "backend": choice.backend,
+        "backend_reason": choice.reason,
     }
 
 
-def ensure_artifacts_installed(model_id: str) -> tuple[Path, Path, Path | None]:
+def ensure_artifacts_installed(model_id: str) -> LocalArtifacts:
     selected_model = normalize_model_id(model_id)
     readiness = inspect_readiness(selected_model)
     if not readiness["binary_installed"]:
@@ -479,18 +656,26 @@ def ensure_artifacts_installed(model_id: str) -> tuple[Path, Path, Path | None]:
             "model_missing", "Local model files are not installed."
         )
     mmproj = readiness.get("mmproj_path")
-    return (
-        Path(readiness["binary_path"]),
-        Path(readiness["model_path"]),
-        Path(mmproj) if mmproj else None,
+    return LocalArtifacts(
+        backend=str(readiness["backend"]),
+        backend_reason=str(readiness["backend_reason"]),
+        binary_path=Path(readiness["binary_path"]),
+        lib_dir=cuda_binary_dir() if readiness["backend"] == "cuda" else None,
+        gguf_path=Path(readiness["model_path"]),
+        mmproj_path=Path(mmproj) if mmproj else None,
     )
 
 
 __all__ = [
+    "CUDA_SERVER_PIN",
     "LLAMA_SERVER_PINS",
+    "CudaServerPin",
+    "LocalArtifacts",
     "llama_server_artifact_key",
     "pin_for_current_platform",
     "binary_path_for_pin",
+    "cuda_binary_dir",
+    "cuda_binary_path",
     "model_path",
     "mmproj_path",
     "install_llama_server",

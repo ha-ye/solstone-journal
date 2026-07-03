@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -18,12 +19,16 @@ from solstone.think.identity import (
 from solstone.think.steward import (
     STALE_PENDING_RECIPE,
     _recipe_outcomes_7d,
+    acquire_steward_lock,
     append_steward_event,
     default_summary_from_body,
+    load_latest_pass_event,
     load_steward_log,
     normalize_summary,
+    prune_steward_log,
     read_steward_health,
     read_steward_summary,
+    release_steward_lock,
     render_health_body,
     run_recipe_pass,
     validate_steward_health,
@@ -88,6 +93,176 @@ def _recipe_row(target: str, outcome: str, ts: int) -> dict:
         "outcome": outcome,
         "detail": None,
     }
+
+
+NOW = 1_000_000_000_000
+DAY_MS = 86_400_000
+
+
+def test_prune_steward_log_age_prune_keeps_order(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: NOW)
+    rows = [
+        {"event": "pass", "ts": NOW - 40 * DAY_MS, "seq": "drop-40"},
+        {"event": "pass", "ts": NOW - 31 * DAY_MS, "seq": "drop-31"},
+        {"event": "pass", "ts": NOW - 29 * DAY_MS, "seq": "keep-29"},
+        {"event": "pass", "ts": NOW - DAY_MS, "seq": "keep-1"},
+    ]
+    _seed_steward_log(tmp_path, rows)
+
+    prune_steward_log()
+
+    assert load_steward_log() == [rows[2], rows[3]]
+
+
+def test_prune_steward_log_preserves_7d_rollup(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: NOW)
+    rows = [
+        _recipe_row("within-7", "verified_healed", NOW - 2 * DAY_MS),
+        _recipe_row("within-7-failed", "failed", NOW - 6 * DAY_MS),
+        _recipe_row("within-30", "running", NOW - 20 * DAY_MS),
+        _recipe_row("older-than-30", "accepted", NOW - 31 * DAY_MS),
+    ]
+    _seed_steward_log(tmp_path, rows)
+    rollup_before = _recipe_outcomes_7d(load_steward_log())
+
+    prune_steward_log()
+    rollup_after = _recipe_outcomes_7d(load_steward_log())
+
+    assert rollup_after == rollup_before
+
+
+def test_prune_steward_log_preserves_latest_pass(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: NOW)
+    rows = [
+        {"event": "pass", "ts": NOW - 31 * DAY_MS, "seq": "oldest"},
+        {"event": "pass", "ts": NOW - 15 * DAY_MS, "seq": "middle"},
+        {"event": "pass", "ts": NOW - DAY_MS, "seq": "newest"},
+    ]
+    _seed_steward_log(tmp_path, rows)
+    before = load_latest_pass_event()
+
+    prune_steward_log()
+
+    assert load_latest_pass_event() == before
+
+
+def test_prune_steward_log_fail_safe_and_malformed(tmp_path, monkeypatch, caplog):
+    _set_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: NOW)
+    rows = [
+        {"event": "pass", "seq": "no-ts"},
+        123,
+        {"event": "pass", "ts": NOW - DAY_MS, "seq": "recent"},
+    ]
+    _seed_steward_log(tmp_path, rows)
+    path = tmp_path / "health" / "steward.log"
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write("not json at all\n")
+
+    with caplog.at_level(logging.INFO):
+        prune_steward_log()
+
+    raw = path.read_text(encoding="utf-8")
+    assert "not json at all" not in raw
+    assert '"seq":"no-ts"' in raw
+    assert "123\n" in raw
+    assert '"seq":"recent"' in raw
+    assert load_steward_log() == [rows[0], rows[2]]
+    assert (
+        "steward: pruned 0 stale row(s), dropped 1 malformed line(s) from steward.log"
+        in caplog.text
+    )
+
+
+def test_prune_steward_log_missing_and_empty_noop(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: NOW)
+    path = tmp_path / "health" / "steward.log"
+
+    prune_steward_log()
+
+    assert not path.exists()
+
+    path.write_text("", encoding="utf-8")
+    prune_steward_log()
+
+    assert path.read_text(encoding="utf-8") == ""
+    assert list((tmp_path / "health").glob("*.tmp")) == []
+
+
+def test_prune_steward_log_atomicity_and_valid_jsonl(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: NOW)
+    rows = [
+        {"event": "pass", "ts": NOW - 40 * DAY_MS, "seq": "stale"},
+        {"event": "pass", "ts": NOW - DAY_MS, "seq": "fresh"},
+    ]
+    _seed_steward_log(tmp_path, rows)
+
+    prune_steward_log()
+
+    path = tmp_path / "health" / "steward.log"
+    assert list((tmp_path / "health").glob("*.tmp")) == []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        json.loads(line)
+    assert load_steward_log() == [rows[1]]
+
+
+def test_prune_steward_log_skips_when_steward_lock_held(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: NOW)
+    rows = [
+        {"event": "pass", "ts": NOW - 40 * DAY_MS, "seq": "stale"},
+        {"event": "pass", "ts": NOW - DAY_MS, "seq": "fresh"},
+    ]
+    _seed_steward_log(tmp_path, rows)
+    path = tmp_path / "health" / "steward.log"
+    before = path.read_bytes()
+    fd = acquire_steward_lock()
+    assert fd is not None
+    try:
+        prune_steward_log()
+    finally:
+        release_steward_lock(fd)
+
+    assert path.read_bytes() == before
+
+
+def test_prune_steward_log_recent_render_failed_survives(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: NOW)
+    rows = [
+        {
+            "event": "render.failed",
+            "ts": NOW - DAY_MS,
+            "target": "identity/health.md",
+        },
+        _recipe_row("stale-target", "failed", NOW - 40 * DAY_MS),
+    ]
+    _seed_steward_log(tmp_path, rows)
+
+    prune_steward_log()
+
+    assert load_steward_log() == [rows[0]]
+
+
+def test_prune_steward_log_noop_when_nothing_dropped(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr("solstone.think.steward.now_ms", lambda: NOW)
+    rows = [
+        {"event": "pass", "ts": NOW - 29 * DAY_MS, "seq": "fresh-29"},
+        _recipe_row("fresh-target", "running", NOW - DAY_MS),
+    ]
+    _seed_steward_log(tmp_path, rows)
+    path = tmp_path / "health" / "steward.log"
+    before = path.read_bytes()
+
+    prune_steward_log()
+
+    assert path.read_bytes() == before
 
 
 def _fixed_facts(
@@ -394,7 +569,7 @@ def test_render_health_body_talent_failure_timed_out():
             {"kind": "talent_failure", "name": "entities", "state": "timeout"},
             {"kind": "talent_failure", "name": "documents", "state": "timeout"},
         ],
-        "talents": {"failed": 2},
+        "talents": {"failed": 9, "outstanding_failed": 2},
     }
     body = render_health_body(
         generated_at=_GEN_AT,
@@ -406,6 +581,27 @@ def test_render_health_body_talent_failure_timed_out():
     assert (
         "2 agents timed out during yesterday's processing (entities, documents)."
         in (body)
+    )
+
+
+def test_render_health_body_talent_failure_request_lost():
+    pipeline_day = {
+        "anomalies": [
+            {"kind": "talent_failure", "name": "entities", "state": "request_lost"},
+            {"kind": "talent_failure", "name": "documents", "state": "request_lost"},
+        ],
+        "talents": {"outstanding_failed": 2},
+    }
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day=pipeline_day,
+        recipe_outcomes_7d=[],
+        data_source_errors=[],
+    )
+
+    assert (
+        "2 agents couldn't start during yesterday's processing "
+        "(entities, documents)." in body
     )
 
 

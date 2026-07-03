@@ -12,7 +12,7 @@ from dataclasses import dataclass
 class LocalEndpoint:
     ip: str
     port: int
-    scope: str  # "lan" or "ula"
+    scope: str  # "lan", "ula", or "vpn"
 
 
 @dataclass(frozen=True)

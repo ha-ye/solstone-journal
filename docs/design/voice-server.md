@@ -242,14 +242,15 @@ Implementation notes by tool:
 - `entities.recent_with` sorts interactions descending by activity timestamp and truncates to a small spoken-friendly limit, default 10.
 - `commitments.list` and `commitments.complete` must strip `sources` before returning anything model-facing.
 - `calendar.today.location` and `calendar.today.prep_notes` default to `""` because current anticipated activity rows do not guarantee either field.
-- `briefing.get.facet` is the literal string `"identity"` because the canonical source is `journal/identity/briefing.md`, not a facet-scoped talent output.
+- `briefing.get.facet` is the literal string `"identity"` as a fixed spoken-context label, not a facet-scoped talent output; the briefing itself is read from `chronicle/<day>/talents/morning_briefing.md`.
 
 ## 6. Brain init prompt (full text)
 
 Runtime template values:
 
 - `{agent_name}` comes from `get_config().get("agent", {}).get("name") or "sol"` (`solstone/think/utils.py:557-588`, `tests/fixtures/journal/config/journal.json:70-74`).
-- `{today}` is the external date string `YYYY-MM-DD` produced by the voice tool `_today()` helper.
+- `<today>` is literal prompt text, not a `.format(...)` placeholder; the init
+  template only interpolates `{agent_name}`.
 
 Prompt text:
 
@@ -274,7 +275,7 @@ Before you write the instruction, ingest the current context:
 - Read the active entities that matter right now.
 - Read the open commitments.
 - Read today's calendar and anticipated activities.
-- Read the latest briefing in journal/identity/briefing.md if it is for today.
+- Read today's morning briefing at chronicle/<today>/talents/morning_briefing.md if it exists.
 
 Then write one system instruction that does all of the following:
 - Establish who {agent_name} is and how the voice should speak.
@@ -416,7 +417,7 @@ Uniform fixture-date strategy:
 - Add one narrow helper in `think.voice.tools`, for example `_today() -> datetime.date` plus a formatter helper in the same module.
 - All date-sensitive voice tools (`journal.get_day`, `journal.search` day-window math, `calendar.today`, `briefing.get`) use that helper.
 - Tests monkeypatch the helper to the fixture briefing date or another explicit date instead of rewriting shared fixture files.
-- This keeps the shared fixture journal stable and avoids clock-driven flakes from `tests/fixtures/journal/identity/briefing.md` being dated `20260327`.
+- This keeps the shared fixture journal stable and avoids clock-driven flakes from `tests/fixtures/journal/chronicle/20260327/talents/morning_briefing.md` being dated `20260327`.
 
 Per-file plan:
 
@@ -455,7 +456,7 @@ Journal-data rule:
 
 - Brain-not-ready behavior: this design treats the bridge contract and acceptance list as canonical and returns HTTP 503 from `/api/voice/session` after a 10-second wait, instead of using the older static fallback instruction path from the scope prose.
 - Routing location: this design uses a root-level `solstone/convey/voice.py` blueprint, not `solstone/apps/voice/`, because the feature is a root API and the app shell assumes `/app/<name>` plus `workspace.html`.
-- Briefing source path: this design treats `journal/identity/briefing.md` via `solstone/apps/home/routes.py::_load_briefing_md(...)` as canonical, not the older chronicle talent-output path described in the scope.
+- Briefing source path: `_load_briefing_md(...)` reads the canonical `chronicle/<day>/talents/morning_briefing.md` talent output. (Updated 2026-07-02: an earlier revision read the phantom identity-dir briefing file; retired in the H1 lode.)
 - Commitments resolution mapping: this design maps `done|sent|signed|deferred -> as_state="closed"` and `dropped -> as_state="dropped"` because `think.surfaces.ledger.close(...)` only accepts `closed|dropped`.
 - OpenAI key sourcing: this design uses `config.voice.openai_api_key` in `journal/config/journal.json` first, then `OPENAI_API_KEY`, and does not add `journal/config/openai.json`.
 - `ask_sol` clause: this design removes it from the brain init prompt and does not add a 10th tool to the manifest.

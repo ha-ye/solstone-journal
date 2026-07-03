@@ -97,7 +97,7 @@ def _sample_config():
         },
         "setup": {"completed_at": 12345},
         "providers": {"auth": "provider_auth_val", "key_validation": "val123"},
-        "transcribe": {"whisper": {"device": "gpu"}},
+        "transcribe": {"parakeet-cpp": {"device": "cpu"}},
         "env": {"API_KEY": "xyz"},
         "retention": {"days": 30},
     }
@@ -224,7 +224,7 @@ def test_never_transfer_excluded(ingest_env):
     assert "setup.completed_at" in diff
     assert "providers.auth" in diff
     assert "providers.key_validation" in diff
-    assert "transcribe.whisper.device" in diff
+    assert "transcribe.parakeet-cpp.device" in diff
     assert any(key.startswith("env.") for key in diff)
 
 

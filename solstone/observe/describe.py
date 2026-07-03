@@ -65,6 +65,53 @@ from solstone.think.utils import (
 
 logger = logging.getLogger(__name__)
 
+# Perceptual-distance at/above which a qualified frame is a scene cut and
+# bypasses the stride floor unconditionally (out of 64 dHash bits).
+SCENE_CUT_THRESHOLD = 25
+# Minimum wall-clock gap (seconds) between kept frames for non-scene-cut,
+# dHash-qualified frames; closer arrivals are stride-dropped.
+MIN_STRIDE_SECONDS = 5.0
+
+
+def _winnow_decision(
+    current_hash: int,
+    current_timestamp: float,
+    last_kept_hash: int,
+    last_kept_timestamp: float,
+    dhash_threshold: int,
+    scene_cut_threshold: int,
+    min_stride_seconds: float,
+) -> tuple[bool, bool, str]:
+    """Decide whether a non-first frame is kept, measured against the last KEPT frame.
+
+    All three gates (dHash change, scene-cut, stride floor) compare against the
+    last kept frame's hash/timestamp. The reference advances only on a kept frame,
+    so a frame dropped by either the dHash gate or the stride floor leaves the
+    reference untouched.
+
+    Returns (keep, scene_cut, reason); reason is one of:
+      - "below_threshold": dHash change < dhash_threshold; not qualified, not kept.
+      - "scene_cut":       change >= scene_cut_threshold; kept, bypasses the stride floor.
+      - "stride_dropped":  qualified, non-scene-cut, arrived < min_stride_seconds
+                           after the last kept frame; not kept.
+      - "kept":            qualified, non-scene-cut, past the stride floor; kept.
+    """
+    distance = bin(last_kept_hash ^ current_hash).count("1")
+    if distance < dhash_threshold:
+        return (False, False, "below_threshold")
+    if distance >= scene_cut_threshold:
+        return (True, True, "scene_cut")
+    if (current_timestamp - last_kept_timestamp) < min_stride_seconds:
+        return (False, False, "stride_dropped")
+    return (True, False, "kept")
+
+
+def _flattened_image_data(img: Image.Image):
+    get_flattened_data = getattr(img, "get_flattened_data", None)
+    if get_flattened_data is not None:
+        return get_flattened_data()
+    return img.getdata()
+
 
 class RequestType(Enum):
     """Type of vision analysis request."""
@@ -345,23 +392,38 @@ class VideoProcessor:
         self.height: Optional[int] = None
         # Store qualified frames as simple list
         self.qualified_frames: List[dict] = []
+        describe_config = get_config().get("describe", {})
+        self.scene_cut_threshold: int = describe_config.get(
+            "scene_cut_threshold", SCENE_CUT_THRESHOLD
+        )
+        self.min_stride_seconds: float = describe_config.get(
+            "min_stride_seconds", MIN_STRIDE_SECONDS
+        )
+        self.winnow_metrics: dict = {}
 
     def process(self) -> List[dict]:
         """
         Process video and return qualified frames.
 
         Uses dHash perceptual hashing to detect significant changes. Caches
-        the dHash of the last qualified frame for comparison.
+        the dHash of the last kept frame for comparison.
 
         Returns:
             List of qualified frames with timestamp and frame_bytes.
         """
-        # Cache for the last qualified frame hash
-        last_hash: Optional[int] = None
+        # Reference = last KEPT frame; advances only on keep.
+        last_kept_hash: Optional[int] = None
+        last_kept_timestamp: float = 0.0
         self.first_hash = None
         self.last_hash = None
         self.qualified_count = 0
         self.decode_failed = False
+
+        # Winnowing counters (see the metrics line after the loop for definitions).
+        raw_frames = 0
+        dhash_qualified = 0
+        scene_cut_count = 0
+        stride_dropped = 0
 
         # Imports deferred: av (PyAV) and cv2 (via observe.aruco) bundle
         # mismatched libavdevice majors. Keeping them out of module scope
@@ -385,6 +447,7 @@ class VideoProcessor:
 
                 frame_count = 0
                 for frame in container.decode(video=0):
+                    raw_frames += 1
                     if frame.pts is None:
                         continue
 
@@ -437,46 +500,77 @@ class VideoProcessor:
                                 "extrapolated"
                             ]
 
-                    # First frame: always qualify
-                    if last_hash is None:
+                    # First frame: always kept
+                    if last_kept_hash is None:
                         frame_data["frame_bytes"] = self._frame_to_bytes(pil_img)
-                        last_hash = self._dhash(pil_img)
-                        self.first_hash = last_hash
-                        self.last_hash = last_hash
+                        first_hash = self._dhash(pil_img)
+                        last_kept_hash = first_hash
+                        last_kept_timestamp = timestamp
+                        self.first_hash = first_hash
+                        self.last_hash = first_hash
                         pil_img.close()
 
                         self.qualified_frames.append(frame_data)
+                        dhash_qualified += 1
 
                         logger.debug(f"First frame at {timestamp:.2f}s")
                         continue
 
-                    # Compare current frame with last qualified using dHash
+                    # Decide against the last KEPT frame (single reference).
                     current_hash = self._dhash(pil_img)
-                    distance = bin(last_hash ^ current_hash).count("1")
+                    keep, scene_cut, reason = _winnow_decision(
+                        current_hash,
+                        timestamp,
+                        last_kept_hash,
+                        last_kept_timestamp,
+                        self.DHASH_THRESHOLD,
+                        self.scene_cut_threshold,
+                        self.min_stride_seconds,
+                    )
 
-                    if distance < self.DHASH_THRESHOLD:
-                        # Not enough change - skip this frame
+                    if reason == "below_threshold":
                         pil_img.close()
                         continue
 
-                    # Qualified - convert full frame to bytes
+                    # Passed the dHash gate.
+                    dhash_qualified += 1
+                    if not keep:
+                        stride_dropped += 1
+                        pil_img.close()
+                        continue
+
+                    # Kept: convert full frame to bytes and advance the reference.
                     frame_data["frame_bytes"] = self._frame_to_bytes(pil_img)
                     pil_img.close()
 
                     self.qualified_frames.append(frame_data)
-
-                    # Update cached frame hash
-                    last_hash = current_hash
+                    last_kept_hash = current_hash
+                    last_kept_timestamp = timestamp
                     self.last_hash = current_hash
+                    if scene_cut:
+                        scene_cut_count += 1
 
                     logger.debug(
-                        f"Qualified frame at {timestamp:.2f}s (hamming: {distance})"
+                        f"Qualified frame at {timestamp:.2f}s (reason: {reason})"
                     )
 
                 self.qualified_count = len(self.qualified_frames)
+                self.winnow_metrics = {
+                    "raw": raw_frames,
+                    "dhash_qualified": dhash_qualified,
+                    "scene_cut": scene_cut_count,
+                    "stride_dropped": stride_dropped,
+                    "kept": self.qualified_count,
+                }
                 logger.info(
-                    f"Processed {frame_count} frames from {self.video_path.name}, "
-                    f"{len(self.qualified_frames)} qualified"
+                    "winnowing %s raw=%d dhash_qualified=%d scene_cut=%d "
+                    "stride_dropped=%d kept=%d",
+                    self.video_path.name,
+                    raw_frames,
+                    dhash_qualified,
+                    scene_cut_count,
+                    stride_dropped,
+                    self.qualified_count,
                 )
 
         except av.error.InvalidDataError as e:
@@ -527,7 +621,7 @@ class VideoProcessor:
     def _dhash(self, img: Image.Image) -> int:
         """Compute 64-bit dHash (difference hash) for perceptual comparison."""
         small = img.resize(self.DHASH_SIZE, Image.BILINEAR).convert("L")
-        pixels = list(small.getdata())
+        pixels = list(_flattened_image_data(small))
         hash_val = 0
         for row in range(8):
             for col in range(8):

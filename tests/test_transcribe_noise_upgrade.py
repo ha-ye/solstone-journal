@@ -166,12 +166,12 @@ class TestBackendMetadata:
         model_info = {"model": "medium.en", "device": "cpu", "compute_type": "int8"}
         base_dt = datetime.datetime(2025, 1, 15, 14, 30, 0)
 
-        # Test with whisper backend
+        # Test with parakeet backend
         lines = _statements_to_jsonl(
-            statements, "audio.flac", base_dt, model_info, backend="whisper"
+            statements, "audio.flac", base_dt, model_info, backend="parakeet"
         )
         metadata = json.loads(lines[0])
-        assert metadata["backend"] == "whisper"
+        assert metadata["backend"] == "parakeet"
 
         # Test with revai backend
         lines = _statements_to_jsonl(

@@ -167,6 +167,25 @@ def test_wait_for_convey_ready_convey_died(caplog):
     assert "Convey process exited during startup" in caplog.text
 
 
+def test_register_scheduler_defaults_tolerates_malformed_config(
+    tmp_path, monkeypatch, caplog
+):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(mod.scheduler, "_entries", {})
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    schedules_path = config_dir / "schedules.json"
+    schedules_path.write_bytes(b'{"heartbeat": ')
+    before = schedules_path.read_bytes()
+
+    caplog.set_level("ERROR")
+    mod._register_scheduler_defaults()
+
+    assert "Failed to register scheduler defaults" in caplog.text
+    assert schedules_path.read_bytes() == before
+
+
 # require_solstone branch tests (down/tempfail/up/skip) live with the function in
 # tests/test_think_utils.py::TestSolstoneGuard — they test a utils helper, not
 # supervisor startup, and were a duplicate set here.

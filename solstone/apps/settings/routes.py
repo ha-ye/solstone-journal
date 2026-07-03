@@ -146,16 +146,7 @@ def _compute_runtime_label() -> str:
         return "macOS CoreML helper"
     if os_name != "linux" or arch != "x86_64":
         return "unsupported"
-    try:
-        import onnxruntime
-
-        return (
-            "Linux ONNX (CUDA fp32)"
-            if "CUDAExecutionProvider" in onnxruntime.get_available_providers()
-            else "Linux ONNX (CPU fp32)"
-        )
-    except Exception:
-        return "unsupported"
+    return "Linux parakeet.cpp"
 
 
 def _service_key_validation(config: dict[str, Any]) -> dict[str, Any]:
@@ -174,6 +165,38 @@ def _service_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _project_transcribe_config(transcribe_config: Any) -> dict[str, Any]:
+    """Return the public transcribe config for currently supported backends."""
+    if not isinstance(transcribe_config, dict):
+        return {}
+
+    from solstone.observe.transcribe import BACKEND_METADATA, BACKEND_REGISTRY
+
+    supported_backends = set(BACKEND_REGISTRY)
+    projected: dict[str, Any] = {}
+    for key, value in transcribe_config.items():
+        if key in supported_backends:
+            if not isinstance(value, dict):
+                continue
+            allowed = set(BACKEND_METADATA.get(key, {}).get("settings", []))
+            projected[key] = {
+                nested_key: copy.deepcopy(nested_value)
+                for nested_key, nested_value in value.items()
+                if nested_key in allowed
+            }
+            continue
+
+        # Backend subtrees are dict-shaped. Drop stale removed backend configs
+        # such as the former Whisper subtree while preserving scalar settings.
+        if isinstance(value, dict):
+            continue
+        projected[key] = copy.deepcopy(value)
+
+    if projected.get("backend") not in supported_backends:
+        projected["backend"] = "parakeet"
+    return projected
+
+
 def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     projected = copy.deepcopy(config)
     service_validation = _service_key_validation(config)
@@ -186,6 +209,8 @@ def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     convey_config.pop("secret", None)
     convey_config.pop("password_hash", None)
     convey_config.pop("password", None)
+    if "transcribe" in projected:
+        projected["transcribe"] = _project_transcribe_config(projected["transcribe"])
     projected["runtime_env"] = {k: bool(os.getenv(k)) for k in API_KEY_ENV_VARS}
     return projected
 
@@ -355,6 +380,18 @@ def update_config() -> Any:
 
             # Handle nested backend configs for transcribe section
             if section == "transcribe":
+                if "backend" in data:
+                    from solstone.observe.transcribe import BACKEND_REGISTRY
+
+                    if data["backend"] not in BACKEND_REGISTRY:
+                        valid = ", ".join(sorted(BACKEND_REGISTRY))
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail=(
+                                f"Invalid backend: {data['backend']}. "
+                                f"Must be one of: {valid}"
+                            ),
+                        )
                 for backend_key, allowed_keys in transcribe_nested.items():
                     if backend_key in data and isinstance(data[backend_key], dict):
                         # Ensure nested dict exists
@@ -530,7 +567,7 @@ def get_transcribe() -> Any:
         from solstone.observe.transcribe import get_backend_list
 
         config = get_journal_config()
-        transcribe_config = config.get("transcribe", {})
+        transcribe_config = _project_transcribe_config(config.get("transcribe", {}))
 
         # Get backends list from registry
         backends = get_backend_list()
@@ -561,6 +598,10 @@ def get_transcribe() -> Any:
                 "api_keys": api_keys,
                 "config": transcribe_config,
                 "runtime_label": runtime_label,
+                "parakeet_uses_cpp": (
+                    platform.system().lower() == "linux"
+                    and platform.machine().lower() == "x86_64"
+                ),
                 "resource": resource,
             }
         )

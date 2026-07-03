@@ -18,7 +18,7 @@ def stt_local_floor_bytes() -> int | None:
     machine = platform.machine().lower()
     if system == "darwin" and machine == "arm64":
         return STT_LOCAL_FLOOR_DARWIN_BYTES
-    if system == "linux" and machine in {"x86_64", "aarch64"}:
+    if system == "linux" and machine in {"x86_64", "aarch64", "arm64"}:
         return STT_LOCAL_FLOOR_LINUX_BYTES
     return None
 
@@ -29,10 +29,8 @@ def local_stt_backend() -> str | None:
     machine = platform.machine().lower()
     if system == "darwin" and machine == "arm64":
         return "parakeet"
-    if system == "linux" and machine == "x86_64":
+    if system == "linux" and machine in {"x86_64", "aarch64", "arm64"}:
         return "parakeet"
-    if system == "linux" and machine == "aarch64":
-        return "whisper"
     return None
 
 

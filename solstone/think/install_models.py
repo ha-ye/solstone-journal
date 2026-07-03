@@ -14,7 +14,6 @@ import sys
 import tempfile
 from importlib import resources
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 from solstone.observe.transcribe.main import (
@@ -23,14 +22,11 @@ from solstone.observe.transcribe.main import (
     WESPEAKER_MODEL_PATH,
     WESPEAKER_MODEL_SHA256,
 )
-from solstone.observe.transcribe.parakeet_hints import (
-    PACKAGED_COREML_HINT,
-    PACKAGED_LINUX_PARAKEET_HINT,
-)
+from solstone.observe.transcribe.parakeet_hints import PACKAGED_COREML_HINT
 from solstone.observe.utils import compute_file_sha256
+from solstone.think import parakeet_readiness
 from solstone.think.parakeet_readiness import (
     BACKEND,
-    LINUX_HUB_DIR,
     MODEL_VERSION,
     _cache_dir,
     _check_parakeet_ready,
@@ -38,17 +34,13 @@ from solstone.think.parakeet_readiness import (
     _platform_info,
     _sentinel_path,
     _sentinel_ready,
-    _verify_linux_cache,
     _verify_mac_cache,
     _verify_variant_cache,
 )
 from solstone.think.utils import is_packaged_install
 
-MODEL_ID = "istupakov/parakeet-tdt-0.6b-v3-onnx"
-LINUX_LOAD_MODEL_ID = "nemo-parakeet-tdt-0.6b-v3"
-PARAKEET_ONNX_VARIANT_ENV = "PARAKEET_ONNX_VARIANT"
+JOURNAL_VARIANT_ENV = "JOURNAL_VARIANT"
 HELPER_ENV_KEY = "SOLSTONE_PARAKEET_HELPER"
-LEGACY_NEMO_MODEL_DIR = LINUX_HUB_DIR / "models--nvidia--parakeet-tdt-0.6b-v3"
 
 
 def _now_utc() -> str:
@@ -88,7 +80,11 @@ def _resolve_variant(
     if flag_value in {"cpu", "cuda"}:
         if os_name != "linux":
             raise SystemExit(f"variant {flag_value!r} not supported on {os_name}")
-        if arch != "x86_64":
+        if flag_value == "cpu" and arch not in {"x86_64", "aarch64", "arm64"}:
+            raise SystemExit(
+                f"variant {flag_value!r} not supported on {os_name}/{arch}"
+            )
+        if flag_value == "cuda" and arch != "x86_64":
             raise SystemExit(
                 f"variant {flag_value!r} not supported on {os_name}/{arch}"
             )
@@ -103,13 +99,20 @@ def _resolve_variant(
 
     if os_name == "darwin" and arch == "arm64":
         return "coreml"
-    if os_name == "linux" and arch == "x86_64":
+    if os_name == "linux" and arch in {"x86_64", "aarch64", "arm64"}:
         if env_value:
             if env_value not in {"cpu", "cuda"}:
                 raise SystemExit(
-                    f"invalid {PARAKEET_ONNX_VARIANT_ENV}={env_value!r}; use 'cpu' or 'cuda'"
+                    f"invalid {JOURNAL_VARIANT_ENV}={env_value!r}; use 'cpu' or 'cuda'"
+                )
+            if env_value == "cuda" and arch != "x86_64":
+                raise SystemExit(
+                    f"invalid {JOURNAL_VARIANT_ENV}={env_value!r}; "
+                    f"use 'cpu' on {os_name}/{arch}"
                 )
             return env_value
+        if arch != "x86_64":
+            return "cpu"
         return _detect_linux_variant()
     return None
 
@@ -194,14 +197,6 @@ def _disk_full_message(cache_dir: Path) -> str:
     )
 
 
-def _is_rate_limit_error(exc: Exception) -> bool:
-    response = getattr(exc, "response", None)
-    if getattr(response, "status_code", None) == 429:
-        return True
-    message = str(exc).lower()
-    return "429" in message and "rate" in message and "limit" in message
-
-
 def _verify_bundled_assets() -> None:
     for asset_path, expected_sha256 in (
         (WESPEAKER_MODEL_PATH, WESPEAKER_MODEL_SHA256),
@@ -221,22 +216,6 @@ def _verify_bundled_assets() -> None:
                 f"  expected: {expected_sha256}\n"
                 f"  actual:   {actual_sha256}"
             )
-
-
-def _restore_linux_sentinel_if_cache_ready(
-    os_name: str,
-    arch: str,
-    variant: str,
-    sentinel_path: Path,
-    cache_dir: Path,
-) -> Path | None:
-    if variant not in {"cpu", "cuda"} or not _verify_linux_cache(cache_dir):
-        return None
-    _write_sentinel(
-        sentinel_path,
-        _build_payload(os_name, arch, variant, cache_dir),
-    )
-    return cache_dir
 
 
 def _build_payload(
@@ -260,54 +239,6 @@ def _build_payload(
     if fluidaudio_version is not None:
         payload["fluidaudio_version"] = fluidaudio_version
     return payload
-
-
-def _import_onnx_asr() -> ModuleType | None:
-    try:
-        import onnx_asr
-    except ImportError:
-        if is_packaged_install():
-            print(PACKAGED_LINUX_PARAKEET_HINT, file=sys.stderr)
-            return None
-        raise
-    return onnx_asr
-
-
-def _fetch_linux_model(cache_dir: Path) -> bool:
-    if LEGACY_NEMO_MODEL_DIR.exists():
-        print(
-            "WARNING: legacy NeMo cache detected at "
-            f"{LEGACY_NEMO_MODEL_DIR}; remove it manually if no longer needed: "
-            f"rm -rf {LEGACY_NEMO_MODEL_DIR}"
-        )
-    try:
-        try:
-            from huggingface_hub.utils import HfHubHTTPError
-        except Exception:  # pragma: no cover - older/newer hub versions vary
-            HfHubHTTPError = None
-
-        onnx_asr = _import_onnx_asr()
-        if onnx_asr is None:
-            return False
-
-        model = onnx_asr.load_model(LINUX_LOAD_MODEL_ID, quantization=None)
-        if model is None:
-            raise RuntimeError(
-                "parakeet install failed: onnx-asr.load_model returned no model"
-            )
-        return True
-    except OSError as exc:
-        if exc.errno == errno.ENOSPC:
-            raise RuntimeError(_disk_full_message(cache_dir)) from exc
-        raise
-    except Exception as exc:
-        if (
-            HfHubHTTPError is not None and isinstance(exc, HfHubHTTPError)
-        ) or _is_rate_limit_error(exc):
-            raise RuntimeError(
-                "parakeet install failed: Hugging Face rate limit (HTTP 429); retry in a few minutes"
-            ) from exc
-        raise
 
 
 def _run_mac_helper(cache_dir: Path) -> dict[str, Any] | None:
@@ -368,37 +299,43 @@ def _run_mac_helper(cache_dir: Path) -> dict[str, Any] | None:
     return payload
 
 
-def _install_models(os_name: str, arch: str, variant: str) -> int:
+def _check_linux_cpp_ready() -> dict[str, Path]:
+    from solstone.think.providers import parakeet_install
+
+    return parakeet_readiness.check_parakeet_cpp_files(
+        parakeet_install.cache_root(),
+        parakeet_install.parakeet_server_artifact_key(),
+    )
+
+
+def _install_linux_cpp(*, force: bool = False) -> int:
+    from solstone.think.providers import parakeet_install
+
+    try:
+        if force:
+            parakeet_install.install_parakeet(force=True)
+        else:
+            parakeet_install.install_parakeet()
+        paths = _check_linux_cpp_ready()
+    except Exception as exc:
+        return _fail(f"parakeet install failed: {exc}")
+    print(f"model ready: {paths['model']}")
+    return 0
+
+
+def _install_models(
+    os_name: str,
+    arch: str,
+    variant: str,
+    *,
+    force: bool = False,
+) -> int:
+    if variant in {"cpu", "cuda"}:
+        return _install_linux_cpp(force=force)
+
     sentinel_path = _sentinel_path(variant)
     cache_dir = _cache_dir(variant)
     _remove_sentinel(sentinel_path)
-
-    if variant in {"cpu", "cuda"}:
-        try:
-            fetched = _fetch_linux_model(cache_dir)
-        except RuntimeError as exc:
-            return _fail_with_quarantine(str(exc), cache_dir, sentinel_path)
-        except Exception as exc:
-            return _fail_with_quarantine(
-                f"parakeet install failed: {exc}",
-                cache_dir,
-                sentinel_path,
-            )
-        if not fetched:
-            return 0
-        if not _verify_linux_cache(cache_dir):
-            return _fail_with_quarantine(
-                "parakeet install failed: Linux cache verification failed",
-                cache_dir,
-                sentinel_path,
-            )
-        _write_sentinel(
-            sentinel_path,
-            _build_payload(os_name, arch, variant, cache_dir),
-        )
-        print(f"model ready: {cache_dir}")
-        return 0
-
     try:
         payload = _run_mac_helper(cache_dir)
     except RuntimeError as exc:
@@ -441,9 +378,9 @@ def _install_models(os_name: str, arch: str, variant: str) -> int:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Install and verify solstone's bundled ML models (parakeet ASR plus "
+            "Install and verify solstone's bundled ML models (local STT plus "
             "bundled wespeaker/pyannote assets). Default action checks the "
-            "parakeet sentinel + cache and fetches if missing; --force re-fetches; "
+            "local STT artifacts and fetches if missing; --force re-fetches; "
             "--check verifies only and exits nonzero on any problem."
         )
     )
@@ -451,20 +388,20 @@ def main() -> int:
     mode_group.add_argument(
         "--check",
         action="store_true",
-        help="Verify bundled assets and the parakeet sentinel/cache without fetching.",
+        help="Verify bundled assets and local STT artifacts without fetching.",
     )
     mode_group.add_argument(
         "--force",
         action="store_true",
-        help="Ignore the sentinel and refetch/verify the model cache.",
+        help="Ignore readiness and refetch/verify local STT artifacts.",
     )
     parser.add_argument(
         "--variant",
         choices=("auto", "cpu", "cuda", "coreml"),
         default="auto",
         help=(
-            "Parakeet variant to install or verify. auto honors "
-            "PARAKEET_ONNX_VARIANT on linux/x86_64, then autodetects."
+            "Journal variant to install or verify. auto honors "
+            "JOURNAL_VARIANT on linux/x86_64, then autodetects."
         ),
     )
     args = parser.parse_args()
@@ -472,7 +409,7 @@ def main() -> int:
     os_name, arch = _platform_info()
     variant = _resolve_variant(
         args.variant,
-        os.getenv(PARAKEET_ONNX_VARIANT_ENV),
+        os.getenv(JOURNAL_VARIANT_ENV),
         os_name,
         arch,
     )
@@ -490,24 +427,25 @@ def main() -> int:
         )
         return 0
 
-    if os_name == "linux" and arch == "x86_64" and variant == "cuda":
-        try:
-            import onnxruntime
-
-            providers = onnxruntime.get_available_providers()
-        except Exception:
-            sys.exit(
-                "device=cuda requires CUDAExecutionProvider; rerun: "
-                "PARAKEET_ONNX_VARIANT=cuda make install"
-            )
-        if "CUDAExecutionProvider" not in providers:
-            sys.exit(
-                "device=cuda requires CUDAExecutionProvider; rerun: "
-                "PARAKEET_ONNX_VARIANT=cuda make install"
-            )
+    if variant in {"cpu", "cuda"}:
+        if args.check:
+            try:
+                paths = _check_linux_cpp_ready()
+            except RuntimeError as exc:
+                return _fail(str(exc))
+            print(f"model ready: {paths['model']}")
+            return 0
+        if not args.force:
+            try:
+                paths = _check_linux_cpp_ready()
+            except RuntimeError:
+                pass
+            else:
+                print(f"model ready: {paths['model']}")
+                return 0
+        return _install_models(os_name, arch, variant, force=args.force)
 
     sentinel_path = _sentinel_path(variant)
-    cache_dir = _cache_dir(variant)
     if args.check:
         try:
             ready_cache = _check_parakeet_ready(
@@ -531,18 +469,8 @@ def main() -> int:
         if ready_cache is not None and _verify_variant_cache(variant, ready_cache):
             print(f"model ready: {ready_cache}")
             return 0
-        restored_cache = _restore_linux_sentinel_if_cache_ready(
-            os_name,
-            arch,
-            variant,
-            sentinel_path,
-            cache_dir,
-        )
-        if restored_cache is not None:
-            print(f"model ready: {restored_cache}")
-            return 0
 
-    return _install_models(os_name, arch, variant)
+    return _install_models(os_name, arch, variant, force=args.force)
 
 
 if __name__ == "__main__":

@@ -39,8 +39,10 @@ from solstone.think.change_detection import detect_segment_change, resolve_prede
 from solstone.think.cluster import cluster_segments
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
 from solstone.think.cortex_client import (
+    CortexNotClaimed,
     CortexSpawnUnavailable,
     cortex_request,
+    get_use_log_status,
     read_use_finish_fields,
     read_use_provider_model_reason,
     wait_for_uses,
@@ -147,6 +149,8 @@ class ThinkingJSONLWriter:
 
 _jsonl: ThinkingJSONLWriter | None = None
 SEGMENT_WORKERS_MAX = 32
+# ~10 min wall-clock budget for the journal-stats post-phase
+JOURNAL_STATS_MAX_RUNTIME = 600
 
 
 def _jsonl_log(event: str, **fields) -> None:
@@ -181,6 +185,28 @@ def _provider_model_fields(use_id: str) -> dict[str, str | None]:
     if reason_code:
         fields["reason_code"] = reason_code
     return fields
+
+
+def _classify_timeout_state(use_id: str) -> str:
+    """Classify a timed-out use as ``request_lost`` or ``timeout``.
+
+    On a ``wait_for_uses`` timeout, a use has no durable terminal event —
+    ``_recover_completed_from_disk`` folds any use with a durable finish/error
+    event into ``completed`` before the timeout is reported. So a still-timed-out
+    use's durable log is either absent (the Callosum request was never claimed by
+    cortex — the request was lost) or present-but-non-terminal (the talent genuinely
+    ran past the deadline).
+
+    Returns ``"request_lost"`` when no durable use file exists
+    (``get_use_log_status`` is ``"not_found"``), otherwise ``"timeout"``.
+
+    ``request_lost`` strictly means "no durable claim existed at classification
+    time." A request can rarely be claimed *after* the wait deadline (late bus
+    delivery), producing a ``request_lost`` record followed by a later completion;
+    the terminal-state fold on the summary side reconciles that. The state name is
+    about attributability, not a guarantee the work never ran.
+    """
+    return "request_lost" if get_use_log_status(use_id) == "not_found" else "timeout"
 
 
 def _cache_fields(use_id: str) -> dict[str, bool | int | None]:
@@ -637,6 +663,66 @@ def _log_skip(name: str, reason: str, detail: str, **extra) -> None:
     _jsonl_log("talent.skip", name=name, reason=reason, detail=detail, **extra)
 
 
+def _record_request_lost(
+    name: str,
+    use_id: str,
+    *,
+    mode: str,
+    day: str,
+    segment: str | None = None,
+    stream: str | None = None,
+    facet: str | None = None,
+    activity: str | None = None,
+) -> None:
+    """Record a never-claimed cortex request as an immediate failure."""
+    if activity is not None:
+        emit(
+            "talent_completed",
+            mode=mode,
+            day=day,
+            activity=activity,
+            facet=facet,
+            name=name,
+            use_id=use_id,
+            state="request_lost",
+        )
+        _jsonl_log(
+            "talent.fail",
+            mode=mode,
+            day=day,
+            activity=activity,
+            facet=facet,
+            name=name,
+            use_id=use_id,
+            state="request_lost",
+            **_provider_model_fields(use_id),
+        )
+        return
+
+    emit(
+        "talent_completed",
+        mode=mode,
+        day=day,
+        segment=segment,
+        name=name,
+        use_id=use_id,
+        state="request_lost",
+        **({"facet": facet} if facet else {}),
+    )
+    _jsonl_log(
+        "talent.fail",
+        mode=mode,
+        day=day,
+        segment=segment,
+        name=name,
+        use_id=use_id,
+        state="request_lost",
+        **_provider_model_fields(use_id),
+        **({"stream": stream} if stream else {}),
+        **({"facet": facet} if facet else {}),
+    )
+
+
 def _update_status(**fields) -> None:
     """Update shared status dict (thread-safe)."""
     with _status_lock:
@@ -775,37 +861,30 @@ def check_callosum_available() -> bool:
 
 
 _SKIPPED: object = object()
-_SEND_RETRY_DELAYS = (0.5, 1.0)  # seconds between retries (3 attempts total)
 
 
-def _cortex_request_with_retry(**kwargs) -> str | None:
-    """Call cortex_request with retries on Callosum send failure.
+class _NotClaimed:
+    __slots__ = ("use_id",)
 
-    Retries up to len(_SEND_RETRY_DELAYS) times with short sleeps in between.
-    Returns the use_id on success, or None if all attempts failed.
-    """
+    def __init__(self, use_id: str) -> None:
+        self.use_id = use_id
+
+
+def _dispatch_cortex_request(**kwargs) -> str | None | _NotClaimed:
+    """Call cortex_request and classify dispatch failures for orchestrators."""
     try:
-        use_id = cortex_request(**kwargs)
+        return cortex_request(**kwargs)
     except CortexSpawnUnavailable as exc:
         logging.info("cortex_request unavailable: %s", exc.detail or "unknown")
         return None
-    if use_id is not None:
-        return use_id
-
-    name = kwargs.get("name", "unknown")
-    for i, delay in enumerate(_SEND_RETRY_DELAYS, 1):
-        logging.warning("Retrying cortex request for '%s' (attempt %d)", name, i + 1)
-        time.sleep(delay)
-        try:
-            use_id = cortex_request(**kwargs)
-        except CortexSpawnUnavailable as exc:
-            logging.info("cortex_request unavailable: %s", exc.detail or "unknown")
-            return None
-        if use_id is not None:
-            return use_id
-
-    logging.error("All cortex request attempts failed for '%s'", name)
-    return None
+    except CortexNotClaimed as exc:
+        name = kwargs.get("name", "unknown")
+        logging.warning(
+            "cortex request not claimed for '%s' (use_id=%s)",
+            name,
+            exc.use_id,
+        )
+        return _NotClaimed(exc.use_id)
 
 
 def _drain_priority_batch(
@@ -854,7 +933,8 @@ def _drain_priority_batch(
             )
             timed_facet = next((f for aid, _, _, f in spawned if aid == use_id), None)
             label = f"{timed_name}/{timed_facet}" if timed_facet else timed_name
-            failed_names.append(f"{label} (timeout)")
+            state = _classify_timeout_state(use_id)
+            failed_names.append(f"{label} ({state})")
             emit(
                 "talent_completed",
                 mode=target_schedule,
@@ -862,7 +942,7 @@ def _drain_priority_batch(
                 segment=segment,
                 name=timed_name,
                 use_id=use_id,
-                state="timeout",
+                state=state,
                 **({"facet": timed_facet} if timed_facet else {}),
             )
             _jsonl_log(
@@ -872,7 +952,7 @@ def _drain_priority_batch(
                 segment=segment,
                 name=timed_name,
                 use_id=use_id,
-                state="timeout",
+                state=state,
                 **_provider_model_fields(use_id),
                 **({"stream": stream} if stream else {}),
                 **({"facet": timed_facet} if timed_facet else {}),
@@ -1154,7 +1234,7 @@ def run_segment_sense(
     def _cfg(name: str) -> dict | None:
         return all_prompts.get(name)
 
-    def _dispatch_agent(name: str, config: dict) -> str | None | object:
+    def _dispatch_agent(name: str, config: dict) -> str | None | _NotClaimed | object:
         if name in skip_talents:
             _log_skip(
                 name,
@@ -1197,9 +1277,7 @@ def run_segment_sense(
             if is_generate
             else f"Running scheduled task for {iso_date(day)}: {day_input_summary(day)}."
         )
-        return _cortex_request_with_retry(
-            prompt=prompt, name=name, config=request_config
-        )
+        return _dispatch_cortex_request(prompt=prompt, name=name, config=request_config)
 
     sense_config = _cfg("sense")
     if sense_config is None:
@@ -1318,6 +1396,27 @@ def run_segment_sense(
             duration_ms=duration_ms,
         )
         return (0, 1, ["sense (send)"])
+    if isinstance(sense_agent_id, _NotClaimed):
+        _record_request_lost(
+            "sense",
+            sense_agent_id.use_id,
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            stream=stream,
+        )
+        duration_ms = int((time.time() - start_time) * 1000)
+        emit(
+            "completed",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            success=0,
+            failed=1,
+            failed_names=["sense (request_lost)"],
+            duration_ms=duration_ms,
+        )
+        return (0, 1, ["sense (request_lost)"])
     elif sense_agent_id is not _SKIPPED:
         emit(
             "talent_started",
@@ -1620,6 +1719,19 @@ def run_segment_sense(
             )
             total_failed += 1
             all_failed_names.append(f"{agent_name} (send)")
+            _update_status(agents_completed=total_success + total_failed)
+            continue
+        if isinstance(use_id, _NotClaimed):
+            _record_request_lost(
+                agent_name,
+                use_id.use_id,
+                mode=target_schedule,
+                day=day,
+                segment=segment,
+                stream=stream,
+            )
+            total_failed += 1
+            all_failed_names.append(f"{agent_name} (request_lost)")
             _update_status(agents_completed=total_success + total_failed)
             continue
 
@@ -1955,7 +2067,7 @@ def run_daily_prompts(
                             else f"Processing facet '{facet_name}' for {day_formatted}: {input_summary}. Use get_facet('{facet_name}') to load context."
                         )
 
-                        use_id = _cortex_request_with_retry(
+                        use_id = _dispatch_cortex_request(
                             prompt=prompt,
                             name=prompt_name,
                             config=request_config,
@@ -1972,6 +2084,20 @@ def run_daily_prompts(
                             group_failed += 1
                             all_failed_names.append(
                                 f"{prompt_name}/{facet_name} (send)"
+                            )
+                            continue
+                        if isinstance(use_id, _NotClaimed):
+                            _record_request_lost(
+                                prompt_name,
+                                use_id.use_id,
+                                mode=target_schedule,
+                                day=day,
+                                facet=facet_name,
+                                stream=stream,
+                            )
+                            group_failed += 1
+                            all_failed_names.append(
+                                f"{prompt_name}/{facet_name} (request_lost)"
                             )
                             continue
                         spawned.append((use_id, prompt_name, config, facet_name))
@@ -2072,7 +2198,7 @@ def run_daily_prompts(
                         else f"Running scheduled task for {day_formatted}: {input_summary}."
                     )
 
-                    use_id = _cortex_request_with_retry(
+                    use_id = _dispatch_cortex_request(
                         prompt=prompt,
                         name=prompt_name,
                         config=request_config,
@@ -2087,6 +2213,17 @@ def run_daily_prompts(
                         )
                         group_failed += 1
                         all_failed_names.append(f"{prompt_name} (send)")
+                        continue
+                    if isinstance(use_id, _NotClaimed):
+                        _record_request_lost(
+                            prompt_name,
+                            use_id.use_id,
+                            mode=target_schedule,
+                            day=day,
+                            stream=stream,
+                        )
+                        group_failed += 1
+                        all_failed_names.append(f"{prompt_name} (request_lost)")
                         continue
                     spawned.append((use_id, prompt_name, config, None))
                     emit(
@@ -2367,7 +2504,7 @@ def run_weekly_prompts(
                             )
                         )
 
-                        use_id = _cortex_request_with_retry(
+                        use_id = _dispatch_cortex_request(
                             prompt=prompt,
                             name=prompt_name,
                             config=request_config,
@@ -2384,6 +2521,20 @@ def run_weekly_prompts(
                             group_failed += 1
                             all_failed_names.append(
                                 f"{prompt_name}/{facet_name} (send)"
+                            )
+                            continue
+                        if isinstance(use_id, _NotClaimed):
+                            _record_request_lost(
+                                prompt_name,
+                                use_id.use_id,
+                                mode=target_schedule,
+                                day=day,
+                                facet=facet_name,
+                                stream=stream,
+                            )
+                            group_failed += 1
+                            all_failed_names.append(
+                                f"{prompt_name}/{facet_name} (request_lost)"
                             )
                             continue
                         spawned.append((use_id, prompt_name, config, facet_name))
@@ -2459,7 +2610,7 @@ def run_weekly_prompts(
                         )
                     )
 
-                    use_id = _cortex_request_with_retry(
+                    use_id = _dispatch_cortex_request(
                         prompt=prompt,
                         name=prompt_name,
                         config=request_config,
@@ -2474,6 +2625,17 @@ def run_weekly_prompts(
                         )
                         group_failed += 1
                         all_failed_names.append(f"{prompt_name} (send)")
+                        continue
+                    if isinstance(use_id, _NotClaimed):
+                        _record_request_lost(
+                            prompt_name,
+                            use_id.use_id,
+                            mode=target_schedule,
+                            day=day,
+                            stream=stream,
+                        )
+                        group_failed += 1
+                        all_failed_names.append(f"{prompt_name} (request_lost)")
                         continue
                     spawned.append((use_id, prompt_name, config, None))
                     emit(
@@ -2634,7 +2796,7 @@ def run_cadence_prompts(
         _apply_output_persistence(request_config, config, force_refresh=refresh)
         prompt = "" if is_generate else f"Running cadence task for {iso_date(day)}."
 
-        use_id = _cortex_request_with_retry(
+        use_id = _dispatch_cortex_request(
             prompt=prompt,
             name=name,
             config=request_config,
@@ -2649,6 +2811,17 @@ def run_cadence_prompts(
             )
             total_failed += 1
             failed_names.append(f"{name} (send)")
+            continue
+        if isinstance(use_id, _NotClaimed):
+            _record_request_lost(
+                name,
+                use_id.use_id,
+                mode="cadence",
+                day=day,
+                stream=stream,
+            )
+            total_failed += 1
+            failed_names.append(f"{name} (request_lost)")
             continue
 
         emit("talent_started", mode="cadence", day=day, name=name, use_id=use_id)
@@ -2841,6 +3014,7 @@ def run_activity_prompts(
                     timed_name = next(
                         (n for aid, n, _ in spawned if aid == use_id), "unknown"
                     )
+                    state = _classify_timeout_state(use_id)
                     emit(
                         "talent_completed",
                         mode="activity",
@@ -2849,7 +3023,7 @@ def run_activity_prompts(
                         facet=facet,
                         name=timed_name,
                         use_id=use_id,
-                        state="timeout",
+                        state=state,
                     )
                     _jsonl_log(
                         "talent.fail",
@@ -2859,7 +3033,7 @@ def run_activity_prompts(
                         facet=facet,
                         name=timed_name,
                         use_id=use_id,
-                        state="timeout",
+                        state=state,
                         **_provider_model_fields(use_id),
                     )
 
@@ -2972,7 +3146,7 @@ def run_activity_prompts(
                     else f"Processing activity '{activity_id}' ({activity_type}) in facet '{facet}' for {day_formatted}."
                 )
 
-                use_id = _cortex_request_with_retry(
+                use_id = _dispatch_cortex_request(
                     prompt=prompt,
                     name=prompt_name,
                     config=request_config,
@@ -2982,6 +3156,17 @@ def run_activity_prompts(
                         prompt_name,
                         "send_failed",
                         f"All cortex request attempts failed for {prompt_name}",
+                        mode="activity",
+                        day=day,
+                        activity=activity_id,
+                        facet=facet,
+                    )
+                    total_failed += 1
+                    continue
+                if isinstance(use_id, _NotClaimed):
+                    _record_request_lost(
+                        prompt_name,
+                        use_id.use_id,
                         mode="activity",
                         day=day,
                         activity=activity_id,
@@ -3162,7 +3347,7 @@ def run_flush_prompts(
             if is_generate:
                 request_config["output"] = config.get("output", "md")
 
-            use_id = _cortex_request_with_retry(
+            use_id = _dispatch_cortex_request(
                 prompt="",
                 name=prompt_name,
                 config=request_config,
@@ -3172,6 +3357,16 @@ def run_flush_prompts(
                     prompt_name,
                     "send_failed",
                     f"All cortex request attempts failed for {prompt_name}",
+                    mode="flush",
+                    day=day,
+                    segment=segment,
+                )
+                total_failed += 1
+                continue
+            if isinstance(use_id, _NotClaimed):
+                _record_request_lost(
+                    prompt_name,
+                    use_id.use_id,
                     mode="flush",
                     day=day,
                     segment=segment,
@@ -3213,6 +3408,7 @@ def run_flush_prompts(
                 timed_name = next(
                     (n for aid, n, _ in spawned if aid == use_id), "unknown"
                 )
+                state = _classify_timeout_state(use_id)
                 _jsonl_log(
                     "talent.fail",
                     mode="flush",
@@ -3220,7 +3416,7 @@ def run_flush_prompts(
                     segment=segment,
                     name=timed_name,
                     use_id=use_id,
-                    state="timeout",
+                    state=state,
                     **_provider_model_fields(use_id),
                 )
 
@@ -4131,17 +4327,31 @@ def main() -> None:
             day_log(day, f"starting: {' '.join(cmd)}")
             _jsonl_log("phase.start", mode=_run_mode, day=day, phase="sense_repair")
             _phase_start = time.time()
-            phase_ok = run_command(cmd, day)
-            _jsonl_log(
-                "phase.complete",
-                mode=_run_mode,
-                day=day,
-                phase="sense_repair",
-                success=phase_ok,
-                duration_ms=int((time.time() - _phase_start) * 1000),
+            phase_ok, phase_timed_out = run_bounded_phase(
+                cmd, day, DEFAULT_TASK_MAX_RUNTIME
             )
+            phase_complete = {
+                "mode": _run_mode,
+                "day": day,
+                "phase": "sense_repair",
+                "success": phase_ok,
+                "duration_ms": int((time.time() - _phase_start) * 1000),
+            }
+            if phase_timed_out:
+                phase_complete.update(
+                    reason_code="wall_clock_exceeded",
+                    timeout_seconds=DEFAULT_TASK_MAX_RUNTIME,
+                    bounded=True,
+                )
+            _jsonl_log("phase.complete", **phase_complete)
             if not phase_ok:
-                logging.warning("Sense repair failed, continuing anyway")
+                if phase_timed_out:
+                    logging.warning(
+                        "Sense repair exceeded its %ss budget, continuing anyway",
+                        DEFAULT_TASK_MAX_RUNTIME,
+                    )
+                else:
+                    logging.warning("Sense repair failed, continuing anyway")
 
         # PRE-PHASE: Run segment-think batch repair (daily only)
         if not args.segment:
@@ -4250,15 +4460,31 @@ def main() -> None:
                 stats_cmd.append("--verbose")
             _jsonl_log("phase.start", mode=_run_mode, day=day, phase="journal_stats")
             _phase_start = time.time()
-            stats_ok = run_command(stats_cmd, day)
-            _jsonl_log(
-                "phase.complete",
-                mode=_run_mode,
-                day=day,
-                phase="journal_stats",
-                success=stats_ok,
-                duration_ms=int((time.time() - _phase_start) * 1000),
+            stats_ok, stats_timed_out = run_bounded_phase(
+                stats_cmd, day, JOURNAL_STATS_MAX_RUNTIME
             )
+            phase_complete = {
+                "mode": _run_mode,
+                "day": day,
+                "phase": "journal_stats",
+                "success": stats_ok,
+                "duration_ms": int((time.time() - _phase_start) * 1000),
+            }
+            if stats_timed_out:
+                phase_complete.update(
+                    reason_code="wall_clock_exceeded",
+                    timeout_seconds=JOURNAL_STATS_MAX_RUNTIME,
+                    bounded=True,
+                )
+            _jsonl_log("phase.complete", **phase_complete)
+            if not stats_ok:
+                if stats_timed_out:
+                    logging.warning(
+                        "Journal stats exceeded its %ss budget, continuing anyway",
+                        JOURNAL_STATS_MAX_RUNTIME,
+                    )
+                else:
+                    logging.warning("Journal stats failed, continuing anyway")
 
             # Check storage health and emit warnings
             try:
@@ -4287,7 +4513,6 @@ def main() -> None:
                         "show",
                         title="Storage Warning",
                         message=storage_warnings[0]["message"],
-                        icon="💾",
                         action="/app/settings#storage",
                     )
             except Exception:

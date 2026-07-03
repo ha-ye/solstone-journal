@@ -715,22 +715,25 @@ def test_serve_audio_sets_flac_mimetype(speakers_env, monkeypatch):
         assert response.mimetype == "audio/flac"
 
 
-def test_serve_audio_path_traversal_returns_non_200(speakers_env, monkeypatch):
-    """Requests that escape the journal day dir get a non-200 response."""
+def test_serve_audio_path_traversal_is_forbidden(speakers_env, monkeypatch):
+    """A rel_path resolving to a real file outside the day dir is refused 403."""
     from solstone.apps.speakers.routes import speakers_bp
     from solstone.convey import state
 
     env = speakers_env()
     monkeypatch.setattr(state, "journal_root", str(env.journal / "chronicle"))
+    chronicle = env.journal / "chronicle"
+    (chronicle / "20240101").mkdir(parents=True, exist_ok=True)
+    # Real file OUTSIDE the day dir, reachable via ../ from it.
+    (chronicle / "leak.flac").write_bytes(b"secret")
 
     app = Flask(__name__)
     app.register_blueprint(speakers_bp)
 
     with app.test_client() as client:
-        response = client.get(
-            "/app/speakers/api/serve_audio/20240101/../../../etc/passwd"
-        )
-        assert response.status_code != 200
+        response = client.get("/app/speakers/api/serve_audio/20240101/../leak.flac")
+        assert response.status_code == 403
+        assert response.get_json()["reason_code"] == "invalid_path"
 
 
 def test_serve_audio_malformed_day_returns_404(speakers_env, monkeypatch):
@@ -747,6 +750,112 @@ def test_serve_audio_malformed_day_returns_404(speakers_env, monkeypatch):
     with app.test_client() as client:
         response = client.get("/app/speakers/api/serve_audio/notadate/foo")
         assert response.status_code == 404
+
+
+def test_confirm_attribution_rejects_escaping_stream(speakers_env):
+    """Confirm attribution rejects stream traversal before creating directories."""
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        response = client.post(
+            "/app/speakers/api/confirm-attribution",
+            json={
+                "day": "20240101",
+                "stream": "../../outside",
+                "segment_key": "143022_300",
+                "source": "mic_audio",
+                "sentence_id": 0,
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_segment_or_stream"
+    assert not (env.journal / "outside").exists()
+
+
+def test_correct_attribution_rejects_escaping_segment(speakers_env):
+    """Correct attribution rejects segment traversal before creating directories."""
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        response = client.post(
+            "/app/speakers/api/correct-attribution",
+            json={
+                "day": "20240101",
+                "stream": "test",
+                "segment_key": "143022_300/../../../outside",
+                "source": "mic_audio",
+                "sentence_id": 0,
+                "new_speaker": "alice_test",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_segment_or_stream"
+    assert not (env.journal / "outside").exists()
+
+
+def test_assign_attribution_rejects_escaping_stream(speakers_env):
+    """Assign attribution rejects stream traversal before creating directories."""
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        response = client.post(
+            "/app/speakers/api/assign-attribution",
+            json={
+                "day": "20240101",
+                "stream": "../../outside",
+                "segment_key": "143022_300",
+                "source": "mic_audio",
+                "sentence_id": 0,
+                "speaker": "alice_test",
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_segment_or_stream"
+    assert not (env.journal / "outside").exists()
+
+
+def test_attribute_segment_rejects_escaping_segment(speakers_env):
+    """Attribute segment rejects segment traversal before creating directories."""
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        response = client.post(
+            "/app/speakers/api/attribute-segment",
+            json={
+                "day": "20240101",
+                "stream": "test",
+                "segment": "../../outside",
+            },
+        )
+
+    # Pre-validation guards both the attribute_segment and direct get_segment_path
+    # mkdir sinks.
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_segment_or_stream"
+    assert not (env.journal / "outside").exists()
 
 
 def test_get_journal_principal(speakers_env):

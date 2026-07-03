@@ -854,6 +854,23 @@ def _resolve_temporal(
     return None, None  # unreachable
 
 
+def _quote_term(word: str) -> str:
+    """Phrase-quote a bare term carrying an apostrophe so it is FTS5-valid.
+
+    Plain alphanumeric terms and bareword operators pass through untouched. A
+    trailing ``*`` wildcard stays OUTSIDE the quotes (``O'Bri*`` -> ``"O'Bri"*``)
+    so it still prefix-matches; a wildcard buried inside the quotes matches
+    nothing. The FTS5 default tokenizer splits on the apostrophe, so ``it's``
+    indexes as ``[it, s]`` and the ``"it's"`` phrase matches it.
+    """
+    if word in ("AND", "OR", "NOT"):
+        return word
+    base, star = (word[:-1], "*") if word.endswith("*") else (word, "")
+    if "'" in base:
+        return f'"{base}"{star}'
+    return word
+
+
 def sanitize_fts_query(
     query: str, reference_date: datetime | None = None
 ) -> tuple[str, str | None, str | None]:
@@ -882,10 +899,18 @@ def sanitize_fts_query(
     words = result.split()
     has_operators = any(word in ("AND", "OR", "NOT") for word in words)
     has_quotes = '"' in result
-    if len(words) > 1 and not has_operators and not has_quotes:
-        near_terms = " ".join(words)
-        and_terms = " AND ".join(words)
+    # Balanced user quotes pass through untouched — never re-quote them.
+    if has_quotes:
+        return result, day_from, day_to
+    # No user quotes present: phrase-quote each bare term so apostrophes are
+    # FTS5-valid. has_operators/has_quotes were computed on the pre-quoted words.
+    quoted = [_quote_term(word) for word in words]
+    if len(words) > 1 and not has_operators:
+        near_terms = " ".join(quoted)
+        and_terms = " AND ".join(quoted)
         result = f"NEAR({near_terms}, 10) OR ({and_terms})"
+    else:
+        result = " ".join(quoted)
     return result, day_from, day_to
 
 
@@ -922,7 +947,8 @@ def _build_where_clause(
     if query:
         sanitized, extracted_from, extracted_to = sanitize_fts_query(query)
         if sanitized:
-            where_clause = f"chunks MATCH '{sanitized}'"
+            where_clause = "chunks MATCH ?"
+            params.append(sanitized)
         else:
             where_clause = "1=1"
     else:

@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 STALE_PENDING_RECIPE = "stale_pending_segment_reprocess"
 _SEVEN_DAYS_MS = 7 * 86_400_000
+_THIRTY_DAYS_MS = 30 * 86_400_000
 
 # Closed set of summary actions the convey widget can map to an affordance.
 # CPO-named contract (S3); VPE proposes the initial values. Keep it closed so the
@@ -113,6 +115,75 @@ def load_latest_pass_event() -> dict | None:
         if row.get("event") == "pass":
             return row
     return None
+
+
+def prune_steward_log() -> None:
+    # Serialization: retained lines re-emitted verbatim in original order; only >=30d-old rows and JSON-undecodable lines are removed. Self-acquires .steward.lock so it mutually excludes the render.failed appender; the heartbeat "pass" append happens-before this call and is single-flighted by heartbeat.pid, so no append is lost.
+    path = _steward_log_path()
+    fd = acquire_steward_lock()
+    if fd is None:
+        return
+    try:
+        try:
+            cutoff = now_ms() - _THIRTY_DAYS_MS
+            kept: list[str] = []
+            aged = 0
+            malformed = 0
+            try:
+                with path.open(encoding="utf-8") as handle:
+                    for raw_line in handle:
+                        line = raw_line.rstrip("\n")
+                        stripped = line.strip()
+                        if not stripped:
+                            kept.append(line)
+                            continue
+                        try:
+                            row = json.loads(stripped)
+                        except json.JSONDecodeError:
+                            malformed += 1
+                            continue
+                        if isinstance(row, dict):
+                            ts_raw = row.get("ts")
+                            if ts_raw is not None:
+                                try:
+                                    ts = int(ts_raw)
+                                except (TypeError, ValueError):
+                                    pass
+                                else:
+                                    if ts < cutoff:
+                                        aged += 1
+                                        continue
+                        kept.append(line)
+            except FileNotFoundError:
+                return
+
+            dropped = aged + malformed
+            if dropped == 0:
+                return
+
+            logger.info(
+                "steward: pruned %d stale row(s), dropped %d malformed line(s) from steward.log",
+                aged,
+                malformed,
+            )
+            new_text = "".join(k + "\n" for k in kept)
+            health_dir = path.parent
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                dir=health_dir, prefix=".steward_", suffix=".tmp"
+            )
+            tmp_file = Path(tmp_path)
+            try:
+                with open(tmp_fd, "w", encoding="utf-8") as handle:
+                    handle.write(new_text)
+                tmp_file.replace(path)
+            except BaseException:
+                tmp_file.unlink(missing_ok=True)
+                raise
+        except Exception:
+            logger.warning("steward: log prune failed", exc_info=True)
+            return
+    finally:
+        release_steward_lock(fd)
 
 
 def _normalize_recipe_outcome(outcome: Any) -> str | None:
@@ -405,10 +476,12 @@ def _attention_bullets(
 
     failures = [a for a in anomalies if a.get("kind") == "talent_failure"]
     if failures:
-        n = int((pd.get("talents") or {}).get("failed", len(failures)))
+        n = int((pd.get("talents") or {}).get("outstanding_failed", len(failures)))
         names = [str(a.get("name")) for a in failures if a.get("name")]
         verb = (
-            "timed out"
+            "couldn't start"
+            if all(a.get("state") == "request_lost" for a in failures)
+            else "timed out"
             if all(a.get("state") == "timeout" for a in failures)
             else "failed"
         )
@@ -424,7 +497,7 @@ def _attention_bullets(
             "journal data. Facet newsletters may be missing."
         )
 
-    seg = next((a for a in anomalies if a.get("kind") == "segment_runs_missing"), None)
+    seg = next((a for a in anomalies if a.get("kind") == "segments_not_thought"), None)
     if seg is not None:
         if seg.get("error"):
             bullets.append(

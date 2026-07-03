@@ -16,7 +16,7 @@ Decision log:
   be diagnosed.
 - disk threshold: 10 GiB — measured `.venv`=7.88 GiB +
   uv-cache first-install growth ~1 GiB + buffer.
-- Feature-extras checks (pdf, whisper) are dynamically registered from
+- Feature-extras checks are dynamically registered from
   `solstone.think.features.FEATURES`, severity advisory, never affect
   exit code. Filter via `--feature <name>`.
 """
@@ -115,12 +115,18 @@ SERVICE_RUNNING_CHECK = Check("service_running", "blocker", ("linux", "darwin"))
 LAUNCHD_STALE_PLIST_CHECK = Check("launchd_stale_plist", "advisory", ("darwin",))
 JOURNAL_SYNC_CHECK = Check("journal_sync", "blocker", ("linux", "darwin"))
 DEFAULT_STT_READY_CHECK = Check("default_stt_ready", "advisory", ("linux", "darwin"))
-_DEFAULT_STT_RUNTIME_FIX = (
-    "parakeet runtime (onnx-asr) is not installed — reinstall to add it: "
-    "uv tool install --reinstall solstone"
+PARAKEET_CPP_STT_READY_CHECK = Check(
+    "parakeet_cpp_stt_ready", "advisory", ("linux", "darwin")
 )
-_DEFAULT_STT_MODEL_FIX = (
-    "parakeet model is not downloaded — fetch it with: journal install-models"
+_PARAKEET_CPP_INSTALL_FIX = (
+    "parakeet-cpp artifacts are not installed — fetch them with: "
+    "journal install-provider parakeet"
+)
+_PARAKEET_CPP_START_FIX = (
+    "parakeet-server is not reachable — start the journal service: journal start"
+)
+_COREML_MODEL_FIX = (
+    "CoreML parakeet model is not downloaded — fetch it with: journal install-models"
 )
 JOURNAL_CAUGHT_UP_CHECK = Check("journal_caught_up", "advisory", ("linux", "darwin"))
 TASK_PACE_CHECK = Check("task_pace", "advisory", ("linux", "darwin"))
@@ -743,6 +749,35 @@ def _resolve_configured_backend() -> str | None:
     return backend if isinstance(backend, str) else None
 
 
+def _parakeet_cpp_ready_result(check: Check) -> CheckResult:
+    os_name, arch = parakeet_readiness._platform_info()
+    if os_name != "linux":
+        return make_result(check, "skip", "parakeet-cpp is only supported on Linux")
+    path_text, _source = get_journal_info()
+    cache_root = parakeet_readiness.parakeet_cpp_cache_root(Path(path_text))
+    try:
+        artifact_key = parakeet_readiness.parakeet_cpp_artifact_key(os_name, arch)
+    except RuntimeError as exc:
+        return make_result(check, "warn", str(exc), _PARAKEET_CPP_INSTALL_FIX)
+    try:
+        parakeet_readiness.check_parakeet_cpp_files(cache_root, artifact_key)
+    except RuntimeError as exc:
+        return make_result(check, "warn", str(exc), _PARAKEET_CPP_INSTALL_FIX)
+    from solstone.think.providers import parakeet_server
+
+    state, error = parakeet_server.probe_state()
+    if state != parakeet_server.STATE_READY:
+        return make_result(
+            check,
+            "warn",
+            f"parakeet-server not reachable: {error}",
+            _PARAKEET_CPP_START_FIX,
+        )
+    return make_result(
+        check, "ok", "parakeet-cpp ready (binaries + model installed, server reachable)"
+    )
+
+
 def default_stt_ready_check(args: Args) -> CheckResult:
     del args
     check = DEFAULT_STT_READY_CHECK
@@ -755,28 +790,32 @@ def default_stt_ready_check(args: Args) -> CheckResult:
         )
 
     os_name, arch = parakeet_readiness._platform_info()
-    if (os_name, arch) not in {("linux", "x86_64"), ("darwin", "arm64")}:
-        return make_result(check, "skip", "parakeet not supported on this platform")
+    if os_name == "linux" and arch == "x86_64":
+        return _parakeet_cpp_ready_result(check)
+    if os_name == "darwin" and arch == "arm64":
+        try:
+            ready_cache = parakeet_readiness._check_parakeet_ready(
+                os_name,
+                arch,
+                "coreml",
+                parakeet_readiness._sentinel_path("coreml"),
+            )
+        except RuntimeError as exc:
+            return make_result(check, "warn", str(exc), _COREML_MODEL_FIX)
+        return make_result(check, "ok", f"parakeet model ready at {ready_cache}")
+    return make_result(check, "skip", "parakeet not supported on this platform")
 
-    variant = "cpu" if os_name == "linux" else "coreml"
-    if os_name == "linux" and importlib.util.find_spec("onnx_asr") is None:
+
+def parakeet_cpp_stt_ready_check(args: Args) -> CheckResult:
+    del args
+    check = PARAKEET_CPP_STT_READY_CHECK
+    if _resolve_configured_backend() != "parakeet-cpp":
         return make_result(
             check,
-            "warn",
-            "onnx-asr runtime not installed",
-            _DEFAULT_STT_RUNTIME_FIX,
+            "skip",
+            "configured backend is not parakeet-cpp; check not applicable",
         )
-
-    try:
-        ready_cache = parakeet_readiness._check_parakeet_ready(
-            os_name,
-            arch,
-            variant,
-            parakeet_readiness._sentinel_path(variant),
-        )
-    except RuntimeError as exc:
-        return make_result(check, "warn", str(exc), _DEFAULT_STT_MODEL_FIX)
-    return make_result(check, "ok", f"parakeet model ready at {ready_cache}")
+    return _parakeet_cpp_ready_result(check)
 
 
 def _make_feature_check(
@@ -825,6 +864,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="journal")),
     (LAUNCHD_STALE_PLIST_CHECK, launchd_stale_plist_check),
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),
+    (PARAKEET_CPP_STT_READY_CHECK, parakeet_cpp_stt_ready_check),
     (SKILL_STATE_CHECK, skill_state_check),
     *FEATURE_CHECKS.values(),
 ]
@@ -842,6 +882,7 @@ JOURNAL_READINESS_CHECKS: list[tuple[Check, Runner]] = [
     (HOST_DEPENDENCIES_CHECK, host_dependencies_check),
     *READINESS_CHECKS,
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),
+    (PARAKEET_CPP_STT_READY_CHECK, parakeet_cpp_stt_ready_check),
     *FEATURE_CHECKS.values(),
 ]
 

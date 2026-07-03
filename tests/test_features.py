@@ -2,7 +2,6 @@
 # Copyright (c) 2026 sol pbc
 
 import dataclasses
-import importlib.util
 
 import pytest
 
@@ -33,7 +32,6 @@ def test_feature_is_frozen():
 
 def test_features_registry_contents():
     assert "pdf" in FEATURES
-    assert "whisper" in FEATURES
 
     for feature in FEATURES.values():
         assert isinstance(feature.name, str)
@@ -47,12 +45,6 @@ def test_features_registry_contents():
 
 def test_is_available_true_for_pdf():
     assert is_available("pdf") is True
-
-
-def test_is_available_reflects_whisper_installation():
-    assert is_available("whisper") is (
-        importlib.util.find_spec("faster_whisper") is not None
-    )
 
 
 def test_is_available_false_for_missing_module(monkeypatch):
@@ -91,14 +83,6 @@ def test_install_hint_pdf_darwin():
         install_hint("pdf", "darwin")
         == "pip install 'solstone[pdf]' and brew install pango poppler"
     )
-
-
-def test_install_hint_whisper_linux():
-    assert install_hint("whisper", "linux") == "pip install 'solstone[whisper]'"
-
-
-def test_install_hint_whisper_darwin():
-    assert install_hint("whisper", "darwin") == "pip install 'solstone[whisper]'"
 
 
 def test_install_hint_unknown_raises_keyerror():
