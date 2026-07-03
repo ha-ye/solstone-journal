@@ -38,7 +38,6 @@ from solstone.think.entities import (
     load_observations,
     load_recent_entity_names,
     observations_file_path,
-    parse_knowledge_graph_entities,
     rename_entity_memory,
     resolve_entity,
     save_detected_entity,
@@ -2144,70 +2143,6 @@ def test_load_detected_entities_recent_first_word_exclusion(
 
     assert "Sarah" not in names  # First word excluded
     assert "Charlie Brown" in names  # Not matched, included
-
-
-# Tests for parse_knowledge_graph_entities
-
-
-def test_parse_knowledge_graph_entities(tmp_path, monkeypatch):
-    """Test parsing entity names from knowledge graph markdown."""
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-
-    # Create a knowledge graph file
-    day_dir = tmp_path / "chronicle" / "20260108" / "talents"
-    day_dir.mkdir(parents=True)
-
-    kg_content = """# Knowledge Graph Report
-
-## 1. Entity Extraction
-
-### People
-| Entity Name | Type | First Appearance |
-| :--- | :--- | :--- |
-| **Alice Johnson** | Person | 09:00 |
-| **Bob Smith** | Person | 10:00 |
-
-### Projects
-| Entity Name | Type | First Appearance |
-| :--- | :--- | :--- |
-| **Project Alpha** | Project | 11:00 |
-
-## 2. Relationship Mapping
-
-| Source Name | Target Name | Relationship Type |
-| :--- | :--- | :--- |
-| **Alice Johnson** | **Project Alpha** | `works-on` |
-| **Bob Smith** | **Alice Johnson** | `collaborates-with` |
-"""
-    (day_dir / "knowledge_graph.md").write_text(kg_content)
-
-    # Parse entities
-    entities = parse_knowledge_graph_entities("20260108")
-
-    assert "Alice Johnson" in entities
-    assert "Bob Smith" in entities
-    assert "Project Alpha" in entities
-    assert len(entities) == 3  # Unique names only
-
-
-def test_parse_knowledge_graph_entities_missing_file(tmp_path, monkeypatch):
-    """Test parsing returns empty list when KG doesn't exist."""
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-
-    entities = parse_knowledge_graph_entities("20260108")
-    assert entities == []
-
-
-def test_parse_knowledge_graph_entities_empty_file(tmp_path, monkeypatch):
-    """Test parsing returns empty list for empty KG."""
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-
-    day_dir = tmp_path / "chronicle" / "20260108" / "talents"
-    day_dir.mkdir(parents=True)
-    (day_dir / "knowledge_graph.md").write_text("")
-
-    entities = parse_knowledge_graph_entities("20260108")
-    assert entities == []
 
 
 # Tests for touch_entities_from_activity

@@ -5,7 +5,6 @@
 
 This module handles:
 - Updating last_seen timestamps on entities
-- Parsing knowledge graph for entity names
 - Loading detected entities with aggregation
 """
 
@@ -18,7 +17,7 @@ from solstone.think.entities.core import EntityDict
 from solstone.think.entities.loading import load_entities, parse_entity_file
 from solstone.think.entities.matching import find_matching_entity
 from solstone.think.entities.saving import save_entities
-from solstone.think.utils import day_path, get_journal
+from solstone.think.utils import get_journal
 
 
 def touch_entity(facet: str, name: str, day: str) -> str:
@@ -61,61 +60,6 @@ def touch_entity(facet: str, name: str, day: str) -> str:
             return "skipped"
 
     return "not_found"
-
-
-def parse_knowledge_graph_entities(day: str) -> list[str]:
-    """Parse entity names from a day's knowledge graph.
-
-    Extracts entity names from markdown tables in the knowledge graph output.
-    Entity names appear in bold (**Name**) in the first column of tables.
-
-    Args:
-        day: Day string in YYYYMMDD format
-
-    Returns:
-        List of unique entity names found in the knowledge graph.
-        Returns empty list if KG doesn't exist or can't be parsed.
-
-    Example:
-        >>> parse_knowledge_graph_entities("20260108")
-        ["Jeremie Miller (Jer)", "Neal Satterfield", "Flightline", ...]
-    """
-    kg_path = day_path(day, create=False) / "talents" / "knowledge_graph.md"
-
-    if not kg_path.exists():
-        return []
-
-    try:
-        content = kg_path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
-
-    # Extract bold names from first column of markdown tables
-    # Pattern matches: | **Name** | ... (first column of table rows)
-    # Also matches relationship mapping tables: | **Name** | **Target** | ...
-    entity_names: set[str] = set()
-
-    # Match table rows with bold text in first or second column
-    # Format: | **Entity Name** | Type | ... or | **Source** | **Target** | ...
-    table_row_pattern = re.compile(r"^\|\s*\*\*(.+?)\*\*\s*\|", re.MULTILINE)
-
-    for match in table_row_pattern.finditer(content):
-        name = match.group(1).strip()
-        if name:
-            entity_names.add(name)
-
-    # Also extract targets from relationship mapping (second column)
-    # Format: | **Source** | **Target** | Relationship | ...
-    relationship_pattern = re.compile(
-        r"^\|\s*\*\*.+?\*\*\s*\|\s*\*\*(.+?)\*\*\s*\|", re.MULTILINE
-    )
-
-    for match in relationship_pattern.finditer(content):
-        name = match.group(1).strip()
-        if name:
-            entity_names.add(name)
-
-    return list(entity_names)
 
 
 def touch_entities_from_activity(

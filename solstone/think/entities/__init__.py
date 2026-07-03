@@ -26,7 +26,6 @@ This package is organized into focused modules:
 from solstone.think.entities.activity import (
     iter_detected_entity_names_since,
     load_detected_entities_recent,
-    parse_knowledge_graph_entities,
     touch_entities_from_activity,
     touch_entity,
 )
@@ -214,7 +213,6 @@ __all__ = [
     # Activity
     "iter_detected_entity_names_since",
     "load_detected_entities_recent",
-    "parse_knowledge_graph_entities",
     "touch_entities_from_activity",
     "touch_entity",
     # Observations

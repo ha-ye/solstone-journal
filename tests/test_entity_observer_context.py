@@ -190,11 +190,6 @@ def test_assemble_observer_context_deep_segment_context(tmp_path, monkeypatch):
             }
         ],
     )
-    _write_text(
-        tmp_path / "chronicle" / day / "talents" / "knowledge_graph.md",
-        "UNIQUE_KG_SENTINEL_DAY_DUMP",
-    )
-
     result = entity_context.assemble_observer_context(facet, day)
 
     assert "Alice Johnson" in result
@@ -206,7 +201,6 @@ def test_assemble_observer_context_deep_segment_context(tmp_path, monkeypatch):
     assert "Alice Johnson transcript line 1" in result
     assert "Alice Johnson transcript line 12" in result
     assert "Alice Johnson transcript line 13" not in result
-    assert "UNIQUE_KG_SENTINEL_DAY_DUMP" not in result
     assert "Bob unrelated sense context should not appear." not in result
     assert "Bob unrelated transcript should not appear." not in result
 
@@ -371,7 +365,7 @@ def test_assemble_observer_context_budget_ceiling(tmp_path, monkeypatch):
         assert "".join(forbidden) not in source
 
 
-def test_assemble_observer_context_search_and_kg_levers(tmp_path, monkeypatch):
+def test_assemble_observer_context_search_lever(tmp_path, monkeypatch):
     _set_journal(monkeypatch, str(tmp_path))
     facet = "work"
     day = "20260405"
@@ -392,20 +386,7 @@ def test_assemble_observer_context_search_and_kg_levers(tmp_path, monkeypatch):
         ],
     )
 
-    calls = []
-
     def fake_search(query: str, **kwargs) -> tuple[int, list[dict]]:
-        calls.append((query, kwargs))
-        if kwargs.get("agent") == "knowledge_graph":
-            return 1, [
-                {
-                    "text": "KG chunk says Alice owns integration architecture.",
-                    "metadata": {
-                        "agent": "knowledge_graph",
-                        "path": f"{day}/talents/knowledge_graph.md",
-                    },
-                }
-            ]
         return 3, [
             {
                 "text": "Deduped segment evidence should not show.",
@@ -429,11 +410,9 @@ def test_assemble_observer_context_search_and_kg_levers(tmp_path, monkeypatch):
     result = entity_context.assemble_observer_context(facet, day)
 
     assert "Related journal evidence says Alice owns partner APIs." in result
-    assert "KG chunk says Alice owns integration architecture." in result
     assert "Deduped segment evidence should not show." not in result
     assert "Chat noise should not show." not in result
     assert entity_context.THIN_SOURCE_MARKER not in result
-    assert any(call[1].get("agent") == "knowledge_graph" for call in calls)
 
 
 def test_assemble_observer_context_no_active_entities(tmp_path, monkeypatch):
