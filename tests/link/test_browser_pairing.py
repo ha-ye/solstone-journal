@@ -101,6 +101,19 @@ async def test_browser_pairing_registers_observer_and_returns_attestation(
     )
     assert _b64u_decode(signed_identity["pkH_spki"]) == home_key.public_spki_der
     assert signed_identity["instance_id"] == state.instance_id
+    # msg2 must carry the CA public SPKI so a browser holding only the 0x06 link's
+    # 16-byte ca_fp_spki pin can verify the signature above. The transmitted key
+    # must equal the CA's SPKI DER and hash to the link pin.
+    ca_spki = _b64u_decode(signed_identity["ca_spki"])
+    assert ca_spki == ca.public_spki_der()
+    assert _sha256(ca_spki)[:16] == bytes.fromhex(ca.spki_fingerprint_sha256())[:16]
+    # And the signature must verify using only the transmitted ca_spki (what the
+    # extension actually does — it never has the CA cert, only this SPKI).
+    serialization.load_der_public_key(ca_spki).verify(
+        sig_der,
+        PAIR_LABEL + home_key.public_spki_der + uuid_bytes(state.instance_id),
+        ec.ECDSA(hashes.SHA256()),
+    )
 
     entry = AuthorizedClients(authorized_clients_path()).get(
         "sha256:" + _sha256(ext_spki).hex()

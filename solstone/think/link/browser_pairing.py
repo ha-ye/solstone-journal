@@ -68,6 +68,7 @@ async def register_browser(
             _json_bytes(
                 {
                     "pkH_spki": _b64u(upload_key.public_spki_der),
+                    "ca_spki": _b64u(ca.public_spki_der()),
                     "instance_id": state.instance_id,
                     "sig": _b64u(sig_raw),
                 }

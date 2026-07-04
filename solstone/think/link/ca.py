@@ -52,13 +52,21 @@ class LoadedCa:
         """SHA-256 of the CA cert DER — used as the CA identifier at /enroll/home."""
         return _hex_sha256(self.cert.public_bytes(serialization.Encoding.DER))
 
-    def spki_fingerprint_sha256(self) -> str:
-        """SHA-256 of DER SPKI; matches spl-relay enroll.ts ca_fp, not cert DER."""
-        spki_der = self.cert.public_key().public_bytes(
+    def public_spki_der(self) -> bytes:
+        """DER SubjectPublicKeyInfo of the CA public key.
+
+        These are the bytes whose SHA-256 first-16 form the ``ca_fp_spki`` pin
+        carried in the 0x06 pair link, so a browser client that only holds the
+        pin can be handed this key to verify the home's pairing signature.
+        """
+        return self.cert.public_key().public_bytes(
             serialization.Encoding.DER,
             serialization.PublicFormat.SubjectPublicKeyInfo,
         )
-        return _hex_sha256(spki_der)
+
+    def spki_fingerprint_sha256(self) -> str:
+        """SHA-256 of DER SPKI; matches spl-relay enroll.ts ca_fp, not cert DER."""
+        return _hex_sha256(self.public_spki_der())
 
 
 def generate_ca(

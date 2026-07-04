@@ -103,9 +103,13 @@ Inner pairing JSON is compact UTF-8 with no whitespace. Binary fields are
 base64url unpadded strings.
 
 1. ext->home PairHello: magic `"SBP1"` | version `0x01`.
-2. home->ext signed identity: `{ "pkH_spki", "instance_id", "sig" }`.
+2. home->ext signed identity: `{ "pkH_spki", "ca_spki", "instance_id", "sig" }`.
    `sig` is raw IEEE-P1363 `R || S`, 64 bytes. It signs raw bytes:
    `"spl-pair-browser-v1" || pkH_spki_DER || instance_id_16`.
+   `ca_spki` is the CA public-key SPKI DER (base64url); the browser holds only
+   the 16-byte `ca_fp_spki` pin from the 0x06 link, so the home must supply the
+   full CA key here. The browser checks `SHA-256(ca_spki)[:16] == ca_fp_spki`,
+   then verifies `sig` with it.
 3. ext->home HPKE base-mode seal to pkH, info=`instance_id_16`, AAD=`b""`.
    Plaintext is `{ "S", "ext_pub_spki", "device_label" }`.
 4. home verifies `S` through the existing single-use nonce store, registers the
