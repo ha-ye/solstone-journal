@@ -109,8 +109,18 @@ def _iter_normalized_rows(
 
     pattern = f"*/normalized/{month}.jsonl" if month else "*/normalized/*.jsonl"
     rows: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
     for path in sorted(imports_root.glob(pattern)):
-        rows.extend(_read_shard_rows(path))
+        for row in _read_shard_rows(path):
+            # The same record appears in every bundle that imported it
+            # (e.g. a test-week import overlapped by the full backfill);
+            # keep one row per dedupe key.
+            dedupe_key = row.get("dedupe_key")
+            if isinstance(dedupe_key, str) and dedupe_key:
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
+            rows.append(row)
     return rows
 
 

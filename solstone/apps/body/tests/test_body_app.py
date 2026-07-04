@@ -353,3 +353,37 @@ def test_day_api_rejects_invalid_day(body_env):
 
     assert env.client.get("/app/body/api/day/not-a-day").status_code == 400
     assert env.client.get("/app/body/api/day/2026-07-03").status_code == 400
+
+
+def test_day_api_counts_overlapping_bundles_once(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    first_shard = (
+        env.journal / "imports" / "20260703_120000" / "normalized" / "2026-07.jsonl"
+    )
+    second_shard = (
+        env.journal / "imports" / "20260704_090000" / "normalized" / "2026-07.jsonl"
+    )
+    second_shard.parent.mkdir(parents=True)
+    second_shard.write_text(first_shard.read_text(encoding="utf-8"), encoding="utf-8")
+    _write_json(
+        env.journal / "imports" / "20260704_090000" / "manifest.json",
+        {
+            "import_id": "20260704_090000",
+            "source_type": "apple_health",
+            "source_hash": "sha256:full-backfill",
+            "entry_count": 4,
+            "days_affected": ["20260703", "20260704"],
+            "files_created": [],
+            "imported_at": "2026-07-04T09:00:00",
+            "imported_via": "test",
+        },
+    )
+
+    response = env.client.get("/app/body/api/day/20260703")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["glucose"]["count"] == 2
+    assert payload["entry_total"] == 3
