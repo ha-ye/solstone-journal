@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import datetime as dt
 import importlib
 import importlib.util
 import json
@@ -11,11 +12,17 @@ from pathlib import Path
 
 import pytest
 
+from solstone.apps.body import routes as body_routes
 from solstone.think.importers import apple_health
 from solstone.think.importers.apple_health import (
     AppleHealthImporter,
 )
 from solstone.think.importers.health_dedupe import get_health_dedupe_record
+from solstone.think.importers.health_schema import (
+    merge_sleep_sessions,
+    pick_day_sleep,
+    pick_main_session,
+)
 
 FIXTURE_ROOT = (
     Path(__file__).parent
@@ -42,12 +49,14 @@ REGENERATE_SCRIPT = (
     Path(__file__).parent.parent / "scripts" / "regenerate_health_day_summaries.py"
 )
 
+# The fixture's only sleep entry starts Jan 2 at 10:30 PM and ends Jan 3 at
+# 6:30 AM. Under the canonical cross-midnight rule that night belongs to the
+# day it ended (Jan 3, which has no records and hence no card), so the Jan 2
+# card carries no Sleep line — exactly like the body day page for Jan 2.
 EXPECTED_FIXTURE_DAY_CARD = """\
 # Body · January 2, 2026
 
-Slept 10:30 PM – 6:30 AM, glucose 105 mg/dL, 1 workout.
-
-**Sleep** 10:30 PM – 6:30 AM · 8h 00m · 1 sleep entry
+Glucose 105 mg/dL, 1 workout.
 
 **Glucose** 105 mg/dL · 1 reading
 
@@ -132,6 +141,7 @@ def _rich_day_summary() -> apple_health._DaySummary:
     ]
     for row in rows:
         apple_health._add_to_day_summary(summary, row)
+    apple_health._attach_night_sleep({summary.day: summary})
     return summary
 
 
@@ -355,7 +365,7 @@ def test_day_summary_card_has_lede_and_provenance_footer(
     lines = summary_path.read_text(encoding="utf-8").splitlines()
 
     assert lines[0] == "# Body · January 2, 2026"
-    assert lines[2] == "Slept 10:30 PM – 6:30 AM, glucose 105 mg/dL, 1 workout."
+    assert lines[2] == "Glucose 105 mg/dL, 1 workout."
     footer = lines[-1]
     assert "import 20260103_120000" in footer
     assert "brought in via Apple Health" in footer
@@ -363,6 +373,10 @@ def test_day_summary_card_has_lede_and_provenance_footer(
 
 
 def test_render_day_summary_owner_card_structure():
+    # Two sources cover the night: Synthetic Watch 12:01–3:00 AM and
+    # Synthetic Ring Mirror 3:10–8:05 AM. The canonical rule never sums
+    # sources — the longest-coverage source (Ring Mirror) is the day's
+    # sleep, matching what the body day page shows for the same rows.
     rendered = apple_health._render_day_summary(
         _rich_day_summary(), import_id="20260704_090000"
     )
@@ -370,9 +384,9 @@ def test_render_day_summary_owner_card_structure():
     assert rendered == (
         "# Body · July 1, 2026\n"
         "\n"
-        "Slept 12:01 AM – 8:05 AM, glucose 77–104 mg/dL (avg 88.3), 4 workouts.\n"
+        "Slept 3:10 AM – 8:05 AM, glucose 77–104 mg/dL (avg 88.3), 4 workouts.\n"
         "\n"
-        "**Sleep** 12:01 AM – 8:05 AM · 8h 04m · 2 sleep entries\n"
+        "**Sleep** 3:10 AM – 8:05 AM · 4h 55m · 1 sleep entry\n"
         "\n"
         "**Glucose** 77–104 mg/dL · avg 88.3 · 3 readings\n"
         "\n"
@@ -513,6 +527,186 @@ def test_render_day_summary_formats_counts_with_thousands_separators():
 
     assert "- Step count: 1,234" in rendered
     assert "1,234 records summarized" in rendered
+
+
+# --- Canonical sleep: shared helpers, card == day page ------------------------
+
+
+TZ = dt.timezone(dt.timedelta(hours=-6))
+
+
+def _at(month: int, day: int, hour: int, minute: int = 0) -> dt.datetime:
+    return dt.datetime(2026, month, day, hour, minute, tzinfo=TZ)
+
+
+CROSS_MIDNIGHT_EXPORT_RECORDS = """
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Ring" sourceVersion="1.0" creationDate="2026-07-01 07:10:00 -0600" startDate="2026-06-30 22:58:00 -0600" endDate="2026-07-01 02:00:00 -0600" value="HKCategoryValueSleepAnalysisAsleepCore"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Ring" sourceVersion="1.0" creationDate="2026-07-01 07:10:00 -0600" startDate="2026-07-01 02:30:00 -0600" endDate="2026-07-01 07:08:00 -0600" value="HKCategoryValueSleepAnalysisAsleepDeep"/>
+  <Record type="HKCategoryTypeIdentifierSleepAnalysis" sourceName="Synthetic Wrist" sourceVersion="1.0" creationDate="2026-07-01 06:35:00 -0600" startDate="2026-06-30 23:30:00 -0600" endDate="2026-07-01 06:30:00 -0600" value="HKCategoryValueSleepAnalysisAsleepUnspecified"/>
+  <Record type="HKQuantityTypeIdentifierHeartRate" sourceName="Synthetic Watch" sourceVersion="1.0" unit="count/min" creationDate="2026-07-01 09:00:00 -0600" startDate="2026-07-01 09:00:00 -0600" endDate="2026-07-01 09:00:00 -0600" value="61"/>
+"""
+
+
+def _write_cross_midnight_export(root: Path) -> Path:
+    export_root = root / "apple_health_export"
+    export_root.mkdir(parents=True)
+    (export_root / "export.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<!DOCTYPE HealthData>\n"
+        f'<HealthData locale="en_US">{CROSS_MIDNIGHT_EXPORT_RECORDS}</HealthData>\n',
+        encoding="utf-8",
+    )
+    return root
+
+
+def test_merge_sleep_sessions_joins_gaps_up_to_the_limit():
+    merged = merge_sleep_sessions(
+        [
+            (_at(7, 1, 2, 30), _at(7, 1, 7, 8)),  # unsorted on purpose
+            (_at(6, 30, 22, 58), _at(7, 1, 2, 0)),  # 30-minute wake gap
+            (_at(7, 1, 14, 0), _at(7, 1, 14, 45)),  # afternoon nap, far apart
+        ]
+    )
+
+    assert merged == [
+        (_at(6, 30, 22, 58), _at(7, 1, 7, 8)),
+        (_at(7, 1, 14, 0), _at(7, 1, 14, 45)),
+    ]
+
+
+def test_merge_sleep_sessions_keeps_gaps_beyond_the_limit_apart():
+    merged = merge_sleep_sessions(
+        [
+            (_at(7, 1, 22, 0), _at(7, 1, 23, 0)),
+            (_at(7, 2, 0, 1), _at(7, 2, 6, 0)),  # 61-minute gap
+        ]
+    )
+
+    assert merged == [
+        (_at(7, 1, 22, 0), _at(7, 1, 23, 0)),
+        (_at(7, 2, 0, 1), _at(7, 2, 6, 0)),
+    ]
+
+
+def test_pick_main_session_applies_noon_rule_and_naps():
+    day = dt.date(2026, 7, 1)
+    night = (_at(6, 30, 22, 58), _at(7, 1, 7, 8))
+    nap = (_at(7, 1, 14, 0), _at(7, 1, 14, 45))
+    tonight = (_at(7, 1, 23, 0), _at(7, 2, 6, 0))  # ends tomorrow: not today's
+
+    main, naps = pick_main_session([nap, night, tonight], day)
+
+    assert main == night
+    assert naps == [nap]
+
+
+def test_pick_day_sleep_prefers_longest_coverage_source():
+    sleep = pick_day_sleep(
+        {
+            "Synthetic Wrist": [(_at(6, 30, 23, 30), _at(7, 1, 6, 30))],
+            "Synthetic Ring": [(_at(6, 30, 22, 58), _at(7, 1, 7, 8))],
+        },
+        dt.date(2026, 7, 1),
+    )
+
+    assert sleep is not None
+    assert sleep.source == "Synthetic Ring"
+    assert sleep.other_sources == ("Synthetic Wrist",)
+    assert sleep.main == (_at(6, 30, 22, 58), _at(7, 1, 7, 8))
+    assert sleep.naps == ()
+
+
+def test_day_card_sleep_matches_body_day_page_for_cross_midnight_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    export = _write_cross_midnight_export(tmp_path / "source")
+
+    AppleHealthImporter().process(
+        export,
+        journal,
+        import_id="20260702_080000",
+        dry_run=False,
+        with_day_summaries=True,
+    )
+
+    day_page = body_routes._build_health_day(journal, "20260701")
+    sleep = day_page["sleep"]
+    card = (
+        journal
+        / "chronicle"
+        / "20260701"
+        / "import.apple_health"
+        / "000000_300"
+        / "day_summary_transcript.md"
+    ).read_text(encoding="utf-8")
+
+    # The canonical rule merges the two Ring intervals across the 30-minute
+    # wake gap into the night ending July 1 morning; Ring outlasts Wrist.
+    assert sleep["source"] == "Synthetic Ring"
+    assert sleep["window"] == "10:58 PM – 7:08 AM"
+    assert sleep["duration"] == "8h 10m"
+    # Card and day page answer with the SAME window and duration.
+    assert (
+        f"**Sleep** {sleep['window']} · {sleep['duration']} · 2 sleep entries" in card
+    )
+    assert card.splitlines()[2].startswith(f"Slept {sleep['window']}")
+
+    # The night is not double-attributed: June 30 shows no sleep on either
+    # surface (its card exists — the night's first interval starts there).
+    prev_card = (
+        journal
+        / "chronicle"
+        / "20260630"
+        / "import.apple_health"
+        / "000000_300"
+        / "day_summary_transcript.md"
+    ).read_text(encoding="utf-8")
+    assert "**Sleep**" not in prev_card
+    assert body_routes._build_health_day(journal, "20260630")["sleep"] is None
+
+
+def test_regenerate_script_feeds_prev_day_sleep_into_cross_midnight_cards(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    export = _write_cross_midnight_export(tmp_path / "source")
+    AppleHealthImporter().process(
+        export,
+        journal,
+        import_id="20260702_080000",
+        dry_run=False,
+        with_day_summaries=True,
+    )
+    card_path = (
+        journal
+        / "chronicle"
+        / "20260701"
+        / "import.apple_health"
+        / "000000_300"
+        / "day_summary_transcript.md"
+    )
+    original = card_path.read_text(encoding="utf-8")
+    card_path.write_text("# Apple Health Summary\n\nstale\n", encoding="utf-8")
+
+    module = _load_regenerate_script_module()
+    exit_code = module.main([str(journal), "--apply"])
+    output = capsys.readouterr().out
+    regenerated = card_path.read_text(encoding="utf-8")
+
+    # July 1's rebuild pulls the prior day's sleep rows — which live in the
+    # prior month's shard — back in, landing byte-identical to the import.
+    assert exit_code == 0
+    assert "1 rewritten" in output
+    assert regenerated == original
+    assert "**Sleep** 10:58 PM – 7:08 AM · 8h 10m · 2 sleep entries" in regenerated
 
 
 def test_regenerate_script_dry_run_reports_diff_without_writing(

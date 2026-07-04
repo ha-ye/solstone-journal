@@ -5,11 +5,12 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Final, Mapping
+from typing import Any, Final, Iterable, Mapping, Sequence
 
 SOURCE_APPLE_HEALTH: Final = "apple_health"
 SOURCE_OURA: Final = "oura"
@@ -62,6 +63,120 @@ FRIENDLY_TYPE_NAMES: Final[Mapping[str, str]] = {
     "HKQuantityTypeIdentifierLeanBodyMass": "Lean body mass",
     "HKQuantityTypeIdentifierHeight": "Height",
 }
+
+# Sleep-analysis intervals from one source separated by less than this gap
+# merge into one session (brief wake windows stay inside the night).
+SLEEP_SESSION_GAP_MINUTES: Final = 60
+
+# One source's sleep interval or merged session as (start, end).
+SleepInterval = tuple[dt.datetime, dt.datetime]
+
+
+@dataclass(frozen=True, slots=True)
+class DaySleep:
+    """Canonical sleep for one day: the primary source's night and naps.
+
+    ``main`` is the session that ended that morning (it usually started the
+    previous evening); ``naps`` are later sessions fully inside the day.
+    Multiple sources are never summed — ``source`` is the longest-coverage
+    source and ``other_sources`` are only named.
+    """
+
+    source: str
+    other_sources: tuple[str, ...]
+    main: SleepInterval | None
+    naps: tuple[SleepInterval, ...]
+
+
+def merge_sleep_sessions(
+    intervals: Iterable[SleepInterval],
+    *,
+    gap_minutes: int = SLEEP_SESSION_GAP_MINUTES,
+) -> list[SleepInterval]:
+    """Merge one source's sleep intervals into sessions, oldest first.
+
+    Intervals separated by ``gap_minutes`` or less join one session; an end
+    before its start clamps to a zero-length interval. All datetimes must be
+    mutually comparable (all aware or all naive) — callers normalize.
+    """
+
+    ordered = sorted(intervals, key=lambda interval: interval[0])
+    gap = dt.timedelta(minutes=gap_minutes)
+    merged: list[list[dt.datetime]] = []
+    for start, end in ordered:
+        if end < start:
+            end = start
+        if merged and start <= merged[-1][1] + gap:
+            if end > merged[-1][1]:
+                merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def pick_main_session(
+    sessions: Iterable[SleepInterval],
+    day: dt.date,
+) -> tuple[SleepInterval | None, list[SleepInterval]]:
+    """Split one source's sessions into (main night, naps) for ``day``.
+
+    Only sessions ending on ``day`` count. The main session is the first,
+    by end time, that crossed midnight or ended by noon — the night that
+    ended that morning. Other sessions starting on ``day`` are naps.
+    """
+
+    noon = dt.time(12, 0)
+    ending_today = [s for s in sessions if s[1].date() == day]
+    main: SleepInterval | None = None
+    naps: list[SleepInterval] = []
+    for session in sorted(ending_today, key=lambda s: s[1]):
+        crosses_midnight = session[0].date() < day
+        ends_morning = session[1].time() <= noon
+        if main is None and (crosses_midnight or ends_morning):
+            main = session
+        elif session[0].date() == day:
+            naps.append(session)
+    return main, naps
+
+
+def pick_day_sleep(
+    intervals_by_source: Mapping[str, Sequence[SleepInterval]],
+    day: dt.date,
+    *,
+    gap_minutes: int = SLEEP_SESSION_GAP_MINUTES,
+) -> DaySleep | None:
+    """The canonical sleep report for ``day`` across sources.
+
+    Each source's intervals merge into sessions and split into main + naps;
+    the source with the longest coverage (main duration, or summed naps when
+    it has no main) is primary. Ties resolve to the alphabetically first
+    source. Returns ``None`` when no source has a session for the day.
+    """
+
+    per_source: dict[str, tuple[SleepInterval | None, list[SleepInterval]]] = {}
+    for source, intervals in intervals_by_source.items():
+        sessions = merge_sleep_sessions(intervals, gap_minutes=gap_minutes)
+        main, naps = pick_main_session(sessions, day)
+        if main is not None or naps:
+            per_source[source] = (main, naps)
+    if not per_source:
+        return None
+
+    def _coverage_seconds(source: str) -> float:
+        main, naps = per_source[source]
+        if main is not None:
+            return (main[1] - main[0]).total_seconds()
+        return sum((nap[1] - nap[0]).total_seconds() for nap in naps)
+
+    primary = max(sorted(per_source), key=_coverage_seconds)
+    main, naps = per_source[primary]
+    return DaySleep(
+        source=primary,
+        other_sources=tuple(name for name in sorted(per_source) if name != primary),
+        main=main,
+        naps=tuple(naps),
+    )
+
 
 _HK_PREFIX_RE: Final = re.compile(
     r"^HK(?:Quantity|Category)TypeIdentifier|^HKDataType|^HKWorkoutActivityType"

@@ -12,6 +12,11 @@ rebuilds that day's summary from the normalized rows across all
 ``dedupe_key``, later import bundles winning), and renders it with the
 importer's day-summary renderer.
 
+Every shard of every bundle loads up front, so each day's rebuild also
+sees the previous day's rows — including a previous day that lives in the
+prior month's shards — and feeds its sleep intervals into the canonical
+cross-midnight sleep rule, matching the body day page.
+
 Dry-run by default: prints, per day, the old and new byte sizes and whether
 the content would change. Pass ``--apply`` to rewrite changed files.
 """
@@ -31,7 +36,9 @@ if str(REPO_ROOT) not in sys.path:
 from solstone.think.importers.apple_health import (  # noqa: E402
     _add_to_day_summary,
     _DaySummary,
+    _previous_day,
     _render_day_summary,
+    _resolve_night_sleep,
 )
 from solstone.think.importers.health_schema import (  # noqa: E402
     DEFAULT_HEALTH_IMPORT_STREAM,
@@ -80,12 +87,8 @@ def load_rows_by_day(journal_root: Path) -> dict[str, dict[str, dict[str, Any]]]
     return rows_by_day
 
 
-def rebuild_day_summary(
-    day: str, rows_by_key: dict[str, dict[str, Any]]
-) -> tuple[str, str]:
-    """Render (markdown, import_id) for one day from deduped normalized rows."""
-
-    ordered = sorted(
+def _ordered_rows(rows_by_key: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    return sorted(
         rows_by_key.values(),
         key=lambda row: (
             row.get("start_date") or "",
@@ -93,9 +96,35 @@ def rebuild_day_summary(
             row.get("dedupe_key") or "",
         ),
     )
+
+
+def _summary_from_rows(day: str, rows_by_key: dict[str, dict[str, Any]]) -> _DaySummary:
     summary = _DaySummary(day=day)
-    for row in ordered:
+    for row in _ordered_rows(rows_by_key):
         _add_to_day_summary(summary, row)
+    return summary
+
+
+def rebuild_day_summary(
+    day: str,
+    rows_by_key: dict[str, dict[str, Any]],
+    prev_rows_by_key: dict[str, dict[str, Any]] | None = None,
+) -> tuple[str, str]:
+    """Render (markdown, import_id) for one day from deduped normalized rows.
+
+    ``prev_rows_by_key`` carries the previous day's rows so the canonical
+    cross-midnight sleep rule sees the night that ended this morning.
+    """
+
+    ordered = _ordered_rows(rows_by_key)
+    summary = _summary_from_rows(day, rows_by_key)
+    prev_day = _previous_day(day)
+    prev_summary = (
+        _summary_from_rows(prev_day, prev_rows_by_key)
+        if prev_day and prev_rows_by_key
+        else None
+    )
+    summary.night_sleep = _resolve_night_sleep(summary, prev_summary)
     import_ids = sorted(
         {str(row["import_id"]) for row in ordered if row.get("import_id")}
     )
@@ -150,7 +179,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{day}: no normalized rows found; leaving file untouched")
             continue
         old_content = md_path.read_text(encoding="utf-8")
-        content, _import_id = rebuild_day_summary(day, day_rows)
+        prev_day = _previous_day(day)
+        prev_rows = rows_by_day.get(prev_day) if prev_day else None
+        content, _import_id = rebuild_day_summary(day, day_rows, prev_rows)
         new_content = content + "\n"
         old_bytes = len(old_content.encode("utf-8"))
         new_bytes = len(new_content.encode("utf-8"))

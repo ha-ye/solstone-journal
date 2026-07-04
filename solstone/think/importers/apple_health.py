@@ -24,9 +24,11 @@ from solstone.think.importers.health_dedupe import (
 from solstone.think.importers.health_schema import (
     SOURCE_APPLE_HEALTH,
     HealthRecordIdentity,
+    SleepInterval,
     friendly_type_name,
     health_record_dedupe_key,
     health_value_hash,
+    pick_day_sleep,
 )
 from solstone.think.importers.shared import (
     hash_source,
@@ -141,6 +143,15 @@ class _NormalizedItem:
     manifest_entry: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class _NightSleep:
+    """The main sleep session shown on a day card, already resolved."""
+
+    start: dt.datetime
+    end: dt.datetime
+    entry_count: int
+
+
 @dataclass(slots=True)
 class _DaySummary:
     day: str
@@ -151,25 +162,24 @@ class _DaySummary:
     workouts: list[str] = field(default_factory=list)
     glucose_values: list[float] = field(default_factory=list)
     glucose_unit: str | None = None
-    sleep_entry_count: int = 0
-    sleep_start: dt.datetime | None = None
-    sleep_end: dt.datetime | None = None
+    # Raw sleep intervals attributed to this day (by start time), per
+    # source. The rendered session is resolved by _attach_night_sleep,
+    # which also folds in the previous day's intervals.
+    sleep_intervals: dict[str, list[SleepInterval]] = field(default_factory=dict)
+    night_sleep: _NightSleep | None = None
 
     def add_source(self, source_name: str | None) -> None:
         if source_name:
             self.sources.add(source_name)
 
-    def add_sleep_window(self, start_date: str | None, end_date: str | None) -> None:
-        start = _parse_apple_datetime(start_date)
-        end = _parse_apple_datetime(end_date)
-        if start is None or end is None:
+    def add_sleep_interval(
+        self, source: str, start_date: str | None, end_date: str | None
+    ) -> None:
+        start = _normalize_sleep_time(start_date)
+        if start is None:
             return
-        if self.sleep_start is None or _wall_clock(start) < _wall_clock(
-            self.sleep_start
-        ):
-            self.sleep_start = start
-        if self.sleep_end is None or _wall_clock(end) > _wall_clock(self.sleep_end):
-            self.sleep_end = end
+        end = _normalize_sleep_time(end_date) or start
+        self.sleep_intervals.setdefault(source, []).append((start, end))
 
 
 class AppleHealthImporter:
@@ -521,6 +531,7 @@ def _save_export(
         dedupe_records.append(item.dedupe_record)
         summaries.setdefault(item.day, _DaySummary(day=item.day))
         _add_to_day_summary(summaries[item.day], item.row)
+    _attach_night_sleep(summaries)
 
     normalized_paths: list[Path] = []
     for month, rows in sorted(normalized_by_month.items()):
@@ -816,8 +827,73 @@ def _add_to_day_summary(summary: _DaySummary, row: dict[str, Any]) -> None:
             if row.get("unit"):
                 summary.glucose_unit = str(row["unit"])
     if "SleepAnalysis" in record_type:
-        summary.sleep_entry_count += 1
-        summary.add_sleep_window(row.get("start_date"), row.get("end_date"))
+        source = str(row.get("source_name") or row.get("source_family") or "unknown")
+        summary.add_sleep_interval(source, row.get("start_date"), row.get("end_date"))
+
+
+def _normalize_sleep_time(value: str | None) -> dt.datetime | None:
+    """Parse a record timestamp for sleep math, mirroring the body app:
+    wall-clock components keep the record's own local time; naive values
+    get UTC attached only to make comparisons possible."""
+
+    parsed = _parse_apple_datetime(value)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed
+
+
+def _previous_day(day: str) -> str | None:
+    try:
+        parsed = dt.datetime.strptime(day, "%Y%m%d").date()
+    except ValueError:
+        return None
+    return (parsed - dt.timedelta(days=1)).strftime("%Y%m%d")
+
+
+def _resolve_night_sleep(
+    summary: _DaySummary, prev_summary: _DaySummary | None
+) -> _NightSleep | None:
+    """The day's canonical main sleep session, or None.
+
+    Sleep entries are day-attributed by start time, so the night that ends
+    this morning mostly lives on the previous day — both days' intervals
+    feed the shared merge + main-session rule (the same one the body day
+    page applies), keeping the card and the page on one number.
+    """
+
+    try:
+        target = dt.datetime.strptime(summary.day, "%Y%m%d").date()
+    except ValueError:
+        return None
+    intervals_by_source: dict[str, list[SleepInterval]] = {}
+    for source_summary in (prev_summary, summary):
+        if source_summary is None:
+            continue
+        for source, intervals in source_summary.sleep_intervals.items():
+            intervals_by_source.setdefault(source, []).extend(intervals)
+    if not intervals_by_source:
+        return None
+    sleep = pick_day_sleep(intervals_by_source, target)
+    if sleep is None or sleep.main is None:
+        return None
+    start, end = sleep.main
+    entry_count = sum(
+        1 for s, _ in intervals_by_source[sleep.source] if start <= s <= end
+    )
+    return _NightSleep(start=start, end=end, entry_count=entry_count)
+
+
+def _attach_night_sleep(summaries: dict[str, _DaySummary]) -> None:
+    """Resolve every day's night sleep in place, feeding each day the
+    previous day's intervals so cross-midnight sessions land on the day
+    they ended."""
+
+    for day, summary in summaries.items():
+        prev_key = _previous_day(day)
+        prev_summary = summaries.get(prev_key) if prev_key else None
+        summary.night_sleep = _resolve_night_sleep(summary, prev_summary)
 
 
 def _render_day_summary(summary: _DaySummary, *, import_id: str) -> str:
@@ -853,10 +929,10 @@ def _render_day_summary(summary: _DaySummary, *, import_id: str) -> str:
 
 def _day_summary_lede(summary: _DaySummary) -> str:
     parts: list[str] = []
-    if summary.sleep_start and summary.sleep_end:
+    if summary.night_sleep is not None:
         parts.append(
-            f"Slept {_format_time_12h(summary.sleep_start)}"
-            f" – {_format_time_12h(summary.sleep_end)}"
+            f"Slept {_format_time_12h(summary.night_sleep.start)}"
+            f" – {_format_time_12h(summary.night_sleep.end)}"
         )
     if summary.glucose_values:
         glucose = f"glucose {_glucose_range(summary)}"
@@ -876,19 +952,17 @@ def _day_summary_lede(summary: _DaySummary) -> str:
 
 
 def _sleep_line(summary: _DaySummary) -> str | None:
-    if summary.sleep_start is None or summary.sleep_end is None:
+    sleep = summary.night_sleep
+    if sleep is None:
         return None
-    parts = [
-        f"**Sleep** {_format_time_12h(summary.sleep_start)}"
-        f" – {_format_time_12h(summary.sleep_end)}"
-    ]
-    duration = _sleep_duration(summary.sleep_start, summary.sleep_end)
-    if duration is not None:
-        parts.append(_format_duration(duration))
-    parts.append(
-        _count_phrase(summary.sleep_entry_count, "sleep entry", "sleep entries")
+    return " · ".join(
+        (
+            f"**Sleep** {_format_time_12h(sleep.start)}"
+            f" – {_format_time_12h(sleep.end)}",
+            _format_duration(sleep.end - sleep.start),
+            _count_phrase(sleep.entry_count, "sleep entry", "sleep entries"),
+        )
     )
-    return " · ".join(parts)
 
 
 def _glucose_line(summary: _DaySummary) -> str | None:
@@ -964,20 +1038,6 @@ def _format_duration(duration: dt.timedelta) -> str:
     if hours:
         return f"{hours}h {minutes:02d}m"
     return f"{minutes}m"
-
-
-def _sleep_duration(start: dt.datetime, end: dt.datetime) -> dt.timedelta | None:
-    if (start.tzinfo is None) == (end.tzinfo is None):
-        duration = end - start
-    else:
-        duration = _wall_clock(end) - _wall_clock(start)
-    if duration <= dt.timedelta(0):
-        return None
-    return duration
-
-
-def _wall_clock(value: dt.datetime) -> dt.datetime:
-    return value.replace(tzinfo=None)
 
 
 def _format_glucose_value(value: float) -> str:
