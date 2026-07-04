@@ -28,6 +28,7 @@ from solstone.think.spl.health import (
     REASON_RELAY_TUNNEL_UNREACHABLE,
     REASON_SERVICE_TOKEN_REJECTED,
 )
+from solstone.think.spl.ws_buffer import BufferedWsReader
 from solstone.think.utils import now_ms
 
 log = logging.getLogger("spl.relay_client")
@@ -171,26 +172,44 @@ class RelayClient:
             ) as ws:
                 self._record_tunnel_success()
                 self._emit_health()
-                try:
-                    tcp_reader, tcp_writer = await asyncio.open_connection(
-                        _LINK_DIRECT_HOST,
-                        _LINK_DIRECT_PORT,
-                    )
-                except OSError:
-                    self._record_tunnel_error(REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE)
-                    self._emit_health()
-                    log.warning(
-                        "tunnel %s failed: reason=%s",
+                reader = BufferedWsReader(ws)
+                prefix = await reader.peek(4)
+                if prefix[:1] == b"\x16":
+                    try:
+                        tcp_reader, tcp_writer = await asyncio.open_connection(
+                            _LINK_DIRECT_HOST,
+                            _LINK_DIRECT_PORT,
+                        )
+                    except OSError:
+                        self._record_tunnel_error(
+                            REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE
+                        )
+                        self._emit_health()
+                        log.warning(
+                            "tunnel %s failed: reason=%s",
+                            tunnel_id,
+                            REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
+                        )
+                        return
+                    try:
+                        await _write_initial_tcp_bytes(
+                            tcp_writer, reader.drain_buffer()
+                        )
+                        await _pipe_tunnel(ws, tcp_reader, tcp_writer, tunnel_id)
+                    except ConnectionClosed as exc:
+                        log.info("tunnel %s closed: code=%s", tunnel_id, exc.code)
+                    except OSError:
+                        log.warning("tunnel %s pipe socket error", tunnel_id)
+                elif prefix == b"SBO1":
+                    from solstone.think.spl.blob_receiver import receive_blob
+
+                    await receive_blob(reader, ws)
+                else:
+                    log.info(
+                        "tunnel %s closed: unknown first bytes=%s",
                         tunnel_id,
-                        REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
+                        prefix.hex(),
                     )
-                    return
-                try:
-                    await _pipe_tunnel(ws, tcp_reader, tcp_writer, tunnel_id)
-                except ConnectionClosed as exc:
-                    log.info("tunnel %s closed: code=%s", tunnel_id, exc.code)
-                except OSError:
-                    log.warning("tunnel %s pipe socket error", tunnel_id)
         except InvalidStatus as exc:
             status = exc.response.status_code
             if status == 404:
@@ -318,11 +337,25 @@ async def _bridge_pairing_tunnel(
     tcp_writer: asyncio.StreamWriter | None = None
     try:
         async with connect(url, additional_headers=headers, max_size=None) as ws:
-            tcp_reader, tcp_writer = await asyncio.open_connection(
-                _LINK_DIRECT_HOST,
-                _LINK_DIRECT_PORT,
-            )
-            await _pipe_tunnel(ws, tcp_reader, tcp_writer, tunnel_id)
+            reader = BufferedWsReader(ws)
+            prefix = await reader.peek(4)
+            if prefix[:1] == b"\x16":
+                tcp_reader, tcp_writer = await asyncio.open_connection(
+                    _LINK_DIRECT_HOST,
+                    _LINK_DIRECT_PORT,
+                )
+                await _write_initial_tcp_bytes(tcp_writer, reader.drain_buffer())
+                await _pipe_tunnel(ws, tcp_reader, tcp_writer, tunnel_id)
+            elif prefix == b"SBP1":
+                from solstone.think.link.browser_pairing import register_browser
+
+                await register_browser(reader, ws)
+            else:
+                log.info(
+                    "pairing tunnel %s closed: unknown first bytes=%s",
+                    tunnel_id,
+                    prefix.hex(),
+                )
     except ConnectionClosed as exc:
         log.info("pairing tunnel %s closed: code=%s", tunnel_id, exc.code)
     except (
@@ -568,6 +601,15 @@ async def _pipe_tunnel(
         await asyncio.gather(*pending, return_exceptions=True)
     for task in done:
         task.result()
+
+
+async def _write_initial_tcp_bytes(
+    tcp_writer: asyncio.StreamWriter,
+    initial: bytes,
+) -> None:
+    if initial:
+        tcp_writer.write(initial)
+        await tcp_writer.drain()
 
 
 def _post_json_sync(url: str, body: dict[str, Any]) -> dict[str, Any]:

@@ -45,10 +45,14 @@ class FakeSession:
 
     def post(self, url: str, **kwargs: Any) -> FakeResponse:
         if "files" in kwargs:
-            recorded_files = {
-                field: (filename, handle.read(), content_type)
-                for field, (filename, handle, content_type) in kwargs["files"].items()
-            }
+            source = kwargs["files"]
+            items = source.items() if isinstance(source, dict) else source
+            recorded_files = []
+            for field, (filename, handle, content_type) in items:
+                content = handle.read() if hasattr(handle, "read") else handle
+                recorded_files.append((field, (filename, content, content_type)))
+            if isinstance(source, dict):
+                recorded_files = dict(recorded_files)
             kwargs = {**kwargs, "files": recorded_files}
         self.calls.append(("POST", url, kwargs))
         return self._next()
@@ -255,6 +259,45 @@ def test_upload_posts_multipart_files_and_data(tmp_path) -> None:
     assert kwargs["data"] == {"k": "v"}
     assert "json" not in kwargs
     assert "headers" not in kwargs
+
+
+def test_upload_passes_headers_and_in_memory_files() -> None:
+    fake = FakeSession([_json_response(201, {"id": "att-1"})])
+    client = ConveyClient(session=fake, base_url="http://localhost:5015")
+
+    body = client.upload(
+        "/app/observer/ingest",
+        files={"files": ("browser_host.jsonl", b'{"ok":true}\n', "application/jsonl")},
+        data={"k": "v"},
+        headers={"X-Solstone-Observer": "handle123"},
+    )
+
+    assert body == {"id": "att-1"}
+    method, url, kwargs = fake.calls[0]
+    assert method == "POST"
+    assert url == "http://localhost:5015/app/observer/ingest"
+    assert kwargs["files"] == {
+        "files": ("browser_host.jsonl", b'{"ok":true}\n', "application/jsonl")
+    }
+    assert kwargs["headers"] == {"X-Solstone-Observer": "handle123"}
+
+
+def test_upload_allows_repeated_file_fields() -> None:
+    fake = FakeSession([_json_response(200, {"status": "ok"})])
+    client = ConveyClient(session=fake, base_url="http://localhost:5015")
+
+    client.upload(
+        "/app/observer/ingest",
+        files=[
+            ("files", ("a.jsonl", b"a\n", "application/jsonl")),
+            ("files", ("b.jsonl", b"b\n", "application/jsonl")),
+        ],
+    )
+
+    assert fake.calls[0][2]["files"] == [
+        ("files", ("a.jsonl", b"a\n", "application/jsonl")),
+        ("files", ("b.jsonl", b"b\n", "application/jsonl")),
+    ]
 
 
 def test_default_session_applies_api_timeout_to_request_verbs(

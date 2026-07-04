@@ -14,6 +14,7 @@ import contextlib
 import functools
 import json
 import logging
+import os
 from collections.abc import Callable
 from typing import Any, NoReturn, TypeVar
 from urllib.parse import urlencode
@@ -149,23 +150,43 @@ class ConveyClient:
 
         return self._decode(response)
 
-    def upload(self, path: str, *, files: dict[str, Any], data: Any = None) -> Any:
+    def upload(
+        self,
+        path: str,
+        *,
+        files: dict[str, Any] | list[tuple[str, Any]],
+        data: Any = None,
+        headers: dict[str, str] | None = None,
+    ) -> Any:
         if not path.startswith("/"):
             raise ValueError("convey path must start with '/'")
         url = self._base_url.rstrip("/") + path
 
         with contextlib.ExitStack() as stack:
-            opened = {}
-            for field, (filename, file_path, content_type) in files.items():
-                handle = stack.enter_context(open(file_path, "rb"))
-                opened[field] = (filename, handle, content_type)
+            opened_dict = {}
+            opened_list = []
+            file_items = files.items() if isinstance(files, dict) else files
+            for field, (filename, source, content_type) in file_items:
+                if isinstance(source, str | os.PathLike):
+                    value = stack.enter_context(open(source, "rb"))
+                elif isinstance(source, bytearray | memoryview):
+                    value = bytes(source)
+                else:
+                    value = source
+                prepared = (filename, value, content_type)
+                if isinstance(files, dict):
+                    opened_dict[field] = prepared
+                else:
+                    opened_list.append((field, prepared))
+            post_kwargs: dict[str, Any] = {
+                "files": opened_dict if isinstance(files, dict) else opened_list,
+                "data": data,
+                **self._timeout_kwargs(UPLOAD_TIMEOUT),
+            }
+            if headers is not None:
+                post_kwargs["headers"] = headers
             try:
-                response = self._session.post(
-                    url,
-                    files=opened,
-                    data=data,
-                    **self._timeout_kwargs(UPLOAD_TIMEOUT),
-                )
+                response = self._session.post(url, **post_kwargs)
             except requests.exceptions.Timeout:
                 self._raise_timeout("POST", path, UPLOAD_TIMEOUT)
             except requests.exceptions.RequestException as exc:

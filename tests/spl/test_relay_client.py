@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from websockets.datastructures import Headers
-from websockets.exceptions import InvalidStatus
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.http11 import Response
 
 from solstone.think.spl import relay_client
@@ -70,16 +70,39 @@ class FakeListenWS:
 
 
 class FakeTunnelWS:
+    def __init__(self, frames: list[bytes] | None = None) -> None:
+        self.frames = list(frames or [b"\x16\x03\x01\x00"])
+
     async def __aenter__(self) -> "FakeTunnelWS":
         return self
 
     async def __aexit__(self, *_args: Any) -> None:
         return None
 
+    async def recv(self) -> bytes:
+        if not self.frames:
+            raise ConnectionClosed(None, None)
+        return self.frames.pop(0)
+
+    def __aiter__(self) -> "FakeTunnelWS":
+        return self
+
+    async def __anext__(self) -> bytes:
+        if not self.frames:
+            raise StopAsyncIteration
+        return self.frames.pop(0)
+
 
 class FakeWriter:
     def __init__(self) -> None:
         self.closed = False
+        self.writes: list[bytes] = []
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
+
+    async def drain(self) -> None:
+        return None
 
     def close(self) -> None:
         self.closed = True
