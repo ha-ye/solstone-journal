@@ -5,8 +5,10 @@
 
 import json
 import logging
+import os
 import re
 import shutil
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -32,6 +34,27 @@ from solstone.think.utils import CHRONICLE_DIR, iter_segments
 DATE_RE = re.compile(r"^\d{8}$")
 logger = logging.getLogger(__name__)
 ProgressCallback = Callable[[str, int, int | None, str | None], None]
+
+
+def _atomic_copytree(source: Path, target: Path) -> None:
+    """Copy ``source`` into ``target`` atomically.
+
+    Copies into a dot-prefixed, unique-per-run temp sibling in
+    ``target.parent`` (same filesystem, so os.replace is a rename), then
+    atomically replaces the guaranteed-absent target. On any failure the temp
+    is removed, leaving nothing at ``target`` and no residue. The dot prefix +
+    no ``HHMMSS_LEN`` substring means segment enumeration (segment_key) never
+    mistakes an orphaned temp for a segment; the per-run uuid means a
+    crash-orphaned temp never blocks a retry.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temp = target.parent / f".merge-tmp-{uuid.uuid4().hex}"
+    try:
+        shutil.copytree(source, temp, copy_function=shutil.copy2)
+        os.replace(temp, target)
+    except Exception:
+        shutil.rmtree(temp, ignore_errors=True)
+        raise
 
 
 @dataclass
@@ -230,7 +253,7 @@ def _merge_segments(
                 )
                 continue
 
-            shutil.copytree(seg_path, target_path, copy_function=shutil.copy2)
+            _atomic_copytree(seg_path, target_path)
             summary.segments_copied += 1
             _log_decision(
                 log_path,
@@ -431,11 +454,7 @@ def _merge_facets(
         try:
             if not target_facet_dir.exists():
                 if not dry_run:
-                    shutil.copytree(
-                        source_facet_dir,
-                        target_facet_dir,
-                        copy_function=shutil.copy2,
-                    )
+                    _atomic_copytree(source_facet_dir, target_facet_dir)
                 summary.facets_created += 1
                 _log_decision(
                     log_path,
@@ -534,11 +553,7 @@ def _merge_overlapping_facet(
                     continue
 
                 if not dry_run:
-                    shutil.copytree(
-                        source_entity_dir,
-                        target_entity_dir,
-                        copy_function=shutil.copy2,
-                    )
+                    _atomic_copytree(source_entity_dir, target_entity_dir)
                 _log_decision(
                     log_path,
                     {
@@ -703,11 +718,7 @@ def _merge_overlapping_facet(
                         )
                         continue
                     if not dry_run:
-                        shutil.copytree(
-                            source_output_dir,
-                            target_output_dir,
-                            copy_function=shutil.copy2,
-                        )
+                        _atomic_copytree(source_output_dir, target_output_dir)
                     _log_decision(
                         log_path,
                         {
@@ -819,11 +830,7 @@ def _merge_imports(
                 )
                 continue
             if not dry_run:
-                shutil.copytree(
-                    source_import_dir,
-                    target_import_dir,
-                    copy_function=shutil.copy2,
-                )
+                _atomic_copytree(source_import_dir, target_import_dir)
             summary.imports_copied += 1
             _log_decision(
                 log_path,

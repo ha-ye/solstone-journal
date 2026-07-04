@@ -622,6 +622,42 @@ def test_error_resilience(merge_journals_fixture, monkeypatch):
     assert "1 errors:" in result.output
 
 
+def test_segment_copy_mid_copy_failure_leaves_no_target_or_temp(
+    merge_journals_fixture, monkeypatch
+):
+    paths = merge_journals_fixture
+
+    import solstone.think.merge as journal_merge_module
+
+    real_copytree = shutil.copytree
+    bad_segment = paths["source"] / "20260101" / "143022_300"
+    target_path = paths["target"] / "chronicle" / "20260101" / "143022_300"
+
+    def failing_copytree(src, dst, *args, **kwargs):
+        if Path(src) == bad_segment:
+            Path(dst).mkdir(parents=True)
+            (Path(dst) / "partial.jsonl").write_text("partial\n", encoding="utf-8")
+            raise OSError("boom")
+        return real_copytree(src, dst, *args, **kwargs)
+
+    monkeypatch.setattr(journal_merge_module.shutil, "copytree", failing_copytree)
+
+    result = merge_journals(paths["source"], paths["target"])
+
+    assert result.segments_errored == 1
+    assert not target_path.exists()
+    assert not any(entry.name.startswith(".") for entry in target_path.parent.iterdir())
+
+    monkeypatch.setattr(journal_merge_module.shutil, "copytree", real_copytree)
+
+    retry = merge_journals(paths["source"], paths["target"])
+
+    assert retry.segments_errored == 0
+    assert (target_path / "audio.jsonl").read_text(encoding="utf-8") == (
+        '{"audio": "source-segment"}\n'
+    )
+
+
 def test_decision_log_written(merge_journals_fixture, monkeypatch):
     paths = merge_journals_fixture
     _mock_indexer(monkeypatch)

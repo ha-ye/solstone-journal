@@ -126,9 +126,10 @@ EXCLUDED_FILES: frozenset[str] = frozenset(
 
 EXCLUDED_PREFIXES: tuple[str, ...] = ()
 
-# Empty by design. If this check flags owner journal-data, migrate the site. If
-# it flags non-owner runtime storage, classify it in EXCLUDED_FILES.
-ALLOWLIST: dict[tuple[str, str], int] = {}
+# The merge engine's _atomic_copytree() uses a same-parent temp directory and
+# os.replace() for atomic tree visibility; journal_io currently only exposes
+# file-level install primitives.
+ALLOWLIST: dict[tuple[str, str], int] = {("solstone/think/merge.py", "os.replace"): 1}
 
 
 def _is_test_file(rel: Path) -> bool:
