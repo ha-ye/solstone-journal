@@ -1142,8 +1142,8 @@ a.body-jump-day:focus-visible {
               {% for fact in body_day.walking.facts %}
                 <li>
                   <span>{{ fact.label }}</span>
-                  {% if fact.value %}
-                    <strong class="body-num">{{ fact.value }}</strong>
+                  {% if fact.summary %}
+                    <strong class="body-num">{{ fact.summary }}{% if fact.count > 1 %} <span class="body-fact-kind">&middot; {{ fact.count_label }} entries</span>{% endif %}</strong>
                   {% else %}
                     <strong><span class="body-num">{{ fact.count_label }}</span> <span class="body-fact-kind">entries</span></strong>
                   {% endif %}
@@ -1193,8 +1193,11 @@ a.body-jump-day:focus-visible {
       <section class="body-card body-section" aria-labelledby="body-sources-title">
         <h2 id="body-sources-title" class="body-question-title">Sources this day</h2>
         <div class="body-chips">
-          {% for name in body_day.sources.names %}
-            <span class="body-chip">{{ name }}</span>
+          {% for chip in body_day.sources.chips %}
+            <span class="body-chip">
+              <span>{{ chip.name }}</span>
+              <span class="body-chip-range body-num">&middot; {{ chip.entries_label }}</span>
+            </span>
           {% endfor %}
         </div>
         <p class="body-card-footer">

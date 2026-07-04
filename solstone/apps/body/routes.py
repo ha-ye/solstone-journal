@@ -1168,6 +1168,20 @@ def _workout_duration_minutes(row: dict[str, Any]) -> float | None:
     return None
 
 
+def _workout_duration_label(minutes: float | None) -> str | None:
+    """Duration copy for a workout row.
+
+    Sub-minute workouts read '<1m' instead of a false '0m'; zero-length
+    rows carry no duration at all.
+    """
+
+    if minutes is None or minutes <= 0:
+        return None
+    if minutes < 1:
+        return "<1m"
+    return _format_duration(minutes)
+
+
 def _group_by_type(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -1196,8 +1210,8 @@ def _display_range(record_type: str, low: float, high: float, unit: str | None) 
     return f"{span} {unit_label}"
 
 
-def _primary_source_steps(step_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The primary-source step total, mirroring ``pick_day_sleep``.
+def _primary_source_totals(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The primary-source summed value, mirroring ``pick_day_sleep``.
 
     The largest-coverage source's total is reported and labeled with its
     source; other sources are only named, never summed. Returns ``None``
@@ -1206,7 +1220,7 @@ def _primary_source_steps(step_rows: list[dict[str, Any]]) -> dict[str, Any] | N
     """
 
     per_source: dict[str, dict[str, float]] = {}
-    for row in step_rows:
+    for row in rows:
         value = _parse_float(row.get("value"))
         if value is None:
             continue
@@ -1228,15 +1242,30 @@ def _primary_source_steps(step_rows: list[dict[str, Any]]) -> dict[str, Any] | N
             return None
         primary = max(sorted(usable), key=lambda name: per_source[name]["coverage"])
     others = sorted(name for name in per_source if name != primary)
-    total = int(round(per_source[primary]["total"]))
     return {
-        "mode": "total",
-        "total": total,
-        "total_label": f"{total:,}",
+        "total": per_source[primary]["total"],
         "source": primary,
         "samples": int(per_source[primary]["samples"]),
         "others": others,
         "others_label": (f"{', '.join(others)} also contributed" if others else None),
+    }
+
+
+def _primary_source_steps(step_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The primary-source step total as the steps payload."""
+
+    picked = _primary_source_totals(step_rows)
+    if picked is None:
+        return None
+    total = int(round(picked["total"]))
+    return {
+        "mode": "total",
+        "total": total,
+        "total_label": f"{total:,}",
+        "source": picked["source"],
+        "samples": picked["samples"],
+        "others": picked["others"],
+        "others_label": picked["others_label"],
     }
 
 
@@ -1309,14 +1338,108 @@ def _running_dynamics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return items
 
 
-# Quantities where one source's samples honestly sum to a day total worth
-# showing with its unit instead of a bare entry count.
+# Walking metrics that read as an average alone — per-walk gait samples
+# swing enough that a min–max span would overstate what the day states.
+_WALKING_AVG_ONLY_FRAGMENTS = (
+    "WalkingStepLength",
+    "WalkingDoubleSupportPercentage",
+    "WalkingAsymmetryPercentage",
+    "AppleWalkingSteadiness",
+)
+
+
+def _walking_metrics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-type value summaries for the walking-metrics card.
+
+    Mirrors the running-dynamics treatment: speed-like types summarize as
+    min–max plus average ('2.1–3.4 mph · avg 2.8'); step length and the
+    gait percentages read as an average ('avg 28.3%'), with the shared
+    normalizers scaling HealthKit's 0–1 fraction-percent rows. Entry
+    counts stay in the payload as secondary text. Types without usable
+    values keep ``summary`` as ``None`` — the card falls back to counts.
+    """
+
+    items: list[dict[str, Any]] = []
+    grouped = _group_by_type(rows)
+    for record_type in sorted(grouped, key=friendly_type_name):
+        rows_for_type = grouped[record_type]
+        values = [
+            value
+            for value in (_parse_float(row.get("value")) for row in rows_for_type)
+            if value is not None
+        ]
+        unit, consistent = _single_unit(rows_for_type)
+        summary: str | None = None
+        if values and consistent:
+            if any(fragment in record_type for fragment in _WALKING_AVG_ONLY_FRAGMENTS):
+                summary = f"avg {display_value(record_type, mean(values), unit)}"
+            else:
+                low, high, avg = min(values), max(values), mean(values)
+                span = _display_range(record_type, low, high, unit)
+                if low == high:
+                    summary = span
+                else:
+                    summary = f"{span} · avg {display_number(record_type, avg, unit)}"
+        items.append(
+            {
+                "label": friendly_type_name(record_type),
+                "count": len(rows_for_type),
+                "count_label": f"{len(rows_for_type):,}",
+                "summary": summary,
+            }
+        )
+    return items
+
+
+# Quantities whose samples honestly sum to a day total worth showing with
+# its unit instead of a bare entry count. Multi-source days go through the
+# primary-source rule (largest coverage wins, others only named) so
+# overlapping devices never double-count into one figure.
 _SUMMABLE_FRAGMENTS = (
     "FlightsClimbed",
     "AppleExerciseTime",
     "AppleStandTime",
     "TimeInDaylight",
+    "ActiveEnergyBurned",
+    "BasalEnergyBurned",
+    "DistanceWalkingRunning",
+    "DistanceCycling",
 )
+
+# Stand-hour category rows carry stood/idle values, not quantities; the
+# day figure is the number of distinct hours with a stood entry.
+_STAND_HOUR_FRAGMENT = "AppleStandHour"
+
+
+def _summable_total_label(record_type: str, total: float, unit: str | None) -> str:
+    """Owner-facing total for a summable quantity.
+
+    Distances read with one decimal ('4.2 mi'); energy totals read as
+    whole calories ('612 Cal'); everything else goes through the shared
+    display normalizers unchanged.
+    """
+
+    if "Distance" in record_type:
+        unit_label = friendly_unit_label(record_type, unit)
+        label = f"{total:,.1f}"
+        return f"{label} {unit_label}" if unit_label else label
+    if "EnergyBurned" in record_type:
+        total = float(round(total))
+    return display_value(record_type, total, unit)
+
+
+def _stood_hour_count(rows: list[dict[str, Any]]) -> int:
+    """Distinct hours with a stood stand-hour entry, across sources."""
+
+    stood: set[tuple[date, int]] = set()
+    for row in rows:
+        if "stood" not in str(row.get("value") or "").lower():
+            continue
+        moment = _parse_record_time(row.get("start_date") or row.get("start_time"))
+        if moment is None:
+            continue
+        stood.add((moment.date(), moment.hour))
+    return len(stood)
 
 
 def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -1338,7 +1461,7 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             {
                 "name": friendly_type_name(str(row.get("record_type") or "Workout")),
                 "start": _format_clock(start) if start else None,
-                "duration": _format_duration(minutes) if minutes is not None else None,
+                "duration": _workout_duration_label(minutes),
             }
         )
 
@@ -1389,15 +1512,17 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             "value": None,
         }
         if any(fragment in record_type for fragment in _SUMMABLE_FRAGMENTS):
-            sources = {_source_label(row) for row in rows_for_type}
-            values = [
-                value
-                for value in (_parse_float(row.get("value")) for row in rows_for_type)
-                if value is not None
-            ]
             unit, consistent = _single_unit(rows_for_type)
-            if len(sources) == 1 and values and consistent:
-                item["value"] = display_value(record_type, sum(values), unit)
+            picked = _primary_source_totals(rows_for_type) if consistent else None
+            if picked is not None:
+                value = _summable_total_label(record_type, picked["total"], unit)
+                if picked["others"]:
+                    value += f" · {picked['source']} — {picked['others_label']}"
+                item["value"] = value
+        elif _STAND_HOUR_FRAGMENT in record_type:
+            stood = _stood_hour_count(rows_for_type)
+            if stood:
+                item["value"] = f"{stood:,}"
         counter_items.append(item)
 
     return {
@@ -1846,7 +1971,7 @@ def _build_health_day(
     mind_sound_facts = _fact_items(
         families.get("Mindfulness", []) + families.get("Hearing & audio", [])
     )
-    walking_facts = _fact_items(families.get("Walking metrics", []))
+    walking_facts = _walking_metrics(families.get("Walking metrics", []))
     body_facts = _fact_items(families.get("Body measurements", []))
     # Leftover signals: the explicit "Other" family plus sleep-family rows
     # that are not sleep-analysis intervals (wrist temperature and kin).
@@ -1857,7 +1982,8 @@ def _build_health_day(
     ]
     other_facts = _fact_items(leftover_rows)
 
-    source_names = sorted({_source_label(row) for row in day_rows})
+    source_counts: Counter[str] = Counter(_source_label(row) for row in day_rows)
+    source_names = sorted(source_counts)
     via = (
         " + ".join(
             sorted(
@@ -1873,6 +1999,18 @@ def _build_health_day(
     sources = (
         {
             "names": source_names,
+            "chips": [
+                {
+                    "name": name,
+                    "count": source_counts[name],
+                    "count_label": f"{source_counts[name]:,}",
+                    "entries_label": (
+                        f"{source_counts[name]:,} "
+                        + ("entry" if source_counts[name] == 1 else "entries")
+                    ),
+                }
+                for name in source_names
+            ],
             "entry_total": len(day_rows),
             "entry_total_label": f"{len(day_rows):,}",
             "via": via,
@@ -2126,9 +2264,7 @@ def _workout_window_items(
                 "end_label": _time_label(end),
                 "overlap_minutes": round(minutes, 1),
                 "overlap_label": _format_duration(minutes),
-                "duration_label": _format_duration(duration)
-                if duration is not None
-                else None,
+                "duration_label": _workout_duration_label(duration),
                 "source": _source_label(row),
             }
         )

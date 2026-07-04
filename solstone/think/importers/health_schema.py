@@ -290,14 +290,26 @@ _FRACTION_PERCENT_FRAGMENTS: Final = (
 )
 
 
+# Raw units whose owner-facing label differs regardless of record type.
+# HealthKit exports audio levels as 'dBASPL', speeds as 'mi/hr' / 'km/hr';
+# energy rows say 'Cal' natively but other exporters write 'kcal'.
+_FRIENDLY_UNIT_LABELS: Final[Mapping[str, str]] = {
+    "dBASPL": "dB",
+    "kcal": "Cal",
+    "mi/hr": "mph",
+    "km/hr": "km/h",
+}
+
+
 def friendly_unit_label(record_type: str, unit: str | None) -> str | None:
     """Owner-facing unit label for a health record's raw unit.
 
     'count/min' reads as 'bpm' for heart-rate-family types (heart rate,
     resting heart rate, walking heart rate average, heart-rate recovery)
-    and 'breaths/min' for respiratory rate. A bare 'count' drops to an
-    empty label so values render as plain numbers. '%' stays '%'; unknown
-    units pass through unchanged.
+    and 'breaths/min' for respiratory rate. Type-independent raw units
+    relabel through ``_FRIENDLY_UNIT_LABELS`` ('dBASPL' → 'dB', 'mi/hr' →
+    'mph'). A bare 'count' drops to an empty label so values render as
+    plain numbers. '%' stays '%'; unknown units pass through unchanged.
     """
 
     if unit is None:
@@ -307,6 +319,9 @@ def friendly_unit_label(record_type: str, unit: str | None) -> str | None:
             return "breaths/min"
         if "HeartRate" in record_type:
             return "bpm"
+    known = _FRIENDLY_UNIT_LABELS.get(unit)
+    if known is not None:
+        return known
     if unit == "count":
         return ""
     return unit

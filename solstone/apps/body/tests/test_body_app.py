@@ -1493,6 +1493,38 @@ def test_display_normalizers_scale_fraction_percents_and_relabel_units():
         )
         == "52 bpm"
     )
+    # Type-independent raw exporter units relabel for owners.
+    assert (
+        health_schema.friendly_unit_label(
+            "HKQuantityTypeIdentifierHeadphoneAudioExposure", "dBASPL"
+        )
+        == "dB"
+    )
+    assert (
+        health_schema.friendly_unit_label(
+            "HKQuantityTypeIdentifierWalkingSpeed", "mi/hr"
+        )
+        == "mph"
+    )
+    assert (
+        health_schema.friendly_unit_label(
+            "HKQuantityTypeIdentifierWalkingSpeed", "km/hr"
+        )
+        == "km/h"
+    )
+    assert (
+        health_schema.friendly_unit_label(
+            "HKQuantityTypeIdentifierActiveEnergyBurned", "kcal"
+        )
+        == "Cal"
+    )
+    # Apple's native energy rows already say 'Cal'; it passes through.
+    assert (
+        health_schema.friendly_unit_label(
+            "HKQuantityTypeIdentifierActiveEnergyBurned", "Cal"
+        )
+        == "Cal"
+    )
 
 
 # --- Day view: heart card ------------------------------------------------------
@@ -2078,6 +2110,317 @@ def test_day_api_summable_quantities_total_when_single_source(body_env):
     assert mind_facts["Mindful sessions"] == "15m"
 
 
+# --- Day view: activity value parity ---------------------------------------------
+
+
+ACTIVE_ENERGY_TYPE = "HKQuantityTypeIdentifierActiveEnergyBurned"
+DISTANCE_TYPE = "HKQuantityTypeIdentifierDistanceWalkingRunning"
+STAND_HOUR_TYPE = "HKCategoryTypeIdentifierAppleStandHour"
+WALK_SPEED_TYPE = "HKQuantityTypeIdentifierWalkingSpeed"
+STEP_LENGTH_TYPE = "HKQuantityTypeIdentifierWalkingStepLength"
+DOUBLE_SUPPORT_TYPE = "HKQuantityTypeIdentifierWalkingDoubleSupportPercentage"
+ASYMMETRY_TYPE = "HKQuantityTypeIdentifierWalkingAsymmetryPercentage"
+
+
+def test_day_api_energy_and_distance_pick_primary_source_totals(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            ACTIVE_ENERGY_TYPE,
+            "2026-08-20T08:00:00-06:00",
+            "2026-08-20T09:00:00-06:00",
+            value="300.5",
+            unit="Cal",
+            source="Synthetic Ring",
+        ),
+        _row(
+            ACTIVE_ENERGY_TYPE,
+            "2026-08-20T10:00:00-06:00",
+            "2026-08-20T11:00:00-06:00",
+            value="311.6",
+            unit="Cal",
+            source="Synthetic Ring",
+        ),
+        _row(
+            ACTIVE_ENERGY_TYPE,
+            "2026-08-20T08:05:00-06:00",
+            "2026-08-20T08:10:00-06:00",
+            value="120",
+            unit="Cal",
+            source="Synthetic Phone",
+        ),
+        _row(
+            DISTANCE_TYPE,
+            "2026-08-20T08:00:00-06:00",
+            "2026-08-20T09:00:00-06:00",
+            value="2.13",
+            unit="mi",
+            source="Synthetic Ring",
+        ),
+        _row(
+            DISTANCE_TYPE,
+            "2026-08-20T10:00:00-06:00",
+            "2026-08-20T11:00:00-06:00",
+            value="2.11",
+            unit="mi",
+            source="Synthetic Ring",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_060000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260820").get_json()
+    counters = {
+        item["label"]: item["value"] for item in payload["activity"]["counters"]
+    }
+
+    # The largest-coverage source's sum wins; the other source is only
+    # named, never summed into the figure. Energy reads as whole Cal.
+    assert (
+        counters["Active energy"]
+        == "612 Cal · Synthetic Ring — Synthetic Phone also contributed"
+    )
+    # Distance totals keep one decimal in the rows' own unit.
+    assert counters["Walking + running distance"] == "4.2 mi"
+
+    html = env.client.get("/app/body/20260820").get_data(as_text=True)
+    assert "612 Cal · Synthetic Ring — Synthetic Phone also contributed" in html
+    assert "4.2 mi" in html
+
+
+def test_day_api_stand_hours_count_distinct_stood_hours(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            STAND_HOUR_TYPE,
+            "2026-08-21T08:00:00-06:00",
+            value="HKCategoryValueAppleStandHourStood",
+            source="Synthetic Watch",
+        ),
+        _row(
+            STAND_HOUR_TYPE,
+            "2026-08-21T09:00:00-06:00",
+            value="HKCategoryValueAppleStandHourStood",
+            source="Synthetic Watch",
+        ),
+        _row(
+            STAND_HOUR_TYPE,
+            "2026-08-21T10:00:00-06:00",
+            value="HKCategoryValueAppleStandHourIdle",
+            source="Synthetic Watch",
+        ),
+        # The phone repeating an hour the watch already stood must not
+        # double-count; a phone-only stood hour still counts.
+        _row(
+            STAND_HOUR_TYPE,
+            "2026-08-21T09:00:00-06:00",
+            value="HKCategoryValueAppleStandHourStood",
+            source="Synthetic Phone",
+        ),
+        _row(
+            STAND_HOUR_TYPE,
+            "2026-08-21T14:00:00-06:00",
+            value="HKCategoryValueAppleStandHourStood",
+            source="Synthetic Phone",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_070000", rows)
+
+    counters = {
+        item["label"]: item["value"]
+        for item in env.client.get("/app/body/api/day/20260821").get_json()["activity"][
+            "counters"
+        ]
+    }
+
+    # Distinct stood hours: 8 AM, 9 AM (once), 2 PM. Idle hours are not
+    # stand hours; the label stays the factual count, no goal framing.
+    assert counters["Stand hours"] == "3"
+
+
+# --- Day view: walking metric value summaries --------------------------------------
+
+
+def test_day_api_walking_metrics_summarize_values(body_env):
+    env = body_env()
+    rows = [
+        _row(WALK_SPEED_TYPE, "2026-08-22T08:00:00-06:00", value="2.1", unit="mi/hr"),
+        _row(WALK_SPEED_TYPE, "2026-08-22T12:00:00-06:00", value="3.4", unit="mi/hr"),
+        _row(WALK_SPEED_TYPE, "2026-08-22T16:00:00-06:00", value="2.9", unit="mi/hr"),
+        _row(STEP_LENGTH_TYPE, "2026-08-22T08:00:00-06:00", value="27.2", unit="in"),
+        _row(STEP_LENGTH_TYPE, "2026-08-22T12:00:00-06:00", value="28.4", unit="in"),
+        _row(DOUBLE_SUPPORT_TYPE, "2026-08-22T08:00:00-06:00", value="0.281", unit="%"),
+        _row(DOUBLE_SUPPORT_TYPE, "2026-08-22T12:00:00-06:00", value="0.285", unit="%"),
+        _row(ASYMMETRY_TYPE, "2026-08-22T08:00:00-06:00", value="0.02", unit="%"),
+        _row(ASYMMETRY_TYPE, "2026-08-22T12:00:00-06:00", value="0.04", unit="%"),
+    ]
+    _seed_import(env.journal, "20260910_080000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260822").get_json()
+    walking = {item["label"]: item for item in payload["walking"]["facts"]}
+
+    # Speed: min–max plus average in the friendly mph label.
+    assert walking["Walking speed"]["summary"] == "2.1–3.4 mph · avg 2.8"
+    assert walking["Walking speed"]["count_label"] == "3"
+    # Step length: average with its unit.
+    assert walking["Walking step length"]["summary"] == "avg 27.8 in"
+    # Fraction-percent rows scale through the shared normalizers —
+    # 0.283 renders as 28.3%, never "0.3 %".
+    assert walking["Walking double support percentage"]["summary"] == "avg 28.3%"
+    assert walking["Walking asymmetry percentage"]["summary"] == "avg 3%"
+
+    html = env.client.get("/app/body/20260822").get_data(as_text=True)
+    assert "2.1–3.4 mph · avg 2.8" in html
+    assert "avg 28.3%" in html
+    # Entry counts stay secondary next to the value.
+    assert "3 entries" in html
+
+
+# --- Day view: source chip counts ---------------------------------------------------
+
+
+def test_day_page_source_chips_carry_entry_counts(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            HR_TYPE,
+            "2026-08-23T08:00:00-06:00",
+            value="70",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+        _row(
+            HR_TYPE,
+            "2026-08-23T09:00:00-06:00",
+            value="80",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+        _row(
+            GLUCOSE_TYPE,
+            "2026-08-23T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_090000", rows)
+
+    sources = env.client.get("/app/body/api/day/20260823").get_json()["sources"]
+
+    chips = {chip["name"]: chip for chip in sources["chips"]}
+    assert chips["Synthetic Watch"]["count"] == 2
+    assert chips["Synthetic Watch"]["entries_label"] == "2 entries"
+    assert chips["Synthetic Stelo"]["entries_label"] == "1 entry"
+    # The footer total is unchanged alongside the per-chip counts.
+    assert sources["entry_total_label"] == "3"
+
+    html = env.client.get("/app/body/20260823").get_data(as_text=True)
+    assert "2 entries" in html
+    assert "1 entry" in html
+    assert "entries observed" in html
+
+
+# --- Day view: raw units never reach the page ---------------------------------------
+
+
+def test_day_page_html_carries_no_raw_unit_strings(body_env):
+    env = body_env()
+    rows = [
+        _row(HR_TYPE, "2026-08-24T09:00:00-06:00", value="70", unit="count/min"),
+        _row(HR_TYPE, "2026-08-24T12:00:00-06:00", value="88", unit="count/min"),
+        _row(
+            HEADPHONE_AUDIO_TYPE,
+            "2026-08-24T10:00:00-06:00",
+            value="52.1",
+            unit="dBASPL",
+        ),
+        _row(
+            HEADPHONE_AUDIO_TYPE,
+            "2026-08-24T11:00:00-06:00",
+            value="63.9",
+            unit="dBASPL",
+        ),
+        _row(WALK_SPEED_TYPE, "2026-08-24T08:00:00-06:00", value="2.5", unit="mi/hr"),
+        _row(
+            ACTIVE_ENERGY_TYPE,
+            "2026-08-24T08:00:00-06:00",
+            "2026-08-24T09:00:00-06:00",
+            value="512.4",
+            unit="Cal",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierAppleExerciseTime",
+            "2026-08-24T08:00:00-06:00",
+            value="22",
+            unit="min",
+        ),
+        _row(
+            STAND_HOUR_TYPE,
+            "2026-08-24T08:00:00-06:00",
+            value="HKCategoryValueAppleStandHourStood",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_100000", rows)
+
+    html = env.client.get("/app/body/20260824").get_data(as_text=True)
+
+    # Raw exporter unit strings never reach the page — the shared
+    # normalizers relabel them ('bpm', 'dB', 'mph', 'Cal').
+    for raw in ("count/min", "dBASPL", "kcal", "mi/hr"):
+        assert raw not in html, f"raw unit string leaked into HTML: {raw}"
+    assert "bpm" in html
+    assert "dB" in html
+    assert "mph" in html
+    assert "512 Cal" in html
+
+
+# --- Day view: workout ordering and sub-minute durations -----------------------------
+
+
+def test_day_api_workouts_sort_by_start_and_never_render_zero_minutes(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            "HKWorkoutActivityTypeWalking",
+            "2026-08-25T13:05:00-06:00",
+            "2026-08-25T13:35:00-06:00",
+            source="S",
+            kind="workout",
+        ),
+        _row(
+            "HKWorkoutActivityTypeRunning",
+            "2026-08-25T00:03:00-06:00",
+            "2026-08-25T00:03:20-06:00",
+            source="S",
+            kind="workout",
+        ),
+        _row(
+            "HKWorkoutActivityTypeYoga",
+            "2026-08-25T06:00:00-06:00",
+            "2026-08-25T06:00:00-06:00",
+            source="S",
+            kind="workout",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_110000", rows)
+
+    workouts = env.client.get("/app/body/api/day/20260825").get_json()["activity"][
+        "workouts"
+    ]
+
+    # Strict start-time order: the after-midnight workout leads the list.
+    assert [w["start"] for w in workouts] == ["12:03 AM", "6:00 AM", "1:05 PM"]
+    # A 20-second workout reads '<1m', never '0m'; a zero-length row
+    # carries no duration at all.
+    assert workouts[0]["duration"] == "<1m"
+    assert workouts[1]["duration"] is None
+    assert workouts[2]["duration"] == "30m"
+
+    html = env.client.get("/app/body/20260825").get_data(as_text=True)
+    assert "&lt;1m" in html
+    assert "&middot; 0m" not in html
+
+
 # --- Day view: audio-level summaries ------------------------------------------
 
 
@@ -2129,14 +2472,14 @@ def test_day_api_audio_levels_summarize_factual_range(body_env):
     payload = env.client.get("/app/body/api/day/20260806").get_json()
 
     facts = {fact["label"]: fact["value"] for fact in payload["mind_sound"]["facts"]}
-    # Entry count plus the day's factual level range in the rows' own
-    # unit — no exposure judgments.
-    assert facts["Headphone audio level"] == "3 entries · 52.1–78 dBASPL"
-    assert facts["Environmental audio level"] == "2 entries · 61.7–84.6 dBASPL"
+    # Entry count plus the day's factual level range in the friendly
+    # 'dB' label — no exposure judgments.
+    assert facts["Headphone audio level"] == "3 entries · 52.1–78 dB"
+    assert facts["Environmental audio level"] == "2 entries · 61.7–84.6 dB"
 
     html = env.client.get("/app/body/20260806").get_data(as_text=True)
     assert "Mind &amp; sound" in html
-    assert "3 entries · 52.1–78 dBASPL" in html
+    assert "3 entries · 52.1–78 dB" in html
     # Factual range only inside the card — no exposure judgments.
     card = html[html.index("Mind &amp; sound") : html.index("Sources this day")]
     lowered = card.lower()
