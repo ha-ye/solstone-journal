@@ -173,6 +173,24 @@ def _latest_sources_snapshot(journal_root: Path) -> dict[str, Any]:
     }
 
 
+# Aggregates over the dedupe DB cost a full-table scan (~2M rows after the
+# 5-year backfill). The DB only changes when an import runs, so cache the
+# fold keyed by the database (and WAL) file signature.
+_dedupe_stats_cache: dict[
+    str, tuple[tuple[float, int, float, int], dict[str, Any]]
+] = {}
+
+
+def _dedupe_db_signature(db_path: Path) -> tuple[float, int, float, int]:
+    stat = db_path.stat()
+    wal = db_path.with_name(db_path.name + "-wal")
+    try:
+        wal_stat = wal.stat()
+        return (stat.st_mtime, stat.st_size, wal_stat.st_mtime, wal_stat.st_size)
+    except FileNotFoundError:
+        return (stat.st_mtime, stat.st_size, 0.0, 0)
+
+
 def _read_health_dedupe_stats(journal_root: Path) -> dict[str, Any]:
     db_path = journal_root / "imports" / "health-dedupe.sqlite"
     if not db_path.exists():
@@ -185,66 +203,56 @@ def _read_health_dedupe_stats(journal_root: Path) -> dict[str, Any]:
             "coverage_window": {"start": None, "end": None},
         }
 
+    signature = _dedupe_db_signature(db_path)
+    cache_key = str(db_path)
+    cached = _dedupe_stats_cache.get(cache_key)
+    if cached and cached[0] == signature:
+        return cached[1]
+
     uri = f"file:{db_path}?mode=ro"
     with closing(sqlite3.connect(uri, uri=True)) as conn:
         conn.row_factory = sqlite3.Row
-        total = conn.execute("SELECT COUNT(*) FROM health_dedupe").fetchone()[0]
-        by_type = {
-            row["record_type"]: row["n"]
-            for row in conn.execute(
-                """
-                SELECT record_type, COUNT(*) AS n
-                FROM health_dedupe
-                GROUP BY record_type
-                ORDER BY record_type
-                """
-            )
-        }
-        by_source = {
-            row["source_family"]: row["n"]
-            for row in conn.execute(
-                """
-                SELECT source_family, COUNT(*) AS n
-                FROM health_dedupe
-                GROUP BY source_family
-                ORDER BY source_family
-                """
-            )
-        }
-        by_month = {
-            row["m"]: row["n"]
-            for row in conn.execute(
-                """
-                SELECT substr(start_time, 1, 7) AS m, COUNT(*) AS n
-                FROM health_dedupe
-                GROUP BY m
-                ORDER BY m
-                """
-            )
-        }
-        by_day = {
-            row["d"]: row["n"]
-            for row in conn.execute(
-                """
-                SELECT replace(substr(start_time, 1, 10), '-', '') AS d, COUNT(*) AS n
-                FROM health_dedupe
-                GROUP BY d
-                ORDER BY d
-                """
-            )
-        }
+        # One scan for every grouped aggregate; folded in Python below.
+        grouped = conn.execute(
+            """
+            SELECT
+                record_type,
+                source_family,
+                replace(substr(start_time, 1, 10), '-', '') AS d,
+                COUNT(*) AS n
+            FROM health_dedupe
+            GROUP BY record_type, source_family, d
+            """
+        ).fetchall()
         window = conn.execute(
             "SELECT MIN(start_time) AS s, MAX(start_time) AS e FROM health_dedupe"
         ).fetchone()
 
-    return {
+    total = 0
+    by_type: Counter[str] = Counter()
+    by_source: Counter[str] = Counter()
+    by_month: Counter[str] = Counter()
+    by_day: Counter[str] = Counter()
+    for row in grouped:
+        n = row["n"]
+        day = row["d"]
+        total += n
+        by_type[row["record_type"]] += n
+        by_source[row["source_family"]] += n
+        by_day[day] += n
+        if len(day) >= 6:
+            by_month[f"{day[:4]}-{day[4:6]}"] += n
+
+    result = {
         "total": total,
-        "by_type": by_type,
-        "by_source": by_source,
-        "by_month": by_month,
-        "by_day": by_day,
+        "by_type": dict(sorted(by_type.items())),
+        "by_source": dict(sorted(by_source.items())),
+        "by_month": dict(sorted(by_month.items())),
+        "by_day": dict(sorted(by_day.items())),
         "coverage_window": {"start": window["s"], "end": window["e"]},
     }
+    _dedupe_stats_cache[cache_key] = (signature, result)
+    return result
 
 
 def _build_health_import_status(journal_root: Path) -> dict[str, Any]:
