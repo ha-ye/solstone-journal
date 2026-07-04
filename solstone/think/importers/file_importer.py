@@ -71,6 +71,7 @@ FILE_IMPORTER_REGISTRY: dict[str, str] = {
     "document": "solstone.think.importers.documents",
     "image": "solstone.think.importers.images",
     "journal_archive": "solstone.think.importers.journal_archive",
+    "apple_health": "solstone.think.importers.apple_health",
 }
 
 

@@ -37,11 +37,11 @@ DTD_FIXTURE_ROOT = (
 )
 
 
-def test_apple_health_not_registered_for_save_mode():
+def test_apple_health_registered_after_pre_save_gate():
     file_importer = importlib.import_module("solstone.think.importers.file_importer")
 
-    assert "apple_health" not in file_importer.FILE_IMPORTER_REGISTRY
-    assert file_importer.get_file_importer("apple_health") is None
+    assert "apple_health" in file_importer.FILE_IMPORTER_REGISTRY
+    assert file_importer.get_file_importer("apple_health") is not None
 
 
 def test_detects_synthetic_export_directory():
