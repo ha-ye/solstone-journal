@@ -124,7 +124,7 @@ def _merge_workout_statistics(
     changed = False
     for key in _WORKOUT_STATISTIC_KEYS:
         value = recovered.get(key)
-        if value is not None and metadata.get(key) != value:
+        if value is not None and key not in metadata:
             metadata[key] = value
             changed = True
     return changed

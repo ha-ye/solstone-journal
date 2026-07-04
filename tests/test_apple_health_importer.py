@@ -386,6 +386,12 @@ def test_backfill_workout_statistics_script_updates_metadata_not_dedupe(
     rows = _read_jsonl(shard)
     original_dedupe_key = rows[0]["dedupe_key"]
     original_raw_ref = rows[0]["raw_ref"]
+    module = _load_backfill_workout_stats_script_module()
+    unchanged_code = module.main([str(journal)])
+    unchanged_output = capsys.readouterr().out
+    assert unchanged_code == 0
+    assert "0 rows would update" in unchanged_output
+
     for key in (
         "totalEnergyBurned",
         "totalEnergyBurnedUnit",
@@ -397,7 +403,6 @@ def test_backfill_workout_statistics_script_updates_metadata_not_dedupe(
         rows[0]["metadata"].pop(key)
     shard.write_text(json.dumps(rows[0], sort_keys=True) + "\n", encoding="utf-8")
 
-    module = _load_backfill_workout_stats_script_module()
     dry_run_code = module.main([str(journal)])
     dry_run_output = capsys.readouterr().out
     dry_run_row = _read_jsonl(shard)[0]
