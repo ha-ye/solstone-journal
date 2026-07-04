@@ -901,14 +901,16 @@ a.body-jump-day:focus-visible {
       {% if body_day.activity and body_day.activity.workouts %}
         <article class="body-card body-highlight body-card--soft">
           <h2 class="body-highlight-title">Workouts</h2>
-          <p class="body-highlight-value">{{ body_day.activity.workouts|length }} workouts</p>
+          {% set workout_count = body_day.activity.workouts|length %}
+          <p class="body-highlight-value">{{ workout_count }} workout{{ "" if workout_count == 1 else "s" }}</p>
           <p class="body-highlight-detail">{{ body_day.activity.workout_summary }}</p>
         </article>
       {% endif %}
       {% if body_day.sources %}
         <article class="body-card body-highlight body-card--soft">
           <h2 class="body-highlight-title">Sources</h2>
-          <p class="body-highlight-value">{{ body_day.sources.names|length }} sources</p>
+          {% set source_count = body_day.sources.names|length %}
+          <p class="body-highlight-value">{{ source_count }} source{{ "" if source_count == 1 else "s" }}</p>
           <p class="body-highlight-detail">{{ body_day.sources.names|join(" · ") }}</p>
         </article>
       {% endif %}
@@ -1039,7 +1041,7 @@ a.body-jump-day:focus-visible {
                 {% if counter.value %}
                   <strong class="body-num">{{ counter.value }}</strong>
                 {% else %}
-                  <strong><span class="body-num">{{ counter.count_label }}</span> <span class="body-fact-kind">entries</span></strong>
+                  <strong><span class="body-num">{{ counter.count_label }}</span> <span class="body-fact-kind">{{ "entry" if counter.count == 1 else "entries" }}</span></strong>
                 {% endif %}
               </li>
             {% endfor %}

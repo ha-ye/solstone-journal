@@ -743,6 +743,67 @@ def test_pick_main_session_applies_noon_rule_and_naps():
     assert naps == [nap]
 
 
+def test_pick_main_session_keeps_unmerged_evening_doze_as_nap():
+    day = dt.date(2026, 7, 1)
+    night = (_at(6, 30, 23, 0), _at(7, 1, 6, 30))
+    doze = (_at(7, 1, 20, 0), _at(7, 1, 20, 40))  # never merged into tonight
+    tonight = (_at(7, 1, 22, 30), _at(7, 2, 6, 0))  # tomorrow's main night
+
+    main, naps = pick_main_session([night, doze, tonight], day)
+
+    # A genuinely separate same-evening doze stays a nap; the session that
+    # runs past midnight belongs to the next day, never to both.
+    assert main == night
+    assert naps == [doze]
+
+
+def test_pick_day_sleep_never_attributes_an_interval_to_two_days():
+    # Four days shaped like the verified journal days: nightly sleep split
+    # into fragments, including a bedtime fragment before midnight that
+    # merges into the following night, plus one genuine afternoon nap.
+    intervals = {
+        "Synthetic Phone": [
+            (_at(8, 14, 23, 2), _at(8, 15, 6, 35)),  # night ending the 15th
+            (_at(8, 15, 23, 17), _at(8, 15, 23, 58)),  # bedtime fragment
+            (_at(8, 16, 0, 20), _at(8, 16, 6, 35)),  # rest of that night
+            (_at(8, 16, 14, 0), _at(8, 16, 14, 40)),  # genuine afternoon nap
+            (_at(8, 16, 23, 30), _at(8, 17, 7, 0)),  # night ending the 17th
+        ]
+    }
+
+    sessions_by_day: dict[dt.date, list[tuple[dt.datetime, dt.datetime]]] = {}
+    for offset in range(14, 18):
+        day = dt.date(2026, 8, offset)
+        sleep = pick_day_sleep(intervals, day)
+        if sleep is None:
+            continue
+        sessions_by_day[day] = ([sleep.main] if sleep.main else []) + list(sleep.naps)
+
+    # The bedtime fragment lands exactly once: as the start of the 16th's
+    # main night — never doubling as the 15th's nap.
+    assert sessions_by_day[dt.date(2026, 8, 15)] == [
+        (_at(8, 14, 23, 2), _at(8, 15, 6, 35))
+    ]
+    assert sessions_by_day[dt.date(2026, 8, 16)] == [
+        (_at(8, 15, 23, 17), _at(8, 16, 6, 35)),
+        (_at(8, 16, 14, 0), _at(8, 16, 14, 40)),
+    ]
+    assert sessions_by_day[dt.date(2026, 8, 17)] == [
+        (_at(8, 16, 23, 30), _at(8, 17, 7, 0))
+    ]
+
+    # Invariant: no interval overlaps between two days' attributed sessions.
+    days = sorted(sessions_by_day)
+    for i, day_a in enumerate(days):
+        for day_b in days[i + 1 :]:
+            for start_a, end_a in sessions_by_day[day_a]:
+                for start_b, end_b in sessions_by_day[day_b]:
+                    assert end_a <= start_b or end_b <= start_a, (
+                        f"{day_a} session {start_a}–{end_a} overlaps "
+                        f"{day_b} session {start_b}–{end_b}"
+                    )
+
+
 def test_pick_day_sleep_prefers_longest_coverage_source():
     sleep = pick_day_sleep(
         {

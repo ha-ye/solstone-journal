@@ -82,9 +82,11 @@ class DaySleep:
     """Canonical sleep for one day: the primary source's night and naps.
 
     ``main`` is the session that ended that morning (it usually started the
-    previous evening); ``naps`` are later sessions fully inside the day.
-    Multiple sources are never summed — ``source`` is the longest-coverage
-    source and ``other_sources`` are only named.
+    previous evening); ``naps`` are other sessions fully inside the day —
+    a session that runs past the day's midnight belongs to the following
+    day's night, never to both days. Multiple sources are never summed —
+    ``source`` is the longest-coverage source and ``other_sources`` are
+    only named.
 
     ``in_bed_minutes`` is the merged main-session span; ``asleep_minutes``
     sums the asleep-stage intervals inside it. When the primary source has
@@ -174,18 +176,29 @@ def pick_main_session(
     sessions: Iterable[SleepInterval],
     day: dt.date,
 ) -> tuple[SleepInterval | None, list[SleepInterval]]:
-    """Split one source's sessions into (main night, naps) for ``day``.
+    """Split one source's merged sessions into (main night, naps) for ``day``.
 
-    Only sessions ending on ``day`` count. The main session is the first,
-    by end time, that crossed midnight or ended by noon — the night that
-    ended that morning. Other sessions starting on ``day`` are naps.
+    The main session is the first, by end time, of the sessions ending on
+    ``day`` that crossed midnight or ended by noon — the night that ended
+    that morning. A merged session is ``day``'s nap only when it starts
+    AND ends on ``day`` and is not the main session. A session that ends
+    after ``day``'s midnight is the following day's night (or the session
+    that day picks as its main) and never attributes to ``day`` — so no
+    interval ever lands on two days. Callers must merge over enough of
+    the following day's intervals that a bedtime fragment joins its night
+    instead of reading as a same-evening nap; a doze that genuinely did
+    not merge into the next night stays a nap.
     """
 
     noon = dt.time(12, 0)
-    ending_today = [s for s in sessions if s[1].date() == day]
     main: SleepInterval | None = None
     naps: list[SleepInterval] = []
-    for session in sorted(ending_today, key=lambda s: s[1]):
+    for session in sorted(sessions, key=lambda s: s[1]):
+        if session[1].date() != day:
+            # Ends before ``day`` (an earlier night) or past ``day``'s
+            # midnight (the next day's night, including the session the
+            # next day would pick as its main) — not this day's.
+            continue
         crosses_midnight = session[0].date() < day
         ends_morning = session[1].time() <= noon
         if main is None and (crosses_midnight or ends_morning):
@@ -207,6 +220,11 @@ def pick_day_sleep(
     the source with the longest coverage (main duration, or summed naps when
     it has no main) is primary. Ties resolve to the alphabetically first
     source. Returns ``None`` when no source has a session for the day.
+
+    Callers pass intervals spanning the previous day (the night that ended
+    this morning starts there) **and** the following day's morning — without
+    it, a bedtime fragment cannot merge into the next night and would
+    misread as this day's nap.
 
     Intervals may carry an optional third element — the row's raw stage
     value — which feeds ``asleep_minutes`` / ``has_stage_detail``. Bare

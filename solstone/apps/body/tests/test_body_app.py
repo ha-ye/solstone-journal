@@ -645,6 +645,88 @@ def test_day_api_sleep_not_attributed_to_the_night_start_day(body_env):
     assert response.get_json()["sleep"] is None
 
 
+def test_day_api_bedtime_fragment_attributes_only_to_next_days_night(body_env):
+    env = body_env()
+    rows = [
+        # The night that ends this day's morning (starts the prior evening).
+        _row(
+            SLEEP_TYPE,
+            "2023-08-14T23:02:00-06:00",
+            "2023-08-15T06:35:00-06:00",
+            value="HKCategoryValueSleepAnalysisInBed",
+            source="Synthetic Phone",
+        ),
+        # Bedtime fragment before midnight — the first slice of the night
+        # that ends the NEXT morning, day-attributed by its start time.
+        _row(
+            SLEEP_TYPE,
+            "2023-08-15T23:17:00-06:00",
+            "2023-08-15T23:58:00-06:00",
+            value="HKCategoryValueSleepAnalysisInBed",
+            source="Synthetic Phone",
+        ),
+        # The rest of that night, within the merge gap, on the next day.
+        _row(
+            SLEEP_TYPE,
+            "2023-08-16T00:20:00-06:00",
+            "2023-08-16T06:35:00-06:00",
+            value="HKCategoryValueSleepAnalysisInBed",
+            source="Synthetic Phone",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_110000", rows)
+
+    day = env.client.get("/app/body/api/day/20230815").get_json()["sleep"]
+    # Main night unchanged; the 11:17 PM fragment merges into the following
+    # night instead of misreading as this day's nap.
+    assert day["window"] == "11:02 PM – 6:35 AM"
+    assert day["naps"] == []
+    assert [segment["kind"] for segment in day["bar"]["segments"]] == ["main"]
+
+    next_day = env.client.get("/app/body/api/day/20230816").get_json()["sleep"]
+    # The fragment appears exactly once: as the start of the next day's main.
+    assert next_day["window"] == "11:17 PM – 6:35 AM"
+    assert next_day["naps"] == []
+
+
+def test_day_api_bedtime_fragment_merges_across_month_boundary(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            SLEEP_TYPE,
+            "2026-08-30T23:00:00-06:00",
+            "2026-08-31T06:30:00-06:00",
+            value="HKCategoryValueSleepAnalysisInBed",
+            source="Synthetic Phone",
+        ),
+        # Month-boundary bedtime fragment: its continuation lives in the
+        # NEXT month's shard, which the day view must also read.
+        _row(
+            SLEEP_TYPE,
+            "2026-08-31T23:17:00-06:00",
+            "2026-08-31T23:58:00-06:00",
+            value="HKCategoryValueSleepAnalysisInBed",
+            source="Synthetic Phone",
+        ),
+        _row(
+            SLEEP_TYPE,
+            "2026-09-01T00:15:00-06:00",
+            "2026-09-01T06:40:00-06:00",
+            value="HKCategoryValueSleepAnalysisInBed",
+            source="Synthetic Phone",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_120000", rows)
+
+    day = env.client.get("/app/body/api/day/20260831").get_json()["sleep"]
+    assert day["window"] == "11:00 PM – 6:30 AM"
+    assert day["naps"] == []
+
+    next_day = env.client.get("/app/body/api/day/20260901").get_json()["sleep"]
+    assert next_day["window"] == "11:17 PM – 6:40 AM"
+    assert next_day["naps"] == []
+
+
 def test_recent_rail_sleep_matches_day_page_sleep(body_env):
     env = body_env()
     _seed_cross_midnight_sleep(env.journal)
@@ -2254,6 +2336,54 @@ def test_day_api_energy_and_distance_pick_primary_source_totals(body_env):
     assert "4.2 mi" in html
 
 
+def test_day_api_zero_summable_totals_fall_back_to_entry_counts(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            ACTIVE_ENERGY_TYPE,
+            "2026-08-22T08:00:00-06:00",
+            "2026-08-22T08:05:00-06:00",
+            value="0",
+            unit="Cal",
+            source="Synthetic Phone",
+        ),
+        _row(
+            DISTANCE_TYPE,
+            "2026-08-22T08:00:00-06:00",
+            "2026-08-22T08:05:00-06:00",
+            value="0.04",
+            unit="mi",
+            source="Synthetic Phone",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierFlightsClimbed",
+            "2026-08-22T09:00:00-06:00",
+            value="3",
+            unit="count",
+            source="Synthetic Phone",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_130000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260822").get_json()
+    counters = {item["label"]: item for item in payload["activity"]["counters"]}
+
+    # A zero-reading day must not manufacture a '0 Cal' health fact — the
+    # card falls back to the factual entry count.
+    assert counters["Active energy"]["value"] is None
+    assert counters["Active energy"]["count"] == 1
+    # A distance summing to 0.0 at display precision falls back the same way.
+    assert counters["Walking + running distance"]["value"] is None
+    # A real total still reads as its value.
+    assert counters["Flights climbed"]["value"] == "3"
+
+    html = env.client.get("/app/body/20260822").get_data(as_text=True)
+    assert "0 Cal" not in html
+    assert "0.0 mi" not in html
+    # The count fallback pluralizes honestly: one row reads '1 entry'.
+    assert ">entry<" in html
+
+
 def test_day_api_stand_hours_count_distinct_stood_hours(body_env):
     env = body_env()
     rows = [
@@ -2385,6 +2515,26 @@ def test_day_page_source_chips_carry_entry_counts(body_env):
     assert "2 entries" in html
     assert "1 entry" in html
     assert "entries observed" in html
+    # The sources highlight pluralizes by count.
+    assert "2 sources" in html
+
+
+def test_day_page_single_source_highlight_reads_singular(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            HR_TYPE,
+            "2026-08-25T08:00:00-06:00",
+            value="70",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_150000", rows)
+
+    html = env.client.get("/app/body/20260825").get_data(as_text=True)
+    assert "1 source" in html
+    assert "1 sources" not in html
 
 
 # --- Day view: raw units never reach the page ---------------------------------------
@@ -2622,6 +2772,65 @@ def test_day_api_body_measurements_and_other_signals_cards(body_env):
     assert "22.3%" in html
 
 
+def test_day_api_multi_row_body_measurements_show_latest_value(body_env):
+    env = body_env()
+    mass = "HKQuantityTypeIdentifierBodyMass"
+    fat = "HKQuantityTypeIdentifierBodyFatPercentage"
+    rows = [
+        _row(
+            mass,
+            "2026-05-08T07:00:00-06:00",
+            value="173.1",
+            unit="lb",
+            source="Synthetic Scale",
+        ),
+        # The latest reading is picked by start time, not row order.
+        _row(
+            mass,
+            "2026-05-08T21:00:00-06:00",
+            value="172.4",
+            unit="lb",
+            source="Synthetic Scale",
+        ),
+        _row(
+            mass,
+            "2026-05-08T12:00:00-06:00",
+            value="172.9",
+            unit="lb",
+            source="Synthetic Scale",
+        ),
+        _row(
+            fat,
+            "2026-05-08T07:00:00-06:00",
+            value="0.231",
+            unit="%",
+            source="Synthetic Scale",
+        ),
+        _row(
+            fat,
+            "2026-05-08T21:00:00-06:00",
+            value="0.223",
+            unit="%",
+            source="Synthetic Scale",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_140000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260508").get_json()
+    facts = {
+        fact["label"]: fact["value"] for fact in payload["body_measurements"]["facts"]
+    }
+
+    # Multi-entry measurement types headline the day's latest reading
+    # through the shared normalizers (body fat's 0–1 fraction reads as a
+    # percent), with the factual entry count alongside.
+    assert facts["Body mass"] == "latest 172.4 lb · 3 entries"
+    assert facts["Body fat"] == "latest 22.3% · 2 entries"
+
+    html = env.client.get("/app/body/20260508").get_data(as_text=True)
+    assert "latest 172.4 lb · 3 entries" in html
+
+
 # --- Day view: prompt gating --------------------------------------------------------
 
 
@@ -2688,7 +2897,7 @@ def test_day_api_glucose_axis_labels_match_padded_domain(body_env):
 # --- Day view: evening nap bar sliver -------------------------------------------------
 
 
-def test_day_api_post_6pm_nap_bar_segment_stays_visible(body_env):
+def test_day_api_post_6pm_doze_drops_bar_and_label_together(body_env):
     env = body_env()
     rows = [
         _row(
@@ -2698,8 +2907,10 @@ def test_day_api_post_6pm_nap_bar_segment_stays_visible(body_env):
             value="HKCategoryValueSleepAnalysisAsleepCore",
             source="Synthetic Ring",
         ),
-        # A nap after the 6 PM axis end would clamp to a zero-width sliver
-        # at x=1440 without the visibility clamp.
+        # An evening doze past the 6 PM axis end that never merged into a
+        # following night: it has no honest place inside the 6 PM – 6 PM
+        # axis, so the bar and its nap label drop together — never a
+        # clamped sliver at the edge under an orphaned label.
         _row(
             SLEEP_TYPE,
             "2026-08-05T19:00:00-06:00",
@@ -2712,13 +2923,43 @@ def test_day_api_post_6pm_nap_bar_segment_stays_visible(body_env):
 
     sleep = env.client.get("/app/body/api/day/20260805").get_json()["sleep"]
 
+    assert [segment["kind"] for segment in sleep["bar"]["segments"]] == ["main"]
+    assert sleep["naps"] == []
+    # The main night stays the headline either way.
+    assert sleep["window"] == "11:00 PM – 6:30 AM"
+
+
+def test_day_api_nap_straddling_axis_end_keeps_visible_bar_and_label(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            SLEEP_TYPE,
+            "2026-08-06T23:00:00-06:00",
+            "2026-08-07T06:30:00-06:00",
+            value="HKCategoryValueSleepAnalysisAsleepCore",
+            source="Synthetic Ring",
+        ),
+        # A doze straddling the 6 PM axis end keeps its list label and its
+        # bar clips to a visible minimum width inside the axis.
+        _row(
+            SLEEP_TYPE,
+            "2026-08-07T17:58:00-06:00",
+            "2026-08-07T18:30:00-06:00",
+            value="HKCategoryValueSleepAnalysisAsleepCore",
+            source="Synthetic Ring",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_233000", rows)
+
+    sleep = env.client.get("/app/body/api/day/20260807").get_json()["sleep"]
+
     nap_segments = [
         segment for segment in sleep["bar"]["segments"] if segment["kind"] == "nap"
     ]
-    assert nap_segments
-    for segment in nap_segments:
-        assert segment["width"] >= 4.0
-        assert segment["x"] + segment["width"] <= 1440.0
+    assert len(nap_segments) == 1
+    assert nap_segments[0]["width"] >= 4.0
+    assert nap_segments[0]["x"] + nap_segments[0]["width"] <= 1440.0
+    assert sleep["naps"] == [{"window": "5:58 PM – 6:30 PM", "duration": "32m"}]
 
 
 # --- Overview: month qualifiers, import list, audit bundles ---------------------------

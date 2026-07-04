@@ -1057,20 +1057,24 @@ def _axis_minute(moment: datetime, axis_day: date) -> float:
 def _sleep_analysis(
     day_rows: list[dict[str, Any]],
     prev_rows: list[dict[str, Any]],
+    next_rows: list[dict[str, Any]],
     day: str,
 ) -> dict[str, Any] | None:
     """The day's sleep card: the session ending that morning, naps separate.
 
     Cross-midnight rule: entries are day-attributed by start time, so the
-    night that ends this morning mostly lives on the previous day — both
-    days' rows feed the merge. Multiple sources are never summed: the
-    longest-coverage source is primary, others are named in the footer.
-    The merge + main-session rule is the shared canonical implementation
-    in ``health_schema`` — the importer's day cards use the same one.
+    night that ends this morning mostly lives on the previous day, and the
+    night that starts this evening continues into the next day — all three
+    days' rows feed the merge, so a bedtime fragment merges into the
+    following night instead of misreading as this day's nap. Multiple
+    sources are never summed: the longest-coverage source is primary,
+    others are named in the footer. The merge + main-session rule is the
+    shared canonical implementation in ``health_schema`` — the importer's
+    day cards use the same one.
     """
     target = date(int(day[:4]), int(day[4:6]), int(day[6:8]))
     intervals_by_source: dict[str, list[tuple[datetime, datetime, str | None]]] = {}
-    for row in prev_rows + day_rows:
+    for row in prev_rows + day_rows + next_rows:
         if not _is_sleep_type(str(row.get("record_type") or "")):
             continue
         start = _parse_record_time(row.get("start_date") or row.get("start_time"))
@@ -1088,14 +1092,17 @@ def _sleep_analysis(
     if sleep is None:
         return None
     main = sleep.main
-    naps = list(sleep.naps)
     axis_day = target - timedelta(days=1)
+    # A doze at or past the 6 PM axis end has no honest place inside the
+    # 6 PM – 6 PM axis: its bar and its list label drop together instead
+    # of leaving a clamped sliver at the edge under an orphaned label.
+    naps = [nap for nap in sleep.naps if _axis_minute(nap[0], axis_day) < 1440.0]
 
     def _bar_segment(session: tuple[datetime, datetime], kind: str) -> dict[str, Any]:
         left = min(max(_axis_minute(session[0], axis_day), 0.0), 1440.0)
         right = min(max(_axis_minute(session[1], axis_day), 0.0), 1440.0)
-        # A session clamped to the axis edge (a post-6PM nap) keeps its
-        # minimum width inside the axis instead of collapsing to nothing.
+        # A session clipped by the axis edge (a nap straddling 6 PM) keeps
+        # its minimum width inside the axis instead of collapsing to nothing.
         width = max(right - left, 4.0)
         left = min(left, 1440.0 - width)
         return {
@@ -1221,7 +1228,13 @@ def _workout_metrics(row: dict[str, Any]) -> dict[str, Any]:
         type_key="totalEnergyBurnedType",
         fallback_type="HKQuantityTypeIdentifierActiveEnergyBurned",
     )
-    labels = [metric["label"] for metric in (distance, energy) if metric is not None]
+    # A recovered total that rounds to zero carries no display label —
+    # it stays out of the joined metrics line rather than reading '0 Cal'.
+    labels = [
+        metric["label"]
+        for metric in (distance, energy)
+        if metric is not None and metric["label"] is not None
+    ]
     return {
         "distance": distance,
         "energy": energy,
@@ -1459,20 +1472,28 @@ _SUMMABLE_FRAGMENTS = (
 _STAND_HOUR_FRAGMENT = "AppleStandHour"
 
 
-def _summable_total_label(record_type: str, total: float, unit: str | None) -> str:
-    """Owner-facing total for a summable quantity.
+def _summable_total_label(
+    record_type: str, total: float, unit: str | None
+) -> str | None:
+    """Owner-facing total for a summable quantity, or ``None`` at zero.
 
     Distances read with one decimal ('4.2 mi'); energy totals read as
     whole calories ('612 Cal'); everything else goes through the shared
-    display normalizers unchanged.
+    display normalizers unchanged. A total that rounds to zero at its
+    display precision returns ``None`` — a zero-reading day falls back
+    to its entry count instead of manufacturing a '0 Cal' health fact.
     """
 
     if "Distance" in record_type:
+        if round(total, 1) == 0:
+            return None
         unit_label = friendly_unit_label(record_type, unit)
         label = f"{total:,.1f}"
         return f"{label} {unit_label}" if unit_label else label
     if "EnergyBurned" in record_type:
         total = float(round(total))
+    if display_number(record_type, total, unit) in ("0", "0.0"):
+        return None
     return display_value(record_type, total, unit)
 
 
@@ -1566,9 +1587,10 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             picked = _primary_source_totals(rows_for_type) if consistent else None
             if picked is not None:
                 value = _summable_total_label(record_type, picked["total"], unit)
-                if picked["others"]:
-                    value += f" · {picked['source']} — {picked['others_label']}"
-                item["value"] = value
+                if value is not None:
+                    if picked["others"]:
+                        value += f" · {picked['source']} — {picked['others_label']}"
+                    item["value"] = value
         elif _STAND_HOUR_FRAGMENT in record_type:
             stood = _stood_hour_count(rows_for_type)
             if stood:
@@ -1631,6 +1653,48 @@ def _fact_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if value is not None:
                 unit = str(latest.get("unit") or "").strip() or None
                 item["value"] = display_value(record_type, value, unit)
+        items.append(item)
+    return items
+
+
+def _body_measurement_facts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-type latest-value summaries for the body-measurements card.
+
+    Body measurements are point-in-time readings, so the day's latest
+    reading (by start time) is the honest headline even when a smart
+    scale wrote several rows: a single reading shows its value; multi-
+    entry types read 'latest 172.4 lb · 6 entries'. Values go through
+    the shared display normalizers (body fat's 0–1 fraction renders as
+    a percentage). Types without parseable values keep ``value`` as
+    ``None`` — the card falls back to counts.
+    """
+
+    items: list[dict[str, Any]] = []
+    grouped = _group_by_type(rows)
+    for record_type in sorted(
+        grouped, key=lambda rt: (-len(grouped[rt]), friendly_type_name(rt))
+    ):
+        rows_for_type = grouped[record_type]
+        item: dict[str, Any] = {
+            "label": friendly_type_name(record_type),
+            "count": len(rows_for_type),
+            "count_label": f"{len(rows_for_type):,}",
+            "value": None,
+        }
+        valued = [
+            (row, value)
+            for row in rows_for_type
+            if (value := _parse_float(row.get("value"))) is not None
+        ]
+        if valued:
+            latest_row, latest_value = max(
+                valued, key=lambda pair: _time_sort_key(_row_time(pair[0]) or "")
+            )
+            unit = str(latest_row.get("unit") or "").strip() or None
+            label = display_value(record_type, latest_value, unit)
+            if len(rows_for_type) > 1:
+                label = f"latest {label} · {item['count_label']} entries"
+            item["value"] = label
         items.append(item)
     return items
 
@@ -2004,17 +2068,25 @@ def _build_health_day(
         # Cross-midnight sleep: the prior day's entries may live in the
         # prior month's shards near a month boundary.
         months.append(_prior_month(month))
+    next_date = target + timedelta(days=1)
+    next_month = f"{next_date.year}-{next_date.month:02d}"
+    if next_month != month:
+        # The night that starts this evening continues into the next day —
+        # near a month boundary those entries live in the next month's shards.
+        months.append(next_month)
     read = reader or _month_reader(journal_root)
     rows = [row for shard_month in months for row in read(shard_month)]
     day_rows = [row for row in rows if row.get("day") == day]
     prev_day = (target - timedelta(days=1)).strftime("%Y%m%d")
     prev_rows = [row for row in rows if row.get("day") == prev_day]
+    next_day = next_date.strftime("%Y%m%d")
+    next_rows = [row for row in rows if row.get("day") == next_day]
 
     families: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in day_rows:
         families[_family_for_type(str(row.get("record_type") or ""))].append(row)
 
-    sleep = _sleep_analysis(day_rows, prev_rows, day)
+    sleep = _sleep_analysis(day_rows, prev_rows, next_rows, day)
     glucose_series = _glucose_series(day_rows)
     activity = _activity_analysis(day_rows)
     heart = _heart_analysis(families.get("Heart", []))
@@ -2022,7 +2094,7 @@ def _build_health_day(
         families.get("Mindfulness", []) + families.get("Hearing & audio", [])
     )
     walking_facts = _walking_metrics(families.get("Walking metrics", []))
-    body_facts = _fact_items(families.get("Body measurements", []))
+    body_facts = _body_measurement_facts(families.get("Body measurements", []))
     # Leftover signals: the explicit "Other" family plus sleep-family rows
     # that are not sleep-analysis intervals (wrist temperature and kin).
     leftover_rows = families.get("Other", []) + [
