@@ -1,0 +1,378 @@
+<style>
+.health-imports {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px;
+  color: #1f2937;
+}
+
+.health-imports-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.health-imports-title {
+  margin: 0;
+  font-size: 28px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.health-imports-subtitle {
+  margin: 6px 0 0;
+  color: #5b6472;
+  line-height: 1.45;
+}
+
+.health-imports-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.health-imports-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #1f2937;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.health-imports-button:hover {
+  background: #f5f7fa;
+}
+
+.health-imports-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.health-imports-card {
+  border: 1px solid #d8e0ea;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+.health-imports-card h2,
+.health-imports-card h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.health-imports-metric {
+  font-size: 26px;
+  line-height: 1.1;
+  font-weight: 700;
+}
+
+.health-imports-muted {
+  color: #64748b;
+}
+
+.health-imports-section {
+  margin-top: 18px;
+}
+
+.health-imports-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #ffffff;
+  border: 1px solid #d8e0ea;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.health-imports-table th,
+.health-imports-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid #e6ebf2;
+  text-align: left;
+  vertical-align: top;
+}
+
+.health-imports-table th {
+  color: #475569;
+  background: #f8fafc;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.health-imports-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.health-imports-lists {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.health-imports-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.health-imports-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid #edf2f7;
+}
+
+.health-imports-list li:last-child {
+  border-bottom: 0;
+}
+
+.health-imports-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 13px;
+}
+
+.health-imports-summary {
+  white-space: pre-wrap;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid #d8e0ea;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2937;
+  line-height: 1.5;
+}
+
+@media (max-width: 900px) {
+  .health-imports-header {
+    flex-direction: column;
+  }
+
+  .health-imports-actions {
+    justify-content: flex-start;
+  }
+
+  .health-imports-grid,
+  .health-imports-lists {
+    grid-template-columns: 1fr;
+  }
+
+  .health-imports-table {
+    display: block;
+    overflow-x: auto;
+  }
+}
+</style>
+
+{% set status = health_status or {} %}
+{% set view = health_view|default("status") %}
+<div class="health-imports">
+  <header class="health-imports-header">
+    <div>
+      <h1 class="health-imports-title">Health imports</h1>
+      <p class="health-imports-subtitle">
+        Read-only view of health import files already present in this journal.
+      </p>
+    </div>
+    <nav class="health-imports-actions" aria-label="Health import views">
+      <a class="health-imports-button" href="/app/health/imports">Status</a>
+      {% if health_day %}
+        <a class="health-imports-button" href="/app/health/imports/{{ health_day.day }}">Day {{ health_day.day }}</a>
+      {% endif %}
+    </nav>
+  </header>
+
+  {% if view == "day" and health_day %}
+    <section class="health-imports-grid" aria-label="Day glucose facts">
+      <article class="health-imports-card">
+        <h2>Entries</h2>
+        <div class="health-imports-metric">{{ health_day.entry_total }}</div>
+      </article>
+      <article class="health-imports-card">
+        <h2>Glucose count</h2>
+        <div class="health-imports-metric">{{ health_day.glucose.count }}</div>
+      </article>
+      <article class="health-imports-card">
+        <h2>Min / max</h2>
+        <div class="health-imports-metric">
+          {% if health_day.glucose.count %}
+            {{ "%g"|format(health_day.glucose.min) }} / {{ "%g"|format(health_day.glucose.max) }}
+          {% else %}
+            -
+          {% endif %}
+        </div>
+        {% if health_day.glucose.unit %}<div class="health-imports-muted">{{ health_day.glucose.unit }}</div>{% endif %}
+      </article>
+      <article class="health-imports-card">
+        <h2>Mean</h2>
+        <div class="health-imports-metric">
+          {% if health_day.glucose.count %}{{ "%g"|format(health_day.glucose.mean) }}{% else %}-{% endif %}
+        </div>
+        {% if health_day.glucose.unit %}<div class="health-imports-muted">{{ health_day.glucose.unit }}</div>{% endif %}
+      </article>
+    </section>
+
+    <section class="health-imports-section" aria-labelledby="day-summary-title">
+      <h2 id="day-summary-title">Day summary</h2>
+      {% if health_day.summary_markdown %}
+        <pre class="health-imports-summary">{{ health_day.summary_markdown }}</pre>
+      {% else %}
+        <p class="health-imports-muted">No day summary file for {{ health_day.day }}.</p>
+      {% endif %}
+    </section>
+  {% else %}
+    <section class="health-imports-grid" aria-label="Health import status">
+      <article class="health-imports-card">
+        <h2>Imports</h2>
+        <div class="health-imports-metric">{{ status.imports|length }}</div>
+      </article>
+      <article class="health-imports-card">
+        <h2>Entries</h2>
+        <div class="health-imports-metric">{{ status.normalized.total|default(0) }}</div>
+      </article>
+      <article class="health-imports-card">
+        <h2>Dedupe rows</h2>
+        <div class="health-imports-metric">{{ status.dedupe.total|default(0) }}</div>
+      </article>
+      <article class="health-imports-card">
+        <h2>Coverage window</h2>
+        {% if status.coverage_window and status.coverage_window.start %}
+          <div class="health-imports-code">{{ status.coverage_window.start }}</div>
+          <div class="health-imports-code">{{ status.coverage_window.end }}</div>
+        {% else %}
+          <div class="health-imports-muted">No entries yet.</div>
+        {% endif %}
+      </article>
+    </section>
+
+    <section class="health-imports-section" aria-labelledby="imports-title">
+      <h2 id="imports-title">Import list</h2>
+      <table class="health-imports-table">
+        <thead>
+          <tr>
+            <th>Import</th>
+            <th>Source</th>
+            <th>Imported</th>
+            <th>Entries</th>
+            <th>Days</th>
+            <th>Months</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in status.imports %}
+            <tr>
+              <td class="health-imports-code">{{ item.import_id }}</td>
+              <td>{{ item.source_type }}</td>
+              <td>{{ item.imported_at }}</td>
+              <td>{{ item.entry_count }}</td>
+              <td>{{ item.days_affected|join(", ") }}</td>
+              <td>{{ item.normalized_months|join(", ") }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="6" class="health-imports-muted">No health imports found.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="health-imports-section health-imports-lists" aria-label="Health import totals">
+      <article class="health-imports-card">
+        <h3>By type</h3>
+        <ul class="health-imports-list">
+          {% for name, count in status.normalized.by_type.items() %}
+            <li><span class="health-imports-code">{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="health-imports-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+      <article class="health-imports-card">
+        <h3>By source</h3>
+        <ul class="health-imports-list">
+          {% for name, count in status.normalized.by_source.items() %}
+            <li><span>{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="health-imports-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+      <article class="health-imports-card">
+        <h3>By month</h3>
+        <ul class="health-imports-list">
+          {% for name, count in status.normalized.by_month.items() %}
+            <li><span>{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="health-imports-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+    </section>
+
+    <section class="health-imports-section health-imports-lists" aria-label="Health dedupe totals">
+      <article class="health-imports-card">
+        <h3>Dedupe by type</h3>
+        <ul class="health-imports-list">
+          {% for name, count in status.dedupe.by_type.items() %}
+            <li><span class="health-imports-code">{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="health-imports-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+      <article class="health-imports-card">
+        <h3>Dedupe by source</h3>
+        <ul class="health-imports-list">
+          {% for name, count in status.dedupe.by_source.items() %}
+            <li><span>{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="health-imports-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+      <article class="health-imports-card">
+        <h3>Dedupe by month</h3>
+        <ul class="health-imports-list">
+          {% for name, count in status.dedupe.by_month.items() %}
+            <li><span>{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="health-imports-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+    </section>
+
+    <section class="health-imports-section" aria-labelledby="latest-title">
+      <h2 id="latest-title">Latest source time</h2>
+      <table class="health-imports-table">
+        <thead>
+          <tr>
+            <th>Source</th>
+            <th>Latest time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for name, latest in status.latest_by_source.items() %}
+            <tr>
+              <td>{{ name }}</td>
+              <td class="health-imports-code">{{ latest }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="2" class="health-imports-muted">No source times yet.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  {% endif %}
+</div>
