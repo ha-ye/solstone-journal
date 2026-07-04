@@ -4,6 +4,13 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- When a day has a large backlog of raw media to take in, sol now works through more of it at once and keeps making progress on its own, instead of stalling until the next day.
+- A moment whose originals are still being taken in is no longer mistaken for an empty one — sol waits for them to land before deciding there was nothing there.
+
 ## [0.6.23] - 2026-07-04
 
 ### Added

@@ -178,6 +178,43 @@ def test_daily_health_log_keeps_segment_events_out(journal_copy, monkeypatch):
     ]
 
 
+def test_sense_repair_prephase_uses_default_describe_jobs(journal_copy, monkeypatch):
+    mod = importlib.import_module("solstone.think.thinking")
+    bounded_calls = []
+    daily_called = []
+
+    monkeypatch.setattr(mod.os, "cpu_count", lambda: 16)
+    assert mod._default_describe_jobs() == 4
+    monkeypatch.setattr(mod.os, "cpu_count", lambda: 7)
+    assert mod._default_describe_jobs() == 1
+    monkeypatch.setattr(mod.os, "cpu_count", lambda: 8)
+    assert mod._default_describe_jobs() == 2
+
+    def fake_bounded(cmd, day, timeout=None):
+        bounded_calls.append((cmd, day, timeout))
+        return (True, False)
+
+    def fake_daily(day, verbose, **kwargs):
+        daily_called.append(day)
+        return (5, 0, [], set())
+
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded)
+    monkeypatch.setattr(mod, "run_command", lambda cmd, day: True)
+    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
+
+    mod.main()
+
+    assert daily_called == ["20240101"]
+    assert bounded_calls[0] == (
+        ["journal", "sense", "--day", "20240101", "-j", "2"],
+        "20240101",
+        mod.DEFAULT_TASK_MAX_RUNTIME,
+    )
+
+
 def test_daily_segment_prephase_timeout_is_nonfatal(journal_copy, monkeypatch):
     mod = importlib.import_module("solstone.think.thinking")
     bounded_calls = []
@@ -197,6 +234,7 @@ def test_daily_segment_prephase_timeout_is_nonfatal(journal_copy, monkeypatch):
         return (5, 0, [], set())
 
     _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(mod.os, "cpu_count", lambda: 16)
     monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded)
     monkeypatch.setattr(mod, "run_command", fake_command)
     monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
@@ -225,7 +263,7 @@ def test_daily_segment_prephase_timeout_is_nonfatal(journal_copy, monkeypatch):
     assert daily_called
     assert bounded_calls == [
         (
-            ["journal", "sense", "--day", "20240101"],
+            ["journal", "sense", "--day", "20240101", "-j", "4"],
             "20240101",
             mod.DEFAULT_TASK_MAX_RUNTIME,
         ),
@@ -505,6 +543,50 @@ def test_select_segment_repair_targets_force_all_preserves_refresh_semantics(
     assert counts == {
         "total": 2,
         "selected": 2,
+        "complete": 0,
+        "raw_blocked": 0,
+    }
+
+
+def test_raw_media_pending_skip_becomes_repair_selectable_after_describe_output(
+    monkeypatch,
+):
+    from solstone.think import thinking as think
+
+    pending = {
+        "key": "091000_300",
+        "stream": STREAM,
+        "data_state": {"screen": "pending"},
+    }
+    sensed = {
+        "key": pending["key"],
+        "stream": STREAM,
+        "data_state": {"screen": "analyzed"},
+    }
+    monkeypatch.setattr(think, "read_segment_progress", lambda day: {})
+
+    selected, counts = think._select_segment_repair_targets(
+        DAY,
+        [pending],
+        force_all=False,
+    )
+    assert selected == []
+    assert counts == {
+        "total": 1,
+        "selected": 0,
+        "complete": 0,
+        "raw_blocked": 1,
+    }
+
+    selected, counts = think._select_segment_repair_targets(
+        DAY,
+        [sensed],
+        force_all=False,
+    )
+    assert selected == [sensed]
+    assert counts == {
+        "total": 1,
+        "selected": 1,
         "complete": 0,
         "raw_blocked": 0,
     }

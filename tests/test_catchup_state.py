@@ -358,6 +358,61 @@ def test_day_eligible_to_drain(journal, monkeypatch):
     assert catchup_state.day_eligible_to_drain(DAY, catchup_state.KIND_DAILY_CATCHUP)
 
 
+def test_screen_describe_output_rearms_daily_catchup_progress(journal, monkeypatch):
+    segment = _segment(journal)
+    (segment / "center_DP-3_screen.webm").write_bytes(b"raw-video")
+    monkeypatch.setattr(catchup_state.time, "time", lambda: 30)
+
+    catchup_state.record_attempt(CMD_DAILY, DAY, "ref-1", started_at=10)
+    started_record = catchup_state.read_day_record(
+        DAY, catchup_state.KIND_DAILY_CATCHUP
+    )
+    started_fingerprint = started_record["fingerprint"]
+
+    (segment / "center_DP-3_screen.jsonl").write_text(
+        '{"timestamp":0,"text":"frame"}\n',
+        encoding="utf-8",
+    )
+    progressed_fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
+    assert progressed_fingerprint != started_fingerprint
+
+    result = catchup_state.record_outcome(
+        CMD_DAILY, DAY, "ref-1", exit_status="timeout", ended_at=20
+    )
+    record = catchup_state.read_day_record(DAY, catchup_state.KIND_DAILY_CATCHUP)
+    assert result.completed is False
+    assert record["consecutive_non_completion"] == 1
+    assert record["next_retry_at"] > catchup_state.time.time()
+    assert catchup_state.day_eligible_to_drain(DAY, catchup_state.KIND_DAILY_CATCHUP)
+
+    catchup_state.record_attempt(CMD_DAILY, DAY, "ref-2", started_at=40)
+    reset_record = catchup_state.read_day_record(DAY, catchup_state.KIND_DAILY_CATCHUP)
+    assert reset_record["fingerprint"] == progressed_fingerprint
+    assert reset_record["consecutive_non_completion"] == 0
+    assert reset_record["entered_backoff_at"] is None
+    assert reset_record["notified_at"] is None
+    assert reset_record["next_retry_at"] == 0
+
+
+def test_unchanged_daily_noncompletion_stays_gated_until_retry(journal, monkeypatch):
+    _segment(journal).joinpath("audio.jsonl").write_text("one\n", encoding="utf-8")
+
+    catchup_state.record_attempt(CMD_DAILY, DAY, "ref-1", started_at=10)
+    result = catchup_state.record_outcome(
+        CMD_DAILY, DAY, "ref-1", exit_status="ok", ended_at=100
+    )
+    assert result.completed is False
+    assert result.next_retry_at == 700
+
+    monkeypatch.setattr(catchup_state.time, "time", lambda: 200)
+    assert not catchup_state.day_eligible_to_drain(
+        DAY, catchup_state.KIND_DAILY_CATCHUP
+    )
+
+    monkeypatch.setattr(catchup_state.time, "time", lambda: 701)
+    assert catchup_state.day_eligible_to_drain(DAY, catchup_state.KIND_DAILY_CATCHUP)
+
+
 def test_record_segment_repair_attempt_sets_active_and_resets_on_fingerprint_change(
     journal,
 ):

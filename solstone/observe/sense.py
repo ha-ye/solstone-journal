@@ -1071,7 +1071,9 @@ class FileSensor:
             for file_path, handler_name, command in to_process:
                 seg_name = file_path.parent.name
                 meta = segment_meta_cache.get(seg_name)
-                if max_jobs > self._resolve_concurrency(handler_name):
+                if handler_name == "describe" and max_jobs > self._resolve_concurrency(
+                    handler_name
+                ):
                     if handler_name not in temp_pools:
                         temp_pools[handler_name] = ThreadPoolExecutor(
                             max_workers=max_jobs,
@@ -1258,7 +1260,11 @@ def main():
         "--jobs",
         type=int,
         default=1,
-        help="Max concurrent processing jobs when using --day (default: 1)",
+        help=(
+            "Max concurrent screen-describe jobs when using --day (default: 1). "
+            "Only the describe handler is elevated; audio, PDF, and image handlers "
+            "keep their configured concurrency."
+        ),
     )
     parser.add_argument(
         "--reprocess",

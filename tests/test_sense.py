@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -658,6 +659,80 @@ def test_process_day_filters_stream_and_modality(tmp_path, monkeypatch):
     )
 
     assert processed == [("alpha", "audio.flac")]
+
+
+def test_process_day_elevates_describe_only_in_batch_mode(tmp_path, monkeypatch):
+    """Batch max_jobs elevates screen describe without bypassing other handler pools."""
+    import solstone.observe.sense as sense_module
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    for filename in ("screen.webm", "audio.flac", "document.pdf", "image.png"):
+        make_segment_file(tmp_path, filename=filename)
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
+    sensor.register("*.pdf", "extract", ["journal", "extract", "{file}"])
+    sensor.register("*.png", "depict", ["journal", "depict", "{file}"])
+    monkeypatch.setattr(sensor, "_resolve_concurrency", lambda _handler: 1)
+
+    class RecordingPool:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.submitted = []
+            self.shutdown_calls = []
+
+        def submit(self, fn, *args):
+            self.submitted.append((fn, args))
+            future = Future()
+            try:
+                future.set_result(fn(*args))
+            except Exception as exc:
+                future.set_exception(exc)
+            return future
+
+        def shutdown(self, **kwargs):
+            self.shutdown_calls.append(kwargs)
+
+    class RecordingTempExecutor(RecordingPool):
+        instances = []
+
+        def __init__(self, *, max_workers: int, thread_name_prefix: str) -> None:
+            super().__init__(thread_name_prefix)
+            self.max_workers = max_workers
+            self.thread_name_prefix = thread_name_prefix
+            self.instances.append(self)
+
+    configured_pools = {
+        name: RecordingPool(name)
+        for name in ("describe", "transcribe", "extract", "depict")
+    }
+    sensor.handler_pools.update(configured_pools)
+    monkeypatch.setattr(sense_module, "ThreadPoolExecutor", RecordingTempExecutor)
+    processed = []
+
+    def fake_run(queued_item, handler_name, *_args):
+        processed.append((handler_name, queued_item.file_path.name))
+
+    monkeypatch.setattr(sensor, "_run_handler", fake_run)
+
+    sensor.process_day("20250101", max_jobs=3)
+
+    assert [
+        (executor.max_workers, executor.thread_name_prefix)
+        for executor in RecordingTempExecutor.instances
+    ] == [(3, "describe-batch")]
+    assert configured_pools["describe"].submitted == []
+    assert len(RecordingTempExecutor.instances[0].submitted) == 1
+    assert len(configured_pools["transcribe"].submitted) == 1
+    assert len(configured_pools["extract"].submitted) == 1
+    assert len(configured_pools["depict"].submitted) == 1
+    assert set(processed) == {
+        ("describe", "screen.webm"),
+        ("transcribe", "audio.flac"),
+        ("extract", "document.pdf"),
+        ("depict", "image.png"),
+    }
 
 
 def test_file_sensor_spawn_handler(tmp_path, monkeypatch):

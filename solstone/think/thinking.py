@@ -36,7 +36,7 @@ from solstone.think.catchup_state import (
     record_segment_repair_outcome,
 )
 from solstone.think.change_detection import detect_segment_change, resolve_predecessor
-from solstone.think.cluster import cluster_segments
+from solstone.think.cluster import cluster_segments, read_segment_data_state
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
 from solstone.think.cortex_client import (
     CortexNotClaimed,
@@ -47,6 +47,7 @@ from solstone.think.cortex_client import (
     read_use_provider_model_reason,
     wait_for_uses,
 )
+from solstone.think.data_state import DataState
 from solstone.think.facets import (
     get_active_facets,
     get_enabled_facets,
@@ -475,6 +476,11 @@ def _default_segment_workers() -> int:
     """Return the default segment-level worker count for repair mode."""
     cpu_count = os.cpu_count() or 2
     return max(1, min(8, cpu_count // 2))
+
+
+def _default_describe_jobs() -> int:
+    """Return the default screen-describe worker count for repair mode."""
+    return max(1, min(4, (os.cpu_count() or 2) // 4))
 
 
 def _select_segment_repair_targets(
@@ -1312,6 +1318,24 @@ def run_segment_sense(
             **({"stream": stream} if stream else {}),
         )
         return (0, 1, ["sense (not_configured)"])
+
+    data_states = read_segment_data_state(day, segment, stream)
+    in_flight = sorted(
+        modality
+        for modality, state in data_states.items()
+        if state in {DataState.PENDING, DataState.ANALYZING}
+    )
+    if in_flight:
+        _jsonl_log(
+            "sense.skip",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            reason="raw_media_pending",
+            modalities=in_flight,
+            **({"stream": stream} if stream else {}),
+        )
+        return (0, 0, [])
 
     day_dir = day_path(day)
     seg_dir = _segment_dir(day, segment, stream)
@@ -3668,7 +3692,12 @@ def dry_run(
     print(header + "\n")
 
     if not segment:
-        print("Pre-phase:  journal sense --day " + day)
+        print(
+            "Pre-phase:  journal sense --day "
+            + day
+            + " -j "
+            + str(_default_describe_jobs())
+        )
 
     if not all_prompts:
         print(f"No prompts for schedule: {target_schedule}")
@@ -4365,7 +4394,14 @@ def main() -> None:
         # PRE-PHASE: Run sense repair (daily only)
         if not args.segment:
             logging.info("Running pre-phase: sense repair")
-            cmd = ["journal", "sense", "--day", day]
+            cmd = [
+                "journal",
+                "sense",
+                "--day",
+                day,
+                "-j",
+                str(_default_describe_jobs()),
+            ]
             if args.verbose:
                 cmd.append("-v")
             day_log(day, f"starting: {' '.join(cmd)}")

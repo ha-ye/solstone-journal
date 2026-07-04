@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -1935,6 +1936,119 @@ def test_run_task_emits_backoff_notification_once(monkeypatch):
     emitted = [call_args.args[:2] for call_args in callosum.emit.call_args_list]
     assert ("storage", "warning") not in emitted
     assert ("notification", "show") not in emitted
+
+
+def test_run_task_nudges_after_uncompleted_daily_only(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    queue = mod.TaskQueue(on_queue_change=None)
+    callosum = MagicMock()
+    nudge = MagicMock()
+
+    class FakeCallosum:
+        def start(self, callback=None):
+            return None
+
+        def emit(self, *args, **kwargs):
+            return callosum.emit(*args, **kwargs)
+
+        def stop(self):
+            return callosum.stop()
+
+    managed = MagicMock()
+    managed.pid = 12345
+    managed.wait.return_value = 0
+    managed.cleanup = MagicMock()
+
+    def fake_spawn(cmd, *, ref=None, callosum=None, day=None, env=None):
+        managed.cmd = cmd
+        managed.ref = ref
+        return managed
+
+    monkeypatch.setattr(mod, "CallosumConnection", FakeCallosum)
+    monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
+    monkeypatch.setattr(mod, "record_attempt", MagicMock())
+    record_outcome = MagicMock()
+    monkeypatch.setattr(mod, "record_outcome", record_outcome)
+    monkeypatch.setattr(mod, "_nudge_catchup_drain", nudge)
+    monkeypatch.setattr(queue, "_process_next", MagicMock())
+
+    daily_cmd = ["journal", "think", "-v", "--day", "20250101"]
+    record_outcome.return_value = SimpleNamespace(
+        recorded=True,
+        command_kind=mod.KIND_DAILY_CATCHUP,
+        completed=False,
+        entered_backoff=False,
+    )
+    queue._cap_terminated.add("ref-timeout")
+    queue._run_task(["ref-timeout"], daily_cmd, "daily", "20250101")
+
+    assert record_outcome.call_args.kwargs["exit_status"] == "timeout"
+    nudge.assert_called_once_with(exclude_today=True)
+
+    nudge.reset_mock()
+    record_outcome.return_value = SimpleNamespace(
+        recorded=True,
+        command_kind=mod.KIND_DAILY_CATCHUP,
+        completed=True,
+        entered_backoff=False,
+    )
+    queue._run_task(["ref-complete"], daily_cmd, "daily", "20250101")
+    nudge.assert_not_called()
+
+    nudge.reset_mock()
+    record_outcome.return_value = SimpleNamespace(
+        recorded=True,
+        command_kind="segment",
+        completed=False,
+        entered_backoff=False,
+    )
+    segment_cmd = [
+        "journal",
+        "think",
+        "-v",
+        "--day",
+        "20250101",
+        "--segment",
+        "120000_300",
+    ]
+    queue._run_task(["ref-segment"], segment_cmd, "segment", "20250101")
+    nudge.assert_not_called()
+
+
+def test_handle_supervisor_drain_routes_exclude_today(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    calls = []
+
+    class FakeDateTime:
+        @staticmethod
+        def now():
+            return SimpleNamespace(date=lambda: date(2025, 1, 2))
+
+    def fake_drain(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(mod, "datetime", FakeDateTime)
+    monkeypatch.setattr(mod, "run_catchup_drain", fake_drain)
+
+    mod._handle_supervisor_drain(
+        {
+            "tract": "supervisor",
+            "event": "drain",
+            "day": "20250101",
+            "exclude_today": True,
+        }
+    )
+    assert calls == [((), {"force_days": {"20250101"}})]
+
+    calls.clear()
+    mod._handle_supervisor_drain(
+        {"tract": "supervisor", "event": "drain", "exclude_today": True}
+    )
+    assert calls == [((), {"exclude": {"20250102"}})]
+
+    calls.clear()
+    mod._handle_supervisor_drain({"tract": "supervisor", "event": "drain"})
+    assert calls == [((), {})]
 
 
 def test_startup_catchup_drain_reconciles_before_drain(monkeypatch):

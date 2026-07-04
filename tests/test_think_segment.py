@@ -153,6 +153,8 @@ def _write_screen_header(
                 "qualified_count": 1,
             }
         )
+        + "\n"
+        + json.dumps({"timestamp": 1.0, "description": "active screen"})
         + "\n",
         encoding="utf-8",
     )
@@ -311,6 +313,132 @@ class TestRunSegmentSense:
             is True
         )
 
+    def test_run_segment_sense_skips_raw_media_pending_before_idle_gate(
+        self, segment_dir, monkeypatch
+    ):
+        from solstone.think import thinking as think
+        from solstone.think.data_state import DataState
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        spawned = []
+        jsonl_path = segment_dir.parent.parent / "health" / "test_raw_pending.jsonl"
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _sense_config_with_load("sense"),
+        )
+        monkeypatch.setattr(
+            think,
+            "read_segment_data_state",
+            lambda day, segment, stream=None: {"screen": DataState.PENDING.value},
+        )
+        monkeypatch.setattr(
+            think,
+            "check_segment_has_no_input",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("idle gate should not run while raw media is pending")
+            ),
+        )
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        result = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        assert result == (0, 0, [])
+        assert spawned == []
+        assert not (segment_dir / "talents" / "sense.json").exists()
+        events = _read_jsonl_events(jsonl_path)
+        skips = [event for event in events if event["event"] == "sense.skip"]
+        assert skips == [
+            {
+                "event": "sense.skip",
+                "ts": skips[0]["ts"],
+                "mode": "segment",
+                "day": "20240115",
+                "segment": "120000_300",
+                "reason": "raw_media_pending",
+                "modalities": ["screen"],
+                "stream": "default",
+            }
+        ]
+        assert not any(event["event"] == "sense.complete" for event in events)
+
+    def test_run_segment_sense_failed_only_falls_through_to_dispatch(
+        self, segment_dir, monkeypatch
+    ):
+        from solstone.think import thinking as think
+        from solstone.think.data_state import DataState
+        from solstone.think.thinking import ThinkingJSONLWriter
+
+        spawned = []
+        jsonl_path = segment_dir.parent.parent / "health" / "test_failed_state.jsonl"
+        writer = ThinkingJSONLWriter(str(jsonl_path))
+        _write_sense_output(
+            segment_dir,
+            {
+                "density": "active",
+                "content_type": "conversation",
+                "recommend": {},
+                "facets": [],
+            },
+        )
+
+        monkeypatch.setattr(
+            think,
+            "get_talent_configs",
+            lambda schedule=None, **kwargs: _segment_configs("sense"),
+        )
+        monkeypatch.setattr(
+            think,
+            "read_segment_data_state",
+            lambda day, segment, stream=None: {
+                "audio": DataState.ANALYZED.value,
+                "screen": DataState.FAILED.value,
+            },
+        )
+        monkeypatch.setattr(think, "check_segment_has_no_input", lambda *a, **k: False)
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        )
+        monkeypatch.setattr(
+            think,
+            "wait_for_uses",
+            lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+        )
+        monkeypatch.setattr(think, "_callosum", None)
+        monkeypatch.setattr(think, "_jsonl", writer)
+
+        success, failed, failed_names = think.run_segment_sense(
+            "20240115",
+            "120000_300",
+            refresh=False,
+            verbose=False,
+            stream="default",
+        )
+        writer.close()
+
+        assert spawned == ["sense"]
+        assert (success, failed, failed_names) == (1, 0, [])
+        events = _read_jsonl_events(jsonl_path)
+        assert not any(event["event"] == "sense.skip" for event in events)
+        assert any(event["event"] == "sense.complete" for event in events)
+
     def test_recorded_empty_segment_is_gated_to_idle(self, segment_dir, monkeypatch):
         from solstone.think import thinking as think
         from solstone.think.pipeline_health import (
@@ -380,6 +508,7 @@ class TestRunSegmentSense:
         assert len(sense_completes) == 1
         assert sense_completes[0]["density"] == "idle"
         assert sense_completes[0]["gated"] == "no_input"
+        assert not any(event["event"] == "sense.skip" for event in events)
         assert any(event["event"] == "sense.change_detect" for event in events)
         assert not any(
             event["event"] in {"talent.complete", "talent.fail"}

@@ -1007,6 +1007,12 @@ class TaskQueue:
                             consecutive=outcome_result.consecutive_non_completion,
                             last_outcome=outcome_result.last_outcome,
                         )
+                    if (
+                        outcome_result.recorded
+                        and outcome_result.command_kind == KIND_DAILY_CATCHUP
+                        and not outcome_result.completed
+                    ):
+                        _nudge_catchup_drain(exclude_today=True)
                 except Exception:
                     logging.warning("catchup outcome writeback failed", exc_info=True)
             try:
@@ -1552,6 +1558,9 @@ def _handle_supervisor_drain(message: dict) -> None:
     day = message.get("day")
     if day:
         run_catchup_drain(force_days={day})
+    elif message.get("exclude_today"):
+        today_str = datetime.now().date().strftime("%Y%m%d")
+        run_catchup_drain(exclude={today_str})
     else:
         run_catchup_drain()
 
@@ -2711,14 +2720,17 @@ async def handle_runner_exits(procs: list[RunnerManagedProcess]) -> None:
             logging.info("Not restarting %s", managed.name)
 
 
-def _nudge_catchup_drain() -> None:
+def _nudge_catchup_drain(exclude_today: bool = False) -> None:
     """Ask the supervisor loopback path to drain pending catchup work."""
     if _supervisor_callosum is None:
         logging.warning("Cannot nudge catchup drain: supervisor callosum unavailable")
         return
 
     try:
-        _supervisor_callosum.emit("supervisor", "drain")
+        if exclude_today:
+            _supervisor_callosum.emit("supervisor", "drain", exclude_today=True)
+        else:
+            _supervisor_callosum.emit("supervisor", "drain")
     except Exception as exc:
         logging.warning("Cannot nudge catchup drain: %s", exc)
 
