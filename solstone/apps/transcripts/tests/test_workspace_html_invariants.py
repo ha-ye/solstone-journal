@@ -43,3 +43,13 @@ def test_workspace_html_wires_body_window_panel_and_strip():
     assert ".join('\\n')" in text
     assert "Open full Body day" in text
     assert "import.apple_health" in text
+
+    body_events_css = text.split(".tr-body-events {", 1)[1].split("}", 1)[0]
+    assert "left: 104px" not in body_events_css
+    assert "left: 168px" in body_events_css
+
+    body_card = text.split("function renderBodyContextCard", 1)[1].split(
+        "function attachBodyWindowButtons", 1
+    )[0]
+    assert "chunk.markdown" not in body_card
+    assert "Body context unavailable for this day window." in body_card

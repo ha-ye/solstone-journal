@@ -905,9 +905,16 @@ def test_window_api_includes_sleep_events_from_previous_day(body_env):
     events = response.get_json()["events"]
     sleep_events = [event for event in events if event["kind"] == "sleep"]
     assert sleep_events
+    assert len(sleep_events) == 2
+    assert [event["source"] for event in sleep_events] == [
+        "Synthetic Ring",
+        "Synthetic Ring",
+    ]
     assert sleep_events[0]["start"] == "2026-06-30T22:58:00-06:00"
     assert sleep_events[0]["end"] == "2026-07-01T07:08:00-06:00"
     assert sleep_events[0]["overlap_label"] == "7h 08m"
+    assert sleep_events[1]["start"] == "2026-07-01T14:00:00-06:00"
+    assert sleep_events[1]["overlap_label"] == "45m"
 
 
 def test_window_api_rejects_invalid_and_too_large_spans(body_env):

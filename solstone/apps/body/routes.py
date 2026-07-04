@@ -34,7 +34,6 @@ from solstone.convey.reasons import INVALID_DAY, INVALID_REQUEST_VALUE
 from solstone.convey.utils import error_response
 from solstone.think.importers.health_schema import (
     friendly_type_name,
-    merge_sleep_sessions,
     pick_day_sleep,
 )
 
@@ -1544,11 +1543,23 @@ def _sleep_window_events(
         intervals_by_source.setdefault(_source_label(row), []).append(interval)
 
     events: list[dict[str, Any]] = []
-    for source, intervals in intervals_by_source.items():
-        for start, end in merge_sleep_sessions(intervals):
+    seen_sessions: set[tuple[str, str, str]] = set()
+    final_day = (window_end - timedelta(microseconds=1)).date()
+    current_day = window_start.date()
+    while current_day <= final_day:
+        sleep = pick_day_sleep(intervals_by_source, current_day)
+        current_day += timedelta(days=1)
+        if sleep is None:
+            continue
+        sessions = ([sleep.main] if sleep.main is not None else []) + list(sleep.naps)
+        for start, end in sessions:
             minutes = _overlap_minutes(start, end, window_start, window_end)
             if minutes <= 0:
                 continue
+            key = (sleep.source, _iso(start), _iso(end))
+            if key in seen_sessions:
+                continue
+            seen_sessions.add(key)
             events.append(
                 {
                     "kind": "sleep",
@@ -1559,7 +1570,7 @@ def _sleep_window_events(
                     "end_label": _time_label(end),
                     "overlap_minutes": round(minutes, 1),
                     "overlap_label": _format_duration(minutes),
-                    "source": source,
+                    "source": sleep.source,
                 }
             )
     return sorted(events, key=lambda item: _time_sort_key(str(item["start"])))

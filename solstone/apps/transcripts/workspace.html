@@ -259,7 +259,8 @@ body.has-app-bar .tr-card {
 
 .tr-body-events {
   position: absolute;
-  left: 104px;
+  /* Audio is x=72..112 and screen/import is x=120..160. Body starts after them. */
+  left: 168px;
   top: 16px;
   bottom: 12px;
   width: 40px;
@@ -2681,16 +2682,24 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   function renderBodyContextCard(data) {
     const payload = data.body_window;
     const parts = bodyWindowParts(payload, 6);
-    const summary = parts.length
-      ? parts.join(' · ')
-      : (data.chunks || []).map(chunk => chunk.markdown || '').join('\\n\\n');
+    let summary = 'Body context unavailable for this day window.';
+    if (parts.length) {
+      summary = parts.join(' · ');
+    } else if (payload) {
+      summary = payload.has_data
+        ? 'Body data present for this day.'
+        : 'No compact body context in this day window.';
+    }
+    const detailsButton = payload
+      ? '<button type="button" class="tr-body-context-button" data-action="open-body-window">Open details</button>'
+      : '';
     return '<div class="tr-body-context-card">'
       + '<h3>Body context</h3>'
       + '\n'
-      + `<p>${summary ? escapeHtml(summary) : 'Body data present for this day.'}</p>`
+      + `<p>${escapeHtml(summary)}</p>`
       + '\n'
       + '<div class="tr-body-context-actions">'
-      + '<button type="button" class="tr-body-context-button" data-action="open-body-window">Open details</button>'
+      + detailsButton
       + `<a href="/app/body/${day}">Open full Body day</a>`
       + '</div>'
       + '</div>';
