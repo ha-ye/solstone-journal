@@ -40,7 +40,29 @@ from solstone.think.utils import get_journal
 
 logger = logging.getLogger("solstone.backup.engine")
 
-BACKUP_EXCLUDES = ("*.sqlite*", "health", "indexer", "cache", ".cache")
+BACKUP_EXCLUDES = (
+    # Rebuildable derived data — never in snapshots (unchanged).
+    "*.sqlite*",
+    "indexer",
+    "cache",
+    ".cache",
+    # Runtime ephemera under health/ at every depth. Bare "health" was removed:
+    # restic matches a no-slash pattern by basename at ANY depth, so it dropped
+    # the durable deletion audit (retention.log, pruning-runs/) and per-day
+    # talent-provenance/ from every snapshot. These narrow basenames drop only
+    # runtime ephemera; excluding temps is unconditionally correct (never data).
+    "*.sock",
+    "*.pid",
+    "*.port",
+    "*.lock",
+    "*.tmp",
+    ".tmp*",
+    "supervisor.ready",
+    "supervisor.start_time",
+    "scheduler.json",
+    "talents.json",
+    "agents.json",
+)
 PRUNE_MAX_REPACK_SIZE = "1G"
 UNLOCK_TIMEOUT_SECONDS = 5 * 60
 BACKUP_TIMEOUT_SECONDS = 6 * 60 * 60

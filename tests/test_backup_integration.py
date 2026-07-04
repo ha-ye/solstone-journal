@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shlex
 import shutil
+import socket
 from pathlib import Path
 from typing import Any
 
@@ -171,16 +173,66 @@ def test_backup_restore_rotation_teardown_real_local_round_trip(
         "journal content\n",
         encoding="utf-8",
     )
+    (source_journal / "health" / "pruning-runs").mkdir(parents=True)
+    (source_journal / "health" / "retention.log").write_text(
+        "retention audit\n",
+        encoding="utf-8",
+    )
+    (source_journal / "health" / "pruning-runs" / "20260701.jsonl").write_text(
+        "pruning audit\n",
+        encoding="utf-8",
+    )
+    (source_journal / "health" / "supervisor.pid").write_text(
+        "12345\n",
+        encoding="utf-8",
+    )
+    (source_journal / "health" / "supervisor.ready").write_text(
+        "ready\n",
+        encoding="utf-8",
+    )
+    (source_journal / "health" / "convey.port").write_text(
+        "5015\n",
+        encoding="utf-8",
+    )
+    (source_journal / "health" / ".steward.lock").write_text(
+        "locked\n",
+        encoding="utf-8",
+    )
+    (source_journal / "health" / ".steward_inflight.tmp").write_text(
+        "partial\n",
+        encoding="utf-8",
+    )
+    (source_journal / "chronicle" / "20260701" / "health" / "talent-provenance").mkdir(
+        parents=True
+    )
+    (
+        source_journal
+        / "chronicle"
+        / "20260701"
+        / "health"
+        / "talent-provenance"
+        / "run.json"
+    ).write_text('{"run":"audit"}\n', encoding="utf-8")
+    callosum_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    cwd = os.getcwd()
+    try:
+        os.chdir(source_journal / "health")
+        callosum_socket.bind("callosum.sock")
+    finally:
+        os.chdir(cwd)
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(source_journal))
     assert ensure_restic() == restic_path
-    _backup_journal(
-        journal=source_journal,
-        destination=destination,
-        daily_key=daily_key,
-        recovery_key=recovery_key,
-        restic_path=restic_path,
-    )
+    try:
+        _backup_journal(
+            journal=source_journal,
+            destination=destination,
+            daily_key=daily_key,
+            recovery_key=recovery_key,
+            restic_path=restic_path,
+        )
+    finally:
+        callosum_socket.close()
 
     scan_calls: list[tuple[str, dict[str, Any]]] = []
 
@@ -201,6 +253,26 @@ def test_backup_restore_rotation_teardown_real_local_round_trip(
     assert (restored_journal / "chronicle" / "20260612" / "note.txt").read_text(
         encoding="utf-8"
     ) == "journal content\n"
+    assert (restored_journal / "health" / "retention.log").read_text(
+        encoding="utf-8"
+    ) == "retention audit\n"
+    assert (restored_journal / "health" / "pruning-runs" / "20260701.jsonl").read_text(
+        encoding="utf-8"
+    ) == "pruning audit\n"
+    assert (
+        restored_journal
+        / "chronicle"
+        / "20260701"
+        / "health"
+        / "talent-provenance"
+        / "run.json"
+    ).read_text(encoding="utf-8") == '{"run":"audit"}\n'
+    assert not (restored_journal / "health" / "callosum.sock").exists()
+    assert not (restored_journal / "health" / "supervisor.pid").exists()
+    assert not (restored_journal / "health" / "supervisor.ready").exists()
+    assert not (restored_journal / "health" / "convey.port").exists()
+    assert not (restored_journal / "health" / ".steward.lock").exists()
+    assert not (restored_journal / "health" / ".steward_inflight.tmp").exists()
     restored_config = _read_json(_config_path(restored_journal))
     assert restored_config["backup"]["daily_key"] == daily_key
     assert restored_config["backup"]["destination"] == {
