@@ -39,5 +39,7 @@ def test_workspace_html_wires_body_window_panel_and_strip():
     assert "renderBodyStrip" in text
     assert "renderBodyContextCard" in text
     assert "renderBodyEvents" in text
+    assert "tr-body-strip-separator" in text
+    assert ".join('\\n')" in text
     assert "Open full Body day" in text
     assert "import.apple_health" in text

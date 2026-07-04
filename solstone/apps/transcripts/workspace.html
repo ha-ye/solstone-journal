@@ -550,6 +550,10 @@ body.has-app-bar .tr-card {
   font-size: 11px;
 }
 
+.tr-body-strip-separator {
+  color: #9ca3af;
+}
+
 .tr-body-strip-button,
 .tr-body-context-button,
 .tr-body-panel-close {
@@ -2596,7 +2600,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
   function renderBodyPanelSection(title, innerHtml) {
     if (!innerHtml) return '';
-    return `<section class="tr-body-panel-section"><h4>${escapeHtml(title)}</h4>${innerHtml}</section>`;
+    return `<section class="tr-body-panel-section"><h4>${escapeHtml(title)}</h4>\n${innerHtml}\n</section>`;
   }
 
   function renderBodyPanel(payload, title, rangeLabel) {
@@ -2613,16 +2617,16 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
     const briefRows = bodyWindowParts(payload, 8)
       .map(row => `<li>${escapeHtml(row)}</li>`)
-      .join('');
+      .join('\n');
     const sources = (payload.sources?.chips || [])
       .map(source => `<span class="tr-body-chip">${escapeHtml(source.name)} <strong>${escapeHtml(source.count_label)}</strong></span>`)
-      .join('');
+      .join('\n');
     const signals = (payload.signals || []).slice(0, 10)
       .map(signal => `<li>${escapeHtml(signal.label)}: ${escapeHtml(signal.count_label)}</li>`)
-      .join('');
+      .join('\n');
     const events = (payload.events || [])
       .map(event => `<li>${escapeHtml(event.label)} · ${escapeHtml(event.start_label)}–${escapeHtml(event.end_label)} · ${escapeHtml(event.overlap_label)}</li>`)
-      .join('');
+      .join('\n');
 
     bodyPanelBody.innerHTML = ''
       + renderBodyPanelSection('Brief', `<ul class="tr-body-panel-list">${briefRows || '<li>Body data present.</li>'}</ul>`)
@@ -2667,7 +2671,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     if (parts.length === 0) return '';
     return '<div class="tr-body-strip">'
       + '<span class="tr-body-strip-label">Body context</span>'
-      + parts.map(part => `<span>${escapeHtml(part)}</span>`).join('')
+      + '\n'
+      + parts.map(part => `<span>${escapeHtml(part)}</span>`).join('<span class="tr-body-strip-separator" aria-hidden="true"> · </span>')
+      + '\n'
       + '<button type="button" class="tr-body-strip-button" data-action="open-body-window">Open details</button>'
       + '</div>';
   }
@@ -2680,7 +2686,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       : (data.chunks || []).map(chunk => chunk.markdown || '').join('\\n\\n');
     return '<div class="tr-body-context-card">'
       + '<h3>Body context</h3>'
+      + '\n'
       + `<p>${summary ? escapeHtml(summary) : 'Body data present for this day.'}</p>`
+      + '\n'
       + '<div class="tr-body-context-actions">'
       + '<button type="button" class="tr-body-context-button" data-action="open-body-window">Open details</button>'
       + `<a href="/app/body/${day}">Open full Body day</a>`
