@@ -341,21 +341,25 @@ def _group_entries(
 
 
 def _count_by_source(entries: list[dict[str, Any]]) -> dict[str, int]:
-    """Count entries by source type (prefix).
+    """Count entries by returned source-count key.
 
-    Maps the internal prefix names to source config names:
+    Maps internal entry prefixes to returned source-count keys:
     - "transcript" -> "transcripts"
     - "percept" -> "percepts"
-    - "agent_output" -> "agents"
+    - "agent_output" -> "talents"
+
+    Note: cluster input config still uses the internal "agents" source key for
+    talent-output markdown discovery. Returned counts use the public talent
+    frontmatter vocabulary, so "agent_output" is counted as "talents".
 
     Returns:
-        Dict with counts for each source type, e.g., {"transcripts": 2, "percepts": 1, "agents": 0}
+        Dict with counts for each source type, e.g., {"transcripts": 2, "percepts": 1, "talents": 0}
     """
     # Map internal prefix to source config name
     prefix_to_source = {
         "transcript": "transcripts",
         "percept": "percepts",
-        "agent_output": "agents",
+        "agent_output": "talents",
     }
 
     counts = Counter(prefix_to_source.get(e["prefix"], e["prefix"]) for e in entries)
@@ -364,7 +368,7 @@ def _count_by_source(entries: list[dict[str, Any]]) -> dict[str, int]:
     return {
         "transcripts": counts.get("transcripts", 0),
         "percepts": counts.get("percepts", 0),
-        "agents": counts.get("agents", 0),
+        "talents": counts.get("talents", 0),
     }
 
 
@@ -724,9 +728,9 @@ def cluster(
 
     Returns:
         Tuple of (markdown, source_counts) where source_counts is a dict
-        with keys "transcripts", "percepts", "agents" mapping to entry counts.
+        with keys "transcripts", "percepts", "talents" mapping to entry counts.
     """
-    empty_counts = {"transcripts": 0, "screen": 0, "agents": 0}
+    empty_counts = {"transcripts": 0, "percepts": 0, "talents": 0}
 
     day_dir = str(day_path(day))
     # day_path now ensures dir exists, but check anyway for safety
@@ -767,9 +771,9 @@ def cluster_period(
 
     Returns:
         Tuple of (markdown, source_counts) where source_counts is a dict
-        with keys "transcripts", "percepts", "agents" mapping to entry counts.
+        with keys "transcripts", "percepts", "talents" mapping to entry counts.
     """
-    empty_counts = {"transcripts": 0, "screen": 0, "agents": 0}
+    empty_counts = {"transcripts": 0, "percepts": 0, "talents": 0}
 
     segment_dir = _find_segment_dir(day, segment, stream)
 
@@ -844,12 +848,12 @@ def cluster_span(
 
     Returns:
         Tuple of (markdown, source_counts) where source_counts is a dict
-        with keys "transcripts", "percepts", "agents" mapping to entry counts.
+        with keys "transcripts", "percepts", "talents" mapping to entry counts.
 
     Raises:
         ValueError: If any segment directories are missing
     """
-    empty_counts = {"transcripts": 0, "screen": 0, "agents": 0}
+    empty_counts = {"transcripts": 0, "percepts": 0, "talents": 0}
 
     # Validate all segments in span exist upfront (fail fast)
     missing = []

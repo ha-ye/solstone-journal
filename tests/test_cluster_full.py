@@ -27,7 +27,7 @@ def test_cluster_full(tmp_path, monkeypatch):
     )
     # Transcript entries come from 2 segments on 20240101 (default + import.apple)
     assert counts["transcripts"] == 2
-    assert counts["agents"] == 2  # audio.md + screen.md
+    assert counts["talents"] == 2  # audio.md + screen.md
     assert "### Transcript" in md
     # Now uses insight format: "### {stem} summary"
     assert "### screen summary" in md

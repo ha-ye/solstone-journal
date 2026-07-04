@@ -926,6 +926,44 @@ def test_json_cache_reuse_requires_current_schema_validation(
     assert out.read_text(encoding="utf-8") == '{"ok": true}'
 
 
+def test_identity_hash_ignores_source_count_vocabulary():
+    from solstone.think import talents
+
+    config = {
+        "type": "generate",
+        "name": "sense",
+        "provider": "google",
+        "model": "x",
+        "prompt": "think about this segment",
+        "day": DAY,
+        "segment": ACTIVE_SEGMENT,
+        "stream": STREAM,
+        "output": "json",
+        "json_schema": {
+            "type": "object",
+            "required": ["ok"],
+            "properties": {"ok": {"type": "boolean"}},
+        },
+        "schedule": "segment",
+        "sources": {
+            "transcripts": True,
+            "percepts": False,
+            "talents": {"sense": True},
+        },
+        "source_counts": {"transcripts": 1, "percepts": 0, "agents": 1},
+    }
+    runtime_schema = talents.hydrate_runtime_enums(config["json_schema"])
+    renamed_counts = {
+        **config,
+        "source_counts": {"transcripts": 1, "percepts": 0, "talents": 1},
+    }
+
+    assert talents._identity_hash(config, runtime_schema) == talents._identity_hash(
+        renamed_counts,
+        runtime_schema,
+    )
+
+
 def test_activity_replay_dedupes_records_and_preserves_non_refresh(
     tmp_path,
     monkeypatch,

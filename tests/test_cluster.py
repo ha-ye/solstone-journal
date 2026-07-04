@@ -13,6 +13,63 @@ import pytest
 from solstone.observe.processing_record import STATE_EMPTY
 from solstone.think.utils import day_path
 
+DAY = "20240101"
+SEGMENT = "120000_300"
+
+
+def _patch_prepare_config_model_deps(monkeypatch) -> None:
+    from solstone.think.models import TIER_LITE
+
+    monkeypatch.setattr(
+        "solstone.think.models.resolve_provider",
+        lambda _context, _type: ("google", "gemini-test"),
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.type_default_is_local", lambda _type: False
+    )
+    monkeypatch.setattr(
+        "solstone.think.models._resolve_tier",
+        lambda _context, _type: TIER_LITE,
+    )
+    monkeypatch.setattr("solstone.think.models.load_health_status", lambda: {})
+    monkeypatch.setattr(
+        "solstone.think.models.should_recheck_health", lambda _health: False
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.is_provider_model_interface_healthy",
+        lambda _provider, _model, _type, _health: True,
+    )
+
+
+def _write_probe_talent(talent_dir: Path, load: dict | str) -> str:
+    name = "required_talent_probe"
+    metadata = {
+        "type": "generate",
+        "schedule": "segment",
+        "priority": 10,
+        "output": "md",
+        "load": {
+            "transcripts": False,
+            "percepts": False,
+            "talents": load,
+        },
+    }
+    (talent_dir / f"{name}.md").write_text(
+        f"{json.dumps(metadata, indent=2)}\n\nProbe prompt\n",
+        encoding="utf-8",
+    )
+    return name
+
+
+def _seed_talent_output(
+    root: Path,
+    name: str,
+    content: str = "Agent output with enough substantive content for input gating.",
+) -> None:
+    segment_dir = root / "chronicle" / DAY / "default" / SEGMENT / "talents"
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    (segment_dir / f"{name}.md").write_text(content, encoding="utf-8")
+
 
 def test_cluster(tmp_path, monkeypatch):
     """Test cluster() uses transcripts and agent output summaries (*.md files)."""
@@ -34,7 +91,7 @@ def test_cluster(tmp_path, monkeypatch):
         "20240101", sources={"transcripts": True, "percepts": False, "agents": True}
     )
     assert counts["transcripts"] == 1
-    assert counts["agents"] == 1
+    assert counts["talents"] == 1
     assert "### Transcript" in result
     # Now uses insight rendering: "### {stem} summary"
     assert "screen summary" in result
@@ -478,7 +535,7 @@ def test_cluster_with_agent_filter_dict(tmp_path, monkeypatch):
     )
 
     assert counts["transcripts"] == 1
-    assert counts["agents"] == 1  # Only entities should be counted
+    assert counts["talents"] == 1  # Only entities should be counted
     assert "Entity extraction results" in result
     assert "Meeting summary results" not in result
     assert "Flow analysis results" not in result
@@ -511,7 +568,7 @@ def test_cluster_with_agent_filter_multiple(tmp_path, monkeypatch):
     )
 
     assert counts["transcripts"] == 1
-    assert counts["agents"] == 2  # entities + meetings
+    assert counts["talents"] == 2  # entities + meetings
     assert "Entity extraction results" in result
     assert "Meeting summary results" in result
     assert "Flow analysis results" not in result
@@ -544,7 +601,7 @@ def test_cluster_with_agent_filter_app_namespaced(tmp_path, monkeypatch):
     )
 
     assert counts["transcripts"] == 1
-    assert counts["agents"] == 1  # Only app:name
+    assert counts["talents"] == 1  # Only app:name
     assert "System entity results" not in result
     assert "App agent results" in result
 
@@ -569,8 +626,91 @@ def test_cluster_with_empty_agent_filter(tmp_path, monkeypatch):
     )
 
     assert counts["transcripts"] == 1
-    assert counts["agents"] == 0
+    assert counts["talents"] == 0
     assert "Entity extraction results" not in result
+
+
+def test_cluster_count_keys_match_for_empty_and_populated_results(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    empty_day = day_path("20240102")
+    empty_day.mkdir(parents=True, exist_ok=True)
+
+    mod = importlib.import_module("solstone.think.cluster")
+    _empty_result, empty_counts = mod.cluster(
+        "20240102",
+        sources={"transcripts": True, "percepts": True, "agents": True},
+    )
+
+    populated_day = day_path("20240103")
+    segment = populated_day / "default" / "120000_300"
+    (segment / "talents").mkdir(parents=True)
+    (segment / "audio.jsonl").write_text(
+        '{"raw": "audio.flac"}\n{"start": "00:00:01", "text": "hello"}\n',
+        encoding="utf-8",
+    )
+    (segment / "screen.jsonl").write_text(
+        '{"raw": "screen.webm"}\n'
+        '{"timestamp": 10, "analysis": {"primary": "code_editor"}}\n',
+        encoding="utf-8",
+    )
+    (segment / "talents" / "sense.md").write_text(
+        "Sense markdown with entity candidates.",
+        encoding="utf-8",
+    )
+    _populated_result, populated_counts = mod.cluster(
+        "20240103",
+        sources={"transcripts": True, "percepts": True, "agents": True},
+    )
+
+    assert (
+        set(empty_counts)
+        == set(populated_counts)
+        == {
+            "transcripts",
+            "percepts",
+            "talents",
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("load", "agent_name", "expected_skip"),
+    [
+        ("required", "sense", None),
+        ({"sense": "required"}, "sense", None),
+        ("required", None, "missing_required_talents"),
+    ],
+)
+def test_prepare_config_required_talent_source_uses_talent_count_key(
+    tmp_path,
+    monkeypatch,
+    load,
+    agent_name,
+    expected_skip,
+):
+    from solstone.think import talent as talent_module
+    from solstone.think import talents
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(talent_module, "TALENT_DIR", tmp_path / "talents")
+    talent_module.TALENT_DIR.mkdir()
+    _patch_prepare_config_model_deps(monkeypatch)
+    prompt_name = _write_probe_talent(talent_module.TALENT_DIR, load)
+    if agent_name is not None:
+        _seed_talent_output(tmp_path, agent_name)
+
+    config = talents.prepare_config(
+        {
+            "name": prompt_name,
+            "day": DAY,
+            "segment": SEGMENT,
+            "output": "md",
+        }
+    )
+
+    assert config.get("skip_reason") == expected_skip
 
 
 def test_filename_to_agent_key():
