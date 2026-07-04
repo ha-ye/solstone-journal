@@ -7,6 +7,8 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
+import solstone.think.models as models
+
 enrich_mod = importlib.import_module("solstone.observe.enrich")
 
 _SCHEMA = json.loads(
@@ -151,3 +153,23 @@ def test_enrich_transcript_passes_schema_to_generate(monkeypatch):
         "setting": "",
         "warning": "",
     }
+
+
+def test_enrich_transcript_schema_validation_error_returns_none(monkeypatch):
+    def fake_generate(**kwargs):
+        raise models.SchemaValidationError(
+            [{"path": "", "constraint": "json_parse", "message": "empty"}],
+            "",
+        )
+
+    monkeypatch.setattr(enrich_mod, "generate", fake_generate)
+
+    import numpy as np
+
+    result = enrich_mod.enrich_transcript(
+        np.zeros(16000, dtype=np.float32),
+        16000,
+        [{"id": 1, "start": 0.0, "end": 1.0, "text": "Hello world."}],
+    )
+
+    assert result is None

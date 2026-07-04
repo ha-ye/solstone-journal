@@ -381,6 +381,11 @@ async def run_cogitate(
             local_server.connect()
         return await openhands.run_cogitate(config, on_event=on_event)
     except Exception as exc:
+        from solstone.think.talents import TalentHookError
+
+        if isinstance(exc, TalentHookError):
+            raise
+
         reason_code = None
         if not endpoint.is_bundled:
             reason_code = classify_byo_cogitate_error(exc) or getattr(

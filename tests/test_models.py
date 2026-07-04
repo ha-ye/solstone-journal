@@ -34,6 +34,7 @@ from solstone.think.models import (
     TIER_PRO,
     TYPE_DEFAULTS,
     IncompleteJSONError,
+    SchemaValidationError,
     _Family,
     _find_pricing_fallback,
     _parse_family_anthropic,
@@ -1510,6 +1511,37 @@ class TestGenerateJsonSchemaPlumbing:
 
         assert result["schema_validation"] == validation
 
+    def test_generate_with_result_returns_failed_schema_validation_without_raising(
+        self,
+    ):
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(
+                return_value={"text": '{"field": "bad"}', "finish_reason": "stop"}
+            )
+        )
+        validation = {
+            "valid": False,
+            "errors": [{"path": "/field", "constraint": "type", "message": "bad"}],
+        }
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models._validate_schema", return_value=validation),
+        ):
+            result = generate_with_result(
+                "hello",
+                "test.context",
+                json_schema={"type": "object"},
+            )
+
+        assert result["schema_validation"] == validation
+
     def test_generate_with_result_omits_schema_validation_without_schema(self):
         provider_module = SimpleNamespace(
             run_generate=MagicMock(return_value={"text": "{}", "finish_reason": "stop"})
@@ -1578,6 +1610,84 @@ class TestGenerateJsonSchemaPlumbing:
         assert async_result == "{}"
         mock_validate_schema.assert_called_once()
         mock_async_validate.assert_called_once()
+
+    def test_generate_raises_schema_validation_error_with_structured_fields(self):
+        long_text = '{"field": "' + ("x" * 300) + '"}'
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(
+                return_value={"text": long_text, "finish_reason": "stop"}
+            )
+        )
+        schema = {
+            "type": "object",
+            "properties": {"field": {"type": "integer"}},
+        }
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            with pytest.raises(SchemaValidationError) as exc_info:
+                generate("hello", "test.context", json_schema=schema)
+
+        exc = exc_info.value
+        assert exc.text == long_text
+        assert exc.errors[0]["constraint"] == "type"
+        assert len(exc.preview) == 200
+        assert exc.preview.endswith("...")
+        assert "x" * 250 not in str(exc)
+
+    def test_agenerate_raises_schema_validation_error(self):
+        provider_module = SimpleNamespace(
+            run_agenerate=AsyncMock(
+                return_value={"text": '{"field": "bad"}', "finish_reason": "stop"}
+            )
+        )
+        schema = {
+            "type": "object",
+            "properties": {"field": {"type": "integer"}},
+        }
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            with pytest.raises(SchemaValidationError) as exc_info:
+                asyncio.run(agenerate("hello", "test.context", json_schema=schema))
+
+        assert exc_info.value.text == '{"field": "bad"}'
+        assert exc_info.value.errors[0]["constraint"] == "type"
+
+    def test_generate_empty_schema_response_raises_schema_validation_error(self):
+        provider_module = SimpleNamespace(
+            run_generate=MagicMock(return_value={"text": "", "finish_reason": "stop"})
+        )
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+        ):
+            with pytest.raises(SchemaValidationError) as exc_info:
+                generate("hello", "test.context", json_schema={"type": "object"})
+
+        assert exc_info.value.text == ""
+        assert exc_info.value.preview == ""
+        assert exc_info.value.errors[0]["constraint"] == "json_parse"
 
     def test_truncation_raises_before_schema_validation(self):
         provider_module = SimpleNamespace(

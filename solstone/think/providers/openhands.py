@@ -1289,6 +1289,11 @@ async def run_cogitate(
     except QuotaExhaustedError:
         raise
     except Exception as exc:
+        from solstone.think.talents import TalentHookError
+
+        if isinstance(exc, TalentHookError):
+            raise
+
         provider_exc = _unwrap_provider_exception(exc)
         reason_code = None
         local_endpoint = None

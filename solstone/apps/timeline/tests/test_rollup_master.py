@@ -12,7 +12,7 @@ import pytest
 
 from solstone.apps.timeline.maintenance import _rollup_master, run_rollup_master
 from solstone.apps.timeline.tests.conftest import write_json
-from solstone.think.models import GEMINI_FLASH
+from solstone.think.models import GEMINI_FLASH, SchemaValidationError
 
 
 def _write_day(journal, day, titles):
@@ -229,4 +229,30 @@ def test_rollup_master_month_error_nonfatal(timeline_journal, mock_agenerate):
     payload = json.loads((timeline_journal / "timeline.json").read_text())
     assert payload["months"]["202605"]["month_top"] == []
     assert payload["months"]["202605"]["month_rationale"] == "ERROR: month backend down"
+    assert payload["year_top"] == []
+
+
+def test_rollup_master_schema_error_nonfatal(timeline_journal, mock_agenerate):
+    _write_day(timeline_journal, "20260510", ["A", "B", "C", "D", "E"])
+    mock_agenerate(
+        SchemaValidationError(
+            [{"path": "", "constraint": "json_parse", "message": "empty"}],
+            "",
+        )
+    )
+
+    asyncio.run(
+        _rollup_master(
+            timeline_journal,
+            top=4,
+            jobs=5,
+            dry_run=False,
+            force=False,
+            months_filter=None,
+        )
+    )
+
+    payload = json.loads((timeline_journal / "timeline.json").read_text())
+    assert payload["months"]["202605"]["month_top"] == []
+    assert "schema validation" in payload["months"]["202605"]["month_rationale"]
     assert payload["year_top"] == []

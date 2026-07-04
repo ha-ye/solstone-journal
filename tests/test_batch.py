@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from solstone.think.batch import Batch, BatchRequest
-from solstone.think.models import GEMINI_FLASH, GEMINI_LITE
+from solstone.think.models import GEMINI_FLASH, GEMINI_LITE, SchemaValidationError
 
 
 def test_batch_request_creation():
@@ -563,3 +563,28 @@ async def test_batch_passes_json_schema_to_agenerate(mock_agenerate):
 
     call_kwargs = mock_agenerate.call_args[1]
     assert call_kwargs["json_schema"] == {"type": "object"}
+
+
+@pytest.mark.asyncio
+@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+async def test_batch_schema_validation_error_populates_request_error(mock_agenerate):
+    mock_agenerate.side_effect = SchemaValidationError(
+        [{"path": "", "constraint": "json_parse", "message": "empty"}],
+        "",
+    )
+
+    batch = Batch(max_concurrent=5)
+    req = batch.create(
+        contents="Test prompt",
+        context="test.context",
+        json_schema={"type": "object"},
+    )
+    batch.add(req)
+
+    results = []
+    async for completed_req in batch.drain_batch():
+        results.append(completed_req)
+
+    assert len(results) == 1
+    assert results[0].response is None
+    assert "schema validation" in results[0].error

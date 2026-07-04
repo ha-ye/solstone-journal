@@ -23,6 +23,28 @@ from solstone.think.models import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _restore_talents_module():
+    saved = sys.modules.pop("solstone.think.talents", None)
+    parent = sys.modules.get("solstone.think")
+    had_parent_attr = parent is not None and hasattr(parent, "talents")
+    saved_parent_attr = getattr(parent, "talents", None) if had_parent_attr else None
+    if had_parent_attr:
+        delattr(parent, "talents")
+    try:
+        yield
+    finally:
+        if saved is not None:
+            sys.modules["solstone.think.talents"] = saved
+        else:
+            sys.modules.pop("solstone.think.talents", None)
+        if parent is not None:
+            if had_parent_attr:
+                setattr(parent, "talents", saved_parent_attr)
+            elif hasattr(parent, "talents"):
+                delattr(parent, "talents")
+
+
 async def run_main(mod, argv, stdin_data=None):
     sys.argv = argv
     if stdin_data:

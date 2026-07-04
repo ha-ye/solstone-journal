@@ -194,24 +194,24 @@ def detect_transcript_json(text: str, segment_start: str) -> Optional[dict]:
 
     from solstone.think.models import generate
 
-    response_text = generate(
-        contents=contents,
-        context="observe.detect.json",
-        temperature=0.3,
-        max_output_tokens=8192,
-        thinking_budget=8192,
-        system_instruction=_load_json_prompt(),
-        json_output=True,
-        json_schema=_JSON_SCHEMA,
-    )
-
-    logging.info(f"Received JSON conversion response: {response_text[:100]}")
     try:
+        response_text = generate(
+            contents=contents,
+            context="observe.detect.json",
+            temperature=0.3,
+            max_output_tokens=8192,
+            thinking_budget=8192,
+            system_instruction=_load_json_prompt(),
+            json_output=True,
+            json_schema=_JSON_SCHEMA,
+        )
+
+        logging.info(f"Received JSON conversion response: {response_text[:100]}")
         result = json.loads(response_text)
         logging.info("Successfully converted transcript to JSON")
         return result
-    except json.JSONDecodeError:
-        logging.error("Failed to parse JSON response from LLM")
+    except (ValueError, json.JSONDecodeError) as e:
+        logging.error(f"Failed to parse JSON response from LLM: {e}")
         return None
 
 

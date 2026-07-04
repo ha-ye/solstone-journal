@@ -63,8 +63,8 @@ def _extract_metadata(path: str) -> str:
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return proc.stdout
-    except Exception as exc:  # pragma: no cover - exiftool optional
-        return f"Error extracting metadata: {exc}"
+    except Exception:  # pragma: no cover - exiftool optional
+        return "exiftool metadata unavailable"
 
 
 def _extract_metadata_json(path: str) -> dict:
@@ -265,37 +265,36 @@ def detect_created(
 
     from solstone.think.models import generate
 
-    response_text = generate(
-        contents=markdown,
-        context="detect.created",
-        temperature=0.3,
-        max_output_tokens=256,
-        thinking_budget=4096,
-        system_instruction=_load_system_prompt(),
-        json_output=True,
-        json_schema=_SCHEMA,
-    )
-
     try:
+        response_text = generate(
+            contents=markdown,
+            context="detect.created",
+            temperature=0.3,
+            max_output_tokens=256,
+            thinking_budget=4096,
+            system_instruction=_load_system_prompt(),
+            json_output=True,
+            json_schema=_SCHEMA,
+        )
         result = json.loads(response_text)
-
-        # Convert UTC to local time if needed
-        if result and result.get("utc") is True:
-            day = result.get("day")
-            time = result.get("time")
-
-            if day and time:
-                # Parse as UTC datetime
-                utc_dt = datetime.strptime(f"{day}{time}", "%Y%m%d%H%M%S")
-                utc_dt = utc_dt.replace(tzinfo=timezone.utc)
-
-                # Convert to local timezone
-                local_dt = utc_dt.astimezone()
-
-                # Update result with local time
-                result["day"] = local_dt.strftime("%Y%m%d")
-                result["time"] = local_dt.strftime("%H%M%S")
-
-        return result
-    except json.JSONDecodeError:
+    except (ValueError, json.JSONDecodeError):
         return None
+
+    # Convert UTC to local time if needed
+    if result and result.get("utc") is True:
+        day = result.get("day")
+        time = result.get("time")
+
+        if day and time:
+            # Parse as UTC datetime
+            utc_dt = datetime.strptime(f"{day}{time}", "%Y%m%d%H%M%S")
+            utc_dt = utc_dt.replace(tzinfo=timezone.utc)
+
+            # Convert to local timezone
+            local_dt = utc_dt.astimezone()
+
+            # Update result with local time
+            result["day"] = local_dt.strftime("%Y%m%d")
+            result["time"] = local_dt.strftime("%H%M%S")
+
+    return result

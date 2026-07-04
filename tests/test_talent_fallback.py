@@ -19,7 +19,11 @@ from solstone.think.models import (
     should_recheck_health,
 )
 from solstone.think.providers.cli import QuotaExhaustedError
-from solstone.think.talents import _is_retryable_error
+from solstone.think.talents import (
+    TalentHookError,
+    _is_retryable_error,
+    _should_fallback,
+)
 from solstone.think.utils import now_ms
 
 
@@ -754,6 +758,13 @@ def test_on_failure_no_retry_value_error(monkeypatch):
     assert not any(e.get("event") == "fallback" for e in events)
 
 
+def test_talent_hook_error_is_non_retryable():
+    exc = TalentHookError("post", "broken", "chat", RuntimeError("boom"))
+
+    assert _is_retryable_error(exc) is False
+    assert _should_fallback(exc) is False
+
+
 def test_on_failure_both_fail_raises_original(monkeypatch):
     from solstone.think.talents import _execute_generate
 
@@ -942,3 +953,76 @@ def test_main_async_no_duplicate_error_when_evented(monkeypatch, capsys):
     events = [json.loads(line) for line in lines]
     error_events = [event for event in events if event.get("event") == "error"]
     assert len(error_events) == 1
+
+
+def test_main_async_cogitate_hook_error_no_fallback_no_double_emit(
+    monkeypatch,
+    capsys,
+):
+    from solstone.think import talents
+
+    ndjson_input = json.dumps({"name": "chat", "prompt": "hello"})
+    monkeypatch.setattr("sys.stdin", StringIO(ndjson_input))
+
+    provider_calls = []
+
+    async def fake_run_cogitate(config, on_event):
+        provider_calls.append(config["provider"])
+        on_event({"event": "finish", "result": "provider result"})
+
+    def broken_post_hook(result, context):
+        raise RuntimeError("hook exploded")
+
+    mock_args = MagicMock()
+    mock_args.verbose = False
+    mock_args.dry_run = False
+    mock_args.subcommand = None
+
+    config = {
+        "type": "cogitate",
+        "name": "chat",
+        "provider": "google",
+        "model": "gemini-3-flash-preview",
+        "tier": "flash",
+        "prompt": "hello",
+        "hook": {"post": "broken_hook"},
+    }
+
+    monkeypatch.setattr("solstone.think.talents.setup_cli", lambda _parser: mock_args)
+    monkeypatch.setattr(
+        "solstone.think.talents.setup_logging",
+        lambda _verbose=False: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "solstone.think.talents.prepare_config", lambda _request: config
+    )
+    monkeypatch.setattr("solstone.think.talents.validate_config", lambda _config: None)
+    monkeypatch.setattr(
+        "solstone.think.talents.load_post_hook", lambda _config: broken_post_hook
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.PROVIDER_REGISTRY",
+        {"google": object(), "anthropic": object()},
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.get_provider_module",
+        lambda _provider: SimpleNamespace(run_cogitate=fake_run_cogitate),
+    )
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+    asyncio.run(talents.main_async())
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    events = [json.loads(line) for line in lines]
+    error_events = [event for event in events if event.get("event") == "error"]
+
+    assert provider_calls == ["google"]
+    assert [event for event in events if event.get("event") == "fallback"] == []
+    assert [event for event in events if event.get("event") == "finish"] == []
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "hook_error"
+    assert error_events[0]["terminal"] is True
+    assert (
+        "post-hook 'broken_hook' failed for talent 'chat'" in error_events[0]["error"]
+    )
+    assert "hook exploded" in error_events[0]["error"]

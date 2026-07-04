@@ -120,6 +120,18 @@ def test_detect_transcript_segment_passes_schema_to_generate(monkeypatch):
     assert all(isinstance(item, tuple) and len(item) == 2 for item in result)
 
 
+def test_detect_transcript_segment_schema_validation_error_returns_empty(monkeypatch):
+    def fake_generate(**kwargs):
+        raise models.SchemaValidationError(
+            [{"path": "", "constraint": "json_parse", "message": "empty"}],
+            "",
+        )
+
+    monkeypatch.setattr(models, "generate", fake_generate)
+
+    assert mod.detect_transcript_segment("01\n02\n", "12:00:00") == []
+
+
 def test_detect_transcript_json_passes_schema_to_generate(monkeypatch):
     captured = {}
 
@@ -140,3 +152,15 @@ def test_detect_transcript_json_passes_schema_to_generate(monkeypatch):
         "topics": "planning",
         "setting": "workplace",
     }
+
+
+def test_detect_transcript_json_schema_validation_error_returns_none(monkeypatch):
+    def fake_generate(**kwargs):
+        raise models.SchemaValidationError(
+            [{"path": "", "constraint": "json_parse", "message": "empty"}],
+            "",
+        )
+
+    monkeypatch.setattr(models, "generate", fake_generate)
+
+    assert mod.detect_transcript_json("some text", "12:00:00") is None

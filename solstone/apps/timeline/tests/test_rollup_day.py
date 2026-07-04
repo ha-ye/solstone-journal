@@ -10,7 +10,7 @@ import json
 
 from solstone.apps.timeline.maintenance import _rollup_day, run_rollup_day
 from solstone.apps.timeline.tests.conftest import write_json
-from solstone.think.models import GEMINI_FLASH, GEMINI_LITE
+from solstone.think.models import GEMINI_FLASH, GEMINI_LITE, SchemaValidationError
 
 DAY = "20260512"
 
@@ -169,6 +169,33 @@ def test_rollup_day_hour_error_continues_picks_empty_with_error_field(
     )
     assert payload["hours"]["12"]["picks"] == []
     assert "hour backend down" in payload["hours"]["12"]["error"]
+    assert len(payload["day_top"]) == 4
+
+
+def test_rollup_day_schema_error_continues_picks_empty_with_error_field(
+    timeline_journal,
+    mock_agenerate,
+):
+    for i in range(5):
+        _write_segment(timeline_journal, DAY, f"12000{i}_60", f"Noon {i}")
+        _write_segment(timeline_journal, DAY, f"13000{i}_60", f"One {i}")
+    mock_agenerate(
+        SchemaValidationError(
+            [{"path": "", "constraint": "json_parse", "message": "empty"}],
+            "",
+        ),
+        {"picks": [0, 1, 2, 3], "rationale": "one pm"},
+    )
+
+    asyncio.run(
+        _rollup_day(timeline_journal, DAY, top=4, jobs=5, dry_run=False, force=False)
+    )
+
+    payload = json.loads(
+        (timeline_journal / "chronicle" / DAY / "timeline.json").read_text()
+    )
+    assert payload["hours"]["12"]["picks"] == []
+    assert "schema validation" in payload["hours"]["12"]["error"]
     assert len(payload["day_top"]) == 4
 
 

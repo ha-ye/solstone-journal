@@ -84,6 +84,24 @@ MIN_INPUT_CHARS = 50
 MIN_OUTPUT_TOKENS = 300
 
 
+class TalentHookError(RuntimeError):
+    """Raised when an invoked talent hook fails."""
+
+    def __init__(
+        self,
+        phase: str,
+        hook_name: str,
+        talent_name: str,
+        original: Exception,
+    ) -> None:
+        self.phase = phase
+        self.hook_name = hook_name
+        self.talent_name = talent_name
+        super().__init__(
+            f"{phase}-hook {hook_name!r} failed for talent {talent_name!r}: {original}"
+        )
+
+
 def setup_logging(verbose: bool = False) -> logging.Logger:
     """Configure logging for agent CLI."""
     level = logging.DEBUG if verbose else logging.INFO
@@ -808,6 +826,8 @@ def _run_pre_hooks(config: dict) -> dict:
     if not pre_hook:
         return {}
 
+    hook_name = str(config.get("hook", {}).get("pre", "unknown"))
+    talent_name = str(config.get("name", "unknown"))
     try:
         modifications = pre_hook(config)
         if modifications:
@@ -815,6 +835,7 @@ def _run_pre_hooks(config: dict) -> dict:
             return modifications
     except Exception as exc:
         LOG.error("Pre-hook failed: %s", exc)
+        raise TalentHookError("pre", hook_name, talent_name, exc) from exc
 
     return {}
 
@@ -851,6 +872,8 @@ def _run_post_hooks(result: str, config: dict) -> str:
     if not post_hook:
         return result
 
+    hook_name = str(config.get("hook", {}).get("post", "unknown"))
+    talent_name = str(config.get("name", "unknown"))
     try:
         hook_result = post_hook(result, config)
         if hook_result is not None:
@@ -858,6 +881,7 @@ def _run_post_hooks(result: str, config: dict) -> str:
             return hook_result
     except Exception as exc:
         LOG.error("Post-hook failed: %s", exc)
+        raise TalentHookError("post", hook_name, talent_name, exc) from exc
 
     return result
 
@@ -1240,7 +1264,31 @@ def _build_dry_run_event(config: dict, before_values: dict) -> dict:
     return event
 
 
+def _mark_terminal_error_evented(config: dict) -> None:
+    config["_terminal_error_evented"] = True
+
+
+def _emit_terminal_hook_error(
+    config: dict,
+    emit_event: Callable[[dict], None],
+    exc: TalentHookError,
+) -> None:
+    _mark_terminal_error_evented(config)
+    setattr(exc, "_evented", True)
+    emit_event(
+        {
+            "event": "error",
+            "error": str(exc),
+            "reason_code": "hook_error",
+            "provider": config.get("provider"),
+            "terminal": True,
+            "ts": now_ms(),
+        }
+    )
+
+
 _NON_RETRYABLE_ERRORS = (
+    TalentHookError,
     ValueError,
     json.JSONDecodeError,
     KeyError,
@@ -1312,6 +1360,7 @@ async def _execute_with_tools(
             raw_result = data.get("result", "")
             result = _run_post_hooks(raw_result, config)
             if _expected_output_blank(config, raw_result, result):
+                _mark_terminal_error_evented(config)
                 emit_event(
                     {
                         "event": "error",
@@ -1366,6 +1415,9 @@ async def _execute_with_tools(
 
     try:
         await provider_mod.run_cogitate(config=config, on_event=talent_emit_event)
+    except TalentHookError as exc:
+        _emit_terminal_hook_error(config, emit_event, exc)
+        return
     except Exception as exc:
         if provider == "local":
             raise
@@ -1575,8 +1627,13 @@ async def _execute_generate(
     usage_data = gen_result.get("usage")
 
     # Run post-hooks
-    result = _run_post_hooks(raw_result, config)
+    try:
+        result = _run_post_hooks(raw_result, config)
+    except TalentHookError as exc:
+        _emit_terminal_hook_error(config, emit_event, exc)
+        return
     if _expected_output_blank(config, raw_result, result):
+        _mark_terminal_error_evented(config)
         emit_event(
             {
                 "event": "error",
@@ -1713,7 +1770,11 @@ async def _run_talent(
     before_values["extra_context"] = config.get("extra_context", "")
 
     # Run pre-hooks
-    modifications = _run_pre_hooks(config)
+    try:
+        modifications = _run_pre_hooks(config)
+    except TalentHookError as exc:
+        _emit_terminal_hook_error(config, emit_event, exc)
+        return
     template_vars = modifications.pop("template_vars", None)
     for key, value in modifications.items():
         config[key] = value
@@ -1752,7 +1813,7 @@ async def _run_talent(
         await _execute_generate(config, emit_event)
 
     # Log completion
-    if config.get("day"):
+    if config.get("day") and not config.get("_terminal_error_evented"):
         day_log(config["day"], f"talent {name} ok")
 
 

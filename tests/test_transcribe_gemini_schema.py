@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 from jsonschema import Draft202012Validator
 
 import solstone.observe.transcribe.gemini as gemini_mod
@@ -117,3 +118,29 @@ def test_transcribe_passes_schema_to_generate(monkeypatch):
     )
 
     assert captured["json_schema"] is gemini_mod._SCHEMA
+
+
+def test_transcribe_schema_validation_error_raises_runtime_error(monkeypatch):
+    def fake_generate(**kwargs):
+        raise gemini_mod.SchemaValidationError(
+            [{"path": "", "constraint": "json_parse", "message": "empty"}],
+            "",
+        )
+
+    monkeypatch.setattr(gemini_mod, "generate", fake_generate)
+    monkeypatch.setattr(
+        gemini_mod, "_build_chunk_contents", lambda *_args: ["contents"]
+    )
+    monkeypatch.setattr(
+        gemini_mod,
+        "load_prompt",
+        lambda *_args, **_kwargs: SimpleNamespace(text="Prompt"),
+    )
+
+    with pytest.raises(RuntimeError, match="Gemini response failed schema validation"):
+        gemini_mod.transcribe(
+            np.zeros(16000, dtype=np.float32),
+            16000,
+            {},
+            [(0.0, 1.0)],
+        )

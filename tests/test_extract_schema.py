@@ -62,3 +62,25 @@ def test_ai_select_frames_passes_schema_to_generate(monkeypatch):
 
     assert captured["json_schema"] is extract_mod._SCHEMA
     assert result == [1]
+
+
+def test_select_frames_schema_validation_error_uses_fallback(monkeypatch):
+    def fake_generate(**kwargs):
+        raise models.SchemaValidationError(
+            [{"path": "", "constraint": "json_parse", "message": "empty"}],
+            "",
+        )
+
+    monkeypatch.setattr(models, "generate", fake_generate)
+
+    frames = [
+        {"frame_id": 1, "timestamp": 1.0, "analysis": {"primary": "code"}},
+        {"frame_id": 2, "timestamp": 2.0, "analysis": {"primary": "code"}},
+    ]
+    categories = {"code": {"description": "Code editors"}}
+
+    assert extract_mod.select_frames_for_extraction(
+        frames,
+        max_extractions=5,
+        categories=categories,
+    ) == [1, 2]

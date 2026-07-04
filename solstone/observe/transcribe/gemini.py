@@ -34,6 +34,7 @@ from solstone.observe.utils import audio_to_flac_bytes
 from solstone.think.models import (
     DEFAULT_PROVIDER_TIMEOUT_S,
     IncompleteJSONError,
+    SchemaValidationError,
     generate,
 )
 from solstone.think.prompts import load_prompt
@@ -334,16 +335,21 @@ def _transcribe_once(
     # Call Gemini via think.models.generate()
     # thinking_budget=0 disables thinking — transcription is extraction, not
     # reasoning, and Gemini's default thinking budget consumes output tokens.
-    response_text = generate(
-        contents=contents,
-        context="observe.transcribe.gemini",
-        temperature=0.3,
-        max_output_tokens=16384,
-        json_output=True,
-        thinking_budget=0,
-        json_schema=_SCHEMA,
-        timeout_s=timeout_s,
-    )
+    try:
+        response_text = generate(
+            contents=contents,
+            context="observe.transcribe.gemini",
+            temperature=0.3,
+            max_output_tokens=16384,
+            json_output=True,
+            thinking_budget=0,
+            json_schema=_SCHEMA,
+            timeout_s=timeout_s,
+        )
+    except SchemaValidationError as e:
+        logger.error("Gemini response failed schema validation: %s", e)
+        logger.debug("Response text: %s", e.preview)
+        raise RuntimeError(f"Gemini response failed schema validation: {e}") from e
 
     transcribe_time = time.perf_counter() - t0
     logger.debug(

@@ -162,6 +162,57 @@ def test_execute_generate_blank_expected_output_emits_terminal_no_output(
     assert output_path.read_text(encoding="utf-8") == "old output"
 
 
+def test_no_output_does_not_log_day_ok(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.talents")
+    copy_day(tmp_path, monkeypatch)
+
+    import solstone.think.talent as talent
+
+    monkeypatch.setattr(talent, "TALENT_DIR", tmp_path)
+    _write_generator_file(
+        tmp_path,
+        "blank_day_gen",
+        {
+            "type": "generate",
+            "schedule": "daily",
+            "priority": 10,
+            "output": "md",
+            "load": {"transcripts": True, "percepts": True},
+        },
+    )
+
+    from solstone.think import models
+
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda *a, **k: {"text": "   ", "usage": {"input_tokens": 1}},
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    events = run_generator_with_config(
+        mod,
+        {
+            "name": "blank_day_gen",
+            "day": "20240101",
+            "output": "md",
+            "provider": "google",
+            "model": "gemini-2.0-flash",
+        },
+        monkeypatch,
+    )
+
+    error_events = [e for e in events if e["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "no_output"
+    assert [e for e in events if e["event"] == "finish"] == []
+
+    task_log = tmp_path / "chronicle" / "20240101" / "task_log.txt"
+    log_text = task_log.read_text(encoding="utf-8") if task_log.exists() else ""
+    assert "talent blank_day_gen ok" not in log_text
+
+
 def test_execute_generate_blank_without_output_path_still_finishes(
     tmp_path, monkeypatch
 ):
@@ -551,6 +602,66 @@ def post_process(result, context):
     assert captured["name"] == "hooked_gen"
     assert captured["has_transcript"] is True
     assert captured["has_hook"] is True  # Frontmatter fields now directly in config
+
+
+def test_generate_hook_error_emits_terminal_hook_error(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.talents")
+    copy_day(tmp_path, monkeypatch)
+
+    import solstone.think.talent as talent
+
+    monkeypatch.setattr(talent, "TALENT_DIR", tmp_path)
+    _write_generator_file(
+        tmp_path,
+        "hook_error_gen",
+        {
+            "type": "generate",
+            "schedule": "daily",
+            "priority": 10,
+            "output": "md",
+            "hook": {"post": "hook_error_gen"},
+            "load": {"transcripts": True, "percepts": True},
+        },
+    )
+
+    hook_file = tmp_path / "hook_error_gen.py"
+    hook_file.write_text("""
+def post_process(result, context):
+    raise RuntimeError("hook boom")
+""")
+
+    from solstone.think import models
+
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda *a, **k: MOCK_RESULT,
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    events = run_generator_with_config(
+        mod,
+        {
+            "name": "hook_error_gen",
+            "day": "20240101",
+            "output": "md",
+            "provider": "google",
+            "model": "gemini-2.0-flash",
+        },
+        monkeypatch,
+    )
+
+    assert [e for e in events if e["event"] == "finish"] == []
+    error_events = [e for e in events if e["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "hook_error"
+    assert error_events[0]["terminal"] is True
+    assert (
+        "post-hook 'hook_error_gen' failed for talent 'hook_error_gen'"
+        in (error_events[0]["error"])
+    )
+    assert "hook boom" in error_events[0]["error"]
 
 
 def test_generate_without_hook_succeeds(tmp_path, monkeypatch):

@@ -22,6 +22,7 @@ from solstone.think.models import (
     TIER_PRO,
     get_model_provider,
 )
+from solstone.think.talents import TalentHookError
 
 
 def _provider():
@@ -702,6 +703,39 @@ def test_run_cogitate_byo_classified_error_uses_fixed_copy_and_redacts(
     assert events[0]["error"] == provider.LOCAL_ENDPOINT_CONTRACT_COPY
     assert events[0]["reason_code"] == "local_endpoint_contract_failed"
     assert token not in events[0]["trace"]
+
+
+def test_run_cogitate_talent_hook_error_bypasses_local_error_event(monkeypatch):
+    provider = _provider()
+    events: list[dict] = []
+    hook_exc = TalentHookError(
+        "post",
+        "broken_hook",
+        "chat",
+        RuntimeError("hook exploded"),
+    )
+
+    async def fail_cogitate(*_args, **_kwargs):
+        raise hook_exc
+
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_cogitate",
+        fail_cogitate,
+    )
+
+    with pytest.raises(TalentHookError) as raised:
+        asyncio.run(
+            provider.run_cogitate({"model": LOCAL_MODEL}, on_event=events.append)
+        )
+
+    assert raised.value is hook_exc
+    assert events == []
+    assert not getattr(hook_exc, "_evented", False)
 
 
 @pytest.mark.parametrize(

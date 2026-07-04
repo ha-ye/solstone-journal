@@ -17,6 +17,7 @@ from solstone.think.providers.local_endpoint import (
     LOCAL_ENDPOINT_CONTRACT_COPY,
     LocalEndpoint,
 )
+from solstone.think.talents import TalentHookError
 from tests.openhands_fakes import install_fake_openhands
 
 
@@ -127,6 +128,31 @@ def test_run_cogitate_generic_error_emits_event_and_marks_evented(
     assert "RuntimeError: boom" in events[0]["trace"]
     assert events[0]["usage"]["total_tokens"] > 0
     assert events[0]["ts"] == 123456
+
+
+def test_run_cogitate_talent_hook_error_propagates_without_provider_event(
+    fake_openhands,
+    run_env,
+):
+    hook_exc = TalentHookError(
+        "post",
+        "broken_hook",
+        "chat",
+        RuntimeError("hook exploded"),
+    )
+
+    async def fail(_conversation):
+        raise hook_exc
+
+    fake_openhands.Conversation.arun_impl = fail
+    events: list[dict] = []
+
+    with pytest.raises(TalentHookError) as raised:
+        asyncio.run(openhands.run_cogitate(run_env, events.append))
+
+    assert raised.value is hook_exc
+    assert events == []
+    assert not getattr(hook_exc, "_evented", False)
 
 
 def test_run_cogitate_error_before_usage_baseline_omits_usage(

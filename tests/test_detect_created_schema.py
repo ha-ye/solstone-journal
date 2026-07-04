@@ -85,3 +85,44 @@ def test_detect_created_passes_schema_to_generate(monkeypatch):
         "source": "QuickTime:CreateDate",
         "utc": False,
     }
+
+
+def test_detect_created_schema_validation_error_returns_none(monkeypatch):
+    def fake_generate(**kwargs):
+        raise models.SchemaValidationError(
+            [{"path": "", "constraint": "json_parse", "message": "empty"}],
+            "",
+        )
+
+    monkeypatch.setattr(models, "generate", fake_generate)
+    monkeypatch.setattr(
+        detect_created_mod,
+        "_extract_metadata",
+        lambda path: "QuickTime Create Date : 2024:03:15 14:30:52",
+    )
+
+    assert detect_created_mod.detect_created("/dev/null") is None
+
+
+def test_detect_created_metadata_failure_prompt_uses_sentinel(monkeypatch):
+    captured = {}
+
+    def fail_run(*args, **kwargs):
+        raise FileNotFoundError("secret exiftool path")
+
+    def fake_generate(**kwargs):
+        captured.update(kwargs)
+        return (
+            '{"day": "20240315", "time": "143052", "confidence": "high", '
+            '"source": "QuickTime:CreateDate", "utc": false}'
+        )
+
+    monkeypatch.setattr(detect_created_mod.subprocess, "run", fail_run)
+    monkeypatch.setattr(models, "generate", fake_generate)
+
+    result = detect_created_mod.detect_created("/tmp/private-source.mov")
+
+    assert result is not None
+    assert "exiftool metadata unavailable" in captured["contents"]
+    assert "secret exiftool path" not in captured["contents"]
+    assert "FileNotFoundError" not in captured["contents"]

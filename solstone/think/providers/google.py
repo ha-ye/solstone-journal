@@ -325,8 +325,8 @@ def _build_generate_config(
 def _extract_response_text(response: Any) -> str:
     """Extract text from response.
 
-    Returns response.text if available, or a friendly completion message
-    if the response is empty. Raises on safety filter blocks.
+    Returns response.text if available, or "" if the response is empty.
+    Raises on safety filter blocks.
 
     Parameters
     ----------
@@ -341,13 +341,9 @@ def _extract_response_text(response: Any) -> str:
     if finish_reason and "SAFETY" in finish_reason.upper():
         raise ValueError(f"Response blocked by safety filters: {finish_reason}")
 
-    # Extract text, or generate friendly message if empty
+    # Extract text; empty non-safety completions are represented honestly as empty.
     text = response.text if response.text else ""
-    if text:
-        return text
-
-    # Empty text - generate user-friendly completion message
-    return _format_completion_message(finish_reason, had_tool_calls=False)
+    return text
 
 
 def _normalize_finish_reason(response: Any) -> str | None:
@@ -442,45 +438,6 @@ def _extract_finish_reason(response: Any) -> str | None:
             return reason.name
         return str(reason)
     return None
-
-
-def _format_completion_message(finish_reason: str | None, had_tool_calls: bool) -> str:
-    """Create a user-friendly completion message based on finish reason.
-
-    Parameters
-    ----------
-    finish_reason
-        The finish_reason from the response (e.g., "STOP", "MAX_TOKENS").
-    had_tool_calls
-        Whether tool calls were executed during this run.
-
-    Returns
-    -------
-    str
-        A concise, user-friendly completion message.
-    """
-    if not finish_reason:
-        finish_reason = "UNKNOWN"
-
-    # Normalize finish reason (handle both enum names and string values)
-    reason = finish_reason.upper().replace("FINISHREASON.", "")
-
-    if reason == "STOP":
-        if had_tool_calls:
-            return "Completed via tools."
-        return "Completed."
-    elif reason == "MAX_TOKENS":
-        return "Reached token limit."
-    elif "SAFETY" in reason:
-        return "Blocked by safety filters."
-    elif reason == "RECITATION":
-        return "Stopped due to recitation."
-    elif "TOOL" in reason or "FUNCTION" in reason:
-        # UNEXPECTED_TOOL_CALL, MALFORMED_FUNCTION_CALL, etc.
-        return "Tool execution incomplete."
-    else:
-        # Unknown reason - include it for debugging
-        return f"Completed ({reason.lower()})."
 
 
 def _summarize_contents(contents: Any) -> str:

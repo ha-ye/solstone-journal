@@ -220,6 +220,25 @@ class IncompleteJSONError(ValueError):
         super().__init__(f"JSON response incomplete (reason: {reason})")
 
 
+class SchemaValidationError(ValueError):
+    """Raised when JSON response text fails local schema validation.
+
+    Attributes:
+        errors: The schema validation errors returned by _validate_schema.
+        text: The full offending response text.
+        preview: A short preview of the offending response text for error messages.
+    """
+
+    def __init__(self, errors: list[dict], text: str):
+        self.errors = errors
+        self.text = text
+        self.preview = text if len(text) <= 200 else text[:197] + "..."
+        super().__init__(
+            "JSON response failed schema validation "
+            f"({len(errors)} error(s); preview={self.preview!r})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Prompt context discovery
 #
@@ -1304,7 +1323,9 @@ def generate(
     _validate_json_response(result, json_output)
 
     if json_schema is not None:
-        _validate_schema(result["text"], json_schema)
+        validation = _validate_schema(result["text"], json_schema)
+        if validation["valid"] is False:
+            raise SchemaValidationError(validation["errors"], result["text"])
 
     return result["text"]
 
@@ -1623,7 +1644,9 @@ async def agenerate(
     _validate_json_response(result, json_output)
 
     if json_schema is not None:
-        _validate_schema(result["text"], json_schema)
+        validation = _validate_schema(result["text"], json_schema)
+        if validation["valid"] is False:
+            raise SchemaValidationError(validation["errors"], result["text"])
 
     return result["text"]
 

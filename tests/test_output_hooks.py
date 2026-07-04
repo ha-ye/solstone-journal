@@ -291,8 +291,8 @@ def post_process(result, context):
     assert finish_events[0]["result"] == MOCK_RESULT["text"]
 
 
-def test_output_hook_error_fallback(tmp_path, monkeypatch):
-    """Test that hook errors fall back to original result."""
+def test_output_hook_error_emits_terminal_hook_error(tmp_path, monkeypatch):
+    """Test that hook errors emit terminal hook_error events."""
     mod = importlib.import_module("solstone.think.talents")
     copy_day(tmp_path, monkeypatch)
 
@@ -330,12 +330,20 @@ def post_process(result, context):
         "model": "gemini-2.0-flash",
     }
 
-    # Should not raise, should fall back gracefully
     events = run_generator_with_config(mod, config, monkeypatch)
 
     finish_events = [e for e in events if e["event"] == "finish"]
-    assert len(finish_events) == 1
-    assert finish_events[0]["result"] == MOCK_RESULT["text"]
+    assert finish_events == []
+
+    error_events = [e for e in events if e["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "hook_error"
+    assert error_events[0]["terminal"] is True
+    assert (
+        "post-hook 'broken_test' failed for talent 'broken_test'"
+        in error_events[0]["error"]
+    )
+    assert "Hook exploded!" in error_events[0]["error"]
 
 
 # =============================================================================
@@ -455,13 +463,60 @@ def pre_process(context):
         "model": "gemini-2.0-flash",
     }
 
-    events = run_generator_with_config(mod, config, monkeypatch)
+    run_generator_with_config(mod, config, monkeypatch)
 
     # Verify pre-hook modified the prompt - check in contents
     contents = received_kwargs.get("contents", [])
     # The prompt should contain [pre-processed]
     prompt_found = any("[pre-processed]" in str(c) for c in contents)
     assert prompt_found, f"Expected [pre-processed] in contents: {contents}"
+
+
+def test_pre_hook_skip_reason_dict_clean_skips(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.talents")
+    copy_day(tmp_path, monkeypatch)
+
+    import solstone.think.talent as talent
+
+    monkeypatch.setattr(talent, "TALENT_DIR", tmp_path)
+
+    prompt_file = tmp_path / "skip_test.md"
+    prompt_file.write_text(
+        '{\n  "type": "generate",\n  "title": "Skip",\n  "schedule": "daily",\n  "priority": 10,\n  "output": "md",\n  "hook": {"pre": "skip_test"},\n  "load": {"transcripts": true, "percepts": true}\n}\n\nOriginal prompt'
+    )
+
+    hook_file = tmp_path / "skip_test.py"
+    hook_file.write_text("""
+def pre_process(context):
+    return {"skip_reason": "no_sources"}
+""")
+
+    from solstone.think import models
+
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda *a, **k: MOCK_RESULT,
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    events = run_generator_with_config(
+        mod,
+        {
+            "name": "skip_test",
+            "day": "20240101",
+            "output": "md",
+            "provider": "google",
+            "model": "gemini-2.0-flash",
+        },
+        monkeypatch,
+    )
+
+    finish_events = [e for e in events if e["event"] == "finish"]
+    assert len(finish_events) == 1
+    assert finish_events[0]["skipped"] == "no_sources"
+    assert [e for e in events if e["event"] == "error"] == []
 
     # Verify generator still completed successfully
     finish_events = [e for e in events if e["event"] == "finish"]

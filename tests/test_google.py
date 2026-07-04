@@ -8,6 +8,7 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from google.genai import types as genai_types
 
 from solstone.think.models import DEFAULT_PROVIDER_TIMEOUT_S, GEMINI_FLASH
@@ -15,10 +16,31 @@ from solstone.think.providers import google as google_provider
 from solstone.think.providers.google import (
     _extract_finish_reason,
     _extract_usage,
-    _format_completion_message,
     _resolved_model,
 )
 from tests.conftest import setup_google_genai_stub
+
+
+@pytest.fixture(autouse=True)
+def _restore_talents_module():
+    saved = sys.modules.pop("solstone.think.talents", None)
+    parent = sys.modules.get("solstone.think")
+    had_parent_attr = parent is not None and hasattr(parent, "talents")
+    saved_parent_attr = getattr(parent, "talents", None) if had_parent_attr else None
+    if had_parent_attr:
+        delattr(parent, "talents")
+    try:
+        yield
+    finally:
+        if saved is not None:
+            sys.modules["solstone.think.talents"] = saved
+        else:
+            sys.modules.pop("solstone.think.talents", None)
+        if parent is not None:
+            if had_parent_attr:
+                setattr(parent, "talents", saved_parent_attr)
+            elif hasattr(parent, "talents"):
+                delattr(parent, "talents")
 
 
 async def run_main(mod, argv, stdin_data=None):
@@ -244,52 +266,62 @@ def test_extract_finish_reason_no_candidates():
     assert _extract_finish_reason(response) is None
 
 
-def test_format_completion_message_stop_with_tools():
-    """Test message for STOP with tool calls."""
-    msg = _format_completion_message("STOP", had_tool_calls=True)
-    assert msg == "Completed via tools."
+def test_run_generate_empty_stop_completion_returns_empty_text():
+    response = SimpleNamespace(
+        text="",
+        candidates=[SimpleNamespace(finish_reason="STOP", content=None)],
+        usage_metadata=None,
+    )
+    client = SimpleNamespace(
+        models=SimpleNamespace(generate_content=MagicMock(return_value=response))
+    )
+
+    result = google_provider.run_generate(
+        contents="hello",
+        model=GEMINI_FLASH,
+        client=client,
+    )
+
+    assert result["text"] == ""
+    assert result["finish_reason"] == "stop"
 
 
-def test_format_completion_message_stop_no_tools():
-    """Test message for STOP without tool calls."""
-    msg = _format_completion_message("STOP", had_tool_calls=False)
-    assert msg == "Completed."
+def test_run_generate_empty_max_tokens_completion_returns_empty_text():
+    response = SimpleNamespace(
+        text="",
+        candidates=[SimpleNamespace(finish_reason="MAX_TOKENS", content=None)],
+        usage_metadata=None,
+    )
+    client = SimpleNamespace(
+        models=SimpleNamespace(generate_content=MagicMock(return_value=response))
+    )
+
+    result = google_provider.run_generate(
+        contents="hello",
+        model=GEMINI_FLASH,
+        client=client,
+    )
+
+    assert result["text"] == ""
+    assert result["finish_reason"] == "max_tokens"
 
 
-def test_format_completion_message_max_tokens():
-    """Test message for MAX_TOKENS finish reason."""
-    msg = _format_completion_message("MAX_TOKENS", had_tool_calls=False)
-    assert msg == "Reached token limit."
+def test_run_generate_safety_completion_still_raises():
+    response = SimpleNamespace(
+        text="",
+        candidates=[SimpleNamespace(finish_reason="SAFETY")],
+        usage_metadata=None,
+    )
+    client = SimpleNamespace(
+        models=SimpleNamespace(generate_content=MagicMock(return_value=response))
+    )
 
-
-def test_format_completion_message_safety():
-    """Test message for safety-related finish reasons."""
-    msg = _format_completion_message("SAFETY", had_tool_calls=False)
-    assert msg == "Blocked by safety filters."
-
-    msg = _format_completion_message("PROHIBITED_SAFETY", had_tool_calls=False)
-    assert msg == "Blocked by safety filters."
-
-
-def test_format_completion_message_tool_errors():
-    """Test message for tool-related error finish reasons."""
-    msg = _format_completion_message("UNEXPECTED_TOOL_CALL", had_tool_calls=True)
-    assert msg == "Tool execution incomplete."
-
-    msg = _format_completion_message("MALFORMED_FUNCTION_CALL", had_tool_calls=False)
-    assert msg == "Tool execution incomplete."
-
-
-def test_format_completion_message_unknown():
-    """Test message for unknown finish reasons."""
-    msg = _format_completion_message("SOME_NEW_REASON", had_tool_calls=False)
-    assert msg == "Completed (some_new_reason)."
-
-
-def test_format_completion_message_none():
-    """Test message when finish_reason is None."""
-    msg = _format_completion_message(None, had_tool_calls=False)
-    assert msg == "Completed (unknown)."
+    with pytest.raises(ValueError, match="blocked by safety filters"):
+        google_provider.run_generate(
+            contents="hello",
+            model=GEMINI_FLASH,
+            client=client,
+        )
 
 
 class TestRunGenerateJsonSchema:
