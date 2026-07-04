@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import sqlite3
+import time
 from pathlib import Path
 
 from solstone.think.importers.health_dedupe import (
@@ -10,6 +12,7 @@ from solstone.think.importers.health_dedupe import (
     get_health_dedupe_record,
     health_dedupe_db_path,
     upsert_health_dedupe_record,
+    upsert_health_dedupe_records,
 )
 from solstone.think.importers.health_schema import (
     HealthRecordIdentity,
@@ -129,3 +132,135 @@ def test_upsert_health_dedupe_record_preserves_first_import(tmp_path: Path):
     assert row["last_seen_import_id"] == "20260102_999999"
     assert row["raw_ref"] == "raw/export.xml#record-4"
     assert row["normalized_ref"] == "import.apple_health/20260102/123000"
+
+
+def test_upsert_health_dedupe_records_batches_in_wal_mode(tmp_path: Path):
+    original_key = "sha256:existing-glucose"
+    inserted = upsert_health_dedupe_record(
+        tmp_path,
+        HealthDedupeRecord(
+            dedupe_key=original_key,
+            source_family="apple_health",
+            record_type="HKQuantityTypeIdentifierBloodGlucose",
+            start_time="2026-01-02T12:30:00-07:00",
+            first_import_id="20260102_123000",
+            last_seen_import_id="20260102_123000",
+            raw_ref="raw/export.xml#record-4",
+        ),
+    )
+
+    result = upsert_health_dedupe_records(
+        tmp_path,
+        [
+            HealthDedupeRecord(
+                dedupe_key=original_key,
+                source_family="apple_health",
+                record_type="HKQuantityTypeIdentifierBloodGlucose",
+                start_time="2026-01-02T12:30:00-07:00",
+                first_import_id="20260102_999999",
+                last_seen_import_id="20260102_999999",
+                normalized_ref="import.apple_health/20260102/123000",
+            ),
+            HealthDedupeRecord(
+                dedupe_key="sha256:new-heart-rate",
+                source_family="apple_health",
+                source_record_id="heart-rate-1",
+                record_type="HKQuantityTypeIdentifierHeartRate",
+                start_time="2026-01-02T12:35:00-07:00",
+                first_import_id="20260102_999999",
+                last_seen_import_id="20260102_999999",
+                normalized_ref="import.apple_health/20260102/123500",
+            ),
+        ],
+    )
+
+    existing_row = get_health_dedupe_record(tmp_path, original_key)
+    new_row = get_health_dedupe_record(tmp_path, "sha256:new-heart-rate")
+
+    assert inserted is True
+    assert result.inserted == 1
+    assert result.updated == 1
+    assert existing_row is not None
+    assert existing_row["first_import_id"] == "20260102_123000"
+    assert existing_row["last_seen_import_id"] == "20260102_999999"
+    assert existing_row["raw_ref"] == "raw/export.xml#record-4"
+    assert existing_row["normalized_ref"] == "import.apple_health/20260102/123000"
+    assert new_row is not None
+    assert new_row["source_record_id"] == "heart-rate-1"
+    with sqlite3.connect(health_dedupe_db_path(tmp_path)) as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert journal_mode == "wal"
+
+
+def test_upsert_health_dedupe_records_handles_duplicate_keys_in_batch(tmp_path: Path):
+    result = upsert_health_dedupe_records(
+        tmp_path,
+        [
+            HealthDedupeRecord(
+                dedupe_key="sha256:duplicate-key",
+                source_family="apple_health",
+                record_type="HKQuantityTypeIdentifierStepCount",
+                start_time="2026-01-02T12:00:00-07:00",
+                first_import_id="20260102_120000",
+                last_seen_import_id="20260102_120000",
+                raw_ref="raw/export.xml#record-1",
+            ),
+            HealthDedupeRecord(
+                dedupe_key="sha256:duplicate-key",
+                source_family="apple_health",
+                record_type="HKQuantityTypeIdentifierStepCount",
+                start_time="2026-01-02T12:00:00-07:00",
+                first_import_id="20260102_999999",
+                last_seen_import_id="20260102_999999",
+                normalized_ref="import.apple_health/20260102/120000",
+            ),
+        ],
+    )
+    row = get_health_dedupe_record(tmp_path, "sha256:duplicate-key")
+
+    assert result.inserted == 1
+    assert result.updated == 1
+    assert row is not None
+    assert row["first_import_id"] == "20260102_120000"
+    assert row["last_seen_import_id"] == "20260102_999999"
+    assert row["raw_ref"] == "raw/export.xml#record-1"
+    assert row["normalized_ref"] == "import.apple_health/20260102/120000"
+
+
+def _synthetic_dedupe_records(count: int) -> list[HealthDedupeRecord]:
+    return [
+        HealthDedupeRecord(
+            dedupe_key=f"sha256:synthetic-{index:05d}",
+            source_family="apple_health",
+            source_record_id=f"synthetic-{index:05d}",
+            record_type="HKQuantityTypeIdentifierStepCount",
+            start_time=f"2026-01-02T12:{index % 60:02d}:00-07:00",
+            end_time=f"2026-01-02T12:{index % 60:02d}:30-07:00",
+            value_hash=f"sha256:value-{index:05d}",
+            first_import_id="synthetic-import",
+            last_seen_import_id="synthetic-import",
+            normalized_ref=f"import.apple_health/synthetic/{index:05d}",
+            raw_ref=f"raw/export.xml#synthetic-{index:05d}",
+        )
+        for index in range(count)
+    ]
+
+
+def measure_batched_health_dedupe_upsert_rate(
+    tmp_path: Path,
+    count: int = 12_000,
+) -> float:
+    records = _synthetic_dedupe_records(count)
+    started_at = time.perf_counter()
+    result = upsert_health_dedupe_records(tmp_path, records)
+    elapsed_seconds = time.perf_counter() - started_at
+
+    assert result.inserted == count
+    assert result.updated == 0
+    return count / elapsed_seconds
+
+
+def test_batched_health_dedupe_upsert_benchmark(tmp_path: Path):
+    upserts_per_second = measure_batched_health_dedupe_upsert_rate(tmp_path)
+
+    assert upserts_per_second >= 10_000

@@ -6,19 +6,25 @@
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from posixpath import dirname
 from typing import BinaryIO, Callable, Iterator
 from xml.etree import ElementTree
 
 from solstone.think.importers.file_importer import ImportPreview, ImportResult
 
+logger = logging.getLogger(__name__)
+
 SAVE_MODE_BLOCKED_MESSAGE = (
     "Apple Health save-mode import is blocked until the health privacy "
     "preflight and raw-export retention controls are implemented."
 )
+
+_BYTE_PROGRESS_LOG_INTERVAL = 100 * 1024 * 1024
 
 _EXPORT_XML_CANDIDATES = (
     "apple_health_export/export.xml",
@@ -31,6 +37,8 @@ class _PreviewStats:
     records: int = 0
     workouts: int = 0
     routes: int = 0
+    export_cda_present: bool = False
+    electrocardiograms: int = 0
     glucose_records: int = 0
     earliest_day: str | None = None
     latest_day: str | None = None
@@ -142,6 +150,27 @@ def _find_export_xml_in_zip(names: list[str]) -> str | None:
     return None
 
 
+class _ByteProgressReader:
+    def __init__(self, handle: BinaryIO, path: Path) -> None:
+        self._handle = handle
+        self._path = path
+        self._bytes_read = 0
+        self._next_log_at = _BYTE_PROGRESS_LOG_INTERVAL
+
+    def read(self, size: int = -1) -> bytes:
+        chunk = self._handle.read(size)
+        self._bytes_read += len(chunk)
+        while self._next_log_at > 0 and self._bytes_read >= self._next_log_at:
+            logger.info(
+                "Parsed %d MB (%d bytes) from Apple Health export.xml at %s",
+                self._next_log_at // (1024 * 1024),
+                self._next_log_at,
+                self._path,
+            )
+            self._next_log_at += _BYTE_PROGRESS_LOG_INTERVAL
+        return chunk
+
+
 def _count_route_files(path: Path) -> int:
     if path.is_dir():
         export_xml = _find_export_xml_in_directory(path)
@@ -162,6 +191,52 @@ def _count_route_files(path: Path) -> int:
                 and not name.endswith("/")
             )
     return 0
+
+
+def _count_supplemental_files(path: Path) -> tuple[bool, int]:
+    if path.is_dir():
+        export_xml = _find_export_xml_in_directory(path)
+        if export_xml is None:
+            return (False, 0)
+
+        export_root = export_xml.parent
+        export_cda_present = (export_root / "export_cda.xml").is_file()
+        electrocardiograms_root = export_root / "electrocardiograms"
+        electrocardiograms = 0
+        if electrocardiograms_root.is_dir():
+            electrocardiograms = sum(
+                1 for child in electrocardiograms_root.iterdir() if child.is_file()
+            )
+        return (export_cda_present, electrocardiograms)
+
+    if path.is_file() and path.suffix.lower() == ".zip":
+        with zipfile.ZipFile(path) as archive:
+            names = archive.namelist()
+            export_xml = _find_export_xml_in_zip(names)
+            if export_xml is None:
+                return (False, 0)
+
+            export_root = dirname(export_xml.rstrip("/"))
+            export_prefix = f"{export_root}/" if export_root else ""
+            export_cda_present = f"{export_prefix}export_cda.xml" in {
+                name.rstrip("/") for name in names
+            }
+            electrocardiograms_prefix = f"{export_prefix}electrocardiograms/"
+            electrocardiograms = sum(
+                1
+                for name in names
+                if _is_direct_zip_child(name, electrocardiograms_prefix)
+            )
+            return (export_cda_present, electrocardiograms)
+
+    return (False, 0)
+
+
+def _is_direct_zip_child(name: str, parent_prefix: str) -> bool:
+    if name.endswith("/") or not name.startswith(parent_prefix):
+        return False
+    remainder = name[len(parent_prefix) :]
+    return bool(remainder) and "/" not in remainder
 
 
 @contextmanager
@@ -187,10 +262,18 @@ def _open_export_xml(path: Path) -> Iterator[BinaryIO]:
 
 
 def _preview_export(path: Path) -> _PreviewStats:
-    stats = _PreviewStats(routes=_count_route_files(path))
+    export_cda_present, electrocardiograms = _count_supplemental_files(path)
+    stats = _PreviewStats(
+        routes=_count_route_files(path),
+        export_cda_present=export_cda_present,
+        electrocardiograms=electrocardiograms,
+    )
     with _open_export_xml(path) as handle:
         root = None
-        for event, elem in ElementTree.iterparse(handle, events=("start", "end")):
+        progress_handle = _ByteProgressReader(handle, path)
+        for event, elem in ElementTree.iterparse(
+            progress_handle, events=("start", "end")
+        ):
             if event == "start":
                 if root is None:
                     root = elem
@@ -248,6 +331,8 @@ def _summary(stats: _PreviewStats) -> str:
         f"routes={stats.routes}",
         f"glucose={stats.glucose_records}",
         f"sources={len(stats.source_names)}",
+        f"export_cda={'present' if stats.export_cda_present else 'absent'}",
+        f"electrocardiograms={stats.electrocardiograms}",
     ]
     if top_type_names:
         parts.append(f"top_types={top_type_names}")

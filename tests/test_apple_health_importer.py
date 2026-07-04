@@ -2,10 +2,12 @@
 # Copyright (c) 2026 sol pbc
 
 import importlib
+import logging
 from pathlib import Path
 
 import pytest
 
+from solstone.think.importers import apple_health
 from solstone.think.importers.apple_health import (
     AppleHealthImporter,
 )
@@ -23,6 +25,13 @@ ZIP_FIXTURE = (
     / "importers"
     / "health"
     / "apple_health_synthetic.zip"
+)
+DTD_FIXTURE_ROOT = (
+    Path(__file__).parent
+    / "fixtures"
+    / "importers"
+    / "health"
+    / "apple_health_synthetic_dtd"
 )
 
 
@@ -51,6 +60,24 @@ def test_preview_synthetic_export_directory():
     assert "workouts=1" in preview.summary
     assert "routes=1" in preview.summary
     assert "glucose=1" in preview.summary
+
+
+def test_preview_parses_synthetic_export_with_internal_dtd_subset():
+    preview = AppleHealthImporter().preview(DTD_FIXTURE_ROOT)
+
+    assert preview.date_range == ("20260410", "20260411")
+    assert preview.item_count == 3
+    assert "records=2" in preview.summary
+    assert "workouts=1" in preview.summary
+    assert "export_cda=present" in preview.summary
+    assert "electrocardiograms=2" in preview.summary
+
+
+def test_preview_reports_cda_and_ecg_files_by_name_only():
+    preview = AppleHealthImporter().preview(DTD_FIXTURE_ROOT)
+
+    assert "export_cda=present" in preview.summary
+    assert "electrocardiograms=2" in preview.summary
 
 
 def test_process_save_mode_is_blocked_before_writing(tmp_path: Path):
@@ -90,4 +117,34 @@ def test_detects_and_previews_synthetic_zip_fixture():
     assert importer.detect(ZIP_FIXTURE) is True
     assert (
         importer.preview(ZIP_FIXTURE).summary == importer.preview(FIXTURE_ROOT).summary
+    )
+
+
+def test_preview_logs_byte_progress_for_large_xml_reads(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+):
+    export_root = tmp_path / "apple_health_export"
+    export_root.mkdir()
+    records = "\n".join(
+        '<Record type="HKQuantityTypeIdentifierStepCount" '
+        'sourceName="Synthetic Watch" startDate="2026-05-01 08:00:00 -0700" '
+        'endDate="2026-05-01 08:05:00 -0700" unit="count" value="1"/>'
+        for _ in range(3)
+    )
+    (export_root / "export.xml").write_text(
+        f'<?xml version="1.0" encoding="UTF-8"?>\n'
+        f"<!DOCTYPE HealthData>\n"
+        f'<HealthData locale="en_US">{records}</HealthData>\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(apple_health, "_BYTE_PROGRESS_LOG_INTERVAL", 128)
+    caplog.set_level(logging.INFO, logger=apple_health.__name__)
+
+    preview = AppleHealthImporter().preview(tmp_path)
+
+    assert preview.item_count == 3
+    assert any(
+        "from Apple Health export.xml" in record.message for record in caplog.records
     )
