@@ -213,7 +213,7 @@ def test_workspace_html_day_lane_hit_target_and_selection_rail_sync():
     # rendered timeline geometry itself is not distorted.
     hit_css = text.split(".tr-seg::after {", 1)[1].split("}", 1)[0]
     assert "content: ''" in hit_css
-    assert "min-height: 8px" in hit_css
+    assert "min-height: 14px" in hit_css
     assert "height: 100%" in hit_css
 
     # Selecting a segment (pointer or keyboard) recenters the detail zoom
@@ -255,3 +255,18 @@ def test_workspace_html_body_panel_focus_management():
     )[0]
     assert "document.contains(bodyPanelTrigger)" in close_fn
     assert "bodyPanelTrigger.focus()" in close_fn
+
+    # The close button activates on explicit Enter/Space keydown (belt and
+    # braces over native button activation, which some automation skips),
+    # and Escape closes a visible panel unless the image modal is open.
+    assert text.count("bodyPanelClose.addEventListener('keydown'") == 1
+    keydown_handler = text.split("bodyPanelClose.addEventListener('keydown'", 1)[
+        1
+    ].split("});", 1)[0]
+    assert "e.key === 'Enter' || e.key === ' '" in keydown_handler
+    assert "closeBodyPanel()" in keydown_handler
+    escape_branch = text.split(
+        "e.key === 'Escape' && bodyPanel.classList.contains('visible')", 1
+    )[1].split("}", 1)[0]
+    assert "closeBodyPanel();" in escape_branch
+    assert "trImageModal" in escape_branch
