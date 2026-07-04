@@ -7,6 +7,7 @@ import importlib.util
 import json
 import logging
 import re
+import zipfile
 from collections import Counter
 from pathlib import Path
 
@@ -47,6 +48,9 @@ DTD_FIXTURE_ROOT = (
 )
 REGENERATE_SCRIPT = (
     Path(__file__).parent.parent / "scripts" / "regenerate_health_day_summaries.py"
+)
+BACKFILL_WORKOUT_STATS_SCRIPT = (
+    Path(__file__).parent.parent / "scripts" / "backfill_health_workout_statistics.py"
 )
 
 # The fixture's only sleep entry starts Jan 2 at 10:30 PM and ends Jan 3 at
@@ -152,6 +156,45 @@ def _load_regenerate_script_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_backfill_workout_stats_script_module():
+    spec = importlib.util.spec_from_file_location(
+        "backfill_health_workout_statistics", BACKFILL_WORKOUT_STATS_SCRIPT
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+WORKOUT_STATISTICS_EXPORT = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE HealthData>
+<HealthData locale="en_US">
+  <Workout workoutActivityType="HKWorkoutActivityTypeCycling" duration="45" durationUnit="min" sourceName="Synthetic Watch" sourceVersion="1.0" creationDate="2026-07-04 08:45:00 -0600" startDate="2026-07-04 08:00:00 -0600" endDate="2026-07-04 08:45:00 -0600">
+    <WorkoutStatistics type="HKQuantityTypeIdentifierActiveEnergyBurned" startDate="2026-07-04 08:00:00 -0600" endDate="2026-07-04 08:45:00 -0600" sum="321.5" unit="Cal"/>
+    <WorkoutStatistics type="HKQuantityTypeIdentifierDistanceCycling" startDate="2026-07-04 08:00:00 -0600" endDate="2026-07-04 08:45:00 -0600" sum="12.4" unit="km"/>
+  </Workout>
+</HealthData>
+"""
+
+
+WORKOUT_STATISTICS_ATTRIB = {
+    "workoutActivityType": "HKWorkoutActivityTypeCycling",
+    "duration": "45",
+    "durationUnit": "min",
+    "sourceName": "Synthetic Watch",
+    "sourceVersion": "1.0",
+    "creationDate": "2026-07-04 08:45:00 -0600",
+    "startDate": "2026-07-04 08:00:00 -0600",
+    "endDate": "2026-07-04 08:45:00 -0600",
+}
+
+
+def _write_workout_statistics_zip(path: Path) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("apple_health_export/export.xml", WORKOUT_STATISTICS_EXPORT)
+    return path
 
 
 def test_apple_health_registered_after_pre_save_gate():
@@ -280,6 +323,101 @@ def test_save_mode_writes_raw_source_normalized_rows_and_dedupe_to_journal_root(
     assert dedupe_row["normalized_ref"] == glucose_row["normalized_ref"]
     assert dedupe_row["raw_ref"] == glucose_row["raw_ref"]
     assert not live_journal.exists()
+
+
+def test_workout_statistics_children_land_in_metadata_without_changing_dedupe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    journal = tmp_path / "journal"
+    export = _write_workout_statistics_zip(tmp_path / "workout_stats.zip")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    AppleHealthImporter().process(
+        export,
+        journal,
+        import_id="20260704_120000",
+        dry_run=False,
+    )
+
+    rows = _read_jsonl(
+        journal / "imports" / "20260704_120000" / "normalized" / "2026-07.jsonl"
+    )
+    workout = rows[0]
+    old_identity = apple_health._normalize_element(
+        "Workout",
+        WORKOUT_STATISTICS_ATTRIB,
+        import_id="20260704_120000",
+        raw_ref="synthetic#workout-1",
+        day="20260704",
+    )
+
+    assert workout["kind"] == "workout"
+    assert workout["dedupe_key"] == old_identity.row["dedupe_key"]
+    assert workout["metadata"]["totalEnergyBurned"] == "321.5"
+    assert workout["metadata"]["totalEnergyBurnedUnit"] == "Cal"
+    assert workout["metadata"]["totalEnergyBurnedType"] == (
+        "HKQuantityTypeIdentifierActiveEnergyBurned"
+    )
+    assert workout["metadata"]["totalDistance"] == "12.4"
+    assert workout["metadata"]["totalDistanceUnit"] == "km"
+    assert workout["metadata"]["totalDistanceType"] == (
+        "HKQuantityTypeIdentifierDistanceCycling"
+    )
+
+
+def test_backfill_workout_statistics_script_updates_metadata_not_dedupe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+):
+    journal = tmp_path / "journal"
+    export = _write_workout_statistics_zip(tmp_path / "workout_stats.zip")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    AppleHealthImporter().process(
+        export,
+        journal,
+        import_id="20260704_120000",
+        dry_run=False,
+    )
+
+    shard = journal / "imports" / "20260704_120000" / "normalized" / "2026-07.jsonl"
+    rows = _read_jsonl(shard)
+    original_dedupe_key = rows[0]["dedupe_key"]
+    original_raw_ref = rows[0]["raw_ref"]
+    for key in (
+        "totalEnergyBurned",
+        "totalEnergyBurnedUnit",
+        "totalEnergyBurnedType",
+        "totalDistance",
+        "totalDistanceUnit",
+        "totalDistanceType",
+    ):
+        rows[0]["metadata"].pop(key)
+    shard.write_text(json.dumps(rows[0], sort_keys=True) + "\n", encoding="utf-8")
+
+    module = _load_backfill_workout_stats_script_module()
+    dry_run_code = module.main([str(journal)])
+    dry_run_output = capsys.readouterr().out
+    dry_run_row = _read_jsonl(shard)[0]
+
+    assert dry_run_code == 0
+    assert "1 rows would update" in dry_run_output
+    assert "dry-run" in dry_run_output
+    assert "totalEnergyBurned" not in dry_run_row["metadata"]
+    assert dry_run_row["dedupe_key"] == original_dedupe_key
+
+    apply_code = module.main([str(journal), "--apply"])
+    apply_output = capsys.readouterr().out
+    updated = _read_jsonl(shard)[0]
+
+    assert apply_code == 0
+    assert "1 rows updated" in apply_output
+    assert updated["dedupe_key"] == original_dedupe_key
+    assert updated["raw_ref"] == original_raw_ref
+    assert updated["metadata"]["totalEnergyBurned"] == "321.5"
+    assert updated["metadata"]["totalDistance"] == "12.4"
 
 
 def test_save_mode_writes_opt_in_day_summary_files_only_in_files_created(

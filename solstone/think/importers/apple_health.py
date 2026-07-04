@@ -24,7 +24,6 @@ from solstone.think.importers.health_dedupe import (
 from solstone.think.importers.health_schema import (
     SOURCE_APPLE_HEALTH,
     HealthRecordIdentity,
-    SleepInterval,
     SleepStagedInterval,
     friendly_type_name,
     health_record_dedupe_key,
@@ -169,9 +168,7 @@ class _DaySummary:
     # Raw sleep intervals attributed to this day (by start time), per
     # source. The rendered session is resolved by _attach_night_sleep,
     # which also folds in the previous day's intervals.
-    sleep_intervals: dict[str, list[SleepStagedInterval]] = field(
-        default_factory=dict
-    )
+    sleep_intervals: dict[str, list[SleepStagedInterval]] = field(default_factory=dict)
     night_sleep: _NightSleep | None = None
 
     def add_source(self, source_name: str | None) -> None:
@@ -456,6 +453,7 @@ def _scan_export(
     item_ordinal = 0
     with _open_export_xml(path) as handle:
         root = None
+        inside_workout = False
         progress_handle = _ByteProgressReader(handle, path)
         for event, elem in ElementTree.iterparse(
             progress_handle, events=("start", "end")
@@ -463,6 +461,8 @@ def _scan_export(
             if event == "start":
                 if root is None:
                     root = elem
+                if elem.tag == "Workout":
+                    inside_workout = True
                 continue
 
             if elem.tag == "Record":
@@ -497,6 +497,9 @@ def _scan_export(
                 stats.add_day(day)
                 if on_item is not None:
                     on_item("workout", attrs, day, item_ordinal)
+                inside_workout = False
+            elif inside_workout:
+                continue
             elem.clear()
             if root is not None:
                 root.clear()
@@ -668,6 +671,7 @@ def _parse_normalized_items(
     scanned = 0
     with _open_export_xml(path) as handle:
         root = None
+        inside_workout = False
         progress_handle = _ByteProgressReader(handle, path)
         for event, elem in ElementTree.iterparse(
             progress_handle, events=("start", "end")
@@ -675,19 +679,29 @@ def _parse_normalized_items(
             if event == "start":
                 if root is None:
                     root = elem
+                if elem.tag == "Workout":
+                    inside_workout = True
                 continue
 
             if elem.tag in {"Record", "Workout"}:
                 scanned += 1
                 day = _parse_apple_day(elem.attrib.get("startDate"))
                 if date_window.includes(day):
+                    attrib = dict(elem.attrib)
+                    identity_metadata = _metadata_without_core_fields(attrib, elem.tag)
+                    metadata = dict(identity_metadata)
+                    if elem.tag == "Workout":
+                        for key, value in _workout_statistics_metadata(elem).items():
+                            metadata.setdefault(key, value)
                     items.append(
                         _normalize_element(
                             elem.tag,
-                            dict(elem.attrib),
+                            attrib,
                             import_id=import_id,
                             raw_ref=f"{raw_ref}#{elem.tag.lower()}-{scanned}",
                             day=day or "",
+                            metadata=metadata,
+                            identity_metadata=identity_metadata,
                         )
                     )
                 if progress_callback and scanned % 10_000 == 0:
@@ -696,6 +710,10 @@ def _parse_normalized_items(
                         scanned,
                         stage="importing",
                     )
+                if elem.tag == "Workout":
+                    inside_workout = False
+            elif inside_workout:
+                continue
 
             elem.clear()
             if root is not None:
@@ -713,6 +731,8 @@ def _normalize_element(
     import_id: str,
     raw_ref: str,
     day: str,
+    metadata: dict[str, str] | None = None,
+    identity_metadata: dict[str, str] | None = None,
 ) -> _NormalizedItem:
     if element_tag == "Record":
         kind = "record"
@@ -726,7 +746,10 @@ def _normalize_element(
     value = attrib.get("value")
     unit = attrib.get("unit")
     source_name = attrib.get("sourceName")
-    metadata = _metadata_without_core_fields(attrib, element_tag)
+    if metadata is None:
+        metadata = _metadata_without_core_fields(attrib, element_tag)
+    if identity_metadata is None:
+        identity_metadata = metadata
     dedupe_key = health_record_dedupe_key(
         HealthRecordIdentity(
             source_family=SOURCE_APPLE_HEALTH,
@@ -736,7 +759,7 @@ def _normalize_element(
             source_name=source_name,
             value=value,
             unit=unit,
-            metadata=metadata,
+            metadata=identity_metadata,
         )
     )
     month = f"{day[:4]}-{day[4:6]}" if day else "undated"
@@ -778,7 +801,11 @@ def _normalize_element(
             record_type=record_type,
             start_time=start_time,
             end_time=end_time,
-            value_hash=health_value_hash(value=value, unit=unit, metadata=metadata),
+            value_hash=health_value_hash(
+                value=value,
+                unit=unit,
+                metadata=identity_metadata,
+            ),
             first_import_id=import_id,
             last_seen_import_id=import_id,
             normalized_ref=normalized_ref,
@@ -818,6 +845,101 @@ def _metadata_without_core_fields(
             if key in attrib:
                 metadata[key] = attrib[key]
     return metadata
+
+
+def _workout_statistics_metadata(elem: ElementTree.Element) -> dict[str, str]:
+    """Extract modern Apple ``WorkoutStatistics`` totals for workout rows."""
+
+    metadata: dict[str, str] = {}
+    for child in elem:
+        if child.tag != "WorkoutStatistics":
+            continue
+        stat_type = child.attrib.get("type", "")
+        stat_sum = child.attrib.get("sum")
+        if stat_sum is None:
+            continue
+        unit = child.attrib.get("unit")
+        if stat_type == "HKQuantityTypeIdentifierActiveEnergyBurned":
+            _set_workout_total(
+                metadata,
+                "totalEnergyBurned",
+                "totalEnergyBurnedUnit",
+                "totalEnergyBurnedType",
+                stat_sum,
+                unit,
+                stat_type,
+            )
+        elif "Distance" in stat_type:
+            _set_workout_total(
+                metadata,
+                "totalDistance",
+                "totalDistanceUnit",
+                "totalDistanceType",
+                stat_sum,
+                unit,
+                stat_type,
+            )
+    return metadata
+
+
+def _set_workout_total(
+    metadata: dict[str, str],
+    value_key: str,
+    unit_key: str,
+    type_key: str,
+    value: str,
+    unit: str | None,
+    stat_type: str,
+) -> None:
+    if value_key in metadata:
+        return
+    metadata[value_key] = value
+    if unit:
+        metadata[unit_key] = unit
+    if stat_type:
+        metadata[type_key] = stat_type
+
+
+def _workout_statistics_by_raw_ref(
+    path: Path, raw_ref: str
+) -> dict[str, dict[str, str]]:
+    """Map ``imports/...#workout-N`` raw refs to recovered workout totals.
+
+    The ``N`` ordinal intentionally matches the existing normalized ``raw_ref``
+    assignment: records and workouts advance the counter, child statistics do
+    not. Callers can update row metadata without changing dedupe keys.
+    """
+
+    by_ref: dict[str, dict[str, str]] = {}
+    scanned = 0
+    with _open_export_xml(path) as handle:
+        root = None
+        inside_workout = False
+        progress_handle = _ByteProgressReader(handle, path)
+        for event, elem in ElementTree.iterparse(
+            progress_handle, events=("start", "end")
+        ):
+            if event == "start":
+                if root is None:
+                    root = elem
+                if elem.tag == "Workout":
+                    inside_workout = True
+                continue
+
+            if elem.tag in {"Record", "Workout"}:
+                scanned += 1
+                if elem.tag == "Workout":
+                    metadata = _workout_statistics_metadata(elem)
+                    if metadata:
+                        by_ref[f"{raw_ref}#workout-{scanned}"] = metadata
+                    inside_workout = False
+            elif inside_workout:
+                continue
+
+            elem.clear()
+            if root is not None:
+                root.clear()
+    return by_ref
 
 
 def _add_to_day_summary(summary: _DaySummary, row: dict[str, Any]) -> None:
