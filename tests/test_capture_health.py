@@ -35,15 +35,17 @@ def test_disabled_observers_excluded(monkeypatch):
     assert result["status"] == "no_observers"
 
 
-def test_list_observers_raises_returns_unknown(monkeypatch):
+def test_list_observers_raises_returns_unknown(monkeypatch, caplog):
     def _raise() -> list[dict]:
         raise RuntimeError("boom")
 
     monkeypatch.setattr("solstone.apps.observer.utils.list_observers", _raise)
 
-    result = get_capture_health()
+    with caplog.at_level("DEBUG", logger="solstone.think.capture_health"):
+        result = get_capture_health()
 
     assert result == {"status": "unknown", "observers": []}
+    assert "failed to derive capture health" in caplog.text
 
 
 def test_degraded_status_from_rejection(monkeypatch):

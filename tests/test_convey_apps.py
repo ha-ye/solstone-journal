@@ -297,6 +297,31 @@ class TestInjectedChatBarContext:
 
         assert context["chat_bar_sol_request"] is None
 
+    def test_awareness_context_failure_logs_and_uses_fallback(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        import solstone.convey.state as convey_state
+
+        def fail_current():
+            raise RuntimeError("boom")
+
+        app = Flask(__name__)
+        registry = AppRegistry()
+        monkeypatch.setattr(convey_state, "journal_root", str(tmp_path))
+        monkeypatch.setattr("solstone.convey.apps._get_facets_data", lambda: [])
+        monkeypatch.setattr("solstone.convey.apps._get_selected_facet", lambda: None)
+        monkeypatch.setattr("solstone.think.awareness.get_current", fail_current)
+        register_app_context(app, registry)
+
+        with caplog.at_level("WARNING", logger="solstone.convey.apps"):
+            with app.test_request_context("/"):
+                context: dict = {}
+                app.update_template_context(context)
+
+        assert context["chat_bar_placeholder"] == "Send a message..."
+        assert context["chat_bar_attention"] is None
+        assert "failed to resolve chat bar awareness context" in caplog.text
+
 
 class TestAttentionResolution:
     """Tests for _resolve_attention() and attention-aware placeholder resolution."""
@@ -311,6 +336,21 @@ class TestAttentionResolution:
 
         current = {"imports": {"has_imported": True}, "journal": {}}
         assert _resolve_attention(current) is None
+
+    def test_cortex_attention_failure_logs_and_falls_through(self, monkeypatch, caplog):
+        from solstone.convey.apps import _resolve_attention
+
+        def fail_scan():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(
+            "solstone.convey.apps.read_unresolved_agent_failures", fail_scan
+        )
+
+        with caplog.at_level("WARNING", logger="solstone.convey.apps"):
+            assert _resolve_attention({}) is None
+
+        assert "failed to resolve chat bar cortex attention" in caplog.text
 
     def test_p1_recent_import(self):
         from datetime import datetime

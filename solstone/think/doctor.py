@@ -44,7 +44,7 @@ from pathlib import Path
 from typing import IO, Callable, Sequence
 
 from solstone.think import features as _features
-from solstone.think import parakeet_readiness, skills_cli
+from solstone.think import maint, parakeet_readiness, skills_cli
 from solstone.think.health_cli import fetch_supervisor_status
 from solstone.think.probe import (
     CONFIG_DIR_READABLE_CHECK,
@@ -74,7 +74,7 @@ from solstone.think.service import (
 )
 from solstone.think.setup_events import STATUS_TRANSLATION, JsonlEmitter, utc_now_iso
 from solstone.think.sync_check import check_journal_sync, format_doctor_report
-from solstone.think.utils import get_journal_info, is_packaged_install
+from solstone.think.utils import get_journal_info, is_packaged_install, now_ms
 
 
 @dataclass(frozen=True)
@@ -129,6 +129,7 @@ _COREML_MODEL_FIX = (
     "CoreML parakeet model is not downloaded — fetch it with: journal install-models"
 )
 JOURNAL_CAUGHT_UP_CHECK = Check("journal_caught_up", "advisory", ("linux", "darwin"))
+JOURNAL_MAINT_TASKS_CHECK = Check("journal_maint_tasks", "blocker", ("linux", "darwin"))
 TASK_PACE_CHECK = Check("task_pace", "advisory", ("linux", "darwin"))
 OBSERVER_INGEST_HEALTH_CHECK = Check(
     "observer_ingest_health", "advisory", ("linux", "darwin")
@@ -138,6 +139,10 @@ _CAUGHT_UP_BACKLOG_FIX = (
     "to prioritize it"
 )
 _CAUGHT_UP_CANT_TELL_FIX = "re-run journal doctor; check the health logs if it persists"
+_MAINT_STALE_MS = 5 * 60 * 1000
+_MAINT_TASK_FIX = (
+    "inspect with journal maint <task>; re-run with journal maint --force <task>"
+)
 _TASK_PACE_FIX = (
     "a job is running long; it will be stopped automatically if it passes its cap "
     "— no action needed unless it persists"
@@ -665,6 +670,52 @@ def journal_caught_up_check(args: Args) -> CheckResult:
     return make_result(check, "warn", detail, _CAUGHT_UP_BACKLOG_FIX)
 
 
+def journal_maint_tasks_check(args: Args) -> CheckResult:
+    del args
+    check = JOURNAL_MAINT_TASKS_CHECK
+    path_text, _source = get_journal_info()
+    journal = Path(path_text)
+    if not journal.is_dir():
+        return make_result(check, "skip", "no local journal")
+
+    tasks = maint.list_tasks(journal)
+    failed = [task for task in tasks if task.get("status") == "failed"]
+    if failed:
+        detail = "failed maint task(s): " + ", ".join(
+            f"{task['qualified_name']} (exit {task.get('exit_code', 'unknown')})"
+            for task in failed
+        )
+        return make_result(check, "fail", detail, _MAINT_TASK_FIX)
+
+    current_ms = now_ms()
+    stale = [
+        task
+        for task in tasks
+        if task.get("status") == "in_progress"
+        and isinstance(task.get("ran_ts"), int)
+        and current_ms - task["ran_ts"] > _MAINT_STALE_MS
+    ]
+    if stale:
+        detail = "started, no exit: " + ", ".join(
+            str(task["qualified_name"]) for task in stale
+        )
+        return make_result(check, "warn", detail, _MAINT_TASK_FIX)
+
+    indeterminate = [
+        task
+        for task in tasks
+        if task.get("status") == "in_progress"
+        and not isinstance(task.get("ran_ts"), int)
+    ]
+    if indeterminate:
+        detail = "couldn't fully determine — maint state unreadable: " + ", ".join(
+            str(task["qualified_name"]) for task in indeterminate
+        )
+        return make_result(check, "warn", detail, _MAINT_TASK_FIX)
+
+    return make_result(check, "ok", "no unresolved maint tasks")
+
+
 def task_pace_check(args: Args) -> CheckResult:
     del args
     check = TASK_PACE_CHECK
@@ -859,6 +910,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (SERVICE_RUNNING_CHECK, service_running_check),
     (JOURNAL_SYNC_CHECK, journal_sync_check),
     (JOURNAL_CAUGHT_UP_CHECK, journal_caught_up_check),
+    (JOURNAL_MAINT_TASKS_CHECK, journal_maint_tasks_check),
     (TASK_PACE_CHECK, task_pace_check),
     (OBSERVER_INGEST_HEALTH_CHECK, observer_ingest_health_check),
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="journal")),

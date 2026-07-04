@@ -51,6 +51,7 @@ from .reasons import (
     INVALID_CONFIG_VALUE,
     INVALID_OPERATION_FOR_STATE,
     PL_REVOKED,
+    PROVIDER_VALIDATION_FAILED,
 )
 from .secure_listener import get_authorized_clients, start_secure_listener
 from .secure_listener.wsgi import CERTLESS_PAIR_ENDPOINTS
@@ -273,13 +274,23 @@ def init_validate_provider() -> Any:
     data = request.get_json(silent=True) or {}
     key = data.get("key", "")
 
-    from solstone.think.providers import validate_key
-
     try:
+        from solstone.convey.provider_readiness import chat_view
+        from solstone.think.providers import validate_key
+
         result = validate_key("google", key)
-    except Exception as e:
-        result = {"valid": False, "error": str(e)}
-    return jsonify(result)
+    except Exception:
+        logger.exception("provider validation dispatch failed")
+        return error_response(PROVIDER_VALIDATION_FAILED)
+
+    if result.get("valid"):
+        return jsonify({"valid": True})
+
+    reason_code = result.get("reason_code") or "unknown"
+    view = chat_view(reason_code, "google")
+    return jsonify(
+        {"valid": False, "message": view["message"], "reason_code": reason_code}
+    )
 
 
 @bp.route("/init/observers")
@@ -354,6 +365,7 @@ def init_finalize() -> Any:
         )
 
     data = request.get_json(silent=True) or {}
+    warnings: list[str] = []
 
     from solstone.think.utils import now_ms
 
@@ -404,8 +416,18 @@ def init_finalize() -> Any:
         start_secure_listener(current_app._get_current_object())
     except Exception:
         logger.error("secure listener start after finalize FAILED")
+        warnings.append(
+            "Setup is complete, but secure network access didn't start — "
+            "you can retry pairing from settings."
+        )
 
-    return jsonify({"success": True, "redirect": url_for("app:thinking.index")})
+    return jsonify(
+        {
+            "success": True,
+            "redirect": url_for("app:thinking.index"),
+            "warnings": warnings,
+        }
+    )
 
 
 @bp.route("/favicon.ico")

@@ -555,6 +555,20 @@ class TestHostDependencies:
         }
         assert doctor.CHECK_MAP["host_dependencies"].severity == "blocker"
 
+    def test_maint_tasks_registered_in_journal_and_check_map(self, doctor):
+        pair = (
+            doctor.JOURNAL_MAINT_TASKS_CHECK,
+            doctor.journal_maint_tasks_check,
+        )
+
+        assert doctor.JOURNAL_MAINT_TASKS_CHECK.name == "journal_maint_tasks"
+        assert doctor.JOURNAL_MAINT_TASKS_CHECK.name in doctor.CHECK_MAP
+        assert doctor.CHECK_MAP["journal_maint_tasks"].severity == "blocker"
+        assert pair in doctor.JOURNAL_CHECKS
+        assert pair not in doctor.UNIVERSAL_CHECKS
+        assert pair not in doctor.READINESS_CHECKS
+        assert pair not in doctor.JOURNAL_READINESS_CHECKS
+
     def test_host_dependencies_ok_when_present(self, doctor):
         result = doctor.host_dependencies_check(args(doctor))
 

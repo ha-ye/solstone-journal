@@ -408,6 +408,7 @@ class TestInitMark:
 
     def test_finalize_catch_routes_server_error(self, fresh_client):
         resp = fresh_client.get("/init")
+        assert b"data.warnings" in resp.data
         assert b"err.serverMessage" in resp.data
         assert b"showFinalizeError" in resp.data
 
@@ -452,6 +453,8 @@ class TestInitValidateProvider:
         assert data["valid"] is True
 
     def test_validate_provider_invalid_key(self, fresh_client, monkeypatch):
+        from solstone.convey.provider_readiness import chat_view
+
         monkeypatch.setattr(
             "solstone.think.providers.validate_key",
             lambda provider, key: {"valid": False, "error": "Invalid key"},
@@ -464,7 +467,54 @@ class TestInitValidateProvider:
         assert resp.status_code == 200
         data = resp.get_json()
         assert data["valid"] is False
-        assert data["error"] == "Invalid key"
+        assert data["reason_code"] == "unknown"
+        assert data["message"] == chat_view("unknown", "google")["message"]
+        assert data["message"] != "Invalid key"
+
+    def test_validate_provider_provider_failure_no_leak(
+        self, fresh_client, monkeypatch
+    ):
+        from solstone.think.providers import google
+
+        def fail_probe(_api_key):
+            raise ConnectionError("SECRET-TRACEBACK-XYZ")
+
+        monkeypatch.setattr(google, "_probe_backend", fail_probe)
+
+        resp = fresh_client.post(
+            "/init/validate-provider",
+            json={"key": "bad-key"},
+            content_type="application/json",
+        )
+
+        text = resp.get_data(as_text=True)
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert data["valid"] is False
+        assert data["reason_code"] == "network_unreachable"
+        assert "SECRET-TRACEBACK-XYZ" not in text
+        assert "Traceback" not in text
+        assert "RuntimeError" not in text
+
+    def test_validate_provider_dispatch_failure_non_2xx(
+        self, fresh_client, monkeypatch
+    ):
+        def fail_validate(_provider, _key):
+            raise RuntimeError("SECRET-DISPATCH")
+
+        monkeypatch.setattr("solstone.think.providers.validate_key", fail_validate)
+
+        resp = fresh_client.post(
+            "/init/validate-provider",
+            json={"key": "bad-key"},
+            content_type="application/json",
+        )
+
+        text = resp.get_data(as_text=True)
+        data = resp.get_json()
+        assert resp.status_code == 500
+        assert data["reason_code"] == "provider_validation_failed"
+        assert "SECRET-DISPATCH" not in text
 
     def test_validate_provider_no_config_write(
         self, fresh_client, journal_copy, monkeypatch
@@ -654,6 +704,45 @@ class TestInitFinalize:
         config = _read_config(journal_copy)
         assert "completed_at" in config["setup"]
         assert "allow_network_access" not in config["convey"]
+
+    def test_finalize_warns_when_secure_listener_fails(self, fresh_client, monkeypatch):
+        _commit_journal_identity()
+
+        def fail_start(_app):
+            raise RuntimeError("listener boom")
+
+        monkeypatch.setattr("solstone.convey.root.start_secure_listener", fail_start)
+
+        resp = fresh_client.post(
+            "/init/finalize",
+            json={"name": "Jane"},
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["success"] is True
+        assert data["redirect"] == "/app/thinking/"
+        assert isinstance(data["warnings"], list)
+        assert data["warnings"]
+
+    def test_finalize_happy_path_returns_empty_warnings(
+        self, fresh_client, monkeypatch
+    ):
+        _commit_journal_identity()
+        monkeypatch.setattr(
+            "solstone.convey.root.start_secure_listener",
+            lambda _app: None,
+        )
+
+        resp = fresh_client.post(
+            "/init/finalize",
+            json={"name": "Jane"},
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.get_json()["warnings"] == []
 
     def test_finalize_minimal(self, fresh_client, journal_copy):
         """Finalize with optional fields omitted."""

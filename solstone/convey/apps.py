@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 
@@ -15,6 +16,8 @@ from solstone.convey.provider_readiness import is_blocking_reason, present_for_r
 from solstone.think.talent_runs import AgentFailure, read_unresolved_agent_failures
 
 from .icons import APP_LUCIDE_MAP, lucide_svg, resolve_facet_icon_svg
+
+logger = logging.getLogger(__name__)
 
 
 def _get_facets_data() -> list[dict]:
@@ -154,7 +157,7 @@ def _resolve_attention(awareness_current: dict) -> AttentionItem | None:
                 context_lines=context,
             )
     except Exception:
-        pass
+        logger.warning("failed to resolve chat bar cortex attention", exc_info=True)
 
     # P1: Recent import completion
     imports = awareness_current.get("imports", {})
@@ -326,7 +329,9 @@ def register_app_context(app: Flask, registry: AppRegistry) -> None:
                 chat_bar_attention = {"placeholder_text": attention.placeholder_text}
             chat_bar_placeholder = _resolve_placeholder(awareness_current, day_count)
         except Exception:
-            pass  # Default placeholder on any error
+            logger.warning(
+                "failed to resolve chat bar awareness context", exc_info=True
+            )
 
         today = date.today().strftime("%Y%m%d")
         from solstone.convey.chat_stream import read_chat_events

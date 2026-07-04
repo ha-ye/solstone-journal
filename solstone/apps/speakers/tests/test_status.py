@@ -205,7 +205,7 @@ def test_status_embeddings_with_data(speakers_env):
     assert result["date_range"] == ["20240101", "20240102"]
 
 
-def test_status_attribution_with_labels(speakers_env):
+def test_status_attribution_with_labels(speakers_env, caplog):
     from solstone.apps.speakers.status import get_speakers_status
 
     env = speakers_env()
@@ -227,8 +227,24 @@ def test_status_attribution_with_labels(speakers_env):
             },
         ],
     )
+    corrupt_path = env.create_speaker_labels(
+        "20240101",
+        "091000_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "bob",
+                "confidence": "high",
+                "method": "voiceprint",
+            }
+        ],
+    )
+    corrupt_path.write_text("{ invalid json }", encoding="utf-8")
 
-    result = get_speakers_status(section="attribution")
+    with caplog.at_level("WARNING", logger="solstone.apps.speakers.status"):
+        result = get_speakers_status(section="attribution")
+
+    assert "Failed to read speaker labels" in caplog.text
     assert result["files"] == 1
     assert result["labels"] == 2
     assert result["by_confidence"]["high"] == 1

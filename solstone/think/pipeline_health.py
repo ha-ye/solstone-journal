@@ -269,6 +269,12 @@ def summarize_pipeline_day(day: str) -> dict:
     try:
         health_dir = day_path(day, create=False) / "health"
         if not health_dir.is_dir():
+            today = _now().strftime("%Y%m%d")
+            if day < today and cluster_segments(day):
+                summary["status"] = "unknown"
+                summary["anomalies"].append(
+                    {"kind": "segments_not_thought", "error": "no_health_dir"}
+                )
             return summary
 
         for path in sorted(health_dir.glob("*.jsonl")):
@@ -329,11 +335,17 @@ def summarize_pipeline_day(day: str) -> dict:
                         except (TypeError, ValueError):
                             duration_ms = 0
                         summary["runs"][mode]["duration_ms_total"] += duration_ms
+    except ValueError:
+        return summary
     except Exception:
         logger.warning(
             "pipeline_health: unexpected error summarizing %s",
             day,
             exc_info=True,
+        )
+        summary["status"] = "unknown"
+        summary["anomalies"].append(
+            {"kind": "segments_not_thought", "error": "scan_failed"}
         )
         return summary
 
@@ -1577,7 +1589,7 @@ def pipeline_status_message(summary: dict) -> dict | None:
     if seg is not None:
         if seg.get("error"):
             return {
-                "status": "stale",
+                "status": summary.get("status", "stale"),
                 "message": "Segment thinking status unavailable",
             }
         count = seg.get("not_thought", 0)

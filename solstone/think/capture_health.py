@@ -12,7 +12,11 @@ propagating; callers render a neutral UI instead of crashing.
 
 from __future__ import annotations
 
+import logging
+
 from solstone.think.utils import now_ms
+
+logger = logging.getLogger(__name__)
 
 _CONNECTED_MS = 30_000
 _STALE_MS = 120_000
@@ -107,4 +111,5 @@ def get_capture_health() -> dict:
             "observers": observer_summaries,
         }
     except Exception:
+        logger.debug("failed to derive capture health", exc_info=True)
         return {"status": "unknown", "observers": []}

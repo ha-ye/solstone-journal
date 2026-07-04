@@ -368,7 +368,7 @@
           body: JSON.stringify({key})
         });
         if (result.valid) showFieldStatus(input, 'saved', 'connected');
-        else showFieldStatus(input, 'error', result.error || 'validation failed');
+        else showFieldStatus(input, 'error', result.message || 'validation failed');
         if (input.value.trim() === validatedValue) {
           button.textContent = result.valid ? 'connected' : 'failed';
         }
@@ -659,6 +659,14 @@
           })
         });
         if (data && data.success && data.redirect) {
+          if (data.warnings && data.warnings.length) {
+            showFinalizeError(errorEl, data.warnings.join(' '));
+            if (button) button.textContent = 'redirecting…';
+            setTimeout(() => {
+              window.location.href = data.redirect;
+            }, RESULT_DISPLAY_MS);
+            return;
+          }
           if (button) button.textContent = 'redirecting…';
           window.location.href = data.redirect;
           return;

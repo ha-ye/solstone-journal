@@ -828,8 +828,7 @@ def log_token_usage(
             f.write(json.dumps(token_data) + "\n")
 
     except Exception:
-        # Silently fail - logging shouldn't break the main flow
-        pass
+        logger.warning("failed to log token usage", exc_info=True)
 
 
 _CLOUD_MODEL_FAMILIES = {"openai", "google", "anthropic"}

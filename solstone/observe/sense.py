@@ -629,7 +629,7 @@ class FileSensor:
                 health_dir.mkdir(parents=True, exist_ok=True)
                 (health_dir / "stream.updated").touch()
             except Exception:
-                pass
+                logger.debug("failed to touch stream.updated marker", exc_info=True)
 
         # Cleanup segment tracking
         del self.segment_files[segment]

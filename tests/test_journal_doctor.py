@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import plistlib
 from pathlib import Path
@@ -30,6 +31,24 @@ def home_root(monkeypatch, tmp_path):
 
 def args(doctor):
     return doctor.Args(verbose=False, json=False, jsonl=False, port=5015)
+
+
+MAINT_APP = "sol"
+MAINT_TASK = "000_migrate_agent_layout"
+MAINT_QUALIFIED = f"{MAINT_APP}:{MAINT_TASK}"
+
+
+def maint_state_file(journal: Path) -> Path:
+    path = journal / "maint" / MAINT_APP / f"{MAINT_TASK}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_maint_events(journal: Path, events: list[dict]) -> None:
+    maint_state_file(journal).write_text(
+        "".join(json.dumps(event) + "\n" for event in events),
+        encoding="utf-8",
+    )
 
 
 def make_repo(tmp_path: Path, *, worktree: bool = False) -> Path:
@@ -162,6 +181,77 @@ def test_observer_ingest_health_ok_and_skip(doctor, monkeypatch):
     result = doctor.observer_ingest_health_check(args(doctor))
 
     assert result.status == "skip"
+
+
+def test_journal_maint_tasks_failed_state_fails(doctor, monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(tmp_path), "source"))
+    write_maint_events(
+        tmp_path,
+        [
+            {"event": "exec", "ts": 1000},
+            {"event": "exit", "ts": 2000, "exit_code": 2},
+        ],
+    )
+
+    result = doctor.journal_maint_tasks_check(args(doctor))
+
+    assert result.status == "fail"
+    assert MAINT_QUALIFIED in result.detail
+    assert "exit 2" in result.detail
+    assert result.fix is not None
+    assert "journal maint <task>" in result.fix
+    assert "journal maint --force <task>" in result.fix
+
+
+def test_journal_maint_tasks_stale_in_progress_warns(doctor, monkeypatch, tmp_path):
+    now = 10_000_000
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(tmp_path), "source"))
+    monkeypatch.setattr(doctor, "now_ms", lambda: now)
+    write_maint_events(
+        tmp_path,
+        [{"event": "exec", "ts": now - doctor._MAINT_STALE_MS - 1}],
+    )
+
+    result = doctor.journal_maint_tasks_check(args(doctor))
+
+    assert result.status == "warn"
+    assert "started, no exit" in result.detail
+    assert MAINT_QUALIFIED in result.detail
+    assert result.fix is not None
+    assert "journal maint --force <task>" in result.fix
+
+
+def test_journal_maint_tasks_pending_is_ok(doctor, monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(tmp_path), "source"))
+
+    result = doctor.journal_maint_tasks_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "no unresolved maint tasks"
+
+
+def test_journal_maint_tasks_exec_less_state_warns(doctor, monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(tmp_path), "source"))
+    write_maint_events(
+        tmp_path,
+        [{"event": "line", "ts": 1000, "line": "started but no exec"}],
+    )
+
+    result = doctor.journal_maint_tasks_check(args(doctor))
+
+    assert result.status == "warn"
+    assert result.detail.startswith("couldn't fully determine")
+    assert MAINT_QUALIFIED in result.detail
+
+
+def test_journal_maint_tasks_no_local_journal_skips(doctor, monkeypatch, tmp_path):
+    missing = tmp_path / "missing-journal"
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(missing), "source"))
+
+    result = doctor.journal_maint_tasks_check(args(doctor))
+
+    assert result.status == "skip"
+    assert result.detail == "no local journal"
 
 
 def test_service_running_crash_loop_fails(doctor, monkeypatch):

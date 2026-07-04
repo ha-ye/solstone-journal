@@ -96,6 +96,7 @@
               "pl_revoked",
               "principal_entity_protected",
               "provider_key_missing",
+              "provider_validation_failed",
               "push_request_invalid",
               "raw_media_not_available",
               "recovery_key_mismatch",

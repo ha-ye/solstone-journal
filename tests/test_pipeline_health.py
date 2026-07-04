@@ -1115,6 +1115,18 @@ def test_missing_health_dir(pipeline_journal):
     assert summary["runs"]["daily"]["count"] == 0
 
 
+def test_missing_health_dir_with_captured_segments_is_unknown(pipeline_journal):
+    day = "20200101"
+    _seed_screen_segment(pipeline_journal, day, "120000_300")
+
+    summary = summarize_pipeline_day(day)
+
+    assert summary["status"] == "unknown"
+    assert {"kind": "segments_not_thought", "error": "no_health_dir"} in summary[
+        "anomalies"
+    ]
+
+
 def test_healthy_day_with_all_modes(pipeline_journal):
     day = "20990101"
     base = pipeline_journal / "chronicle" / day / "health"
@@ -1502,6 +1514,22 @@ def test_segment_completion_fold_failure_elevates_status(
         "status": "stale",
         "message": "Segment thinking status unavailable",
     }
+
+
+def test_scan_failure_elevates_status_to_unknown(pipeline_journal, monkeypatch):
+    from solstone.think import pipeline_health
+
+    def fail_day_path(*_args, **_kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(pipeline_health, "day_path", fail_day_path)
+
+    summary = summarize_pipeline_day("20200102")
+
+    assert summary["status"] == "unknown"
+    assert {"kind": "segments_not_thought", "error": "scan_failed"} in summary[
+        "anomalies"
+    ]
 
 
 def test_invalid_day_returns_healthy_empty(pipeline_journal):
@@ -2226,6 +2254,20 @@ def test_historical_failures_with_latest_complete_are_not_pending(pipeline_journ
             },
             {
                 "status": "stale",
+                "message": "Segment thinking status unavailable",
+            },
+        ),
+        (
+            {
+                "status": "unknown",
+                "anomalies": [
+                    {"kind": "segments_not_thought", "error": "no_health_dir"}
+                ],
+                "talents": {"failed": 0},
+                "day": "20260101",
+            },
+            {
+                "status": "unknown",
                 "message": "Segment thinking status unavailable",
             },
         ),

@@ -1519,6 +1519,23 @@ def test_file_sensor_live_observed_touches_stream_updated(
     assert marker.exists()
 
 
+def test_file_sensor_live_observed_logs_stream_updated_failure(
+    tmp_path, monkeypatch, mock_callosum, caplog
+):
+    def fail_day_path(_day):
+        raise OSError("boom")
+
+    monkeypatch.setattr("solstone.observe.sense.day_path", fail_day_path)
+
+    with caplog.at_level("DEBUG", logger="solstone.observe.sense"):
+        observed = _observed_event_from_observing(
+            tmp_path, monkeypatch, mock_callosum, batch=False
+        )
+
+    assert observed["segment"] == "143022_300"
+    assert "failed to touch stream.updated marker" in caplog.text
+
+
 def test_file_sensor_batch_observed_does_not_touch_stream_updated(
     tmp_path, monkeypatch, mock_callosum
 ):

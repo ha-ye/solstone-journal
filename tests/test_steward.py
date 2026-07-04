@@ -563,6 +563,24 @@ def test_render_health_body_activity_gap_bullet():
     assert "3 activities ended yesterday" in body
 
 
+def test_render_health_body_segment_status_unknown_bullet():
+    pipeline_day = {
+        "status": "unknown",
+        "anomalies": [{"kind": "segments_not_thought", "error": "no_health_dir"}],
+    }
+
+    body = render_health_body(
+        generated_at=_GEN_AT,
+        pipeline_day=pipeline_day,
+        recipe_outcomes_7d=[],
+        data_source_errors=[],
+    )
+
+    assert validate_steward_health(body) is None
+    assert "sol is well." not in body
+    assert "Segment thinking status could not be determined." in body
+
+
 def test_render_health_body_talent_failure_timed_out():
     pipeline_day = {
         "anomalies": [

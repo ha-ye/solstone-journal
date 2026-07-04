@@ -221,6 +221,7 @@ def _attribution_section() -> dict[str, Any]:
                 try:
                     data = json.loads(labels_file.read_text())
                 except Exception:
+                    logger.warning("Failed to read speaker labels", exc_info=True)
                     continue
                 total_files += 1
                 for label in data.get("labels", []):

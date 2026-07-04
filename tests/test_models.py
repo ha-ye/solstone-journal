@@ -1317,6 +1317,31 @@ def test_log_token_usage_passes_through_cache_creation_tokens(tmp_path, monkeypa
     assert entry["usage"]["cached_tokens"] == 3000
 
 
+def test_log_token_usage_logs_append_failure(tmp_path, monkeypatch, caplog):
+    import builtins
+
+    from solstone.think.models import log_token_usage
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    real_open = builtins.open
+
+    def fail_token_open(path, *args, **kwargs):
+        if str(path).endswith(".jsonl"):
+            raise OSError("disk full")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", fail_token_open)
+
+    with caplog.at_level(logging.WARNING, logger="solstone.think.models"):
+        log_token_usage(
+            model="gpt-5.2",
+            usage={"input_tokens": 1000, "output_tokens": 200},
+            context="test",
+        )
+
+    assert "failed to log token usage" in caplog.text
+
+
 class TestModelSupports:
     def test_opus_4_7_temperature_not_supported(self):
         assert model_supports(CLAUDE_OPUS_4, "temperature") is False
