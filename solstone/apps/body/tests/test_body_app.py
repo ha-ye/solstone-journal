@@ -1611,6 +1611,203 @@ def test_day_api_blood_pressure_compresses_to_ranges_when_many_readings(body_env
     assert bp["range_label"] == "systolic 110–128 mmHg · diastolic 70–82 mmHg"
 
 
+# --- Day view: heart-rate day curve -------------------------------------------
+
+
+def _hr_rows(day: str, times_values: list[tuple[str, int]]) -> list[dict]:
+    return [
+        _row(
+            HR_TYPE,
+            f"{day}T{clock}:00-06:00",
+            value=str(value),
+            unit="count/min",
+            source="Synthetic Watch",
+        )
+        for clock, value in times_values
+    ]
+
+
+def test_day_api_heart_rate_series_buckets_band_and_gap_split(body_env):
+    env = body_env()
+    # Two adjacent 5-minute buckets in the morning, then a >45-minute gap
+    # to an isolated bucket: the curve must split and the tail render as
+    # a dot.
+    readings = [
+        ("06:00", 60),
+        ("06:01", 100),
+        ("06:02", 62),
+        ("06:03", 58),
+        ("06:04", 90),
+        ("06:05", 64),
+        ("06:06", 66),
+        ("06:07", 68),
+        ("06:08", 70),
+        ("06:09", 72),
+        ("08:00", 80),
+        ("08:01", 82),
+        ("08:02", 84),
+        ("08:03", 86),
+        ("08:04", 88),
+    ]
+    _seed_import(env.journal, "20260910_000000", _hr_rows("2026-08-10", readings))
+
+    payload = env.client.get("/app/body/api/day/20260810").get_json()
+
+    series = payload["heart"]["series"]
+    assert series is not None
+    assert series["count"] == 15
+    assert series["unit"] == "count/min"
+    # Friendly unit only — the raw count/min never reaches the owner.
+    assert series["unit_label"] == "bpm"
+    assert series["bucket_minutes"] == 5
+    # Bucket medians at bucket-center minutes-of-day.
+    assert series["points"] == [
+        [362.5, 62.0],
+        [367.5, 68.0],
+        [482.5, 84.0],
+    ]
+    # Per-bucket min–max carries the honest instantaneous variability.
+    assert series["bands"] == [
+        [362.5, 58.0, 100.0],
+        [367.5, 64.0, 72.0],
+        [482.5, 80.0, 88.0],
+    ]
+    # The 06:07→08:02 bucket gap (115 min) splits the curve: one median
+    # path with its band polygon, plus the isolated bucket as a dot.
+    assert len(series["svg"]["paths"]) == 1
+    assert series["svg"]["paths"][0].startswith("M362.5 ")
+    assert "L367.5 " in series["svg"]["paths"][0]
+    assert len(series["svg"]["band_paths"]) == 1
+    band = series["svg"]["band_paths"][0]
+    assert band.startswith("M")
+    assert band.endswith(" Z")
+    # Closed polygon: maxima out, minima back — four points for two buckets.
+    assert band.count("L") == 3
+    assert len(series["svg"]["dots"]) == 1
+    assert series["svg"]["dots"][0][0] == 482.5
+
+
+def test_day_api_heart_rate_series_absent_below_threshold(body_env):
+    env = body_env()
+    readings = [(f"06:{5 * i:02d}", 60 + i) for i in range(11)]
+    _seed_import(env.journal, "20260910_010000", _hr_rows("2026-08-11", readings))
+
+    payload = env.client.get("/app/body/api/day/20260811").get_json()
+
+    # Eleven readings are below the curve threshold: the payload keeps
+    # the key additively but the card stays a text-only range row.
+    heart = payload["heart"]
+    assert heart["series"] is None
+    assert heart["heart_rate"]["summary"] == "60–70 bpm · 11 readings"
+
+    html = env.client.get("/app/body/20260811").get_data(as_text=True)
+    assert "60–70 bpm · 11 readings" in html
+    assert "Heart rate through the day" not in html
+    assert 'class="body-curve-band"' not in html
+
+
+def test_day_api_heart_series_y_axis_labels_match_padded_domain(body_env):
+    env = body_env()
+    values = [55, 60, 70, 80, 90, 100, 110, 120, 125, 130, 135, 142]
+    readings = [(f"06:{5 * i:02d}", value) for i, value in enumerate(values)]
+    _seed_import(env.journal, "20260910_020000", _hr_rows("2026-08-12", readings))
+
+    series = env.client.get("/app/body/api/day/20260812").get_json()["heart"]["series"]
+
+    # Same axis convention as glucose: readings span 55–142, the domain
+    # pads by 8% (6.96) and rounds outward to whole numbers the labels
+    # state.
+    assert series["min"] == 55.0
+    assert series["max"] == 142.0
+    assert series["svg"]["y_min_label"] == "48"
+    assert series["svg"]["y_max_label"] == "149"
+
+
+def test_day_page_renders_heart_curve_under_range_row(body_env):
+    env = body_env()
+    readings = [(f"07:{i:02d}", 62 + (i % 7)) for i in range(20)]
+    rows = _hr_rows("2026-08-13", readings) + [
+        _row(
+            RESP_TYPE,
+            "2026-08-13T03:30:00-06:00",
+            value="14.5",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_030000", rows)
+
+    html = env.client.get("/app/body/20260813").get_data(as_text=True)
+
+    # Range row, then the curve with its band, then the other facts.
+    assert "62–68 bpm · 20 readings" in html
+    assert 'aria-label="Heart rate through the day"' in html
+    assert 'class="body-curve-band"' in html
+    assert "Respiratory rate" in html
+    curve_at = html.index('aria-label="Heart rate through the day"')
+    assert html.index("62–68 bpm") < curve_at
+    assert curve_at < html.index("Respiratory rate")
+    assert "count/min" not in html
+
+
+def test_day_api_payload_keys_stay_additive_with_heart_series(body_env):
+    env = body_env()
+    readings = [(f"09:{i:02d}", 70 + i) for i in range(12)]
+    rows = _hr_rows("2026-08-14", readings) + [
+        _row(
+            GLUCOSE_TYPE,
+            "2026-08-14T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _row(
+            GLUCOSE_TYPE,
+            "2026-08-14T08:05:00-06:00",
+            value="105",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_040000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260814").get_json()
+
+    # Existing top-level keys stay intact alongside the new series.
+    assert {
+        "day",
+        "date_label",
+        "summary_markdown",
+        "glucose",
+        "entry_total",
+        "has_data",
+        "lede",
+        "sleep",
+        "glucose_series",
+        "activity",
+        "heart",
+        "mind_sound",
+        "walking",
+        "body_measurements",
+        "other_signals",
+        "sources",
+        "prompts",
+        "audit",
+        "nearest",
+    } <= set(payload)
+    assert {"heart_rate", "series", "blood_pressure", "facts"} <= set(payload["heart"])
+    # The glucose curve payload keeps its shape — the band is HR-only.
+    glucose_svg = payload["glucose_series"][0]["svg"]
+    assert {"width", "height", "paths", "dots", "y_min_label", "y_max_label"} <= set(
+        glucose_svg
+    )
+    assert "band_paths" not in glucose_svg
+    series_svg = payload["heart"]["series"]["svg"]
+    assert {"paths", "band_paths", "dots", "y_min_label", "y_max_label"} <= set(
+        series_svg
+    )
+
+
 # --- Day view: steps primary source ---------------------------------------------
 
 
@@ -1879,6 +2076,73 @@ def test_day_api_summable_quantities_total_when_single_source(body_env):
     }
     # Mindful sessions sum to minutes of session time.
     assert mind_facts["Mindful sessions"] == "15m"
+
+
+# --- Day view: audio-level summaries ------------------------------------------
+
+
+HEADPHONE_AUDIO_TYPE = "HKQuantityTypeIdentifierHeadphoneAudioExposure"
+ENVIRONMENTAL_AUDIO_TYPE = "HKQuantityTypeIdentifierEnvironmentalAudioExposure"
+
+
+def test_day_api_audio_levels_summarize_factual_range(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            HEADPHONE_AUDIO_TYPE,
+            "2026-08-06T09:00:00-06:00",
+            value="52.1",
+            unit="dBASPL",
+            source="Synthetic Buds",
+        ),
+        _row(
+            HEADPHONE_AUDIO_TYPE,
+            "2026-08-06T13:00:00-06:00",
+            value="78",
+            unit="dBASPL",
+            source="Synthetic Buds",
+        ),
+        _row(
+            HEADPHONE_AUDIO_TYPE,
+            "2026-08-06T17:00:00-06:00",
+            value="60.5",
+            unit="dBASPL",
+            source="Synthetic Buds",
+        ),
+        _row(
+            ENVIRONMENTAL_AUDIO_TYPE,
+            "2026-08-06T10:00:00-06:00",
+            value="61.7",
+            unit="dBASPL",
+            source="Synthetic Watch",
+        ),
+        _row(
+            ENVIRONMENTAL_AUDIO_TYPE,
+            "2026-08-06T15:00:00-06:00",
+            value="84.6",
+            unit="dBASPL",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260910_050000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260806").get_json()
+
+    facts = {fact["label"]: fact["value"] for fact in payload["mind_sound"]["facts"]}
+    # Entry count plus the day's factual level range in the rows' own
+    # unit — no exposure judgments.
+    assert facts["Headphone audio level"] == "3 entries · 52.1–78 dBASPL"
+    assert facts["Environmental audio level"] == "2 entries · 61.7–84.6 dBASPL"
+
+    html = env.client.get("/app/body/20260806").get_data(as_text=True)
+    assert "Mind &amp; sound" in html
+    assert "3 entries · 52.1–78 dBASPL" in html
+    # Factual range only inside the card — no exposure judgments.
+    card = html[html.index("Mind &amp; sound") : html.index("Sources this day")]
+    lowered = card.lower()
+    assert "loud" not in lowered
+    assert "warning" not in lowered
+    assert "exposure" not in lowered
 
 
 # --- Day view: new cards -----------------------------------------------------------

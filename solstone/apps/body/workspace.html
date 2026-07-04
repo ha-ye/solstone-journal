@@ -667,6 +667,13 @@ a.body-jump-day:focus-visible {
   fill: var(--orange-ink);
 }
 
+/* Bucket min–max band under a median day curve: same hue, low opacity. */
+.body-curve path.body-curve-band {
+  fill: var(--orange);
+  fill-opacity: 0.18;
+  stroke: none;
+}
+
 .body-curve-hours {
   display: flex;
   justify-content: space-between;
@@ -1043,24 +1050,51 @@ a.body-jump-day:focus-visible {
     {% if body_day.heart %}
       <section class="body-card" aria-labelledby="body-heart-title">
         <h2 id="body-heart-title" class="body-question-title">Heart &amp; breathing</h2>
-        <ul class="body-facts">
-          {% if body_day.heart.heart_rate %}
+        {% if body_day.heart.heart_rate %}
+          <ul class="body-facts">
             <li>
               <span>Heart rate</span>
               <strong class="body-num">{{ body_day.heart.heart_rate.summary }}</strong>
             </li>
+          </ul>
+          {% if body_day.heart.series %}
+            {% set hr = body_day.heart.series %}
+            <div class="body-curve-wrap">
+              <div class="body-curve-y body-num" aria-hidden="true">
+                <span>{{ hr.svg.y_max_label }}</span>
+                <span>{{ hr.svg.y_min_label }}</span>
+              </div>
+              <svg class="body-curve" viewBox="0 0 1440 260" preserveAspectRatio="none" role="img" aria-label="Heart rate through the day">
+                {% for path in hr.svg.band_paths %}
+                  <path class="body-curve-band" d="{{ path }}"></path>
+                {% endfor %}
+                {% for path in hr.svg.paths %}
+                  <path d="{{ path }}" vector-effect="non-scaling-stroke"></path>
+                {% endfor %}
+                {% for dot in hr.svg.dots %}
+                  <circle cx="{{ dot[0] }}" cy="{{ dot[1] }}" r="4"></circle>
+                {% endfor %}
+              </svg>
+            </div>
+            <div class="body-curve-hours body-num" aria-hidden="true">
+              <span>12 AM</span><span>6 AM</span><span>12 PM</span><span>6 PM</span><span>12 AM</span>
+            </div>
           {% endif %}
-          {% for fact in body_day.heart.facts %}
-            <li>
-              <span>{{ fact.label }}</span>
-              {% if fact.value %}
-                <strong class="body-num">{{ fact.value }}</strong>
-              {% else %}
-                <strong><span class="body-num">{{ fact.count_label }}</span> <span class="body-fact-kind">readings</span></strong>
-              {% endif %}
-            </li>
-          {% endfor %}
-        </ul>
+        {% endif %}
+        {% if body_day.heart.facts %}
+          <ul class="body-facts">
+            {% for fact in body_day.heart.facts %}
+              <li>
+                <span>{{ fact.label }}</span>
+                {% if fact.value %}
+                  <strong class="body-num">{{ fact.value }}</strong>
+                {% else %}
+                  <strong><span class="body-num">{{ fact.count_label }}</span> <span class="body-fact-kind">readings</span></strong>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
         {% if body_day.heart.blood_pressure %}
           {% set bp = body_day.heart.blood_pressure %}
           <h3 class="body-card-label">Blood pressure</h3>

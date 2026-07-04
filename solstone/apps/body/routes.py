@@ -24,7 +24,7 @@ from collections import Counter, defaultdict
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from statistics import mean
+from statistics import mean, median
 from typing import Any, Callable
 
 from flask import Blueprint, jsonify, render_template, request
@@ -50,17 +50,26 @@ DAY_SUMMARY_STREAM = "import.apple_health"
 APPLE_HEALTH_SOURCE_TYPE = "apple_health"
 DAY_SUMMARY_FILE = "day_summary_transcript.md"
 
-# Glucose readings further apart than this render as separate curve
-# segments instead of a line drawn across the gap.
-GLUCOSE_SEGMENT_GAP_MINUTES = 45
+# Day-curve readings further apart than this render as separate curve
+# segments instead of a line drawn across the gap (glucose and heart rate
+# share the constant).
+CURVE_SEGMENT_GAP_MINUTES = 45
 # The sleep bar axis runs 6 PM of the previous day to 6 PM of the day.
 SLEEP_AXIS_START_HOUR = 18
 RECENT_DAY_LIMIT = 4
 STALE_SOURCE_DAYS = 30
 
-GLUCOSE_SVG_WIDTH = 1440.0
-GLUCOSE_SVG_HEIGHT = 260.0
+CURVE_SVG_WIDTH = 1440.0
+CURVE_SVG_HEIGHT = 260.0
 MAX_WINDOW_DAYS = 7
+
+HEART_RATE_TYPE = "HKQuantityTypeIdentifierHeartRate"
+# Heart-rate readings fold into buckets this wide; the median draws the
+# line and the bucket min–max renders as a translucent band.
+HEART_BUCKET_MINUTES = 5
+# Below this many readings a day curve would overstate the data — the
+# card keeps its text-only range row instead.
+HEART_CURVE_MIN_READINGS = 12
 
 _MONTH_ABBR = (
     "Jan",
@@ -915,6 +924,12 @@ def _build_health_import_status(journal_root: Path) -> dict[str, Any]:
 
 
 # --- Day cards ---------------------------------------------------------------
+#
+# Presentation parity rule for the card builders below: signals with dense
+# timestamped readings render as day curves (glucose, heart rate); signals
+# with few readings render value summaries (ranges, totals, paired
+# readings); counts alone are a last resort. Future signals (Oura
+# readiness and kin) inherit this intent.
 
 
 def _find_day_summary(journal_root: Path, day: str) -> str:
@@ -981,7 +996,7 @@ def _glucose_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
         def _y(value: float) -> float:
             return round(
-                GLUCOSE_SVG_HEIGHT - (value - lo) / (hi - lo) * GLUCOSE_SVG_HEIGHT, 1
+                CURVE_SVG_HEIGHT - (value - lo) / (hi - lo) * CURVE_SVG_HEIGHT, 1
             )
 
         segments: list[list[list[float]]] = []
@@ -990,7 +1005,7 @@ def _glucose_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for minute, value in points:
             if (
                 prev_minute is not None
-                and minute - prev_minute > GLUCOSE_SEGMENT_GAP_MINUTES
+                and minute - prev_minute > CURVE_SEGMENT_GAP_MINUTES
             ):
                 segments.append(current)
                 current = []
@@ -1020,8 +1035,8 @@ def _glucose_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "mean_label": _format_number(mean_value),
                 "points": points,
                 "svg": {
-                    "width": GLUCOSE_SVG_WIDTH,
-                    "height": GLUCOSE_SVG_HEIGHT,
+                    "width": CURVE_SVG_WIDTH,
+                    "height": CURVE_SVG_HEIGHT,
                     "paths": paths,
                     "dots": dots,
                     "y_min_label": _format_number(lo),
@@ -1395,7 +1410,12 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 
 
 def _fact_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Per-type counts; a single reading (or resting heart rate) shows its value."""
+    """Per-type counts; values where the rows honestly support one.
+
+    A single reading (or resting heart rate) shows its value; mindful
+    sessions sum to minutes; audio-level rows summarize as their entry
+    count plus the day's factual level range in the rows' own unit.
+    """
     grouped = _group_by_type(rows)
     items: list[dict[str, Any]] = []
     for record_type in sorted(
@@ -1418,6 +1438,16 @@ def _fact_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         minutes += (interval[1] - interval[0]).total_seconds() / 60
                 if minutes > 0:
                     item["value"] = _format_duration(minutes)
+        elif "AudioExposure" in record_type and len(rows_for_type) > 1:
+            values = [
+                value
+                for value in (_parse_float(row.get("value")) for row in rows_for_type)
+                if value is not None
+            ]
+            unit, consistent = _single_unit(rows_for_type)
+            if values and consistent:
+                span = _display_range(record_type, min(values), max(values), unit)
+                item["value"] = f"{item['count_label']} entries · {span}"
         elif len(rows_for_type) == 1 or "RestingHeartRate" in record_type:
             latest = max(
                 rows_for_type, key=lambda r: _time_sort_key(_row_time(r) or "")
@@ -1510,8 +1540,110 @@ def _blood_pressure(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return result
 
 
+def _heart_rate_series(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Bucketed heart-rate day curve: median line plus min–max band.
+
+    Heart rate swings within any five minutes, so raw readings fold into
+    ``HEART_BUCKET_MINUTES`` buckets — the per-bucket median draws the
+    line and the per-bucket min–max renders as a translucent band, the
+    honest render for the signal's instantaneous variability. Mirrors
+    ``_glucose_series`` geometry: 12 AM → 12 AM x-axis, padded y-domain
+    with outward-rounded integer labels, gaps over
+    ``CURVE_SEGMENT_GAP_MINUTES`` split segments, isolated buckets render
+    as dots. Returns ``None`` on sparse days (fewer than
+    ``HEART_CURVE_MIN_READINGS`` readings) or mixed units — the card
+    keeps its text-only range row.
+    """
+    readings: list[tuple[int, float]] = []
+    units: set[str] = set()
+    for row in rows:
+        if str(row.get("record_type") or "") != HEART_RATE_TYPE:
+            continue
+        moment = _parse_record_time(row.get("start_date") or row.get("start_time"))
+        value = _parse_float(row.get("value"))
+        if moment is None or value is None:
+            continue
+        if row.get("unit") is not None:
+            units.add(str(row["unit"]))
+        readings.append((moment.hour * 60 + moment.minute, value))
+    if len(readings) < HEART_CURVE_MIN_READINGS or len(units) > 1:
+        return None
+    unit = next(iter(units)) if units else None
+
+    buckets: dict[int, list[float]] = defaultdict(list)
+    for minute, value in readings:
+        buckets[minute // HEART_BUCKET_MINUTES].append(value)
+    # (x at bucket center, median, min, max) in chronological order.
+    stats = [
+        (
+            index * HEART_BUCKET_MINUTES + HEART_BUCKET_MINUTES / 2,
+            median(buckets[index]),
+            min(buckets[index]),
+            max(buckets[index]),
+        )
+        for index in sorted(buckets)
+    ]
+
+    values = [value for _, value in readings]
+    v_min, v_max = min(values), max(values)
+    # Same y-axis convention as glucose: padded domain, outward-rounded
+    # to whole numbers the axis labels can state.
+    pad = max((v_max - v_min) * 0.08, 2.0)
+    lo = float(math.floor(v_min - pad))
+    hi = float(math.ceil(v_max + pad))
+
+    def _y(value: float) -> float:
+        return round(CURVE_SVG_HEIGHT - (value - lo) / (hi - lo) * CURVE_SVG_HEIGHT, 1)
+
+    segments: list[list[tuple[float, float, float, float]]] = []
+    current: list[tuple[float, float, float, float]] = []
+    prev_x: float | None = None
+    for stat in stats:
+        if prev_x is not None and stat[0] - prev_x > CURVE_SEGMENT_GAP_MINUTES:
+            segments.append(current)
+            current = []
+        current.append(stat)
+        prev_x = stat[0]
+    if current:
+        segments.append(current)
+
+    paths: list[str] = []
+    band_paths: list[str] = []
+    dots: list[list[float]] = []
+    for segment in segments:
+        if len(segment) == 1:
+            dots.append([segment[0][0], _y(segment[0][1])])
+            continue
+        paths.append("M" + " L".join(f"{x:g} {_y(mid):g}" for x, mid, _, _ in segment))
+        # Closed band polygon: along the maxima, back along the minima.
+        upper = [f"{x:g} {_y(high):g}" for x, _, _, high in segment]
+        lower = [f"{x:g} {_y(low):g}" for x, _, low, _ in reversed(segment)]
+        band_paths.append("M" + " L".join(upper + lower) + " Z")
+
+    return {
+        "unit": unit,
+        "unit_label": friendly_unit_label(HEART_RATE_TYPE, unit),
+        "count": len(readings),
+        "count_label": f"{len(readings):,}",
+        "min": v_min,
+        "max": v_max,
+        "bucket_minutes": HEART_BUCKET_MINUTES,
+        "points": [[x, mid] for x, mid, _, _ in stats],
+        "bands": [[x, low, high] for x, _, low, high in stats],
+        "svg": {
+            "width": CURVE_SVG_WIDTH,
+            "height": CURVE_SVG_HEIGHT,
+            "paths": paths,
+            "band_paths": band_paths,
+            "dots": dots,
+            "y_min_label": _format_number(lo),
+            "y_max_label": _format_number(hi),
+        },
+    }
+
+
 def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The heart card: an HR range, paired blood pressure, value facts."""
+    """The heart card: an HR range and curve, paired blood pressure, facts."""
 
     if not rows:
         return None
@@ -1526,12 +1658,13 @@ def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         }
     else:
         heart_rate = None
+    series = _heart_rate_series(rows) if heart_rate else None
     blood_pressure = _blood_pressure(rows)
 
     fact_rows: list[dict[str, Any]] = []
     for row in rows:
         record_type = str(row.get("record_type") or "")
-        if heart_rate and record_type == "HKQuantityTypeIdentifierHeartRate":
+        if heart_rate and record_type == HEART_RATE_TYPE:
             continue
         if blood_pressure and (
             _BP_SYSTOLIC_FRAGMENT in record_type
@@ -1578,6 +1711,7 @@ def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         return None
     return {
         "heart_rate": heart_rate,
+        "series": series,
         "blood_pressure": blood_pressure,
         "facts": facts,
     }
@@ -1841,9 +1975,7 @@ def _window_signal_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _window_heart_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     heart_rows = [
-        row
-        for row in rows
-        if str(row.get("record_type") or "") == "HKQuantityTypeIdentifierHeartRate"
+        row for row in rows if str(row.get("record_type") or "") == HEART_RATE_TYPE
     ]
     values = [
         value
@@ -1863,7 +1995,7 @@ def _window_heart_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if low == high
         else f"{_format_number(low)}–{_format_number(high)}"
     )
-    display_unit = friendly_unit_label("HKQuantityTypeIdentifierHeartRate", unit)
+    display_unit = friendly_unit_label(HEART_RATE_TYPE, unit)
     return {
         "count": len(values),
         "count_label": f"{len(values):,}",
