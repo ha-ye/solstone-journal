@@ -4,12 +4,11 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
-## [Unreleased]
+## [0.6.24] - 2026-07-04
 
 ### Fixed
-
-- When a day has a large backlog of raw media to take in, sol now works through more of it at once and keeps making progress on its own, instead of stalling until the next day.
-- A moment whose originals are still being taken in is no longer mistaken for an empty one — sol waits for them to land before deciding there was nothing there.
+- if screen processing fell a few days behind, sol now catches up instead of stalling. it used to chip away at a backlog in one short nightly window, one piece at a time, so a pile could sit for days; sol now works through more at once and keeps going until the backlog clears.
+- a stretch of the day still being processed is no longer mistaken for an empty one. sol used to sometimes mark that stretch done too soon, so what was on your screen never made it into the day's summary; it now waits and comes back, so the summary in your journal reflects the full day.
 
 ## [0.6.23] - 2026-07-04
 
