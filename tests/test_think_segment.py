@@ -762,7 +762,12 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -819,7 +824,12 @@ class TestRunSegmentSense:
 
         _write_sense_output(
             segment_dir,
-            {"density": "idle", "recommend": {"screen_record": True}, "facets": []},
+            {
+                "density": "idle",
+                "content_type": "idle",
+                "recommend": {"screen_record": True},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -855,7 +865,12 @@ class TestRunSegmentSense:
         assert failed == 0
         assert updates == [
             (
-                {"density": "idle", "recommend": {"screen_record": True}, "facets": []},
+                {
+                    "density": "idle",
+                    "content_type": "idle",
+                    "recommend": {"screen_record": True},
+                    "facets": [],
+                },
                 "120000_300",
                 "20240115",
             )
@@ -969,7 +984,12 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {"screen_record": True}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {"screen_record": True},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -1010,7 +1030,12 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -1075,6 +1100,7 @@ class TestRunSegmentSense:
             segment_dir,
             {
                 "density": "active",
+                "content_type": "coding",
                 "recommend": {"speaker_attribution": True},
                 "facets": [],
             },
@@ -1122,6 +1148,7 @@ class TestRunSegmentSense:
             segment_dir,
             {
                 "density": "active",
+                "content_type": "coding",
                 "recommend": {
                     "screen_record": True,
                     "speaker_attribution": True,
@@ -1420,7 +1447,7 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "idle", "recommend": {}, "facets": []},
+            {"density": "idle", "content_type": "idle", "recommend": {}, "facets": []},
         )
 
         monkeypatch.setattr(
@@ -1459,7 +1486,12 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {"screen_record": False},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -1501,7 +1533,12 @@ class TestRunSegmentSense:
         writer = ThinkingJSONLWriter(str(jsonl_path))
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {"screen_record": False},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -1546,7 +1583,12 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {"screen_record": False},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -1585,7 +1627,12 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {"screen_record": False},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -1631,7 +1678,12 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {"screen_record": False}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {"screen_record": False},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -1669,7 +1721,7 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "idle", "recommend": {}, "facets": []},
+            {"density": "idle", "content_type": "idle", "recommend": {}, "facets": []},
         )
 
         monkeypatch.setattr(
@@ -1707,7 +1759,12 @@ class TestRunSegmentSense:
         spawned = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -1782,7 +1839,12 @@ class TestRunSegmentSense:
 
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {},
+                "facets": [],
+            },
         )
 
         monkeypatch.setattr(
@@ -1818,7 +1880,12 @@ class TestRunSegmentSense:
 
         assert updates == [
             (
-                {"density": "active", "recommend": {}, "facets": []},
+                {
+                    "density": "active",
+                    "content_type": "coding",
+                    "recommend": {},
+                    "facets": [],
+                },
                 "120000_300",
                 "20240115",
             )
@@ -1852,7 +1919,12 @@ class TestRunSegmentSense:
         indexer_calls = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {},
+                "facets": [],
+            },
         )
         (segment_dir / "talents" / "flow.md").write_text("flow", encoding="utf-8")
 
@@ -1905,7 +1977,12 @@ class TestRunSegmentSense:
         calls = []
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {},
+                "facets": [],
+            },
         )
 
         def mock_cortex_request(prompt, name, config=None):
@@ -1946,7 +2023,12 @@ class TestRunSegmentSense:
 
         _write_sense_output(
             segment_dir,
-            {"density": "active", "recommend": {}, "facets": []},
+            {
+                "density": "active",
+                "content_type": "coding",
+                "recommend": {},
+                "facets": [],
+            },
         )
         wait_calls = []
         jsonl_events = []
@@ -2266,7 +2348,7 @@ class TestThinkJSONLEvents:
 
         _write_sense_output(
             segment_dir,
-            {"density": "idle", "recommend": {}, "facets": []},
+            {"density": "idle", "content_type": "idle", "recommend": {}, "facets": []},
         )
 
         monkeypatch.setattr(
@@ -2323,6 +2405,7 @@ class TestThinkJSONLEvents:
             segment_dir,
             {
                 "density": "active",
+                "content_type": "coding",
                 "recommend": {
                     "screen_record": False,
                     "speaker_attribution": False,

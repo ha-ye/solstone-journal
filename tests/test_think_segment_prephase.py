@@ -1049,6 +1049,152 @@ def test_activity_replay_dedupes_records_and_preserves_non_refresh(
     assert any(event.get("event") == "activity.unchanged" for event in health_events)
 
 
+def test_activity_replay_treats_malformed_sense_like_absent(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    from solstone.think import thinking as think
+    from solstone.think.activity_state_machine import ActivityStateMachine
+
+    ending_segment = "091000_300"
+    segments = [
+        {"stream": STREAM, "key": ACTIVE_SEGMENT},
+        {"stream": STREAM, "key": IDLE_SEGMENT},
+        {"stream": STREAM, "key": ending_segment},
+    ]
+
+    monkeypatch.setattr(
+        "solstone.think.activity_state_machine.time.time",
+        lambda: 123.456,
+    )
+    monkeypatch.setattr(
+        think,
+        "run_activity_prompts",
+        lambda **kwargs: True,
+    )
+    monkeypatch.setattr(think, "_callosum", None)
+    state_machines: list[ActivityStateMachine] = []
+
+    class CapturingActivityStateMachine(ActivityStateMachine):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            state_machines.append(self)
+
+    monkeypatch.setattr(think, "ActivityStateMachine", CapturingActivityStateMachine)
+
+    def run_case(journal: Path, *, malformed: bool) -> tuple[bytes, bytes]:
+        start_index = len(state_machines)
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+        _seed_segment(journal, DAY, ACTIVE_SEGMENT, _active_sense())
+        middle_dir = _seed_segment(journal, DAY, IDLE_SEGMENT, _active_sense())
+        _seed_segment(journal, DAY, ending_segment, _idle_sense())
+        middle_sense = middle_dir / "talents" / "sense.json"
+        if malformed:
+            _write_sense_output(
+                middle_dir,
+                {
+                    "density": "active",
+                    "activity_summary": "Malformed cached output",
+                    "entities": [],
+                    "facets": [{"facet": FACET, "level": "high"}],
+                    "recommend": {},
+                },
+            )
+        else:
+            middle_sense.unlink()
+
+        think._replay_activity_state_for_segments(
+            day=DAY,
+            segments=segments,
+            refresh=False,
+            verbose=False,
+            max_concurrency=2,
+            skip_activity_prompts=False,
+        )
+        record_path = journal / "facets" / FACET / "activities" / f"{DAY}.jsonl"
+        state_machine = state_machines[start_index]
+        state_snapshot = {
+            "last_segment_key": state_machine.last_segment_key,
+            "last_segment_day": state_machine.last_segment_day,
+            "active": {
+                facet: {k: v for k, v in entry.items() if k != "_change"}
+                for facet, entry in state_machine.state.items()
+            },
+        }
+        return record_path.read_bytes(), json.dumps(
+            state_snapshot, sort_keys=True
+        ).encode()
+
+    caplog.set_level(logging.WARNING)
+    malformed_records, malformed_state = run_case(
+        tmp_path / "malformed", malformed=True
+    )
+    absent_records, absent_state = run_case(tmp_path / "absent", malformed=False)
+
+    assert malformed_records == absent_records
+    assert malformed_state == absent_state
+    assert "missing required keys: content_type" in caplog.text
+
+
+@pytest.mark.parametrize("missing_key", ["density", "content_type"])
+def test_run_segment_sense_reports_invalid_sense_output(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    missing_key,
+):
+    from solstone.think import thinking as think
+    from solstone.think.activity_state_machine import ActivityStateMachine
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    malformed = _active_sense()
+    malformed.pop(missing_key)
+    _seed_segment(journal, DAY, ACTIVE_SEGMENT, malformed)
+
+    monkeypatch.setattr(
+        think,
+        "get_talent_configs",
+        lambda schedule=None, **kwargs: _segment_configs("sense"),
+    )
+    monkeypatch.setattr(
+        think,
+        "cortex_request",
+        lambda prompt, name, config=None: f"agent-{name}",
+    )
+    monkeypatch.setattr(
+        think,
+        "wait_for_uses",
+        lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+    )
+    emitted: list[tuple[str, str, dict]] = []
+
+    class CaptureCallosum:
+        def emit(self, tract, event, **fields):
+            emitted.append((tract, event, fields))
+
+    monkeypatch.setattr(think, "_callosum", CaptureCallosum())
+    caplog.set_level(logging.WARNING)
+
+    success, failed, failed_names = think.run_segment_sense(
+        DAY,
+        ACTIVE_SEGMENT,
+        refresh=False,
+        verbose=False,
+        stream=STREAM,
+        state_machine=ActivityStateMachine(),
+    )
+
+    assert success == 1
+    assert failed == 1
+    assert failed_names == ["sense (output_invalid)"]
+    assert f"missing required keys: {missing_key}" in caplog.text
+    completed = [event for event in emitted if event[1] == "completed"]
+    assert completed[-1][2]["failed"] == 1
+    assert completed[-1][2]["failed_names"] == ["sense (output_invalid)"]
+
+
 def test_cache_hit_priority_drain_suppresses_rescan_but_counts_segment_complete(
     tmp_path,
     monkeypatch,

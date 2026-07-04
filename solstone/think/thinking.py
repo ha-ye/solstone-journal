@@ -520,6 +520,13 @@ def _select_segment_repair_targets(
     return selected, counts
 
 
+_SENSE_REQUIRED_KEYS = ("density", "content_type")
+
+
+def _sense_output_missing_required_keys(data: dict) -> tuple[str, ...]:
+    return tuple(key for key in _SENSE_REQUIRED_KEYS if key not in data)
+
+
 def _read_segment_sense_json(day: str, stream: str | None, segment: str) -> dict | None:
     path = get_output_path(
         day_path(day),
@@ -544,7 +551,20 @@ def _read_segment_sense_json(day: str, stream: str | None, segment: str) -> dict
             exc_info=True,
         )
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    missing = _sense_output_missing_required_keys(data)
+    if missing:
+        logging.warning(
+            "Invalid Sense output for %s/%s/%s during activity replay: "
+            "missing required keys: %s",
+            day,
+            stream,
+            segment,
+            ", ".join(missing),
+        )
+        return None
+    return data
 
 
 def _replay_activity_state_for_segments(
@@ -1476,6 +1496,30 @@ def run_segment_sense(
     except (OSError, json.JSONDecodeError) as exc:
         logging.error("Failed to read Sense output %s: %s", sense_output_path, exc)
         failed_names = all_failed_names + ["sense (output_parse)"]
+        duration_ms = int((time.time() - start_time) * 1000)
+        emit(
+            "completed",
+            mode=target_schedule,
+            day=day,
+            segment=segment,
+            success=total_success,
+            failed=total_failed + 1,
+            failed_names=failed_names,
+            duration_ms=duration_ms,
+        )
+        return (total_success, total_failed + 1, failed_names)
+
+    if not isinstance(sense_json, dict):
+        missing = _SENSE_REQUIRED_KEYS
+    else:
+        missing = _sense_output_missing_required_keys(sense_json)
+    if missing:
+        logging.warning(
+            "Invalid Sense output %s: missing required keys: %s",
+            sense_output_path,
+            ", ".join(missing),
+        )
+        failed_names = all_failed_names + ["sense (output_invalid)"]
         duration_ms = int((time.time() - start_time) * 1000)
         emit(
             "completed",

@@ -128,7 +128,7 @@ def test_flag_set_skips_prompts_but_writes_record(
 
     _write_sense_output(
         segment_dir,
-        {"density": "active", "recommend": {}, "facets": []},
+        {"density": "active", "content_type": "coding", "recommend": {}, "facets": []},
     )
     _patch_segment_dependencies(monkeypatch, append_calls, activity_calls)
     monkeypatch.setattr(think, "_jsonl", writer)
@@ -171,7 +171,7 @@ def test_flag_unset_runs_prompts_unchanged(
 
     _write_sense_output(
         segment_dir,
-        {"density": "active", "recommend": {}, "facets": []},
+        {"density": "active", "content_type": "coding", "recommend": {}, "facets": []},
     )
     _patch_segment_dependencies(monkeypatch, append_calls, activity_calls)
 

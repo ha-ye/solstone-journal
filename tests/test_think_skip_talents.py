@@ -74,6 +74,7 @@ def _new_only_segment_configs() -> dict[str, dict]:
 def _active_sense_output() -> dict:
     return {
         "density": "active",
+        "content_type": "coding",
         "recommend": {
             "screen_record": True,
             "speaker_attribution": True,
