@@ -998,6 +998,7 @@ a.body-jump-day:focus-visible {
                 <span class="body-num">
                   {% if workout.start %}{{ workout.start }}{% endif %}
                   {% if workout.duration %}&middot; {{ workout.duration }}{% endif %}
+                  {% if workout.metrics_label %}&middot; {{ workout.metrics_label }}{% endif %}
                 </span>
               </li>
             {% endfor %}

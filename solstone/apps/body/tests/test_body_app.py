@@ -764,7 +764,16 @@ def test_window_api_returns_factual_window_aggregates(body_env):
             "2026-07-10T11:20:00-06:00",
             source="Synthetic Watch",
             kind="workout",
-            metadata={"duration": "60", "durationUnit": "min"},
+            metadata={
+                "duration": "60",
+                "durationUnit": "min",
+                "totalDistance": "4.2",
+                "totalDistanceUnit": "mi",
+                "totalDistanceType": ("HKQuantityTypeIdentifierDistanceWalkingRunning"),
+                "totalEnergyBurned": "198.4",
+                "totalEnergyBurnedUnit": "Cal",
+                "totalEnergyBurnedType": ("HKQuantityTypeIdentifierActiveEnergyBurned"),
+            },
         ),
     ]
     _seed_import(env.journal, "20260808_000000", rows)
@@ -791,7 +800,12 @@ def test_window_api_returns_factual_window_aggregates(body_env):
     assert payload["steps"]["total"] == 412
     assert payload["workouts"][0]["name"] == "Walking"
     assert payload["workouts"][0]["overlap_label"] == "40m"
+    assert payload["workouts"][0]["distance"]["label"] == "4.2 mi"
+    assert payload["workouts"][0]["energy"]["label"] == "198 Cal"
+    assert payload["workouts"][0]["metric_labels"] == ["4.2 mi", "198 Cal"]
+    assert payload["workouts"][0]["metrics_label"] == "4.2 mi · 198 Cal"
     assert {event["kind"] for event in payload["events"]} == {"workout"}
+    assert payload["events"][0]["metrics_label"] == "4.2 mi · 198 Cal"
     assert payload["sources"]["names"] == [
         "Synthetic Phone",
         "Synthetic Stelo",
@@ -808,6 +822,7 @@ def test_window_api_returns_factual_window_aggregates(body_env):
     assert hour["entry_total"] == 7
     assert hour["glucose"]["range_label"] == "88–96 mg/dL"
     assert hour["heart_rate"]["label"] == "62–89 bpm"
+    assert hour["events"][0]["metrics_label"] == "4.2 mi · 198 Cal"
     assert hour["steps"]["label"] == "412 steps"
     assert [event["label"] for event in hour["events"]] == ["Walking"]
     assert hour["summary"] == [
@@ -2025,6 +2040,58 @@ def test_day_api_workout_summary_aggregates_kinds(body_env):
 
     html = env.client.get("/app/body/20260725").get_data(as_text=True)
     assert "Cycling ×2 · Walking" in html
+
+
+def test_day_api_workouts_show_recovered_distance_and_energy(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            "HKWorkoutActivityTypeCycling",
+            "2026-07-27T07:00:00-06:00",
+            "2026-07-27T07:45:00-06:00",
+            source="Synthetic Watch",
+            kind="workout",
+            metadata={
+                "duration": "45",
+                "durationUnit": "min",
+                "totalDistance": "12.4",
+                "totalDistanceUnit": "km",
+                "totalDistanceType": "HKQuantityTypeIdentifierDistanceCycling",
+                "totalEnergyBurned": "321.5",
+                "totalEnergyBurnedUnit": "Cal",
+                "totalEnergyBurnedType": ("HKQuantityTypeIdentifierActiveEnergyBurned"),
+            },
+        ),
+        _row(
+            "HKWorkoutActivityTypeWalking",
+            "2026-07-27T18:00:00-06:00",
+            "2026-07-27T18:20:00-06:00",
+            source="Synthetic Watch",
+            kind="workout",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_171500", rows)
+
+    workouts = env.client.get("/app/body/api/day/20260727").get_json()["activity"][
+        "workouts"
+    ]
+
+    assert workouts[0]["name"] == "Cycling"
+    assert workouts[0]["distance"]["label"] == "12.4 km"
+    assert workouts[0]["energy"]["label"] == "322 Cal"
+    assert workouts[0]["metric_labels"] == ["12.4 km", "322 Cal"]
+    assert workouts[0]["metrics_label"] == "12.4 km · 322 Cal"
+    assert workouts[1]["distance"] is None
+    assert workouts[1]["energy"] is None
+    assert workouts[1]["metric_labels"] == []
+    assert workouts[1]["metrics_label"] is None
+
+    html = env.client.get("/app/body/20260727").get_data(as_text=True)
+    assert "7:00 AM" in html
+    assert "45m" in html
+    assert "12.4 km" in html
+    assert "322 Cal" in html
+    assert "None" not in html
 
 
 # --- Day view: running dynamics ---------------------------------------------------

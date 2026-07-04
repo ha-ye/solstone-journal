@@ -1182,6 +1182,54 @@ def _workout_duration_label(minutes: float | None) -> str | None:
     return _format_duration(minutes)
 
 
+def _workout_metric(
+    row: dict[str, Any],
+    *,
+    value_key: str,
+    unit_key: str,
+    type_key: str,
+    fallback_type: str,
+) -> dict[str, Any] | None:
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    value = _parse_float(metadata.get(value_key))
+    if value is None:
+        return None
+    unit = str(metadata.get(unit_key) or "").strip() or None
+    record_type = str(metadata.get(type_key) or fallback_type)
+    return {
+        "value": value,
+        "unit": unit,
+        "record_type": record_type,
+        "label": _summable_total_label(record_type, value, unit),
+    }
+
+
+def _workout_metrics(row: dict[str, Any]) -> dict[str, Any]:
+    distance = _workout_metric(
+        row,
+        value_key="totalDistance",
+        unit_key="totalDistanceUnit",
+        type_key="totalDistanceType",
+        fallback_type="HKQuantityTypeIdentifierDistanceWalkingRunning",
+    )
+    energy = _workout_metric(
+        row,
+        value_key="totalEnergyBurned",
+        unit_key="totalEnergyBurnedUnit",
+        type_key="totalEnergyBurnedType",
+        fallback_type="HKQuantityTypeIdentifierActiveEnergyBurned",
+    )
+    labels = [metric["label"] for metric in (distance, energy) if metric is not None]
+    return {
+        "distance": distance,
+        "energy": energy,
+        "metric_labels": labels,
+        "metrics_label": " · ".join(labels) if labels else None,
+    }
+
+
 def _group_by_type(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
@@ -1457,11 +1505,13 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     for row in sorted(workouts, key=lambda r: _time_sort_key(_row_time(r) or "")):
         start = _parse_record_time(row.get("start_date") or row.get("start_time"))
         minutes = _workout_duration_minutes(row)
+        metrics = _workout_metrics(row)
         workout_items.append(
             {
                 "name": friendly_type_name(str(row.get("record_type") or "Workout")),
                 "start": _format_clock(start) if start else None,
                 "duration": _workout_duration_label(minutes),
+                **metrics,
             }
         )
 
@@ -2255,6 +2305,7 @@ def _workout_window_items(
         if minutes <= 0:
             continue
         duration = _workout_duration_minutes(row)
+        metrics = _workout_metrics(row)
         items.append(
             {
                 "name": friendly_type_name(str(row.get("record_type") or "Workout")),
@@ -2266,6 +2317,7 @@ def _workout_window_items(
                 "overlap_label": _format_duration(minutes),
                 "duration_label": _workout_duration_label(duration),
                 "source": _source_label(row),
+                **metrics,
             }
         )
     return sorted(items, key=lambda item: _time_sort_key(str(item["start"])))
@@ -2330,6 +2382,10 @@ def _window_events(
             "end_label": item["end_label"],
             "overlap_minutes": item["overlap_minutes"],
             "overlap_label": item["overlap_label"],
+            "metric_labels": item["metric_labels"],
+            "metrics_label": item["metrics_label"],
+            "distance": item["distance"],
+            "energy": item["energy"],
             "source": item["source"],
         }
         for item in _workout_window_items(rows, window_start, window_end)
