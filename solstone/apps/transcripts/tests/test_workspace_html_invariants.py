@@ -24,3 +24,20 @@ def test_workspace_html_renders_awaiting_thinking_state():
     assert "tr-zoom-pill-awaiting" in text
     assert "seg.think" in text
     assert "rg.think" in text
+
+
+def test_workspace_html_wires_body_window_panel_and_strip():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    assert 'id="trBodyPanel"' in text
+    assert 'id="trBodyEvents"' in text
+    assert "/app/body/api/window" in text
+    assert "fetchSegmentBodyWindow" in text
+    assert "fetchDayBodyWindow" in text
+    assert "renderBodyStrip" in text
+    assert "renderBodyContextCard" in text
+    assert "renderBodyEvents" in text
+    assert "Open full Body day" in text
+    assert "import.apple_health" in text

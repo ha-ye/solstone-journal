@@ -257,6 +257,48 @@ body.has-app-bar .tr-card {
   border: 1px solid #3b82f6;
 }
 
+.tr-body-events {
+  position: absolute;
+  left: 104px;
+  top: 16px;
+  bottom: 12px;
+  width: 40px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.tr-body-event {
+  position: absolute;
+  left: 0;
+  width: 40px;
+  min-height: 4px;
+  border-radius: 12px;
+  box-shadow: 0 1px 1px rgba(0,0,0,.04);
+  pointer-events: auto;
+  cursor: pointer;
+  transition: filter 0.15s ease, box-shadow 0.15s ease;
+}
+
+.tr-body-event:hover {
+  filter: brightness(0.94);
+  box-shadow: 0 2px 4px rgba(0,0,0,.10);
+}
+
+.tr-body-event:focus-visible {
+  outline: 2px solid var(--accent, #4a9eff);
+  outline-offset: 1px;
+}
+
+.tr-body-event-sleep {
+  background: rgba(96, 165, 250, 0.48);
+  border: 1px solid #2563eb;
+}
+
+.tr-body-event-workout {
+  background: rgba(45, 212, 191, 0.48);
+  border: 1px solid #0f766e;
+}
+
 .tr-seg-pending {
   opacity: 0.9;
   border-style: dashed;
@@ -478,6 +520,158 @@ body.has-app-bar .tr-card {
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 13px;
+}
+
+.tr-body-strip,
+.tr-body-context-card,
+.tr-body-panel {
+  border: 1px solid var(--border, #e5e7eb);
+  background: var(--surface, #ffffff);
+  box-shadow: 0 1px 2px rgba(0,0,0,.04);
+}
+
+.tr-body-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: #374151;
+  font-size: 13px;
+}
+
+.tr-body-strip-label {
+  color: #6b7280;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 11px;
+}
+
+.tr-body-strip-button,
+.tr-body-context-button,
+.tr-body-panel-close {
+  border: 1px solid var(--border, #d1d5db);
+  background: #ffffff;
+  color: #111827;
+  border-radius: 999px;
+  padding: 5px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tr-body-strip-button:hover,
+.tr-body-context-button:hover,
+.tr-body-panel-close:hover {
+  background: #f9fafb;
+}
+
+.tr-body-context-card {
+  display: grid;
+  gap: 12px;
+  margin: 16px;
+  padding: 18px;
+  border-radius: 12px;
+  max-width: 760px;
+}
+
+.tr-body-context-card h3,
+.tr-body-panel h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.tr-body-context-card p,
+.tr-body-panel p {
+  margin: 0;
+  color: #4b5563;
+}
+
+.tr-body-context-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.tr-body-panel {
+  position: fixed;
+  top: calc(var(--facet-bar-height) + var(--date-nav-height) + 20px);
+  right: 20px;
+  bottom: calc(var(--app-bar-height, 0px) + 20px);
+  z-index: 45;
+  width: min(420px, calc(100vw - 40px));
+  border-radius: 14px;
+  transform: translateX(calc(100% + 28px));
+  opacity: 0;
+  pointer-events: none;
+  transition: transform 0.18s ease, opacity 0.18s ease;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  overflow: hidden;
+}
+
+.tr-body-panel.visible {
+  transform: translateX(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tr-body-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 18px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+}
+
+.tr-body-panel-body {
+  overflow: auto;
+  padding: 18px;
+  display: grid;
+  gap: 16px;
+}
+
+.tr-body-panel-section {
+  display: grid;
+  gap: 8px;
+}
+
+.tr-body-panel-section h4 {
+  margin: 0;
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tr-body-panel-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tr-body-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.tr-body-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: #f9fafb;
+  font-size: 12px;
 }
 
 	.tr-md-content pre {
@@ -1666,6 +1860,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       <div class="tr-grid" id="trGrid"></div>
       <div class="tr-labels" id="trLabels"></div>
       <div class="tr-segments" id="trSegments"></div>
+      <div class="tr-body-events" id="trBodyEvents" aria-label="body context events"></div>
       <div class="tr-sel-wrap" id="trSelWrap">
         <div class="tr-sel" data-handle="move">
           <div class="tr-bumper tr-bumper-top" data-handle="start" title="drag to adjust start"></div>
@@ -1676,6 +1871,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         <span><span class="tr-legend-dot" style="background: #86efac;"></span>audio</span>
         <span><span class="tr-legend-dot" style="background: #facc15;"></span>screen</span>
         <span><span class="tr-legend-dot" style="background: #93c5fd;"></span>import</span>
+        <span><span class="tr-legend-dot" style="background: #60a5fa;"></span>body</span>
       </div>
     </div>
 
@@ -1721,6 +1917,17 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   </div>
 </div>
 
+<aside id="trBodyPanel" class="tr-body-panel" aria-hidden="true" aria-labelledby="trBodyPanelTitle">
+  <div class="tr-body-panel-header">
+    <div>
+      <h3 id="trBodyPanelTitle">Body context</h3>
+      <p id="trBodyPanelRange"></p>
+    </div>
+    <button type="button" id="trBodyPanelClose" class="tr-body-panel-close">close</button>
+  </div>
+  <div id="trBodyPanelBody" class="tr-body-panel-body"></div>
+</aside>
+
 <div id="trDeleteSegmentModal" class="modal" style="display: none;" role="dialog" aria-modal="true" aria-labelledby="trDeleteSegmentModalTitle">
   <div class="modal-content">
     <div class="modal-header danger">
@@ -1760,6 +1967,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   const grid = document.getElementById('trGrid');
   const labels = document.getElementById('trLabels');
   const segmentsLane = document.getElementById('trSegments');
+  const bodyEventsLane = document.getElementById('trBodyEvents');
   const selWrap = document.getElementById('trSelWrap');
   const sel = selWrap.querySelector('.tr-sel');
 
@@ -1791,6 +1999,11 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 	  const warningDetails = document.getElementById('trWarningDetails');
 	  const warningCaret = document.getElementById('trWarningCaret');
 	  const deleteBtn = document.getElementById('trDeleteBtn');
+  const bodyPanel = document.getElementById('trBodyPanel');
+  const bodyPanelTitle = document.getElementById('trBodyPanelTitle');
+  const bodyPanelRange = document.getElementById('trBodyPanelRange');
+  const bodyPanelBody = document.getElementById('trBodyPanelBody');
+  const bodyPanelClose = document.getElementById('trBodyPanelClose');
   const deleteSegmentModal = document.getElementById('trDeleteSegmentModal');
   const deleteSegmentModalBody = document.getElementById('trDeleteSegmentModalBody');
   const deleteSegmentModalConfirm = document.getElementById('trDeleteSegmentModalConfirm');
@@ -1880,6 +2093,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   let range = { start: 9 * 60, end: 10 * 60 };
   let drag = null;
   let allSegments = [];
+  let dayBodyWindow = null;
   let selectedSegment = null;
   let updateNowPosition = null;
   let deleteModalReturnFocus = null;
@@ -2312,6 +2526,183 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     return hh * 60 + mm;
   }
 
+  function dayParts() {
+    return {
+      year: Number(day.slice(0, 4)),
+      month: Number(day.slice(4, 6)) - 1,
+      date: Number(day.slice(6, 8))
+    };
+  }
+
+  function isoForDayMinute(minute) {
+    const parts = dayParts();
+    return new Date(parts.year, parts.month, parts.date, 0, minute, 0, 0).toISOString();
+  }
+
+  function minuteForIso(value) {
+    const parts = dayParts();
+    const dayStart = new Date(parts.year, parts.month, parts.date, 0, 0, 0, 0);
+    const moment = new Date(value);
+    return Math.round((moment.getTime() - dayStart.getTime()) / 60000);
+  }
+
+  function bodyWindowUrl(fromIso, toIso) {
+    const params = new URLSearchParams({ from: fromIso, to: toIso });
+    return `/app/body/api/window?${params.toString()}`;
+  }
+
+  async function fetchBodyWindow(fromIso, toIso, signal = null) {
+    const response = await fetch(bodyWindowUrl(fromIso, toIso), { signal });
+    if (!response.ok) {
+      throw new Error('body window failed: ' + response.status);
+    }
+    return response.json();
+  }
+
+  function fetchDayBodyWindow(signal = null) {
+    return fetchBodyWindow(isoForDayMinute(0), isoForDayMinute(24 * 60), signal);
+  }
+
+  function fetchSegmentBodyWindow(seg, signal = null) {
+    return fetchBodyWindow(
+      isoForDayMinute(parseTime(seg.start)),
+      isoForDayMinute(parseTime(seg.end)),
+      signal
+    );
+  }
+
+  function isBodySummarySegment(seg = selectedSegment) {
+    return seg?.stream === 'import.apple_health';
+  }
+
+  function bodyWindowParts(payload, limit = 4) {
+    if (!payload || !payload.has_data) return [];
+    const parts = [];
+    if (payload.heart_rate?.count && payload.heart_rate?.label) {
+      parts.push('HR ' + payload.heart_rate.label);
+    }
+    if (payload.glucose?.count && payload.glucose?.delta_label) {
+      parts.push('glucose ' + payload.glucose.delta_label);
+    }
+    if (payload.steps?.label) {
+      parts.push(payload.steps.label);
+    }
+    if ((payload.workouts || []).length > 0) {
+      const count = payload.workouts.length;
+      parts.push(count + ' workout' + (count === 1 ? '' : 's'));
+    }
+    return parts.slice(0, limit);
+  }
+
+  function renderBodyPanelSection(title, innerHtml) {
+    if (!innerHtml) return '';
+    return `<section class="tr-body-panel-section"><h4>${escapeHtml(title)}</h4>${innerHtml}</section>`;
+  }
+
+  function renderBodyPanel(payload, title, rangeLabel) {
+    bodyPanelTitle.textContent = title || 'Body context';
+    bodyPanelRange.textContent = rangeLabel || '';
+
+    if (!payload || !payload.has_data) {
+      bodyPanelBody.innerHTML = '<p>No body context in this window.</p>'
+        + `<p><a href="/app/body/${day}">Open full Body day</a></p>`;
+      bodyPanel.classList.add('visible');
+      bodyPanel.setAttribute('aria-hidden', 'false');
+      return;
+    }
+
+    const briefRows = bodyWindowParts(payload, 8)
+      .map(row => `<li>${escapeHtml(row)}</li>`)
+      .join('');
+    const sources = (payload.sources?.chips || [])
+      .map(source => `<span class="tr-body-chip">${escapeHtml(source.name)} <strong>${escapeHtml(source.count_label)}</strong></span>`)
+      .join('');
+    const signals = (payload.signals || []).slice(0, 10)
+      .map(signal => `<li>${escapeHtml(signal.label)}: ${escapeHtml(signal.count_label)}</li>`)
+      .join('');
+    const events = (payload.events || [])
+      .map(event => `<li>${escapeHtml(event.label)} · ${escapeHtml(event.start_label)}–${escapeHtml(event.end_label)} · ${escapeHtml(event.overlap_label)}</li>`)
+      .join('');
+
+    bodyPanelBody.innerHTML = ''
+      + renderBodyPanelSection('Brief', `<ul class="tr-body-panel-list">${briefRows || '<li>Body data present.</li>'}</ul>`)
+      + renderBodyPanelSection('Events', events ? `<ul class="tr-body-panel-list">${events}</ul>` : '')
+      + renderBodyPanelSection('Sources', sources ? `<div class="tr-body-chip-row">${sources}</div>` : '')
+      + renderBodyPanelSection('Signals', signals ? `<ul class="tr-body-panel-list">${signals}</ul>` : '')
+      + `<p><a href="/app/body/${day}">Open full Body day</a></p>`;
+    bodyPanel.classList.add('visible');
+    bodyPanel.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeBodyPanel() {
+    bodyPanel.classList.remove('visible');
+    bodyPanel.setAttribute('aria-hidden', 'true');
+  }
+
+  bodyPanelClose.addEventListener('click', closeBodyPanel);
+
+  function openBodyWindow(payload, title, rangeLabel) {
+    renderBodyPanel(payload, title, rangeLabel);
+  }
+
+  async function openBodyWindowFromIso(fromIso, toIso, title, rangeLabel) {
+    bodyPanelTitle.textContent = title || 'Body context';
+    bodyPanelRange.textContent = rangeLabel || '';
+    bodyPanelBody.innerHTML = window.SurfaceState.loading({ text: 'Loading body context...' });
+    bodyPanel.classList.add('visible');
+    bodyPanel.setAttribute('aria-hidden', 'false');
+    try {
+      const payload = await fetchBodyWindow(fromIso, toIso);
+      renderBodyPanel(payload, title, rangeLabel);
+    } catch (_) {
+      bodyPanelBody.innerHTML = window.SurfaceState.error({
+        heading: "couldn't load body context",
+        desc: 'try again in a moment'
+      });
+    }
+  }
+
+  function renderBodyStrip(payload) {
+    const parts = bodyWindowParts(payload, 4);
+    if (parts.length === 0) return '';
+    return '<div class="tr-body-strip">'
+      + '<span class="tr-body-strip-label">Body context</span>'
+      + parts.map(part => `<span>${escapeHtml(part)}</span>`).join('')
+      + '<button type="button" class="tr-body-strip-button" data-action="open-body-window">Open details</button>'
+      + '</div>';
+  }
+
+  function renderBodyContextCard(data) {
+    const payload = data.body_window;
+    const parts = bodyWindowParts(payload, 6);
+    const summary = parts.length
+      ? parts.join(' · ')
+      : (data.chunks || []).map(chunk => chunk.markdown || '').join('\\n\\n');
+    return '<div class="tr-body-context-card">'
+      + '<h3>Body context</h3>'
+      + `<p>${summary ? escapeHtml(summary) : 'Body data present for this day.'}</p>`
+      + '<div class="tr-body-context-actions">'
+      + '<button type="button" class="tr-body-context-button" data-action="open-body-window">Open details</button>'
+      + `<a href="/app/body/${day}">Open full Body day</a>`
+      + '</div>'
+      + '</div>';
+  }
+
+  function attachBodyWindowButtons(targetEl) {
+    targetEl.querySelectorAll('[data-action="open-body-window"]').forEach(button => {
+      button.addEventListener('click', () => {
+        const payload = segmentData?.body_window;
+        if (payload) {
+          const title = isBodySummarySegment() ? 'Body context' : 'Body during this segment';
+          const label = isBodySummarySegment()
+            ? 'Full day'
+            : `${selectedSegment?.start || ''}–${selectedSegment?.end || ''}`;
+          openBodyWindow(payload, title, label);
+        }
+      });
+    });
+  }
+
   // Format cost in cents with exact USD in title
   // Returns {text: "3c", title: "$0.0312"} or {text: "", title: ""} if null/zero
   function formatCost(costUSD) {
@@ -2451,6 +2842,40 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       }
     });
     segmentsLane.appendChild(el);
+  }
+
+  function renderBodyEvents(payload) {
+    bodyEventsLane.innerHTML = '';
+    if (!payload || !payload.has_data || !(payload.events || []).length) {
+      return;
+    }
+    (payload.events || []).forEach(event => {
+      const startMin = minuteForIso(event.start);
+      const endMin = minuteForIso(event.end);
+      const visStart = Math.max(startMin, timelineStart);
+      const visEnd = Math.min(endMin, timelineEnd);
+      if (visEnd <= visStart) {
+        return;
+      }
+      const block = document.createElement('div');
+      block.className = 'tr-body-event tr-body-event-' + (event.kind === 'sleep' ? 'sleep' : 'workout');
+      block.style.top = y(visStart) + 'px';
+      block.style.height = Math.max(4, y(visEnd) - y(visStart)) + 'px';
+      block.setAttribute('role', 'button');
+      block.setAttribute('tabindex', '0');
+      const title = `${event.label} · ${event.start_label}–${event.end_label}`;
+      block.setAttribute('aria-label', title);
+      block.title = `${title} · ${event.overlap_label}`;
+      const open = () => openBodyWindowFromIso(event.start, event.end, 'Body context', title);
+      block.addEventListener('click', open);
+      block.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          open();
+        }
+      });
+      bodyEventsLane.appendChild(block);
+    });
   }
 
   function buildGrid() {
@@ -2705,6 +3130,14 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
     fetch(`/app/transcripts/api/segment/${day}/${seg.stream}/${seg.key}`, { signal })
       .then(r => r.json())
+      .then(data => {
+        const bodyPromise = isBodySummarySegment(seg)
+          ? fetchDayBodyWindow(signal)
+          : fetchSegmentBodyWindow(seg, signal);
+        return bodyPromise
+          .then(bodyWindow => ({ ...data, body_window: bodyWindow }))
+          .catch(() => data);
+      })
       .then(data => {
         if (!selectedSegment || selectedSegment.key !== segmentToken) {
           return;
@@ -3307,6 +3740,12 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     });
     const dataState = data.data_state || {};
 
+    if (isBodySummarySegment() && showAudio && showScreen) {
+      targetEl.innerHTML = renderBodyContextCard(data);
+      attachBodyWindowButtons(targetEl);
+      return;
+    }
+
     const textOnlyScreen = showScreen
       && Object.keys(currentVideoFiles).length === 0
       && Object.keys(currentImageFiles).length === 0;
@@ -3349,7 +3788,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     const displayItems = textOnlyScreen ? chunks : groupBasicScreenFrames(chunks);
     groupEntriesByIdx = new Map();
 
-    let html = `<div class="tr-unified" role="list" aria-label="transcript entries, ${displayItems.length} items">`;
+    let html = renderBodyStrip(data.body_window);
+    html += `<div class="tr-unified" role="list" aria-label="transcript entries, ${displayItems.length} items">`;
 
     // Audio player section (if we have audio)
     if (data.audio_file && showAudio) {
@@ -3419,6 +3859,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
     html += '</div>';
     targetEl.innerHTML = html;
+    attachBodyWindowButtons(targetEl);
 
     // Get audio element reference
     const paneAudioEl = targetEl.querySelector('audio[data-role="segment-audio"]');
@@ -3985,6 +4426,15 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       markdownOnlySegments(data.segments).forEach(seg => {
         addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think);
       });
+      fetchDayBodyWindow()
+        .then(payload => {
+          dayBodyWindow = payload;
+          renderBodyEvents(dayBodyWindow);
+        })
+        .catch(() => {
+          dayBodyWindow = null;
+          renderBodyEvents(null);
+        });
 
       // Now-marker for today
       if (day === todayStr) {
@@ -4280,6 +4730,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         markdownOnlySegments(allSegments).forEach(seg => {
           addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think);
         });
+        renderBodyEvents(dayBodyWindow);
       })
       .catch(() => {
         // Range indicators may be stale, but the main segment state is already updated.

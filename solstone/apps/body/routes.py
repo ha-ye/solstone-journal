@@ -27,13 +27,14 @@ from pathlib import Path
 from statistics import mean
 from typing import Any, Callable
 
-from flask import Blueprint, jsonify, render_template
+from flask import Blueprint, jsonify, render_template, request
 
 from solstone.convey import state
 from solstone.convey.reasons import INVALID_DAY, INVALID_REQUEST_VALUE
 from solstone.convey.utils import error_response
 from solstone.think.importers.health_schema import (
     friendly_type_name,
+    merge_sleep_sessions,
     pick_day_sleep,
 )
 
@@ -57,6 +58,7 @@ STALE_SOURCE_DAYS = 30
 
 GLUCOSE_SVG_WIDTH = 1440.0
 GLUCOSE_SVG_HEIGHT = 260.0
+MAX_WINDOW_DAYS = 7
 
 _MONTH_ABBR = (
     "Jan",
@@ -370,6 +372,93 @@ def _prior_month(month: str) -> str:
     if mon == 1:
         return f"{year - 1}-12"
     return f"{year}-{mon - 1:02d}"
+
+
+def _month_keys_between(start: datetime, end: datetime) -> list[str]:
+    """Month shard keys touched by an inclusive date span."""
+    current = date(start.year, start.month, 1)
+    final = date(end.year, end.month, 1)
+    keys: list[str] = []
+    while current <= final:
+        keys.append(f"{current.year}-{current.month:02d}")
+        if current.month == 12:
+            current = date(current.year + 1, 1, 1)
+        else:
+            current = date(current.year, current.month + 1, 1)
+    return keys
+
+
+def _parse_window_bound(value: object) -> datetime | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _row_interval(row: dict[str, Any]) -> tuple[datetime, datetime] | None:
+    start = _parse_record_time(row.get("start_date") or row.get("start_time"))
+    if start is None:
+        return None
+    end = _parse_record_time(row.get("end_date")) or start
+    if end < start:
+        end = start
+    return start, end
+
+
+def _interval_overlaps(
+    start: datetime, end: datetime, window_start: datetime, window_end: datetime
+) -> bool:
+    if end <= start:
+        return window_start <= start < window_end
+    return start < window_end and end > window_start
+
+
+def _overlap_minutes(
+    start: datetime, end: datetime, window_start: datetime, window_end: datetime
+) -> float:
+    if not _interval_overlaps(start, end, window_start, window_end):
+        return 0.0
+    if end <= start:
+        return 0.0
+    overlap_start = max(start, window_start)
+    overlap_end = min(end, window_end)
+    return max((overlap_end - overlap_start).total_seconds() / 60, 0.0)
+
+
+def _rows_for_window(
+    journal_root: Path,
+    window_start: datetime,
+    window_end: datetime,
+    *,
+    reader: Callable[[str], list[dict[str, Any]]] | None = None,
+) -> list[dict[str, Any]]:
+    read = reader or _month_reader(journal_root)
+    shard_start = window_start - timedelta(days=1)
+    rows: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for month in _month_keys_between(shard_start, window_end):
+        for row in read(month):
+            dedupe_key = row.get("dedupe_key")
+            if isinstance(dedupe_key, str) and dedupe_key:
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
+            interval = _row_interval(row)
+            if interval is None:
+                continue
+            if _interval_overlaps(interval[0], interval[1], window_start, window_end):
+                rows.append(row)
+    return rows
 
 
 def _family_for_type(record_type: str) -> str:
@@ -1262,6 +1351,310 @@ def _build_health_day(
     }
 
 
+# --- Window API -------------------------------------------------------------
+
+
+def _iso(moment: datetime) -> str:
+    return moment.isoformat()
+
+
+def _time_label(moment: datetime) -> str:
+    return _format_clock(moment)
+
+
+def _window_family_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: Counter[str] = Counter()
+    for row in rows:
+        counts[_family_for_type(str(row.get("record_type") or ""))] += 1
+    return [
+        {
+            "name": family,
+            "count": counts[family],
+            "count_label": f"{counts[family]:,}",
+        }
+        for family in _FAMILY_ORDER
+        if counts.get(family)
+    ]
+
+
+def _window_signal_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    counts: Counter[str] = Counter(
+        friendly_type_name(str(row.get("record_type") or "")) for row in rows
+    )
+    return [
+        {"label": label, "count": count, "count_label": f"{count:,}"}
+        for label, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+
+def _window_heart_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    heart_rows = [
+        row
+        for row in rows
+        if str(row.get("record_type") or "") == "HKQuantityTypeIdentifierHeartRate"
+    ]
+    values = [
+        value
+        for value in (_parse_float(row.get("value")) for row in heart_rows)
+        if value is not None
+    ]
+    if not values:
+        return {"count": 0, "min": None, "max": None, "unit": None, "label": None}
+    units = sorted(
+        {str(row.get("unit")) for row in heart_rows if row.get("unit") is not None}
+    )
+    unit = units[0] if len(units) == 1 else ("mixed" if units else None)
+    range_label = f"{_format_number(min(values))}–{_format_number(max(values))}"
+    return {
+        "count": len(values),
+        "count_label": f"{len(values):,}",
+        "min": min(values),
+        "max": max(values),
+        "unit": unit,
+        "label": f"{range_label} {unit}".strip() if unit else range_label,
+    }
+
+
+def _window_glucose(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    readings: list[dict[str, Any]] = []
+    for row in rows:
+        if not _is_glucose_type(str(row.get("record_type") or "")):
+            continue
+        value = _parse_float(row.get("value"))
+        moment = _parse_record_time(row.get("start_date") or row.get("start_time"))
+        if value is None or moment is None:
+            continue
+        unit = str(row.get("unit") or "").strip() or None
+        readings.append(
+            {
+                "time": _time_label(moment),
+                "iso": _iso(moment),
+                "value": value,
+                "value_label": _format_number(value),
+                "unit": unit,
+                "source": _source_label(row),
+            }
+        )
+    readings.sort(key=lambda item: _time_sort_key(str(item["iso"])))
+    if not readings:
+        return {
+            "count": 0,
+            "readings": [],
+            "unit": None,
+            "delta_label": None,
+            "min": None,
+            "max": None,
+        }
+    units = sorted({reading["unit"] for reading in readings if reading["unit"]})
+    unit = units[0] if len(units) == 1 else ("mixed" if units else None)
+    first = readings[0]
+    last = readings[-1]
+    delta = f"{first['value_label']} → {last['value_label']}"
+    if unit and unit != "mixed":
+        delta += f" {unit}"
+    values = [float(reading["value"]) for reading in readings]
+    return {
+        "count": len(readings),
+        "count_label": f"{len(readings):,}",
+        "readings": readings,
+        "unit": unit,
+        "delta_label": delta,
+        "first": first,
+        "last": last,
+        "min": min(values),
+        "max": max(values),
+    }
+
+
+def _window_steps(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    step_rows = [
+        row for row in rows if "StepCount" in str(row.get("record_type") or "")
+    ]
+    if not step_rows:
+        return {"samples": 0, "mode": "none", "label": None}
+    sources = sorted({_source_label(row) for row in step_rows})
+    values = [
+        value
+        for value in (_parse_float(row.get("value")) for row in step_rows)
+        if value is not None
+    ]
+    if len(sources) == 1 and values:
+        total = int(round(sum(values)))
+        return {
+            "mode": "total",
+            "samples": len(step_rows),
+            "samples_label": f"{len(step_rows):,}",
+            "total": total,
+            "total_label": f"{total:,}",
+            "source": sources[0],
+            "label": f"{total:,} steps",
+        }
+    samples = len(step_rows)
+    return {
+        "mode": "samples",
+        "samples": samples,
+        "samples_label": f"{samples:,}",
+        "label": f"{samples:,} step samples",
+    }
+
+
+def _workout_window_items(
+    rows: list[dict[str, Any]], window_start: datetime, window_end: datetime
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("kind") != "workout":
+            continue
+        interval = _row_interval(row)
+        if interval is None:
+            continue
+        start, end = interval
+        minutes = _overlap_minutes(start, end, window_start, window_end)
+        if minutes <= 0:
+            continue
+        duration = _workout_duration_minutes(row)
+        items.append(
+            {
+                "name": friendly_type_name(str(row.get("record_type") or "Workout")),
+                "start": _iso(start),
+                "end": _iso(end),
+                "start_label": _time_label(start),
+                "end_label": _time_label(end),
+                "overlap_minutes": round(minutes, 1),
+                "overlap_label": _format_duration(minutes),
+                "duration_label": _format_duration(duration)
+                if duration is not None
+                else None,
+                "source": _source_label(row),
+            }
+        )
+    return sorted(items, key=lambda item: _time_sort_key(str(item["start"])))
+
+
+def _sleep_window_events(
+    rows: list[dict[str, Any]], window_start: datetime, window_end: datetime
+) -> list[dict[str, Any]]:
+    intervals_by_source: dict[str, list[tuple[datetime, datetime]]] = {}
+    for row in rows:
+        if not _is_sleep_type(str(row.get("record_type") or "")):
+            continue
+        interval = _row_interval(row)
+        if interval is None:
+            continue
+        intervals_by_source.setdefault(_source_label(row), []).append(interval)
+
+    events: list[dict[str, Any]] = []
+    for source, intervals in intervals_by_source.items():
+        for start, end in merge_sleep_sessions(intervals):
+            minutes = _overlap_minutes(start, end, window_start, window_end)
+            if minutes <= 0:
+                continue
+            events.append(
+                {
+                    "kind": "sleep",
+                    "label": "Sleep",
+                    "start": _iso(start),
+                    "end": _iso(end),
+                    "start_label": _time_label(start),
+                    "end_label": _time_label(end),
+                    "overlap_minutes": round(minutes, 1),
+                    "overlap_label": _format_duration(minutes),
+                    "source": source,
+                }
+            )
+    return sorted(events, key=lambda item: _time_sort_key(str(item["start"])))
+
+
+def _window_events(
+    rows: list[dict[str, Any]], window_start: datetime, window_end: datetime
+) -> list[dict[str, Any]]:
+    workout_events = [
+        {
+            "kind": "workout",
+            "label": item["name"],
+            "start": item["start"],
+            "end": item["end"],
+            "start_label": item["start_label"],
+            "end_label": item["end_label"],
+            "overlap_minutes": item["overlap_minutes"],
+            "overlap_label": item["overlap_label"],
+            "source": item["source"],
+        }
+        for item in _workout_window_items(rows, window_start, window_end)
+    ]
+    return sorted(
+        _sleep_window_events(rows, window_start, window_end) + workout_events,
+        key=lambda item: _time_sort_key(str(item["start"])),
+    )
+
+
+def _window_sources(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    counts: Counter[str] = Counter(_source_label(row) for row in rows)
+    names = sorted(counts)
+    return {
+        "names": names,
+        "count": len(names),
+        "chips": [
+            {"name": name, "count": counts[name], "count_label": f"{counts[name]:,}"}
+            for name in names
+        ],
+    }
+
+
+def _window_brief(
+    heart_rate: dict[str, Any],
+    glucose: dict[str, Any],
+    steps: dict[str, Any],
+    workouts: list[dict[str, Any]],
+) -> list[str]:
+    rows: list[str] = []
+    if heart_rate.get("count"):
+        rows.append(f"Heart rate {heart_rate['label']}")
+    if glucose.get("count"):
+        rows.append(f"Glucose {glucose['delta_label']}")
+    if steps.get("label"):
+        rows.append(str(steps["label"]))
+    if workouts:
+        count = len(workouts)
+        rows.append(f"{count} workout" + ("s" if count != 1 else ""))
+    return rows
+
+
+def _build_health_window(
+    journal_root: Path,
+    window_start: datetime,
+    window_end: datetime,
+    *,
+    reader: Callable[[str], list[dict[str, Any]]] | None = None,
+) -> dict[str, Any]:
+    rows = _rows_for_window(journal_root, window_start, window_end, reader=reader)
+    rows.sort(key=lambda row: _time_sort_key(_row_time(row) or ""))
+    heart_rate = _window_heart_rate(rows)
+    glucose = _window_glucose(rows)
+    steps = _window_steps(rows)
+    workouts = _workout_window_items(rows, window_start, window_end)
+    brief = _window_brief(heart_rate, glucose, steps, workouts)
+    span_minutes = (window_end - window_start).total_seconds() / 60
+    return {
+        "from": _iso(window_start),
+        "to": _iso(window_end),
+        "span_minutes": round(span_minutes, 1),
+        "has_data": bool(rows),
+        "entry_total": len(rows),
+        "entry_total_label": f"{len(rows):,}",
+        "families": _window_family_items(rows),
+        "signals": _window_signal_items(rows),
+        "heart_rate": heart_rate,
+        "glucose": glucose,
+        "steps": steps,
+        "workouts": workouts,
+        "events": _window_events(rows, window_start, window_end),
+        "sources": _window_sources(rows),
+        "brief": brief,
+        "brief_label": " · ".join(brief),
+    }
+
+
 @body_bp.route("/")
 def index():
     # The overview is the stable Body home: no date-nav pill here — the
@@ -1298,6 +1691,28 @@ def api_day(day: str):
         return jsonify(_build_health_day(_journal_root(), day))
     except ValueError:
         return error_response(INVALID_DAY)
+
+
+@body_bp.get("/api/window")
+def api_window():
+    window_start = _parse_window_bound(request.args.get("from"))
+    window_end = _parse_window_bound(request.args.get("to"))
+    if window_start is None or window_end is None:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="Window requires valid from and to ISO timestamps.",
+        )
+    if window_end <= window_start:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="Window end must be after window start.",
+        )
+    if window_end - window_start > timedelta(days=MAX_WINDOW_DAYS):
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail=f"Window span must be {MAX_WINDOW_DAYS} days or less.",
+        )
+    return jsonify(_build_health_window(_journal_root(), window_start, window_end))
 
 
 @body_bp.get("/api/stats/<month>")

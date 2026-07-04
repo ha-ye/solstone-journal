@@ -83,3 +83,44 @@ def day(
         f"mean={glucose.get('mean')} "
         f"unit={glucose.get('unit')}"
     )
+
+
+@app.command("window")
+@convey_cli
+def window(
+    from_value: str = typer.Option(
+        ...,
+        "--from",
+        help="Window start as an ISO timestamp.",
+    ),
+    to_value: str = typer.Option(
+        ...,
+        "--to",
+        help="Window end as an ISO timestamp.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Print the full JSON response.",
+    ),
+) -> None:
+    """Show imported health context for a time window."""
+
+    payload = get_client().request(
+        "GET",
+        "/app/body/api/window",
+        params={"from": from_value, "to": to_value},
+    )
+    if json_output:
+        _echo_json(payload)
+        return
+
+    if not isinstance(payload, dict):
+        typer.echo("I couldn't read the response from the body app.", err=True)
+        raise typer.Exit(1)
+
+    typer.echo(f"window: {payload.get('from')} to {payload.get('to')}")
+    typer.echo(f"entries: {payload.get('entry_total', 0)}")
+    brief = payload.get("brief_label")
+    if brief:
+        typer.echo(str(brief))

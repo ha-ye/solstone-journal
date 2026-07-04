@@ -381,6 +381,8 @@ def test_body_call_module_uses_convey_http_only():
     source = (body_root / "call.py").read_text(encoding="utf-8")
 
     assert "solstone.think.convey_client" in source
+    assert '@app.command("window")' in source
+    assert "/app/body/api/window" in source
     assert "from pathlib" not in source
     assert "import os" not in source
     assert "sqlite3" not in source
@@ -705,6 +707,247 @@ def test_day_api_steps_total_only_with_single_source(body_env):
     assert steps["mode"] == "samples"
     assert steps["samples"] == 2
     assert "total" not in steps
+
+
+# --- Window API -------------------------------------------------------------
+
+
+def test_window_api_returns_factual_window_aggregates(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            GLUCOSE_TYPE,
+            "2026-07-10T10:00:00-06:00",
+            value="88",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _row(
+            GLUCOSE_TYPE,
+            "2026-07-10T10:30:00-06:00",
+            value="96",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierHeartRate",
+            "2026-07-10T10:05:00-06:00",
+            value="62",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierHeartRate",
+            "2026-07-10T10:45:00-06:00",
+            value="89",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+        _row(
+            STEP_TYPE,
+            "2026-07-10T10:15:00-06:00",
+            value="200",
+            unit="count",
+            source="Synthetic Phone",
+        ),
+        _row(
+            STEP_TYPE,
+            "2026-07-10T10:45:00-06:00",
+            value="212",
+            unit="count",
+            source="Synthetic Phone",
+        ),
+        _row(
+            "HKWorkoutActivityTypeWalking",
+            "2026-07-10T10:20:00-06:00",
+            "2026-07-10T11:20:00-06:00",
+            source="Synthetic Watch",
+            kind="workout",
+            metadata={"duration": "60", "durationUnit": "min"},
+        ),
+    ]
+    _seed_import(env.journal, "20260808_000000", rows)
+
+    response = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-07-10T10:00:00-06:00&to=2026-07-10T11:00:00-06:00"
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["has_data"] is True
+    assert payload["entry_total"] == 7
+    assert payload["heart_rate"]["count"] == 2
+    assert payload["heart_rate"]["min"] == 62.0
+    assert payload["heart_rate"]["max"] == 89.0
+    assert payload["glucose"]["delta_label"] == "88 → 96 mg/dL"
+    assert [reading["value"] for reading in payload["glucose"]["readings"]] == [
+        88.0,
+        96.0,
+    ]
+    assert payload["steps"]["mode"] == "total"
+    assert payload["steps"]["total"] == 412
+    assert payload["workouts"][0]["name"] == "Walking"
+    assert payload["workouts"][0]["overlap_label"] == "40m"
+    assert {event["kind"] for event in payload["events"]} == {"workout"}
+    assert payload["sources"]["names"] == [
+        "Synthetic Phone",
+        "Synthetic Stelo",
+        "Synthetic Watch",
+    ]
+    assert [family["name"] for family in payload["families"]] == [
+        "Glucose",
+        "Activity",
+        "Heart",
+    ]
+
+
+def test_window_api_reads_cross_month_and_dedupes_overlapping_bundles(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            GLUCOSE_TYPE,
+            "2026-06-30T23:55:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _row(
+            GLUCOSE_TYPE,
+            "2026-07-01T00:05:00-06:00",
+            value="104",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+    ]
+    _seed_import(env.journal, "20260809_000000", rows)
+    first_june = (
+        env.journal / "imports" / "20260809_000000" / "normalized" / "2026-06.jsonl"
+    )
+    first_july = (
+        env.journal / "imports" / "20260809_000000" / "normalized" / "2026-07.jsonl"
+    )
+    second_root = env.journal / "imports" / "20260809_010000" / "normalized"
+    second_root.mkdir(parents=True)
+    (second_root / "2026-06.jsonl").write_text(
+        first_june.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    (second_root / "2026-07.jsonl").write_text(
+        first_july.read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    _write_json(
+        env.journal / "imports" / "20260809_010000" / "manifest.json",
+        {
+            "import_id": "20260809_010000",
+            "source_type": "apple_health",
+            "source_hash": "sha256:overlap",
+            "entry_count": 2,
+            "days_affected": ["20260630", "20260701"],
+            "files_created": [],
+            "imported_at": "2026-08-09T01:00:00",
+            "imported_via": "test",
+        },
+    )
+
+    response = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-06-30T23:45:00-06:00&to=2026-07-01T00:15:00-06:00"
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["entry_total"] == 2
+    assert payload["glucose"]["delta_label"] == "100 → 104 mg/dL"
+
+
+def test_window_api_steps_do_not_total_multiple_sources(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            STEP_TYPE,
+            "2026-07-10T09:00:00-06:00",
+            value="300",
+            unit="count",
+            source="Synthetic Phone",
+        ),
+        _row(
+            STEP_TYPE,
+            "2026-07-10T09:05:00-06:00",
+            value="200",
+            unit="count",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260810_000000", rows)
+
+    response = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-07-10T09:00:00-06:00&to=2026-07-10T10:00:00-06:00"
+    )
+
+    assert response.status_code == 200
+    steps = response.get_json()["steps"]
+    assert steps["mode"] == "samples"
+    assert steps["samples"] == 2
+    assert "total" not in steps
+
+
+def test_window_api_includes_sleep_events_from_previous_day(body_env):
+    env = body_env()
+    _seed_cross_midnight_sleep(env.journal)
+
+    response = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-07-01T00:00:00-06:00&to=2026-07-02T00:00:00-06:00"
+    )
+
+    assert response.status_code == 200
+    events = response.get_json()["events"]
+    sleep_events = [event for event in events if event["kind"] == "sleep"]
+    assert sleep_events
+    assert sleep_events[0]["start"] == "2026-06-30T22:58:00-06:00"
+    assert sleep_events[0]["end"] == "2026-07-01T07:08:00-06:00"
+    assert sleep_events[0]["overlap_label"] == "7h 08m"
+
+
+def test_window_api_rejects_invalid_and_too_large_spans(body_env):
+    env = body_env()
+
+    missing = env.client.get("/app/body/api/window")
+    assert missing.status_code == 400
+    assert missing.get_json()["reason_code"] == "invalid_request_value"
+
+    reversed_span = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-07-10T10:00:00-06:00&to=2026-07-10T09:00:00-06:00"
+    )
+    assert reversed_span.status_code == 400
+
+    too_large = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-07-01T00:00:00-06:00&to=2026-07-09T00:00:00-06:00"
+    )
+    assert too_large.status_code == 400
+    assert "7 days or less" in too_large.get_json()["detail"]
+
+
+def test_window_api_empty_window_is_read_only(body_env):
+    env = body_env()
+    imports_root = env.journal / "imports"
+    assert not imports_root.exists()
+
+    response = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-07-10T09:00:00-06:00&to=2026-07-10T10:00:00-06:00"
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["has_data"] is False
+    assert payload["entry_total"] == 0
+    assert payload["families"] == []
+    assert payload["events"] == []
+    assert not imports_root.exists()
 
 
 # --- Day view: glucose curve -------------------------------------------------
