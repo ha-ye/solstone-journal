@@ -147,7 +147,7 @@ journal-host = [
 
 # Run a journal here — the full host stack with CPU ONNX runtime.
 journal = [
-    "solstone-journal-host==0.6.22",
+    "solstone-journal-host==0.6.23",
     # CPU ONNX runtime: covers VAD, diarization, and the WeSpeaker embedder;
     # !=1.24.1 across the board (known-bad wheel).
     "onnxruntime>=1.20.0,!=1.24.1",
@@ -162,7 +162,7 @@ journal = [
 # VAD, diarization, and WeSpeaker. Install this instead of [journal], not
 # alongside it.
 journal-cuda = [
-    "solstone-journal-host==0.6.22",
+    "solstone-journal-host==0.6.23",
     "onnxruntime-gpu>=1.25.0",
     "nvidia-cuda-runtime-cu12",
     "nvidia-cudnn-cu12",

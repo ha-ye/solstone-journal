@@ -10,7 +10,7 @@ readme = {text = "Host-only console scripts (journal, mlx-vlm-server) for a sols
 version = "0.6.23"
 requires-python = ">=3.12"
 dependencies = [
-    "solstone[journal-host]==0.6.22",
+    "solstone[journal-host]==0.6.23",
 ]
 
 [project.scripts]
