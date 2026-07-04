@@ -339,13 +339,18 @@ def import_archive(
     imported = []
     with tarfile.open(archive_path, "r:gz") as tar:
         members = tar.getmembers()
-        plan: list[tuple[str, str, Path, list[tuple[tarfile.TarInfo, Path]]]] = []
+        plan: list[tuple[str, str, Path, list[tuple[tarfile.TarInfo, Path, str]]]] = []
 
         for original_arc_key, target_arc_key in validation["import_as"].items():
             _reject_if_unsafe(target_arc_key, "segment key")
             target_dir = contained_path(journal, f"{day}/{target_arc_key}")
+            manifest_by_name = {
+                f["name"]: f["sha256"]
+                for f in manifest["segments"][original_arc_key].get("files", [])
+            }
 
             planned_files = []
+            planned_names = set()
             prefix = f"{original_arc_key}/"
             for member in members:
                 if member.name.startswith(prefix) and member.isfile():
@@ -357,18 +362,34 @@ def import_archive(
                             f"{target_arc_key!r}: {member.name!r}"
                         )
                     _reject_if_unsafe(filename, "member filename")
+                    if filename not in manifest_by_name:
+                        raise ValueError(
+                            f"Archive member for segment {original_arc_key!r} "
+                            f"has no manifest hash entry: {filename!r}"
+                        )
                     target_path = contained_path(
                         journal,
                         f"{day}/{target_arc_key}/{filename}",
                     )
-                    planned_files.append((member, target_path))
+                    planned_files.append(
+                        (member, target_path, manifest_by_name[filename])
+                    )
+                    planned_names.add(filename)
+
+            missing = set(manifest_by_name) - planned_names
+            if missing:
+                missing_list = ", ".join(sorted(missing))
+                raise ValueError(
+                    f"Archive missing manifest-listed file(s) for segment "
+                    f"{original_arc_key!r}: {missing_list}"
+                )
 
             plan.append((original_arc_key, target_arc_key, target_dir, planned_files))
 
         for original_arc_key, target_arc_key, target_dir, planned_files in plan:
             target_dir.mkdir(parents=True, exist_ok=True)
 
-            for member, target_path in planned_files:
+            for member, target_path, expected_sha256 in planned_files:
                 source = tar.extractfile(member)
                 if source:
                     temp_path = None
@@ -385,6 +406,13 @@ def import_archive(
                         temp_path = Path(temp_handle.name)
                         shutil.copyfileobj(source, temp_handle)
                         temp_handle.close()
+                        actual_sha256 = compute_file_sha256(temp_path)
+                        if actual_sha256 != expected_sha256:
+                            raise ValueError(
+                                f"Archive content mismatch for {target_path}: "
+                                f"manifest sha256 {expected_sha256} != extracted "
+                                f"{actual_sha256}"
+                            )
                         install_file(temp_path, target_path)
                         promoted = True
                         # Preserve modification time (install_file does not)

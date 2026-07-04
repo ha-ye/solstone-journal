@@ -504,6 +504,98 @@ class TestTransferImport:
         assert first_path.read_bytes() == b"first content"
         assert list(day_dir.rglob("*.tmp")) == []
 
+    def test_import_archive_rejects_member_sha256_mismatch(self, tmp_path, monkeypatch):
+        """Test manifest/member hash mismatch aborts before promoting that file."""
+        import io
+
+        from solstone.observe.transfer import import_archive
+        from solstone.observe.utils import compute_bytes_sha256
+
+        archive_path = tmp_path / "sha-mismatch.tgz"
+        synced_content = b"already synced"
+        good_content = b"good import"
+        bad_manifest_content = b"manifest bytes"
+        bad_member_content = b"tampered bytes"
+        manifest = {
+            "version": 1,
+            "day": "20250101",
+            "created_at": 1704067200000,
+            "host": "test-host",
+            "segments": {
+                "120000_300": {
+                    "files": [
+                        {
+                            "name": "audio.flac",
+                            "sha256": compute_bytes_sha256(synced_content),
+                            "size": len(synced_content),
+                        }
+                    ]
+                },
+                "125000_300": {
+                    "files": [
+                        {
+                            "name": "audio.flac",
+                            "sha256": compute_bytes_sha256(good_content),
+                            "size": len(good_content),
+                        }
+                    ]
+                },
+                "130000_300": {
+                    "files": [
+                        {
+                            "name": "audio.flac",
+                            "sha256": compute_bytes_sha256(bad_manifest_content),
+                            "size": len(bad_manifest_content),
+                        }
+                    ]
+                },
+            },
+        }
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            for segment, content in (
+                ("120000_300", synced_content),
+                ("125000_300", good_content),
+                ("130000_300", bad_member_content),
+            ):
+                info = tarfile.TarInfo(name=f"{segment}/audio.flac")
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
+
+            manifest_json = json.dumps(manifest).encode()
+            manifest_info = tarfile.TarInfo(name="manifest.json")
+            manifest_info.size = len(manifest_json)
+            tar.addfile(manifest_info, io.BytesIO(manifest_json))
+
+        journal_path = tmp_path / "journal"
+        synced_path = (
+            journal_path / "chronicle" / "20250101" / "120000_300" / "audio.flac"
+        )
+        synced_path.parent.mkdir(parents=True)
+        synced_path.write_bytes(synced_content)
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
+
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+
+        bad_target = (
+            journal_path / "chronicle" / "20250101" / "130000_300" / "audio.flac"
+        )
+        with pytest.raises(ValueError) as excinfo:
+            import_archive(archive_path)
+
+        message = str(excinfo.value)
+        assert "Archive content mismatch" in message
+        assert str(bad_target) in message
+        assert not bad_target.exists()
+        assert (
+            journal_path / "chronicle" / "20250101" / "125000_300" / "audio.flac"
+        ).read_bytes() == good_content
+        assert synced_path.read_bytes() == synced_content
+        assert list((journal_path / "chronicle").rglob("*.tmp")) == []
+
     def test_import_archive_routes_member_writes_through_install_file(self):
         """Test import_archive has no raw durable member write path."""
         from solstone.observe import transfer
