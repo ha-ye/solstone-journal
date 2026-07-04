@@ -1,0 +1,385 @@
+<style>
+.body-header {
+  margin-bottom: var(--space-5);
+}
+
+.body-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: var(--weight-display);
+  font-size: 1.75rem;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.body-subtitle {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-body);
+  line-height: 1.45;
+  color: var(--ink-soft);
+}
+
+.body-nav {
+  margin-top: var(--space-3);
+}
+
+.body-link {
+  color: var(--orange-ink);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+
+.body-link:hover {
+  text-decoration: underline;
+}
+
+.body-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.body-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-3);
+}
+
+.body-lists {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--space-3);
+}
+
+.body-card {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+
+.body-card-label {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint-paper);
+}
+
+.body-metric {
+  font-size: 1.6rem;
+  font-weight: var(--weight-display);
+  line-height: 1.1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.body-muted {
+  color: var(--ink-faint-paper);
+}
+
+.body-code {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.body-section {
+  margin-top: var(--space-5);
+}
+
+.body-section-title {
+  margin: 0 0 var(--space-3);
+  font-size: 1.1rem;
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+}
+
+.body-table-wrap {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  overflow-x: auto;
+}
+
+.body-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.body-table th,
+.body-table td {
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--hairline);
+  text-align: left;
+  vertical-align: top;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.body-table th {
+  font-size: 12px;
+  font-weight: var(--weight-medium);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-faint-paper);
+  background: var(--cream-bright);
+}
+
+.body-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.body-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.body-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--hairline);
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.body-list li:last-child {
+  border-bottom: 0;
+}
+
+.body-summary {
+  white-space: pre-wrap;
+  margin: 0;
+  padding: var(--space-4);
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-x: auto;
+}
+
+.body-empty {
+  color: var(--ink-faint);
+}
+
+@media (max-width: 768px) {
+  .body-grid,
+  .body-lists {
+    grid-template-columns: 1fr;
+  }
+}
+</style>
+
+<div class="workspace-content">
+  <header class="body-header">
+    <h1 class="body-title">Body</h1>
+    {% if body_day %}
+      <p class="body-subtitle">Imported health data for day {{ body_day.day }}.</p>
+      <nav class="body-nav" aria-label="Body views">
+        <a class="body-link" href="/app/body/">All imported health data</a>
+      </nav>
+    {% else %}
+      <p class="body-subtitle">
+        Read-only view of health data imported into this journal.
+      </p>
+    {% endif %}
+  </header>
+
+  {% if body_day %}
+    <section class="body-grid" aria-label="Day glucose facts">
+      <article class="body-card">
+        <h2 class="body-card-label">Entries</h2>
+        <div class="body-metric">{{ body_day.entry_total }}</div>
+      </article>
+      <article class="body-card">
+        <h2 class="body-card-label">Glucose count</h2>
+        <div class="body-metric">{{ body_day.glucose.count }}</div>
+      </article>
+      <article class="body-card">
+        <h2 class="body-card-label">Min / max</h2>
+        <div class="body-metric">
+          {% if body_day.glucose.count %}
+            {{ "%g"|format(body_day.glucose.min) }} / {{ "%g"|format(body_day.glucose.max) }}
+          {% else %}
+            &mdash;
+          {% endif %}
+        </div>
+        {% if body_day.glucose.unit %}<div class="body-muted">{{ body_day.glucose.unit }}</div>{% endif %}
+      </article>
+      <article class="body-card">
+        <h2 class="body-card-label">Mean</h2>
+        <div class="body-metric">
+          {% if body_day.glucose.count %}{{ "%g"|format(body_day.glucose.mean) }}{% else %}&mdash;{% endif %}
+        </div>
+        {% if body_day.glucose.unit %}<div class="body-muted">{{ body_day.glucose.unit }}</div>{% endif %}
+      </article>
+    </section>
+
+    <section class="body-section" aria-labelledby="body-day-summary-title">
+      <h2 id="body-day-summary-title" class="body-section-title">Day summary</h2>
+      {% if body_day.summary_markdown %}
+        <pre class="body-summary">{{ body_day.summary_markdown }}</pre>
+      {% else %}
+        <p class="body-empty">No day summary file for {{ body_day.day }}.</p>
+      {% endif %}
+    </section>
+  {% else %}
+    {% set status = body_status or {} %}
+    <section class="body-grid" aria-label="Imported health data totals">
+      <article class="body-card">
+        <h2 class="body-card-label">Imports</h2>
+        <div class="body-metric">{{ status.imports|length }}</div>
+      </article>
+      <article class="body-card">
+        <h2 class="body-card-label">Entries</h2>
+        <div class="body-metric">{{ status.normalized.total|default(0) }}</div>
+      </article>
+      <article class="body-card">
+        <h2 class="body-card-label">Dedupe rows</h2>
+        <div class="body-metric">{{ status.dedupe.total|default(0) }}</div>
+      </article>
+      <article class="body-card">
+        <h2 class="body-card-label">Coverage window</h2>
+        {% if status.coverage_window and status.coverage_window.start %}
+          <div class="body-code">{{ status.coverage_window.start }}</div>
+          <div class="body-code">{{ status.coverage_window.end }}</div>
+        {% else %}
+          <div class="body-muted">No entries yet.</div>
+        {% endif %}
+      </article>
+    </section>
+
+    <section class="body-section" aria-labelledby="body-imports-title">
+      <h2 id="body-imports-title" class="body-section-title">Import list</h2>
+      <div class="body-table-wrap">
+        <table class="body-table">
+          <thead>
+            <tr>
+              <th>Import</th>
+              <th>Source</th>
+              <th>Imported</th>
+              <th>Entries</th>
+              <th>Days</th>
+              <th>Months</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in status.imports %}
+              <tr>
+                <td class="body-code">{{ item.import_id }}</td>
+                <td>{{ item.source_type }}</td>
+                <td>{{ item.imported_at }}</td>
+                <td>{{ item.entry_count }}</td>
+                <td>
+                  {% for d in item.days_affected %}
+                    <a class="body-link" href="/app/body/{{ d }}">{{ d }}</a>{% if not loop.last %}, {% endif %}
+                  {% endfor %}
+                </td>
+                <td>{{ item.normalized_months|join(", ") }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="6" class="body-muted">No health imports found.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="body-section body-lists" aria-label="Entry totals">
+      <article class="body-card">
+        <h3 class="body-card-label">By type</h3>
+        <ul class="body-list">
+          {% for name, count in status.normalized.by_type.items() %}
+            <li><span class="body-code">{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="body-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+      <article class="body-card">
+        <h3 class="body-card-label">By source</h3>
+        <ul class="body-list">
+          {% for name, count in status.normalized.by_source.items() %}
+            <li><span>{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="body-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+      <article class="body-card">
+        <h3 class="body-card-label">By month</h3>
+        <ul class="body-list">
+          {% for name, count in status.normalized.by_month.items() %}
+            <li><span>{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="body-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+    </section>
+
+    <section class="body-section body-lists" aria-label="Dedupe totals">
+      <article class="body-card">
+        <h3 class="body-card-label">Dedupe by type</h3>
+        <ul class="body-list">
+          {% for name, count in status.dedupe.by_type.items() %}
+            <li><span class="body-code">{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="body-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+      <article class="body-card">
+        <h3 class="body-card-label">Dedupe by source</h3>
+        <ul class="body-list">
+          {% for name, count in status.dedupe.by_source.items() %}
+            <li><span>{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="body-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+      <article class="body-card">
+        <h3 class="body-card-label">Dedupe by month</h3>
+        <ul class="body-list">
+          {% for name, count in status.dedupe.by_month.items() %}
+            <li><span>{{ name }}</span><strong>{{ count }}</strong></li>
+          {% else %}
+            <li class="body-muted">No entries.</li>
+          {% endfor %}
+        </ul>
+      </article>
+    </section>
+
+    <section class="body-section" aria-labelledby="body-latest-title">
+      <h2 id="body-latest-title" class="body-section-title">Latest source time</h2>
+      <div class="body-table-wrap">
+        <table class="body-table">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Latest time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for name, latest in status.latest_by_source.items() %}
+              <tr>
+                <td>{{ name }}</td>
+                <td class="body-code">{{ latest }}</td>
+              </tr>
+            {% else %}
+              <tr><td colspan="2" class="body-muted">No source times yet.</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+</div>

@@ -20,6 +20,7 @@ APP_LUCIDE_MAP: dict[str, str] = {
     "import": "import",
     "curation": "wand-sparkles",
     "backup": "history",
+    "body": "heart-pulse",
     "entities": "contact",
     "health": "stethoscope",
     "network": "network",

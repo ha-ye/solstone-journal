@@ -7,7 +7,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from solstone.apps.health import routes as health_routes
+from solstone.apps.body import routes as body_routes
 
 
 def _write_json(path: Path, payload: dict) -> None:
@@ -184,11 +184,11 @@ def _seed_health_import(journal: Path) -> None:
             )
 
 
-def test_status_api_summarizes_synthetic_health_import(health_env):
-    env = health_env()
+def test_status_api_summarizes_synthetic_health_import(body_env):
+    env = body_env()
     _seed_health_import(env.journal)
 
-    response = env.client.get("/app/health/api/status")
+    response = env.client.get("/app/body/api/status")
 
     assert response.status_code == 200
     status = response.get_json()
@@ -222,11 +222,11 @@ def test_status_api_summarizes_synthetic_health_import(health_env):
     }
 
 
-def test_status_page_renders_import_and_dedupe_sections(health_env):
-    env = health_env()
+def test_status_page_renders_import_and_dedupe_sections(body_env):
+    env = body_env()
     _seed_health_import(env.journal)
 
-    response = env.client.get("/app/health/imports")
+    response = env.client.get("/app/body/")
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
@@ -237,11 +237,11 @@ def test_status_page_renders_import_and_dedupe_sections(health_env):
     assert "apple_health" in html
 
 
-def test_day_api_returns_summary_and_factual_glucose_stats(health_env):
-    env = health_env()
+def test_day_api_returns_summary_and_factual_glucose_stats(body_env):
+    env = body_env()
     _seed_health_import(env.journal)
 
-    response = env.client.get("/app/health/api/day/20260703")
+    response = env.client.get("/app/body/api/day/20260703")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -256,11 +256,11 @@ def test_day_api_returns_summary_and_factual_glucose_stats(health_env):
     }
 
 
-def test_day_page_renders_summary_and_glucose_facts_only(health_env):
-    env = health_env()
+def test_day_page_renders_summary_and_glucose_facts_only(body_env):
+    env = body_env()
     _seed_health_import(env.journal)
 
-    response = env.client.get("/app/health/imports/20260703")
+    response = env.client.get("/app/body/20260703")
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
@@ -274,10 +274,10 @@ def test_day_page_renders_summary_and_glucose_facts_only(health_env):
     assert "low glucose" not in lowered
 
 
-def test_health_templates_and_copy_avoid_surveillance_verbs():
-    health_root = Path(health_routes.__file__).resolve().parent
+def test_body_workspace_template_avoids_surveillance_verbs():
+    body_root = Path(body_routes.__file__).resolve().parent
     banned = {"capture", "watch", "record", "monitor", "track", "collect"}
-    checked = [health_root / "imports.html"]
+    checked = [body_root / "workspace.html"]
 
     for path in checked:
         source = path.read_text(encoding="utf-8").lower()
@@ -285,9 +285,9 @@ def test_health_templates_and_copy_avoid_surveillance_verbs():
         assert found == set(), f"{path.name} contains banned copy terms: {found}"
 
 
-def test_health_call_module_uses_convey_http_only():
-    health_root = Path(health_routes.__file__).resolve().parent
-    source = (health_root / "call.py").read_text(encoding="utf-8")
+def test_body_call_module_uses_convey_http_only():
+    body_root = Path(body_routes.__file__).resolve().parent
+    source = (body_root / "call.py").read_text(encoding="utf-8")
 
     assert "solstone.think.convey_client" in source
     assert "from pathlib" not in source
@@ -296,22 +296,22 @@ def test_health_call_module_uses_convey_http_only():
     assert "open(" not in source
 
 
-def test_read_routes_create_nothing_in_empty_journal(health_env):
-    env = health_env()
+def test_read_routes_create_nothing_in_empty_journal(body_env):
+    env = body_env()
     imports_root = env.journal / "imports"
     assert not imports_root.exists()
 
-    assert env.client.get("/app/health/api/status").status_code == 200
-    assert env.client.get("/app/health/api/day/20260703").status_code == 200
-    assert env.client.get("/app/health/api/stats/2026-07").status_code == 200
-    assert env.client.get("/app/health/imports").status_code == 200
+    assert env.client.get("/app/body/api/status").status_code == 200
+    assert env.client.get("/app/body/api/day/20260703").status_code == 200
+    assert env.client.get("/app/body/api/stats/2026-07").status_code == 200
+    assert env.client.get("/app/body/").status_code == 200
 
     assert not imports_root.exists()
     assert not (imports_root / "health-dedupe.sqlite").exists()
 
 
-def test_non_health_import_manifests_are_excluded(health_env):
-    env = health_env()
+def test_non_health_import_manifests_are_excluded(body_env):
+    env = body_env()
     _seed_health_import(env.journal)
     _write_json(
         env.journal / "imports" / "20260601_090000" / "manifest.json",
@@ -331,25 +331,25 @@ def test_non_health_import_manifests_are_excluded(health_env):
         "not json", encoding="utf-8"
     )
 
-    response = env.client.get("/app/health/api/status")
+    response = env.client.get("/app/body/api/status")
 
     assert response.status_code == 200
     import_ids = [item["import_id"] for item in response.get_json()["imports"]]
     assert import_ids == ["20260703_120000"]
 
 
-def test_month_stats_api_returns_day_counts(health_env):
-    env = health_env()
+def test_month_stats_api_returns_day_counts(body_env):
+    env = body_env()
     _seed_health_import(env.journal)
 
-    response = env.client.get("/app/health/api/stats/2026-07")
+    response = env.client.get("/app/body/api/stats/2026-07")
 
     assert response.status_code == 200
     assert response.get_json() == {"20260703": 3, "20260704": 1}
 
 
-def test_day_api_rejects_invalid_day(health_env):
-    env = health_env()
+def test_day_api_rejects_invalid_day(body_env):
+    env = body_env()
 
-    assert env.client.get("/app/health/api/day/not-a-day").status_code == 400
-    assert env.client.get("/app/health/api/day/2026-07-03").status_code == 400
+    assert env.client.get("/app/body/api/day/not-a-day").status_code == 400
+    assert env.client.get("/app/body/api/day/2026-07-03").status_code == 400

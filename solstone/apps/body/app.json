@@ -1,0 +1,7 @@
+{
+  "icon": "🫀",
+  "label": "body",
+  "facets": {"disabled": true},
+  "date_nav": true,
+  "allow_future_dates": false
+}

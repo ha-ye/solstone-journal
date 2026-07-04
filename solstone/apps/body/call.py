@@ -1,9 +1,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""CLI commands for health import views.
+"""CLI commands for body app views.
 
-Auto-discovered by ``think.call`` and mounted as ``sol call health``.
+Auto-discovered by ``think.call`` and mounted as ``sol call body``.
 This module reaches journal data only over the Convey HTTP client.
 """
 
@@ -15,7 +15,7 @@ import typer
 
 from solstone.think.convey_client import convey_cli, get_client
 
-app = typer.Typer(help="Health import views.")
+app = typer.Typer(help="Imported health data views.")
 
 
 def _echo_json(payload: object) -> None:
@@ -31,15 +31,15 @@ def status(
         help="Print the full JSON response.",
     ),
 ) -> None:
-    """Show health import status."""
+    """Show imported health data status."""
 
-    payload = get_client().request("GET", "/app/health/api/status")
+    payload = get_client().request("GET", "/app/body/api/status")
     if json_output:
         _echo_json(payload)
         return
 
     if not isinstance(payload, dict):
-        typer.echo("I couldn't read the health response.", err=True)
+        typer.echo("I couldn't read the response from the body app.", err=True)
         raise typer.Exit(1)
 
     imports = payload.get("imports") or []
@@ -61,15 +61,15 @@ def day(
         help="Print the full JSON response.",
     ),
 ) -> None:
-    """Show one health import day."""
+    """Show one day of imported health data."""
 
-    payload = get_client().request("GET", f"/app/health/api/day/{day_value}")
+    payload = get_client().request("GET", f"/app/body/api/day/{day_value}")
     if json_output:
         _echo_json(payload)
         return
 
     if not isinstance(payload, dict):
-        typer.echo("I couldn't read the health response.", err=True)
+        typer.echo("I couldn't read the response from the body app.", err=True)
         raise typer.Exit(1)
 
     glucose = payload.get("glucose") or {}
