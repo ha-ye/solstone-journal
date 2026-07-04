@@ -65,6 +65,10 @@ def nonces_path() -> Path:
     return link_root() / "nonces.json"
 
 
+def upload_private_key_path() -> Path:
+    return link_root() / "hpke" / "upload_private.pem"
+
+
 def state_path() -> Path:
     return link_root() / "state.json"
 

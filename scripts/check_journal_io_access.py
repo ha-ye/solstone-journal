@@ -126,6 +126,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/link/establish.py",
         "solstone/think/link/nonces.py",
         "solstone/think/link/paths.py",
+        "solstone/think/link/upload_key.py",
         "solstone/think/sense_splitter.py",
         "solstone/think/streams.py",
         "solstone/think/talent_provenance.py",

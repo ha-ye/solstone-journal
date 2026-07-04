@@ -6,18 +6,21 @@
 The spl-protocol-fixed core shape is unchanged: `fingerprint`, `device_label`,
 `paired_at`, `instance_id`, and `role`. `device_label` is the home-assigned,
 renameable label for the paired client. Solstone also stores local-only
-`last_seen_at`, `network`, and `client_label` fields for UX:
+`last_seen_at`, `network`, `client_label`, and browser-uplink fields for UX:
 
-            {
-              "fingerprint": "sha256:<hex>",
-              "device_label": "Jer's iPhone",
-              "paired_at": "2026-04-19T17:42:13Z",
-              "instance_id": "<home_instance_id>",
-              "role": "",
-              "last_seen_at": "2026-04-19T18:03:12Z",  // optional; null/absent = never
-              "network": "network",                    // optional; local display label source
-              "client_label": "jer-laptop"             // optional; client self-name/hostname
-            }
+    {
+      "fingerprint": "sha256:<hex>",
+      "device_label": "Jer's iPhone",
+      "paired_at": "2026-04-19T17:42:13Z",
+      "instance_id": "<home_instance_id>",
+      "role": "",
+      "last_seen_at": "2026-04-19T18:03:12Z",  // optional; null/absent = never
+      "network": "network",                    // optional; local display label source
+      "client_label": "jer-laptop",            // optional; client self-name/hostname
+      "kind": "cert",                          // cert | browser
+      "pubkey_spki": "<hex>",                  // browser only
+      "observer_handle": "<handle>"            // browser only
+    }
 
 Role-less linked systems are stored with `role: ""`; peers are stored with
 `role: "peer"`. The peer role is provenance, not a behavioral authorization
@@ -30,8 +33,8 @@ file write. Convey's pair and unpair routes own the pairing writer surface; the
 secure listener updates `last_seen_at` and uses this ledger for TLS verification
 and per-request authorization.
 
-`last_seen_at`, `network`, and `client_label` are local-only — never transmitted
-externally.
+`last_seen_at`, `network`, `client_label`, `kind`, `pubkey_spki`, and
+`observer_handle` are local-only — never transmitted externally.
 """
 
 from __future__ import annotations
@@ -61,6 +64,9 @@ class ClientEntry:
     last_seen_at: str | None = None
     network: str | None = None
     client_label: str = ""
+    kind: str = "cert"
+    pubkey_spki: str | None = None
+    observer_handle: str | None = None
 
 
 class AuthorizedClients:
@@ -127,6 +133,39 @@ class AuthorizedClients:
                 current[fingerprint] = entry
                 self._write(current)
                 self._entries = current
+
+    def add_browser(
+        self,
+        *,
+        fingerprint: str,
+        device_label: str,
+        instance_id: str,
+        pubkey_spki: str,
+        observer_handle: str,
+        paired_at: str | None = None,
+        network: str | None = None,
+    ) -> ClientEntry:
+        paired_at = paired_at or dt.datetime.now(dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        entry = ClientEntry(
+            fingerprint=fingerprint,
+            device_label=device_label,
+            paired_at=paired_at,
+            instance_id=instance_id,
+            role="",
+            last_seen_at=None,
+            network=network,
+            client_label="",
+            kind="browser",
+            pubkey_spki=pubkey_spki,
+            observer_handle=observer_handle,
+        )
+        with self._lock:
+            with hold_lock(self._path):
+                current = self._load_file_locked()
+                current[fingerprint] = entry
+                self._write(current)
+                self._entries = current
+        return entry
 
     def remove(self, fingerprint: str) -> bool:
         with self._lock:
@@ -218,6 +257,9 @@ class AuthorizedClients:
                 last_seen = item.get("last_seen_at")
                 network = item.get("network")
                 client_label = item.get("client_label")
+                kind = item.get("kind")
+                pubkey_spki = item.get("pubkey_spki")
+                observer_handle = item.get("observer_handle")
                 out[fp] = ClientEntry(
                     fingerprint=fp,
                     device_label=str(item.get("device_label", "")),
@@ -227,6 +269,11 @@ class AuthorizedClients:
                     last_seen_at=last_seen if isinstance(last_seen, str) else None,
                     network=network if isinstance(network, str) else None,
                     client_label=client_label if isinstance(client_label, str) else "",
+                    kind=kind if isinstance(kind, str) and kind else "cert",
+                    pubkey_spki=pubkey_spki if isinstance(pubkey_spki, str) else None,
+                    observer_handle=(
+                        observer_handle if isinstance(observer_handle, str) else None
+                    ),
                 )
         return out
 
@@ -238,9 +285,12 @@ class AuthorizedClients:
                 "paired_at": e.paired_at,
                 "instance_id": e.instance_id,
                 "role": e.role,
+                "kind": e.kind,
                 **({"last_seen_at": e.last_seen_at} if e.last_seen_at else {}),
                 **({"network": e.network} if e.network else {}),
                 **({"client_label": e.client_label} if e.client_label else {}),
+                **({"pubkey_spki": e.pubkey_spki} if e.pubkey_spki else {}),
+                **({"observer_handle": e.observer_handle} if e.observer_handle else {}),
             }
             for e in entries.values()
         ]

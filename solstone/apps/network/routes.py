@@ -1026,6 +1026,8 @@ def _entry_to_json(entry: ClientEntry) -> dict[str, Any]:
         "last_seen_at": entry.last_seen_at,
         "role": entry.role,
         "network": entry.network,
+        "kind": entry.kind,
+        "observer_handle": entry.observer_handle,
     }
 
 
