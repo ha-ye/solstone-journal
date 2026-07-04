@@ -90,6 +90,7 @@ pdf = [
 # user-facing extra — always pulled in via [journal] or [journal-cuda].
 journal-host = [
     "python-dotenv",
+    "pyhpke==0.6.4",
     "google-genai>=1.62.0",
     "Flask[async]",
     "Markdown",
