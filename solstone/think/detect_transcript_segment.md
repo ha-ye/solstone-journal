@@ -10,7 +10,7 @@ INPUT:
 - First line: "START_TIME: HH:MM:SS"
 - Remaining lines: numbered "N: content"
 
-OUTPUT: JSON array of {"start_at": "HH:MM:SS", "line": N}
+OUTPUT: JSON object: {"segments": [{"start_at": "HH:MM:SS", "line": N}, ...]}
 
 RULES:
 1. First segment is always {"start_at": START_TIME, "line": 1}
@@ -24,4 +24,4 @@ RULES:
 4. All "start_at" times must be absolute HH:MM:SS
 5. Do NOT put boundaries in the middle of someone speaking
 
-Return only the JSON array.
+Return only the JSON object with a top-level "segments" array.
