@@ -4,6 +4,19 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.6.23] - 2026-07-04
+
+### Added
+- a browser observer can now sync to your journal even when the journal runs on a different machine. it reaches your home over the private relay and seals what it sends end to end, so the relay only moves the bytes and can't read them.
+
+### Changed
+- the journal's own screens and the customer-facing docs now follow the sol naming model: sol lives on your devices and keeps everything in your journal.
+
+### Fixed
+- sol reports its own health and a day's processing truthfully. status and health views now show a real state instead of an optimistic guess, a day where every image read failed is marked done-until-you-redo instead of looking stuck, and work that already retried and finished is no longer counted as a problem.
+- your journal holds onto your data more safely. a single corrupt reading no longer aborts the whole day, imported data is checked against its fingerprint before it's trusted, a segment copy either finishes or leaves nothing half-written, backups keep the health record they used to drop, and older media is only cleared once sol can confirm the results derived from it are safely stored.
+- hardened the journal's local connections. the local web surface now turns away requests from unexpected sites, audio and segment files are only served from inside your journal, and searching with an apostrophe no longer errors out.
+
 ## [0.6.22] - 2026-07-03
 
 ### Added
