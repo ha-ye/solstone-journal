@@ -8,21 +8,35 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import zipfile
+from collections import Counter, defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from posixpath import dirname
-from typing import BinaryIO, Callable, Iterator
+from typing import Any, BinaryIO, Callable, Iterator
 from xml.etree import ElementTree
 
 from solstone.think.importers.file_importer import ImportPreview, ImportResult
+from solstone.think.importers.health_dedupe import (
+    HealthDedupeRecord,
+    upsert_health_dedupe_records,
+)
+from solstone.think.importers.health_schema import (
+    SOURCE_APPLE_HEALTH,
+    HealthRecordIdentity,
+    health_record_dedupe_key,
+    health_value_hash,
+)
+from solstone.think.importers.shared import (
+    hash_source,
+    install_source_file,
+    write_content_manifest,
+    write_jsonl_records,
+    write_manifest,
+    write_markdown_segment_file,
+)
 
 logger = logging.getLogger(__name__)
-
-SAVE_MODE_BLOCKED_MESSAGE = (
-    "Apple Health save-mode import is blocked until the health privacy "
-    "preflight and raw-export retention controls are implemented."
-)
 
 _BYTE_PROGRESS_LOG_INTERVAL = 100 * 1024 * 1024
 
@@ -30,6 +44,9 @@ _EXPORT_XML_CANDIDATES = (
     "apple_health_export/export.xml",
     "export.xml",
 )
+
+_NORMALIZED_SCHEMA = "solstone.health.apple_health.v1"
+_DAY_SUMMARY_SEGMENT = "000000_300"
 
 
 @dataclass(slots=True)
@@ -44,6 +61,7 @@ class _PreviewStats:
     latest_day: str | None = None
     source_names: set[str] = field(default_factory=set)
     record_types: dict[str, int] = field(default_factory=dict)
+    days: set[str] = field(default_factory=set)
 
     @property
     def item_count(self) -> int:
@@ -62,6 +80,7 @@ class _PreviewStats:
     def add_day(self, day: str | None) -> None:
         if day is None:
             return
+        self.days.add(day)
         if self.earliest_day is None or day < self.earliest_day:
             self.earliest_day = day
         if self.latest_day is None or day > self.latest_day:
@@ -75,6 +94,62 @@ class _PreviewStats:
         if not record_type:
             return
         self.record_types[record_type] = self.record_types.get(record_type, 0) + 1
+
+
+@dataclass(frozen=True, slots=True)
+class _DateWindow:
+    start_day: str | None = None
+    end_day: str | None = None
+
+    @property
+    def has_filter(self) -> bool:
+        return self.start_day is not None or self.end_day is not None
+
+    def includes(self, day: str | None) -> bool:
+        if day is None:
+            return not self.has_filter
+        if self.start_day is not None and day < self.start_day:
+            return False
+        if self.end_day is not None and day > self.end_day:
+            return False
+        return True
+
+
+@dataclass(slots=True)
+class _NormalizedItem:
+    row: dict[str, Any]
+    dedupe_record: HealthDedupeRecord
+    month: str
+    day: str
+    manifest_entry: dict[str, Any]
+
+
+@dataclass(slots=True)
+class _DaySummary:
+    day: str
+    record_count: int = 0
+    workout_count: int = 0
+    type_counts: Counter[str] = field(default_factory=Counter)
+    sources: set[str] = field(default_factory=set)
+    workouts: list[str] = field(default_factory=list)
+    glucose_values: list[float] = field(default_factory=list)
+    glucose_unit: str | None = None
+    sleep_start: str | None = None
+    sleep_end: str | None = None
+
+    def add_source(self, source_name: str | None) -> None:
+        if source_name:
+            self.sources.add(source_name)
+
+    def add_sleep_window(self, start_date: str | None, end_date: str | None) -> None:
+        start_display = _time_display(start_date)
+        end_display = _time_display(end_date)
+        if start_display is None or end_display is None:
+            return
+        if self.sleep_start is None or start_display < self.sleep_start:
+            self.sleep_start = start_display
+        if self.sleep_end is None or end_display > self.sleep_end:
+            self.sleep_end = end_display
 
 
 class AppleHealthImporter:
@@ -94,8 +169,16 @@ class AppleHealthImporter:
                 return False
         return False
 
-    def preview(self, path: Path) -> ImportPreview:
-        stats = _preview_export(path)
+    def preview(
+        self,
+        path: Path,
+        *,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> ImportPreview:
+        stats = _preview_export(
+            path, date_window=_parse_date_window(date_from, date_to)
+        )
         return ImportPreview(
             date_range=stats.date_range,
             item_count=stats.item_count,
@@ -112,18 +195,39 @@ class AppleHealthImporter:
         import_id: str | None = None,
         progress_callback: Callable | None = None,
         dry_run: bool = False,
+        date_from: str | None = None,
+        date_to: str | None = None,
+        with_day_summaries: bool = False,
     ) -> ImportResult:
-        if not dry_run:
-            raise RuntimeError(SAVE_MODE_BLOCKED_MESSAGE)
+        date_window = _parse_date_window(date_from, date_to)
+        preview = self.preview(path, date_from=date_from, date_to=date_to)
+        if dry_run:
+            return ImportResult(
+                entries_written=0,
+                entities_seeded=0,
+                files_created=[],
+                errors=[],
+                summary=f"Dry run only: {preview.summary}",
+                date_range=preview.date_range,
+            )
 
-        preview = self.preview(path)
+        resolved_import_id = import_id or dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        result = _save_export(
+            path,
+            journal_root,
+            import_id=resolved_import_id,
+            date_window=date_window,
+            with_day_summaries=with_day_summaries,
+            progress_callback=progress_callback,
+        )
         return ImportResult(
-            entries_written=0,
+            entries_written=result["entries_written"],
             entities_seeded=0,
-            files_created=[],
+            files_created=result["files_created"],
             errors=[],
-            summary=f"Dry run only: {preview.summary}",
-            date_range=preview.date_range,
+            summary=result["summary"],
+            segments=result["segments"] or None,
+            date_range=result["date_range"],
         )
 
 
@@ -261,13 +365,54 @@ def _open_export_xml(path: Path) -> Iterator[BinaryIO]:
     raise FileNotFoundError(f"No Apple Health export.xml found at {path}")
 
 
-def _preview_export(path: Path) -> _PreviewStats:
+def _parse_date_window(date_from: str | None, date_to: str | None) -> _DateWindow:
+    start_day = _parse_cli_day(date_from, "--date-from") if date_from else None
+    end_day = _parse_cli_day(date_to, "--date-to") if date_to else None
+    if start_day and end_day and start_day > end_day:
+        raise ValueError("--date-from must be on or before --date-to")
+    return _DateWindow(start_day=start_day, end_day=end_day)
+
+
+def _parse_cli_day(value: str, flag_name: str) -> str:
+    clean = value.strip()
+    for fmt in ("%Y-%m-%d", "%Y%m%d"):
+        try:
+            return dt.datetime.strptime(clean, fmt).strftime("%Y%m%d")
+        except ValueError:
+            pass
+    raise ValueError(f"{flag_name} must be YYYY-MM-DD or YYYYMMDD")
+
+
+def _preview_export(
+    path: Path, *, date_window: _DateWindow | None = None
+) -> _PreviewStats:
+    window = date_window or _DateWindow()
     export_cda_present, electrocardiograms = _count_supplemental_files(path)
-    stats = _PreviewStats(
-        routes=_count_route_files(path),
+    route_count = 0 if window.has_filter else _count_route_files(path)
+    return _scan_export(
+        path,
+        date_window=window,
+        routes=route_count,
         export_cda_present=export_cda_present,
         electrocardiograms=electrocardiograms,
     )
+
+
+def _scan_export(
+    path: Path,
+    *,
+    date_window: _DateWindow,
+    routes: int = 0,
+    export_cda_present: bool = False,
+    electrocardiograms: int = 0,
+    on_item: Callable[[str, dict[str, str], str | None, int], None] | None = None,
+) -> _PreviewStats:
+    stats = _PreviewStats(
+        routes=routes,
+        export_cda_present=export_cda_present,
+        electrocardiograms=electrocardiograms,
+    )
+    item_ordinal = 0
     with _open_export_xml(path) as handle:
         root = None
         progress_handle = _ByteProgressReader(handle, path)
@@ -280,21 +425,470 @@ def _preview_export(path: Path) -> _PreviewStats:
                 continue
 
             if elem.tag == "Record":
+                item_ordinal += 1
+                attrs = dict(elem.attrib)
+                day = _parse_apple_day(attrs.get("startDate"))
+                if not date_window.includes(day):
+                    elem.clear()
+                    if root is not None:
+                        root.clear()
+                    continue
                 stats.records += 1
-                record_type = elem.attrib.get("type")
+                record_type = attrs.get("type")
                 stats.add_record_type(record_type)
-                stats.add_source(elem.attrib.get("sourceName"))
-                stats.add_day(_parse_apple_day(elem.attrib.get("startDate")))
+                stats.add_source(attrs.get("sourceName"))
+                stats.add_day(day)
                 if _is_glucose_record(record_type):
                     stats.glucose_records += 1
+                if on_item is not None:
+                    on_item("record", attrs, day, item_ordinal)
             elif elem.tag == "Workout":
+                item_ordinal += 1
+                attrs = dict(elem.attrib)
+                day = _parse_apple_day(attrs.get("startDate"))
+                if not date_window.includes(day):
+                    elem.clear()
+                    if root is not None:
+                        root.clear()
+                    continue
                 stats.workouts += 1
-                stats.add_source(elem.attrib.get("sourceName"))
-                stats.add_day(_parse_apple_day(elem.attrib.get("startDate")))
+                stats.add_source(attrs.get("sourceName"))
+                stats.add_day(day)
+                if on_item is not None:
+                    on_item("workout", attrs, day, item_ordinal)
             elem.clear()
             if root is not None:
                 root.clear()
     return stats
+
+
+def _save_export(
+    path: Path,
+    journal_root: Path,
+    *,
+    import_id: str,
+    date_window: _DateWindow,
+    with_day_summaries: bool,
+    progress_callback: Callable | None,
+) -> dict[str, Any]:
+    journal_root = Path(journal_root)
+    import_dir = Path(journal_root) / "imports" / import_id
+    raw_ref = _install_raw_source(path, import_dir)
+    normalized_items = _parse_normalized_items(
+        path,
+        import_id=import_id,
+        date_window=date_window,
+        raw_ref=raw_ref,
+        progress_callback=progress_callback,
+    )
+
+    normalized_by_month: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    dedupe_records: list[HealthDedupeRecord] = []
+    summaries: dict[str, _DaySummary] = {}
+    for item in normalized_items:
+        rows = normalized_by_month[item.month]
+        normalized_ref = (
+            f"imports/{import_id}/normalized/{item.month}.jsonl#L{len(rows) + 1}"
+        )
+        item.row["import_id"] = import_id
+        item.row["month"] = item.month
+        item.row["normalized_ref"] = normalized_ref
+        item.dedupe_record = _dedupe_record_with_normalized_ref(
+            item.dedupe_record,
+            normalized_ref,
+        )
+        rows.append(item.row)
+        dedupe_records.append(item.dedupe_record)
+        summaries.setdefault(item.day, _DaySummary(day=item.day))
+        _add_to_day_summary(summaries[item.day], item.row)
+
+    normalized_paths: list[Path] = []
+    for month, rows in sorted(normalized_by_month.items()):
+        out_path = import_dir / "normalized" / f"{month}.jsonl"
+        normalized_paths.append(write_jsonl_records(out_path, rows))
+
+    dedupe_result = upsert_health_dedupe_records(journal_root, dedupe_records)
+
+    files_created: list[str] = []
+    segments: list[tuple[str, str]] = []
+    if with_day_summaries and summaries:
+        files_created, segments = _write_day_summaries(
+            journal_root,
+            summaries,
+            import_id=import_id,
+        )
+
+    write_content_manifest(
+        import_id,
+        _content_manifest_entries(
+            normalized_paths,
+            summaries,
+            segments,
+            import_id=import_id,
+        ),
+        journal_root=journal_root,
+    )
+    write_manifest(
+        journal_root,
+        import_id,
+        SOURCE_APPLE_HEALTH,
+        hash_source(path),
+        len(normalized_items),
+        files_created,
+        days_affected=sorted(summaries),
+    )
+
+    date_range = _date_range_from_days(summaries)
+    return {
+        "entries_written": len(normalized_items),
+        "files_created": files_created,
+        "segments": segments,
+        "date_range": date_range,
+        "summary": (
+            "Saved Apple Health import: "
+            f"records={len(normalized_items)}, "
+            f"new={dedupe_result.inserted}, "
+            f"duplicates={dedupe_result.updated}, "
+            f"normalized_months={len(normalized_paths)}, "
+            f"day_summaries={len(files_created)}"
+        ),
+    }
+
+
+def _dedupe_record_with_normalized_ref(
+    record: HealthDedupeRecord,
+    normalized_ref: str,
+) -> HealthDedupeRecord:
+    return HealthDedupeRecord(
+        dedupe_key=record.dedupe_key,
+        source_family=record.source_family,
+        record_type=record.record_type,
+        start_time=record.start_time,
+        end_time=record.end_time,
+        source_record_id=record.source_record_id,
+        value_hash=record.value_hash,
+        first_import_id=record.first_import_id,
+        last_seen_import_id=record.last_seen_import_id,
+        normalized_ref=normalized_ref,
+        raw_ref=record.raw_ref,
+    )
+
+
+def _write_day_summaries(
+    journal_root: Path,
+    summaries: dict[str, _DaySummary],
+    *,
+    import_id: str,
+) -> tuple[list[str], list[tuple[str, str]]]:
+    files: list[str] = []
+    segments: list[tuple[str, str]] = []
+    for day, summary in sorted(summaries.items()):
+        out_path = write_markdown_segment_file(
+            journal_root,
+            day,
+            "import.apple_health",
+            _DAY_SUMMARY_SEGMENT,
+            "day_summary_transcript.md",
+            _render_day_summary(summary, import_id=import_id),
+        )
+        files.append(str(out_path))
+        segments.append((day, _DAY_SUMMARY_SEGMENT))
+    return files, segments
+
+
+def _install_raw_source(path: Path, import_dir: Path) -> str:
+    raw_dir = import_dir / "raw"
+    if path.is_file():
+        raw_path = raw_dir / path.name
+        install_source_file(path, raw_path)
+        raw_rel = raw_path.relative_to(import_dir).as_posix()
+        return f"imports/{import_dir.name}/{raw_rel}"
+
+    export_xml = _find_export_xml_in_directory(path)
+    if export_xml is None:
+        raise FileNotFoundError(f"No Apple Health export.xml found under {path}")
+    for source_file in sorted(child for child in path.rglob("*") if child.is_file()):
+        install_source_file(source_file, raw_dir / source_file.relative_to(path))
+    raw_path = raw_dir / export_xml.relative_to(path)
+    raw_rel = raw_path.relative_to(import_dir).as_posix()
+    return f"imports/{import_dir.name}/{raw_rel}"
+
+
+def _parse_normalized_items(
+    path: Path,
+    *,
+    import_id: str,
+    date_window: _DateWindow,
+    raw_ref: str,
+    progress_callback: Callable | None,
+) -> list[_NormalizedItem]:
+    items: list[_NormalizedItem] = []
+    scanned = 0
+    with _open_export_xml(path) as handle:
+        root = None
+        progress_handle = _ByteProgressReader(handle, path)
+        for event, elem in ElementTree.iterparse(
+            progress_handle, events=("start", "end")
+        ):
+            if event == "start":
+                if root is None:
+                    root = elem
+                continue
+
+            if elem.tag in {"Record", "Workout"}:
+                scanned += 1
+                day = _parse_apple_day(elem.attrib.get("startDate"))
+                if date_window.includes(day):
+                    items.append(
+                        _normalize_element(
+                            elem.tag,
+                            dict(elem.attrib),
+                            import_id=import_id,
+                            raw_ref=f"{raw_ref}#{elem.tag.lower()}-{scanned}",
+                            day=day or "",
+                        )
+                    )
+                if progress_callback and scanned % 10_000 == 0:
+                    progress_callback(
+                        len(items),
+                        scanned,
+                        stage="importing",
+                    )
+
+            elem.clear()
+            if root is not None:
+                root.clear()
+
+    if progress_callback:
+        progress_callback(len(items), scanned, stage="importing")
+    return items
+
+
+def _normalize_element(
+    element_tag: str,
+    attrib: dict[str, str],
+    *,
+    import_id: str,
+    raw_ref: str,
+    day: str,
+) -> _NormalizedItem:
+    if element_tag == "Record":
+        kind = "record"
+        record_type = attrib.get("type", "Record")
+    else:
+        kind = "workout"
+        record_type = attrib.get("workoutActivityType", "Workout")
+
+    start_time = attrib.get("startDate", "")
+    end_time = attrib.get("endDate")
+    value = attrib.get("value")
+    unit = attrib.get("unit")
+    source_name = attrib.get("sourceName")
+    metadata = _metadata_without_core_fields(attrib, element_tag)
+    dedupe_key = health_record_dedupe_key(
+        HealthRecordIdentity(
+            source_family=SOURCE_APPLE_HEALTH,
+            record_type=record_type,
+            start_time=start_time,
+            end_time=end_time,
+            source_name=source_name,
+            value=value,
+            unit=unit,
+            metadata=metadata,
+        )
+    )
+    month = f"{day[:4]}-{day[4:6]}" if day else "undated"
+    normalized_ref = f"normalized/{month}.jsonl#{dedupe_key}"
+    row = {
+        "schema": _NORMALIZED_SCHEMA,
+        "source_family": SOURCE_APPLE_HEALTH,
+        "kind": kind,
+        "dedupe_key": dedupe_key,
+        "record_type": record_type,
+        "day": day,
+        "start_date": start_time,
+        "end_date": end_time,
+        "source_name": source_name,
+        "source_version": attrib.get("sourceVersion"),
+        "unit": unit,
+        "value": value,
+        "metadata": metadata,
+        "raw_ref": raw_ref,
+    }
+    row = {key: value for key, value in row.items() if value is not None}
+    manifest_entry = {
+        "id": dedupe_key,
+        "title": _display_identifier(record_type),
+        "date": day,
+        "type": "health_record" if kind == "record" else "health_workout",
+        "preview": _display_identifier(record_type),
+        "meta": {
+            "source_name": source_name,
+            "kind": kind,
+        },
+        "segments": [],
+    }
+    return _NormalizedItem(
+        row=row,
+        dedupe_record=HealthDedupeRecord(
+            dedupe_key=dedupe_key,
+            source_family=SOURCE_APPLE_HEALTH,
+            record_type=record_type,
+            start_time=start_time,
+            end_time=end_time,
+            value_hash=health_value_hash(value=value, unit=unit, metadata=metadata),
+            first_import_id=import_id,
+            last_seen_import_id=import_id,
+            normalized_ref=normalized_ref,
+            raw_ref=raw_ref,
+        ),
+        month=month,
+        day=day,
+        manifest_entry=manifest_entry,
+    )
+
+
+def _metadata_without_core_fields(
+    attrib: dict[str, str],
+    element_tag: str,
+) -> dict[str, str]:
+    core = {
+        "type",
+        "workoutActivityType",
+        "sourceName",
+        "sourceVersion",
+        "creationDate",
+        "startDate",
+        "endDate",
+        "unit",
+        "value",
+    }
+    metadata = {key: value for key, value in attrib.items() if key not in core}
+    if element_tag == "Workout":
+        for key in (
+            "duration",
+            "durationUnit",
+            "totalDistance",
+            "totalDistanceUnit",
+            "totalEnergyBurned",
+            "totalEnergyBurnedUnit",
+        ):
+            if key in attrib:
+                metadata[key] = attrib[key]
+    return metadata
+
+
+def _add_to_day_summary(summary: _DaySummary, row: dict[str, Any]) -> None:
+    summary.add_source(row.get("source_name"))
+    kind = row["kind"]
+    record_type = row["record_type"]
+    if kind == "workout":
+        summary.workout_count += 1
+        summary.workouts.append(_display_identifier(record_type))
+        return
+
+    summary.record_count += 1
+    summary.type_counts[record_type] += 1
+    if _is_glucose_record(record_type):
+        glucose_value = _parse_float(row.get("value"))
+        if glucose_value is not None:
+            summary.glucose_values.append(glucose_value)
+            if row.get("unit"):
+                summary.glucose_unit = str(row["unit"])
+    if "SleepAnalysis" in record_type:
+        summary.add_sleep_window(row.get("start_date"), row.get("end_date"))
+
+
+def _render_day_summary(summary: _DaySummary, *, import_id: str) -> str:
+    lines = [
+        "# Apple Health Summary",
+        "",
+        f"Import ID: {import_id}",
+        f"Day: {summary.day}",
+        "",
+        f"Records: {summary.record_count}",
+        f"Workouts: {summary.workout_count}",
+    ]
+    lines.append("")
+    lines.append("Counts by type:")
+    if summary.type_counts:
+        for name, count in sorted(summary.type_counts.items()):
+            lines.append(f"- {name}: {count}")
+    else:
+        lines.append("- none")
+    if summary.workouts:
+        lines.append(f"Workout names: {', '.join(sorted(set(summary.workouts)))}")
+    if summary.sleep_start and summary.sleep_end:
+        lines.append(f"Sleep window: {summary.sleep_start} to {summary.sleep_end}")
+    if summary.glucose_values:
+        unit = f" {summary.glucose_unit}" if summary.glucose_unit else ""
+        glucose_min = min(summary.glucose_values)
+        glucose_max = max(summary.glucose_values)
+        glucose_mean = sum(summary.glucose_values) / len(summary.glucose_values)
+        lines.append(
+            "Glucose: "
+            f"count {len(summary.glucose_values)}, "
+            f"min {glucose_min:g}, "
+            f"max {glucose_max:g}, "
+            f"mean {glucose_mean:g}{unit}"
+        )
+    if summary.sources:
+        lines.append(f"Sources present: {', '.join(sorted(summary.sources))}")
+    return "\n".join(lines)
+
+
+def _content_manifest_entries(
+    normalized_paths: list[Path],
+    summaries: dict[str, _DaySummary],
+    segments: list[tuple[str, str]],
+    *,
+    import_id: str,
+) -> list[dict[str, Any]]:
+    segment_by_day = {day: key for day, key in segments}
+    entries: list[dict[str, Any]] = []
+    for path in normalized_paths:
+        entries.append(
+            {
+                "id": f"normalized-{path.stem}",
+                "title": f"Apple Health normalized {path.stem}",
+                "date": path.stem.replace("-", ""),
+                "type": "health_normalized_month",
+                "preview": "Monthly normalized Apple Health records",
+                "meta": {
+                    "import_id": import_id,
+                    "path": path.name,
+                },
+                "segments": [],
+            }
+        )
+    for day, summary in sorted(summaries.items()):
+        segment_key = segment_by_day.get(day)
+        entries.append(
+            {
+                "id": f"summary-{day}",
+                "title": "Apple Health Summary",
+                "date": day,
+                "type": "health_day_summary",
+                "preview": (
+                    f"{summary.record_count} records, "
+                    f"{summary.workout_count} workouts, "
+                    f"{len(summary.glucose_values)} glucose readings"
+                ),
+                "meta": {
+                    "sources": sorted(summary.sources),
+                    "record_types": dict(sorted(summary.type_counts.items())),
+                },
+                "segments": ([{"day": day, "key": segment_key}] if segment_key else []),
+            }
+        )
+    return entries
+
+
+def _date_range_from_days(summaries: dict[str, _DaySummary]) -> tuple[str, str]:
+    if not summaries:
+        return ("", "")
+    days = sorted(summaries)
+    return (days[0], days[-1])
 
 
 def _parse_apple_day(value: str | None) -> str | None:
@@ -314,10 +908,47 @@ def _parse_apple_day(value: str | None) -> str | None:
         return None
 
 
+def _time_display(value: str | None) -> str | None:
+    if not value:
+        return None
+    value = value.strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return dt.datetime.strptime(value, fmt).isoformat()
+        except ValueError:
+            pass
+    try:
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        return None
+
+
 def _is_glucose_record(record_type: str | None) -> bool:
     if not record_type:
         return False
     return "BloodGlucose" in record_type or record_type.endswith("Glucose")
+
+
+def _parse_float(value: Any | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _display_identifier(value: str | None) -> str:
+    if not value:
+        return "Unknown"
+    display = value
+    for prefix in (
+        "HKQuantityTypeIdentifier",
+        "HKCategoryTypeIdentifier",
+        "HKWorkoutActivityType",
+    ):
+        display = display.replace(prefix, "")
+    return display or value
 
 
 def _summary(stats: _PreviewStats) -> str:

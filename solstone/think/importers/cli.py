@@ -376,6 +376,10 @@ def import_one(
     verbose: bool = False,
     wait_for_processing: bool = True,
     deterministic_only: bool = False,
+    confirm_health_save: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    with_day_summaries: bool = False,
 ) -> dict[str, Any] | None:
     """When False, returns after segment creation without awaiting transcription completion;
     failed_segments is omitted from the result and created_segments is the durable
@@ -394,8 +398,48 @@ def import_one(
         verbose=verbose,
         wait_for_processing=wait_for_processing,
         deterministic_only=deterministic_only,
+        confirm_health_save=confirm_health_save,
+        date_from=date_from,
+        date_to=date_to,
+        with_day_summaries=with_day_summaries,
     )
     return _import_one_from_args(args)
+
+
+def _preview_file_importer(
+    importer: Any,
+    path: Path,
+    args: argparse.Namespace,
+) -> Any:
+    if importer.name == "apple_health":
+        return importer.preview(
+            path,
+            date_from=getattr(args, "date_from", None),
+            date_to=getattr(args, "date_to", None),
+        )
+    return importer.preview(path)
+
+
+def _process_file_importer(
+    importer: Any,
+    path: Path,
+    journal_root: Path,
+    args: argparse.Namespace,
+) -> Any:
+    kwargs: dict[str, Any] = {
+        "facet": args.facet,
+        "import_id": _import_id,
+        "progress_callback": _progress_callback,
+    }
+    if importer.name == "apple_health":
+        kwargs.update(
+            {
+                "date_from": getattr(args, "date_from", None),
+                "date_to": getattr(args, "date_to", None),
+                "with_day_summaries": getattr(args, "with_day_summaries", False),
+            }
+        )
+    return importer.process(path, journal_root, **kwargs)
 
 
 def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
@@ -554,7 +598,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     )
 
     if args.dry_run and _file_importer is not None:
-        preview = _file_importer.preview(Path(args.media))
+        preview = _preview_file_importer(_file_importer, Path(args.media), args)
         if args.json:
             print(
                 json.dumps(
@@ -696,6 +740,25 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             "source_type": import_source,
         }
 
+    if _file_importer is not None:
+        from solstone.think.importers.pre_save_gate import (
+            PreSaveGateError,
+            enforce_pre_save_gate,
+        )
+
+        try:
+            enforce_pre_save_gate(
+                _file_importer,
+                dry_run=args.dry_run,
+                confirm_health_save=getattr(args, "confirm_health_save", False),
+            )
+        except PreSaveGateError as exc:
+            if args.json:
+                print(json.dumps(exc.to_dict()))
+            else:
+                print(exc.format_text())
+            raise SystemExit(exc.exit_code) from None
+
     # Copy to imports/ if file is not already there
     if needs_setup:
         args.media = _setup_import(
@@ -812,23 +875,15 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             import_dir = _setup_file_import(_import_id)
             if _file_importer.name == "journal_archive":
                 # The archive importer owns the same O_EXCL lock internally for direct callers.
-                result = _file_importer.process(
-                    Path(args.media),
-                    journal_root,
-                    facet=args.facet,
-                    import_id=_import_id,
-                    progress_callback=_progress_callback,
+                result = _process_file_importer(
+                    _file_importer, Path(args.media), journal_root, args
                 )
             else:
                 from solstone.think.importers.journal_archive import acquire_merge_lock
 
                 with acquire_merge_lock(journal_root, "file-import", _import_id):
-                    result = _file_importer.process(
-                        Path(args.media),
-                        journal_root,
-                        facet=args.facet,
-                        import_id=_import_id,
-                        progress_callback=_progress_callback,
+                    result = _process_file_importer(
+                        _file_importer, Path(args.media), journal_root, args
                     )
 
             all_created_files.extend(result.files_created)
@@ -1367,6 +1422,28 @@ def main() -> None:
         help="Show what would be imported without writing to the journal",
     )
     parser.add_argument(
+        "--confirm-health-save",
+        action="store_true",
+        help="Confirm this run may save sensitive health importer output",
+    )
+    parser.add_argument(
+        "--date-from",
+        type=str,
+        default=None,
+        help="For Apple Health: include records on or after YYYY-MM-DD",
+    )
+    parser.add_argument(
+        "--date-to",
+        type=str,
+        default=None,
+        help="For Apple Health: include records on or before YYYY-MM-DD",
+    )
+    parser.add_argument(
+        "--with-day-summaries",
+        action="store_true",
+        help="For Apple Health: write factual daily summary transcript segments",
+    )
+    parser.add_argument(
         "--deterministic-only",
         action="store_true",
         help="Use only deterministic timestamp detection; skip model detection",
@@ -1497,6 +1574,10 @@ def main() -> None:
             json_output=args.json,
             verbose=args.verbose,
             deterministic_only=args.deterministic_only,
+            confirm_health_save=args.confirm_health_save,
+            date_from=args.date_from,
+            date_to=args.date_to,
+            with_day_summaries=args.with_day_summaries,
         )
     except Exception as exc:
         raise SystemExit(str(exc)) from exc

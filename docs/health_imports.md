@@ -1,18 +1,26 @@
-# Health Imports Phase 0
+# Health Imports
 
 This document is the source-truth planning boundary for Apple Health, Oura, and glucose data imports into Solstone.
 
-## Phase 0 Scope
+## Current Scope
 
-Phase 0 is repository setup only:
+The current Apple Health importer supports a gated synthetic/test-week save path:
 
-- Define the health import schema and dedupe substrate.
-- Add synthetic fixtures for Apple Health, Oura, and Dexcom/Stelo-style glucose exports.
-- Add an Apple Health detector and preview parser that can read synthetic export directories and zip files.
-- Keep Apple Health save-mode blocked and keep the importer out of `FILE_IMPORTER_REGISTRY`.
-- Keep all fixtures synthetic. Do not commit real Apple Health, Oura, Stelo, Dexcom, location, or token data.
+- Preview Apple Health `export.xml` data from a directory or zip.
+- Filter previews and save runs with `--date-from YYYY-MM-DD` and `--date-to YYYY-MM-DD`.
+- Require the health pre-save gate before any non-dry-run Apple Health write.
+- Install the source export under `imports/<id>/raw/`.
+- Write normalized monthly JSONL under `imports/<id>/normalized/`.
+- Keep importer-owned record dedupe in `imports/health-dedupe.sqlite`.
+- Optionally write small factual day-summary transcript files with `--with-day-summaries`.
 
-Phase 0 must not import health data into the live journal.
+The live journal and real Apple Health export remain outside automated tests. Use synthetic fixtures and temp/sandbox journals only until Jack separately creates the approval artifact and runs the first live test-week command.
+
+## Phase 1 Local Save Path
+
+Apple Health Phase 1 adds a concrete importer save path for orchestrated use after privacy preflight. The importer writes only under the provided `journal_root`: raw source material under `imports/<id>/raw/`, normalized monthly JSONL under `imports/<id>/normalized/`, importer-owned dedupe rows in `imports/health-dedupe.sqlite`, and optional factual day-summary transcript files under `chronicle/YYYYMMDD/import.apple_health/000000_86400/`.
+
+Dense normalized JSONL shards are not returned in `ImportResult.files_created`; only optional day-summary transcript files are returned there so indexers do not ingest per-sample health rows.
 
 ## Source Strategy
 
@@ -34,9 +42,13 @@ Use the Oura API for Oura-native semantics that Apple Health does not preserve w
 
 Use a Dexcom/Stelo CSV fixture only as a synthetic glucose shape reference until a real export or API path is explicitly chosen.
 
+## Date Attribution
+
+Apple Health records are assigned to the local calendar day encoded in each record's own timestamp string, including its written timezone offset. The importer does not convert all records into the Mac's current timezone before windowing or grouping. A record with `startDate="2026-01-02 22:30:00 -0700"` belongs to `20260102`.
+
 ## Import Streams
 
-The expected first stream name is `import.apple_health`.
+The Apple Health summary stream name is `import.apple_health`.
 
 Later source-specific streams can be added only after privacy preflight and save-mode tests exist:
 
@@ -56,9 +68,13 @@ Dedupe keys must include the source family so Apple Health, Oura, and Dexcom rec
 
 Do not collapse cross-source records during import. Preserve source attribution and reconcile later in query, review, or summary layers.
 
+## Apple Health Date Attribution
+
+Apple Health Phase 1 attributes records and workouts to the local calendar day of their `startDate`. Date windows are inclusive and filter on that attributed start day. This means a sleep record that starts before midnight and ends the next morning belongs to the start day for preview counts, normalized monthly shards, dedupe rows, and optional day-summary transcript placement.
+
 ## Privacy Checklist
 
-Before any save-mode health import is registered or exposed:
+Before any live-journal save-mode health import:
 
 - Require explicit user confirmation that the export contains sensitive health data.
 - Print or display the target journal path before writing.
@@ -68,6 +84,8 @@ Before any save-mode health import is registered or exposed:
 - Never commit real health fixtures.
 - Keep summaries factual and avoid medical interpretation.
 
+The required approval artifact lives at `imports/_approvals/health_import_preflight.json` in the target journal. It must match the current checklist version and contain a decision for each replication destination: `time_machine`, `icloud`, `solbase`, `hosted_backup`, and `other`.
+
 ## Deferred Work
 
 The following are intentionally out of scope for Phase 0:
@@ -75,7 +93,6 @@ The following are intentionally out of scope for Phase 0:
 - Oura OAuth, token storage, API sync, or webhooks.
 - Health Auto Export or custom HealthKit ingest endpoints.
 - Any LAN, public, or phone-to-Mac health ingest service.
-- Apple Health save-mode import registration.
 - Entity, facet, observation, activity, or indexer writes.
 - Medical advice, recommendations, or anomaly interpretation.
 
