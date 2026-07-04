@@ -259,11 +259,13 @@ body.has-app-bar .tr-card {
 
 .tr-body-events {
   position: absolute;
-  /* Audio is x=72..112 and screen/import is x=120..160. Body starts after them. */
+  /* Audio is x=72..112 and screen/import is x=120..160. Body starts after
+     them; 24px blocks end at x=192, keeping an 8px gutter inside the
+     200px day column instead of clipping. */
   left: 168px;
   top: 16px;
   bottom: 12px;
-  width: 40px;
+  width: 24px;
   pointer-events: none;
   z-index: 1;
 }
@@ -271,7 +273,7 @@ body.has-app-bar .tr-card {
 .tr-body-event {
   position: absolute;
   left: 0;
-  width: 40px;
+  width: 24px;
   min-height: 4px;
   border-radius: 12px;
   box-shadow: 0 1px 1px rgba(0,0,0,.04);
@@ -557,7 +559,8 @@ body.has-app-bar .tr-card {
 
 .tr-body-strip-button,
 .tr-body-context-button,
-.tr-body-panel-close {
+.tr-body-panel-close,
+.tr-body-link {
   border: 1px solid var(--border, #d1d5db);
   background: #ffffff;
   color: #111827;
@@ -567,10 +570,25 @@ body.has-app-bar .tr-card {
   cursor: pointer;
 }
 
+.tr-body-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
 .tr-body-strip-button:hover,
 .tr-body-context-button:hover,
-.tr-body-panel-close:hover {
+.tr-body-panel-close:hover,
+.tr-body-link:hover {
   background: #f9fafb;
+}
+
+.tr-body-strip-button:focus-visible,
+.tr-body-context-button:focus-visible,
+.tr-body-panel-close:focus-visible,
+.tr-body-link:focus-visible {
+  outline: 2px solid var(--accent, #4a9eff);
+  outline-offset: 1px;
 }
 
 .tr-body-context-card {
@@ -594,6 +612,103 @@ body.has-app-bar .tr-card {
   color: #4b5563;
 }
 
+.tr-body-context-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tr-body-context-fact {
+  border: 1px solid #e5e7eb;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: #f9fafb;
+  color: #374151;
+  font-size: 12px;
+}
+
+.tr-body-rhythm {
+  display: grid;
+  gap: 8px;
+}
+
+.tr-body-rhythm-title {
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.tr-body-rhythm-grid {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(8px, 1fr));
+  gap: 3px;
+  align-items: end;
+}
+
+.tr-body-hour {
+  position: relative;
+  min-width: 0;
+  min-height: 34px;
+  border: 1px solid #e5e7eb;
+  border-radius: 5px;
+  padding: 0;
+  background: #f9fafb;
+  cursor: pointer;
+}
+
+.tr-body-hour-empty {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.tr-body-hour-level-1 { background: #eff6ff; border-color: #bfdbfe; }
+.tr-body-hour-level-2 { background: #dbeafe; border-color: #93c5fd; }
+.tr-body-hour-level-3 { background: #bfdbfe; border-color: #60a5fa; }
+.tr-body-hour-level-4 { background: #93c5fd; border-color: #3b82f6; }
+
+.tr-body-hour:hover:not(.tr-body-hour-empty) {
+  filter: brightness(0.96);
+}
+
+.tr-body-hour:focus-visible {
+  outline: 2px solid var(--accent, #4a9eff);
+  outline-offset: 1px;
+}
+
+.tr-body-hour-label {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  color: #6b7280;
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.tr-body-hour-list {
+  display: grid;
+  gap: 6px;
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tr-body-hour-list li {
+  display: grid;
+  grid-template-columns: minmax(82px, auto) 1fr;
+  gap: 10px;
+  align-items: baseline;
+  color: #374151;
+  font-size: 13px;
+}
+
+.tr-body-hour-list time {
+  color: #6b7280;
+  font-variant-numeric: tabular-nums;
+}
+
 .tr-body-context-actions {
   display: flex;
   align-items: center;
@@ -611,8 +726,11 @@ body.has-app-bar .tr-card {
   border-radius: 14px;
   transform: translateX(calc(100% + 28px));
   opacity: 0;
+  /* visibility keeps the closed panel's focusable children out of the tab
+     order; its discrete transition flips to hidden only after the slide. */
+  visibility: hidden;
   pointer-events: none;
-  transition: transform 0.18s ease, opacity 0.18s ease;
+  transition: transform 0.18s ease, opacity 0.18s ease, visibility 0.18s;
   display: grid;
   grid-template-rows: auto 1fr;
   overflow: hidden;
@@ -621,6 +739,7 @@ body.has-app-bar .tr-card {
 .tr-body-panel.visible {
   transform: translateX(0);
   opacity: 1;
+  visibility: visible;
   pointer-events: auto;
 }
 
@@ -677,6 +796,21 @@ body.has-app-bar .tr-card {
   padding: 4px 8px;
   background: #f9fafb;
   font-size: 12px;
+}
+
+.tr-body-panel-more,
+.tr-body-panel-more a {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.tr-body-panel-more a {
+  text-decoration: none;
+}
+
+.tr-body-panel-more a:hover,
+.tr-body-panel-more a:focus-visible {
+  text-decoration: underline;
 }
 
 	.tr-md-content pre {
@@ -1875,8 +2009,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       <div class="tr-timeline-legend">
         <span><span class="tr-legend-dot" style="background: #86efac;"></span>audio</span>
         <span><span class="tr-legend-dot" style="background: #facc15;"></span>screen</span>
-        <span><span class="tr-legend-dot" style="background: #93c5fd;"></span>import</span>
-        <span><span class="tr-legend-dot" style="background: #60a5fa;"></span>body</span>
+        <span><span class="tr-legend-dot" style="background: #2563eb;"></span>import</span>
+        <span><span class="tr-legend-dot" style="background: #60a5fa;"></span>sleep</span>
+        <span><span class="tr-legend-dot" style="background: #2dd4bf;"></span>workout</span>
       </div>
     </div>
 
@@ -2539,9 +2674,24 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     };
   }
 
+  function localIsoString(dateValue) {
+    const pad = value => String(value).padStart(2, '0');
+    const offsetMinutes = -dateValue.getTimezoneOffset();
+    const sign = offsetMinutes >= 0 ? '+' : '-';
+    const absOffset = Math.abs(offsetMinutes);
+    return dateValue.getFullYear()
+      + '-' + pad(dateValue.getMonth() + 1)
+      + '-' + pad(dateValue.getDate())
+      + 'T' + pad(dateValue.getHours())
+      + ':' + pad(dateValue.getMinutes())
+      + ':' + pad(dateValue.getSeconds())
+      + sign + pad(Math.floor(absOffset / 60))
+      + ':' + pad(absOffset % 60);
+  }
+
   function isoForDayMinute(minute) {
     const parts = dayParts();
-    return new Date(parts.year, parts.month, parts.date, 0, minute, 0, 0).toISOString();
+    return localIsoString(new Date(parts.year, parts.month, parts.date, 0, minute, 0, 0));
   }
 
   function minuteForIso(value) {
@@ -2586,8 +2736,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     if (payload.heart_rate?.count && payload.heart_rate?.label) {
       parts.push('HR ' + payload.heart_rate.label);
     }
-    if (payload.glucose?.count && payload.glucose?.delta_label) {
-      parts.push('glucose ' + payload.glucose.delta_label);
+    if (payload.glucose?.count && (payload.glucose?.range_label || payload.glucose?.delta_label)) {
+      parts.push('glucose ' + (payload.glucose.range_label || payload.glucose.delta_label));
     }
     if (payload.steps?.label) {
       parts.push(payload.steps.label);
@@ -2599,9 +2749,82 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     return parts.slice(0, limit);
   }
 
+  function bodyHourSummary(hour) {
+    const summary = (hour?.summary || []).filter(Boolean);
+    if (summary.length) return summary.slice(0, 3).join(' · ');
+    if (hour?.has_data && hour?.entry_total_label) return hour.entry_total_label + ' entries present';
+    return '';
+  }
+
+  function bodyHourLevel(hour, maxEntries) {
+    if (!hour?.has_data) return 0;
+    const count = Number(hour.entry_total || 0);
+    if (!maxEntries || count <= 0) return 1;
+    const ratio = Math.log1p(count) / Math.log1p(maxEntries);
+    return Math.max(1, Math.min(4, Math.ceil(ratio * 4)));
+  }
+
+  function renderBodyHourList(payload, limit = 12) {
+    const hours = (payload?.hourly || []).filter(hour => hour.has_data);
+    if (!hours.length) return '';
+    const visible = hours.slice(0, limit);
+    const more = hours.length > visible.length
+      ? `<li><time></time><span>and ${hours.length - visible.length} more hours</span></li>`
+      : '';
+    return '<ul class="tr-body-hour-list">'
+      + visible.map(hour => {
+        const summary = bodyHourSummary(hour) || 'Body data present';
+        return `<li><time>${escapeHtml(hour.label || '')}</time><span>${escapeHtml(summary)}</span></li>`;
+      }).join('\n')
+      + more
+      + '</ul>';
+  }
+
+  function renderBodyRhythm(payload, options = {}) {
+    const hours = payload?.hourly || [];
+    if (!hours.length) return '';
+    const maxEntries = hours.reduce((max, hour) => Math.max(max, Number(hour.entry_total || 0)), 0);
+    const cells = hours.map((hour, index) => {
+      const summary = bodyHourSummary(hour);
+      const level = bodyHourLevel(hour, maxEntries);
+      const classes = ['tr-body-hour', `tr-body-hour-level-${level}`];
+      if (!hour.has_data) classes.push('tr-body-hour-empty');
+      const hourLabel = index % 6 === 0
+        ? `<span class="tr-body-hour-label">${escapeHtml(hour.label || '')}</span>`
+        : '';
+      const title = `${hour.range_label || hour.label || 'Hour'}${summary ? ' · ' + summary : ' · no body data'}`;
+      const actionAttrs = hour.has_data
+        ? ` data-action="open-body-hour" data-from="${escapeHtml(hour.start || '')}" data-to="${escapeHtml(hour.end || '')}" data-range="${escapeHtml(hour.range_label || '')}"`
+        : ' disabled';
+      return `<button type="button" class="${classes.join(' ')}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"${actionAttrs}>${hourLabel}</button>`;
+    }).join('\n');
+    const rows = options.rows ? renderBodyHourList(payload, options.limit || 12) : '';
+    return '<div class="tr-body-rhythm">'
+      + '<div class="tr-body-rhythm-title">Day rhythm</div>'
+      + `<div class="tr-body-rhythm-grid">${cells}</div>`
+      + rows
+      + '</div>';
+  }
+
   function renderBodyPanelSection(title, innerHtml) {
     if (!innerHtml) return '';
     return `<section class="tr-body-panel-section"><h4>${escapeHtml(title)}</h4>\n${innerHtml}\n</section>`;
+  }
+
+  // "1,234" -> "1,234 entries"; a count_label that already carries a noun
+  // (e.g. "3 readings") passes through untouched. Never a bare number.
+  function bodyCountText(item) {
+    const label = String(item?.count_label ?? item?.count ?? '').trim();
+    if (!label) return '';
+    if (/[a-z]/i.test(label)) return label;
+    const noun = Number(item?.count) === 1 ? 'entry' : 'entries';
+    return `${label} ${noun}`;
+  }
+
+  function renderBodyPanelFooter() {
+    return '<div class="tr-body-context-actions">'
+      + `<a class="tr-body-link" href="/app/body/${day}">Open full Body day</a>`
+      + '</div>';
   }
 
   function renderBodyPanel(payload, title, rangeLabel) {
@@ -2610,7 +2833,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
     if (!payload || !payload.has_data) {
       bodyPanelBody.innerHTML = '<p>No body context in this window.</p>'
-        + `<p><a href="/app/body/${day}">Open full Body day</a></p>`;
+        + renderBodyPanelFooter();
       bodyPanel.classList.add('visible');
       bodyPanel.setAttribute('aria-hidden', 'false');
       return;
@@ -2620,21 +2843,28 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       .map(row => `<li>${escapeHtml(row)}</li>`)
       .join('\n');
     const sources = (payload.sources?.chips || [])
-      .map(source => `<span class="tr-body-chip">${escapeHtml(source.name)} <strong>${escapeHtml(source.count_label)}</strong></span>`)
+      .map(source => `<span class="tr-signal-chip">${escapeHtml(source.name)} · ${escapeHtml(bodyCountText(source))}</span>`)
       .join('\n');
-    const signals = (payload.signals || []).slice(0, 10)
-      .map(signal => `<li>${escapeHtml(signal.label)}: ${escapeHtml(signal.count_label)}</li>`)
+    const signalItems = payload.signals || [];
+    const signalOverflow = signalItems.length > 10
+      ? `<li class="tr-body-panel-more"><a href="/app/body/${day}">+${signalItems.length - 10} more in Body</a></li>`
+      : '';
+    const signals = signalItems.slice(0, 10)
+      .map(signal => `<li>${escapeHtml(signal.label)} · ${escapeHtml(bodyCountText(signal))}</li>`)
       .join('\n');
     const events = (payload.events || [])
       .map(event => `<li>${escapeHtml(event.label)} · ${escapeHtml(event.start_label)}–${escapeHtml(event.end_label)} · ${escapeHtml(event.overlap_label)}</li>`)
       .join('\n');
+    const rhythm = renderBodyRhythm(payload, { rows: true, limit: 24 });
 
     bodyPanelBody.innerHTML = ''
       + renderBodyPanelSection('Brief', `<ul class="tr-body-panel-list">${briefRows || '<li>Body data present.</li>'}</ul>`)
+      + renderBodyPanelSection('Rhythm', rhythm)
       + renderBodyPanelSection('Events', events ? `<ul class="tr-body-panel-list">${events}</ul>` : '')
       + renderBodyPanelSection('Sources', sources ? `<div class="tr-body-chip-row">${sources}</div>` : '')
-      + renderBodyPanelSection('Signals', signals ? `<ul class="tr-body-panel-list">${signals}</ul>` : '')
-      + `<p><a href="/app/body/${day}">Open full Body day</a></p>`;
+      + renderBodyPanelSection('Signals', signals ? `<ul class="tr-body-panel-list">${signals}${signalOverflow}</ul>` : '')
+      + renderBodyPanelFooter();
+    attachBodyWindowButtons(bodyPanelBody);
     bodyPanel.classList.add('visible');
     bodyPanel.setAttribute('aria-hidden', 'false');
   }
@@ -2667,8 +2897,30 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     }
   }
 
+  // Sleep/workout event counts ("1 sleep session") for windows whose
+  // compact summary is empty but which still hold body events.
+  function bodyEventParts(payload) {
+    const events = payload?.events || [];
+    const counts = { sleep: 0, workout: 0 };
+    events.forEach(event => {
+      if (event.kind === 'sleep') counts.sleep += 1;
+      else if (event.kind === 'workout') counts.workout += 1;
+    });
+    const parts = [];
+    if (counts.sleep) {
+      parts.push(counts.sleep + ' sleep session' + (counts.sleep === 1 ? '' : 's'));
+    }
+    if (counts.workout) {
+      parts.push(counts.workout + ' workout' + (counts.workout === 1 ? '' : 's'));
+    }
+    return parts;
+  }
+
   function renderBodyStrip(payload) {
-    const parts = bodyWindowParts(payload, 4);
+    let parts = bodyWindowParts(payload, 4);
+    if (parts.length === 0 && payload?.has_data) {
+      parts = bodyEventParts(payload).slice(0, 4);
+    }
     if (parts.length === 0) return '';
     return '<div class="tr-body-strip">'
       + '<span class="tr-body-strip-label">Body context</span>'
@@ -2683,24 +2935,29 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     const payload = data.body_window;
     const parts = bodyWindowParts(payload, 6);
     let summary = 'Body context unavailable for this day window.';
-    if (parts.length) {
-      summary = parts.join(' · ');
-    } else if (payload) {
+    if (payload) {
       summary = payload.has_data
         ? 'Body data present for this day.'
         : 'No compact body context in this day window.';
     }
+    const facts = parts.length
+      ? '<div class="tr-body-context-facts">'
+        + parts.map(part => `<span class="tr-body-context-fact">${escapeHtml(part)}</span>`).join('\n')
+        + '</div>'
+      : `<p>${escapeHtml(summary)}</p>`;
+    const rhythm = payload ? renderBodyRhythm(payload) : '';
     const detailsButton = payload
       ? '<button type="button" class="tr-body-context-button" data-action="open-body-window">Open details</button>'
       : '';
     return '<div class="tr-body-context-card">'
       + '<h3>Body context</h3>'
       + '\n'
-      + `<p>${escapeHtml(summary)}</p>`
+      + facts
+      + rhythm
       + '\n'
       + '<div class="tr-body-context-actions">'
       + detailsButton
-      + `<a href="/app/body/${day}">Open full Body day</a>`
+      + `<a class="tr-body-link" href="/app/body/${day}">Open full Body day</a>`
       + '</div>'
       + '</div>';
   }
@@ -2716,6 +2973,17 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
             : `${selectedSegment?.start || ''}–${selectedSegment?.end || ''}`;
           openBodyWindow(payload, title, label);
         }
+      });
+    });
+    targetEl.querySelectorAll('[data-action="open-body-hour"]').forEach(button => {
+      button.addEventListener('click', () => {
+        if (!button.dataset.from || !button.dataset.to) return;
+        openBodyWindowFromIso(
+          button.dataset.from,
+          button.dataset.to,
+          'Body during this hour',
+          button.dataset.range || ''
+        );
       });
     });
   }
@@ -2814,7 +3082,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     });
   }
 
-  function addSegmentIndicator(type, startMin, endMin, column, streams = [], state = 'analyzed', think = null) {
+  function addSegmentIndicator(type, startMin, endMin, column, streams = [], state = 'analyzed', think = null, segment = null) {
     const el = document.createElement('div');
     el.className = 'tr-seg ' + (type === 'screen' ? 'tr-seg-screen' : type === 'markdown' ? 'tr-seg-markdown' : 'tr-seg-audio');
     if (state === 'pending') {
@@ -2840,22 +3108,25 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     const streamSuffix = sortedStreams.length ? ' · ' + streamToken : '';
     const stateSuffix = state === 'pending' ? ' · pending' : state === 'analyzing' ? ' · analyzing' : (think === 'awaiting' ? ' · ' + AWAITING_THINKING_LABEL : '');
     el.title = hhmm(startMin) + ' – ' + hhmm(endMin) + ' (' + (endMin - startMin) + ' min, ' + type + streamSuffix + stateSuffix + ')';
-    el.addEventListener('click', e => {
-      e.stopPropagation();
+    const activate = () => {
+      if (segment) {
+        selectSegment(segment);
+        return;
+      }
       const midMin = (startMin + endMin) / 2;
       const start = snap(midMin - DEFAULT_LEN / 2);
       range = { start, end: start + DEFAULT_LEN };
       renderTimeline();
       updateZoom();
+    };
+    el.addEventListener('click', e => {
+      e.stopPropagation();
+      activate();
     });
     el.addEventListener('keydown', e => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        const midMin = (startMin + endMin) / 2;
-        const start = snap(midMin - DEFAULT_LEN / 2);
-        range = { start, end: start + DEFAULT_LEN };
-        renderTimeline();
-        updateZoom();
+        activate();
       }
     });
     segmentsLane.appendChild(el);
@@ -4441,7 +4712,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         addSegmentIndicator('screen', s, e, 1, rg.streams, rg.state || 'analyzed', rg.think);
       });
       markdownOnlySegments(data.segments).forEach(seg => {
-        addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think);
+        addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think, seg);
       });
       fetchDayBodyWindow()
         .then(payload => {
@@ -4745,7 +5016,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
           addSegmentIndicator('screen', s, e, 1, rg.streams, rg.state || 'analyzed', rg.think);
         });
         markdownOnlySegments(allSegments).forEach(seg => {
-          addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think);
+          addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think, seg);
         });
         renderBodyEvents(dayBodyWindow);
       })
