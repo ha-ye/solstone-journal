@@ -9,8 +9,8 @@ importer-owned dedupe database. Read paths create nothing on disk.
 Two altitudes:
 
 - ARCHIVE (``/app/body``) — what the journal holds about the body across
-  all time: coverage, month heat-strip, recent days, coverage families,
-  sources, and an audit drawer with the raw import bookkeeping.
+  all time: coverage, per-day contribution grid, recent days, coverage
+  families, sources, and an audit drawer with the raw import bookkeeping.
 - DAY (``/app/body/<YYYYMMDD>``) — question-first cards for one day,
   rendered only when that day has the data.
 """
@@ -372,18 +372,6 @@ def _prior_month(month: str) -> str:
     return f"{year}-{mon - 1:02d}"
 
 
-def _iter_month_span(first: str, last: str) -> list[str]:
-    year, mon = int(first[:4]), int(first[5:7])
-    last_year, last_mon = int(last[:4]), int(last[5:7])
-    months: list[str] = []
-    while (year, mon) <= (last_year, last_mon):
-        months.append(f"{year:04d}-{mon:02d}")
-        mon += 1
-        if mon == 13:
-            year, mon = year + 1, 1
-    return months
-
-
 def _family_for_type(record_type: str) -> str:
     for family, fragments in _FAMILY_RULES:
         for fragment in fragments:
@@ -549,34 +537,55 @@ def _read_health_dedupe_stats(journal_root: Path) -> dict[str, Any]:
     return result
 
 
-def _month_heat_strip(
-    by_month: dict[str, int], by_day: dict[str, int]
-) -> list[dict[str, Any]]:
-    """Month cells first→last with log-scale intensity; empty months stay pale."""
-    if not by_month:
+def _grid_cell(day_key: str, count: int, scale: float) -> dict[str, Any]:
+    if count:
+        entries = f"{count:,} " + ("entry" if count == 1 else "entries")
+        intensity = round(math.log1p(count) / scale, 3)
+    else:
+        entries = "no entries"
+        intensity = 0.0
+    return {
+        "day": day_key,
+        "count": count,
+        "intensity": intensity,
+        "title": f"{_format_day_short(day_key)}, {day_key[:4]} · {entries}",
+    }
+
+
+def _day_contribution_grid(by_day: dict[str, int]) -> list[dict[str, Any]]:
+    """Contribution-style day grid: one row-block per year, weeks as columns.
+
+    Spans the first through the last day with data. Each year block holds
+    week columns of seven weekday cells (Mon–Sun); ``None`` pads partial
+    first/last weeks. Intensity is log-scaled from per-day entry counts so
+    a heavy backfill day doesn't wash out ordinary days; empty days inside
+    the span carry zero intensity and render pale and unlinked.
+    """
+    if not by_day:
         return []
-    months = sorted(by_month)
-    first_day_by_month: dict[str, str] = {}
-    for day in by_day:
-        month = f"{day[:4]}-{day[4:6]}"
-        if month not in first_day_by_month or day < first_day_by_month[month]:
-            first_day_by_month[month] = day
-    scale = math.log1p(max(by_month.values()))
-    cells: list[dict[str, Any]] = []
-    for month in _iter_month_span(months[0], months[-1]):
-        count = by_month.get(month, 0)
-        intensity = round(math.log1p(count) / scale, 3) if count and scale else 0.0
-        cells.append(
-            {
-                "month": month,
-                "label": _format_month_label(month),
-                "count": count,
-                "count_label": f"{count:,}",
-                "intensity": intensity,
-                "first_day": first_day_by_month.get(month),
-            }
-        )
-    return cells
+    days = sorted(by_day)
+    first = datetime.strptime(days[0], "%Y%m%d").date()
+    last = datetime.strptime(days[-1], "%Y%m%d").date()
+    scale = math.log1p(max(by_day.values()))
+    blocks: list[dict[str, Any]] = []
+    for year in range(first.year, last.year + 1):
+        start = max(first, date(year, 1, 1))
+        end = min(last, date(year, 12, 31))
+        weeks: list[list[dict[str, Any] | None]] = []
+        week: list[dict[str, Any] | None] = [None] * start.weekday()
+        current = start
+        while current <= end:
+            day_key = current.strftime("%Y%m%d")
+            week.append(_grid_cell(day_key, by_day.get(day_key, 0), scale))
+            if len(week) == 7:
+                weeks.append(week)
+                week = []
+            current += timedelta(days=1)
+        if week:
+            week.extend([None] * (7 - len(week)))
+            weeks.append(week)
+        blocks.append({"year": year, "weeks": weeks})
+    return blocks
 
 
 def _coverage_families(dedupe: dict[str, Any]) -> list[dict[str, Any]]:
@@ -710,7 +719,7 @@ def _build_archive(
         "import_count": len(imports),
         "months_observed": len(by_month),
         "coverage": coverage,
-        "heat": _month_heat_strip(by_month, dedupe["by_day"]),
+        "day_grid": _day_contribution_grid(dedupe["by_day"]),
         "recent_days": _recent_day_rail(journal_root, dedupe["by_day"]),
         "families": _coverage_families(dedupe),
         "sources": _source_chips(recent),
@@ -1265,9 +1274,15 @@ def _build_health_day(
 
 @body_bp.route("/")
 def index():
+    status = _build_health_import_status(_journal_root())
+    # Anchor convey's date-nav pill to the latest day with data so the
+    # archive offers ‹ date › paging into /app/body/<day> pages. Explicit
+    # render args win over the context processor's URL-extracted ``day``.
+    day_counts = status["day_counts"]
     return render_template(
         "app.html",
-        body_status=_build_health_import_status(_journal_root()),
+        body_status=status,
+        day=max(day_counts) if day_counts else None,
     )
 
 

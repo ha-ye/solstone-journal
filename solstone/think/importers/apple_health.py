@@ -48,6 +48,7 @@ _EXPORT_XML_CANDIDATES = (
 
 _NORMALIZED_SCHEMA = "solstone.health.apple_health.v1"
 _DAY_SUMMARY_SEGMENT = "000000_300"
+_DAY_SUMMARY_SIGNAL_LIMIT = 6
 
 _MONTH_NAMES = (
     "January",
@@ -840,10 +841,12 @@ def _render_day_summary(summary: _DaySummary, *, import_id: str) -> str:
         friendly_counts: Counter[str] = Counter()
         for record_type, count in summary.type_counts.items():
             friendly_counts[friendly_type_name(record_type)] += count
-        for name, count in sorted(
-            friendly_counts.items(), key=lambda item: (-item[1], item[0])
-        ):
+        ranked = sorted(friendly_counts.items(), key=lambda item: (-item[1], item[0]))
+        for name, count in ranked[:_DAY_SUMMARY_SIGNAL_LIMIT]:
             lines.append(f"- {name}: {count:,}")
+        hidden = len(ranked) - _DAY_SUMMARY_SIGNAL_LIMIT
+        if hidden > 0:
+            lines.extend(["", f"…and {_count_phrase(hidden, 'more signal')}"])
     lines.extend(["", _day_summary_footer(summary, import_id=import_id)])
     return "\n".join(lines)
 

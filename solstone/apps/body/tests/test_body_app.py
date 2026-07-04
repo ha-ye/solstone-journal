@@ -4,8 +4,12 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
+from datetime import date
 from pathlib import Path
+
+import pytest
 
 from solstone.apps.body import routes as body_routes
 
@@ -345,6 +349,20 @@ def test_day_page_renders_summary_and_glucose_facts_only(body_env):
     assert "normal glucose" not in lowered
     assert "high glucose" not in lowered
     assert "low glucose" not in lowered
+
+
+def test_day_page_lede_renders_once_in_hero_card(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    lede = env.client.get("/app/body/api/day/20260703").get_json()["lede"]
+    html = env.client.get("/app/body/20260703").get_data(as_text=True)
+
+    # The lede lives in the "What your body added to the day" hero card
+    # only — the page header carries just the date context.
+    assert lede
+    assert html.count(lede) == 1
+    assert "What your body added to the day" in html
 
 
 def test_body_workspace_template_avoids_surveillance_verbs():
@@ -779,15 +797,19 @@ def test_day_page_renders_ask_prompts_with_chat_hook(body_env):
     assert "window.fillChat" in html
 
 
-# --- Archive: heat strip, families, rail --------------------------------------
+# --- Archive: day grid, families, rail ----------------------------------------
 
 
-def test_status_api_heat_strip_spans_gap_months_log_scaled(body_env):
+def _grid_cells(block: dict) -> list[dict]:
+    return [cell for week in block["weeks"] for cell in week if cell is not None]
+
+
+def test_status_api_day_grid_groups_years_and_log_scales(body_env):
     env = body_env()
-    march = [
+    december = [
         _row(
             GLUCOSE_TYPE,
-            f"2026-03-15T0{i}:00:00-06:00",
+            f"2025-12-30T0{i}:00:00-06:00",
             value="100",
             unit="mg/dL",
             source="Synthetic Stelo",
@@ -804,28 +826,71 @@ def test_status_api_heat_strip_spans_gap_months_log_scaled(body_env):
         )
         for i in range(5)
     ]
-    _seed_import(env.journal, "20260804_000000", march + july)
+    _seed_import(env.journal, "20260804_000000", december + july)
 
     archive = env.client.get("/app/body/api/status").get_json()["archive"]
 
-    heat = archive["heat"]
-    assert [cell["month"] for cell in heat] == [
-        "2026-03",
-        "2026-04",
-        "2026-05",
-        "2026-06",
-        "2026-07",
+    grid = archive["day_grid"]
+    assert [block["year"] for block in grid] == [2025, 2026]
+
+    # Weeks are Monday-first columns of exactly seven weekday slots; the
+    # first day with data sits at its own weekday row after None padding.
+    for block in grid:
+        assert all(len(week) == 7 for week in block["weeks"])
+    assert grid[0]["weeks"][0][date(2025, 12, 30).weekday()]["day"] == "20251230"
+
+    # The span runs the first through the last day with data, continuously
+    # across the year-block boundary.
+    first_cells = _grid_cells(grid[0])
+    second_cells = _grid_cells(grid[1])
+    assert first_cells[0]["day"] == "20251230"
+    assert first_cells[-1]["day"] == "20251231"
+    assert second_cells[0]["day"] == "20260101"
+    assert second_cells[-1]["day"] == "20260703"
+    assert len(second_cells) == (date(2026, 7, 3) - date(2026, 1, 1)).days + 1
+
+    by_day = {cell["day"]: cell for cell in first_cells + second_cells}
+    # Log scaling: monotone in count, busiest day pinned to 1.0, and above
+    # what a linear ramp (2/5 = 0.4) would give.
+    assert by_day["20260703"]["intensity"] == 1.0
+    assert 0.0 < by_day["20251230"]["intensity"] < by_day["20260703"]["intensity"]
+    assert by_day["20251230"]["intensity"] == pytest.approx(
+        math.log1p(2) / math.log1p(5), abs=1e-3
+    )
+    # Days without data stay pale: zero count, zero intensity.
+    assert by_day["20260102"]["count"] == 0
+    assert by_day["20260102"]["intensity"] == 0.0
+    assert by_day["20260703"]["title"] == "Jul 3, 2026 · 5 entries"
+    assert by_day["20260102"]["title"] == "Jan 2, 2026 · no entries"
+
+
+def test_status_page_day_grid_links_only_days_with_data(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            GLUCOSE_TYPE,
+            "2026-03-15T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _row(
+            GLUCOSE_TYPE,
+            "2026-07-03T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
     ]
-    assert heat[0]["count"] == 2
-    assert 0.0 < heat[0]["intensity"] < 1.0
-    assert heat[0]["first_day"] == "20260315"
-    for cell in heat[1:4]:
-        assert cell["count"] == 0
-        assert cell["intensity"] == 0.0
-        assert cell["first_day"] is None
-    assert heat[-1]["intensity"] == 1.0
-    assert archive["months_observed"] == 2
-    assert archive["coverage"]["range_label"] == "Mar 2026 – Jul 2026"
+    _seed_import(env.journal, "20260807_000000", rows)
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+
+    assert 'href="/app/body/20260315"' in html
+    assert "Mar 15, 2026 · 1 entry" in html
+    # A day inside the span with no entries renders pale and unlinked.
+    assert 'href="/app/body/20260401"' not in html
+    assert "Apr 1, 2026 · no entries" in html
 
 
 def test_dedupe_stats_include_per_type_time_ranges(body_env):
@@ -931,5 +996,29 @@ def test_status_page_renders_archive_sections(body_env):
     assert "Recent body days" in html
     assert "Coverage areas" in html
     assert "Sources represented" in html
-    assert "body-heat-cell" in html
+    assert "body-day-cell" in html
     assert "months observed" in html
+
+
+# --- Archive: date-nav pill ----------------------------------------------------
+
+
+def test_archive_page_mounts_day_nav_to_latest_day(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+
+    # Convey's date-nav pill mounts on the archive, anchored to the latest
+    # day with data; its arrows page into /app/body/<day> views.
+    assert 'id="date-nav-label"' in html
+    assert "const currentDay = '20260704'" in html
+    assert "const app = 'body'" in html
+
+
+def test_archive_page_without_data_has_no_day_nav(body_env):
+    env = body_env()
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+
+    assert 'id="date-nav-label"' not in html

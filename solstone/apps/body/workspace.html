@@ -23,13 +23,6 @@
   color: var(--ink-soft);
 }
 
-.body-lede {
-  margin: var(--space-2) 0 0;
-  font-size: var(--text-body);
-  line-height: 1.45;
-  color: var(--ink-soft);
-}
-
 .body-nav {
   margin-top: var(--space-3);
 }
@@ -233,16 +226,38 @@
   color: var(--ink-faint);
 }
 
-.body-heat {
-  display: flex;
-  gap: 2px;
+.body-days {
+  display: grid;
+  gap: var(--space-2);
   margin-top: var(--space-3);
+  overflow-x: auto;
 }
 
-.body-heat-cell {
-  flex: 1 1 0;
-  min-width: 4px;
-  height: 20px;
+.body-days-year {
+  display: grid;
+  grid-template-columns: 38px auto;
+  gap: var(--space-2);
+  align-items: start;
+  width: max-content;
+}
+
+.body-days-year-label {
+  font-size: 12px;
+  line-height: 11px;
+  color: var(--ink-faint-paper);
+}
+
+.body-days-grid {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, 11px);
+  grid-auto-columns: 11px;
+  gap: 2px;
+}
+
+.body-day-cell {
+  width: 11px;
+  height: 11px;
   border-radius: 3px;
   background: color-mix(
     in srgb,
@@ -251,22 +266,22 @@
   );
 }
 
-.body-heat-cell--empty {
+.body-day-cell--empty {
   background: var(--cream-bright);
   border: 1px solid var(--hairline);
 }
 
-a.body-heat-cell:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
+.body-day-cell--pad {
+  background: transparent;
 }
 
-.body-heat-ends {
-  display: flex;
-  justify-content: space-between;
-  margin-top: var(--space-1);
-  font-size: 12px;
-  color: var(--ink-faint-paper);
+a.body-day-cell:hover {
+  outline: 1px solid var(--orange-ink);
+}
+
+a.body-day-cell:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .body-rail {
@@ -667,7 +682,6 @@ a.body-heat-cell:focus-visible {
 {% if body_day %}
   <header class="body-header">
     <h1 class="body-title">Body · {{ body_day.date_label }}</h1>
-    <p class="body-lede">{{ body_day.lede }}</p>
     <nav class="body-nav" aria-label="Body views">
       <a class="body-link" href="/app/body/">Body archive</a>
     </nav>
@@ -1006,24 +1020,31 @@ a.body-heat-cell:focus-visible {
         {% endif %}
       </div>
     {% if archive and archive.coverage %}
-      {% if archive and archive.heat %}
-      <div class="body-heat" role="img" aria-label="Entries per month across the archive">
-        {% for cell in archive.heat %}
-          {% if cell.first_day %}
-            <a class="body-heat-cell"
-               href="/app/body/{{ cell.first_day }}"
-               style="--heat: {{ cell.intensity }}"
-               title="{{ cell.label }} &middot; {{ cell.count_label }} entries"
-               aria-label="{{ cell.label }}: {{ cell.count_label }} entries"></a>
-          {% else %}
-            <span class="body-heat-cell body-heat-cell--empty"
-                  title="{{ cell.label }} &middot; no entries"></span>
-          {% endif %}
+      {% if archive and archive.day_grid %}
+      <div class="body-days" role="group" aria-label="Entries per day across the archive">
+        {% for block in archive.day_grid %}
+          <div class="body-days-year">
+            <span class="body-days-year-label body-num" aria-hidden="true">{{ block.year }}</span>
+            <div class="body-days-grid">
+              {% for week in block.weeks %}
+                {% for cell in week %}
+                  {% if cell is none %}
+                    <span class="body-day-cell body-day-cell--pad" aria-hidden="true"></span>
+                  {% elif cell.count %}
+                    <a class="body-day-cell"
+                       href="/app/body/{{ cell.day }}"
+                       style="--heat: {{ cell.intensity }}"
+                       title="{{ cell.title }}"
+                       aria-label="{{ cell.title }}"></a>
+                  {% else %}
+                    <span class="body-day-cell body-day-cell--empty"
+                          title="{{ cell.title }}" aria-hidden="true"></span>
+                  {% endif %}
+                {% endfor %}
+              {% endfor %}
+            </div>
+          </div>
         {% endfor %}
-      </div>
-      <div class="body-heat-ends" aria-hidden="true">
-        <span>{{ archive.heat[0].label }}</span>
-        <span>{{ archive.heat[-1].label }}</span>
       </div>
       {% endif %}
     {% else %}

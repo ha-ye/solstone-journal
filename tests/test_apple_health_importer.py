@@ -439,6 +439,71 @@ def test_render_day_summary_signals_only_day_uses_entry_count_lede():
     assert "- Step count: 1" in rendered
 
 
+def test_render_day_summary_trims_signals_to_top_six_with_more_line():
+    summary = apple_health._DaySummary(day="20260701")
+    summary.record_count = 45
+    summary.type_counts = Counter(
+        {
+            "HKQuantityTypeIdentifierStepCount": 9,
+            "HKQuantityTypeIdentifierHeartRate": 8,
+            "HKQuantityTypeIdentifierRespiratoryRate": 7,
+            "HKQuantityTypeIdentifierOxygenSaturation": 6,
+            "HKQuantityTypeIdentifierWalkingStepLength": 5,
+            "HKQuantityTypeIdentifierFlightsClimbed": 4,
+            "HKQuantityTypeIdentifierBodyMass": 3,
+            "HKQuantityTypeIdentifierHeight": 2,
+            "HKQuantityTypeIdentifierVO2Max": 1,
+        }
+    )
+
+    rendered = apple_health._render_day_summary(summary, import_id="20260704_090000")
+    bullets = [line for line in rendered.splitlines() if line.startswith("- ")]
+
+    assert bullets == [
+        "- Step count: 9",
+        "- Heart rate: 8",
+        "- Respiratory rate: 7",
+        "- Blood oxygen: 6",
+        "- Walking step length: 5",
+        "- Flights climbed: 4",
+    ]
+    assert "…and 3 more signals" in rendered
+    assert "Body mass" not in rendered
+    assert "Height" not in rendered
+    assert "VO2 max" not in rendered
+
+
+def test_render_day_summary_more_line_singular_when_one_signal_hidden():
+    summary = apple_health._DaySummary(day="20260701")
+    summary.record_count = 28
+    summary.type_counts = Counter(
+        {
+            "HKQuantityTypeIdentifierStepCount": 7,
+            "HKQuantityTypeIdentifierHeartRate": 6,
+            "HKQuantityTypeIdentifierRespiratoryRate": 5,
+            "HKQuantityTypeIdentifierOxygenSaturation": 4,
+            "HKQuantityTypeIdentifierWalkingStepLength": 3,
+            "HKQuantityTypeIdentifierFlightsClimbed": 2,
+            "HKQuantityTypeIdentifierBodyMass": 1,
+        }
+    )
+
+    rendered = apple_health._render_day_summary(summary, import_id="20260704_090000")
+
+    assert "…and 1 more signal" in rendered
+    assert "more signals" not in rendered
+
+
+def test_render_day_summary_no_more_line_when_six_or_fewer_signals():
+    rendered = apple_health._render_day_summary(
+        _rich_day_summary(), import_id="20260704_090000"
+    )
+
+    # Four signal types on this day — every one lists, no trim line.
+    assert "- Walking step length: 1" in rendered
+    assert "more signal" not in rendered
+
+
 def test_render_day_summary_formats_counts_with_thousands_separators():
     summary = apple_health._DaySummary(day="20260701")
     summary.record_count = 1234
