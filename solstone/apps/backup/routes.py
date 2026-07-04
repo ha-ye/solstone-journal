@@ -79,7 +79,7 @@ DESTINATION_PROBE_TIMEOUT = 30.0
 RETENTION_KEYS = ("hourly", "daily", "weekly", "monthly")
 S3_REQUIRED = ("access_key_id", "secret_access_key")
 B2_REQUIRED = ("account_id", "account_key")
-TERMINAL_PHASES = frozenset({"done", "needs_subscription", "error"})
+TERMINAL_PHASES = frozenset({"done", "needs_subscription", "error", "degraded"})
 
 
 @dataclass
@@ -176,6 +176,9 @@ def _run_long_op(entry: OperationEntry, thunk: Callable[[], OpOutcome]) -> None:
         elif outcome.status in {"ok", "done", "skipped"}:
             entry.phase = "done"
             entry.reason_code = None
+        elif outcome.status == "degraded":
+            entry.phase = "degraded"
+            entry.reason_code = outcome.reason_code
         else:
             entry.phase = "error"
             entry.reason_code = outcome.reason_code or "failed"

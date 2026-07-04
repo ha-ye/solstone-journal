@@ -302,32 +302,88 @@ def test_restore_malformed_snapshots_json_returns_failed(
     assert result.reason_code == "failed"
 
 
-def test_restore_check_failure_is_nonfatal(
+@pytest.mark.parametrize(
+    ("check_returncode", "reason_code"),
+    [
+        (11, "integrity_unverified"),
+        (1, "integrity_failed"),
+    ],
+)
+def test_restore_check_failure_reports_degraded_and_keeps_side_effects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    check_returncode: int,
+    reason_code: str,
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _write_config(tmp_path, {"backup": {"daily_key": "daily-secret"}})
+    destination = _destination()
+    recovery_key = "A" * 64
     responses = iter(
         [
             _result(0, [{"paths": ["/old/journal"]}]),
             _result(0, {"message_type": "summary", "bytes_restored": 5}),
-            _result(11),
+            _result(check_returncode),
         ]
     )
+    order: list[str] = []
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        order.append(args[0])
+        calls.append((args, kwargs))
+        return next(responses)
+
+    def fake_set_destination(value: Destination) -> None:
+        order.append("set_destination")
+        assert value == destination
+
+    def fake_set_recovery_key(value: str) -> None:
+        order.append("set_recovery_key")
+        assert value == recovery_key
+
+    def fake_set_recovery_key_confirmed(value: bool) -> None:
+        order.append("set_recovery_key_confirmed")
+        assert value is True
+
+    def fake_scan_journal(journal: str, **kwargs: Any) -> bool:
+        order.append("scan_journal")
+        assert journal == str(tmp_path)
+        assert kwargs == {"full": True}
+        return True
+
     monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
-    monkeypatch.setattr(restore, "run_restic", lambda args, **kwargs: next(responses))
-    monkeypatch.setattr(restore, "set_destination", lambda destination: None)
-    monkeypatch.setattr(restore, "set_recovery_key", lambda key: None)
-    monkeypatch.setattr(restore, "set_recovery_key_confirmed", lambda confirmed: None)
+    monkeypatch.setattr(restore, "run_restic", fake_run_restic)
+    monkeypatch.setattr(restore, "set_destination", fake_set_destination)
+    monkeypatch.setattr(restore, "set_recovery_key", fake_set_recovery_key)
+    monkeypatch.setattr(
+        restore,
+        "set_recovery_key_confirmed",
+        fake_set_recovery_key_confirmed,
+    )
     monkeypatch.setattr(restore, "get_backup_config", lambda: {"daily_key": "daily"})
-    monkeypatch.setattr(restore, "scan_journal", lambda journal, **kwargs: True)
+    monkeypatch.setattr(restore, "scan_journal", fake_scan_journal)
 
-    result = restore.restore_journal(_destination(), "A" * 64)
+    result = restore.restore_journal(destination, recovery_key)
 
-    assert result.status == "ok"
-    assert result.reason_code is None
+    assert result == restore.RestoreResult(
+        status="degraded",
+        reason_code=reason_code,
+        integrity_ok=False,
+        resumable=True,
+        bytes_restored=5,
+    )
     assert result.integrity_ok is False
+    assert order == [
+        "snapshots",
+        "restore",
+        "check",
+        "set_destination",
+        "set_recovery_key",
+        "set_recovery_key_confirmed",
+        "scan_journal",
+    ]
+    assert calls[2][0] == ["check"]
 
 
 def test_restore_missing_daily_key_is_not_resumable(

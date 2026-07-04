@@ -17,7 +17,7 @@
   const statusLabels =
     (copy.management && copy.management.status_labels) || {};
   const hostedCopy = copy.hosted || {};
-  const terminalPhases = new Set(['done', 'error', 'needs_subscription']);
+  const terminalPhases = new Set(['done', 'error', 'needs_subscription', 'degraded']);
 
   function panel(name) {
     return root.querySelector(`[data-backup-panel="${name}"]`);

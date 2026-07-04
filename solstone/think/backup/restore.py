@@ -149,11 +149,20 @@ def _run_restore(
         timeout=RESTORE_CHECK_TIMEOUT_SECONDS,
     )
     integrity_ok = check.returncode == 0
-    if not integrity_ok:
+    if integrity_ok:
+        status = "ok"
+        reason_code = None
+    else:
+        status = "degraded"
+        reason_code = (
+            "integrity_unverified"
+            if check.returncode in {11, 124}
+            else "integrity_failed"
+        )
         logger.warning(
             "backup restore integrity check completed returncode=%s reason_code=%s",
             check.returncode,
-            reason_for_returncode(check.returncode),
+            reason_code,
         )
 
     persist(canonical)
@@ -163,12 +172,13 @@ def _run_restore(
     scan_journal(str(journal), full=True)
 
     logger.info(
-        "backup restore completed returncode=%s reason_code=ok",
+        "backup restore completed returncode=%s reason_code=%s",
         restore.returncode,
+        reason_code or "ok",
     )
     return RestoreResult(
-        status="ok",
-        reason_code=None,
+        status=status,
+        reason_code=reason_code,
         integrity_ok=integrity_ok,
         resumable=resumable,
         bytes_restored=restored_size,

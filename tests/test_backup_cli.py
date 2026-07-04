@@ -551,7 +551,7 @@ def test_restore_reads_secret_from_stdin_and_reports_result(
         return RestoreResult(
             status="ok",
             reason_code=None,
-            integrity_ok=False,
+            integrity_ok=True,
             resumable=True,
             bytes_restored=123,
         )
@@ -578,7 +578,65 @@ def test_restore_reads_secret_from_stdin_and_reports_result(
     assert captured["recovery_key"] == "RECOVERYSECRET"
     assert "RECOVERYSECRET" not in " ".join(captured["argv"])
     assert "RECOVERYSECRET" not in result.output
-    assert "Warning: integrity check did not pass." in result.output
+    assert (
+        "Restore complete: 123 bytes, integrity_ok=True, resumable=True."
+        in result.output
+    )
+
+
+@pytest.mark.parametrize(
+    ("reason_code", "detail"),
+    [
+        (
+            "integrity_unverified",
+            "integrity verification could not run "
+            "(the repository was busy or timed out)",
+        ),
+        (
+            "integrity_failed",
+            "integrity verification failed — the backup copy may be damaged",
+        ),
+    ],
+)
+def test_restore_maps_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+    reason_code: str,
+    detail: str,
+) -> None:
+    monkeypatch.setattr(
+        backup_cli,
+        "restore_journal",
+        lambda *_args: RestoreResult(
+            status="degraded",
+            reason_code=reason_code,
+            integrity_ok=False,
+            resumable=True,
+            bytes_restored=123,
+        ),
+    )
+    payload = {
+        "repository": "s3:safe-bucket/path",
+        "backend": "s3",
+        "credentials": {
+            "access_key_id": "access-key",
+            "secret_access_key": "secret-key",
+        },
+        "recovery_key": "RECOVERYSECRET",
+    }
+
+    result = CliRunner().invoke(
+        backup_cli.app,
+        ["restore"],
+        input=json.dumps(payload),
+    )
+
+    assert result.exit_code == 1
+    assert (
+        f"Restored 123 bytes and saved the recovery key, but {detail} "
+        f"(reason_code={reason_code})."
+    ) in result.output
+    assert "Restore failed" not in result.output
+    assert "RECOVERYSECRET" not in result.output
 
 
 def test_restore_maps_error(monkeypatch: pytest.MonkeyPatch) -> None:

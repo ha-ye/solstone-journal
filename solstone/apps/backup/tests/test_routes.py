@@ -21,6 +21,7 @@ from solstone.think.backup.hosted import (
     HostedCredentials,
     HostedCredsUnavailable,
 )
+from solstone.think.backup.restore import RestoreResult
 
 CONSENT_URL = "https://services.test/enable/backup?nonce=NONCE"
 SUBSCRIBE_URL = "https://services.test/plan"
@@ -234,6 +235,44 @@ def test_rotate_restore_and_teardown_routes_call_engine_hooks(
     assert restore_destination.repository == "b2:bucket:path"
     assert restore_destination.backend == "b2"
     assert restore_journal.call_args.args[1] == "A" * 64
+
+
+def test_restore_route_reports_degraded_as_terminal_phase(
+    backup_env,
+    monkeypatch,
+    wait_until_helper,
+) -> None:
+    env = backup_env()
+    restore_journal = Mock(
+        return_value=RestoreResult(
+            status="degraded",
+            reason_code="integrity_failed",
+            integrity_ok=False,
+            resumable=True,
+            bytes_restored=123,
+        )
+    )
+    monkeypatch.setattr(backup_routes, "restore_journal", restore_journal)
+
+    response = env.client.post(
+        "/app/backup/restore",
+        json={
+            "repository": "b2:bucket:path",
+            "backend": "b2",
+            "credentials": {
+                "account_id": "key-id",
+                "account_key": "application-key",
+            },
+            "recovery_key": "A" * 64,
+        },
+    )
+    final = _wait_for_phase(env, wait_until_helper, "degraded")
+    js_text = Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
+
+    assert response.status_code == 202
+    assert final["reason_code"] == "integrity_failed"
+    assert "degraded" in backup_routes.TERMINAL_PHASES
+    assert "new Set(['done', 'error', 'needs_subscription', 'degraded'])" in js_text
 
 
 def test_single_slot_concurrent_operation_returns_backup_busy(

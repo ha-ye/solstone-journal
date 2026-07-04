@@ -352,13 +352,23 @@ def restore() -> None:
     result = restore_journal(destination, recovery_key.strip())
     if result.status == "error":
         _die(f"Restore failed: {result.reason_code}.")
+    if result.status == "degraded":
+        if result.reason_code == "integrity_unverified":
+            detail = (
+                "integrity verification could not run "
+                "(the repository was busy or timed out)"
+            )
+        else:
+            detail = "integrity verification failed — the backup copy may be damaged"
+        _die(
+            f"Restored {result.bytes_restored} bytes and saved the recovery key, "
+            f"but {detail} (reason_code={result.reason_code})."
+        )
     if result.status == "ok":
         typer.echo(
             f"Restore complete: {result.bytes_restored} bytes, "
             f"integrity_ok={result.integrity_ok}, resumable={result.resumable}."
         )
-        if not result.integrity_ok:
-            typer.echo("Warning: integrity check did not pass.")
         return
     raise RuntimeError(f"unknown restore status: {result.status}")
 
