@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import re
 import shutil
@@ -30,6 +31,8 @@ from solstone.think.utils import (
     segment_parse,
     setup_cli,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _find_segment_dir_readonly(
@@ -193,11 +196,13 @@ def _events_summary(seg_dir: Path) -> dict[str, object]:
     return {"entries": entries, "tracts": sorted(tracts)}
 
 
-def _segment_index_info(day: str, stream: str, segment: str) -> dict[str, int | bool]:
+def _segment_index_info(
+    day: str, stream: str, segment: str
+) -> dict[str, int | bool | str | None]:
     """Return journal index presence for a segment."""
     db_path = Path(get_journal()) / "indexer" / "journal.sqlite"
     if not db_path.exists():
-        return {"available": False, "indexed": False, "chunks": 0}
+        return {"available": False, "indexed": False, "chunks": 0, "error": None}
 
     rel_path = f"{day}/{stream}/{segment}"
     try:
@@ -215,10 +220,21 @@ def _segment_index_info(day: str, stream: str, segment: str) -> dict[str, int | 
             ).fetchone()[0]
         finally:
             conn.close()
-    except sqlite3.Error:
-        return {"available": False, "indexed": False, "chunks": 0}
+    except sqlite3.Error as exc:
+        logger.warning("Segment index read failed for %s: %s", rel_path, exc)
+        return {
+            "available": False,
+            "indexed": False,
+            "chunks": 0,
+            "error": str(exc),
+        }
 
-    return {"available": True, "indexed": indexed, "chunks": int(chunk_count)}
+    return {
+        "available": True,
+        "indexed": indexed,
+        "chunks": int(chunk_count),
+        "error": None,
+    }
 
 
 def _describe_prev(day: str, stream: str, marker: dict | None) -> str:
@@ -322,6 +338,11 @@ def _check_forward_chain(day: str, stream: str, segment: str) -> tuple[bool, str
 def _check_index_presence(day: str, stream: str, segment: str) -> tuple[bool, str]:
     """Verify the segment has an index entry when a DB is available."""
     info = _segment_index_info(day, stream, segment)
+    if info["error"]:
+        return (
+            False,
+            f"journal index error: {info['error']} (run: journal indexer --rescan)",
+        )
     if not info["available"]:
         return True, "journal index not available"
     if info["indexed"]:
@@ -389,14 +410,14 @@ def _touch_health_marker(day: str) -> None:
     (health_dir / "stream.updated").touch()
 
 
-def _delete_index_rows(journal: str, rel_path: str) -> dict[str, int]:
+def _delete_index_rows(journal: str, rel_path: str) -> dict[str, int | str | None]:
     """Delete all index rows referencing a segment path.
 
     Returns counts of deleted rows per table.
     """
     db_path = Path(journal) / "indexer" / "journal.sqlite"
     if not db_path.exists():
-        return {"chunks": 0, "files": 0}
+        return {"chunks": 0, "files": 0, "error": None}
 
     try:
         conn = sqlite3.connect(db_path)
@@ -416,12 +437,14 @@ def _delete_index_rows(journal: str, rel_path: str) -> dict[str, int]:
             conn.commit()
         finally:
             conn.close()
-    except sqlite3.Error:
-        return {"chunks": 0, "files": 0}
+    except sqlite3.Error as exc:
+        logger.warning("Segment index row delete failed for %s: %s", rel_path, exc)
+        return {"chunks": 0, "files": 0, "error": str(exc)}
 
     return {
         "chunks": chunks_deleted,
         "files": files_deleted,
+        "error": None,
     }
 
 
@@ -530,6 +553,11 @@ def cmd_move(args: argparse.Namespace) -> None:
         print("  successor to patch: (none - stream tail)")
     if index_info["available"]:
         print(f"  index chunks: {index_info['chunks']}")
+    elif index_info["error"]:
+        print(
+            f"  index read error: {index_info['error']} "
+            "(delete+reindex will be attempted; run: journal indexer --rescan)"
+        )
     print(f"  health markers: {src_day}, {to_day}")
 
     if args.dry_run:
@@ -579,15 +607,29 @@ def cmd_move(args: argparse.Namespace) -> None:
             f"    scanned {summary['segments_scanned']} segments, rebuilt {len(summary['rebuilt'])} stream(s)"
         )
 
-    if index_info["available"]:
+    if index_info["available"] or index_info["error"]:
+        if index_info["error"]:
+            print(
+                f"  pre-move index read errored: {index_info['error']} "
+                "(attempting delete+reindex anyway)"
+            )
         deleted = _delete_index_rows(journal, old_rel)
-        if any(deleted.values()) or verbose:
+        if deleted.get("error"):
+            print(
+                f"  index row delete failed: {deleted['error']} "
+                "(run: journal indexer --rescan)"
+            )
+        elif any(deleted.values()) or verbose:
             print(
                 f"  deleted index rows: chunks={deleted['chunks']}, files={deleted['files']}"
             )
         new_rel = f"{to_day}/{stream}/{new_segment}"
-        indexed = _reindex_segment(journal, dst_dir)
-        print(f"  re-indexed: {indexed} files at {new_rel}")
+        try:
+            indexed = _reindex_segment(journal, dst_dir)
+            print(f"  re-indexed: {indexed} files at {new_rel}")
+        except sqlite3.Error as exc:
+            logger.warning("Reindex after move failed for %s: %s", new_rel, exc)
+            print(f"  re-index failed: {exc} (run: journal indexer --rescan)")
     elif verbose:
         print("  index not available, skipping reindex")
 
@@ -721,7 +763,9 @@ def cmd_inspect(args: argparse.Namespace) -> None:
         print(f"  {', '.join(talents)}")
     print()
     print(f"Size: {_format_size(stats['size'])}")
-    if index_info["available"]:
+    if index_info["error"]:
+        print(f"Index: error ({index_info['error']}) - run: journal indexer --rescan")
+    elif index_info["available"]:
         if index_info["indexed"]:
             print(f"Index: indexed ({index_info['chunks']} chunks)")
         else:

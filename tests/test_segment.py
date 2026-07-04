@@ -5,6 +5,7 @@
 
 import argparse
 import json
+import logging
 
 import pytest
 
@@ -501,6 +502,49 @@ def test_verify_json(tmp_path, monkeypatch, capsys):
     assert excinfo.value.code == 0
     assert isinstance(data, list)
     assert any(item["check"] == "directory exists" for item in data)
+
+
+def test_verify_reports_index_read_error(tmp_path, monkeypatch, capsys, caplog):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _make_segment(
+        tmp_path,
+        "20240101",
+        "default",
+        "090000_300",
+        stream_json={
+            "stream": "default",
+            "prev_day": None,
+            "prev_segment": None,
+            "seq": 1,
+        },
+        screen=False,
+    )
+    streams_dir = tmp_path / "streams"
+    streams_dir.mkdir()
+    (streams_dir / "default.json").write_text(
+        json.dumps({"last_day": "20240101", "last_segment": "090000_300", "seq": 1})
+    )
+    index_dir = tmp_path / "indexer"
+    index_dir.mkdir()
+    (index_dir / "journal.sqlite").write_bytes(b"not a sqlite database")
+    caplog.set_level(logging.WARNING, logger="solstone.think.segment")
+
+    args = argparse.Namespace(
+        path="20240101/default/090000_300",
+        day=None,
+        json_output=False,
+        subcommand="verify",
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_verify(args)
+
+    out = capsys.readouterr().out
+    assert excinfo.value.code == 1
+    assert "FAIL  index presence: journal index error:" in out
+    assert "run: journal indexer --rescan" in out
+    assert "journal index not available" not in out
+    assert "Segment index read failed for 20240101/default/090000_300" in caplog.text
+    assert "file is not a database" in caplog.text
 
 
 def test_verify_no_args(tmp_path, monkeypatch, capsys):
