@@ -1,0 +1,16 @@
+{
+  "data": [
+    {
+      "id": "synthetic-sleep-2026-01-02",
+      "day": "2026-01-02",
+      "score": 88,
+      "total_sleep_duration": 27000,
+      "contributors": {
+        "deep_sleep": 92,
+        "rem_sleep": 84,
+        "restfulness": 80
+      }
+    }
+  ],
+  "next_token": null
+}
