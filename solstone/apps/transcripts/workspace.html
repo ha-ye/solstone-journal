@@ -2780,28 +2780,52 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       + '</ul>';
   }
 
+  // Span gates for the day-rhythm block: the hourly strip only reads at day
+  // scale, and hourly rows only add information beyond the brief when the
+  // window would produce at least two rows.
+  const BODY_RHYTHM_STRIP_MIN_HOURS = 6;
+  const BODY_HOURLY_ROWS_MIN_HOURS = 1;
+
+  function bodyWindowSpanHours(payload) {
+    const start = Date.parse(payload?.from || '');
+    const end = Date.parse(payload?.to || '');
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+    return (end - start) / 3600000;
+  }
+
   function renderBodyRhythm(payload, options = {}) {
     const hours = payload?.hourly || [];
     if (!hours.length) return '';
-    const maxEntries = hours.reduce((max, hour) => Math.max(max, Number(hour.entry_total || 0)), 0);
-    const cells = hours.map((hour, index) => {
-      const summary = bodyHourSummary(hour);
-      const level = bodyHourLevel(hour, maxEntries);
-      const classes = ['tr-body-hour', `tr-body-hour-level-${level}`];
-      if (!hour.has_data) classes.push('tr-body-hour-empty');
-      const hourLabel = index % 6 === 0
-        ? `<span class="tr-body-hour-label">${escapeHtml(hour.label || '')}</span>`
-        : '';
-      const title = `${hour.range_label || hour.label || 'Hour'}${summary ? ' · ' + summary : ' · no body data'}`;
-      const actionAttrs = hour.has_data
-        ? ` data-action="open-body-hour" data-from="${escapeHtml(hour.start || '')}" data-to="${escapeHtml(hour.end || '')}" data-range="${escapeHtml(hour.range_label || '')}"`
-        : ' disabled';
-      return `<button type="button" class="${classes.join(' ')}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"${actionAttrs}>${hourLabel}</button>`;
-    }).join('\n');
-    const rows = options.rows ? renderBodyHourList(payload, options.limit || 12) : '';
+    const spanHours = bodyWindowSpanHours(payload);
+    const showStrip = spanHours >= BODY_RHYTHM_STRIP_MIN_HOURS;
+    const showRows = Boolean(options.rows) && spanHours > BODY_HOURLY_ROWS_MIN_HOURS;
+    if (!showStrip && !showRows) return '';
+    let grid = '';
+    if (showStrip) {
+      const maxEntries = hours.reduce((max, hour) => Math.max(max, Number(hour.entry_total || 0)), 0);
+      const cells = hours.map((hour, index) => {
+        const summary = bodyHourSummary(hour);
+        const level = bodyHourLevel(hour, maxEntries);
+        const classes = ['tr-body-hour', `tr-body-hour-level-${level}`];
+        if (!hour.has_data) classes.push('tr-body-hour-empty');
+        const hourLabel = index % 6 === 0
+          ? `<span class="tr-body-hour-label">${escapeHtml(hour.label || '')}</span>`
+          : '';
+        const title = `${hour.range_label || hour.label || 'Hour'}${summary ? ' · ' + summary : ' · no body data'}`;
+        const actionAttrs = hour.has_data
+          ? ` data-action="open-body-hour" data-from="${escapeHtml(hour.start || '')}" data-to="${escapeHtml(hour.end || '')}" data-range="${escapeHtml(hour.range_label || '')}"`
+          : ' disabled';
+        return `<button type="button" class="${classes.join(' ')}" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}"${actionAttrs}>${hourLabel}</button>`;
+      }).join('\n');
+      grid = `<div class="tr-body-rhythm-grid">${cells}</div>`;
+    }
+    const rows = showRows ? renderBodyHourList(payload, options.limit || 12) : '';
+    const heading = options.title === false
+      ? ''
+      : '<div class="tr-body-rhythm-title">Day rhythm</div>';
     return '<div class="tr-body-rhythm">'
-      + '<div class="tr-body-rhythm-title">Day rhythm</div>'
-      + `<div class="tr-body-rhythm-grid">${cells}</div>`
+      + heading
+      + grid
       + rows
       + '</div>';
   }
@@ -2845,7 +2869,13 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     const sources = (payload.sources?.chips || [])
       .map(source => `<span class="tr-signal-chip">${escapeHtml(source.name)} · ${escapeHtml(bodyCountText(source))}</span>`)
       .join('\n');
-    const signalItems = payload.signals || [];
+    // Rows already presented as events (workouts, sleep) stay out of the
+    // signals list — compare labels case-insensitively, no hardcoded names.
+    const eventLabels = new Set((payload.events || [])
+      .map(event => String(event.label || '').trim().toLowerCase())
+      .filter(label => label));
+    const signalItems = (payload.signals || [])
+      .filter(signal => !eventLabels.has(String(signal.label || '').trim().toLowerCase()));
     const signalOverflow = signalItems.length > 10
       ? `<li class="tr-body-panel-more"><a href="/app/body/${day}">+${signalItems.length - 10} more in Body</a></li>`
       : '';
@@ -2855,11 +2885,11 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     const events = (payload.events || [])
       .map(event => `<li>${escapeHtml(event.label)} · ${escapeHtml(event.start_label)}–${escapeHtml(event.end_label)} · ${escapeHtml(event.overlap_label)}</li>`)
       .join('\n');
-    const rhythm = renderBodyRhythm(payload, { rows: true, limit: 24 });
+    const rhythm = renderBodyRhythm(payload, { rows: true, limit: 24, title: false });
 
     bodyPanelBody.innerHTML = ''
       + renderBodyPanelSection('Brief', `<ul class="tr-body-panel-list">${briefRows || '<li>Body data present.</li>'}</ul>`)
-      + renderBodyPanelSection('Rhythm', rhythm)
+      + renderBodyPanelSection('Day rhythm', rhythm)
       + renderBodyPanelSection('Events', events ? `<ul class="tr-body-panel-list">${events}</ul>` : '')
       + renderBodyPanelSection('Sources', sources ? `<div class="tr-body-chip-row">${sources}</div>` : '')
       + renderBodyPanelSection('Signals', signals ? `<ul class="tr-body-panel-list">${signals}${signalOverflow}</ul>` : '')

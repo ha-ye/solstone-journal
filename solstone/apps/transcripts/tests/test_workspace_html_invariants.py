@@ -146,3 +146,58 @@ def test_workspace_html_body_display_audit_fixes():
         "function renderBodyStrip", 1
     )[0]
     assert "sleep session" in event_parts
+
+
+def test_workspace_html_body_panel_short_window_fixes():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    # One heading for the day-rhythm block: the panel section supplies the
+    # "Day rhythm" heading and suppresses the block's inner title — no
+    # RHYTHM + DAY RHYTHM stutter.
+    panel = text.split("function renderBodyPanel(", 1)[1].split(
+        "function closeBodyPanel", 1
+    )[0]
+    assert "renderBodyPanelSection('Day rhythm', rhythm)" in panel
+    assert "renderBodyPanelSection('Rhythm'" not in text
+    assert "title: false" in panel
+    rhythm_fn = text.split("function renderBodyRhythm", 1)[1].split(
+        "function renderBodyPanelSection", 1
+    )[0]
+    assert "options.title === false" in rhythm_fn
+
+    # Span gates: the hourly strip renders only for day-scale windows, and
+    # hourly rows only when the window would produce at least two rows.
+    assert "BODY_RHYTHM_STRIP_MIN_HOURS = 6" in text
+    assert "BODY_HOURLY_ROWS_MIN_HOURS = 1" in text
+    span_fn = text.split("function bodyWindowSpanHours", 1)[1].split(
+        "function renderBodyRhythm", 1
+    )[0]
+    assert "payload?.from" in span_fn
+    assert "payload?.to" in span_fn
+    assert "spanHours >= BODY_RHYTHM_STRIP_MIN_HOURS" in rhythm_fn
+    assert "spanHours > BODY_HOURLY_ROWS_MIN_HOURS" in rhythm_fn
+
+    # A fully suppressed rhythm returns '' so no empty section heading can
+    # render (renderBodyPanelSection drops sections with empty content).
+    assert "if (!showStrip && !showRows) return '';" in rhythm_fn
+    section_fn = text.split("function renderBodyPanelSection", 1)[1].split(
+        "function bodyCountText", 1
+    )[0]
+    assert "if (!innerHtml) return '';" in section_fn
+
+    # Signals never repeat rows already shown as events: filtered by event
+    # label at render time, case-insensitive, no hardcoded workout names.
+    assert "const eventLabels = new Set((payload.events || [])" in panel
+    assert "!eventLabels.has(String(signal.label || '').trim().toLowerCase())" in panel
+
+    # Panel sections read Brief -> Day rhythm -> Events -> Sources -> Signals.
+    positions = [
+        panel.index("renderBodyPanelSection('Brief'"),
+        panel.index("renderBodyPanelSection('Day rhythm'"),
+        panel.index("renderBodyPanelSection('Events'"),
+        panel.index("renderBodyPanelSection('Sources'"),
+        panel.index("renderBodyPanelSection('Signals'"),
+    ]
+    assert positions == sorted(positions)
