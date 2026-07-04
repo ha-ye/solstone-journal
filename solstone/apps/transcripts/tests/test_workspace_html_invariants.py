@@ -201,3 +201,57 @@ def test_workspace_html_body_panel_short_window_fixes():
         panel.index("renderBodyPanelSection('Signals'"),
     ]
     assert positions == sorted(positions)
+
+
+def test_workspace_html_day_lane_hit_target_and_selection_rail_sync():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    # Tiny day-lane segments (a 5-minute import renders ~2px tall) keep a
+    # minimum pointer target via a transparent ::after extension, so the
+    # rendered timeline geometry itself is not distorted.
+    hit_css = text.split(".tr-seg::after {", 1)[1].split("}", 1)[0]
+    assert "content: ''" in hit_css
+    assert "min-height: 8px" in hit_css
+    assert "height: 100%" in hit_css
+
+    # Selecting a segment (pointer or keyboard) recenters the detail zoom
+    # range to contain it — the rail can never describe a different window
+    # than the selected segment.
+    select_fn = text.split("function selectSegment", 1)[1].split(
+        "function navigateSegment", 1
+    )[0]
+    assert "segStart < range.start || segEnd > range.end" in select_fn
+    assert "renderTimeline();" in select_fn
+    assert "updateZoom();" in select_fn
+
+    # The containment logic lives in selectSegment alone — callers do not
+    # carry duplicated recenter blocks.
+    assert text.count("segStart < range.start || segEnd > range.end") == 1
+
+
+def test_workspace_html_body_panel_focus_management():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    # Opening the docked Body panel places keyboard focus on its close
+    # button (mirroring the screenshot modal), after capturing the trigger.
+    open_fn = text.split("function openBodyPanelSurface", 1)[1].split(
+        "function renderBodyPanel(", 1
+    )[0]
+    assert "bodyPanelTrigger = document.activeElement" in open_fn
+    assert "bodyPanelClose.focus()" in open_fn
+
+    # Every open path routes through the focus-managing helper: the two
+    # renderBodyPanel branches and the openBodyWindowFromIso loading state.
+    assert text.count("openBodyPanelSurface();") == 3
+    assert text.count("bodyPanel.classList.add('visible')") == 1
+
+    # Closing returns focus to the triggering element when still attached.
+    close_fn = text.split("function closeBodyPanel", 1)[1].split(
+        "bodyPanelClose.addEventListener", 1
+    )[0]
+    assert "document.contains(bodyPanelTrigger)" in close_fn
+    assert "bodyPanelTrigger.focus()" in close_fn

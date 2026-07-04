@@ -224,6 +224,20 @@ body.has-app-bar .tr-card {
   transition: filter 0.15s ease, box-shadow 0.15s ease;
 }
 
+/* Short segments (a 5-minute import renders ~2px tall) stay clickable: a
+   transparent ::after extends the pointer target to at least 8px tall,
+   centered on the segment, without distorting the rendered geometry. */
+.tr-seg::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 100%;
+  min-height: 8px;
+  transform: translateY(-50%);
+}
+
 .tr-seg:focus-visible {
   outline: 2px solid var(--accent, #4a9eff);
   outline-offset: 1px;
@@ -2851,6 +2865,19 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       + '</div>';
   }
 
+  // Focus management mirrors the screenshot modal: opening the docked panel
+  // moves focus to its close button; closing returns focus to the trigger.
+  let bodyPanelTrigger = null;
+
+  function openBodyPanelSurface() {
+    if (!bodyPanel.classList.contains('visible')) {
+      bodyPanelTrigger = document.activeElement;
+    }
+    bodyPanel.classList.add('visible');
+    bodyPanel.setAttribute('aria-hidden', 'false');
+    bodyPanelClose.focus();
+  }
+
   function renderBodyPanel(payload, title, rangeLabel) {
     bodyPanelTitle.textContent = title || 'Body context';
     bodyPanelRange.textContent = rangeLabel || '';
@@ -2858,8 +2885,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     if (!payload || !payload.has_data) {
       bodyPanelBody.innerHTML = '<p>No body context in this window.</p>'
         + renderBodyPanelFooter();
-      bodyPanel.classList.add('visible');
-      bodyPanel.setAttribute('aria-hidden', 'false');
+      openBodyPanelSurface();
       return;
     }
 
@@ -2895,13 +2921,16 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       + renderBodyPanelSection('Signals', signals ? `<ul class="tr-body-panel-list">${signals}${signalOverflow}</ul>` : '')
       + renderBodyPanelFooter();
     attachBodyWindowButtons(bodyPanelBody);
-    bodyPanel.classList.add('visible');
-    bodyPanel.setAttribute('aria-hidden', 'false');
+    openBodyPanelSurface();
   }
 
   function closeBodyPanel() {
     bodyPanel.classList.remove('visible');
     bodyPanel.setAttribute('aria-hidden', 'true');
+    if (bodyPanelTrigger && document.contains(bodyPanelTrigger)) {
+      bodyPanelTrigger.focus();
+    }
+    bodyPanelTrigger = null;
   }
 
   bodyPanelClose.addEventListener('click', closeBodyPanel);
@@ -2914,8 +2943,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     bodyPanelTitle.textContent = title || 'Body context';
     bodyPanelRange.textContent = rangeLabel || '';
     bodyPanelBody.innerHTML = window.SurfaceState.loading({ text: 'Loading body context...' });
-    bodyPanel.classList.add('visible');
-    bodyPanel.setAttribute('aria-hidden', 'false');
+    openBodyPanelSurface();
     try {
       const payload = await fetchBodyWindow(fromIso, toIso);
       renderBodyPanel(payload, title, rangeLabel);
@@ -3366,6 +3394,21 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   function selectSegment(seg, updateHash = true, requestedTabId = null) {
     selectedSegment = seg;
 
+    // Keep the detail zoom rail describing the selected segment: when the
+    // segment falls outside the current range (e.g. a 00:00 import selected
+    // while the rail shows midday), recenter the range to contain it.
+    const segStart = parseTime(seg.start);
+    const segEnd = parseTime(seg.end);
+    if (segStart < range.start || segEnd > range.end) {
+      const rangeLen = range.end - range.start;
+      const segMid = (segStart + segEnd) / 2;
+      let newStart = snap(Math.max(timelineStart, segMid - rangeLen / 2));
+      newStart = Math.min(newStart, timelineEnd - rangeLen);
+      range = { start: newStart, end: newStart + rangeLen };
+      renderTimeline();
+      updateZoom();
+    }
+
     // Update URL hash for shareable links
     if (updateHash) {
       const tab = activeTab || 'transcript';
@@ -3397,19 +3440,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       ? (delta > 0 ? 0 : allSegments.length - 1)
       : currentIdx + delta;
     if (nextIdx < 0 || nextIdx >= allSegments.length) return;
-    const seg = allSegments[nextIdx];
-    const segStart = parseTime(seg.start);
-    const segEnd = parseTime(seg.end);
-    if (segStart < range.start || segEnd > range.end) {
-      const rangeLen = range.end - range.start;
-      const segMid = (segStart + segEnd) / 2;
-      let newStart = snap(Math.max(timelineStart, segMid - rangeLen / 2));
-      newStart = Math.min(newStart, timelineEnd - rangeLen);
-      range = { start: newStart, end: newStart + rangeLen };
-      renderTimeline();
-      updateZoom();
-    }
-    selectSegment(seg);
+    // selectSegment recenters the detail zoom range when needed.
+    selectSegment(allSegments[nextIdx]);
   }
 
   // Unified timeline state
@@ -4796,15 +4828,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       if (segKey) {
         const seg = allSegments.find(s => s.key === segKey);
         if (seg) {
-          const segStart = parseTime(seg.start);
-          const segEnd = parseTime(seg.end);
-          const rangeLen = range.end - range.start;
-          const segMid = (segStart + segEnd) / 2;
-          let newStart = snap(Math.max(timelineStart, segMid - rangeLen / 2));
-          newStart = Math.min(newStart, timelineEnd - rangeLen);
-          range = { start: newStart, end: newStart + rangeLen };
-          renderTimeline();
-          updateZoom();
+          // selectSegment recenters the detail zoom range when needed.
           selectSegment(seg, false, tabIdFromHash);
         }
       }
