@@ -1274,15 +1274,13 @@ def _build_health_day(
 
 @body_bp.route("/")
 def index():
-    status = _build_health_import_status(_journal_root())
-    # Anchor convey's date-nav pill to the latest day with data so the
-    # archive offers ‹ date › paging into /app/body/<day> pages. Explicit
-    # render args win over the context processor's URL-extracted ``day``.
-    day_counts = status["day_counts"]
+    # The overview is the stable Body home: no date-nav pill here — the
+    # day grid and recent-day rail are the pickers. Day pages own ‹ date ›.
+    # (Deliberate divergence from transcripts/timeline, which land on a day:
+    # Body's archive-first landing is the product identity.)
     return render_template(
         "app.html",
-        body_status=status,
-        day=max(day_counts) if day_counts else None,
+        body_status=_build_health_import_status(_journal_root()),
     )
 
 

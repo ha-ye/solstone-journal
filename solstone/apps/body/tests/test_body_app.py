@@ -1000,25 +1000,25 @@ def test_status_page_renders_archive_sections(body_env):
     assert "months observed" in html
 
 
-# --- Archive: date-nav pill ----------------------------------------------------
+# --- Overview vs day-page navigation model --------------------------------------
 
 
-def test_archive_page_mounts_day_nav_to_latest_day(body_env):
+def test_overview_is_stable_home_without_day_nav(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
     html = env.client.get("/app/body/").get_data(as_text=True)
 
-    # Convey's date-nav pill mounts on the archive, anchored to the latest
-    # day with data; its arrows page into /app/body/<day> views.
-    assert 'id="date-nav-label"' in html
-    assert "const currentDay = '20260704'" in html
-    assert "const app = 'body'" in html
-
-
-def test_archive_page_without_data_has_no_day_nav(body_env):
-    env = body_env()
-
-    html = env.client.get("/app/body/").get_data(as_text=True)
-
+    # The overview is the stable Body home: the day grid and recent-day
+    # rail are the pickers, so the date-nav pill must NOT mount here.
     assert 'id="date-nav-label"' not in html
+
+
+def test_day_page_mounts_day_nav_and_overview_backlink(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    html = env.client.get("/app/body/20260703").get_data(as_text=True)
+
+    assert 'id="date-nav-label"' in html
+    assert "Body overview" in html
