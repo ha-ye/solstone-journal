@@ -71,6 +71,11 @@ SLEEP_SESSION_GAP_MINUTES: Final = 60
 # One source's sleep interval or merged session as (start, end).
 SleepInterval = tuple[dt.datetime, dt.datetime]
 
+# A sleep interval optionally tagged with its stage value — the raw row
+# value such as "HKCategoryValueSleepAnalysisAsleepCore" (or None when the
+# source carries no stage detail).
+SleepStagedInterval = tuple[dt.datetime, dt.datetime, str | None]
+
 
 @dataclass(frozen=True, slots=True)
 class DaySleep:
@@ -80,12 +85,63 @@ class DaySleep:
     previous evening); ``naps`` are later sessions fully inside the day.
     Multiple sources are never summed — ``source`` is the longest-coverage
     source and ``other_sources`` are only named.
+
+    ``in_bed_minutes`` is the merged main-session span; ``asleep_minutes``
+    sums the asleep-stage intervals inside it. When the primary source has
+    no asleep-stage detail, ``asleep_minutes`` falls back to the merged
+    span and ``has_stage_detail`` stays False.
     """
 
     source: str
     other_sources: tuple[str, ...]
     main: SleepInterval | None
     naps: tuple[SleepInterval, ...]
+    in_bed_minutes: float | None = None
+    asleep_minutes: float | None = None
+    has_stage_detail: bool = False
+
+
+def sleep_stage_kind(value: object) -> str:
+    """Bucket a sleep-analysis row value: asleep / awake / in_bed / unknown.
+
+    Tolerant of raw HealthKit constants ("HKCategoryValueSleepAnalysis
+    AsleepCore", "…InBed") and lowercase variants from other sources.
+    """
+
+    if value is None:
+        return "unknown"
+    text = str(value).lower()
+    if "asleep" in text:
+        return "asleep"
+    if "awake" in text:
+        return "awake"
+    if "inbed" in text or "in_bed" in text or "in bed" in text:
+        return "in_bed"
+    return "unknown"
+
+
+def _asleep_minutes_in_session(
+    session: SleepInterval, staged: Sequence[SleepStagedInterval]
+) -> float | None:
+    """Minutes of asleep-stage intervals inside ``session``.
+
+    Returns ``None`` when no interval carries an asleep stage — the caller
+    treats that as "no stage detail" and falls back to the merged span.
+    Overlapping asleep intervals are unioned so they never double-count.
+    """
+
+    clipped: list[SleepInterval] = []
+    for start, end, stage in staged:
+        if sleep_stage_kind(stage) != "asleep":
+            continue
+        clip_start = max(start, session[0])
+        clip_end = min(end, session[1])
+        if clip_end > clip_start:
+            clipped.append((clip_start, clip_end))
+    if not clipped:
+        return None
+    merged = merge_sleep_sessions(clipped, gap_minutes=0)
+    return sum((end - start).total_seconds() / 60 for start, end in merged)
 
 
 def merge_sleep_sessions(
@@ -140,7 +196,7 @@ def pick_main_session(
 
 
 def pick_day_sleep(
-    intervals_by_source: Mapping[str, Sequence[SleepInterval]],
+    intervals_by_source: Mapping[str, Sequence[SleepInterval | SleepStagedInterval]],
     day: dt.date,
     *,
     gap_minutes: int = SLEEP_SESSION_GAP_MINUTES,
@@ -151,14 +207,27 @@ def pick_day_sleep(
     the source with the longest coverage (main duration, or summed naps when
     it has no main) is primary. Ties resolve to the alphabetically first
     source. Returns ``None`` when no source has a session for the day.
+
+    Intervals may carry an optional third element — the row's raw stage
+    value — which feeds ``asleep_minutes`` / ``has_stage_detail``. Bare
+    ``(start, end)`` intervals keep the fallback behavior: asleep equals
+    the merged in-bed span.
     """
 
     per_source: dict[str, tuple[SleepInterval | None, list[SleepInterval]]] = {}
+    staged_by_source: dict[str, list[SleepStagedInterval]] = {}
     for source, intervals in intervals_by_source.items():
-        sessions = merge_sleep_sessions(intervals, gap_minutes=gap_minutes)
+        staged = [
+            (interval[0], interval[1], interval[2] if len(interval) > 2 else None)
+            for interval in intervals
+        ]
+        sessions = merge_sleep_sessions(
+            [(start, end) for start, end, _ in staged], gap_minutes=gap_minutes
+        )
         main, naps = pick_main_session(sessions, day)
         if main is not None or naps:
             per_source[source] = (main, naps)
+            staged_by_source[source] = staged
     if not per_source:
         return None
 
@@ -170,11 +239,25 @@ def pick_day_sleep(
 
     primary = max(sorted(per_source), key=_coverage_seconds)
     main, naps = per_source[primary]
+    in_bed_minutes: float | None = None
+    asleep_minutes: float | None = None
+    has_stage_detail = False
+    if main is not None:
+        in_bed_minutes = (main[1] - main[0]).total_seconds() / 60
+        staged_asleep = _asleep_minutes_in_session(main, staged_by_source[primary])
+        if staged_asleep is not None:
+            asleep_minutes = staged_asleep
+            has_stage_detail = True
+        else:
+            asleep_minutes = in_bed_minutes
     return DaySleep(
         source=primary,
         other_sources=tuple(name for name in sorted(per_source) if name != primary),
         main=main,
         naps=tuple(naps),
+        in_bed_minutes=in_bed_minutes,
+        asleep_minutes=asleep_minutes,
+        has_stage_detail=has_stage_detail,
     )
 
 
@@ -193,6 +276,73 @@ def friendly_type_name(record_type: str) -> str:
     stripped = _HK_PREFIX_RE.sub("", record_type)
     words = _CAMEL_RE.sub(" ", stripped)
     return (words[:1].upper() + words[1:].lower()) if words else record_type
+
+
+# HealthKit stores these percentage types as 0–1 fractions with unit '%';
+# owner-facing values scale by 100 so 0.98 renders as 98%, never "1.0 %".
+# Matching is by identifier fragment, mirroring the type prettifier above.
+_FRACTION_PERCENT_FRAGMENTS: Final = (
+    "OxygenSaturation",
+    "AppleWalkingSteadiness",
+    "WalkingAsymmetryPercentage",
+    "WalkingDoubleSupportPercentage",
+    "BodyFatPercentage",
+)
+
+
+def friendly_unit_label(record_type: str, unit: str | None) -> str | None:
+    """Owner-facing unit label for a health record's raw unit.
+
+    'count/min' reads as 'bpm' for heart-rate-family types (heart rate,
+    resting heart rate, walking heart rate average, heart-rate recovery)
+    and 'breaths/min' for respiratory rate. A bare 'count' drops to an
+    empty label so values render as plain numbers. '%' stays '%'; unknown
+    units pass through unchanged.
+    """
+
+    if unit is None:
+        return None
+    if unit == "count/min":
+        if "RespiratoryRate" in record_type:
+            return "breaths/min"
+        if "HeartRate" in record_type:
+            return "bpm"
+    if unit == "count":
+        return ""
+    return unit
+
+
+def _format_quantity(value: float) -> str:
+    if value == int(value):
+        return f"{int(value):,}"
+    return f"{value:,.1f}"
+
+
+def display_number(record_type: str, value: float, unit: str | None) -> str:
+    """Scaled, formatted value without its unit ('98', '22.3', '6,412').
+
+    Applies the HealthKit fraction-percent convention: types that store
+    0–1 fractions with unit '%' scale by 100.
+    """
+
+    scaled = value
+    if unit == "%" and any(
+        fragment in record_type for fragment in _FRACTION_PERCENT_FRAGMENTS
+    ):
+        scaled = round(value * 100, 6)
+    return _format_quantity(scaled)
+
+
+def display_value(record_type: str, value: float, unit: str | None) -> str:
+    """Owner-facing value with its normalized unit ('98%', '72 bpm', '23')."""
+
+    number = display_number(record_type, value, unit)
+    unit_label = friendly_unit_label(record_type, unit)
+    if not unit_label:
+        return number
+    if unit_label == "%":
+        return f"{number}%"
+    return f"{number} {unit_label}"
 
 
 @dataclass(frozen=True, slots=True)

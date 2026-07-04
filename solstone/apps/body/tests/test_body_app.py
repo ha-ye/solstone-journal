@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from solstone.apps.body import routes as body_routes
+from solstone.think.importers import health_schema
 
 DEDUPE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS health_dedupe (
@@ -781,6 +782,7 @@ def test_window_api_returns_factual_window_aggregates(body_env):
     assert payload["heart_rate"]["min"] == 62.0
     assert payload["heart_rate"]["max"] == 89.0
     assert payload["glucose"]["delta_label"] == "88 → 96 mg/dL"
+    assert payload["glucose"]["range_label"] == "88–96 mg/dL"
     assert [reading["value"] for reading in payload["glucose"]["readings"]] == [
         88.0,
         96.0,
@@ -799,6 +801,20 @@ def test_window_api_returns_factual_window_aggregates(body_env):
         "Glucose",
         "Activity",
         "Heart",
+    ]
+    assert len(payload["hourly"]) == 1
+    hour = payload["hourly"][0]
+    assert hour["range_label"] == "10:00 AM – 11:00 AM"
+    assert hour["entry_total"] == 7
+    assert hour["glucose"]["range_label"] == "88–96 mg/dL"
+    assert hour["heart_rate"]["label"] == "62–89 bpm"
+    assert hour["steps"]["label"] == "412 steps"
+    assert [event["label"] for event in hour["events"]] == ["Walking"]
+    assert hour["summary"] == [
+        "Walking",
+        "Glucose 88–96 mg/dL",
+        "HR 62–89 bpm",
+        "412 steps",
     ]
 
 
@@ -890,6 +906,51 @@ def test_window_api_steps_do_not_total_multiple_sources(body_env):
     assert steps["mode"] == "samples"
     assert steps["samples"] == 2
     assert "total" not in steps
+
+
+def test_window_api_preserves_full_day_as_hourly_context(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            GLUCOSE_TYPE,
+            "2026-07-10T00:05:00-06:00",
+            value="88",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _row(
+            GLUCOSE_TYPE,
+            "2026-07-10T13:15:00-06:00",
+            value="101",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierHeartRate",
+            "2026-07-10T13:30:00-06:00",
+            value="82",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260810_010000", rows)
+
+    response = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-07-10T00:00:00-06:00&to=2026-07-11T00:00:00-06:00"
+    )
+
+    assert response.status_code == 200
+    hourly = response.get_json()["hourly"]
+    assert len(hourly) == 24
+    assert hourly[0]["range_label"] == "12:00 AM – 1:00 AM"
+    assert hourly[0]["glucose"]["range_label"] == "88 mg/dL"
+    assert hourly[12]["has_data"] is False
+    assert hourly[13]["range_label"] == "1:00 PM – 2:00 PM"
+    assert hourly[13]["summary"] == [
+        "Glucose 101 mg/dL",
+        "HR 82 bpm",
+    ]
 
 
 def test_window_api_includes_sleep_events_from_previous_day(body_env):
@@ -1369,3 +1430,733 @@ def test_day_page_mounts_day_nav_and_overview_backlink(body_env):
 
     assert 'id="date-nav-label"' in html
     assert "Body overview" in html
+
+
+# --- Shared display normalizers ------------------------------------------------
+
+
+def test_display_normalizers_scale_fraction_percents_and_relabel_units():
+    # HK fraction-percent convention: 0–1 fractions with unit '%' scale by
+    # 100 — blood oxygen must never render as "1.0 %".
+    assert (
+        health_schema.display_value(
+            "HKQuantityTypeIdentifierOxygenSaturation", 0.98, "%"
+        )
+        == "98%"
+    )
+    assert (
+        health_schema.display_value(
+            "HKQuantityTypeIdentifierBodyFatPercentage", 0.223, "%"
+        )
+        == "22.3%"
+    )
+    assert (
+        health_schema.display_value(
+            "HKQuantityTypeIdentifierAppleWalkingSteadiness", 0.87, "%"
+        )
+        == "87%"
+    )
+    # Heart-family 'count/min' reads as bpm; respiratory as breaths/min.
+    for record_type in (
+        "HKQuantityTypeIdentifierHeartRate",
+        "HKQuantityTypeIdentifierRestingHeartRate",
+        "HKQuantityTypeIdentifierWalkingHeartRateAverage",
+        "HKQuantityTypeIdentifierHeartRateRecoveryOneMinute",
+    ):
+        assert health_schema.friendly_unit_label(record_type, "count/min") == "bpm"
+    assert (
+        health_schema.friendly_unit_label(
+            "HKQuantityTypeIdentifierRespiratoryRate", "count/min"
+        )
+        == "breaths/min"
+    )
+    # '%' stays '%'; unknown units pass through; bare counts drop the unit.
+    assert (
+        health_schema.friendly_unit_label(
+            "HKQuantityTypeIdentifierOxygenSaturation", "%"
+        )
+        == "%"
+    )
+    assert (
+        health_schema.friendly_unit_label("HKQuantityTypeIdentifierBodyMass", "lb")
+        == "lb"
+    )
+    assert (
+        health_schema.display_value(
+            "HKQuantityTypeIdentifierFlightsClimbed", 23, "count"
+        )
+        == "23"
+    )
+    assert (
+        health_schema.display_value(
+            "HKQuantityTypeIdentifierRestingHeartRate", 52.0, "count/min"
+        )
+        == "52 bpm"
+    )
+
+
+# --- Day view: heart card ------------------------------------------------------
+
+
+HR_TYPE = "HKQuantityTypeIdentifierHeartRate"
+RESTING_HR_TYPE = "HKQuantityTypeIdentifierRestingHeartRate"
+SPO2_TYPE = "HKQuantityTypeIdentifierOxygenSaturation"
+RESP_TYPE = "HKQuantityTypeIdentifierRespiratoryRate"
+HRV_TYPE = "HKQuantityTypeIdentifierHeartRateVariabilitySDNN"
+BP_SYS_TYPE = "HKQuantityTypeIdentifierBloodPressureSystolic"
+BP_DIA_TYPE = "HKQuantityTypeIdentifierBloodPressureDiastolic"
+
+
+def test_day_api_heart_card_ranges_and_friendly_units(body_env):
+    env = body_env()
+    rows = [
+        _row(HR_TYPE, "2026-07-15T06:00:00-06:00", value="55", unit="count/min"),
+        _row(HR_TYPE, "2026-07-15T12:00:00-06:00", value="72", unit="count/min"),
+        _row(HR_TYPE, "2026-07-15T18:00:00-06:00", value="142", unit="count/min"),
+        _row(
+            RESTING_HR_TYPE, "2026-07-15T07:00:00-06:00", value="54", unit="count/min"
+        ),
+        _row(
+            RESTING_HR_TYPE, "2026-07-15T22:00:00-06:00", value="52", unit="count/min"
+        ),
+        _row(SPO2_TYPE, "2026-07-15T03:00:00-06:00", value="0.97", unit="%"),
+        _row(SPO2_TYPE, "2026-07-15T04:00:00-06:00", value="0.99", unit="%"),
+        _row(RESP_TYPE, "2026-07-15T03:30:00-06:00", value="14.5", unit="count/min"),
+        _row(RESP_TYPE, "2026-07-15T04:30:00-06:00", value="16", unit="count/min"),
+        _row(HRV_TYPE, "2026-07-15T05:00:00-06:00", value="45", unit="ms"),
+        _row(HRV_TYPE, "2026-07-15T06:30:00-06:00", value="60", unit="ms"),
+    ]
+    _seed_import(env.journal, "20260901_100000", rows)
+
+    heart = env.client.get("/app/body/api/day/20260715").get_json()["heart"]
+
+    # Heart rate: full-day range in bpm with its reading count.
+    assert heart["heart_rate"]["summary"] == "55–142 bpm · 3 readings"
+    assert heart["heart_rate"]["min"] == 55.0
+    assert heart["heart_rate"]["max"] == 142.0
+    facts = {fact["label"]: fact["value"] for fact in heart["facts"]}
+    # Resting heart rate keeps its latest value even on multi-reading days.
+    assert facts["Resting heart rate"] == "52 bpm"
+    # Multi-reading signals summarize as min–max in friendly units.
+    assert facts["Blood oxygen"] == "97–99%"
+    assert facts["Respiratory rate"] == "14.5–16 breaths/min"
+    assert facts["Heart rate variability"] == "45–60 ms"
+
+
+def test_day_api_single_blood_oxygen_reading_renders_as_percent(body_env):
+    env = body_env()
+    rows = [_row(SPO2_TYPE, "2026-07-16T03:00:00-06:00", value="0.98", unit="%")]
+    _seed_import(env.journal, "20260901_110000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260716").get_json()
+
+    facts = {fact["label"]: fact["value"] for fact in payload["heart"]["facts"]}
+    assert facts["Blood oxygen"] == "98%"
+
+    html = env.client.get("/app/body/20260716").get_data(as_text=True)
+    assert "98%" in html
+    assert "1.0 %" not in html
+
+
+def test_day_api_blood_pressure_pairs_by_start_time(body_env):
+    env = body_env()
+    rows = [
+        _row(BP_SYS_TYPE, "2026-07-17T08:30:00-06:00", value="122", unit="mmHg"),
+        _row(BP_DIA_TYPE, "2026-07-17T08:30:00-06:00", value="78", unit="mmHg"),
+        _row(BP_SYS_TYPE, "2026-07-17T21:05:00-06:00", value="118", unit="mmHg"),
+        _row(BP_DIA_TYPE, "2026-07-17T21:05:00-06:00", value="76", unit="mmHg"),
+        # An unpaired systolic row never fabricates a reading.
+        _row(BP_SYS_TYPE, "2026-07-17T12:00:00-06:00", value="130", unit="mmHg"),
+    ]
+    _seed_import(env.journal, "20260901_120000", rows)
+
+    heart = env.client.get("/app/body/api/day/20260717").get_json()["heart"]
+
+    bp = heart["blood_pressure"]
+    assert bp["mode"] == "readings"
+    assert bp["count"] == 2
+    assert bp["readings"] == [
+        {"time": "8:30 AM", "label": "122/78 mmHg"},
+        {"time": "9:05 PM", "label": "118/76 mmHg"},
+    ]
+    # The paired card replaces the two count-only fact rows.
+    labels = [fact["label"] for fact in heart["facts"]]
+    assert "Blood pressure (systolic)" not in labels
+    assert "Blood pressure (diastolic)" not in labels
+
+    html = env.client.get("/app/body/20260717").get_data(as_text=True)
+    assert "Blood pressure" in html
+    assert "122/78 mmHg" in html
+
+
+def test_day_api_blood_pressure_compresses_to_ranges_when_many_readings(body_env):
+    env = body_env()
+    rows = []
+    for hour, (systolic, diastolic) in enumerate(
+        [(110, 70), (112, 72), (115, 74), (120, 76), (124, 78), (126, 80), (128, 82)],
+        start=8,
+    ):
+        start = f"2026-07-18T{hour:02d}:00:00-06:00"
+        rows.append(_row(BP_SYS_TYPE, start, value=str(systolic), unit="mmHg"))
+        rows.append(_row(BP_DIA_TYPE, start, value=str(diastolic), unit="mmHg"))
+    _seed_import(env.journal, "20260901_130000", rows)
+
+    bp = env.client.get("/app/body/api/day/20260718").get_json()["heart"][
+        "blood_pressure"
+    ]
+
+    assert bp["mode"] == "range"
+    assert bp["count"] == 7
+    assert bp["readings"] == []
+    assert bp["range_label"] == "systolic 110–128 mmHg · diastolic 70–82 mmHg"
+
+
+# --- Day view: steps primary source ---------------------------------------------
+
+
+def test_day_api_steps_pick_primary_source_by_coverage(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            STEP_TYPE,
+            "2026-07-19T08:00:00-06:00",
+            "2026-07-19T09:00:00-06:00",
+            value="2000",
+            unit="count",
+            source="Synthetic Ring",
+        ),
+        _row(
+            STEP_TYPE,
+            "2026-07-19T10:00:00-06:00",
+            "2026-07-19T11:00:00-06:00",
+            value="3000",
+            unit="count",
+            source="Synthetic Ring",
+        ),
+        _row(
+            STEP_TYPE,
+            "2026-07-19T12:00:00-06:00",
+            "2026-07-19T13:00:00-06:00",
+            value="1412",
+            unit="count",
+            source="Synthetic Ring",
+        ),
+        _row(
+            STEP_TYPE,
+            "2026-07-19T08:10:00-06:00",
+            "2026-07-19T08:20:00-06:00",
+            value="800",
+            unit="count",
+            source="Synthetic Phone",
+        ),
+        _row(
+            STEP_TYPE,
+            "2026-07-19T12:10:00-06:00",
+            "2026-07-19T12:20:00-06:00",
+            value="400",
+            unit="count",
+            source="Synthetic Phone",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_140000", rows)
+
+    steps = env.client.get("/app/body/api/day/20260719").get_json()["activity"]["steps"]
+
+    # The largest-coverage source's total wins; the other source is only
+    # named, never summed into the figure.
+    assert steps["mode"] == "total"
+    assert steps["total"] == 6412
+    assert steps["total_label"] == "6,412"
+    assert steps["source"] == "Synthetic Ring"
+    assert steps["others"] == ["Synthetic Phone"]
+    assert steps["others_label"] == "Synthetic Phone also contributed"
+
+    html = env.client.get("/app/body/20260719").get_data(as_text=True)
+    assert "6,412" in html
+    assert "Synthetic Phone also contributed" in html
+
+
+# --- Day view: asleep vs in-bed --------------------------------------------------
+
+
+def test_day_api_sleep_splits_asleep_from_in_bed_when_stages_exist(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            SLEEP_TYPE,
+            "2026-07-20T22:58:00-06:00",
+            "2026-07-21T02:00:00-06:00",
+            value="HKCategoryValueSleepAnalysisAsleepCore",
+            source="Synthetic Ring",
+        ),
+        _row(
+            SLEEP_TYPE,
+            "2026-07-21T02:00:00-06:00",
+            "2026-07-21T02:30:00-06:00",
+            value="HKCategoryValueSleepAnalysisAwake",
+            source="Synthetic Ring",
+        ),
+        _row(
+            SLEEP_TYPE,
+            "2026-07-21T02:30:00-06:00",
+            "2026-07-21T07:08:00-06:00",
+            value="HKCategoryValueSleepAnalysisAsleepDeep",
+            source="Synthetic Ring",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_150000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260721").get_json()
+
+    sleep = payload["sleep"]
+    assert sleep["has_stage_detail"] is True
+    # The awake gap stays inside the merged in-bed span but out of asleep.
+    assert sleep["in_bed_duration"] == "8h 10m"
+    assert sleep["asleep_duration"] == "7h 40m"
+    # ``duration`` keeps the merged-span figure the importer's day card
+    # states, so the two surfaces stay on one number.
+    assert sleep["duration"] == "8h 10m"
+    assert payload["lede"].startswith("Slept 7h 40m (in bed 8h 10m)")
+
+    html = env.client.get("/app/body/20260721").get_data(as_text=True)
+    assert "asleep" in html
+    assert "in bed" in html
+
+    rail = {
+        item["day"]: item
+        for item in env.client.get("/app/body/api/status").get_json()["archive"][
+            "recent_days"
+        ]
+    }
+    assert rail["20260721"]["sleep_duration"] == "7h 40m"
+    assert rail["20260721"]["sleep_in_bed"] == "8h 10m"
+
+
+def test_day_api_sleep_without_stage_detail_keeps_single_figure(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            SLEEP_TYPE,
+            "2026-07-22T23:00:00-06:00",
+            "2026-07-23T06:30:00-06:00",
+            value="HKCategoryValueSleepAnalysisInBed",
+            source="Synthetic Wrist",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_160000", rows)
+
+    sleep = env.client.get("/app/body/api/day/20260723").get_json()["sleep"]
+
+    # All rows in-bed/unspecified: asleep falls back to the merged span
+    # and the card keeps the single pre-stage figure.
+    assert sleep["has_stage_detail"] is False
+    assert sleep["asleep_duration"] is None
+    assert sleep["in_bed_duration"] == "7h 30m"
+    assert sleep["duration"] == "7h 30m"
+
+
+# --- Day view: workout aggregation ------------------------------------------------
+
+
+def test_day_api_workout_summary_aggregates_kinds(body_env):
+    env = body_env()
+    cycling = "HKWorkoutActivityTypeCycling"
+    walking = "HKWorkoutActivityTypeWalking"
+    rows = [
+        _row(cycling, "2026-07-25T06:00:00-06:00", source="S", kind="workout"),
+        _row(cycling, "2026-07-25T17:00:00-06:00", source="S", kind="workout"),
+        _row(walking, "2026-07-25T12:00:00-06:00", source="S", kind="workout"),
+    ]
+    more = [
+        _row(cycling, "2026-07-26T06:00:00-06:00", source="S", kind="workout"),
+        _row(cycling, "2026-07-26T17:00:00-06:00", source="S", kind="workout"),
+        _row(
+            "HKWorkoutActivityTypeHiking",
+            "2026-07-26T08:00:00-06:00",
+            source="S",
+            kind="workout",
+        ),
+        _row(
+            "HKWorkoutActivityTypeRunning",
+            "2026-07-26T10:00:00-06:00",
+            source="S",
+            kind="workout",
+        ),
+        _row(walking, "2026-07-26T12:00:00-06:00", source="S", kind="workout"),
+    ]
+    _seed_import(env.journal, "20260901_170000", rows + more)
+
+    day_one = env.client.get("/app/body/api/day/20260725").get_json()["activity"]
+    day_two = env.client.get("/app/body/api/day/20260726").get_json()["activity"]
+
+    assert day_one["workout_summary"] == "Cycling ×2 · Walking"
+    # More than two kinds compress to "+N more"; the detail list keeps all.
+    assert day_two["workout_summary"] == "Cycling ×2 · Hiking +2 more"
+    assert len(day_two["workouts"]) == 5
+
+    html = env.client.get("/app/body/20260725").get_data(as_text=True)
+    assert "Cycling ×2 · Walking" in html
+
+
+# --- Day view: running dynamics ---------------------------------------------------
+
+
+def test_day_api_running_dynamics_summarize_instead_of_counting(body_env):
+    env = body_env()
+    power = "HKQuantityTypeIdentifierRunningPower"
+    speed = "HKQuantityTypeIdentifierRunningSpeed"
+    contact = "HKQuantityTypeIdentifierRunningGroundContactTime"
+    osc = "HKQuantityTypeIdentifierRunningVerticalOscillation"
+    rows = [
+        _row(power, "2026-07-30T06:00:00-06:00", value="240", unit="W"),
+        _row(power, "2026-07-30T06:01:00-06:00", value="250", unit="W"),
+        _row(power, "2026-07-30T06:02:00-06:00", value="260", unit="W"),
+        _row(speed, "2026-07-30T06:00:00-06:00", value="2.5", unit="m/s"),
+        _row(speed, "2026-07-30T06:01:00-06:00", value="3.125", unit="m/s"),
+        _row(contact, "2026-07-30T06:00:00-06:00", value="240", unit="ms"),
+        _row(osc, "2026-07-30T06:00:00-06:00", value="8.1", unit="cm"),
+        _row(osc, "2026-07-30T06:01:00-06:00", value="9.3", unit="cm"),
+    ]
+    _seed_import(env.journal, "20260901_180000", rows)
+
+    activity = env.client.get("/app/body/api/day/20260730").get_json()["activity"]
+
+    running = {item["label"]: item["summary"] for item in activity["running"]}
+    assert running["Running power"] == "240–260 W · avg 250"
+    # Speed converts to pace when the unit permits; fastest pace first.
+    assert running["Running speed"] == "5:20–6:40 /km · avg 5:56 /km"
+    assert running["Running ground contact time"] == "240 ms"
+    assert running["Running vertical oscillation"] == "8.1–9.3 cm · avg 8.7"
+    # Running dynamics leave the raw entry-count list.
+    counter_labels = [item["label"] for item in activity["counters"]]
+    assert "Running power" not in counter_labels
+
+    html = env.client.get("/app/body/20260730").get_data(as_text=True)
+    assert "Running dynamics" in html
+    assert "240–260 W · avg 250" in html
+
+
+# --- Day view: summable single-source totals --------------------------------------
+
+
+def test_day_api_summable_quantities_total_when_single_source(body_env):
+    env = body_env()
+    flights = "HKQuantityTypeIdentifierFlightsClimbed"
+    exercise = "HKQuantityTypeIdentifierAppleExerciseTime"
+    daylight = "HKQuantityTypeIdentifierTimeInDaylight"
+    mindful = "HKCategoryTypeIdentifierMindfulSession"
+    rows = [
+        _row(flights, "2026-07-31T08:00:00-06:00", value="9", unit="count"),
+        _row(flights, "2026-07-31T15:00:00-06:00", value="14", unit="count"),
+        _row(exercise, "2026-07-31T08:00:00-06:00", value="22", unit="min"),
+        _row(exercise, "2026-07-31T18:00:00-06:00", value="20", unit="min"),
+        _row(daylight, "2026-07-31T12:00:00-06:00", value="38", unit="min"),
+        _row(
+            mindful,
+            "2026-07-31T07:00:00-06:00",
+            "2026-07-31T07:10:00-06:00",
+            source="Synthetic Phone",
+        ),
+        _row(
+            mindful,
+            "2026-07-31T21:00:00-06:00",
+            "2026-07-31T21:05:00-06:00",
+            source="Synthetic Phone",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_190000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260731").get_json()
+
+    counters = {
+        item["label"]: item["value"] for item in payload["activity"]["counters"]
+    }
+    assert counters["Flights climbed"] == "23"
+    assert counters["Exercise minutes"] == "42 min"
+    assert counters["Time in daylight"] == "38 min"
+    mind_facts = {
+        fact["label"]: fact["value"] for fact in payload["mind_sound"]["facts"]
+    }
+    # Mindful sessions sum to minutes of session time.
+    assert mind_facts["Mindful sessions"] == "15m"
+
+
+# --- Day view: new cards -----------------------------------------------------------
+
+
+def test_day_api_body_measurements_and_other_signals_cards(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            "HKQuantityTypeIdentifierBodyMass",
+            "2026-08-01T07:00:00-06:00",
+            value="185.2",
+            unit="lb",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierBodyFatPercentage",
+            "2026-08-01T07:00:30-06:00",
+            value="0.223",
+            unit="%",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierBodyMassIndex",
+            "2026-08-01T07:01:00-06:00",
+            value="24.1",
+            unit="count",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierHeight",
+            "2026-08-01T07:02:00-06:00",
+            value="70",
+            unit="in",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierAppleSleepingWristTemperature",
+            "2026-08-01T03:00:00-06:00",
+            value="96.53",
+            unit="degF",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierNumberOfTimesFallen",
+            "2026-08-01T10:00:00-06:00",
+            value="1",
+            unit="count",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_200000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260801").get_json()
+
+    body_facts = {
+        fact["label"]: fact["value"] for fact in payload["body_measurements"]["facts"]
+    }
+    assert body_facts["Body mass"] == "185.2 lb"
+    # Fraction-percent fix: 0.223 renders as 22.3%, never "0.2 %".
+    assert body_facts["Body fat"] == "22.3%"
+    assert body_facts["Body mass index"] == "24.1"
+    assert body_facts["Height"] == "70 in"
+    other_facts = {
+        fact["label"]: fact["value"] for fact in payload["other_signals"]["facts"]
+    }
+    assert other_facts["Wrist temperature"] == "96.5 degF"
+    assert other_facts["Number of times fallen"] == "1"
+
+    html = env.client.get("/app/body/20260801").get_data(as_text=True)
+    assert "Body measurements" in html
+    assert "Other signals" in html
+    assert "22.3%" in html
+
+
+# --- Day view: prompt gating --------------------------------------------------------
+
+
+def test_day_prompts_gate_journal_references_on_chronicle_day(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            "HKWorkoutActivityTypeCycling",
+            "2026-08-02T06:00:00-06:00",
+            source="S",
+            kind="workout",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_210000", rows)
+
+    without_chronicle = env.client.get("/app/body/api/day/20260802").get_json()
+    assert without_chronicle["prompts"]
+    assert not any("journal" in prompt for prompt in without_chronicle["prompts"])
+
+    (env.journal / "chronicle" / "20260802").mkdir(parents=True)
+    with_chronicle = env.client.get("/app/body/api/day/20260802").get_json()
+    assert any("journal" in prompt for prompt in with_chronicle["prompts"])
+
+
+# --- Day view: sparse lede + glucose axis --------------------------------------------
+
+
+def test_day_api_sparse_lede_names_families(body_env):
+    env = body_env()
+    rows = [
+        _row(HR_TYPE, "2026-08-03T06:00:00-06:00", value="60", unit="count/min"),
+        _row(HR_TYPE, "2026-08-03T07:00:00-06:00", value="62", unit="count/min"),
+        _row(HR_TYPE, "2026-08-03T08:00:00-06:00", value="64", unit="count/min"),
+        _row(STEP_TYPE, "2026-08-03T09:00:00-06:00", value="100", unit="count"),
+        _row(STEP_TYPE, "2026-08-03T10:00:00-06:00", value="200", unit="count"),
+        _row(
+            "HKQuantityTypeIdentifierBodyMass",
+            "2026-08-03T07:00:00-06:00",
+            value="185",
+            unit="lb",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_220000", rows)
+
+    lede = env.client.get("/app/body/api/day/20260803").get_json()["lede"]
+
+    assert lede == "6 entries across Heart, Activity, and 1 more area."
+
+
+def test_day_api_glucose_axis_labels_match_padded_domain(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    curve = env.client.get("/app/body/api/day/20260703").get_json()["glucose_series"][0]
+
+    # Readings span 100–140; the axis pads by 8% (3.2) and rounds outward,
+    # and the labels state that actual rendered domain.
+    assert curve["min"] == 100.0
+    assert curve["max"] == 140.0
+    assert curve["svg"]["y_min_label"] == "96"
+    assert curve["svg"]["y_max_label"] == "144"
+
+
+# --- Day view: evening nap bar sliver -------------------------------------------------
+
+
+def test_day_api_post_6pm_nap_bar_segment_stays_visible(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            SLEEP_TYPE,
+            "2026-08-04T23:00:00-06:00",
+            "2026-08-05T06:30:00-06:00",
+            value="HKCategoryValueSleepAnalysisAsleepCore",
+            source="Synthetic Ring",
+        ),
+        # A nap after the 6 PM axis end would clamp to a zero-width sliver
+        # at x=1440 without the visibility clamp.
+        _row(
+            SLEEP_TYPE,
+            "2026-08-05T19:00:00-06:00",
+            "2026-08-05T19:40:00-06:00",
+            value="HKCategoryValueSleepAnalysisAsleepCore",
+            source="Synthetic Ring",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_230000", rows)
+
+    sleep = env.client.get("/app/body/api/day/20260805").get_json()["sleep"]
+
+    nap_segments = [
+        segment for segment in sleep["bar"]["segments"] if segment["kind"] == "nap"
+    ]
+    assert nap_segments
+    for segment in nap_segments:
+        assert segment["width"] >= 4.0
+        assert segment["x"] + segment["width"] <= 1440.0
+
+
+# --- Overview: month qualifiers, import list, audit bundles ---------------------------
+
+
+def test_overview_titles_carry_sources_month_qualifier(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    status = env.client.get("/app/body/api/status").get_json()
+    assert status["sources_month_label"] == "July 2026"
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+    assert "Sources represented &middot; July 2026" in html
+    assert "By source &middot; July 2026" in html
+
+
+def test_status_api_import_months_render_as_range_label(body_env):
+    env = body_env()
+    december = [
+        _row(
+            GLUCOSE_TYPE,
+            "2025-12-30T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+    ]
+    july = [
+        _row(
+            GLUCOSE_TYPE,
+            "2026-07-03T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+    ]
+    _seed_import(env.journal, "20260902_000000", december + july)
+    # A manifest with no days and no normalized shards renders honestly.
+    _write_json(
+        env.journal / "imports" / "20260902_010000" / "manifest.json",
+        {
+            "import_id": "20260902_010000",
+            "source_type": "apple_health",
+            "source_hash": "sha256:empty",
+            "entry_count": 0,
+            "days_affected": [],
+            "files_created": [],
+            "imported_at": "2026-09-02T01:00:00",
+            "imported_via": "test",
+        },
+    )
+
+    status = env.client.get("/app/body/api/status").get_json()
+
+    by_id = {item["import_id"]: item for item in status["imports"]}
+    assert (
+        by_id["20260902_000000"]["normalized_months_label"]
+        == "2025-12 – 2026-07 · 2 months"
+    )
+    assert by_id["20260902_010000"]["normalized_months_label"] == "—"
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+    assert "2025-12 – 2026-07 · 2 months" in html
+    assert "&mdash;" in html
+
+
+def test_day_audit_lists_every_bundle_containing_the_day(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            GLUCOSE_TYPE,
+            "2026-08-05T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+    ]
+    _seed_import(env.journal, "20260903_000000", rows)
+    # A second bundle imported the same entries (same dedupe keys) with
+    # its own import id — the audit drawer must name both bundles.
+    first_shard = (
+        env.journal / "imports" / "20260903_000000" / "normalized" / "2026-08.jsonl"
+    )
+    second_shard = (
+        env.journal / "imports" / "20260903_010000" / "normalized" / "2026-08.jsonl"
+    )
+    second_shard.parent.mkdir(parents=True)
+    second_shard.write_text(
+        first_shard.read_text(encoding="utf-8").replace(
+            "20260903_000000", "20260903_010000"
+        ),
+        encoding="utf-8",
+    )
+    _write_json(
+        env.journal / "imports" / "20260903_010000" / "manifest.json",
+        {
+            "import_id": "20260903_010000",
+            "source_type": "apple_health",
+            "source_hash": "sha256:overlap",
+            "entry_count": 1,
+            "days_affected": ["20260805"],
+            "files_created": [],
+            "imported_at": "2026-09-03T01:00:00",
+            "imported_via": "test",
+        },
+    )
+
+    payload = env.client.get("/app/body/api/day/20260805").get_json()
+
+    assert payload["entry_total"] == 1
+    assert payload["audit"]["import_ids"] == [
+        "20260903_000000",
+        "20260903_010000",
+    ]

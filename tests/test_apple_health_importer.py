@@ -649,9 +649,12 @@ def test_day_card_sleep_matches_body_day_page_for_cross_midnight_session(
     assert sleep["source"] == "Synthetic Ring"
     assert sleep["window"] == "10:58 PM – 7:08 AM"
     assert sleep["duration"] == "8h 10m"
-    # Card and day page answer with the SAME window and duration.
+    assert sleep["asleep_duration"] == "7h 40m"
+    assert sleep["in_bed_duration"] == "8h 10m"
+    # Card and day page answer with the SAME window and split durations.
     assert (
-        f"**Sleep** {sleep['window']} · {sleep['duration']} · 2 sleep entries" in card
+        f"**Sleep** {sleep['window']} · asleep {sleep['asleep_duration']}"
+        f" · in bed {sleep['in_bed_duration']} · 2 sleep entries" in card
     )
     assert card.splitlines()[2].startswith(f"Slept {sleep['window']}")
 
@@ -706,7 +709,10 @@ def test_regenerate_script_feeds_prev_day_sleep_into_cross_midnight_cards(
     assert exit_code == 0
     assert "1 rewritten" in output
     assert regenerated == original
-    assert "**Sleep** 10:58 PM – 7:08 AM · 8h 10m · 2 sleep entries" in regenerated
+    assert (
+        "**Sleep** 10:58 PM – 7:08 AM · asleep 7h 40m · in bed 8h 10m"
+        " · 2 sleep entries" in regenerated
+    )
 
 
 def test_regenerate_script_dry_run_reports_diff_without_writing(

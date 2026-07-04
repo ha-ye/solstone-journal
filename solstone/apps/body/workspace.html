@@ -876,7 +876,7 @@ a.body-jump-day:focus-visible {
       {% if body_day.sleep %}
         <article class="body-card body-highlight body-card--soft">
           <h2 class="body-highlight-title">Sleep</h2>
-          <p class="body-highlight-value">{{ body_day.sleep.duration }}</p>
+          <p class="body-highlight-value">{{ body_day.sleep.asleep_duration or body_day.sleep.duration }}</p>
           <p class="body-highlight-detail body-num">{{ body_day.sleep.window }}</p>
         </article>
       {% endif %}
@@ -895,11 +895,7 @@ a.body-jump-day:focus-visible {
         <article class="body-card body-highlight body-card--soft">
           <h2 class="body-highlight-title">Workouts</h2>
           <p class="body-highlight-value">{{ body_day.activity.workouts|length }} workouts</p>
-          <p class="body-highlight-detail">
-            {% for workout in body_day.activity.workouts[:2] %}
-              {{ workout.name }}{% if not loop.last %}, {% endif %}
-            {% endfor %}
-          </p>
+          <p class="body-highlight-detail">{{ body_day.activity.workout_summary }}</p>
         </article>
       {% endif %}
       {% if body_day.sources %}
@@ -915,7 +911,15 @@ a.body-jump-day:focus-visible {
     {% if body_day.sleep %}
       <section class="body-card body-card--accent" aria-labelledby="body-sleep-title">
         <h2 id="body-sleep-title" class="body-question-title">How did I sleep?</h2>
-        {% if body_day.sleep.window %}
+        {% if body_day.sleep.asleep_duration and body_day.sleep.asleep_duration != body_day.sleep.in_bed_duration %}
+          <p class="body-primary-line">
+            asleep <span class="body-num">{{ body_day.sleep.asleep_duration }}</span>
+            &middot; in bed <span class="body-num">{{ body_day.sleep.in_bed_duration }}</span>
+          </p>
+          {% if body_day.sleep.window %}
+            <p class="body-muted body-num">{{ body_day.sleep.window }}</p>
+          {% endif %}
+        {% elif body_day.sleep.window %}
           <p class="body-primary-line">
             <span class="body-num">{{ body_day.sleep.window }}</span>
             &middot; <span class="body-num">{{ body_day.sleep.duration }}</span>
@@ -992,11 +996,26 @@ a.body-jump-day:focus-visible {
             {% endfor %}
           </ul>
         {% endif %}
+        {% if body_day.activity.running %}
+          <h3 class="body-card-label">Running dynamics</h3>
+          <ul class="body-facts">
+            {% for item in body_day.activity.running %}
+              <li>
+                <span>{{ item.label }}</span>
+                {% if item.summary %}
+                  <strong class="body-num">{{ item.summary }}</strong>
+                {% else %}
+                  <strong><span class="body-num">{{ item.count_label }}</span> <span class="body-fact-kind">entries</span></strong>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
         {% if body_day.activity.steps %}
           {% if body_day.activity.steps.mode == "total" %}
             <p class="body-primary-line">
               <span class="body-num">{{ body_day.activity.steps.total_label }}</span> steps
-              &middot; {{ body_day.activity.steps.source }}
+              &middot; {{ body_day.activity.steps.source }}{% if body_day.activity.steps.others_label %} &mdash; {{ body_day.activity.steps.others_label }}{% endif %}
             </p>
           {% else %}
             <p class="body-primary-line">
@@ -1009,7 +1028,11 @@ a.body-jump-day:focus-visible {
             {% for counter in body_day.activity.counters %}
               <li>
                 <span>{{ counter.label }}</span>
-                <strong><span class="body-num">{{ counter.count_label }}</span> <span class="body-fact-kind">entries</span></strong>
+                {% if counter.value %}
+                  <strong class="body-num">{{ counter.value }}</strong>
+                {% else %}
+                  <strong><span class="body-num">{{ counter.count_label }}</span> <span class="body-fact-kind">entries</span></strong>
+                {% endif %}
               </li>
             {% endfor %}
           </ul>
@@ -1021,6 +1044,12 @@ a.body-jump-day:focus-visible {
       <section class="body-card" aria-labelledby="body-heart-title">
         <h2 id="body-heart-title" class="body-question-title">Heart &amp; breathing</h2>
         <ul class="body-facts">
+          {% if body_day.heart.heart_rate %}
+            <li>
+              <span>Heart rate</span>
+              <strong class="body-num">{{ body_day.heart.heart_rate.summary }}</strong>
+            </li>
+          {% endif %}
           {% for fact in body_day.heart.facts %}
             <li>
               <span>{{ fact.label }}</span>
@@ -1032,11 +1061,28 @@ a.body-jump-day:focus-visible {
             </li>
           {% endfor %}
         </ul>
+        {% if body_day.heart.blood_pressure %}
+          {% set bp = body_day.heart.blood_pressure %}
+          <h3 class="body-card-label">Blood pressure</h3>
+          {% if bp.mode == "readings" %}
+            <ul class="body-facts">
+              {% for reading in bp.readings %}
+                <li>
+                  <span class="body-num">{{ reading.time }}</span>
+                  <strong class="body-num">{{ reading.label }}</strong>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="body-primary-line body-num">{{ bp.range_label }}</p>
+            <p class="body-card-footer"><span class="body-num">{{ bp.count_label }}</span> readings</p>
+          {% endif %}
+        {% endif %}
       </section>
     {% endif %}
     </div>
 
-    {% if body_day.mind_sound or body_day.walking %}
+    {% if body_day.mind_sound or body_day.walking or body_day.body_measurements or body_day.other_signals %}
       <div class="body-lists body-section">
         {% if body_day.mind_sound %}
           <section class="body-card" aria-labelledby="body-mind-title">
@@ -1060,6 +1106,40 @@ a.body-jump-day:focus-visible {
             <h2 id="body-walking-title" class="body-question-title">Walking metrics</h2>
             <ul class="body-facts">
               {% for fact in body_day.walking.facts %}
+                <li>
+                  <span>{{ fact.label }}</span>
+                  {% if fact.value %}
+                    <strong class="body-num">{{ fact.value }}</strong>
+                  {% else %}
+                    <strong><span class="body-num">{{ fact.count_label }}</span> <span class="body-fact-kind">entries</span></strong>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          </section>
+        {% endif %}
+        {% if body_day.body_measurements %}
+          <section class="body-card" aria-labelledby="body-measurements-title">
+            <h2 id="body-measurements-title" class="body-question-title">Body measurements</h2>
+            <ul class="body-facts">
+              {% for fact in body_day.body_measurements.facts %}
+                <li>
+                  <span>{{ fact.label }}</span>
+                  {% if fact.value %}
+                    <strong class="body-num">{{ fact.value }}</strong>
+                  {% else %}
+                    <strong><span class="body-num">{{ fact.count_label }}</span> <span class="body-fact-kind">entries</span></strong>
+                  {% endif %}
+                </li>
+              {% endfor %}
+            </ul>
+          </section>
+        {% endif %}
+        {% if body_day.other_signals %}
+          <section class="body-card" aria-labelledby="body-other-signals-title">
+            <h2 id="body-other-signals-title" class="body-question-title">Other signals</h2>
+            <ul class="body-facts">
+              {% for fact in body_day.other_signals.facts %}
                 <li>
                   <span>{{ fact.label }}</span>
                   {% if fact.value %}
@@ -1325,7 +1405,7 @@ a.body-jump-day:focus-visible {
               <h3 class="body-day-card-date">{{ recent.label }}</h3>
               <ul class="body-facts">
                 {% if recent.sleep_duration %}
-                  <li><span>Sleep</span><strong class="body-num">{{ recent.sleep_duration }}</strong></li>
+                  <li><span>Sleep</span><strong class="body-num">{{ recent.sleep_duration }}{% if recent.sleep_in_bed %} <span class="body-fact-kind">in bed {{ recent.sleep_in_bed }}</span>{% endif %}</strong></li>
                 {% endif %}
                 {% if recent.glucose_label %}
                   <li><span>Glucose</span><strong class="body-num">{{ recent.glucose_label }}</strong></li>
@@ -1406,7 +1486,7 @@ a.body-jump-day:focus-visible {
 
     {% if archive and archive.sources %}
       <section class="body-card" aria-labelledby="body-sources-rep-title">
-        <h2 id="body-sources-rep-title" class="body-section-title">Sources represented</h2>
+        <h2 id="body-sources-rep-title" class="body-section-title">Sources represented{% if status.sources_month_label %} &middot; {{ status.sources_month_label }}{% endif %}</h2>
         <div class="body-chips">
           {% for source in archive.sources %}
             <span class="body-chip">
@@ -1470,11 +1550,13 @@ a.body-jump-day:focus-visible {
                   <td>{{ item.imported_at }}</td>
                   <td>{{ item.entry_count }}</td>
                   <td>
-                    {% for d in item.days_affected %}
+                    {% for d in item.days_affected or [] %}
                       <a class="body-link" href="/app/body/{{ d }}">{{ d }}</a>{% if not loop.last %}, {% endif %}
+                    {% else %}
+                      <span class="body-muted">&mdash;</span>
                     {% endfor %}
                   </td>
-                  <td>{{ item.normalized_months|join(", ") }}</td>
+                  <td class="body-num">{{ item.normalized_months_label }}</td>
                 </tr>
               {% else %}
                 <tr><td colspan="6" class="body-muted">No health imports found.</td></tr>
@@ -1496,7 +1578,7 @@ a.body-jump-day:focus-visible {
           </ul>
         </article>
         <article class="body-card">
-          <h3 class="body-card-label">By source</h3>
+          <h3 class="body-card-label">By source{% if status.sources_month_label %} &middot; {{ status.sources_month_label }}{% endif %}</h3>
           <ul class="body-list">
             {% for name, count in status.normalized.by_source.items() %}
               <li><span>{{ name }}</span><strong class="body-num">{{ count }}</strong></li>

@@ -33,7 +33,10 @@ from solstone.convey import state
 from solstone.convey.reasons import INVALID_DAY, INVALID_REQUEST_VALUE
 from solstone.convey.utils import error_response
 from solstone.think.importers.health_schema import (
+    display_number,
+    display_value,
     friendly_type_name,
+    friendly_unit_label,
     pick_day_sleep,
 )
 
@@ -201,10 +204,19 @@ def _iter_health_import_manifests(journal_root: Path) -> list[dict[str, Any]]:
             continue
         import_id = str(manifest.get("import_id") or manifest_path.parent.name)
         manifest["import_id"] = import_id
-        manifest["normalized_months"] = [
+        months = [
             path.stem
             for path in sorted((manifest_path.parent / "normalized").glob("*.jsonl"))
         ]
+        manifest["normalized_months"] = months
+        if not months:
+            manifest["normalized_months_label"] = "—"
+        elif len(months) == 1:
+            manifest["normalized_months_label"] = months[0]
+        else:
+            manifest["normalized_months_label"] = (
+                f"{months[0]} – {months[-1]} · {len(months)} months"
+            )
         manifests.append(manifest)
     return manifests
 
@@ -244,17 +256,26 @@ def _iter_normalized_rows(
 
     pattern = f"*/normalized/{month}.jsonl" if month else "*/normalized/*.jsonl"
     rows: list[dict[str, Any]] = []
-    seen_keys: set[str] = set()
+    kept_by_key: dict[str, dict[str, Any]] = {}
     for path in sorted(imports_root.glob(pattern)):
         for row in _read_shard_rows(path):
             # The same entry appears in every bundle that imported it
             # (e.g. a test-week import overlapped by the full backfill);
-            # keep one row per dedupe key.
+            # keep one row per dedupe key, remembering every bundle it
+            # appeared in so the day audit can list them all.
             dedupe_key = row.get("dedupe_key")
             if isinstance(dedupe_key, str) and dedupe_key:
-                if dedupe_key in seen_keys:
+                kept = kept_by_key.get(dedupe_key)
+                if kept is not None:
+                    import_id = row.get("import_id")
+                    if import_id:
+                        bundles = kept.setdefault("import_ids", [])
+                        if str(import_id) not in bundles:
+                            bundles.append(str(import_id))
                     continue
-                seen_keys.add(dedupe_key)
+                kept_by_key[dedupe_key] = row
+                if row.get("import_id"):
+                    row["import_ids"] = [str(row["import_id"])]
             rows.append(row)
     return rows
 
@@ -354,6 +375,10 @@ def _format_day_short(day: str) -> str:
 
 def _format_month_label(month: str) -> str:
     return f"{_MONTH_ABBR[int(month[5:7]) - 1]} {month[:4]}"
+
+
+def _format_month_full(month: str) -> str:
+    return f"{_MONTH_FULL[int(month[5:7]) - 1]} {month[:4]}"
 
 
 def _month_range_label(first: str | None, last: str | None) -> str:
@@ -792,12 +817,23 @@ def _recent_day_rail(
         else:
             glucose_label = None
         sleep = payload["sleep"]
+        # The rail leads with the asleep figure when stage detail split it
+        # from the merged span; the in-bed span rides along as secondary.
+        sleep_duration = None
+        sleep_in_bed = None
+        if sleep:
+            sleep_duration = sleep.get("asleep_duration") or sleep.get("duration")
+            if sleep.get("asleep_duration") and sleep["asleep_duration"] != sleep.get(
+                "in_bed_duration"
+            ):
+                sleep_in_bed = sleep["in_bed_duration"]
         activity = payload["activity"]
         items.append(
             {
                 "day": day,
                 "label": _format_day_short(day),
-                "sleep_duration": sleep["duration"] if sleep else None,
+                "sleep_duration": sleep_duration,
+                "sleep_in_bed": sleep_in_bed,
                 "glucose_label": glucose_label,
                 "workout_count": len(activity["workouts"]) if activity else 0,
                 "source_count": len(payload["sources"]["names"])
@@ -868,6 +904,9 @@ def _build_health_import_status(journal_root: Path) -> dict[str, Any]:
         "coverage_window": dedupe["coverage_window"],
         "latest_by_source": recent["latest_by_source"],
         "sources_month": recent["month"],
+        "sources_month_label": (
+            _format_month_full(recent["month"]) if recent["month"] else None
+        ),
         "day_counts": dedupe["by_day"],
         "archive": _build_archive(
             journal_root, dedupe=dedupe, imports=imports, recent=recent
@@ -934,8 +973,11 @@ def _glucose_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             [moment.hour * 60 + moment.minute, value] for moment, value in readings
         ]
         v_min, v_max = min(values), max(values)
+        # The y-axis labels name the actual rendered domain, so the padded
+        # bounds round outward to whole numbers the labels can state.
         pad = max((v_max - v_min) * 0.08, 2.0)
-        lo, hi = v_min - pad, v_max + pad
+        lo = float(math.floor(v_min - pad))
+        hi = float(math.ceil(v_max + pad))
 
         def _y(value: float) -> float:
             return round(
@@ -982,8 +1024,8 @@ def _glucose_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "height": GLUCOSE_SVG_HEIGHT,
                     "paths": paths,
                     "dots": dots,
-                    "y_min_label": _format_number(v_min),
-                    "y_max_label": _format_number(v_max),
+                    "y_min_label": _format_number(lo),
+                    "y_max_label": _format_number(hi),
                 },
             }
         )
@@ -1012,7 +1054,7 @@ def _sleep_analysis(
     in ``health_schema`` — the importer's day cards use the same one.
     """
     target = date(int(day[:4]), int(day[4:6]), int(day[6:8]))
-    intervals_by_source: dict[str, list[tuple[datetime, datetime]]] = {}
+    intervals_by_source: dict[str, list[tuple[datetime, datetime, str | None]]] = {}
     for row in prev_rows + day_rows:
         if not _is_sleep_type(str(row.get("record_type") or "")):
             continue
@@ -1020,7 +1062,10 @@ def _sleep_analysis(
         if start is None:
             continue
         end = _parse_record_time(row.get("end_date")) or start
-        intervals_by_source.setdefault(_source_label(row), []).append((start, end))
+        stage = str(row["value"]) if row.get("value") is not None else None
+        intervals_by_source.setdefault(_source_label(row), []).append(
+            (start, end, stage)
+        )
     if not intervals_by_source:
         return None
 
@@ -1034,9 +1079,13 @@ def _sleep_analysis(
     def _bar_segment(session: tuple[datetime, datetime], kind: str) -> dict[str, Any]:
         left = min(max(_axis_minute(session[0], axis_day), 0.0), 1440.0)
         right = min(max(_axis_minute(session[1], axis_day), 0.0), 1440.0)
+        # A session clamped to the axis edge (a post-6PM nap) keeps its
+        # minimum width inside the axis instead of collapsing to nothing.
+        width = max(right - left, 4.0)
+        left = min(left, 1440.0 - width)
         return {
             "x": round(left, 1),
-            "width": round(max(right - left, 4.0), 1),
+            "width": round(width, 1),
             "kind": kind,
         }
 
@@ -1052,11 +1101,28 @@ def _sleep_analysis(
             "duration": _format_duration(minutes),
         }
 
+    # ``duration`` stays the merged main-session span — the same figure the
+    # importer's day card states — while ``asleep_duration`` carries the
+    # stage-aware headline figure the page surfaces prefer when present.
+    in_bed_duration = (
+        _format_duration(sleep.in_bed_minutes)
+        if sleep.in_bed_minutes is not None
+        else None
+    )
+    asleep_duration = (
+        _format_duration(sleep.asleep_minutes)
+        if sleep.has_stage_detail and sleep.asleep_minutes is not None
+        else None
+    )
+
     return {
         "source": sleep.source,
         "other_sources": list(sleep.other_sources),
         "window": _session_view(main)["window"] if main is not None else None,
         "duration": _session_view(main)["duration"] if main is not None else None,
+        "asleep_duration": asleep_duration,
+        "in_bed_duration": in_bed_duration,
+        "has_stage_detail": sleep.has_stage_detail,
         "naps": [_session_view(nap) for nap in naps],
         "bar": {
             "segments": segments,
@@ -1087,6 +1153,157 @@ def _workout_duration_minutes(row: dict[str, Any]) -> float | None:
     return None
 
 
+def _group_by_type(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row.get("record_type") or "")].append(row)
+    return grouped
+
+
+def _single_unit(rows: list[dict[str, Any]]) -> tuple[str | None, bool]:
+    """The rows' shared unit and whether units were consistent."""
+    units = {str(row.get("unit")) for row in rows if row.get("unit") is not None}
+    if len(units) > 1:
+        return None, False
+    return (next(iter(units)) if units else None), True
+
+
+def _display_range(record_type: str, low: float, high: float, unit: str | None) -> str:
+    """Owner-facing 'LOW–HIGH unit' label through the shared normalizers."""
+    low_label = display_number(record_type, low, unit)
+    high_label = display_number(record_type, high, unit)
+    span = low_label if low_label == high_label else f"{low_label}–{high_label}"
+    unit_label = friendly_unit_label(record_type, unit)
+    if not unit_label:
+        return span
+    if unit_label == "%":
+        return f"{span}%"
+    return f"{span} {unit_label}"
+
+
+def _primary_source_steps(step_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The primary-source step total, mirroring ``pick_day_sleep``.
+
+    The largest-coverage source's total is reported and labeled with its
+    source; other sources are only named, never summed. Returns ``None``
+    when several sources contributed but none has usable coverage to rank
+    by — the caller falls back to sample counts.
+    """
+
+    per_source: dict[str, dict[str, float]] = {}
+    for row in step_rows:
+        value = _parse_float(row.get("value"))
+        if value is None:
+            continue
+        entry = per_source.setdefault(
+            _source_label(row), {"total": 0.0, "coverage": 0.0, "samples": 0.0}
+        )
+        entry["total"] += value
+        entry["samples"] += 1
+        interval = _row_interval(row)
+        if interval is not None:
+            entry["coverage"] += (interval[1] - interval[0]).total_seconds()
+    if not per_source:
+        return None
+    if len(per_source) == 1:
+        primary = next(iter(per_source))
+    else:
+        usable = [name for name in per_source if per_source[name]["coverage"] > 0]
+        if not usable:
+            return None
+        primary = max(sorted(usable), key=lambda name: per_source[name]["coverage"])
+    others = sorted(name for name in per_source if name != primary)
+    total = int(round(per_source[primary]["total"]))
+    return {
+        "mode": "total",
+        "total": total,
+        "total_label": f"{total:,}",
+        "source": primary,
+        "samples": int(per_source[primary]["samples"]),
+        "others": others,
+        "others_label": (f"{', '.join(others)} also contributed" if others else None),
+    }
+
+
+_RUNNING_DYNAMICS_FRAGMENTS = (
+    "RunningPower",
+    "RunningSpeed",
+    "RunningStrideLength",
+    "RunningGroundContactTime",
+    "RunningVerticalOscillation",
+)
+
+# Speed units convertible to a pace per kilometer.
+_PACE_SECONDS_PER_KM = {
+    "m/s": 1000.0,
+    "km/h": 3600.0,
+    "km/hr": 3600.0,
+}
+
+
+def _is_running_dynamics_type(record_type: str) -> bool:
+    return any(fragment in record_type for fragment in _RUNNING_DYNAMICS_FRAGMENTS)
+
+
+def _pace_label(speed: float, unit: str) -> str | None:
+    """A M:SS pace per kilometer from a speed value, when the unit permits."""
+    scale = _PACE_SECONDS_PER_KM.get(unit)
+    if scale is None or speed <= 0:
+        return None
+    minutes, seconds = divmod(int(round(scale / speed)), 60)
+    return f"{minutes}:{seconds:02d}"
+
+
+def _running_dynamics(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Per-type min/avg/max summaries for a day's running-dynamics rows."""
+    items: list[dict[str, Any]] = []
+    grouped = _group_by_type(rows)
+    for record_type in sorted(grouped, key=friendly_type_name):
+        rows_for_type = grouped[record_type]
+        values = [
+            value
+            for value in (_parse_float(row.get("value")) for row in rows_for_type)
+            if value is not None
+        ]
+        unit, consistent = _single_unit(rows_for_type)
+        summary: str | None = None
+        if values and consistent:
+            low, high, avg = min(values), max(values), mean(values)
+            if "RunningSpeed" in record_type and unit:
+                # Fastest pace comes from the highest speed.
+                fast = _pace_label(high, unit)
+                slow = _pace_label(low, unit)
+                middle = _pace_label(avg, unit)
+                if fast and slow and middle:
+                    span = fast if fast == slow else f"{fast}–{slow}"
+                    summary = f"{span} /km · avg {middle} /km"
+            if summary is None:
+                span = _display_range(record_type, low, high, unit)
+                if low == high:
+                    summary = span
+                else:
+                    summary = f"{span} · avg {display_number(record_type, avg, unit)}"
+        items.append(
+            {
+                "label": friendly_type_name(record_type),
+                "count": len(rows_for_type),
+                "count_label": f"{len(rows_for_type):,}",
+                "summary": summary,
+            }
+        )
+    return items
+
+
+# Quantities where one source's samples honestly sum to a day total worth
+# showing with its unit instead of a bare entry count.
+_SUMMABLE_FRAGMENTS = (
+    "FlightsClimbed",
+    "AppleExerciseTime",
+    "AppleStandTime",
+    "TimeInDaylight",
+)
+
+
 def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     workouts = [row for row in day_rows if row.get("kind") == "workout"]
     activity_rows = [
@@ -1110,29 +1327,26 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             }
         )
 
+    workout_summary: str | None = None
+    if workout_items:
+        kinds = Counter(item["name"] for item in workout_items)
+        ordered = sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))
+        parts = [
+            name if count == 1 else f"{name} ×{count}" for name, count in ordered[:2]
+        ]
+        workout_summary = " · ".join(parts)
+        if len(ordered) > 2:
+            workout_summary += f" +{len(ordered) - 2} more"
+
     step_rows = [
         row for row in activity_rows if "StepCount" in str(row.get("record_type") or "")
     ]
     steps: dict[str, Any] | None = None
     if step_rows:
-        step_sources = sorted({_source_label(row) for row in step_rows})
-        values = [
-            value
-            for value in (_parse_float(row.get("value")) for row in step_rows)
-            if value is not None
-        ]
-        if len(step_sources) == 1 and values:
-            # One source contributed every step sample — a real total is
-            # honest here, labeled with its source.
-            steps = {
-                "mode": "total",
-                "total": int(round(sum(values))),
-                "total_label": f"{int(round(sum(values))):,}",
-                "source": step_sources[0],
-                "samples": len(step_rows),
-            }
-        else:
-            # Multiple sources double-count; present sample counts only.
+        steps = _primary_source_steps(step_rows)
+        if steps is None:
+            # No source has usable coverage to rank by; totals would
+            # double-count, so present sample counts only.
             steps = {
                 "mode": "samples",
                 "samples": len(step_rows),
@@ -1140,22 +1354,49 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             }
 
     other_rows = [row for row in activity_rows if row not in step_rows]
-    counters = Counter(
-        friendly_type_name(str(row.get("record_type") or "")) for row in other_rows
-    )
-    counter_items = [
-        {"label": name, "count": count, "count_label": f"{count:,}"}
-        for name, count in sorted(counters.items(), key=lambda kv: (-kv[1], kv[0]))
+    running_rows = [
+        row
+        for row in other_rows
+        if _is_running_dynamics_type(str(row.get("record_type") or ""))
     ]
+    counter_rows = [row for row in other_rows if row not in running_rows]
 
-    return {"workouts": workout_items, "steps": steps, "counters": counter_items}
+    counter_items: list[dict[str, Any]] = []
+    grouped = _group_by_type(counter_rows)
+    for record_type in sorted(
+        grouped, key=lambda rt: (-len(grouped[rt]), friendly_type_name(rt))
+    ):
+        rows_for_type = grouped[record_type]
+        item: dict[str, Any] = {
+            "label": friendly_type_name(record_type),
+            "count": len(rows_for_type),
+            "count_label": f"{len(rows_for_type):,}",
+            "value": None,
+        }
+        if any(fragment in record_type for fragment in _SUMMABLE_FRAGMENTS):
+            sources = {_source_label(row) for row in rows_for_type}
+            values = [
+                value
+                for value in (_parse_float(row.get("value")) for row in rows_for_type)
+                if value is not None
+            ]
+            unit, consistent = _single_unit(rows_for_type)
+            if len(sources) == 1 and values and consistent:
+                item["value"] = display_value(record_type, sum(values), unit)
+        counter_items.append(item)
+
+    return {
+        "workouts": workout_items,
+        "workout_summary": workout_summary,
+        "steps": steps,
+        "running": _running_dynamics(running_rows) if running_rows else None,
+        "counters": counter_items,
+    }
 
 
 def _fact_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Per-type counts; a single reading (or resting heart rate) shows its value."""
-    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for row in rows:
-        grouped[str(row.get("record_type") or "")].append(row)
+    grouped = _group_by_type(rows)
     items: list[dict[str, Any]] = []
     for record_type in sorted(
         grouped, key=lambda rt: (-len(grouped[rt]), friendly_type_name(rt))
@@ -1167,16 +1408,179 @@ def _fact_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "count_label": f"{len(rows_for_type):,}",
             "value": None,
         }
-        if len(rows_for_type) == 1 or "RestingHeartRate" in record_type:
+        if "MindfulSession" in record_type:
+            sources = {_source_label(row) for row in rows_for_type}
+            if len(sources) == 1:
+                minutes = 0.0
+                for row in rows_for_type:
+                    interval = _row_interval(row)
+                    if interval is not None:
+                        minutes += (interval[1] - interval[0]).total_seconds() / 60
+                if minutes > 0:
+                    item["value"] = _format_duration(minutes)
+        elif len(rows_for_type) == 1 or "RestingHeartRate" in record_type:
             latest = max(
                 rows_for_type, key=lambda r: _time_sort_key(_row_time(r) or "")
             )
             value = _parse_float(latest.get("value"))
             if value is not None:
-                unit = str(latest.get("unit") or "").strip()
-                item["value"] = f"{_format_number(value)} {unit}".strip()
+                unit = str(latest.get("unit") or "").strip() or None
+                item["value"] = display_value(record_type, value, unit)
         items.append(item)
     return items
+
+
+_BP_SYSTOLIC_FRAGMENT = "BloodPressureSystolic"
+_BP_DIASTOLIC_FRAGMENT = "BloodPressureDiastolic"
+# Above this many paired readings the card compresses to per-component
+# ranges instead of a time-stamped list.
+_BP_READING_LIMIT = 6
+
+
+def _blood_pressure(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Systolic/diastolic rows paired by identical start time.
+
+    Returns a time-stamped readings list, or per-component min–max when
+    the day holds more than ``_BP_READING_LIMIT`` paired readings. ``None``
+    when no rows pair up — the caller keeps the rows in the generic facts.
+    """
+
+    by_start: dict[str, dict[str, tuple[dict[str, Any], float]]] = {}
+    for row in rows:
+        record_type = str(row.get("record_type") or "")
+        if _BP_SYSTOLIC_FRAGMENT in record_type:
+            component = "systolic"
+        elif _BP_DIASTOLIC_FRAGMENT in record_type:
+            component = "diastolic"
+        else:
+            continue
+        start = str(row.get("start_date") or "").strip()
+        value = _parse_float(row.get("value"))
+        if not start or value is None:
+            continue
+        by_start.setdefault(start, {}).setdefault(component, (row, value))
+
+    readings: list[dict[str, Any]] = []
+    systolic_values: list[float] = []
+    diastolic_values: list[float] = []
+    unit: str | None = None
+    for start in sorted(by_start, key=_time_sort_key):
+        pair = by_start[start]
+        if "systolic" not in pair or "diastolic" not in pair:
+            continue
+        moment = _parse_record_time(start)
+        if moment is None:
+            continue
+        systolic_row, systolic = pair["systolic"]
+        _, diastolic = pair["diastolic"]
+        pair_unit = str(systolic_row.get("unit") or "").strip() or None
+        unit = unit or pair_unit
+        label = f"{_format_number(systolic)}/{_format_number(diastolic)}"
+        if pair_unit:
+            label += f" {pair_unit}"
+        systolic_values.append(systolic)
+        diastolic_values.append(diastolic)
+        readings.append({"time": _format_clock(moment), "label": label})
+
+    if not readings:
+        return None
+    count = len(readings)
+    result: dict[str, Any] = {
+        "count": count,
+        "count_label": f"{count:,}",
+        "unit": unit,
+        "mode": "readings" if count <= _BP_READING_LIMIT else "range",
+        "readings": readings if count <= _BP_READING_LIMIT else [],
+        "range_label": None,
+    }
+    if count > _BP_READING_LIMIT:
+        unit_suffix = f" {unit}" if unit else ""
+        systolic_span = (
+            f"{_format_number(min(systolic_values))}–"
+            f"{_format_number(max(systolic_values))}"
+        )
+        diastolic_span = (
+            f"{_format_number(min(diastolic_values))}–"
+            f"{_format_number(max(diastolic_values))}"
+        )
+        result["range_label"] = (
+            f"systolic {systolic_span}{unit_suffix}"
+            f" · diastolic {diastolic_span}{unit_suffix}"
+        )
+    return result
+
+
+def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The heart card: an HR range, paired blood pressure, value facts."""
+
+    if not rows:
+        return None
+    heart_rate: dict[str, Any] | None = _window_heart_rate(rows)
+    if heart_rate and heart_rate["count"]:
+        reading_word = "reading" if heart_rate["count"] == 1 else "readings"
+        heart_rate = {
+            **heart_rate,
+            "summary": (
+                f"{heart_rate['label']} · {heart_rate['count_label']} {reading_word}"
+            ),
+        }
+    else:
+        heart_rate = None
+    blood_pressure = _blood_pressure(rows)
+
+    fact_rows: list[dict[str, Any]] = []
+    for row in rows:
+        record_type = str(row.get("record_type") or "")
+        if heart_rate and record_type == "HKQuantityTypeIdentifierHeartRate":
+            continue
+        if blood_pressure and (
+            _BP_SYSTOLIC_FRAGMENT in record_type
+            or _BP_DIASTOLIC_FRAGMENT in record_type
+        ):
+            continue
+        fact_rows.append(row)
+
+    facts: list[dict[str, Any]] = []
+    grouped = _group_by_type(fact_rows)
+    for record_type in sorted(
+        grouped, key=lambda rt: (-len(grouped[rt]), friendly_type_name(rt))
+    ):
+        rows_for_type = grouped[record_type]
+        item: dict[str, Any] = {
+            "label": friendly_type_name(record_type),
+            "count": len(rows_for_type),
+            "count_label": f"{len(rows_for_type):,}",
+            "value": None,
+        }
+        values = [
+            value
+            for value in (_parse_float(row.get("value")) for row in rows_for_type)
+            if value is not None
+        ]
+        unit, consistent = _single_unit(rows_for_type)
+        if values and consistent:
+            if "RestingHeartRate" in record_type:
+                latest = max(
+                    rows_for_type, key=lambda r: _time_sort_key(_row_time(r) or "")
+                )
+                latest_value = _parse_float(latest.get("value"))
+                if latest_value is not None:
+                    item["value"] = display_value(record_type, latest_value, unit)
+            elif len(values) == 1:
+                item["value"] = display_value(record_type, values[0], unit)
+            else:
+                item["value"] = _display_range(
+                    record_type, min(values), max(values), unit
+                )
+        facts.append(item)
+
+    if not (heart_rate or blood_pressure or facts):
+        return None
+    return {
+        "heart_rate": heart_rate,
+        "blood_pressure": blood_pressure,
+        "facts": facts,
+    }
 
 
 def _nearest_days_with_data(by_day: dict[str, int], day: str) -> dict[str, Any]:
@@ -1199,7 +1603,15 @@ def _day_lede(
     activity: dict[str, Any] | None,
 ) -> str:
     parts: list[str] = []
-    if sleep and sleep.get("window"):
+    if (
+        sleep
+        and sleep.get("asleep_duration")
+        and sleep["asleep_duration"] != sleep.get("in_bed_duration")
+    ):
+        parts.append(
+            f"slept {sleep['asleep_duration']} (in bed {sleep['in_bed_duration']})"
+        )
+    elif sleep and sleep.get("window"):
         parts.append(f"slept {sleep['window']}")
     for series in glucose_series:
         parts.append(f"glucose {series['range_label']}")
@@ -1209,7 +1621,24 @@ def _day_lede(
     if not parts:
         if not day_rows:
             return "No body data present for this day."
-        parts.append(f"{len(day_rows):,} entries observed")
+        family_counts = Counter(
+            _family_for_type(str(row.get("record_type") or "")) for row in day_rows
+        )
+        names = [
+            name
+            for name, _ in sorted(family_counts.items(), key=lambda kv: (-kv[1], kv[0]))
+        ]
+        entries = f"{len(day_rows):,} " + ("entry" if len(day_rows) == 1 else "entries")
+        if len(names) == 1:
+            parts.append(f"{entries} across {names[0]}")
+        elif len(names) == 2:
+            parts.append(f"{entries} across {names[0]} and {names[1]}")
+        else:
+            more = len(names) - 2
+            area_word = "area" if more == 1 else "areas"
+            parts.append(
+                f"{entries} across {names[0]}, {names[1]}, and {more} more {area_word}"
+            )
     text = ", ".join(parts)
     return text[0].upper() + text[1:] + "."
 
@@ -1220,13 +1649,16 @@ def _day_prompts(
     has_sleep: bool,
     has_glucose: bool,
     has_workouts: bool,
+    has_journal_day: bool,
 ) -> list[str]:
+    # Prompts that point at the journal only appear when the journal has
+    # a chronicle day to point at.
     prompts = [f"How did my body on {date_label} compare with nearby days?"]
     if has_glucose:
         prompts.append(
             f"What was on my calendar during the glucose peak on {date_label}?"
         )
-    if has_workouts:
+    if has_workouts and has_journal_day:
         prompts.append(
             f"What happened in my journal after the workouts on {date_label}?"
         )
@@ -1234,10 +1666,10 @@ def _day_prompts(
         prompts.append(
             f"What did my evening look like before the sleep ending {date_label}?"
         )
-    for filler in (
-        f"What does my journal hold for {date_label}?",
-        f"Who did I spend {date_label} with?",
-    ):
+    fillers = [f"Who did I spend {date_label} with?"]
+    if has_journal_day:
+        fillers.insert(0, f"What does my journal hold for {date_label}?")
+    for filler in fillers:
         if len(prompts) >= 3:
             break
         prompts.append(filler)
@@ -1276,11 +1708,20 @@ def _build_health_day(
     sleep = _sleep_analysis(day_rows, prev_rows, day)
     glucose_series = _glucose_series(day_rows)
     activity = _activity_analysis(day_rows)
-    heart_facts = _fact_items(families.get("Heart", []))
+    heart = _heart_analysis(families.get("Heart", []))
     mind_sound_facts = _fact_items(
         families.get("Mindfulness", []) + families.get("Hearing & audio", [])
     )
     walking_facts = _fact_items(families.get("Walking metrics", []))
+    body_facts = _fact_items(families.get("Body measurements", []))
+    # Leftover signals: the explicit "Other" family plus sleep-family rows
+    # that are not sleep-analysis intervals (wrist temperature and kin).
+    leftover_rows = families.get("Other", []) + [
+        row
+        for row in families.get("Sleep", [])
+        if not _is_sleep_type(str(row.get("record_type") or ""))
+    ]
+    other_facts = _fact_items(leftover_rows)
 
     source_names = sorted({_source_label(row) for row in day_rows})
     via = (
@@ -1320,9 +1761,11 @@ def _build_health_day(
         "sleep": sleep,
         "glucose_series": glucose_series,
         "activity": activity,
-        "heart": {"facts": heart_facts} if heart_facts else None,
+        "heart": heart,
         "mind_sound": {"facts": mind_sound_facts} if mind_sound_facts else None,
         "walking": {"facts": walking_facts} if walking_facts else None,
+        "body_measurements": {"facts": body_facts} if body_facts else None,
+        "other_signals": {"facts": other_facts} if other_facts else None,
         "sources": sources,
         "prompts": (
             _day_prompts(
@@ -1330,6 +1773,7 @@ def _build_health_day(
                 has_sleep=sleep is not None,
                 has_glucose=bool(glucose_series),
                 has_workouts=bool(activity and activity["workouts"]),
+                has_journal_day=(journal_root / "chronicle" / day).is_dir(),
             )
             if day_rows
             else []
@@ -1342,8 +1786,17 @@ def _build_health_day(
                     ).items()
                 )
             ),
+            # Every bundle that contained one of the day's entries, not
+            # just the bundle whose copy survived dedupe.
             "import_ids": sorted(
-                {str(row.get("import_id")) for row in day_rows if row.get("import_id")}
+                {
+                    import_id
+                    for row in day_rows
+                    for import_id in (
+                        row.get("import_ids")
+                        or ([str(row["import_id"])] if row.get("import_id") else [])
+                    )
+                }
             ),
         },
         "nearest": _nearest_days_with_data(by_day, day),
@@ -1403,14 +1856,23 @@ def _window_heart_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
         {str(row.get("unit")) for row in heart_rows if row.get("unit") is not None}
     )
     unit = units[0] if len(units) == 1 else ("mixed" if units else None)
-    range_label = f"{_format_number(min(values))}–{_format_number(max(values))}"
+    low = min(values)
+    high = max(values)
+    range_label = (
+        _format_number(low)
+        if low == high
+        else f"{_format_number(low)}–{_format_number(high)}"
+    )
+    display_unit = friendly_unit_label("HKQuantityTypeIdentifierHeartRate", unit)
     return {
         "count": len(values),
         "count_label": f"{len(values):,}",
-        "min": min(values),
-        "max": max(values),
+        "min": low,
+        "max": high,
         "unit": unit,
-        "label": f"{range_label} {unit}".strip() if unit else range_label,
+        "label": (
+            f"{range_label} {display_unit}".strip() if display_unit else range_label
+        ),
     }
 
 
@@ -1441,6 +1903,7 @@ def _window_glucose(rows: list[dict[str, Any]]) -> dict[str, Any]:
             "readings": [],
             "unit": None,
             "delta_label": None,
+            "range_label": None,
             "min": None,
             "max": None,
         }
@@ -1452,16 +1915,26 @@ def _window_glucose(rows: list[dict[str, Any]]) -> dict[str, Any]:
     if unit and unit != "mixed":
         delta += f" {unit}"
     values = [float(reading["value"]) for reading in readings]
+    low = min(values)
+    high = max(values)
+    value_range = (
+        _format_number(low)
+        if low == high
+        else f"{_format_number(low)}–{_format_number(high)}"
+    )
+    if unit and unit != "mixed":
+        value_range += f" {unit}"
     return {
         "count": len(readings),
         "count_label": f"{len(readings):,}",
         "readings": readings,
         "unit": unit,
         "delta_label": delta,
+        "range_label": value_range,
         "first": first,
         "last": last,
-        "min": min(values),
-        "max": max(values),
+        "min": low,
+        "max": high,
     }
 
 
@@ -1631,6 +2104,105 @@ def _window_brief(
     return rows
 
 
+def _hour_range_label(start: datetime, end: datetime) -> str:
+    return f"{_format_clock(start)} – {_format_clock(end)}"
+
+
+def _hourly_summary(
+    heart_rate: dict[str, Any],
+    glucose: dict[str, Any],
+    steps: dict[str, Any],
+    events: list[dict[str, Any]],
+) -> list[str]:
+    rows: list[str] = []
+    event_labels = []
+    for event in events:
+        label = str(event.get("label") or "").strip()
+        if label and label not in event_labels:
+            event_labels.append(label)
+    rows.extend(event_labels[:2])
+    if glucose.get("count"):
+        rows.append(f"Glucose {glucose.get('range_label') or glucose['delta_label']}")
+    if heart_rate.get("count"):
+        rows.append(f"HR {heart_rate['label']}")
+    if steps.get("label"):
+        rows.append(str(steps["label"]))
+    return rows
+
+
+def _event_slice_for_bucket(
+    events: list[dict[str, Any]], bucket_start: datetime, bucket_end: datetime
+) -> list[dict[str, Any]]:
+    slices: list[dict[str, Any]] = []
+    for event in events:
+        start = _parse_record_time(event.get("start"))
+        end = _parse_record_time(event.get("end"))
+        if start is None or end is None:
+            continue
+        minutes = _overlap_minutes(start, end, bucket_start, bucket_end)
+        if minutes <= 0:
+            continue
+        sliced = dict(event)
+        sliced["overlap_minutes"] = round(minutes, 1)
+        sliced["overlap_label"] = _format_duration(minutes)
+        slices.append(sliced)
+    return slices
+
+
+def _window_hourly_items(
+    rows: list[dict[str, Any]],
+    window_start: datetime,
+    window_end: datetime,
+    events: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Hour-bounded context that preserves a day's shape for transcripts."""
+
+    current = window_start.replace(minute=0, second=0, microsecond=0)
+    hourly: list[dict[str, Any]] = []
+    while current < window_end:
+        next_hour = current + timedelta(hours=1)
+        bucket_start = max(current, window_start)
+        bucket_end = min(next_hour, window_end)
+        if bucket_end <= bucket_start:
+            current = next_hour
+            continue
+
+        bucket_rows: list[dict[str, Any]] = []
+        for row in rows:
+            interval = _row_interval(row)
+            if interval is None:
+                continue
+            if _interval_overlaps(interval[0], interval[1], bucket_start, bucket_end):
+                bucket_rows.append(row)
+
+        heart_rate = _window_heart_rate(bucket_rows)
+        glucose = _window_glucose(bucket_rows)
+        steps = _window_steps(bucket_rows)
+        bucket_events = _event_slice_for_bucket(events, bucket_start, bucket_end)
+        summary = _hourly_summary(heart_rate, glucose, steps, bucket_events)
+
+        hourly.append(
+            {
+                "start": _iso(bucket_start),
+                "end": _iso(bucket_end),
+                "label": _format_clock(bucket_start),
+                "range_label": _hour_range_label(bucket_start, bucket_end),
+                "has_data": bool(bucket_rows or bucket_events),
+                "entry_total": len(bucket_rows),
+                "entry_total_label": f"{len(bucket_rows):,}",
+                "families": _window_family_items(bucket_rows),
+                "events": bucket_events,
+                "heart_rate": heart_rate,
+                "glucose": glucose,
+                "steps": steps,
+                "summary": summary,
+                "summary_label": " · ".join(summary),
+            }
+        )
+        current = next_hour
+    return hourly
+
+
 def _build_health_window(
     journal_root: Path,
     window_start: datetime,
@@ -1644,6 +2216,7 @@ def _build_health_window(
     glucose = _window_glucose(rows)
     steps = _window_steps(rows)
     workouts = _workout_window_items(rows, window_start, window_end)
+    events = _window_events(rows, window_start, window_end)
     brief = _window_brief(heart_rate, glucose, steps, workouts)
     span_minutes = (window_end - window_start).total_seconds() / 60
     return {
@@ -1659,7 +2232,8 @@ def _build_health_window(
         "glucose": glucose,
         "steps": steps,
         "workouts": workouts,
-        "events": _window_events(rows, window_start, window_end),
+        "events": events,
+        "hourly": _window_hourly_items(rows, window_start, window_end, events),
         "sources": _window_sources(rows),
         "brief": brief,
         "brief_label": " · ".join(brief),

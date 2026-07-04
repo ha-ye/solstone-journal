@@ -25,6 +25,7 @@ from solstone.think.importers.health_schema import (
     SOURCE_APPLE_HEALTH,
     HealthRecordIdentity,
     SleepInterval,
+    SleepStagedInterval,
     friendly_type_name,
     health_record_dedupe_key,
     health_value_hash,
@@ -150,6 +151,9 @@ class _NightSleep:
     start: dt.datetime
     end: dt.datetime
     entry_count: int
+    duration_minutes: float
+    in_bed_minutes: float | None = None
+    has_stage_detail: bool = False
 
 
 @dataclass(slots=True)
@@ -165,7 +169,9 @@ class _DaySummary:
     # Raw sleep intervals attributed to this day (by start time), per
     # source. The rendered session is resolved by _attach_night_sleep,
     # which also folds in the previous day's intervals.
-    sleep_intervals: dict[str, list[SleepInterval]] = field(default_factory=dict)
+    sleep_intervals: dict[str, list[SleepStagedInterval]] = field(
+        default_factory=dict
+    )
     night_sleep: _NightSleep | None = None
 
     def add_source(self, source_name: str | None) -> None:
@@ -173,13 +179,18 @@ class _DaySummary:
             self.sources.add(source_name)
 
     def add_sleep_interval(
-        self, source: str, start_date: str | None, end_date: str | None
+        self,
+        source: str,
+        start_date: str | None,
+        end_date: str | None,
+        value: object = None,
     ) -> None:
         start = _normalize_sleep_time(start_date)
         if start is None:
             return
         end = _normalize_sleep_time(end_date) or start
-        self.sleep_intervals.setdefault(source, []).append((start, end))
+        stage = str(value) if value is not None else None
+        self.sleep_intervals.setdefault(source, []).append((start, end, stage))
 
 
 class AppleHealthImporter:
@@ -828,7 +839,12 @@ def _add_to_day_summary(summary: _DaySummary, row: dict[str, Any]) -> None:
                 summary.glucose_unit = str(row["unit"])
     if "SleepAnalysis" in record_type:
         source = str(row.get("source_name") or row.get("source_family") or "unknown")
-        summary.add_sleep_interval(source, row.get("start_date"), row.get("end_date"))
+        summary.add_sleep_interval(
+            source,
+            row.get("start_date"),
+            row.get("end_date"),
+            row.get("value"),
+        )
 
 
 def _normalize_sleep_time(value: str | None) -> dt.datetime | None:
@@ -867,7 +883,7 @@ def _resolve_night_sleep(
         target = dt.datetime.strptime(summary.day, "%Y%m%d").date()
     except ValueError:
         return None
-    intervals_by_source: dict[str, list[SleepInterval]] = {}
+    intervals_by_source: dict[str, list[SleepStagedInterval]] = {}
     for source_summary in (prev_summary, summary):
         if source_summary is None:
             continue
@@ -880,9 +896,19 @@ def _resolve_night_sleep(
         return None
     start, end = sleep.main
     entry_count = sum(
-        1 for s, _ in intervals_by_source[sleep.source] if start <= s <= end
+        1 for s, _, _stage in intervals_by_source[sleep.source] if start <= s <= end
     )
-    return _NightSleep(start=start, end=end, entry_count=entry_count)
+    duration_minutes = sleep.asleep_minutes
+    if duration_minutes is None:
+        duration_minutes = (end - start).total_seconds() / 60
+    return _NightSleep(
+        start=start,
+        end=end,
+        entry_count=entry_count,
+        duration_minutes=duration_minutes,
+        in_bed_minutes=sleep.in_bed_minutes,
+        has_stage_detail=sleep.has_stage_detail,
+    )
 
 
 def _attach_night_sleep(summaries: dict[str, _DaySummary]) -> None:
@@ -959,10 +985,22 @@ def _sleep_line(summary: _DaySummary) -> str | None:
         (
             f"**Sleep** {_format_time_12h(sleep.start)}"
             f" – {_format_time_12h(sleep.end)}",
-            _format_duration(sleep.end - sleep.start),
+            _night_sleep_duration_label(sleep),
             _count_phrase(sleep.entry_count, "sleep entry", "sleep entries"),
         )
     )
+
+
+def _night_sleep_duration_label(sleep: _NightSleep) -> str:
+    duration = _format_duration(dt.timedelta(minutes=sleep.duration_minutes))
+    if (
+        sleep.has_stage_detail
+        and sleep.in_bed_minutes is not None
+        and round(sleep.in_bed_minutes) != round(sleep.duration_minutes)
+    ):
+        in_bed = _format_duration(dt.timedelta(minutes=sleep.in_bed_minutes))
+        return f"asleep {duration} · in bed {in_bed}"
+    return duration
 
 
 def _glucose_line(summary: _DaySummary) -> str | None:
