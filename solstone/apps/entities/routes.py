@@ -1536,6 +1536,8 @@ def delete_journal_entity_route(entity_id: str) -> Any:
                 },
             )
 
+        # See deferred_deletes module docstring: process-lifetime, pure-delete only,
+        # with pending-without-terminal action-log records as a forensic signature.
         deferred_deletes.schedule_with_id(pending_id, _commit, ttl_seconds=ttl)
         log_app_action(
             app="entities",
