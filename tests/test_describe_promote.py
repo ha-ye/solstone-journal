@@ -341,6 +341,37 @@ async def test_all_frames_failed_promotes_header_only_then_raises(
 
 
 @pytest.mark.asyncio
+async def test_all_frames_failed_output_is_terminal_until_redo(tmp_path, monkeypatch):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    processor = _processor(video_path, [_frame(1, 0.0, _png_bytes())], monkeypatch)
+    _install_fakes(monkeypatch, {1: {"fail": True, "error": "boom"}})
+
+    with pytest.raises(RuntimeError):
+        await processor.process_with_vision(
+            max_concurrent=1,
+            output_path=output_path,
+            work_key="20250101/143022_300/screen",
+        )
+
+    original = output_path.read_bytes()
+    constructed = []
+
+    def fail_if_constructed(*args, **kwargs):
+        constructed.append((args, kwargs))
+        raise AssertionError("VideoProcessor should not reprocess existing output")
+
+    monkeypatch.setattr(describe_module, "VideoProcessor", fail_if_constructed)
+    monkeypatch.setattr(describe_module, "require_solstone", lambda: None)
+    monkeypatch.setattr("sys.argv", ["journal describe", str(video_path)])
+
+    await describe_module.async_main()
+
+    assert constructed == []
+    assert output_path.read_bytes() == original
+
+
+@pytest.mark.asyncio
 async def test_unexpected_mid_job_exception_removes_temp_without_promoting(
     tmp_path, monkeypatch
 ):

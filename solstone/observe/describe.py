@@ -894,8 +894,9 @@ class VideoProcessor:
                 )
                 output_file.write(json.dumps(header) + "\n")
 
-            # All frames failed: promote the header-only file then re-raise so the
-            # segment is left for retry (the sole write-then-reraise path).
+            # All frames failed: promote the header-only failed output as a
+            # terminal record. Existing describe/sense re-entry guards treat
+            # that JSONL as processed; reprocessing requires manual --redo.
             if all_frames_failed:
                 error_detail = (
                     f"Error details in {output_path}"
@@ -904,7 +905,8 @@ class VideoProcessor:
                 )
                 logger.error(
                     f"All {total_frames} frame(s) failed categorization. "
-                    f"Video left in place for retry. {error_detail}"
+                    "Promoted header-only failed output; segment will not be "
+                    f"reprocessed until --redo. {error_detail}"
                 )
                 _promote()
                 raise RuntimeError(
