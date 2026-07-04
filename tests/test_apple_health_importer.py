@@ -2,8 +2,11 @@
 # Copyright (c) 2026 sol pbc
 
 import importlib
+import importlib.util
 import json
 import logging
+import re
+from collections import Counter
 from pathlib import Path
 
 import pytest
@@ -35,6 +38,110 @@ DTD_FIXTURE_ROOT = (
     / "health"
     / "apple_health_synthetic_dtd"
 )
+REGENERATE_SCRIPT = (
+    Path(__file__).parent.parent / "scripts" / "regenerate_health_day_summaries.py"
+)
+
+EXPECTED_FIXTURE_DAY_CARD = """\
+# Body · January 2, 2026
+
+Slept 10:30 PM – 6:30 AM, glucose 105 mg/dL, 1 workout.
+
+**Sleep** 10:30 PM – 6:30 AM · 8h 00m · 1 sleep entry
+
+**Glucose** 105 mg/dL · 1 reading
+
+**Workouts** Running · 1 workout
+
+**Signals**
+
+- Glucose: 1
+- Resting heart rate: 1
+- Sleep: 1
+
+*Sources: Synthetic Ring Mirror, Synthetic Stelo, Synthetic Watch \
+· 4 records summarized · brought in via Apple Health · import 20260103_120000*
+"""
+
+
+def _record_row(
+    record_type: str,
+    *,
+    value: str | None = None,
+    unit: str | None = None,
+    source: str = "Synthetic Watch",
+    start: str | None = None,
+    end: str | None = None,
+) -> dict:
+    row: dict = {"kind": "record", "record_type": record_type, "source_name": source}
+    if value is not None:
+        row["value"] = value
+    if unit is not None:
+        row["unit"] = unit
+    if start is not None:
+        row["start_date"] = start
+    if end is not None:
+        row["end_date"] = end
+    return row
+
+
+def _workout_row(activity_type: str, *, source: str = "Synthetic Watch") -> dict:
+    return {"kind": "workout", "record_type": activity_type, "source_name": source}
+
+
+def _rich_day_summary() -> apple_health._DaySummary:
+    summary = apple_health._DaySummary(day="20260701")
+    rows = [
+        _record_row(
+            "HKCategoryTypeIdentifierSleepAnalysis",
+            start="2026-07-01 00:01:00 -0700",
+            end="2026-07-01 03:00:00 -0700",
+        ),
+        _record_row(
+            "HKCategoryTypeIdentifierSleepAnalysis",
+            source="Synthetic Ring Mirror",
+            start="2026-07-01 03:10:00 -0700",
+            end="2026-07-01 08:05:00 -0700",
+        ),
+        _record_row(
+            "HKQuantityTypeIdentifierBloodGlucose",
+            value="77",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _record_row(
+            "HKQuantityTypeIdentifierBloodGlucose",
+            value="104",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _record_row(
+            "HKQuantityTypeIdentifierBloodGlucose",
+            value="84",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _record_row("HKQuantityTypeIdentifierStepCount", value="500", unit="count"),
+        _record_row("HKQuantityTypeIdentifierStepCount", value="250", unit="count"),
+        _record_row("HKQuantityTypeIdentifierStepCount", value="125", unit="count"),
+        _record_row("HKQuantityTypeIdentifierWalkingStepLength", value="0.7", unit="m"),
+        _workout_row("HKWorkoutActivityTypeRunning"),
+        _workout_row("HKWorkoutActivityTypeRunning"),
+        _workout_row("HKWorkoutActivityTypeRunning"),
+        _workout_row("HKWorkoutActivityTypeHighIntensityIntervalTraining"),
+    ]
+    for row in rows:
+        apple_health._add_to_day_summary(summary, row)
+    return summary
+
+
+def _load_regenerate_script_module():
+    spec = importlib.util.spec_from_file_location(
+        "regenerate_health_day_summaries", REGENERATE_SCRIPT
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_apple_health_registered_after_pre_save_gate():
@@ -218,17 +325,217 @@ def test_save_mode_writes_opt_in_day_summary_files_only_in_files_created(
     assert completion.not_thought == 0
 
     summary = summary_path.read_text(encoding="utf-8")
-    assert "HKQuantityTypeIdentifierBloodGlucose: 1" in summary
-    assert "HKCategoryTypeIdentifierSleepAnalysis: 1" in summary
-    assert (
-        "Sleep window: 2026-01-02T22:30:00-07:00 to 2026-01-03T06:30:00-07:00"
-    ) in summary
-    assert "Workout names: Running" in summary
-    assert "Glucose: count 1, min 105, max 105, mean 105" in summary
-    assert (
-        "Sources present: Synthetic Ring Mirror, Synthetic Stelo, Synthetic Watch"
-        in summary
+    assert summary == EXPECTED_FIXTURE_DAY_CARD
+
+
+def test_day_summary_card_has_lede_and_provenance_footer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    AppleHealthImporter().process(
+        FIXTURE_ROOT,
+        tmp_path,
+        import_id="20260103_120000",
+        dry_run=False,
+        date_from="2026-01-02",
+        date_to="2026-01-02",
+        with_day_summaries=True,
     )
+
+    summary_path = (
+        tmp_path
+        / "chronicle"
+        / "20260102"
+        / "import.apple_health"
+        / "000000_300"
+        / "day_summary_transcript.md"
+    )
+    lines = summary_path.read_text(encoding="utf-8").splitlines()
+
+    assert lines[0] == "# Body · January 2, 2026"
+    assert lines[2] == "Slept 10:30 PM – 6:30 AM, glucose 105 mg/dL, 1 workout."
+    footer = lines[-1]
+    assert "import 20260103_120000" in footer
+    assert "brought in via Apple Health" in footer
+    assert "4 records summarized" in footer
+
+
+def test_render_day_summary_owner_card_structure():
+    rendered = apple_health._render_day_summary(
+        _rich_day_summary(), import_id="20260704_090000"
+    )
+
+    assert rendered == (
+        "# Body · July 1, 2026\n"
+        "\n"
+        "Slept 12:01 AM – 8:05 AM, glucose 77–104 mg/dL (avg 88.3), 4 workouts.\n"
+        "\n"
+        "**Sleep** 12:01 AM – 8:05 AM · 8h 04m · 2 sleep entries\n"
+        "\n"
+        "**Glucose** 77–104 mg/dL · avg 88.3 · 3 readings\n"
+        "\n"
+        "**Workouts** High intensity interval training, Running · 4 workouts\n"
+        "\n"
+        "**Signals**\n"
+        "\n"
+        "- Glucose: 3\n"
+        "- Step count: 3\n"
+        "- Sleep: 2\n"
+        "- Walking step length: 1\n"
+        "\n"
+        "*Sources: Synthetic Ring Mirror, Synthetic Stelo, Synthetic Watch"
+        " · 13 records summarized · brought in via Apple Health"
+        " · import 20260704_090000*"
+    )
+
+
+def test_render_day_summary_uses_friendly_names_never_raw_identifiers():
+    rendered = apple_health._render_day_summary(
+        _rich_day_summary(), import_id="20260704_090000"
+    )
+
+    assert "HKQuantityTypeIdentifier" not in rendered
+    assert "HKCategoryTypeIdentifier" not in rendered
+    assert "HKWorkoutActivityType" not in rendered
+    assert "- Glucose: 3" in rendered
+    assert "- Step count: 3" in rendered
+    assert "- Sleep: 2" in rendered
+    assert "- Walking step length: 1" in rendered
+    assert "High intensity interval training" in rendered
+
+
+def test_render_day_summary_avoids_surveillance_words():
+    rendered = apple_health._render_day_summary(
+        _rich_day_summary(), import_id="20260704_090000"
+    ).lower()
+
+    for banned in ("capture", "track", "monitor", "collect"):
+        assert banned not in rendered
+    assert re.search(r"\brecorded\b", rendered) is None
+
+
+def test_render_day_summary_signals_only_day_uses_entry_count_lede():
+    summary = apple_health._DaySummary(day="20260101")
+    apple_health._add_to_day_summary(
+        summary,
+        _record_row("HKQuantityTypeIdentifierStepCount", value="500", unit="count"),
+    )
+    apple_health._add_to_day_summary(
+        summary,
+        _record_row("HKQuantityTypeIdentifierHeartRate", value="62", unit="count/min"),
+    )
+
+    rendered = apple_health._render_day_summary(summary, import_id="20260103_120000")
+    lines = rendered.splitlines()
+
+    assert lines[0] == "# Body · January 1, 2026"
+    assert lines[2] == "2 entries across 2 signals."
+    assert "**Sleep**" not in rendered
+    assert "**Glucose**" not in rendered
+    assert "**Workouts**" not in rendered
+    assert "- Heart rate: 1" in rendered
+    assert "- Step count: 1" in rendered
+
+
+def test_render_day_summary_formats_counts_with_thousands_separators():
+    summary = apple_health._DaySummary(day="20260701")
+    summary.record_count = 1234
+    summary.type_counts = Counter({"HKQuantityTypeIdentifierStepCount": 1234})
+
+    rendered = apple_health._render_day_summary(summary, import_id="20260704_090000")
+
+    assert "- Step count: 1,234" in rendered
+    assert "1,234 records summarized" in rendered
+
+
+def test_regenerate_script_dry_run_reports_diff_without_writing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    AppleHealthImporter().process(
+        FIXTURE_ROOT,
+        tmp_path,
+        import_id="20260103_120000",
+        dry_run=False,
+        with_day_summaries=True,
+    )
+    stale_path = (
+        tmp_path
+        / "chronicle"
+        / "20260102"
+        / "import.apple_health"
+        / "000000_300"
+        / "day_summary_transcript.md"
+    )
+    stale_content = "# Apple Health Summary\n\nstale debug dump\n"
+    stale_path.write_text(stale_content, encoding="utf-8")
+
+    module = _load_regenerate_script_module()
+    exit_code = module.main([str(tmp_path)])
+    output = capsys.readouterr().out
+
+    assert exit_code == 0
+    assert stale_path.read_text(encoding="utf-8") == stale_content
+    assert re.search(r"20260102: old \d+ bytes -> new \d+ bytes \(changed\)", output)
+    assert re.search(r"20260101: old \d+ bytes -> new \d+ bytes \(unchanged\)", output)
+    assert "1 would change" in output
+    assert "dry-run" in output
+
+
+def test_regenerate_script_apply_rewrites_from_rows_deduped_across_bundles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    for import_id in ("20260103_120000", "20260104_090000"):
+        AppleHealthImporter().process(
+            FIXTURE_ROOT,
+            tmp_path,
+            import_id=import_id,
+            dry_run=False,
+            with_day_summaries=True,
+        )
+    summary_path = (
+        tmp_path
+        / "chronicle"
+        / "20260102"
+        / "import.apple_health"
+        / "000000_300"
+        / "day_summary_transcript.md"
+    )
+    summary_path.write_text("# Apple Health Summary\n\nstale\n", encoding="utf-8")
+
+    module = _load_regenerate_script_module()
+    exit_code = module.main([str(tmp_path), "--apply"])
+    output = capsys.readouterr().out
+    regenerated = summary_path.read_text(encoding="utf-8")
+
+    assert exit_code == 0
+    assert "1 rewritten" in output
+    assert regenerated.startswith("# Body · January 2, 2026\n")
+    # Rows exist in both import bundles; dedupe_key collapse keeps the count
+    # at the fixture day's 4 unique records, attributed to the later bundle.
+    assert "4 records summarized" in regenerated
+    assert "import 20260104_090000" in regenerated
+
+    rerun_code = module.main([str(tmp_path)])
+    rerun_output = capsys.readouterr().out
+    assert rerun_code == 0
+    assert "0 would change" in rerun_output
+
+
+def test_regenerate_script_requires_existing_journal_root(tmp_path: Path):
+    module = _load_regenerate_script_module()
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.main([str(tmp_path / "missing-journal")])
+
+    assert excinfo.value.code == 2
 
 
 def test_detects_and_previews_synthetic_zip_fixture():

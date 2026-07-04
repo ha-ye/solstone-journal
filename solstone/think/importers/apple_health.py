@@ -24,6 +24,7 @@ from solstone.think.importers.health_dedupe import (
 from solstone.think.importers.health_schema import (
     SOURCE_APPLE_HEALTH,
     HealthRecordIdentity,
+    friendly_type_name,
     health_record_dedupe_key,
     health_value_hash,
 )
@@ -47,6 +48,21 @@ _EXPORT_XML_CANDIDATES = (
 
 _NORMALIZED_SCHEMA = "solstone.health.apple_health.v1"
 _DAY_SUMMARY_SEGMENT = "000000_300"
+
+_MONTH_NAMES = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
 
 
 @dataclass(slots=True)
@@ -134,22 +150,25 @@ class _DaySummary:
     workouts: list[str] = field(default_factory=list)
     glucose_values: list[float] = field(default_factory=list)
     glucose_unit: str | None = None
-    sleep_start: str | None = None
-    sleep_end: str | None = None
+    sleep_entry_count: int = 0
+    sleep_start: dt.datetime | None = None
+    sleep_end: dt.datetime | None = None
 
     def add_source(self, source_name: str | None) -> None:
         if source_name:
             self.sources.add(source_name)
 
     def add_sleep_window(self, start_date: str | None, end_date: str | None) -> None:
-        start_display = _time_display(start_date)
-        end_display = _time_display(end_date)
-        if start_display is None or end_display is None:
+        start = _parse_apple_datetime(start_date)
+        end = _parse_apple_datetime(end_date)
+        if start is None or end is None:
             return
-        if self.sleep_start is None or start_display < self.sleep_start:
-            self.sleep_start = start_display
-        if self.sleep_end is None or end_display > self.sleep_end:
-            self.sleep_end = end_display
+        if self.sleep_start is None or _wall_clock(start) < _wall_clock(
+            self.sleep_start
+        ):
+            self.sleep_start = start
+        if self.sleep_end is None or _wall_clock(end) > _wall_clock(self.sleep_end):
+            self.sleep_end = end
 
 
 class AppleHealthImporter:
@@ -784,7 +803,7 @@ def _add_to_day_summary(summary: _DaySummary, row: dict[str, Any]) -> None:
     record_type = row["record_type"]
     if kind == "workout":
         summary.workout_count += 1
-        summary.workouts.append(_display_identifier(record_type))
+        summary.workouts.append(friendly_type_name(record_type))
         return
 
     summary.record_count += 1
@@ -796,45 +815,172 @@ def _add_to_day_summary(summary: _DaySummary, row: dict[str, Any]) -> None:
             if row.get("unit"):
                 summary.glucose_unit = str(row["unit"])
     if "SleepAnalysis" in record_type:
+        summary.sleep_entry_count += 1
         summary.add_sleep_window(row.get("start_date"), row.get("end_date"))
 
 
 def _render_day_summary(summary: _DaySummary, *, import_id: str) -> str:
-    lines = [
-        "# Apple Health Summary",
-        "",
-        f"Import ID: {import_id}",
-        f"Day: {summary.day}",
-        "",
-        f"Records: {summary.record_count}",
-        f"Workouts: {summary.workout_count}",
-    ]
-    lines.append("")
-    lines.append("Counts by type:")
+    """Render an owner-facing day-summary card as markdown.
+
+    Deterministic for a given summary: every section derives only from the
+    summary's data, sorted where iteration order could vary. Times stay in
+    each record's own offset; friendly type names replace raw identifiers.
+    """
+
+    lines = [f"# Body · {_pretty_day(summary.day)}", "", _day_summary_lede(summary)]
+    for section_line in (
+        _sleep_line(summary),
+        _glucose_line(summary),
+        _workouts_line(summary),
+    ):
+        if section_line:
+            lines.extend(["", section_line])
     if summary.type_counts:
-        for name, count in sorted(summary.type_counts.items()):
-            lines.append(f"- {name}: {count}")
-    else:
-        lines.append("- none")
-    if summary.workouts:
-        lines.append(f"Workout names: {', '.join(sorted(set(summary.workouts)))}")
-    if summary.sleep_start and summary.sleep_end:
-        lines.append(f"Sleep window: {summary.sleep_start} to {summary.sleep_end}")
-    if summary.glucose_values:
-        unit = f" {summary.glucose_unit}" if summary.glucose_unit else ""
-        glucose_min = min(summary.glucose_values)
-        glucose_max = max(summary.glucose_values)
-        glucose_mean = sum(summary.glucose_values) / len(summary.glucose_values)
-        lines.append(
-            "Glucose: "
-            f"count {len(summary.glucose_values)}, "
-            f"min {glucose_min:g}, "
-            f"max {glucose_max:g}, "
-            f"mean {glucose_mean:g}{unit}"
-        )
-    if summary.sources:
-        lines.append(f"Sources present: {', '.join(sorted(summary.sources))}")
+        lines.extend(["", "**Signals**", ""])
+        friendly_counts: Counter[str] = Counter()
+        for record_type, count in summary.type_counts.items():
+            friendly_counts[friendly_type_name(record_type)] += count
+        for name, count in sorted(
+            friendly_counts.items(), key=lambda item: (-item[1], item[0])
+        ):
+            lines.append(f"- {name}: {count:,}")
+    lines.extend(["", _day_summary_footer(summary, import_id=import_id)])
     return "\n".join(lines)
+
+
+def _day_summary_lede(summary: _DaySummary) -> str:
+    parts: list[str] = []
+    if summary.sleep_start and summary.sleep_end:
+        parts.append(
+            f"Slept {_format_time_12h(summary.sleep_start)}"
+            f" – {_format_time_12h(summary.sleep_end)}"
+        )
+    if summary.glucose_values:
+        glucose = f"glucose {_glucose_range(summary)}"
+        average = _glucose_average(summary)
+        if average is not None:
+            glucose += f" (avg {average})"
+        parts.append(glucose)
+    if summary.workout_count:
+        parts.append(_count_phrase(summary.workout_count, "workout"))
+    if not parts:
+        parts.append(
+            f"{_count_phrase(summary.record_count, 'entry', 'entries')} across "
+            f"{_count_phrase(len(summary.type_counts), 'signal')}"
+        )
+    sentence = ", ".join(parts) + "."
+    return sentence[0].upper() + sentence[1:]
+
+
+def _sleep_line(summary: _DaySummary) -> str | None:
+    if summary.sleep_start is None or summary.sleep_end is None:
+        return None
+    parts = [
+        f"**Sleep** {_format_time_12h(summary.sleep_start)}"
+        f" – {_format_time_12h(summary.sleep_end)}"
+    ]
+    duration = _sleep_duration(summary.sleep_start, summary.sleep_end)
+    if duration is not None:
+        parts.append(_format_duration(duration))
+    parts.append(
+        _count_phrase(summary.sleep_entry_count, "sleep entry", "sleep entries")
+    )
+    return " · ".join(parts)
+
+
+def _glucose_line(summary: _DaySummary) -> str | None:
+    if not summary.glucose_values:
+        return None
+    parts = [f"**Glucose** {_glucose_range(summary)}"]
+    average = _glucose_average(summary)
+    if average is not None:
+        parts.append(f"avg {average}")
+    parts.append(_count_phrase(len(summary.glucose_values), "reading"))
+    return " · ".join(parts)
+
+
+def _workouts_line(summary: _DaySummary) -> str | None:
+    if not summary.workout_count:
+        return None
+    names = ", ".join(sorted(set(summary.workouts)))
+    return f"**Workouts** {names} · {_count_phrase(summary.workout_count, 'workout')}"
+
+
+def _day_summary_footer(summary: _DaySummary, *, import_id: str) -> str:
+    total = summary.record_count + summary.workout_count
+    parts: list[str] = []
+    if summary.sources:
+        parts.append(f"Sources: {', '.join(sorted(summary.sources))}")
+    parts.append(f"{total:,} records summarized")
+    parts.append("brought in via Apple Health")
+    parts.append(f"import {import_id}")
+    return f"*{' · '.join(parts)}*"
+
+
+def _glucose_range(summary: _DaySummary) -> str:
+    low = _format_glucose_value(min(summary.glucose_values))
+    high = _format_glucose_value(max(summary.glucose_values))
+    unit = f" {summary.glucose_unit}" if summary.glucose_unit else ""
+    if low == high:
+        return f"{low}{unit}"
+    return f"{low}–{high}{unit}"
+
+
+def _glucose_average(summary: _DaySummary) -> str | None:
+    """Average glucose display value, or None when it adds nothing (flat range)."""
+
+    values = summary.glucose_values
+    if min(values) == max(values):
+        return None
+    text = f"{sum(values) / len(values):,.1f}"
+    return text[:-2] if text.endswith(".0") else text
+
+
+def _count_phrase(count: int, singular: str, plural: str | None = None) -> str:
+    label = singular if count == 1 else (plural or f"{singular}s")
+    return f"{count:,} {label}"
+
+
+def _pretty_day(day: str) -> str:
+    try:
+        parsed = dt.datetime.strptime(day, "%Y%m%d")
+    except ValueError:
+        return day
+    return f"{_MONTH_NAMES[parsed.month - 1]} {parsed.day}, {parsed.year}"
+
+
+def _format_time_12h(value: dt.datetime) -> str:
+    hour = value.hour % 12 or 12
+    suffix = "AM" if value.hour < 12 else "PM"
+    return f"{hour}:{value.minute:02d} {suffix}"
+
+
+def _format_duration(duration: dt.timedelta) -> str:
+    total_minutes = round(duration.total_seconds() / 60)
+    hours, minutes = divmod(total_minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    return f"{minutes}m"
+
+
+def _sleep_duration(start: dt.datetime, end: dt.datetime) -> dt.timedelta | None:
+    if (start.tzinfo is None) == (end.tzinfo is None):
+        duration = end - start
+    else:
+        duration = _wall_clock(end) - _wall_clock(start)
+    if duration <= dt.timedelta(0):
+        return None
+    return duration
+
+
+def _wall_clock(value: dt.datetime) -> dt.datetime:
+    return value.replace(tzinfo=None)
+
+
+def _format_glucose_value(value: float) -> str:
+    if value == int(value):
+        return f"{int(value):,}"
+    return f"{value:g}"
 
 
 def _content_manifest_entries(
@@ -908,17 +1054,17 @@ def _parse_apple_day(value: str | None) -> str | None:
         return None
 
 
-def _time_display(value: str | None) -> str | None:
+def _parse_apple_datetime(value: str | None) -> dt.datetime | None:
     if not value:
         return None
     value = value.strip()
     for fmt in ("%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M:%S"):
         try:
-            return dt.datetime.strptime(value, fmt).isoformat()
+            return dt.datetime.strptime(value, fmt)
         except ValueError:
             pass
     try:
-        return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat()
+        return dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
 

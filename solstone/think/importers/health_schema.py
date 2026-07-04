@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from typing import Any, Final, Mapping
 
@@ -23,6 +24,60 @@ KNOWN_SOURCE_FAMILIES: Final = frozenset(
 )
 
 DEFAULT_HEALTH_IMPORT_STREAM: Final = "import.apple_health"
+
+# Owner-facing names for record types whose derived form reads poorly.
+# Everything else falls through to the prettifier below, so new owners'
+# device types render acceptably with no code change.
+FRIENDLY_TYPE_NAMES: Final[Mapping[str, str]] = {
+    "HKQuantityTypeIdentifierBloodGlucose": "Glucose",
+    "HKQuantityTypeIdentifierHeartRate": "Heart rate",
+    "HKQuantityTypeIdentifierHeartRateVariabilitySDNN": "Heart rate variability",
+    "HKQuantityTypeIdentifierRestingHeartRate": "Resting heart rate",
+    "HKQuantityTypeIdentifierWalkingHeartRateAverage": "Walking heart rate average",
+    "HKQuantityTypeIdentifierHeartRateRecoveryOneMinute": "Heart rate recovery",
+    "HKQuantityTypeIdentifierOxygenSaturation": "Blood oxygen",
+    "HKQuantityTypeIdentifierRespiratoryRate": "Respiratory rate",
+    "HKQuantityTypeIdentifierBloodPressureSystolic": "Blood pressure (systolic)",
+    "HKQuantityTypeIdentifierBloodPressureDiastolic": "Blood pressure (diastolic)",
+    "HKQuantityTypeIdentifierVO2Max": "VO2 max",
+    "HKQuantityTypeIdentifierStepCount": "Step count",
+    "HKQuantityTypeIdentifierActiveEnergyBurned": "Active energy",
+    "HKQuantityTypeIdentifierBasalEnergyBurned": "Resting energy",
+    "HKQuantityTypeIdentifierDistanceWalkingRunning": "Walking + running distance",
+    "HKQuantityTypeIdentifierDistanceCycling": "Cycling distance",
+    "HKQuantityTypeIdentifierFlightsClimbed": "Flights climbed",
+    "HKQuantityTypeIdentifierAppleExerciseTime": "Exercise minutes",
+    "HKQuantityTypeIdentifierAppleStandTime": "Stand time",
+    "HKCategoryTypeIdentifierAppleStandHour": "Stand hours",
+    "HKQuantityTypeIdentifierPhysicalEffort": "Physical effort",
+    "HKCategoryTypeIdentifierSleepAnalysis": "Sleep",
+    "HKQuantityTypeIdentifierAppleSleepingWristTemperature": "Wrist temperature",
+    "HKCategoryTypeIdentifierMindfulSession": "Mindful sessions",
+    "HKQuantityTypeIdentifierHeadphoneAudioExposure": "Headphone audio level",
+    "HKQuantityTypeIdentifierEnvironmentalAudioExposure": "Environmental audio level",
+    "HKQuantityTypeIdentifierTimeInDaylight": "Time in daylight",
+    "HKQuantityTypeIdentifierBodyMass": "Body mass",
+    "HKQuantityTypeIdentifierBodyMassIndex": "Body mass index",
+    "HKQuantityTypeIdentifierBodyFatPercentage": "Body fat",
+    "HKQuantityTypeIdentifierLeanBodyMass": "Lean body mass",
+    "HKQuantityTypeIdentifierHeight": "Height",
+}
+
+_HK_PREFIX_RE: Final = re.compile(
+    r"^HK(?:Quantity|Category)TypeIdentifier|^HKDataType|^HKWorkoutActivityType"
+)
+_CAMEL_RE: Final = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+
+
+def friendly_type_name(record_type: str) -> str:
+    """Owner-facing name for a health record type, never a raw identifier."""
+
+    known = FRIENDLY_TYPE_NAMES.get(record_type)
+    if known:
+        return known
+    stripped = _HK_PREFIX_RE.sub("", record_type)
+    words = _CAMEL_RE.sub(" ", stripped)
+    return (words[:1].upper() + words[1:].lower()) if words else record_type
 
 
 @dataclass(frozen=True, slots=True)
