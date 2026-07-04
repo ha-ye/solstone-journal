@@ -167,7 +167,10 @@ def test_save_mode_writes_raw_source_normalized_rows_and_dedupe_to_journal_root(
 
 def test_save_mode_writes_opt_in_day_summary_files_only_in_files_created(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
     result = AppleHealthImporter().process(
         FIXTURE_ROOT,
         tmp_path,
@@ -189,6 +192,30 @@ def test_save_mode_writes_opt_in_day_summary_files_only_in_files_created(
         / "day_summary_transcript.md"
     )
     assert result.segments == [("20260102", "000000_300")]
+
+    from solstone.think.cluster import cluster_segments
+    from solstone.think.pipeline_health import (
+        classify_segment_completion,
+        read_segment_progress,
+    )
+
+    clustered = cluster_segments("20260102")
+    assert clustered == [
+        {
+            "key": "000000_300",
+            "start": "00:00",
+            "end": "00:05",
+            "types": ["markdown"],
+            "stream": "import.apple_health",
+            "data_state": {"markdown": "analyzed"},
+        }
+    ]
+    completion = classify_segment_completion(
+        clustered, read_segment_progress("20260102")
+    )
+    assert completion.blockers == []
+    assert completion.not_sensed == 0
+    assert completion.not_thought == 0
 
     summary = summary_path.read_text(encoding="utf-8")
     assert "HKQuantityTypeIdentifierBloodGlucose: 1" in summary

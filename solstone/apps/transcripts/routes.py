@@ -68,13 +68,14 @@ from solstone.think.data_state import (
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
 from solstone.think.formatters import format_file
 from solstone.think.journal_stats import load_fresh_day_cache
-from solstone.think.media import MIME_TYPES
+from solstone.think.media import MIME_TYPES, PDF_EXTENSIONS
 from solstone.think.models import get_usage_cost
 from solstone.think.pipeline_health import (
     lookup_segment_progress,
     read_segment_progress,
     segment_fully_sensed,
     segment_fully_thought,
+    segment_requires_processing,
 )
 from solstone.think.supervisor import is_supervisor_up
 from solstone.think.utils import (
@@ -127,7 +128,11 @@ def _attach_think_to_segments(segments: list[dict[str, Any]], day: str) -> None:
     """
     progress = read_segment_progress(day)
     for seg in segments:
-        if not segment_fully_sensed(seg["data_state"]):
+        data_state = seg.get("data_state") or {}
+        if not segment_requires_processing(seg):
+            seg["think"] = None
+            continue
+        if not segment_fully_sensed(data_state):
             seg["think"] = None
             continue
         thought, _reason = segment_fully_thought(
@@ -191,6 +196,66 @@ def _attach_streams_to_ranges(
     return out
 
 
+def _segment_markdown_files(segment_dir_path: Path) -> list[Path]:
+    return sorted(
+        {
+            path
+            for pattern in ("*_transcript.md", "imported.md")
+            for path in segment_dir_path.glob(pattern)
+            if path.is_file()
+        }
+    )
+
+
+def _is_markdown_only_segment(segment_dir_path: Path, stream: str) -> bool:
+    if not stream.startswith("import."):
+        return False
+    if not _segment_markdown_files(segment_dir_path):
+        return False
+
+    for pattern in ("*audio.jsonl", "*screen.jsonl", "*_transcript.jsonl"):
+        if any(path.is_file() for path in segment_dir_path.glob(pattern)):
+            return False
+
+    raw_extensions = (
+        set(AUDIO_EXTENSIONS)
+        | set(VIDEO_EXTENSIONS)
+        | set(IMAGE_EXTENSIONS)
+        | set(PDF_EXTENSIONS)
+    )
+    return not any(
+        path.is_file() and path.suffix.lower() in raw_extensions
+        for path in segment_dir_path.iterdir()
+    )
+
+
+def _normalize_markdown_only_segments(segments: list[dict[str, Any]], day: str) -> None:
+    for seg in segments:
+        stream = seg.get("stream")
+        key = seg.get("key")
+        if not isinstance(stream, str) or not isinstance(key, str):
+            continue
+        try:
+            seg_dir = segment_path(day, key, stream, create=False)
+        except (OSError, ValueError):
+            continue
+        if _is_markdown_only_segment(seg_dir, stream):
+            seg["types"] = ["markdown"]
+            seg["data_state"] = {"markdown": DataState.ANALYZED.value}
+
+
+def _attach_visible_streams_to_ranges(
+    ranges: list[tuple[str, str]],
+    segments: list[dict[str, Any]],
+    content_type: str,
+) -> list[dict[str, Any]]:
+    return [
+        range_payload
+        for range_payload in _attach_streams_to_ranges(ranges, segments, content_type)
+        if range_payload["streams"]
+    ]
+
+
 @transcripts_bp.route("/")
 def index() -> Any:
     """Redirect to the most recent day with segments, falling back to today."""
@@ -219,11 +284,14 @@ def transcript_ranges(day: str) -> Any:
         return error_response(INVALID_DAY, status=404, detail="Day not found")
 
     audio_ranges, screen_ranges, segments = scan_day(day)
+    _normalize_markdown_only_segments(segments, day)
     _attach_think_to_segments(segments, day)
     return jsonify(
         {
-            "audio": _attach_streams_to_ranges(audio_ranges, segments, "audio"),
-            "screen": _attach_streams_to_ranges(screen_ranges, segments, "screen"),
+            "audio": _attach_visible_streams_to_ranges(audio_ranges, segments, "audio"),
+            "screen": _attach_visible_streams_to_ranges(
+                screen_ranges, segments, "screen"
+            ),
         }
     )
 
@@ -238,6 +306,7 @@ def transcript_segments(day: str) -> Any:
         return error_response(INVALID_DAY, status=404, detail="Day not found")
 
     segments = cluster_segments(day)
+    _normalize_markdown_only_segments(segments, day)
     _attach_think_to_segments(segments, day)
     return jsonify({"segments": segments})
 
@@ -249,11 +318,14 @@ def transcript_day_data(day: str) -> Any:
         return error_response(INVALID_DAY, status=404, detail="Day not found")
 
     audio_ranges, screen_ranges, segments = scan_day(day)
+    _normalize_markdown_only_segments(segments, day)
     _attach_think_to_segments(segments, day)
     return jsonify(
         {
-            "audio": _attach_streams_to_ranges(audio_ranges, segments, "audio"),
-            "screen": _attach_streams_to_ranges(screen_ranges, segments, "screen"),
+            "audio": _attach_visible_streams_to_ranges(audio_ranges, segments, "audio"),
+            "screen": _attach_visible_streams_to_ranges(
+                screen_ranges, segments, "screen"
+            ),
             "segments": segments,
         }
     )
@@ -413,7 +485,11 @@ def _load_segment_signals(segment_dir_path: Path) -> dict[str, Any]:
     """Load optional Mentra signal context for display in the transcript app."""
     signals_path = segment_dir_path / "signals.jsonl"
     if not signals_path.is_file():
-        return {"events": [], "counts": {}, "calendar": {"total": 0, "unique": 0, "events": []}}
+        return {
+            "events": [],
+            "counts": {},
+            "calendar": {"total": 0, "unique": 0, "events": []},
+        }
 
     events: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
@@ -430,7 +506,11 @@ def _load_segment_signals(segment_dir_path: Path) -> dict[str, Any]:
             continue
         payload = record.get("payload")
         payload = payload if isinstance(payload, dict) else {}
-        timestamp = record.get("timestamp") or payload.get("timestamp") or payload.get("timeStamp")
+        timestamp = (
+            record.get("timestamp")
+            or payload.get("timestamp")
+            or payload.get("timeStamp")
+        )
         timestamp_ms = _timestamp_from_value(timestamp)
         event = {
             "event_type": event_type,
@@ -469,7 +549,10 @@ def _load_segment_signals(segment_dir_path: Path) -> dict[str, Any]:
     events.sort(key=lambda event: (event["timestamp_ms"], event["event_type"]))
     calendar_events = sorted(
         calendar_by_key.values(),
-        key=lambda event: (str(event.get("dtStart") or ""), str(event.get("title") or "")),
+        key=lambda event: (
+            str(event.get("dtStart") or ""),
+            str(event.get("title") or ""),
+        ),
     )
     return {
         "events": events,
@@ -920,9 +1003,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 rel_path = f"{stream}/{segment_key}/{raw_name}"
                 media_url = f"/app/transcripts/api/serve_file/{day}/{rel_path}"
                 if suffix in VIDEO_EXTENSIONS:
-                    video_files[filename] = (
-                        media_url
-                    )
+                    video_files[filename] = media_url
                 else:
                     image_files[raw_name] = media_url
                 resolved = media_full.resolve()
@@ -943,7 +1024,9 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                         if isinstance(text, str) and text.strip():
                             return text.strip()
                 except Exception:
-                    logger.debug("Failed to read image sidecar %s", sidecar, exc_info=True)
+                    logger.debug(
+                        "Failed to read image sidecar %s", sidecar, exc_info=True
+                    )
                 return ""
 
             register_screen_media(raw_media)
@@ -1090,6 +1173,39 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
             )
             continue
 
+    markdown_chunks_added = False
+    if _is_markdown_only_segment(segment_dir_path, stream):
+        time_str = _format_time_from_offset(segment_key, 0)
+        timestamp = _timestamp_from_day_time(day, time_str)
+        for md_path in _segment_markdown_files(segment_dir_path):
+            try:
+                markdown = md_path.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                logger.warning(
+                    "Failed to read markdown segment %s", md_path, exc_info=True
+                )
+                warning_details.append(
+                    {
+                        "type": "markdown",
+                        "file": str(md_path),
+                        "message": str(exc),
+                        "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                    }
+                )
+                continue
+            if not markdown:
+                continue
+            chunks.append(
+                {
+                    "type": "markdown",
+                    "time": time_str,
+                    "timestamp": timestamp,
+                    "markdown": markdown,
+                    "source_ref": {"filename": md_path.name},
+                }
+            )
+            markdown_chunks_added = True
+
     # Sort all chunks by timestamp
     chunks.sort(key=lambda c: c["timestamp"])
     media_purged = {
@@ -1128,7 +1244,8 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 if modality in warning_types and state == DataState.PENDING.value:
                     state = DataState.FAILED.value
                 data_state[modality] = state
-
+    if markdown_chunks_added:
+        data_state["markdown"] = DataState.ANALYZED.value
     # Get cost data for this segment
     cost_data = get_usage_cost(day, segment=segment_key)
 

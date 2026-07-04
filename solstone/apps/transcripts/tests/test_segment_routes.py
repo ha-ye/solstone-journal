@@ -20,6 +20,7 @@ import pytest
 from solstone.apps.transcripts.routes import (
     _attach_streams_to_ranges,
     _segment_modality_signals,
+    _timestamp_from_day_time,
     _watch_reprocess_completion,
 )
 from solstone.apps.transcripts.tests._media_helpers import (
@@ -545,6 +546,71 @@ def test_segment_content_happy_path_returns_segment_payload(client):
     assert data["data_state"] == {"audio": "analyzed", "screen": "analyzed"}
     assert set(data["media_purged"]) == {"audio", "screen"}
     assert all(isinstance(value, bool) for value in data["media_purged"].values())
+
+
+def test_markdown_only_import_segment_lists_as_markdown(client, journal_copy):
+    day = "20990114"
+    stream = "import.apple_health"
+    segment = "000000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "day_summary_transcript.md").write_text(
+        "# Apple Health Summary\n\nGlucose readings: 12\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segments/{day}")
+
+    assert response.status_code == 200
+    segments = response.get_json()["segments"]
+    health_segment = next(seg for seg in segments if seg["stream"] == stream)
+    assert health_segment["types"] == ["markdown"]
+    assert health_segment["data_state"] == {"markdown": "analyzed"}
+    assert health_segment["think"] is None
+
+    day_response = client.get(f"/app/transcripts/api/day/{day}")
+    assert day_response.status_code == 200
+    day_data = day_response.get_json()
+    assert day_data["audio"] == []
+    assert day_data["screen"] == []
+    assert day_data["segments"] == [health_segment]
+
+
+def test_markdown_only_import_segment_renders_markdown_chunk(client, journal_copy):
+    day = "20990114"
+    stream = "import.apple_health"
+    segment = "000000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "day_summary_transcript.md").write_text(
+        "# Apple Health Summary\n\nGlucose readings: 12\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["audio_file"] is None
+    assert data["duration"] == 0.0
+    assert data["media_sizes"] == {"audio": 0, "screen": 0}
+    assert data["media_purged"] == {"audio": False, "screen": False}
+    assert data["data_state"] == {"markdown": "analyzed"}
+    assert len(data["chunks"]) == 1
+    chunk = data["chunks"][0]
+    assert chunk["type"] == "markdown"
+    assert chunk["time"] == "00:00:00"
+    assert chunk["timestamp"] == _timestamp_from_day_time(day, "00:00:00")
+    assert chunk["markdown"] == "# Apple Health Summary\n\nGlucose readings: 12"
+    assert chunk["source_ref"] == {"filename": "day_summary_transcript.md"}
 
 
 def test_segment_content_marks_headerless_screen_frame_analyzed(client, journal_copy):

@@ -1133,6 +1133,35 @@ def test_scan_day_marks_text_transcript_audio_analyzed(tmp_path, monkeypatch, fi
     assert segments[0]["data_state"] == {"audio": "analyzed"}
 
 
+def test_scan_day_marks_markdown_only_import_segment_as_markdown(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    segment = day_dir / "import.apple_health" / "090000_300"
+    segment.mkdir(parents=True)
+    (segment / "day_summary_transcript.md").write_text("health summary\n")
+
+    audio_ranges, screen_ranges, segments = mod.scan_day("20240101")
+
+    assert audio_ranges == []
+    assert screen_ranges == []
+    assert segments == [
+        {
+            "key": "090000_300",
+            "start": "09:00",
+            "end": "09:05",
+            "types": ["markdown"],
+            "stream": "import.apple_health",
+            "data_state": {"markdown": "analyzed"},
+        }
+    ]
+    assert mod.read_segment_data_state(
+        "20240101", "090000_300", "import.apple_health"
+    ) == {"markdown": "analyzed"}
+
+
 def test_day_path_create_false(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -1153,3 +1182,22 @@ def test_find_segment_dir_missing_streamed_segment_does_not_create_directory(
 
     assert result is None
     assert not (tmp_path / "chronicle" / "29990101").exists()
+
+
+def test_scan_day_keeps_document_import_segment_as_media(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day = "20990415"
+    seg_dir = tmp_path / "chronicle" / day / "import.document" / "120000_300"
+    seg_dir.mkdir(parents=True)
+    (seg_dir / "document_transcript.md").write_text(
+        "# Imported Document\n\nSome extracted text.\n", encoding="utf-8"
+    )
+    (seg_dir / "original.pdf").write_bytes(b"%PDF-1.4 synthetic")
+
+    from solstone.think.cluster import scan_day
+
+    _, _, segments = scan_day(day)
+
+    assert len(segments) == 1
+    assert segments[0]["types"] != ["markdown"]
+    assert "markdown" not in segments[0]["data_state"]

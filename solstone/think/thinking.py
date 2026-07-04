@@ -65,6 +65,7 @@ from solstone.think.pipeline_health import (
     read_segment_progress,
     segment_fully_sensed,
     segment_fully_thought,
+    segment_requires_processing,
 )
 from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, run_task
 from solstone.think.sense_splitter import (
@@ -502,6 +503,9 @@ def _select_segment_repair_targets(
     progress = read_segment_progress(day)
     selected: list[dict] = []
     for seg in segments:
+        if not segment_requires_processing(seg):
+            counts["complete"] += 1
+            continue
         if not segment_fully_sensed(seg.get("data_state", {})):
             counts["raw_blocked"] += 1
             continue

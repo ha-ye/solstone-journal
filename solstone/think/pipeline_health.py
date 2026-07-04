@@ -48,6 +48,7 @@ _ACTIVITY_WORK_EVENTS = frozenset(
 )
 SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("documents",)
 SEGMENT_NONGATING_TALENTS: tuple[str, ...] = ("entities:detection",)
+SEGMENT_NO_PROCESSING_MODALITIES = frozenset({"markdown"})
 # Floor talents are capped after repeated failures spanning at least two hours.
 CAP = 5
 MIN_SPAN_MS = 7_200_000
@@ -940,6 +941,20 @@ def segment_fully_sensed(data_state: dict[str, str]) -> bool:
     return all(state in SENSED_TERMINAL_STATES for state in data_state.values())
 
 
+def segment_requires_processing(segment: dict) -> bool:
+    """True when a clustered segment has media/data that should enter think.
+
+    An empty data_state returns True so an anomalous segment surfaces as a
+    visible blocker instead of silently counting as complete.
+    """
+    data_state = segment.get("data_state") or {}
+    if not data_state:
+        return True
+    return any(
+        modality not in SEGMENT_NO_PROCESSING_MODALITIES for modality in data_state
+    )
+
+
 def segment_fully_thought(progress: SegmentProgress | None) -> tuple[bool, str | None]:
     """Per-segment fully-thought verdict. Returns (ok, blocking_reason)."""
     if progress is None or not progress.sensed:
@@ -991,6 +1006,8 @@ def classify_segment_completion(
     capped = 0
 
     for seg in segments:
+        if not segment_requires_processing(seg):
+            continue
         key = seg["key"]
         segment_progress = lookup_segment_progress(progress, seg["stream"], key)
         if segment_progress is not None and segment_progress.capped:

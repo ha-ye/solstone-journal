@@ -242,6 +242,22 @@ def _seed_segment(
     return segment_dir
 
 
+def _seed_markdown_import_segment(
+    journal: Path,
+    day: str = DAY,
+    segment: str = SEGMENT,
+    *,
+    stream: str = "import.apple_health",
+) -> Path:
+    segment_dir = journal / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    (segment_dir / "day_summary_transcript.md").write_text(
+        "# Daily Health\n\nSynthetic summary.\n",
+        encoding="utf-8",
+    )
+    return segment_dir
+
+
 def _write_health(journal: Path, day: str, filename: str, events: list[dict]) -> Path:
     path = journal / "chronicle" / day / "health" / filename
     _write_jsonl(path, events)
@@ -411,6 +427,51 @@ def test_stream_lookup_does_not_borrow_from_other_stream(segment_journal):
     completion = classify_segment_completion(cluster_segments(day), progress)
     assert completion.not_thought == 1
     assert completion.total == 2
+
+
+def test_markdown_only_import_segment_has_no_completion_blocker(segment_journal):
+    day = "20990412"
+    stream = "import.apple_health"
+    _seed_markdown_import_segment(segment_journal, day, SEGMENT, stream=stream)
+
+    segments = cluster_segments(day)
+    completion = classify_segment_completion(segments, read_segment_progress(day))
+
+    assert segments == [
+        {
+            "key": SEGMENT,
+            "start": "09:00",
+            "end": "09:05",
+            "types": ["markdown"],
+            "stream": stream,
+            "data_state": {"markdown": "analyzed"},
+        }
+    ]
+    assert completion.blockers == []
+    assert completion.not_sensed == 0
+    assert completion.not_thought == 0
+    assert completion.total == 1
+
+
+def test_markdown_only_import_segment_is_not_selected_for_repair(segment_journal):
+    day = "20990413"
+    stream = "import.apple_health"
+    _seed_markdown_import_segment(segment_journal, day, SEGMENT, stream=stream)
+    thinking = importlib.import_module("solstone.think.thinking")
+
+    selected, counts = thinking._select_segment_repair_targets(
+        day,
+        cluster_segments(day),
+        force_all=False,
+    )
+
+    assert selected == []
+    assert counts == {
+        "total": 1,
+        "selected": 0,
+        "complete": 1,
+        "raw_blocked": 0,
+    }
 
 
 def test_stream_keyed_no_config_floor_allows_completion(segment_journal):
