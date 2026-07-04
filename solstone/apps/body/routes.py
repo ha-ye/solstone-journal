@@ -22,7 +22,7 @@ import re
 import sqlite3
 from collections import Counter, defaultdict
 from contextlib import closing
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from statistics import mean
 from typing import Any, Callable
@@ -32,7 +32,10 @@ from flask import Blueprint, jsonify, render_template
 from solstone.convey import state
 from solstone.convey.reasons import INVALID_DAY, INVALID_REQUEST_VALUE
 from solstone.convey.utils import error_response
-from solstone.think.importers.health_schema import friendly_type_name
+from solstone.think.importers.health_schema import (
+    friendly_type_name,
+    pick_day_sleep,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +47,6 @@ DAY_SUMMARY_STREAM = "import.apple_health"
 APPLE_HEALTH_SOURCE_TYPE = "apple_health"
 DAY_SUMMARY_FILE = "day_summary_transcript.md"
 
-# Sleep-analysis intervals from one source separated by less than this gap
-# merge into one session (brief wake windows stay inside the night).
-SLEEP_SESSION_GAP_MINUTES = 60
 # Glucose readings further apart than this render as separate curve
 # segments instead of a line drawn across the gap.
 GLUCOSE_SEGMENT_GAP_MINUTES = 45
@@ -552,12 +552,31 @@ def _grid_cell(day_key: str, count: int, scale: float) -> dict[str, Any]:
     }
 
 
+def _month_label_positions(
+    weeks: list[list[dict[str, Any] | None]],
+) -> list[dict[str, Any]]:
+    """Month short-name labels keyed to the week column where each month
+    first leads a column (by its first rendered weekday cell)."""
+    labels: list[dict[str, Any]] = []
+    prev_month: str | None = None
+    for index, week in enumerate(weeks):
+        first_cell = next((cell for cell in week if cell is not None), None)
+        if first_cell is None:
+            continue
+        month = first_cell["day"][4:6]
+        if month != prev_month:
+            labels.append({"index": index, "label": _MONTH_ABBR[int(month) - 1]})
+            prev_month = month
+    return labels
+
+
 def _day_contribution_grid(by_day: dict[str, int]) -> list[dict[str, Any]]:
     """Contribution-style day grid: one row-block per year, weeks as columns.
 
     Spans the first through the last day with data. Each year block holds
     week columns of seven weekday cells (Mon–Sun); ``None`` pads partial
-    first/last weeks. Intensity is log-scaled from per-day entry counts so
+    first/last weeks. ``month_labels`` names the week column where each
+    month starts. Intensity is log-scaled from per-day entry counts so
     a heavy backfill day doesn't wash out ordinary days; empty days inside
     the span carry zero intensity and render pale and unlinked.
     """
@@ -584,7 +603,13 @@ def _day_contribution_grid(by_day: dict[str, int]) -> list[dict[str, Any]]:
         if week:
             week.extend([None] * (7 - len(week)))
             weeks.append(week)
-        blocks.append({"year": year, "weeks": weeks})
+        blocks.append(
+            {
+                "year": year,
+                "weeks": weeks,
+                "month_labels": _month_label_positions(weeks),
+            }
+        )
     return blocks
 
 
@@ -704,6 +729,7 @@ def _build_archive(
 ) -> dict[str, Any]:
     by_month = dedupe["by_month"]
     months = sorted(by_month)
+    days = sorted(dedupe["by_day"])
     coverage = None
     if months:
         coverage = {
@@ -719,6 +745,7 @@ def _build_archive(
         "import_count": len(imports),
         "months_observed": len(by_month),
         "coverage": coverage,
+        "latest_day": days[-1] if days else None,
         "day_grid": _day_contribution_grid(dedupe["by_day"]),
         "recent_days": _recent_day_rail(journal_root, dedupe["by_day"]),
         "families": _coverage_families(dedupe),
@@ -875,23 +902,6 @@ def _glucose_series(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return series
 
 
-def _merge_intervals(
-    intervals: list[tuple[datetime, datetime]], *, gap_minutes: int
-) -> list[list[datetime]]:
-    ordered = sorted(intervals, key=lambda interval: interval[0])
-    gap = timedelta(minutes=gap_minutes)
-    merged: list[list[datetime]] = []
-    for start, end in ordered:
-        if end < start:
-            end = start
-        if merged and start <= merged[-1][1] + gap:
-            if end > merged[-1][1]:
-                merged[-1][1] = end
-        else:
-            merged.append([start, end])
-    return merged
-
-
 def _axis_minute(moment: datetime, axis_day: date) -> float:
     """Minutes since 6 PM of ``axis_day`` using the record's own wall clock."""
     day_delta = (moment.date() - axis_day).days
@@ -910,6 +920,8 @@ def _sleep_analysis(
     night that ends this morning mostly lives on the previous day — both
     days' rows feed the merge. Multiple sources are never summed: the
     longest-coverage source is primary, others are named in the footer.
+    The merge + main-session rule is the shared canonical implementation
+    in ``health_schema`` — the importer's day cards use the same one.
     """
     target = date(int(day[:4]), int(day[4:6]), int(day[6:8]))
     intervals_by_source: dict[str, list[tuple[datetime, datetime]]] = {}
@@ -924,36 +936,14 @@ def _sleep_analysis(
     if not intervals_by_source:
         return None
 
-    noon = time(12, 0)
-    per_source: dict[str, tuple[list[datetime] | None, list[list[datetime]]]] = {}
-    for source, intervals in intervals_by_source.items():
-        sessions = _merge_intervals(intervals, gap_minutes=SLEEP_SESSION_GAP_MINUTES)
-        ending_today = [s for s in sessions if s[1].date() == target]
-        main: list[datetime] | None = None
-        naps: list[list[datetime]] = []
-        for session in sorted(ending_today, key=lambda s: s[1]):
-            crosses_midnight = session[0].date() < target
-            ends_morning = session[1].time() <= noon
-            if main is None and (crosses_midnight or ends_morning):
-                main = session
-            elif session[0].date() == target:
-                naps.append(session)
-        if main is not None or naps:
-            per_source[source] = (main, naps)
-    if not per_source:
+    sleep = pick_day_sleep(intervals_by_source, target)
+    if sleep is None:
         return None
-
-    def _coverage_seconds(source: str) -> float:
-        main, naps = per_source[source]
-        if main is not None:
-            return (main[1] - main[0]).total_seconds()
-        return sum((nap[1] - nap[0]).total_seconds() for nap in naps)
-
-    primary = max(sorted(per_source), key=_coverage_seconds)
-    main, naps = per_source[primary]
+    main = sleep.main
+    naps = list(sleep.naps)
     axis_day = target - timedelta(days=1)
 
-    def _bar_segment(session: list[datetime], kind: str) -> dict[str, Any]:
+    def _bar_segment(session: tuple[datetime, datetime], kind: str) -> dict[str, Any]:
         left = min(max(_axis_minute(session[0], axis_day), 0.0), 1440.0)
         right = min(max(_axis_minute(session[1], axis_day), 0.0), 1440.0)
         return {
@@ -967,7 +957,7 @@ def _sleep_analysis(
         segments.append(_bar_segment(main, "main"))
     segments.extend(_bar_segment(nap, "nap") for nap in naps)
 
-    def _session_view(session: list[datetime]) -> dict[str, str]:
+    def _session_view(session: tuple[datetime, datetime]) -> dict[str, str]:
         minutes = (session[1] - session[0]).total_seconds() / 60
         return {
             "window": f"{_format_clock(session[0])} – {_format_clock(session[1])}",
@@ -975,8 +965,8 @@ def _sleep_analysis(
         }
 
     return {
-        "source": primary,
-        "other_sources": [name for name in sorted(per_source) if name != primary],
+        "source": sleep.source,
+        "other_sources": list(sleep.other_sources),
         "window": _session_view(main)["window"] if main is not None else None,
         "duration": _session_view(main)["duration"] if main is not None else None,
         "naps": [_session_view(nap) for nap in naps],

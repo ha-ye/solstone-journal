@@ -74,35 +74,10 @@
   font-size: 2rem;
 }
 
-.body-hero-top {
-  display: grid;
-  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(120px, auto));
-  gap: var(--space-4);
-  align-items: start;
-}
-
 .body-hero-kicker {
   margin: 0;
   color: var(--ink-soft);
   font-size: 14px;
-}
-
-.body-stat {
-  min-width: 118px;
-}
-
-.body-stat-value {
-  font-size: 1.35rem;
-  font-weight: var(--weight-display);
-  line-height: 1.1;
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-}
-
-.body-stat-label {
-  margin-top: var(--space-1);
-  font-size: 13px;
-  color: var(--ink-faint-paper);
 }
 
 .body-lists {
@@ -226,6 +201,53 @@
   color: var(--ink-faint);
 }
 
+.body-quick-row {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.body-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--touch-min);
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.body-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.body-btn--solid {
+  background: var(--orange);
+  border: 1px solid var(--orange);
+  color: var(--paper);
+}
+
+.body-btn--solid:hover {
+  background: var(--orange-ink);
+  border-color: var(--orange-ink);
+}
+
+.body-btn--outline {
+  background: var(--paper);
+  border: 1px solid var(--orange-ink);
+  color: var(--orange-ink);
+}
+
+.body-btn--outline:hover {
+  background: var(--orange-wash);
+}
+
 .body-days {
   display: grid;
   gap: var(--space-2);
@@ -245,6 +267,42 @@
   font-size: 12px;
   line-height: 11px;
   color: var(--ink-faint-paper);
+  /* Align with the first weekday row, below the month-label row. */
+  margin-top: 14px;
+}
+
+.body-days-months {
+  display: grid;
+  grid-auto-columns: 11px;
+  grid-template-rows: 12px;
+  gap: 2px;
+  margin-bottom: 2px;
+  font-size: 10px;
+  line-height: 12px;
+  color: var(--ink-faint-paper);
+  font-variant-numeric: tabular-nums;
+}
+
+.body-days-months span {
+  grid-row: 1;
+  white-space: nowrap;
+}
+
+.body-days-legend {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-top: var(--space-2);
+  font-size: 12px;
+  color: var(--ink-faint-paper);
+}
+
+.body-days-legend span:first-child {
+  margin-right: var(--space-1);
+}
+
+.body-days-legend span:last-child {
+  margin-left: var(--space-1);
 }
 
 .body-days-grid {
@@ -282,6 +340,108 @@ a.body-day-cell:hover {
 a.body-day-cell:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+
+.body-jump-pop {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  left: 0;
+  z-index: 30;
+  width: 292px;
+  padding: var(--space-3);
+  background: var(--paper);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+}
+
+.body-jump-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.body-jump-title {
+  font-size: 14px;
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+}
+
+.body-jump-nav {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-sm);
+  background: var(--cream-bright);
+  color: var(--ink);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.body-jump-nav:hover:not(:disabled) {
+  background: var(--orange-wash);
+}
+
+.body-jump-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.body-jump-nav:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.body-jump-dow,
+.body-jump-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+
+.body-jump-dow {
+  margin-bottom: 2px;
+  font-size: 11px;
+  text-align: center;
+  color: var(--ink-faint-paper);
+}
+
+.body-jump-day {
+  display: grid;
+  place-items: center;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  text-decoration: none;
+  background: color-mix(
+    in srgb,
+    var(--orange) calc(var(--heat, 0) * 100%),
+    var(--orange-wash)
+  );
+}
+
+a.body-jump-day:hover {
+  outline: 1px solid var(--orange-ink);
+}
+
+a.body-jump-day:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.body-jump-day--empty {
+  background: transparent;
+  color: var(--ink-faint-paper);
+}
+
+.body-jump-day--pad {
+  background: transparent;
 }
 
 .body-rail {
@@ -670,7 +830,6 @@ a.body-day-cell:focus-visible {
   .body-rail,
   .body-main-grid,
   .body-highlights,
-  .body-hero-top,
   .body-archive-hero,
   .body-day-brief {
     grid-template-columns: 1fr;
@@ -999,65 +1158,159 @@ a.body-day-cell:focus-visible {
   <section class="body-card body-archive-hero" aria-labelledby="body-archive-title">
     <div class="body-hero-icon" aria-hidden="true">♡</div>
     <div>
-      <div class="body-hero-top">
-        <div>
-          <h2 id="body-archive-title" class="body-section-title">Body archive</h2>
-          <p class="body-hero-kicker">What Solstone holds about your body over time.</p>
-        </div>
-        {% if archive and archive.coverage %}
-          <div class="body-stat">
-            <div class="body-stat-value">{{ archive.coverage.range_label }}</div>
-            <div class="body-stat-label">{{ archive.months_observed }} months observed</div>
-          </div>
-          <div class="body-stat">
-            <div class="body-stat-value">{{ archive.entry_total_label }}</div>
-            <div class="body-stat-label">entries observed</div>
-          </div>
-          <div class="body-stat">
-            <div class="body-stat-value">{{ archive.import_count }}</div>
-            <div class="body-stat-label">Apple Health imports</div>
-          </div>
-        {% endif %}
-      </div>
-    {% if archive and archive.coverage %}
-      {% if archive and archive.day_grid %}
-      <div class="body-days" role="group" aria-label="Entries per day across the archive">
-        {% for block in archive.day_grid %}
-          <div class="body-days-year">
-            <span class="body-days-year-label body-num" aria-hidden="true">{{ block.year }}</span>
-            <div class="body-days-grid">
-              {% for week in block.weeks %}
-                {% for cell in week %}
-                  {% if cell is none %}
-                    <span class="body-day-cell body-day-cell--pad" aria-hidden="true"></span>
-                  {% elif cell.count %}
-                    <a class="body-day-cell"
-                       href="/app/body/{{ cell.day }}"
-                       style="--heat: {{ cell.intensity }}"
-                       title="{{ cell.title }}"
-                       aria-label="{{ cell.title }}"></a>
-                  {% else %}
-                    <span class="body-day-cell body-day-cell--empty"
-                          title="{{ cell.title }}" aria-hidden="true"></span>
-                  {% endif %}
-                {% endfor %}
-              {% endfor %}
-            </div>
-          </div>
-        {% endfor %}
-      </div>
+      <h2 id="body-archive-title" class="body-section-title">Body archive</h2>
+      <p class="body-hero-kicker">What Solstone holds about your body over time.</p>
+      {% if archive and archive.coverage %}
+        <p class="body-hero-coverage body-num">
+          {{ archive.coverage.range_label }} &middot; {{ archive.months_observed }} months observed
+        </p>
+        <p class="body-hero-stats">
+          <span class="body-num">{{ archive.entry_total_label }}</span> entries
+          &middot; <span class="body-num">{{ archive.import_count }}</span> Apple Health
+          {{ "import" if archive.import_count == 1 else "imports" }}
+        </p>
+      {% else %}
+        <p class="body-subtitle">No body data present yet. Health imports will appear here.</p>
       {% endif %}
-    {% else %}
-      <p class="body-subtitle">No body data present yet. Health imports will appear here.</p>
-    {% endif %}
     </div>
   </section>
+
+  {% if archive and archive.latest_day %}
+    <div class="body-quick-row">
+      <a class="body-btn body-btn--solid" href="/app/body/{{ archive.latest_day }}">Open latest day</a>
+      <button type="button" class="body-btn body-btn--outline" id="body-jump-btn"
+              aria-haspopup="dialog" aria-expanded="false">Jump to date&hellip;</button>
+      <div class="body-jump-pop" id="body-jump-pop" role="dialog" aria-label="Jump to date" hidden
+           data-start-month="{{ archive.coverage.start_month }}"
+           data-end-month="{{ archive.coverage.end_month }}"
+           data-latest-day="{{ archive.latest_day }}">
+        <div class="body-jump-head">
+          <button type="button" class="body-jump-nav" id="body-jump-prev" aria-label="Previous month">&lsaquo;</button>
+          <span class="body-jump-title" id="body-jump-title" aria-live="polite"></span>
+          <button type="button" class="body-jump-nav" id="body-jump-next" aria-label="Next month">&rsaquo;</button>
+        </div>
+        <div class="body-jump-dow" aria-hidden="true">
+          <span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span><span>Su</span>
+        </div>
+        <div class="body-jump-days" id="body-jump-days"></div>
+      </div>
+    </div>
+    <script>
+      (function () {
+        var button = document.getElementById("body-jump-btn");
+        var pop = document.getElementById("body-jump-pop");
+        if (!button || !pop) return;
+        var titleEl = document.getElementById("body-jump-title");
+        var daysEl = document.getElementById("body-jump-days");
+        var prevBtn = document.getElementById("body-jump-prev");
+        var nextBtn = document.getElementById("body-jump-next");
+        var startMonth = pop.dataset.startMonth;
+        var endMonth = pop.dataset.endMonth;
+        var latestDay = pop.dataset.latestDay || "";
+        var current = latestDay.length === 8
+          ? latestDay.slice(0, 4) + "-" + latestDay.slice(4, 6)
+          : endMonth;
+        var cache = {};
+        var monthNames = ["January", "February", "March", "April", "May", "June",
+          "July", "August", "September", "October", "November", "December"];
+
+        function shiftMonth(month, delta) {
+          var year = parseInt(month.slice(0, 4), 10);
+          var idx = parseInt(month.slice(5, 7), 10) - 1 + delta;
+          year += Math.floor(idx / 12);
+          idx = ((idx % 12) + 12) % 12;
+          return year + "-" + String(idx + 1).padStart(2, "0");
+        }
+
+        function renderMonth(month, counts) {
+          var year = parseInt(month.slice(0, 4), 10);
+          var monthIndex = parseInt(month.slice(5, 7), 10) - 1;
+          titleEl.textContent = monthNames[monthIndex] + " " + year;
+          prevBtn.disabled = month <= startMonth;
+          nextBtn.disabled = month >= endMonth;
+          var max = 0;
+          Object.keys(counts).forEach(function (dayKey) {
+            if (counts[dayKey] > max) max = counts[dayKey];
+          });
+          var scale = max > 0 ? Math.log1p(max) : 1;
+          var totalDays = new Date(year, monthIndex + 1, 0).getDate();
+          var lead = (new Date(year, monthIndex, 1).getDay() + 6) % 7; // Mon-first
+          var cells = [];
+          for (var pad = 0; pad < lead; pad += 1) {
+            cells.push('<span class="body-jump-day body-jump-day--pad" aria-hidden="true"></span>');
+          }
+          for (var dayNum = 1; dayNum <= totalDays; dayNum += 1) {
+            var dayKey = month.replace("-", "") + String(dayNum).padStart(2, "0");
+            var count = counts[dayKey] || 0;
+            if (count > 0) {
+              var heat = (Math.log1p(count) / scale).toFixed(3);
+              var entries = count === 1 ? "1 entry" : count + " entries";
+              cells.push(
+                '<a class="body-jump-day" href="/app/body/' + dayKey +
+                '" style="--heat: ' + heat + '" aria-label="' +
+                monthNames[monthIndex] + " " + dayNum + ", " + year + " — " + entries +
+                '">' + dayNum + "</a>"
+              );
+            } else {
+              cells.push('<span class="body-jump-day body-jump-day--empty">' + dayNum + "</span>");
+            }
+          }
+          daysEl.innerHTML = cells.join("");
+        }
+
+        function showMonth(month) {
+          current = month;
+          if (cache[month]) {
+            renderMonth(month, cache[month]);
+            return;
+          }
+          fetch("/app/body/api/stats/" + month)
+            .then(function (response) { return response.json(); })
+            .then(function (counts) {
+              cache[month] = counts;
+              if (current === month) renderMonth(month, counts);
+            });
+        }
+
+        function openPop() {
+          pop.hidden = false;
+          button.setAttribute("aria-expanded", "true");
+          showMonth(current);
+        }
+
+        function closePop(refocus) {
+          if (pop.hidden) return;
+          pop.hidden = true;
+          button.setAttribute("aria-expanded", "false");
+          if (refocus) button.focus();
+        }
+
+        button.addEventListener("click", function () {
+          if (pop.hidden) openPop(); else closePop(false);
+        });
+        prevBtn.addEventListener("click", function () {
+          var target = shiftMonth(current, -1);
+          if (target >= startMonth) showMonth(target);
+        });
+        nextBtn.addEventListener("click", function () {
+          var target = shiftMonth(current, 1);
+          if (target <= endMonth) showMonth(target);
+        });
+        document.addEventListener("click", function (event) {
+          if (pop.hidden) return;
+          if (!pop.contains(event.target) && event.target !== button) closePop(false);
+        });
+        document.addEventListener("keydown", function (event) {
+          if (event.key === "Escape") closePop(true);
+        });
+      })();
+    </script>
+  {% endif %}
 
   {% if archive and archive.recent_days %}
     <section class="body-section" aria-labelledby="body-recent-title">
       <div class="body-section-head">
         <h2 id="body-recent-title" class="body-section-title">Recent body days</h2>
-        <a class="body-link body-section-action" href="/app/body/{{ archive.recent_days[0].day }}">Open latest</a>
       </div>
       <div class="body-rail">
         {% for recent in archive.recent_days %}
@@ -1086,6 +1339,52 @@ a.body-day-cell:focus-visible {
             </div>
           </article>
         {% endfor %}
+      </div>
+    </section>
+  {% endif %}
+
+  {% if archive and archive.day_grid %}
+    <section class="body-card body-section" aria-labelledby="body-history-title">
+      <h2 id="body-history-title" class="body-section-title">Explore all history</h2>
+      <div class="body-days" role="group" aria-label="Entries per day across the archive">
+        {% for block in archive.day_grid %}
+          <div class="body-days-year">
+            <span class="body-days-year-label body-num" aria-hidden="true">{{ block.year }}</span>
+            <div>
+              <div class="body-days-months" aria-hidden="true">
+                {% for month in block.month_labels %}
+                  <span style="grid-column-start: {{ month.index + 1 }};">{{ month.label }}</span>
+                {% endfor %}
+              </div>
+              <div class="body-days-grid">
+                {% for week in block.weeks %}
+                  {% for cell in week %}
+                    {% if cell is none %}
+                      <span class="body-day-cell body-day-cell--pad" aria-hidden="true"></span>
+                    {% elif cell.count %}
+                      <a class="body-day-cell"
+                         href="/app/body/{{ cell.day }}"
+                         style="--heat: {{ cell.intensity }}"
+                         title="{{ cell.title }}"
+                         aria-label="{{ cell.title }}"></a>
+                    {% else %}
+                      <span class="body-day-cell body-day-cell--empty"
+                            title="{{ cell.title }}" aria-hidden="true"></span>
+                    {% endif %}
+                  {% endfor %}
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+      <div class="body-days-legend" aria-hidden="true">
+        <span>less</span>
+        <span class="body-day-cell body-day-cell--empty"></span>
+        <span class="body-day-cell" style="--heat: 0.33"></span>
+        <span class="body-day-cell" style="--heat: 0.66"></span>
+        <span class="body-day-cell" style="--heat: 1"></span>
+        <span>more body data</span>
       </div>
     </section>
   {% endif %}

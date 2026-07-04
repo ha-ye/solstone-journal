@@ -642,6 +642,20 @@ def test_day_api_sleep_not_attributed_to_the_night_start_day(body_env):
     assert response.get_json()["sleep"] is None
 
 
+def test_recent_rail_sleep_matches_day_page_sleep(body_env):
+    env = body_env()
+    _seed_cross_midnight_sleep(env.journal)
+
+    archive = env.client.get("/app/body/api/status").get_json()["archive"]
+    day = env.client.get("/app/body/api/day/20260701").get_json()
+
+    # One canonical sleep number: the recent-days rail and the day page
+    # answer with the same merged cross-midnight session.
+    rail = {item["day"]: item for item in archive["recent_days"]}
+    assert day["sleep"]["duration"] == "8h 10m"
+    assert rail["20260701"]["sleep_duration"] == day["sleep"]["duration"]
+
+
 # --- Day view: activity / steps ---------------------------------------------
 
 
@@ -994,10 +1008,93 @@ def test_status_page_renders_archive_sections(body_env):
 
     assert "Body archive" in html
     assert "Recent body days" in html
+    assert "Explore all history" in html
     assert "Coverage areas" in html
     assert "Sources represented" in html
     assert "body-day-cell" in html
     assert "months observed" in html
+    # Month labels above the grid and the ramp legend under it.
+    assert "body-days-months" in html
+    assert "more body data" in html
+
+
+def test_status_api_archive_latest_day_and_month_labels(body_env):
+    env = body_env()
+    december = [
+        _row(
+            GLUCOSE_TYPE,
+            f"2025-12-30T0{i}:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+        for i in range(2)
+    ]
+    july = [
+        _row(
+            GLUCOSE_TYPE,
+            f"2026-07-03T0{i}:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+        for i in range(5)
+    ]
+    _seed_import(env.journal, "20260808_000000", december + july)
+
+    archive = env.client.get("/app/body/api/status").get_json()["archive"]
+
+    assert archive["latest_day"] == "20260703"
+
+    grid = archive["day_grid"]
+    assert [block["year"] for block in grid] == [2025, 2026]
+    # Each month labels the week column it first leads; a final month too
+    # short to lead a column (July here, span ends Jul 3) gets no label.
+    assert grid[0]["month_labels"] == [{"index": 0, "label": "Dec"}]
+    labels = grid[1]["month_labels"]
+    assert [item["label"] for item in labels] == [
+        "Jan",
+        "Feb",
+        "Mar",
+        "Apr",
+        "May",
+        "Jun",
+    ]
+    indices = [item["index"] for item in labels]
+    assert labels[0] == {"index": 0, "label": "Jan"}
+    assert indices == sorted(indices)
+    assert len(set(indices)) == len(indices)
+    assert all(0 <= index < len(grid[1]["weeks"]) for index in indices)
+
+
+def test_overview_quick_entry_row_and_section_order(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+
+    # Quick-entry row: solid button to the latest day with data, outline
+    # button opening the jump-to-date calendar. No "This week" button.
+    assert "Open latest day" in html
+    assert 'href="/app/body/20260704"' in html
+    assert "Jump to date" in html
+    assert 'id="body-jump-pop"' in html
+    assert 'data-start-month="2026-07"' in html
+    assert 'data-end-month="2026-07"' in html
+    assert "This week" not in html
+
+    # Latest-first order: hero, quick entry, recent days, all history,
+    # coverage/sources panels, audit drawer last.
+    order = [
+        html.index("Body archive"),
+        html.index("Open latest day"),
+        html.index("Recent body days"),
+        html.index("Explore all history"),
+        html.index("Coverage areas"),
+        html.index("Sources represented"),
+        html.index("Audit"),
+    ]
+    assert order == sorted(order)
 
 
 # --- Overview vs day-page navigation model --------------------------------------
