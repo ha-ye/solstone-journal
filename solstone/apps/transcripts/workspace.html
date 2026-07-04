@@ -252,6 +252,11 @@ body.has-app-bar .tr-card {
   border: 1px solid #eab308;
 }
 
+.tr-seg-markdown {
+  background: rgba(147, 197, 253, 0.6);
+  border: 1px solid #3b82f6;
+}
+
 .tr-seg-pending {
   opacity: 0.9;
   border-style: dashed;
@@ -797,6 +802,11 @@ body.has-app-bar .tr-zoom {
 .tr-zoom-pill-screen {
   background: linear-gradient(135deg, rgba(253, 230, 138, 0.8), rgba(253, 230, 138, 0.6));
   border: 1px solid #eab308;
+}
+
+.tr-zoom-pill-markdown {
+  background: linear-gradient(135deg, rgba(147, 197, 253, 0.8), rgba(147, 197, 253, 0.6));
+  border: 1px solid #3b82f6;
 }
 
 .tr-zoom-pill-both {
@@ -1665,6 +1675,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       <div class="tr-timeline-legend">
         <span><span class="tr-legend-dot" style="background: #86efac;"></span>audio</span>
         <span><span class="tr-legend-dot" style="background: #facc15;"></span>screen</span>
+        <span><span class="tr-legend-dot" style="background: #93c5fd;"></span>import</span>
       </div>
     </div>
 
@@ -2356,7 +2367,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   function computeTimelineBounds(ranges) {
     // Compute dynamic timeline bounds from content ranges
     // Returns {start, end} in minutes, snapped to hours
-    const allRanges = [...(ranges.audio || []), ...(ranges.screen || [])];
+    const allRanges = [...(ranges.audio || []), ...(ranges.screen || []), ...(ranges.segments || [])];
 
     if (allRanges.length === 0) {
       return { start: DEFAULT_START, end: DEFAULT_END };
@@ -2388,9 +2399,16 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     return { start, end };
   }
 
+  function markdownOnlySegments(segments) {
+    return (segments || []).filter(seg => {
+      const types = seg.types || [];
+      return types.includes('markdown') && !types.includes('audio') && !types.includes('screen');
+    });
+  }
+
   function addSegmentIndicator(type, startMin, endMin, column, streams = [], state = 'analyzed', think = null) {
     const el = document.createElement('div');
-    el.className = 'tr-seg ' + (type === 'screen' ? 'tr-seg-screen' : 'tr-seg-audio');
+    el.className = 'tr-seg ' + (type === 'screen' ? 'tr-seg-screen' : type === 'markdown' ? 'tr-seg-markdown' : 'tr-seg-audio');
     if (state === 'pending') {
       el.classList.add('tr-seg-pending');
     } else if (state === 'analyzing') {
@@ -2550,6 +2568,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       // Determine pill type based on content
       const hasAudio = seg.types.includes('audio');
       const hasScreen = seg.types.includes('screen');
+      const hasMarkdown = seg.types.includes('markdown');
       const dataState = seg.data_state || {};
       const hasPendingAdvertised = (seg.types || []).some(
         type => dataState[type] && dataState[type] !== 'analyzed'
@@ -2561,6 +2580,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         pill.classList.add('tr-zoom-pill-both');
       } else if (hasAudio) {
         pill.classList.add('tr-zoom-pill-audio');
+      } else if (hasMarkdown) {
+        pill.classList.add('tr-zoom-pill-markdown');
       } else {
         pill.classList.add('tr-zoom-pill-screen');
       }
@@ -2571,7 +2592,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       } else if (seg.think === 'awaiting') {
         pill.classList.add('tr-zoom-pill-awaiting');
       }
-      const typeLabel = (hasAudio && hasScreen) ? 'audio and screen' : hasAudio ? 'audio' : 'screen';
+      const typeLabel = (hasAudio && hasScreen) ? 'audio and screen' : hasAudio ? 'audio' : hasMarkdown ? 'import' : 'screen';
 
       if (selectedSegment && selectedSegment.key === seg.key) {
         pill.classList.add('tr-active');
@@ -2580,7 +2601,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       pill.style.top = zoomY(visStart) + 'px';
       pill.style.height = Math.max(4, zoomY(visEnd) - zoomY(visStart)) + 'px';
       const duration = Math.round(visEnd - visStart);
-      const typeDesc = (hasAudio && hasScreen) ? 'audio + screen' : hasAudio ? 'audio' : 'screen';
+      const typeDesc = (hasAudio && hasScreen) ? 'audio + screen' : hasAudio ? 'audio' : hasMarkdown ? 'import' : 'screen';
       const segmentStatusLabel = hasAnalyzingAdvertised ? 'analyzing' : hasPendingAdvertised ? 'pending' : seg.think === 'awaiting' ? AWAITING_THINKING_LABEL : '';
       const statusSuffix = segmentStatusLabel ? ' · ' + segmentStatusLabel : '';
       const ariaStatusSuffix = segmentStatusLabel ? ', ' + segmentStatusLabel : '';
@@ -3961,6 +3982,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         const e = parseTime(rg.end);
         addSegmentIndicator('screen', s, e, 1, rg.streams, rg.state || 'analyzed', rg.think);
       });
+      markdownOnlySegments(data.segments).forEach(seg => {
+        addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think);
+      });
 
       // Now-marker for today
       if (day === todayStr) {
@@ -4252,6 +4276,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
           const s = parseTime(rg.start);
           const e = parseTime(rg.end);
           addSegmentIndicator('screen', s, e, 1, rg.streams, rg.state || 'analyzed', rg.think);
+        });
+        markdownOnlySegments(allSegments).forEach(seg => {
+          addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think);
         });
       })
       .catch(() => {
