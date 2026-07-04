@@ -166,8 +166,14 @@ def _latest_sources_snapshot(journal_root: Path) -> dict[str, Any]:
     latest_month = max(path.stem for path in shards)
     by_source: Counter[str] = Counter()
     latest_by_source: dict[str, str] = {}
+    seen_keys: set[str] = set()
     for path in sorted(path for path in shards if path.stem == latest_month):
         for row in _read_shard_rows(path):
+            dedupe_key = row.get("dedupe_key")
+            if isinstance(dedupe_key, str) and dedupe_key:
+                if dedupe_key in seen_keys:
+                    continue
+                seen_keys.add(dedupe_key)
             source = _source_label(row)
             by_source[source] += 1
             row_time = _row_time(row)
@@ -186,19 +192,17 @@ def _latest_sources_snapshot(journal_root: Path) -> dict[str, Any]:
 # Aggregates over the dedupe DB cost a full-table scan (~2M rows after the
 # 5-year backfill). The DB only changes when an import runs, so cache the
 # fold keyed by the database (and WAL) file signature.
-_dedupe_stats_cache: dict[
-    str, tuple[tuple[float, int, float, int], dict[str, Any]]
-] = {}
+_dedupe_stats_cache: dict[str, tuple[tuple[int, int, int, int], dict[str, Any]]] = {}
 
 
-def _dedupe_db_signature(db_path: Path) -> tuple[float, int, float, int]:
+def _dedupe_db_signature(db_path: Path) -> tuple[int, int, int, int]:
     stat = db_path.stat()
     wal = db_path.with_name(db_path.name + "-wal")
     try:
         wal_stat = wal.stat()
-        return (stat.st_mtime, stat.st_size, wal_stat.st_mtime, wal_stat.st_size)
+        return (stat.st_mtime_ns, stat.st_size, wal_stat.st_mtime_ns, wal_stat.st_size)
     except FileNotFoundError:
-        return (stat.st_mtime, stat.st_size, 0.0, 0)
+        return (stat.st_mtime_ns, stat.st_size, 0, 0)
 
 
 def _read_health_dedupe_stats(journal_root: Path) -> dict[str, Any]:

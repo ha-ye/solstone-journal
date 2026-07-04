@@ -387,3 +387,87 @@ def test_day_api_counts_overlapping_bundles_once(body_env):
     payload = response.get_json()
     assert payload["glucose"]["count"] == 2
     assert payload["entry_total"] == 3
+
+
+def test_status_api_counts_latest_sources_from_overlapping_bundles_once(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    first_shard = (
+        env.journal / "imports" / "20260703_120000" / "normalized" / "2026-07.jsonl"
+    )
+    second_shard = (
+        env.journal / "imports" / "20260704_090000" / "normalized" / "2026-07.jsonl"
+    )
+    second_shard.parent.mkdir(parents=True)
+    second_shard.write_text(first_shard.read_text(encoding="utf-8"), encoding="utf-8")
+    _write_json(
+        env.journal / "imports" / "20260704_090000" / "manifest.json",
+        {
+            "import_id": "20260704_090000",
+            "source_type": "apple_health",
+            "source_hash": "sha256:full-backfill",
+            "entry_count": 4,
+            "days_affected": ["20260703", "20260704"],
+            "files_created": [],
+            "imported_at": "2026-07-04T09:00:00",
+            "imported_via": "test",
+        },
+    )
+
+    response = env.client.get("/app/body/api/status")
+
+    assert response.status_code == 200
+    status = response.get_json()
+    assert status["normalized"]["by_source"] == {
+        "Synthetic Stelo": 2,
+        "Synthetic Watch": 2,
+    }
+
+
+def test_status_api_cache_invalidates_when_dedupe_db_changes(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    first = env.client.get("/app/body/api/status")
+    assert first.status_code == 200
+    assert first.get_json()["dedupe"]["total"] == 4
+
+    db_path = env.journal / "imports" / "health-dedupe.sqlite"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO health_dedupe (
+                dedupe_key,
+                source_family,
+                record_type,
+                start_time,
+                end_time,
+                first_import_id,
+                last_seen_import_id,
+                normalized_ref,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "apple-health:glucose:cache-invalidates",
+                "apple_health",
+                "HKQuantityTypeIdentifierBloodGlucose",
+                "2026-07-04T07:30:00-06:00",
+                "2026-07-04T07:31:00-06:00",
+                "20260703_120000",
+                "20260703_120000",
+                "imports/20260703_120000/normalized/2026-07.jsonl#L5",
+                "2026-07-04T01:00:00Z",
+                "2026-07-04T01:00:00Z",
+            ),
+        )
+
+    second = env.client.get("/app/body/api/status")
+
+    assert second.status_code == 200
+    payload = second.get_json()
+    assert payload["dedupe"]["total"] == 5
+    assert payload["normalized"]["total"] == 5
