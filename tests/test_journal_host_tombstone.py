@@ -54,6 +54,10 @@ def test_tombstone_metadata_prep_fails_with_migration_message(tmp_path):
         "solstone[journal] and solstone-journal-host have moved."
         in result.stdout + result.stderr
     )
+    assert (
+        "uv tool uninstall solstone && uv tool install solstone-journal && uv tool install solstone"
+        in result.stdout + result.stderr
+    )
 
 
 def test_root_extras_pin_matches_tombstone_version():

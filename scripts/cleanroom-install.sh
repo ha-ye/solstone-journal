@@ -9,8 +9,8 @@ Usage: scripts/cleanroom-install.sh [--source wheel|testpypi|pypi] [--image pyth
   --source    wheel, testpypi, or pypi. Default: wheel.
   --image     One image only. Default: python:3.12-slim then python:3.12.
   --version   Default: dist wheel version for wheel, else pyproject.toml version.
-  --host      Also run the host-surface matrix for solstone[journal].
-  --cuda      With --host, also run solstone[journal-cuda] variants.
+  --host      Also run the host-surface matrix for solstone-journal.
+  --cuda      With --host, also run solstone-journal-cuda variants.
   -h, --help  Show help.
 EOF
 }
@@ -85,31 +85,68 @@ case "$SOURCE" in
             echo "missing root wheel: $ROOT_WHEEL" >&2
             exit 1
         fi
-        if [[ "$RUN_HOST" == "yes" ]] && ! compgen -G "dist/solstone_journal_host-${VERSION}-*" >/dev/null; then
-            echo "missing solstone-journal-host dist in dist/, run uv build --all-packages first" >&2
+        if [[ "$RUN_HOST" == "yes" && ! -f "dist/solstone_journal-${VERSION}-py3-none-any.whl" ]]; then
+            echo "missing dist/solstone_journal-${VERSION}-py3-none-any.whl, run uv build --all-packages first" >&2
+            exit 1
+        fi
+        if [[ "$RUN_CUDA" == "yes" && ! -f "dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl" ]]; then
+            echo "missing dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl, run uv build --all-packages first" >&2
+            exit 1
+        fi
+        if [[ "$RUN_HOST" == "yes" ]] && ! compgen -G "dist/solstone_journal_models-*-py3-none-any.whl" >/dev/null; then
+            echo "missing dist/solstone_journal_models-*-py3-none-any.whl, run uv build --all-packages first" >&2
             exit 1
         fi
         BASE_SPEC="/work/dist/solstone-${VERSION}-py3-none-any.whl"
-        JOURNAL_SPEC="/work/dist/solstone-${VERSION}-py3-none-any.whl[journal]"
-        CUDA_SPEC="/work/dist/solstone-${VERSION}-py3-none-any.whl[journal-cuda]"
+        JOURNAL_SPEC="/work/dist/solstone_journal-${VERSION}-py3-none-any.whl"
+        CUDA_SPEC="/work/dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl"
         FIND_LINKS_ARGS="--find-links /work/dist"
         PIPX_PIP_ARGS="--find-links /work/dist"
         mount_args=(-v "$REPO_ROOT/dist:/work/dist:ro")
         ;;
     testpypi)
         BASE_SPEC="solstone==${VERSION}"
-        JOURNAL_SPEC="solstone[journal]==${VERSION}"
-        CUDA_SPEC="solstone[journal-cuda]==${VERSION}"
+        JOURNAL_SPEC="solstone-journal==${VERSION}"
+        CUDA_SPEC="solstone-journal-cuda==${VERSION}"
         PIP_INDEX_ARGS="--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/"
         UV_INDEX_ARGS="--index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple/"
         PIPX_PIP_ARGS="$PIP_INDEX_ARGS"
         ;;
     pypi)
         BASE_SPEC="solstone==${VERSION}"
-        JOURNAL_SPEC="solstone[journal]==${VERSION}"
-        CUDA_SPEC="solstone[journal-cuda]==${VERSION}"
+        JOURNAL_SPEC="solstone-journal==${VERSION}"
+        CUDA_SPEC="solstone-journal-cuda==${VERSION}"
         ;;
 esac
+
+RUN_RETIRED_SPELLING="no"
+RETIRED_SPELLING_REASON="wheel source"
+
+if [[ "$SOURCE" != "wheel" ]]; then
+    JSON_BASE="https://pypi.org"
+    [[ "$SOURCE" == "testpypi" ]] && JSON_BASE="https://test.pypi.org"
+
+    tombstone_present=$(
+        curl -s --max-time 10 "${JSON_BASE}/pypi/solstone-journal-host/json" |
+            python3 -c 'import json,sys; data=json.load(sys.stdin); print("yes" if "0.7.0" in data.get("releases", {}) else "no")' 2>/dev/null ||
+            true
+    )
+    if [[ "$tombstone_present" != "yes" ]]; then
+        RETIRED_SPELLING_REASON="tombstone 0.7.0 not published"
+    else
+        split_extra_present=$(
+            curl -s --max-time 10 "${JSON_BASE}/pypi/solstone/${VERSION}/json" |
+                python3 -c 'import json,re,sys; data=json.load(sys.stdin); reqs=data.get("info", {}).get("requires_dist") or []; pattern=re.compile(r"extra\s*==\s*[\"\x27]journal[\"\x27]"); print("yes" if any("solstone-journal-host==0.7.0" in req and pattern.search(req) for req in reqs) else "no")' 2>/dev/null ||
+                true
+        )
+        if [[ "$split_extra_present" == "yes" ]]; then
+            RUN_RETIRED_SPELLING="yes"
+            RETIRED_SPELLING_REASON="tombstone 0.7.0 published and solstone ${VERSION} carries the retired extra"
+        else
+            RETIRED_SPELLING_REASON="solstone ${VERSION} predates the split extra"
+        fi
+    fi
+fi
 
 summaries=()
 full_status=0
@@ -182,6 +219,31 @@ run_uvx_thin() {
     echo "absent: uvx journal"
 }
 
+run_retired_spelling() {
+    echo "== retired-spelling/pip =="
+    if [[ "$RUN_RETIRED_SPELLING" != "yes" ]]; then
+        echo "SKIP retired spelling: ${RETIRED_SPELLING_REASON}"
+        return
+    fi
+
+    local venv="/tmp/solstone-clean-pip-retired-spelling"
+    local output status
+    python -m venv "$venv"
+    "$venv/bin/python" -m pip install -q --upgrade pip
+    set +e
+    output=$("$venv/bin/python" -m pip install ${PIP_INDEX_ARGS} "solstone[journal]==${VERSION}" 2>&1)
+    status=$?
+    set -e
+    printf '%s\n' "$output"
+    if [[ "$status" -eq 0 ]]; then
+        fail "retired spelling unexpectedly installed successfully"
+    fi
+    if [[ "$output" != *"have moved"* ]]; then
+        fail "retired spelling failed without migration message"
+    fi
+    echo "retired spelling failed with migration message"
+}
+
 run_pip_host() {
     local extra="$1"
     local spec="$2"
@@ -202,7 +264,7 @@ run_uv_tool_host() {
     rm -rf "$data" "$bin"
     XDG_DATA_HOME="$data" XDG_BIN_HOME="$bin" \
         uv tool install -q ${UV_INDEX_ARGS} ${FIND_LINKS_ARGS} \
-            --with-executables-from solstone-journal-host "$spec"
+            --with-executables-from solstone "$spec"
     assert_present "$bin" sol solstone journal mlx-vlm-server
 }
 
@@ -236,6 +298,9 @@ run_host_extra() {
 run_pip_bare
 run_uv_tool_bare
 run_uvx_thin
+if [[ "$SOURCE" != "wheel" ]]; then
+    run_retired_spelling
+fi
 
 if [[ "$RUN_HOST" == "yes" ]]; then
     run_host_extra journal "$JOURNAL_SPEC"
@@ -258,6 +323,8 @@ run_image() {
     set +e
     output=$(docker run --rm \
         "${mount_args[@]}" \
+        -e SOURCE="$SOURCE" \
+        -e VERSION="$VERSION" \
         -e BASE_SPEC="$BASE_SPEC" \
         -e JOURNAL_SPEC="$JOURNAL_SPEC" \
         -e CUDA_SPEC="$CUDA_SPEC" \
@@ -267,6 +334,8 @@ run_image() {
         -e PIPX_PIP_ARGS="$PIPX_PIP_ARGS" \
         -e RUN_HOST="$RUN_HOST" \
         -e RUN_CUDA="$RUN_CUDA" \
+        -e RUN_RETIRED_SPELLING="$RUN_RETIRED_SPELLING" \
+        -e RETIRED_SPELLING_REASON="$RETIRED_SPELLING_REASON" \
         "$image" bash -c "$CONTAINER_SCRIPT" 2>&1)
     status=$?
     set -e

@@ -26,7 +26,7 @@ The journal is now its own package:
 
 One-time migration for uv tool installs:
 
-    uv tool uninstall solstone && uv tool install solstone-journal
+    uv tool uninstall solstone && uv tool install solstone-journal && uv tool install solstone
 
 Nothing was changed by this failed command.
 See https://github.com/solpbc/solstone-journal/blob/main/INSTALL.md
