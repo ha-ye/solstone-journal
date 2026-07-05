@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import json
 import os
+import select
 import signal
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -88,13 +90,28 @@ def test_talent_main_sigterm_exits_without_cancelled_traceback(tmp_path):
     proc.stdin.flush()
 
     assert proc.stderr is not None
-    ready_line = proc.stderr.readline()
-    if b"provider-awaiting" not in ready_line:
-        stdout, stderr_rest = proc.communicate(timeout=5)
+    stderr_seen = bytearray()
+    deadline = time.monotonic() + 5
+    while b"provider-awaiting" not in stderr_seen and time.monotonic() < deadline:
+        remaining = max(0, deadline - time.monotonic())
+        readable, _, _ = select.select([proc.stderr], [], [], remaining)
+        if not readable:
+            break
+        line = proc.stderr.readline()
+        if not line:
+            break
+        stderr_seen.extend(line)
+
+    if b"provider-awaiting" not in stderr_seen:
+        try:
+            stdout, stderr_rest = proc.communicate(timeout=1)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            stdout, stderr_rest = proc.communicate()
         pytest.fail(
             "talent process did not reach provider await\n"
             f"stdout={stdout.decode(errors='replace')}\n"
-            f"stderr={(ready_line + stderr_rest).decode(errors='replace')}"
+            f"stderr={(bytes(stderr_seen) + stderr_rest).decode(errors='replace')}"
         )
 
     proc.send_signal(signal.SIGTERM)
@@ -107,10 +124,10 @@ def test_talent_main_sigterm_exits_without_cancelled_traceback(tmp_path):
         pytest.fail(
             "talent process did not exit after SIGTERM\n"
             f"stdout={stdout.decode(errors='replace')}\n"
-            f"stderr={(ready_line + stderr_rest).decode(errors='replace')}"
+            f"stderr={(bytes(stderr_seen) + stderr_rest).decode(errors='replace')}"
         )
 
-    stderr = ready_line + stderr_rest
+    stderr = bytes(stderr_seen) + stderr_rest
     assert proc.returncode == 0, stderr.decode(errors="replace")
     assert b"Traceback" not in stderr
     assert b"CancelledError" not in stderr
