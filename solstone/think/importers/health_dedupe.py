@@ -168,6 +168,7 @@ def upsert_health_dedupe_record(
             UPDATE health_dedupe
             SET
                 last_seen_import_id = ?,
+                value_hash = COALESCE(?, value_hash),
                 normalized_ref = COALESCE(?, normalized_ref),
                 raw_ref = COALESCE(?, raw_ref),
                 updated_at = ?
@@ -175,6 +176,7 @@ def upsert_health_dedupe_record(
             """,
             (
                 last_seen_import_id,
+                record.value_hash,
                 record.normalized_ref,
                 record.raw_ref,
                 now,
@@ -226,6 +228,10 @@ def upsert_health_dedupe_records(
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(dedupe_key) DO UPDATE SET
                     last_seen_import_id = excluded.last_seen_import_id,
+                    value_hash = COALESCE(
+                        excluded.value_hash,
+                        health_dedupe.value_hash
+                    ),
                     normalized_ref = COALESCE(
                         excluded.normalized_ref,
                         health_dedupe.normalized_ref

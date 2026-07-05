@@ -1100,3 +1100,21 @@ def test_windowed_save_records_window_in_manifest_hash(
     )
     assert manifest["source_hash"].endswith("#window:20260102:20260102")
     assert not live_journal.exists()
+
+
+def test_cli_file_import_records_windowed_hash_in_both_force_branches():
+    # --force skips the duplicate refusal; it must not change the recorded
+    # source identity, or a forced windowed slice masquerades as the whole
+    # export and blocks a later full import (PR #390 verification finding).
+    cli_src = (
+        Path(__file__).resolve().parents[1]
+        / "solstone"
+        / "think"
+        / "importers"
+        / "cli.py"
+    ).read_text()
+    file_import_block = cli_src.split(
+        "# Source-level dedup: check if this exact file", 1
+    )[1]
+    assert file_import_block.count("windowed_source_hash(") >= 2
+    assert "hash_source(Path(args.media))" not in file_import_block

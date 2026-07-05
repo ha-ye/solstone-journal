@@ -446,17 +446,6 @@ def test_changed_payload_revision_updates_in_place(tmp_path: Path):
     assert row["raw_ref"] == changed.dedupe_record.raw_ref
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Exposed defect: the shared dedupe upsert's ON CONFLICT clause never "
-        "refreshes value_hash, so after an Oura revision the ledger still "
-        "claims the superseded payload. oura_design_20260705.md §4c requires "
-        "'value_hash records that the payload changed'. Fix belongs in "
-        "solstone/think/importers/health_dedupe.py (shared with apple_health)"
-        " — outside this suite's ownership. Remove this marker with that fix."
-    ),
-)
 def test_revision_refreshes_value_hash_in_dedupe_ledger(tmp_path: Path):
     journal = tmp_path
     base = _normalize_for_import(FIXTURE_ROOT / "daily_readiness.json", _IMPORT_A)

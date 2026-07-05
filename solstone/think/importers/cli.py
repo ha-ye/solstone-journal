@@ -872,9 +872,16 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                         "entry_count": entry_count,
                     }
             else:
-                from solstone.think.importers.shared import hash_source
+                from solstone.think.importers.shared import windowed_source_hash
 
-                _source_hash = hash_source(Path(args.media))
+                # --force skips the duplicate refusal; it must not change the
+                # recorded source identity, or a forced windowed slice would
+                # masquerade as the whole source.
+                _source_hash = windowed_source_hash(
+                    Path(args.media),
+                    getattr(args, "date_from", None),
+                    getattr(args, "date_to", None),
+                )
 
             import_dir = _setup_file_import(_import_id)
             if _file_importer.name == "journal_archive":
