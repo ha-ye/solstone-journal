@@ -444,14 +444,61 @@ a.body-jump-day:focus-visible {
   background: transparent;
 }
 
-.body-rail {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(245px, 1fr));
+.body-recent-carousel {
+  display: flex;
   gap: var(--space-3);
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  padding-bottom: var(--space-2);
+  scrollbar-width: thin;
+  scrollbar-color: var(--hairline-2) transparent;
 }
 
-.body-rail .body-card + .body-card {
+.body-recent-carousel .body-card {
+  flex: 0 0 300px;
+  scroll-snap-align: start;
+}
+
+.body-recent-carousel .body-card + .body-card {
   margin-top: 0;
+}
+
+.body-recent-controls {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.body-recent-controls[hidden] {
+  display: none;
+}
+
+.body-recent-nav {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-sm);
+  background: var(--cream-bright);
+  color: var(--ink);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.body-recent-nav:hover:not(:disabled) {
+  background: var(--orange-wash);
+}
+
+.body-recent-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.body-recent-nav:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .body-day-card {
@@ -834,7 +881,6 @@ a.body-jump-day:focus-visible {
 @media (max-width: 768px) {
   .body-grid,
   .body-lists,
-  .body-rail,
   .body-main-grid,
   .body-highlights,
   .body-archive-hero,
@@ -1431,8 +1477,12 @@ a.body-jump-day:focus-visible {
     <section class="body-section" aria-labelledby="body-recent-title">
       <div class="body-section-head">
         <h2 id="body-recent-title" class="body-section-title">Recent body days</h2>
+        <div class="body-recent-controls" id="body-recent-controls" hidden>
+          <button type="button" class="body-recent-nav" id="body-recent-back" aria-label="Newer days">&lsaquo;</button>
+          <button type="button" class="body-recent-nav" id="body-recent-fwd" aria-label="Earlier days">&rsaquo;</button>
+        </div>
       </div>
-      <div class="body-rail">
+      <div class="body-recent-carousel" id="body-recent-carousel">
         {% for recent in archive.recent_days %}
           <article class="body-card body-day-card">
             <div class="body-date-badge" aria-hidden="true">
@@ -1461,6 +1511,46 @@ a.body-jump-day:focus-visible {
         {% endfor %}
       </div>
     </section>
+    <script>
+      (function () {
+        var carousel = document.getElementById("body-recent-carousel");
+        var controls = document.getElementById("body-recent-controls");
+        if (!carousel || !controls) return;
+        var backBtn = document.getElementById("body-recent-back");
+        var fwdBtn = document.getElementById("body-recent-fwd");
+
+        // Cards run newest to oldest, left to right: the back button pages
+        // toward newer days, the forward button toward earlier days. Wheel
+        // and touch scrolling stay native; these buttons are additive.
+        function cardStep() {
+          var card = carousel.querySelector(".body-card");
+          if (!card) return 0;
+          var gap = parseFloat(getComputedStyle(carousel).columnGap) || 0;
+          return card.getBoundingClientRect().width + gap;
+        }
+
+        function syncControls() {
+          if (carousel.scrollWidth <= carousel.clientWidth + 1) {
+            controls.hidden = true;
+            return;
+          }
+          controls.hidden = false;
+          var maxScroll = carousel.scrollWidth - carousel.clientWidth;
+          backBtn.disabled = carousel.scrollLeft <= 1;
+          fwdBtn.disabled = carousel.scrollLeft >= maxScroll - 1;
+        }
+
+        backBtn.addEventListener("click", function () {
+          carousel.scrollBy({ left: -cardStep(), behavior: "smooth" });
+        });
+        fwdBtn.addEventListener("click", function () {
+          carousel.scrollBy({ left: cardStep(), behavior: "smooth" });
+        });
+        carousel.addEventListener("scroll", syncControls, { passive: true });
+        window.addEventListener("resize", syncControls);
+        syncControls();
+      })();
+    </script>
   {% endif %}
 
   {% if archive and archive.day_grid %}

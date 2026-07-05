@@ -1408,6 +1408,55 @@ def test_status_api_recent_day_rail_has_per_day_facts(body_env):
     assert workout_day["sleep_duration"] is None
 
 
+def test_status_api_recent_day_rail_caps_at_fourteen_days(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            GLUCOSE_TYPE,
+            f"2026-07-{day:02d}T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+        for day in range(1, 19)
+    ]
+    _seed_import(env.journal, "20260801_000000", rows)
+
+    rail = env.client.get("/app/body/api/status").get_json()["archive"]["recent_days"]
+
+    # 18 days with data collapse to the newest 14, newest first.
+    assert len(rail) == 14
+    assert [item["day"] for item in rail] == [
+        f"202607{day:02d}" for day in range(18, 4, -1)
+    ]
+
+
+def test_overview_recent_days_render_as_snap_carousel(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+
+    # The rail is a horizontal scroll-snap carousel with fixed-width cards
+    # and a thin scrollbar; the page itself never scrolls sideways.
+    assert 'class="body-recent-carousel"' in html
+    assert "scroll-snap-type: x mandatory" in html
+    assert "overflow-x: auto" in html
+    assert "scroll-snap-align: start" in html
+    assert "scrollbar-width: thin" in html
+
+    # Paging buttons: newest-first order puts newer days to the left, so
+    # the labels follow content, not direction.
+    assert 'aria-label="Newer days"' in html
+    assert 'aria-label="Earlier days"' in html
+
+    # Buttons disable at the respective end of the scroll range and the
+    # control cluster hides entirely when every card fits without overflow.
+    assert "backBtn.disabled" in html
+    assert "fwdBtn.disabled" in html
+    assert "controls.hidden = true" in html
+
+
 def test_status_page_renders_archive_sections(body_env):
     env = body_env()
     _seed_health_import(env.journal)

@@ -56,7 +56,7 @@ DAY_SUMMARY_FILE = "day_summary_transcript.md"
 CURVE_SEGMENT_GAP_MINUTES = 45
 # The sleep bar axis runs 6 PM of the previous day to 6 PM of the day.
 SLEEP_AXIS_START_HOUR = 18
-RECENT_DAY_LIMIT = 4
+RECENT_DAY_LIMIT = 14
 STALE_SOURCE_DAYS = 30
 
 CURVE_SVG_WIDTH = 1440.0
