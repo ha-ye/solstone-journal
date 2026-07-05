@@ -14,12 +14,18 @@ from typing import Any, Final, Iterable, Mapping, Sequence
 
 SOURCE_APPLE_HEALTH: Final = "apple_health"
 SOURCE_OURA: Final = "oura"
+# Rows normalized from Oura API v2 documents. Distinct from SOURCE_OURA,
+# which stays reserved for a one-time Oura account export, and from Oura
+# rows mirrored through Apple Health (family "apple_health", source_name
+# names the ring). Cross-family records never collapse at import time.
+SOURCE_OURA_API: Final = "oura_api"
 SOURCE_DEXCOM_CLARITY: Final = "dexcom_clarity"
 
 KNOWN_SOURCE_FAMILIES: Final = frozenset(
     {
         SOURCE_APPLE_HEALTH,
         SOURCE_OURA,
+        SOURCE_OURA_API,
         SOURCE_DEXCOM_CLARITY,
     }
 )
@@ -62,6 +68,16 @@ FRIENDLY_TYPE_NAMES: Final[Mapping[str, str]] = {
     "HKQuantityTypeIdentifierBodyFatPercentage": "Body fat",
     "HKQuantityTypeIdentifierLeanBodyMass": "Lean body mass",
     "HKQuantityTypeIdentifierHeight": "Height",
+    # Oura API v2 record types (solstone.think.importers.oura). Names stay
+    # neutral facts; attribution ("· Oura's score") is applied at render
+    # time from the row's source family, never baked into the type name.
+    "oura.daily_sleep": "Sleep score",
+    "oura.daily_readiness": "Readiness",
+    "oura.daily_resilience": "Resilience",
+    "oura.daily_stress": "Daytime stress",
+    "oura.daily_spo2": "Nightly blood oxygen",
+    "oura.temperature_deviation": "Temperature deviation",
+    "oura.sleep": "Sleep period",
 }
 
 # Sleep-analysis intervals from one source separated by less than this gap

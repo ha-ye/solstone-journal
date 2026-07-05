@@ -23,7 +23,7 @@ CHECKLIST_DESTINATIONS = (
     "other",
 )
 DESTINATION_DECISIONS = {"approved", "excluded"}
-SENSITIVE_IMPORTERS = frozenset({"apple_health"})
+SENSITIVE_IMPORTERS = frozenset({"apple_health", "oura"})
 
 
 @dataclass(frozen=True, slots=True)
