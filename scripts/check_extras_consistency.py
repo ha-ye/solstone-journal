@@ -24,6 +24,8 @@ The invariants are:
      install (the packages own the same `onnxruntime/` import dir).
   6. Root and host pyprojects agree on version, script ownership, uv workspace
      sources, and the host shim's metadata-only setuptools config.
+  7. `[journal-host]` contains exactly one `solstone-journal-models==`
+     pin matching the models workspace member version.
 """
 
 import sys
@@ -66,10 +68,31 @@ def _names(reqs: list[str]) -> set[str]:
     return out
 
 
+def _check_models_pin(extras: dict, member_version: str | None) -> list[str]:
+    """Return errors for the journal models distribution pin."""
+    host = extras.get("journal-host", [])
+    pins = [dep for dep in host if dep.startswith("solstone-journal-models==")]
+    if len(pins) != 1:
+        return [
+            "[journal-host] must contain exactly one solstone-journal-models== pin; "
+            f"found {len(pins)}"
+        ]
+    if (
+        member_version is not None
+        and pins[0] != f"solstone-journal-models=={member_version}"
+    ):
+        return [
+            "[journal-host] models pin must be "
+            f"solstone-journal-models=={member_version}; found {pins[0]}"
+        ]
+    return []
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     pyproject = root / "pyproject.toml"
     host_pyproject = root / "packages" / "solstone-journal-host" / "pyproject.toml"
+    models_pyproject = root / "packages" / "solstone-journal-models" / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
     project = data["project"]
     root_version = project.get("version")
@@ -78,6 +101,7 @@ def main() -> int:
     root_tool = data.get("tool", {})
     root_uv = root_tool.get("uv", {})
     host_data: dict = {}
+    models_version: str | None = None
     errors: list[str] = []
 
     if not isinstance(root_version, str) or not root_version:
@@ -87,6 +111,19 @@ def main() -> int:
         host_data = tomllib.loads(host_pyproject.read_text(encoding="utf-8"))
     else:
         errors.append(f"missing host pyproject: {host_pyproject.relative_to(root)}")
+
+    if models_pyproject.exists():
+        models_data = tomllib.loads(models_pyproject.read_text(encoding="utf-8"))
+        maybe_models_version = models_data.get("project", {}).get("version")
+        if isinstance(maybe_models_version, str) and maybe_models_version:
+            models_version = maybe_models_version
+        else:
+            errors.append(
+                "models [project].version must be a non-empty string "
+                f"in {models_pyproject.relative_to(root)}"
+            )
+    else:
+        errors.append(f"missing models pyproject: {models_pyproject.relative_to(root)}")
 
     # 1. Base stays exactly the thin access partition.
     if set(base) != THIN_BASE:
@@ -130,6 +167,7 @@ def main() -> int:
         for block in ("solstone[pdf]",):
             if block not in host:
                 errors.append(f"[journal-host] must fold in {block}")
+        errors.extend(_check_models_pin(extras, models_version))
 
     if all(name in extras for name in ("journal", "journal-cuda")):
         # 5. CPU/CUDA ONNX runtime split — never both in one extra.

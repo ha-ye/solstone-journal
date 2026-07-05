@@ -20,6 +20,7 @@ resolution-markers = [
 members = [
     "solstone",
     "solstone-journal-host",
+    "solstone-journal-models",
 ]
 
 [[package]]
@@ -4277,6 +4278,7 @@ journal-host = [
     { name = "python-slugify" },
     { name = "rapidfuzz" },
     { name = "scikit-learn" },
+    { name = "solstone-journal-models" },
     { name = "soundfile" },
     { name = "tzlocal" },
     { name = "weasyprint" },
@@ -4357,6 +4359,7 @@ requires-dist = [
     { name = "solstone", extras = ["pdf"], marker = "extra == 'journal-host'" },
     { name = "solstone-journal-host", marker = "extra == 'journal'", editable = "packages/solstone-journal-host" },
     { name = "solstone-journal-host", marker = "extra == 'journal-cuda'", editable = "packages/solstone-journal-host" },
+    { name = "solstone-journal-models", marker = "extra == 'journal-host'", editable = "packages/solstone-journal-models" },
     { name = "soundfile", marker = "extra == 'journal-host'" },
     { name = "timefhuman" },
     { name = "typer" },
@@ -4389,6 +4392,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [{ name = "solstone", extras = ["journal-host"], editable = "." }]
+
+[[package]]
+name = "solstone-journal-models"
+version = "1.0.0"
+source = { editable = "packages/solstone-journal-models" }
 
 [[package]]
 name = "sortedcontainers"

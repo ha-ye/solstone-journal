@@ -80,9 +80,11 @@ def test_verify_bundled_assets_returns_when_hashes_match(
     pyannote = tmp_path / "pyannote.onnx"
     wespeaker.write_bytes(b"wespeaker")
     pyannote.write_bytes(b"pyannote")
-    monkeypatch.setattr(install_models, "WESPEAKER_MODEL_PATH", wespeaker)
+    monkeypatch.setattr(install_models, "resolve_wespeaker_model", lambda: wespeaker)
     monkeypatch.setattr(install_models, "WESPEAKER_MODEL_SHA256", _sha256(b"wespeaker"))
-    monkeypatch.setattr(install_models, "PYANNOTE_OVERLAP_MODEL_PATH", pyannote)
+    monkeypatch.setattr(
+        install_models, "resolve_pyannote_segmentation_model", lambda: pyannote
+    )
     monkeypatch.setattr(
         install_models,
         "PYANNOTE_OVERLAP_MODEL_SHA256",
@@ -102,9 +104,11 @@ def test_verify_bundled_assets_reports_mutated_asset(
     pyannote.write_bytes(b"pyannote")
     expected = _sha256(b"original")
     actual = _sha256(b"mutated")
-    monkeypatch.setattr(install_models, "WESPEAKER_MODEL_PATH", wespeaker)
+    monkeypatch.setattr(install_models, "resolve_wespeaker_model", lambda: wespeaker)
     monkeypatch.setattr(install_models, "WESPEAKER_MODEL_SHA256", expected)
-    monkeypatch.setattr(install_models, "PYANNOTE_OVERLAP_MODEL_PATH", pyannote)
+    monkeypatch.setattr(
+        install_models, "resolve_pyannote_segmentation_model", lambda: pyannote
+    )
     monkeypatch.setattr(
         install_models,
         "PYANNOTE_OVERLAP_MODEL_SHA256",

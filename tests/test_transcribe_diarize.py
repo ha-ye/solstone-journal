@@ -149,7 +149,11 @@ def test_get_pyannote_session_missing_asset_raises_file_not_found(
 ):
     from solstone.observe.transcribe import diarize
 
-    monkeypatch.setattr(diarize, "PYANNOTE_MODEL_PATH", tmp_path / "missing.onnx")
+    monkeypatch.setattr(
+        diarize,
+        "resolve_pyannote_segmentation_model",
+        lambda: tmp_path / "missing.onnx",
+    )
     monkeypatch.setattr(diarize, "_pyannote_session", None)
 
     with pytest.raises(FileNotFoundError):

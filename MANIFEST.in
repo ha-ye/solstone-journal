@@ -3,8 +3,7 @@
 # non-Python data file ships automatically — no hand-curated per-subdir globs to
 # forget. Curated globs repeatedly dropped files added in new subdirectories (the
 # installed wheel silently omitted them while source-tree CI stayed green); graft
-# removes that failure mode at the root. The wheel is model-dominated (~34 MB of
-# bundled .onnx), so the data-file tail is rounding error.
+# removes that failure mode at the root.
 graft solstone
 
 # Exclude only compiled/editor cruft.

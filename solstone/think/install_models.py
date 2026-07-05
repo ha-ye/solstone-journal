@@ -16,10 +16,12 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from solstone.observe.model_assets import (
+    resolve_pyannote_segmentation_model,
+    resolve_wespeaker_model,
+)
 from solstone.observe.transcribe.main import (
-    PYANNOTE_OVERLAP_MODEL_PATH,
     PYANNOTE_OVERLAP_MODEL_SHA256,
-    WESPEAKER_MODEL_PATH,
     WESPEAKER_MODEL_SHA256,
 )
 from solstone.observe.transcribe.parakeet_hints import PACKAGED_COREML_HINT
@@ -199,8 +201,8 @@ def _disk_full_message(cache_dir: Path) -> str:
 
 def _verify_bundled_assets() -> None:
     for asset_path, expected_sha256 in (
-        (WESPEAKER_MODEL_PATH, WESPEAKER_MODEL_SHA256),
-        (PYANNOTE_OVERLAP_MODEL_PATH, PYANNOTE_OVERLAP_MODEL_SHA256),
+        (resolve_wespeaker_model(), WESPEAKER_MODEL_SHA256),
+        (resolve_pyannote_segmentation_model(), PYANNOTE_OVERLAP_MODEL_SHA256),
     ):
         try:
             actual_sha256 = compute_file_sha256(asset_path)

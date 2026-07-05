@@ -35,21 +35,20 @@ def _get_overlap_session() -> ort.InferenceSession:
     import onnxruntime as ort
 
     if _overlap_session is None:
-        from solstone.observe.transcribe.main import (
-            PYANNOTE_OVERLAP_MODEL_PATH,
-            _select_onnx_providers,
-        )
+        from solstone.observe.model_assets import resolve_pyannote_segmentation_model
+        from solstone.observe.transcribe.main import _select_onnx_providers
 
-        if not PYANNOTE_OVERLAP_MODEL_PATH.is_file():
+        pyannote_model_path = resolve_pyannote_segmentation_model()
+        if not pyannote_model_path.is_file():
             raise FileNotFoundError(
-                f"pyannote model not found at {PYANNOTE_OVERLAP_MODEL_PATH}. "
+                f"pyannote model not found at {pyannote_model_path}. "
                 "Run `make install` to verify the bundled asset."
             )
 
         providers = _select_onnx_providers()
         start = time.monotonic()
         _overlap_session = ort.InferenceSession(
-            str(PYANNOTE_OVERLAP_MODEL_PATH),
+            str(pyannote_model_path),
             providers=providers,
         )
         elapsed_ms = (time.monotonic() - start) * 1000.0

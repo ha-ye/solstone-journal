@@ -29,15 +29,12 @@ from pathlib import Path
 
 import numpy as np
 
+from solstone.observe.model_assets import (
+    resolve_pyannote_segmentation_model,
+    resolve_wespeaker_model,
+)
+
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Model paths
-# ---------------------------------------------------------------------------
-
-ASSETS_DIR = Path(__file__).parent / "assets"
-PYANNOTE_MODEL_PATH = ASSETS_DIR / "pyannote-segmentation-3.0.onnx"
-WESPEAKER_MODEL_PATH = ASSETS_DIR / "wespeaker-resnet34-256.onnx"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -72,12 +69,13 @@ def _get_pyannote_session():
     if _pyannote_session is None:
         import onnxruntime as ort
 
-        if not PYANNOTE_MODEL_PATH.is_file():
+        pyannote_model_path = resolve_pyannote_segmentation_model()
+        if not pyannote_model_path.is_file():
             raise FileNotFoundError(
-                f"pyannote model not found at {PYANNOTE_MODEL_PATH}"
+                f"pyannote model not found at {pyannote_model_path}"
             )
         _pyannote_session = ort.InferenceSession(
-            str(PYANNOTE_MODEL_PATH), providers=["CPUExecutionProvider"]
+            str(pyannote_model_path), providers=["CPUExecutionProvider"]
         )
         logger.debug("pyannote session loaded")
     return _pyannote_session
@@ -88,12 +86,13 @@ def _get_wespeaker_session():
     if _wespeaker_session is None:
         import onnxruntime as ort
 
-        if not WESPEAKER_MODEL_PATH.is_file():
+        wespeaker_model_path = resolve_wespeaker_model()
+        if not wespeaker_model_path.is_file():
             raise FileNotFoundError(
-                f"WeSpeaker model not found at {WESPEAKER_MODEL_PATH}"
+                f"WeSpeaker model not found at {wespeaker_model_path}"
             )
         _wespeaker_session = ort.InferenceSession(
-            str(WESPEAKER_MODEL_PATH), providers=["CPUExecutionProvider"]
+            str(wespeaker_model_path), providers=["CPUExecutionProvider"]
         )
         logger.debug("wespeaker session loaded")
     return _wespeaker_session

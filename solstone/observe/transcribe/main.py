@@ -66,6 +66,7 @@ from solstone.apps.speakers.encoder_config import (
     OVERLAP_DETECTOR_ID,
     OVERLAP_DETECTOR_SHA256,
 )
+from solstone.observe.model_assets import resolve_wespeaker_model
 from solstone.observe.processing_record import (
     HANDLER_TRANSCRIBE,
     REASON_CORRUPT_INPUT,
@@ -131,15 +132,11 @@ DEFAULT_MIN_SPEECH_SECONDS = 1.0
 # Minimum statement duration for embedding (seconds)
 MIN_STATEMENT_DURATION = 0.3
 
-# WeSpeaker embedder asset
-ASSETS_DIR = Path(__file__).parent / "assets"
 EMBEDDER_NAME = "wespeaker-resnet34-256"
 WESPEAKER_MODEL_SHA256 = (
     "5ef208a9da1453335308a6b6f4e6dfbd7e183a38b604de0a57664f45d257fe94"
 )
-WESPEAKER_MODEL_PATH = ASSETS_DIR / "wespeaker-resnet34-256.onnx"
 PYANNOTE_OVERLAP_MODEL_SHA256 = OVERLAP_DETECTOR_SHA256
-PYANNOTE_OVERLAP_MODEL_PATH = ASSETS_DIR / "pyannote-segmentation-3.0.onnx"
 
 # Number of recent entity names to load for transcription context
 ENTITY_NAMES_LIMIT = 40
@@ -232,15 +229,16 @@ def _get_embedder_session() -> ort.InferenceSession:
     if _embedder_session is None:
         import onnxruntime as ort
 
-        if not WESPEAKER_MODEL_PATH.is_file():
+        wespeaker_model_path = resolve_wespeaker_model()
+        if not wespeaker_model_path.is_file():
             raise FileNotFoundError(
-                f"WeSpeaker model asset not found at {WESPEAKER_MODEL_PATH}. "
+                f"WeSpeaker model asset not found at {wespeaker_model_path}. "
                 "Run `make install` to verify the bundled asset."
             )
         providers = _select_onnx_providers()
         start = time.monotonic()
         _embedder_session = ort.InferenceSession(
-            str(WESPEAKER_MODEL_PATH),
+            str(wespeaker_model_path),
             providers=providers,
         )
         elapsed = time.monotonic() - start

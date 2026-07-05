@@ -4,7 +4,7 @@
 # Vendored from faster-whisper 1.2.1 (MIT License, Copyright (c) 2023 SYSTRAN).
 # Source: https://github.com/SYSTRAN/faster-whisper/blob/master/faster_whisper/vad.py
 # Underlying Silero VAD model (silero_vad_v6.onnx) from https://github.com/snakers4/silero-vad
-# (MIT License). The ONNX asset is shipped under solstone/observe/assets/.
+# (MIT License). The ONNX asset ships in the solstone-journal-models distribution.
 #
 # Vendored to give solstone a stable VAD surface with a small dependency footprint
 # (numpy + onnxruntime) and let `faster-whisper` move to an optional `[whisper]` extra.
@@ -12,21 +12,13 @@
 
 import bisect  # noqa: I001
 import functools
-import os
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-
-def _solstone_assets_path() -> str:
-    """Return the path to the bundled solstone/observe/assets/ directory.
-
-    Replaces faster_whisper.utils.get_assets_path() for the vendored copy.
-    """
-    return str(Path(__file__).resolve().parent / "assets")
+from solstone.observe.model_assets import resolve_silero_vad_model
 
 
 # The code below is adapted from https://github.com/snakers4/silero-vad.
@@ -307,7 +299,7 @@ class SpeechTimestampsMap:
 @functools.lru_cache
 def get_vad_model():
     """Returns the VAD model instance."""
-    path = os.path.join(_solstone_assets_path(), "silero_vad_v6.onnx")
+    path = str(resolve_silero_vad_model())
     return SileroVADModel(path)
 
 

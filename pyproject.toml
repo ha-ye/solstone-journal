@@ -89,6 +89,7 @@ pdf = [
 # CPU-vs-CUDA choice deferred to [journal]/[journal-cuda] below). Not a
 # user-facing extra — always pulled in via [journal] or [journal-cuda].
 journal-host = [
+    "solstone-journal-models==1.0.0",
     "python-dotenv",
     "pyhpke==0.6.4",
     "google-genai>=1.62.0",
@@ -197,20 +198,20 @@ Documentation = "https://github.com/solpbc/solstone-journal/blob/main/README.md"
 # subdirectories — the installed wheel would silently omit e.g.
 # solstone/think/contract/layout.json while source-tree `make ci` stayed green,
 # hard-500ing observer ingest. Including every non-.py file under solstone/ is the
-# correct default here: the wheel is model-dominated (~34 MB of bundled .onnx), so
-# the long tail of .json/.md/.html/.schema.json data files is rounding error. If a
-# file lives under solstone/ at build time, it ships. New data file → no pyproject
-# edit required.
+# correct default here: the long tail of .json/.md/.html/.schema.json data files
+# is intentionally shipped. If a file lives under solstone/ at build time, it
+# ships. New data file → no pyproject edit required.
 include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["solstone*"]
 
 [tool.uv.workspace]
-members = ["packages/solstone-journal-host"]
+members = ["packages/solstone-journal-host", "packages/solstone-journal-models"]
 
 [tool.uv.sources]
 solstone-journal-host = {workspace = true}
+solstone-journal-models = {workspace = true}
 
 # Development tools configuration
 [tool.ruff]
