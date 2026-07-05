@@ -30,24 +30,24 @@ PYTHON := $(VENV_PY)
 # die in the `.installed` `uv sync` below — before the per-arch `install` guard
 # (which correctly skips non-x86_64 Linux) ever runs. Gating on x86_64 also
 # keeps this coherent with the STT arch decision (aarch64-linux uses the
-# parakeet.cpp CPU/Vulkan bundle). Everything non-x86_64 falls to the CPU `journal` bundle, whose
-# onnxruntime has aarch64 wheels. Guarded by tests/test_makefile_journal_extra.py.
+# parakeet.cpp CPU/Vulkan bundle). Everything non-x86_64 falls to the CPU
+# `journal-cpu` group, whose onnxruntime has aarch64 wheels. Guarded by
+# tests/test_makefile_journal_extra.py.
 JOURNAL_VARIANT ?= $(shell if [ "$$(uname -m)" = "x86_64" ] && nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
 
-# Dev install extras: install exactly ONE journal-host bundle for this host.
-# [journal] (CPU) and [journal-cuda] (GPU) are the SAME stack and differ only in
-# the ONNX runtime package, so NEVER install both and NEVER use
-# --all-extras:
-#   - [journal] pulls onnxruntime; [journal-cuda] pulls onnxruntime-gpu. Both
+# Dev install groups: install exactly ONE journal leaf for this host.
+# `journal-cpu` and `journal-cuda` select the same journal stack and differ only
+# in the ONNX runtime package, so NEVER install both and NEVER use all optional
+# dependency groups:
+#   - `journal-cpu` pulls onnxruntime; `journal-cuda` pulls onnxruntime-gpu. Both
 #     packages own the SAME onnxruntime/ import dir and clobber each other ->
 #     `import onnxruntime` fails (ModuleNotFoundError) even though uv still
 #     lists it installed. Surfaces as `journal install-models` dying with "No
 #     module named 'onnxruntime'".
-#   - on Darwin, --all-extras also forces resolution of cuda's nvidia-* wheels,
+#   - on Darwin, resolving the CUDA group also forces cuda's nvidia-* wheels,
 #     which have no arm64 builds, so `uv sync` errors out outright.
-# Pick the GPU bundle only on NVIDIA hosts; everyone else gets the CPU bundle.
-JOURNAL_EXTRA := $(if $(filter cuda,$(JOURNAL_VARIANT)),journal-cuda,journal)
-EXTRAS_ARGS := --extra $(JOURNAL_EXTRA)
+# Pick the GPU group only on NVIDIA hosts; everyone else gets the CPU group.
+JOURNAL_GROUP := $(if $(filter cuda,$(JOURNAL_VARIANT)),journal-cuda,journal-cpu)
 
 # Require uv only for goals that actually use it. `preflight` is a pure
 # stdlib readiness battery and `install` runs preflight as its own fail-fast
@@ -70,11 +70,11 @@ USER_BIN := $(HOME)/.local/bin
 	if [ ! -f $@ ] || ! cmp -s "$$tmp_file" $@; then mv "$$tmp_file" $@; else rm -f "$$tmp_file"; fi
 
 # Marker file to track installation
-.installed: pyproject.toml uv.lock .python-version-hash
+.installed: pyproject.toml packages/*/pyproject.toml uv.lock .python-version-hash
 	python3 scripts/render_packaging.py
 	$(MAKE) preflight
 	@echo "Installing package with uv..."
-	$(UV) sync --group dev $(EXTRAS_ARGS)
+	$(UV) sync --group dev --group $(JOURNAL_GROUP)
 	@# Python 3.14+ needs onnxruntime from nightly (not yet on PyPI)
 	@OS_NAME=$$(uname -s); \
 	PY_MINOR=$$($(PYTHON) -c "import sys; print(sys.version_info.minor)"); \
@@ -82,13 +82,13 @@ USER_BIN := $(HOME)/.local/bin
 		echo "Python 3.14+ detected - installing onnxruntime from nightly feed..."; \
 		$(UV) pip install --pre --no-deps --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ORT-Nightly/pypi/simple/ onnxruntime; \
 	fi
-	@# The `--extra $(JOURNAL_EXTRA)` sync above already pulls the right
-	@# ONNX runtime package ([journal] = CPU, [journal-cuda] = GPU).
+	@# The `--group $(JOURNAL_GROUP)` sync above already pulls the right
+	@# ONNX runtime package (journal-cpu = CPU, journal-cuda = GPU).
 	@$(MAKE) --no-print-directory skills
 	@touch .installed
 
 # Generate lock file if missing
-uv.lock: pyproject.toml
+uv.lock: pyproject.toml packages/*/pyproject.toml
 	python3 scripts/render_packaging.py
 	$(UV) lock
 
@@ -110,10 +110,10 @@ install: .installed
 		$(MAKE) parakeet-helper || { echo 'parakeet install: helper build failed' >&2; exit 1; }; \
 	elif [ "$$OS_NAME" = "Linux" ]; then \
 		if [ "$$ARCH" = "x86_64" ]; then \
-			echo "journal install: JOURNAL_EXTRA=$(JOURNAL_EXTRA)"; \
-			$(UV) sync --group dev $(EXTRAS_ARGS) || { echo "journal install: uv sync --group dev $(EXTRAS_ARGS) failed" >&2; exit 1; }; \
-			if [ "$(JOURNAL_VARIANT)" = "cuda" ]; then \
-				$(UV) sync --group dev $(EXTRAS_ARGS) --reinstall-package onnxruntime-gpu || { echo "journal install: failed to force-reinstall onnxruntime-gpu" >&2; exit 1; }; \
+				echo "journal install: JOURNAL_GROUP=$(JOURNAL_GROUP)"; \
+				$(UV) sync --group dev --group $(JOURNAL_GROUP) || { echo "journal install: uv sync --group dev --group $(JOURNAL_GROUP) failed" >&2; exit 1; }; \
+				if [ "$(JOURNAL_VARIANT)" = "cuda" ]; then \
+					$(UV) sync --group dev --group $(JOURNAL_GROUP) --reinstall-package onnxruntime-gpu || { echo "journal install: failed to force-reinstall onnxruntime-gpu" >&2; exit 1; }; \
 				$(VENV_PY) -c "import onnxruntime as ort; ort.preload_dlls(cuda=True, cudnn=True); assert 'CUDAExecutionProvider' in ort.get_available_providers(), 'CUDAExecutionProvider missing after install'; print('journal install: CUDA runtime ready')" || { echo "journal install: CUDA runtime validation failed" >&2; exit 1; }; \
 			fi; \
 		else \

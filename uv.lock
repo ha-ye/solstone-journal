@@ -19,9 +19,11 @@ resolution-markers = [
 [manifest]
 members = [
     "solstone",
-    "solstone-journal-host",
+    "solstone-journal",
+    "solstone-journal-cuda",
     "solstone-journal-models",
 ]
+overrides = [{ name = "solstone-journal-host", marker = "python_full_version < '3.12'", specifier = "==0.7.0" }]
 
 [[package]]
 name = "agent-client-protocol"
@@ -4172,6 +4174,15 @@ wheels = [
 ]
 
 [[package]]
+name = "setuptools"
+version = "83.0.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/34/26/f5d29e25ffdb535afef2d35cdb55b325298f96debd670da4c325e08d70f4/setuptools-83.0.0.tar.gz", hash = "sha256:025bccbbf0fa05b6192bc64ae1e7b16e001fd6d6d4d5de03c97b1c1ade523bef", size = 1154254, upload-time = "2026-07-04T15:31:22.699Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5d/40/e1e72872c6354b306daef1703549e8e83b4d43cfea356311bf722a043752/setuptools-83.0.0-py3-none-any.whl", hash = "sha256:29b23c360f22f414dc7336bb39178cc7bcbf6021ed2733cde173f09dba19abb3", size = 1008090, upload-time = "2026-07-04T15:31:20.885Z" },
+]
+
+[[package]]
 name = "shellingham"
 version = "1.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -4225,21 +4236,6 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
-journal = [
-    { name = "onnxruntime" },
-    { name = "solstone-journal-host" },
-]
-journal-cuda = [
-    { name = "nvidia-cublas-cu12" },
-    { name = "nvidia-cuda-nvrtc-cu12" },
-    { name = "nvidia-cuda-runtime-cu12" },
-    { name = "nvidia-cudnn-cu12" },
-    { name = "nvidia-cufft-cu12" },
-    { name = "nvidia-curand-cu12" },
-    { name = "nvidia-nvjitlink-cu12" },
-    { name = "onnxruntime-gpu" },
-    { name = "solstone-journal-host" },
-]
 journal-host = [
     { name = "anthropic" },
     { name = "av" },
@@ -4299,6 +4295,13 @@ dev = [
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "ruff" },
+    { name = "setuptools" },
+]
+journal-cpu = [
+    { name = "solstone-journal" },
+]
+journal-cuda = [
+    { name = "solstone-journal-cuda" },
 ]
 
 [package.metadata]
@@ -4322,16 +4325,6 @@ requires-dist = [
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'journal-host'", specifier = ">=0.31.2,<1" },
     { name = "mlx-vlm", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'journal-host'", specifier = ">=0.6.2,<0.7" },
     { name = "numpy", marker = "extra == 'journal-host'" },
-    { name = "nvidia-cublas-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-cuda-nvrtc-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-cuda-runtime-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-cudnn-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-cufft-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-curand-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "nvidia-nvjitlink-cu12", marker = "extra == 'journal-cuda'" },
-    { name = "onnxruntime", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'journal'", specifier = "!=1.24.1,>=1.25.0" },
-    { name = "onnxruntime", marker = "extra == 'journal'", specifier = ">=1.20.0,!=1.24.1" },
-    { name = "onnxruntime-gpu", marker = "extra == 'journal-cuda'", specifier = ">=1.25.0" },
     { name = "openai", marker = "extra == 'journal-host'", specifier = ">=1.2.0" },
     { name = "opencv-python-headless", marker = "extra == 'journal-host'" },
     { name = "openhands-sdk", marker = "extra == 'journal-host'", specifier = "==1.27.*" },
@@ -4357,8 +4350,8 @@ requires-dist = [
     { name = "scikit-learn", marker = "extra == 'journal-host'", specifier = ">=1.3" },
     { name = "setproctitle" },
     { name = "solstone", extras = ["pdf"], marker = "extra == 'journal-host'" },
-    { name = "solstone-journal-host", marker = "extra == 'journal'", editable = "packages/solstone-journal-host" },
-    { name = "solstone-journal-host", marker = "extra == 'journal-cuda'", editable = "packages/solstone-journal-host" },
+    { name = "solstone-journal-host", marker = "extra == 'journal'", specifier = "==0.7.0" },
+    { name = "solstone-journal-host", marker = "extra == 'journal-cuda'", specifier = "==0.7.0" },
     { name = "solstone-journal-models", marker = "extra == 'journal-host'", editable = "packages/solstone-journal-models" },
     { name = "soundfile", marker = "extra == 'journal-host'" },
     { name = "timefhuman" },
@@ -4380,18 +4373,55 @@ dev = [
     { name = "pytest-timeout" },
     { name = "pytest-xdist" },
     { name = "ruff" },
+    { name = "setuptools" },
 ]
+journal-cpu = [{ name = "solstone-journal", editable = "packages/solstone-journal" }]
+journal-cuda = [{ name = "solstone-journal-cuda", editable = "packages/solstone-journal-cuda" }]
 
 [[package]]
-name = "solstone-journal-host"
+name = "solstone-journal"
 version = "0.6.24"
-source = { editable = "packages/solstone-journal-host" }
+source = { editable = "packages/solstone-journal" }
 dependencies = [
+    { name = "onnxruntime" },
     { name = "solstone", extra = ["journal-host"] },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "solstone", extras = ["journal-host"], editable = "." }]
+requires-dist = [
+    { name = "onnxruntime", specifier = ">=1.20.0,!=1.24.1" },
+    { name = "onnxruntime", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = "!=1.24.1,>=1.25.0" },
+    { name = "solstone", extras = ["journal-host"], editable = "." },
+]
+
+[[package]]
+name = "solstone-journal-cuda"
+version = "0.6.24"
+source = { editable = "packages/solstone-journal-cuda" }
+dependencies = [
+    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cuda-nvrtc-cu12" },
+    { name = "nvidia-cuda-runtime-cu12" },
+    { name = "nvidia-cudnn-cu12" },
+    { name = "nvidia-cufft-cu12" },
+    { name = "nvidia-curand-cu12" },
+    { name = "nvidia-nvjitlink-cu12" },
+    { name = "onnxruntime-gpu" },
+    { name = "solstone", extra = ["journal-host"] },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cuda-nvrtc-cu12" },
+    { name = "nvidia-cuda-runtime-cu12" },
+    { name = "nvidia-cudnn-cu12" },
+    { name = "nvidia-cufft-cu12" },
+    { name = "nvidia-curand-cu12" },
+    { name = "nvidia-nvjitlink-cu12" },
+    { name = "onnxruntime-gpu", specifier = ">=1.25.0" },
+    { name = "solstone", extras = ["journal-host"], editable = "." },
+]
 
 [[package]]
 name = "solstone-journal-models"

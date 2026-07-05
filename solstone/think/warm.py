@@ -7,8 +7,9 @@ import logging
 import platform
 import sys
 
-# Single source of truth: pyproject.toml [journal-host], plus the [journal] and
-# [journal-cuda] onnxruntime entries. Package-to-import mapping:
+# Single source of truth: pyproject.toml [journal-host], plus the CPU/GPU
+# onnxruntime entries in the solstone-journal / solstone-journal-cuda leaves.
+# Package-to-import mapping:
 # Pillow -> PIL; opencv-python-headless -> cv2; scikit-learn -> sklearn;
 # kaldi-native-fbank -> kaldi_native_fbank.
 #

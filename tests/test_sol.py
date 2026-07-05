@@ -455,17 +455,19 @@ class TestCommandRegistry:
         assert "services" not in sol.service_help_group().commands
 
     def test_pyproject_scripts_split_thin_base_and_host(self):
-        """Root ships only thin scripts; the host shim owns service scripts."""
+        """Root ships thin scripts; both journal leaves own service scripts."""
         root_pyproject = tomllib.loads(
             (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
-        host_pyproject = tomllib.loads(
-            (
-                REPO_ROOT / "packages" / "solstone-journal-host" / "pyproject.toml"
-            ).read_text(encoding="utf-8")
-        )
+        leaf_pyprojects = [
+            tomllib.loads(
+                (REPO_ROOT / "packages" / name / "pyproject.toml").read_text(
+                    encoding="utf-8"
+                )
+            )
+            for name in ("solstone-journal", "solstone-journal-cuda")
+        ]
         root_scripts = root_pyproject["project"]["scripts"]
-        host_scripts = host_pyproject["project"]["scripts"]
 
         assert set(root_scripts) == {"sol", "solstone"}
         assert root_scripts["sol"] == "solstone.think.sol_cli:main"
@@ -473,11 +475,14 @@ class TestCommandRegistry:
         assert "journal" not in root_scripts
         assert "mlx-vlm-server" not in root_scripts
 
-        assert set(host_scripts) == {"journal", "mlx-vlm-server"}
-        assert host_scripts["journal"] == "solstone.think.sol_cli:journal_main"
-        assert (
-            host_scripts["mlx-vlm-server"] == "solstone.think.providers.mlx_server:main"
-        )
+        for leaf_pyproject in leaf_pyprojects:
+            leaf_scripts = leaf_pyproject["project"]["scripts"]
+            assert set(leaf_scripts) == {"journal", "mlx-vlm-server"}
+            assert leaf_scripts["journal"] == "solstone.think.sol_cli:journal_main"
+            assert (
+                leaf_scripts["mlx-vlm-server"]
+                == "solstone.think.providers.mlx_server:main"
+            )
 
     def test_pyproject_declares_journal_parakeet_dependencies(self):
         """The journal host keeps ONNX runtime deps out of the thin base."""
@@ -485,24 +490,37 @@ class TestCommandRegistry:
             (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
         )
         base = pyproject["project"]["dependencies"]
-        extras = pyproject["project"]["optional-dependencies"]
+        cpu_leaf = tomllib.loads(
+            (REPO_ROOT / "packages" / "solstone-journal" / "pyproject.toml").read_text(
+                encoding="utf-8"
+            )
+        )
+        cuda_leaf = tomllib.loads(
+            (
+                REPO_ROOT / "packages" / "solstone-journal-cuda" / "pyproject.toml"
+            ).read_text(encoding="utf-8")
+        )
+        cpu_deps = cpu_leaf["project"]["dependencies"]
+        cuda_deps = cuda_leaf["project"]["dependencies"]
 
         # The thin base carries no ONNX / STT runtime.
         assert not any("onnxruntime" in dep or "onnx-asr" in dep for dep in base), (
             "thin base must not carry the transcription runtime"
         )
 
-        # [journal] (CPU default) pulls the CPU onnxruntime floor.
-        assert "onnxruntime>=1.20.0,!=1.24.1" in extras["journal"]
+        # The CPU leaf pulls the CPU onnxruntime floor.
+        assert "onnxruntime>=1.20.0,!=1.24.1" in cpu_deps
         assert (
             "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'"
-            in extras["journal"]
+            in cpu_deps
         )
-        # [journal-cuda] swaps in the GPU runtime and never the CPU onnxruntime.
-        assert "onnxruntime-gpu>=1.25.0" in extras["journal-cuda"]
+        assert "onnxruntime-gpu>=1.25.0" not in cpu_deps
+
+        # The CUDA leaf swaps in the GPU runtime and never the CPU onnxruntime.
+        assert "onnxruntime-gpu>=1.25.0" in cuda_deps
         assert not any(
             dep.split(";")[0].strip() == "onnxruntime>=1.20.0,!=1.24.1"
-            for dep in extras["journal-cuda"]
+            for dep in cuda_deps
         )
 
     def test_every_registry_entry_has_surface_tag(self):

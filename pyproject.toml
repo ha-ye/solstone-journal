@@ -30,8 +30,8 @@ keywords = ["audio", "transcription", "screenshot", "multimodal", "ai", "gemini"
 dependencies = [
     # The thin `sol` access surface only. `pip install solstone` (the default)
     # is a thin client that talks to a journal — it carries NO provider SDKs,
-    # no AI/media/ML runtime, no Flask. Running a journal host here is the
-    # deliberate `pip install 'solstone[journal]'` opt-in (the full stack below).
+    # no AI/media/ML runtime, no Flask. Install a journal host through
+    # `pip install solstone-journal` or `pip install solstone-journal-cuda`.
     #
     # This partition is the boundary the access-surface import-clean guard
     # (scripts/check_access_imports_clean.py) and the extras-consistency lint
@@ -57,27 +57,22 @@ dependencies = [
 
 [project.optional-dependencies]
 # ---------------------------------------------------------------------------
-# The journal-host menu. `pip install solstone` is the thin client (above);
-# running a journal here is a deliberate opt-in:
+# Install menu. `pip install solstone` is the thin access client above.
+# The journal is now its own package:
 #
-#   pip install 'solstone[journal]'        # run a journal — full CPU stack
-#   pip install 'solstone[journal-cuda]'   # journal with GPU transcription
+#   pip install solstone-journal          # the journal (CPU)
+#   pip install solstone-journal-cuda     # the journal on NVIDIA CUDA
 #
-# [journal] and [journal-cuda] are the same stack; they differ ONLY in the
-# ONNX runtime package (CPU vs CUDA). They share [journal-host] (the heavy core
-# minus the runtime). Install ONE of them, never both — onnxruntime
-# and onnxruntime-gpu own the same `onnxruntime/` import dir and clobber each
-# other (see the Makefile note on --all-extras).
+# [journal] and [journal-cuda] are retired tombstones that fail loudly and point
+# old installs at the new leaf packages. They no longer install the journal.
 #
-# [journal] and [journal-cuda] also pull in the solstone-journal-host shim
-# distribution, built as the uv workspace member under
-# packages/solstone-journal-host/. That shim owns the host-only `journal` and
-# `mlx-vlm-server` console scripts; base solstone keeps only `sol`/`solstone`.
+# [journal-host] and [pdf] remain internal building blocks. The leaf packages
+# compose [journal-host] with either the CPU ONNX runtime or the NVIDIA CUDA
+# runtime; [pdf] backs per-feature install hints (think/features.py).
 #
-# [pdf] remains an internal building block: it backs the per-feature install
-# hints (think/features.py), and [journal-host]/[journal] compose it. It is NOT
-# part of the advertised menu — INSTALL.md documents only `solstone` and
-# `solstone[journal]`.
+# Base solstone keeps only the `sol`/`solstone` scripts. Install exactly one
+# journal leaf; the CPU and GPU ONNX wheels own the same `onnxruntime/` import
+# dir and clobber each other.
 # ---------------------------------------------------------------------------
 pdf = [
     "weasyprint>=60.0",
@@ -86,8 +81,8 @@ pdf = [
 ]
 
 # The full journal-host stack EXCEPT the ONNX runtime package (which is the
-# CPU-vs-CUDA choice deferred to [journal]/[journal-cuda] below). Not a
-# user-facing extra — always pulled in via [journal] or [journal-cuda].
+# CPU-vs-CUDA choice made by the solstone-journal leaf packages). Not a
+# user-facing extra — always pulled in by a leaf package.
 journal-host = [
     "solstone-journal-models==1.0.0",
     "python-dotenv",
@@ -146,38 +141,25 @@ journal-host = [
     "solstone[pdf]",
 ]
 
-# Run a journal here — the full host stack with CPU ONNX runtime.
-journal = [
-    "solstone-journal-host==0.6.24",
-    # CPU ONNX runtime: covers VAD, diarization, and the WeSpeaker embedder;
-    # !=1.24.1 across the board (known-bad wheel).
-    "onnxruntime>=1.20.0,!=1.24.1",
-    # Linux/x86_64 keeps the higher floor for current VAD/diarization/WeSpeaker
-    # wheel behavior; scripts/check_extras_consistency.py pins this floor.
-    "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
-]
+# TOMBSTONE. The journal moved out of the root distribution into its own
+# packages. `solstone[journal]` and the `solstone-journal-host` shim are retired;
+# this extra now pins a build-fails-by-design tombstone so every old spelling
+# fails loudly at install time instead of silently thin-installing. Install the
+# journal via:
+#     pip install solstone-journal          # the journal (CPU)
+#     pip install solstone-journal-cuda     # the journal on NVIDIA CUDA
+# The pin is STATIC (never rewritten per release); render_packaging.py --check
+# and check_extras_consistency.py verify it stays exactly this.
+journal = ["solstone-journal-host==0.7.0"]
 
-# Run a journal here with GPU ONNX runtime (NVIDIA / Linux x86_64).
-# Same stack as [journal] but onnxruntime-gpu in place of the CPU runtime — the
-# GPU wheel supplies the `onnxruntime` namespace (incl. CPU providers) for
-# VAD, diarization, and WeSpeaker. Install this instead of [journal], not
-# alongside it.
-journal-cuda = [
-    "solstone-journal-host==0.6.24",
-    "onnxruntime-gpu>=1.25.0",
-    "nvidia-cuda-runtime-cu12",
-    "nvidia-cudnn-cu12",
-    "nvidia-cublas-cu12",
-    "nvidia-cufft-cu12",
-    "nvidia-curand-cu12",
-    "nvidia-cuda-nvrtc-cu12",
-    "nvidia-nvjitlink-cu12",
-]
+# TOMBSTONE (see [journal] above). Retired — same loud-failure tombstone pin.
+# Install `solstone-journal-cuda` for the NVIDIA CUDA runtime.
+journal-cuda = ["solstone-journal-host==0.7.0"]
 
 [project.scripts]
 # The base distribution ships only the thin `sol` access CLI. Host-only
-# console scripts (`journal`, `mlx-vlm-server`) live in the
-# `solstone-journal-host` distribution, pulled in by [journal]/[journal-cuda].
+# console scripts (`journal`, `mlx-vlm-server`) live in the journal leaf
+# distributions (`solstone-journal` or `solstone-journal-cuda`).
 sol = "solstone.think.sol_cli:main"
 # `solstone` is an alias for the `sol` access CLI so `uvx solstone` /
 # `uv tool run solstone` resolve to the thin client instead of erroring on a
@@ -206,11 +188,22 @@ include-package-data = true
 [tool.setuptools.packages.find]
 include = ["solstone*"]
 
+[tool.uv]
+# The [journal]/[journal-cuda] tombstones pin solstone-journal-host==0.7.0, a
+# build-fails-by-design distribution that must NOT resolve during workspace
+# development. This override prunes it from workspace resolution: the marker
+# `python_version < '3.12'` contradicts requires-python = ">=3.12", so uv drops
+# the requirement entirely (uv lock succeeds; no tombstone node lands in
+# uv.lock). [tool.uv] is never published, so end-user wheel METADATA still
+# carries the tombstone pin and fails loudly at install time.
+override-dependencies = ["solstone-journal-host==0.7.0; python_version < '3.12'"]
+
 [tool.uv.workspace]
-members = ["packages/solstone-journal-host", "packages/solstone-journal-models"]
+members = ["packages/solstone-journal", "packages/solstone-journal-cuda", "packages/solstone-journal-models"]
 
 [tool.uv.sources]
-solstone-journal-host = {workspace = true}
+solstone-journal = {workspace = true}
+solstone-journal-cuda = {workspace = true}
 solstone-journal-models = {workspace = true}
 
 # Development tools configuration
@@ -259,4 +252,7 @@ dev = [
     "pytest-timeout",
     "pytest-xdist",
     "ruff",
+    "setuptools",
 ]
+journal-cpu = ["solstone-journal"]
+journal-cuda = ["solstone-journal-cuda"]
