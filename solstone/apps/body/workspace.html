@@ -1010,6 +1010,222 @@ a.body-jump-day:focus-visible {
   color: var(--ink-faint);
 }
 
+/* --- Trends: signal ribbons + inline canvas drilldown ---------------------- */
+
+.body-trends-stack {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.body-trends-stack[hidden],
+.body-trends-canvas[hidden] {
+  display: none;
+}
+
+.body-trends-ribbon {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+}
+
+.body-trends-ribbon--open {
+  border-color: color-mix(in srgb, var(--orange) 36%, var(--hairline));
+}
+
+.body-trends-ribbon-btn {
+  display: grid;
+  grid-template-columns: 196px minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: stretch;
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius);
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+
+.body-trends-ribbon-btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--paper), var(--cream-bright));
+}
+
+.body-trends-ribbon-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.body-trends-ribbon-btn:disabled {
+  cursor: default;
+}
+
+.body-trends-ribbon-meta {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.body-trends-ribbon-name {
+  font-size: 15px;
+  font-weight: var(--weight-medium);
+  color: var(--ink);
+}
+
+.body-trends-ribbon-latest {
+  font-size: 13px;
+  color: var(--ink-soft-paper);
+}
+
+.body-trends-spark {
+  position: relative;
+  height: 44px;
+  min-width: 0;
+}
+
+.body-trends-spark svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--cream-bright);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-sm);
+}
+
+.body-trends-spark-line {
+  fill: none;
+  stroke: var(--orange-ink);
+  stroke-width: 1.6px;
+}
+
+.body-trends-spark-dot {
+  fill: var(--orange-ink);
+}
+
+.body-trends-tick {
+  stroke: var(--hairline-2);
+  stroke-dasharray: 3 3;
+}
+
+.body-trends-canvas {
+  padding: 0 var(--space-4) var(--space-4);
+}
+
+.body-trends-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.body-trends-chip {
+  min-height: 30px;
+  padding: 2px var(--space-3);
+  background: var(--cream-bright);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.body-trends-chip:hover {
+  background: var(--orange-wash);
+}
+
+.body-trends-chip:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.body-trends-chip--on {
+  background: var(--orange-wash);
+  border-color: var(--orange-ink);
+  color: var(--orange-ink);
+  font-weight: var(--weight-medium);
+}
+
+.body-trends-chip-gap {
+  flex: 1;
+}
+
+.body-trends-plot {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.body-trends-plot .body-curve {
+  height: 260px;
+}
+
+.body-trends-flag-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-left: 1px dashed var(--orange-ink);
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.body-trends-flag {
+  position: absolute;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 1px var(--space-2);
+  background: var(--orange-wash);
+  border: 1px solid color-mix(in srgb, var(--orange) 45%, var(--hairline-2));
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: var(--weight-medium);
+  color: var(--orange-ink);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.body-trends-axis {
+  position: relative;
+  height: 18px;
+  margin-top: var(--space-1);
+  font-size: 12px;
+  color: var(--ink-faint-paper);
+  font-variant-numeric: tabular-nums;
+}
+
+.body-trends-axis span {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.body-trends-axis span.body-trends-axis-edge {
+  transform: none;
+}
+
+.body-trends-foot {
+  margin: var(--space-2) 0 0;
+  font-size: 13px;
+  color: var(--ink-faint);
+}
+
+@media (max-width: 768px) {
+  .body-trends-ribbon-btn {
+    grid-template-columns: 1fr;
+  }
+
+  .body-trends-spark {
+    height: 56px;
+  }
+}
+
 @media (max-width: 768px) {
   .body-grid,
   .body-lists,
@@ -1023,7 +1239,469 @@ a.body-jump-day:focus-visible {
 </style>
 
 <div class="workspace-content body-shell">
-{% if body_day %}
+{% if body_trends %}
+  <header class="body-header">
+    <h1 class="body-title">Body &middot; Trends</h1>
+    <nav class="body-nav" aria-label="Body views">
+      <a class="body-link" href="/app/body/">&larr; Body overview</a>
+    </nav>
+  </header>
+
+  <section class="body-card" id="body-trends-status" aria-live="polite">
+    <p class="body-muted" id="body-trends-status-line">Loading trends&hellip;</p>
+  </section>
+
+  <div class="body-trends-stack" id="body-trends-stack" hidden></div>
+
+  <script>
+    (function () {
+      "use strict";
+      var statusCard = document.getElementById("body-trends-status");
+      var statusLine = document.getElementById("body-trends-status-line");
+      var stack = document.getElementById("body-trends-stack");
+      if (!statusCard || !statusLine || !stack) return;
+
+      var SVG_W = 1440;
+      var CANVAS_H = 260;
+      var SPARK_H = 44;
+      var MS_DAY = 86400000;
+      var MS_WEEK = 7 * MS_DAY;
+      // Monday anchor safely before any archive day: 2001-01-01 was a Monday.
+      var WEEK_EPOCH = Date.UTC(2001, 0, 1);
+      var POLL_MS = 5000;
+      var RANGE_WEEKS = { "1y": 52, "3y": 156 };
+
+      var signals = [];
+      var annotations = [];
+      var weekly = {};
+      var domain = { w0: 0, w1: 1 };
+      var state = { open: null, range: "all", flags: true };
+
+      function esc(text) {
+        return String(text)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      function dayToUtc(day) {
+        return Date.UTC(
+          parseInt(day.slice(0, 4), 10),
+          parseInt(day.slice(4, 6), 10) - 1,
+          parseInt(day.slice(6, 8), 10)
+        );
+      }
+
+      function weekOf(day) {
+        return Math.floor((dayToUtc(day) - WEEK_EPOCH) / MS_WEEK);
+      }
+
+      function weekDate(week) {
+        return new Date(WEEK_EPOCH + week * MS_WEEK);
+      }
+
+      function monthYearLabel(week) {
+        return weekDate(week).toLocaleDateString("en-US", {
+          month: "short", year: "numeric", timeZone: "UTC"
+        });
+      }
+
+      function dayLabel(day) {
+        return new Date(dayToUtc(day)).toLocaleDateString("en-US", {
+          month: "short", day: "numeric", year: "numeric", timeZone: "UTC"
+        });
+      }
+
+      function median(values) {
+        var sorted = values.slice().sort(function (a, b) { return a - b; });
+        var mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      }
+
+      // Weekly median bucketing: daily points fold into Monday-anchored
+      // weeks. A week with no daily points stays absent — a gap, never a
+      // value interpolated across it.
+      function weeklyMedians(daily) {
+        var byWeek = {};
+        daily.forEach(function (point) {
+          var week = weekOf(point[0]);
+          (byWeek[week] = byWeek[week] || []).push(point[1]);
+        });
+        return Object.keys(byWeek)
+          .map(function (week) { return parseInt(week, 10); })
+          .sort(function (a, b) { return a - b; })
+          .map(function (week) {
+            return { week: week, value: median(byWeek[week]) };
+          });
+      }
+
+      // Same gap rule as the day curves: adjacent weeks join, an absent
+      // week splits the segment, an isolated week renders as a dot.
+      function gapSegments(points) {
+        var segments = [];
+        var current = [];
+        points.forEach(function (point) {
+          if (current.length && point.week - current[current.length - 1].week > 1) {
+            segments.push(current);
+            current = [];
+          }
+          current.push(point);
+        });
+        if (current.length) segments.push(current);
+        return segments;
+      }
+
+      // Same padded y-domain convention as the day curves: 8% of the
+      // spread, never less than 2, rounded outward to integers the axis
+      // labels can state.
+      function paddedDomain(points) {
+        var vMin = Infinity;
+        var vMax = -Infinity;
+        points.forEach(function (point) {
+          if (point.value < vMin) vMin = point.value;
+          if (point.value > vMax) vMax = point.value;
+        });
+        var pad = Math.max((vMax - vMin) * 0.08, 2.0);
+        return { lo: Math.floor(vMin - pad), hi: Math.ceil(vMax + pad) };
+      }
+
+      function formatHours(minutes) {
+        var hours = Math.round((minutes / 60) * 10) / 10;
+        return hours.toFixed(1).replace(/\.0$/, "") + "h";
+      }
+
+      function formatValue(signal, value) {
+        if (signal.unit_label === "h") return formatHours(value);
+        if (signal.key === "steps") {
+          return Math.round(value).toLocaleString("en-US") +
+            (signal.unit_label ? " " + signal.unit_label : "");
+        }
+        if (signal.key === "body_mass") {
+          return (Math.round(value * 10) / 10) +
+            (signal.unit_label ? " " + signal.unit_label : "");
+        }
+        return Math.round(value) +
+          (signal.unit_label ? " " + signal.unit_label : "");
+      }
+
+      function xAt(week, w0, w1) {
+        return ((week - w0) / Math.max(1, w1 - w0) * SVG_W).toFixed(1);
+      }
+
+      function yAt(value, dom, height) {
+        return (height - (value - dom.lo) / (dom.hi - dom.lo) * height).toFixed(1);
+      }
+
+      function curveMarkup(points, w0, w1, dom, height, lineClass, dotClass, dotR) {
+        var parts = [];
+        gapSegments(points).forEach(function (segment) {
+          if (segment.length === 1) {
+            parts.push('<circle class="' + dotClass + '" cx="' +
+              xAt(segment[0].week, w0, w1) + '" cy="' +
+              yAt(segment[0].value, dom, height) + '" r="' + dotR + '"></circle>');
+            return;
+          }
+          var path = segment.map(function (point, index) {
+            return (index ? "L" : "M") + xAt(point.week, w0, w1) + " " +
+              yAt(point.value, dom, height);
+          }).join(" ");
+          parts.push('<path class="' + lineClass + '" d="' + path +
+            '" vector-effect="non-scaling-stroke"></path>');
+        });
+        return parts.join("");
+      }
+
+      // Era/annotation ticks on the ribbon sparklines: quiet dashed
+      // verticals at each annotated day, labels live in the canvas.
+      function tickMarkup(w0, w1) {
+        return annotations.map(function (note) {
+          var week = weekOf(note.day);
+          if (week < w0 || week > w1) return "";
+          var x = xAt(week, w0, w1);
+          return '<line class="body-trends-tick" x1="' + x + '" y1="0" x2="' +
+            x + '" y2="' + SPARK_H + '" vector-effect="non-scaling-stroke"></line>';
+        }).join("");
+      }
+
+      function ribbonMarkup(signal) {
+        var points = weekly[signal.key];
+        var canvasId = "body-trends-canvas-" + signal.key;
+        var hasData = points.length > 0;
+        var latest = hasData
+          ? formatValue(signal, signal.daily[signal.daily.length - 1][1]) + " · latest"
+          : "not present yet";
+        var spark = "";
+        if (hasData) {
+          spark = tickMarkup(domain.w0, domain.w1) + curveMarkup(
+            points, domain.w0, domain.w1, paddedDomain(points), SPARK_H,
+            "body-trends-spark-line", "body-trends-spark-dot", 3
+          );
+        }
+        return '<section class="body-trends-ribbon" data-signal="' +
+          esc(signal.key) + '">' +
+          '<button type="button" class="body-trends-ribbon-btn" data-signal="' +
+          esc(signal.key) + '" aria-expanded="false" aria-controls="' +
+          canvasId + '"' + (hasData ? "" : " disabled") + ">" +
+          '<span class="body-trends-ribbon-meta">' +
+          '<span class="body-trends-ribbon-name">' + esc(signal.label) + "</span>" +
+          '<span class="body-trends-ribbon-latest body-num">' + esc(latest) + "</span>" +
+          "</span>" +
+          '<span class="body-trends-spark">' +
+          '<svg viewBox="0 0 ' + SVG_W + " " + SPARK_H +
+          '" preserveAspectRatio="none" aria-hidden="true">' + spark + "</svg>" +
+          "</span></button>" +
+          '<div class="body-trends-canvas" id="' + canvasId + '" hidden></div>' +
+          "</section>";
+      }
+
+      function windowBounds() {
+        if (state.range === "all") return { w0: domain.w0, w1: domain.w1 };
+        var span = RANGE_WEEKS[state.range];
+        return { w0: Math.max(domain.w0, domain.w1 - span), w1: domain.w1 };
+      }
+
+      function axisMarkup(w0, w1) {
+        var spans = ['<span class="body-trends-axis-edge" style="left: 0;">' +
+          monthYearLabel(w0) + "</span>"];
+        var lastYear = weekDate(w0).getUTCFullYear();
+        for (var week = w0 + 1; week <= w1; week += 1) {
+          var year = weekDate(week).getUTCFullYear();
+          if (year !== lastYear) {
+            lastYear = year;
+            var pct = (week - w0) / Math.max(1, w1 - w0) * 100;
+            if (pct > 7 && pct < 96) {
+              spans.push('<span style="left: ' + pct.toFixed(2) + '%;">' +
+                year + "</span>");
+            }
+          }
+        }
+        return spans.join("");
+      }
+
+      function flagMarkup(w0, w1) {
+        var html = "";
+        var level = 0;
+        annotations.forEach(function (note) {
+          var week = weekOf(note.day);
+          if (week < w0 || week > w1) return;
+          var pct = (week - w0) / Math.max(1, w1 - w0) * 100;
+          html += '<div class="body-trends-flag-line" style="left: ' +
+            pct.toFixed(2) + '%;"></div>';
+          var style = "left: " + pct.toFixed(2) + "%; top: " + (8 + level * 26) + "px;";
+          if (pct < 9) style += " transform: none;";
+          if (pct > 91) style += " transform: translateX(-100%);";
+          html += '<div class="body-trends-flag" style="' + style + '">' +
+            esc(note.label) + "</div>";
+          level = (level + 1) % 3;
+        });
+        return html;
+      }
+
+      function chipsMarkup(signal) {
+        return '<div class="body-trends-chips" role="group" aria-label="' +
+          esc(signal.label) + ' range and annotations">' +
+          ["1y", "3y", "all"].map(function (range) {
+            var on = state.range === range;
+            return '<button type="button" class="body-trends-chip' +
+              (on ? " body-trends-chip--on" : "") + '" data-range="' + range +
+              '" aria-pressed="' + (on ? "true" : "false") + '">' +
+              (range === "all" ? "All" : range) + "</button>";
+          }).join("") +
+          '<span class="body-trends-chip-gap"></span>' +
+          '<button type="button" class="body-trends-chip' +
+          (state.flags ? " body-trends-chip--on" : "") +
+          '" data-flags-toggle aria-pressed="' + (state.flags ? "true" : "false") +
+          '">Annotations · ' + (state.flags ? "on" : "off") + "</button>" +
+          '<button type="button" class="body-trends-chip" data-collapse>Close</button>' +
+          "</div>";
+      }
+
+      function renderCanvas(signal) {
+        var canvas = document.getElementById("body-trends-canvas-" + signal.key);
+        if (!canvas) return;
+        var bounds = windowBounds();
+        var inWindow = weekly[signal.key].filter(function (point) {
+          return point.week >= bounds.w0 && point.week <= bounds.w1;
+        });
+        if (!inWindow.length) {
+          canvas.innerHTML = chipsMarkup(signal) +
+            '<p class="body-muted">Not present in this range.</p>';
+          return;
+        }
+        var vMin = Infinity;
+        var vMax = -Infinity;
+        inWindow.forEach(function (point) {
+          if (point.value < vMin) vMin = point.value;
+          if (point.value > vMax) vMax = point.value;
+        });
+        var dom = paddedDomain(inWindow);
+        var line = signal.label + " · " + formatValue(signal, vMin) + " – " +
+          formatValue(signal, vMax) + " · " + inWindow.length +
+          " weeks present · weekly median";
+        canvas.innerHTML = chipsMarkup(signal) +
+          '<p class="body-primary-line body-num">' + esc(line) + "</p>" +
+          '<div class="body-curve-wrap">' +
+          '<div class="body-curve-y body-num" aria-hidden="true">' +
+          "<span>" + esc(formatValue(signal, dom.hi)) + "</span>" +
+          "<span>" + esc(formatValue(signal, dom.lo)) + "</span>" +
+          "</div>" +
+          '<div class="body-trends-plot">' +
+          '<svg class="body-curve" viewBox="0 0 ' + SVG_W + " " + CANVAS_H +
+          '" preserveAspectRatio="none" role="img" aria-label="' +
+          esc(signal.label) + ' weekly medians across the archive">' +
+          curveMarkup(inWindow, bounds.w0, bounds.w1, dom, CANVAS_H, "", "", 4) +
+          "</svg>" +
+          (state.flags ? flagMarkup(bounds.w0, bounds.w1) : "") +
+          "</div>" +
+          "</div>" +
+          '<div class="body-trends-axis body-num" aria-hidden="true">' +
+          axisMarkup(bounds.w0, bounds.w1) + "</div>";
+      }
+
+      function findSignal(key) {
+        for (var i = 0; i < signals.length; i += 1) {
+          if (signals[i].key === key) return signals[i];
+        }
+        return null;
+      }
+
+      function setExpanded(key, expanded) {
+        var section = stack.querySelector(
+          '.body-trends-ribbon[data-signal="' + key + '"]'
+        );
+        if (!section) return;
+        section.classList.toggle("body-trends-ribbon--open", expanded);
+        var btn = section.querySelector(".body-trends-ribbon-btn");
+        btn.setAttribute("aria-expanded", expanded ? "true" : "false");
+        section.querySelector(".body-trends-canvas").hidden = !expanded;
+      }
+
+      function collapseOpen(refocus) {
+        if (!state.open) return;
+        var key = state.open;
+        state.open = null;
+        setExpanded(key, false);
+        if (refocus) {
+          var btn = stack.querySelector(
+            '.body-trends-ribbon[data-signal="' + key + '"] .body-trends-ribbon-btn'
+          );
+          if (btn) btn.focus();
+        }
+      }
+
+      // One canvas at a time: opening a ribbon collapses whichever was open.
+      function expandSignal(key) {
+        collapseOpen(false);
+        state.open = key;
+        state.range = "all";
+        state.flags = true;
+        setExpanded(key, true);
+        renderOpenCanvas();
+      }
+
+      function toggleSignal(key) {
+        if (state.open === key) collapseOpen(false);
+        else expandSignal(key);
+      }
+
+      function renderOpenCanvas() {
+        if (!state.open) return;
+        var signal = findSignal(state.open);
+        if (signal) renderCanvas(signal);
+      }
+
+      stack.addEventListener("click", function (event) {
+        if (event.target.closest("[data-collapse]")) {
+          collapseOpen(true);
+          return;
+        }
+        if (event.target.closest("[data-flags-toggle]")) {
+          state.flags = !state.flags;
+          renderOpenCanvas();
+          return;
+        }
+        var chip = event.target.closest(".body-trends-chip[data-range]");
+        if (chip) {
+          state.range = chip.dataset.range;
+          renderOpenCanvas();
+          return;
+        }
+        var btn = event.target.closest(".body-trends-ribbon-btn");
+        if (btn && !btn.disabled) toggleSignal(btn.dataset.signal);
+      });
+
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") collapseOpen(true);
+      });
+
+      function showStatus(text) {
+        statusCard.hidden = false;
+        statusLine.textContent = text;
+      }
+
+      function renderTrends(payload) {
+        signals = payload.signals || [];
+        annotations = payload.annotations || [];
+        weekly = {};
+        var wMin = Infinity;
+        var wMax = -Infinity;
+        signals.forEach(function (signal) {
+          signal.daily = (signal.daily || []).slice().sort(function (a, b) {
+            return a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0;
+          });
+          var points = weeklyMedians(signal.daily);
+          weekly[signal.key] = points;
+          if (points.length) {
+            if (points[0].week < wMin) wMin = points[0].week;
+            if (points[points.length - 1].week > wMax) wMax = points[points.length - 1].week;
+          }
+        });
+        if (wMin > wMax) {
+          showStatus("No trend data present yet.");
+          return;
+        }
+        // Annotations can sit at the archive edges; keep them on the axis.
+        annotations.forEach(function (note) {
+          var week = weekOf(note.day);
+          if (week < wMin) wMin = week;
+          if (week > wMax) wMax = week;
+        });
+        domain = { w0: wMin, w1: wMax };
+        var foot = payload.generated_at_day
+          ? '<p class="body-trends-foot">Weekly medians of daily points · through ' +
+            esc(dayLabel(payload.generated_at_day)) + "</p>"
+          : "";
+        stack.innerHTML = signals.map(ribbonMarkup).join("") + foot;
+        statusCard.hidden = true;
+        stack.hidden = false;
+        if (weekly.resting_hr && weekly.resting_hr.length) expandSignal("resting_hr");
+      }
+
+      function loadTrends() {
+        fetch("/app/body/api/trends")
+          .then(function (response) {
+            if (!response.ok) throw new Error("trends " + response.status);
+            return response.json();
+          })
+          .then(function (payload) {
+            if (payload.warming) {
+              showStatus("Preparing trends — the first build over five years takes a minute.");
+              window.setTimeout(loadTrends, POLL_MS);
+              return;
+            }
+            renderTrends(payload);
+          })
+          .catch(function () {
+            showStatus("Trends are not available right now.");
+            window.setTimeout(loadTrends, POLL_MS);
+          });
+      }
+      loadTrends();
+    })();
+  </script>
+
+{% elif body_day %}
   <header class="body-header">
     <h1 class="body-title">Body · {{ body_day.date_label }}</h1>
     <nav class="body-nav" aria-label="Body views">
@@ -1501,6 +2179,7 @@ a.body-jump-day:focus-visible {
       <a class="body-btn body-btn--solid" href="/app/body/{{ archive.latest_day }}">Open latest day</a>
       <button type="button" class="body-btn body-btn--outline" id="body-jump-btn"
               aria-haspopup="dialog" aria-expanded="false">Jump to date&hellip;</button>
+      <a class="body-btn body-btn--outline" href="/app/body/trends">Trends</a>
       <div class="body-jump-pop" id="body-jump-pop" role="dialog" aria-label="Jump to date" hidden
            data-start-month="{{ archive.coverage.start_month }}"
            data-end-month="{{ archive.coverage.end_month }}"

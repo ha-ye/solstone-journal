@@ -3752,3 +3752,140 @@ def test_stats_warm_leaves_first_request_hot(body_env):
 
     assert response.status_code == 200
     assert response.get_json()["dedupe"]["total"] == 4
+
+
+# --- Trends front-end --------------------------------------------------------
+#
+# Owned by the Trends front-end change-set (workspace.html). The pins below
+# are template-source-level — the repo's JS-invariant idiom — because the
+# /app/body/trends page route and /app/body/api/trends endpoint belong to the
+# server change-set and may land separately. Nothing here requests either
+# endpoint; the one rendered-page test uses the overview route, which exists
+# independently of the server half.
+
+
+def _trends_workspace_source() -> str:
+    body_root = Path(body_routes.__file__).resolve().parent
+    return (body_root / "workspace.html").read_text(encoding="utf-8")
+
+
+def test_trends_branch_renders_instead_of_overview_and_day():
+    source = _trends_workspace_source()
+
+    # The trends flag owns the first template branch; the day view and the
+    # overview keep theirs, so exactly one of the three ever renders.
+    trends_at = source.index("{% if body_trends %}")
+    day_at = source.index("{% elif body_day %}")
+    status_at = source.index("{% elif body_status %}")
+    assert trends_at < day_at < status_at
+
+    # Header: Trends title plus the overview backlink, day-page idiom.
+    branch = source[trends_at:day_at]
+    assert "Body &middot; Trends" in branch
+    assert 'href="/app/body/"' in branch
+    assert "Body overview" in branch
+
+
+def test_trends_view_fetches_api_and_polls_while_warming():
+    source = _trends_workspace_source()
+
+    assert 'fetch("/app/body/api/trends")' in source
+    # The calm warming placeholder, re-polled every five seconds until the
+    # first build lands.
+    assert (
+        "Preparing trends — the first build over five years takes a minute." in source
+    )
+    assert "var POLL_MS = 5000;" in source
+    assert "window.setTimeout(loadTrends, POLL_MS);" in source
+    # The ribbon stack stays hidden until real series arrive.
+    assert 'id="body-trends-stack" hidden' in source
+
+
+def test_trends_ribbons_bucket_weekly_medians_with_honest_gaps():
+    source = _trends_workspace_source()
+
+    # Client-side weekly median bucketing of the daily points.
+    assert "function weeklyMedians(daily)" in source
+    assert "function median(values)" in source
+    assert "Math.floor((dayToUtc(day) - WEEK_EPOCH) / MS_WEEK)" in source
+
+    # The app's curve gap rule at week scale: an absent week splits the
+    # segment — never a line drawn across it — and isolated weeks are dots.
+    assert "point.week - current[current.length - 1].week > 1" in source
+    assert "segment.length === 1" in source
+
+    # Ribbons are real buttons that disclose the inline canvas.
+    assert 'class="body-trends-ribbon-btn"' in source
+    assert 'aria-expanded="false" aria-controls="' in source
+    # Annotation ticks draw on the ribbon sparklines.
+    assert "body-trends-tick" in source
+
+
+def test_trends_canvas_mirrors_curve_idiom_with_year_axis():
+    source = _trends_workspace_source()
+
+    # The drilldown chart is the day page's .body-curve treatment.
+    assert '<svg class="body-curve" viewBox="0 0 ' in source
+    assert "body-curve-wrap" in source
+    assert "body-curve-y" in source
+
+    # Padded y-domain rounded outward to integers, the app convention.
+    assert "Math.max((vMax - vMin) * 0.08, 2.0)" in source
+    assert "Math.floor(vMin - pad)" in source
+    assert "Math.ceil(vMax + pad)" in source
+
+    # The x-axis marks year boundaries within the visible window.
+    assert "year !== lastYear" in source
+    assert "body-trends-axis" in source
+
+
+def test_trends_range_chips_annotations_and_collapse_controls():
+    source = _trends_workspace_source()
+
+    # 1y / 3y / All re-window client-side from the latest data week.
+    assert 'RANGE_WEEKS = { "1y": 52, "3y": 156 }' in source
+    assert '["1y", "3y", "all"]' in source
+    assert "data-range" in source
+    assert "Math.max(domain.w0, domain.w1 - span)" in source
+
+    # Annotation flags ride dashed verticals and toggle off as a group.
+    assert "body-trends-flag-line" in source
+    assert "border-left: 1px dashed var(--orange-ink)" in source
+    assert "data-flags-toggle" in source
+    assert 'aria-pressed="' in source
+
+    # Close control and Escape both collapse the open canvas.
+    assert "data-collapse" in source
+    assert ">Close<" in source
+    assert 'if (event.key === "Escape") collapseOpen(true);' in source
+
+    # One canvas at a time; resting heart rate opens first when present.
+    assert "function expandSignal(key)" in source
+    assert "One canvas at a time" in source
+    assert 'expandSignal("resting_hr")' in source
+
+
+def test_trends_overview_button_sits_in_quick_entry_row(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+
+    assert (
+        '<a class="body-btn body-btn--outline" href="/app/body/trends">Trends</a>'
+        in html
+    )
+    # The link sits in the quick-entry row: after the jump button, before
+    # the recent-days rail.
+    trends_at = html.index('href="/app/body/trends"')
+    assert html.index("Jump to date") < trends_at < html.index("Recent body days")
+
+
+def test_trends_copy_avoids_surveillance_and_interpretation_words():
+    # The whole-template surveillance-verb ban is asserted elsewhere; the
+    # trends surface additionally never interprets — no progress or
+    # judgment vocabulary anywhere in the template source.
+    source = _trends_workspace_source()
+    interpretive = {"improving", "declining", "better", "worse"}
+    found = {word for word in interpretive if word in source}
+    assert found == set(), f"workspace.html contains interpretive copy: {found}"
