@@ -1659,6 +1659,12 @@ a.body-jump-day:focus-visible {
         button.addEventListener("click", function () {
           if (pop.hidden) openPop(); else closePop(false);
         });
+        button.addEventListener("keydown", function (event) {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            if (pop.hidden) openPop(); else closePop(false);
+          }
+        });
         titleBtn.addEventListener("click", function () {
           if (view === "days") {
             renderYears();
