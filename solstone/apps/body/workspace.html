@@ -1293,6 +1293,24 @@ a.body-jump-day:focus-visible {
             <p class="body-card-footer"><span class="body-num">{{ bp.count_label }}</span> readings</p>
           {% endif %}
         {% endif %}
+        {% if body_day.heart.rhythm %}
+          {# Rhythm lines are factual only: what the device reported, and
+             which device reported it. No interpretation, no advice. #}
+          <ul class="body-facts">
+            {% for item in body_day.heart.rhythm.events %}
+              <li>
+                <span>{{ item.label }}</span>
+                <strong class="body-num">{{ item.detail }}</strong>
+              </li>
+            {% endfor %}
+            {% if body_day.heart.rhythm.burden %}
+              <li>
+                <span>{{ body_day.heart.rhythm.burden.label }}</span>
+                <strong class="body-num">{{ body_day.heart.rhythm.burden.detail }}</strong>
+              </li>
+            {% endif %}
+          </ul>
+        {% endif %}
       </section>
     {% endif %}
     </div>

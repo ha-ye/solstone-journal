@@ -1854,6 +1854,13 @@ def test_display_normalizers_scale_fraction_percents_and_relabel_units():
         )
         == "87%"
     )
+    # AFib burden follows the same HealthKit percent-quantity convention.
+    assert (
+        health_schema.display_value(
+            "HKQuantityTypeIdentifierAtrialFibrillationBurden", 0.021, "%"
+        )
+        == "2.1%"
+    )
     # Heart-family 'count/min' reads as bpm; respiratory as breaths/min.
     for record_type in (
         "HKQuantityTypeIdentifierHeartRate",
@@ -2041,6 +2048,252 @@ def test_day_api_blood_pressure_compresses_to_ranges_when_many_readings(body_env
     assert bp["range_label"] == "systolic 110–128 mmHg · diastolic 70–82 mmHg"
 
 
+# --- Day view: heart-rhythm events ---------------------------------------------
+#
+# Rhythm rows are the most sensitive display in the app. The card states
+# what the device reported, attributed to the device — a count, a device-
+# stated value — and nothing else: no interpretation, no alarm framing,
+# no advice.
+
+
+IRREGULAR_RHYTHM_TYPE = "HKCategoryTypeIdentifierIrregularHeartRhythmEvent"
+HIGH_HR_EVENT_TYPE = "HKCategoryTypeIdentifierHighHeartRateEvent"
+LOW_HR_EVENT_TYPE = "HKCategoryTypeIdentifierLowHeartRateEvent"
+AFIB_BURDEN_TYPE = "HKQuantityTypeIdentifierAtrialFibrillationBurden"
+
+# Advisory or interpretive phrasing that must never accompany a rhythm
+# row. Checked against the rendered Heart & breathing card, lowercased.
+RHYTHM_BANNED_PHRASES = (
+    "atrial fibrillation",
+    "detected",
+    "warning",
+    "alert",
+    "abnormal",
+    "normal",
+    "risk",
+    "urgent",
+    "emergency",
+    "danger",
+    "consult",
+    "advice",
+    "recommend",
+    "doctor",
+    "seek ",
+)
+
+
+def _heart_card_slice(html: str) -> str:
+    start = html.index('id="body-heart-title"')
+    return html[start : html.index("</section>", start)]
+
+
+def test_day_api_rhythm_events_state_count_and_device_only(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            IRREGULAR_RHYTHM_TYPE,
+            "2026-09-02T09:15:00-06:00",
+            value="HKCategoryValueNotApplicable",
+            source="Synthetic Watch",
+        ),
+        _row(
+            HIGH_HR_EVENT_TYPE,
+            "2026-09-02T14:00:00-06:00",
+            value="HKCategoryValueNotApplicable",
+            source="Synthetic Watch",
+            metadata={"HKMetadataKeyHeartRateEventThreshold": "120 count/min"},
+        ),
+        _row(
+            HIGH_HR_EVENT_TYPE,
+            "2026-09-02T18:30:00-06:00",
+            value="HKCategoryValueNotApplicable",
+            source="Synthetic Watch",
+        ),
+        _row(
+            LOW_HR_EVENT_TYPE,
+            "2026-09-02T04:00:00-06:00",
+            value="HKCategoryValueNotApplicable",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260920_100000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260902").get_json()
+
+    rhythm = payload["heart"]["rhythm"]
+    # Exact factual lines: type · count · device attribution, nothing else.
+    assert [event["line"] for event in rhythm["events"]] == [
+        "High heart-rate notification · 2 events · reported by Synthetic Watch",
+        "Irregular rhythm notification · 1 event · reported by Synthetic Watch",
+        "Low heart-rate notification · 1 event · reported by Synthetic Watch",
+    ]
+    assert rhythm["burden"] is None
+    # Rhythm rows never double-render as generic count facts.
+    assert payload["heart"]["facts"] == []
+    # The Other-signals catch-all no longer claims rhythm rows.
+    assert payload["other_signals"] is None
+
+
+def test_day_page_rhythm_lines_pin_format_and_ban_advisory_phrasing(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            IRREGULAR_RHYTHM_TYPE,
+            "2026-09-02T09:15:00-06:00",
+            value="HKCategoryValueNotApplicable",
+            source="Synthetic Watch",
+        ),
+        _row(
+            AFIB_BURDEN_TYPE,
+            "2026-09-02T00:00:00-06:00",
+            "2026-09-03T00:00:00-06:00",
+            value="0.021",
+            unit="%",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260920_110000", rows)
+
+    html = env.client.get("/app/body/20260902").get_data(as_text=True)
+
+    # Exact card line format: label cell, then the factual detail cell.
+    assert "<span>Irregular rhythm notification</span>" in html
+    assert (
+        '<strong class="body-num">1 event · reported by Synthetic Watch</strong>'
+        in html
+    )
+    assert "<span>AFib burden</span>" in html
+    assert (
+        '<strong class="body-num">2.1% · reported by Synthetic Watch</strong>' in html
+    )
+    card = _heart_card_slice(html).lower()
+    for phrase in RHYTHM_BANNED_PHRASES:
+        assert phrase not in card, f"advisory phrasing in rhythm card: {phrase!r}"
+
+
+def test_day_api_afib_burden_scales_fraction_percent(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            AFIB_BURDEN_TYPE,
+            "2026-09-04T00:00:00-06:00",
+            value="0.021",
+            unit="%",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260920_120000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260904").get_json()
+
+    burden = payload["heart"]["rhythm"]["burden"]
+    assert burden["value"] == "2.1%"
+    assert burden["line"] == "AFib burden · 2.1% · reported by Synthetic Watch"
+    assert payload["heart"]["rhythm"]["events"] == []
+
+    html = env.client.get("/app/body/20260904").get_data(as_text=True)
+    assert "2.1% · reported by Synthetic Watch" in html
+    # The 0–1 fraction never reaches the page unscaled.
+    assert "0.021" not in html
+
+
+def test_day_api_multi_entry_afib_burden_leads_with_latest(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            AFIB_BURDEN_TYPE,
+            "2026-09-05T08:00:00-06:00",
+            value="0.018",
+            unit="%",
+            source="Synthetic Watch",
+        ),
+        _row(
+            AFIB_BURDEN_TYPE,
+            "2026-09-05T20:00:00-06:00",
+            value="0.021",
+            unit="%",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260920_130000", rows)
+
+    burden = env.client.get("/app/body/api/day/20260905").get_json()["heart"]["rhythm"][
+        "burden"
+    ]
+
+    assert burden["line"] == (
+        "AFib burden · latest 2.1% · 2 entries · reported by Synthetic Watch"
+    )
+
+
+def test_day_api_rhythm_rows_leave_other_signals_to_real_leftovers(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            IRREGULAR_RHYTHM_TYPE,
+            "2026-09-06T09:15:00-06:00",
+            value="HKCategoryValueNotApplicable",
+            source="Synthetic Watch",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierNumberOfTimesFallen",
+            "2026-09-06T10:00:00-06:00",
+            value="1",
+            unit="count",
+        ),
+    ]
+    _seed_import(env.journal, "20260920_140000", rows)
+
+    payload = env.client.get("/app/body/api/day/20260906").get_json()
+
+    other_labels = [fact["label"] for fact in payload["other_signals"]["facts"]]
+    assert other_labels == ["Number of times fallen"]
+    assert [event["label"] for event in payload["heart"]["rhythm"]["events"]] == [
+        "Irregular rhythm notification"
+    ]
+
+
+def test_window_api_signals_carry_rhythm_rows_with_friendly_labels(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            IRREGULAR_RHYTHM_TYPE,
+            "2026-09-07T10:10:00-06:00",
+            value="HKCategoryValueNotApplicable",
+            source="Synthetic Watch",
+        ),
+        _row(
+            AFIB_BURDEN_TYPE,
+            "2026-09-07T10:20:00-06:00",
+            value="0.021",
+            unit="%",
+            source="Synthetic Watch",
+        ),
+        _row(
+            HR_TYPE,
+            "2026-09-07T10:05:00-06:00",
+            value="62",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+    ]
+    _seed_import(env.journal, "20260920_150000", rows)
+
+    payload = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-09-07T10:00:00-06:00&to=2026-09-07T11:00:00-06:00"
+    ).get_json()
+
+    # Category-kind rhythm rows join the signals list with the same
+    # factual labels the day card uses — never a raw identifier.
+    assert payload["signals"] == [
+        {"label": "AFib burden", "count": 1, "count_label": "1"},
+        {"label": "Heart rate", "count": 1, "count_label": "1"},
+        {"label": "Irregular rhythm notification", "count": 1, "count_label": "1"},
+    ]
+    assert [family["name"] for family in payload["families"]] == ["Heart"]
+
+
 # --- Day view: heart-rate day curve -------------------------------------------
 
 
@@ -2225,7 +2478,9 @@ def test_day_api_payload_keys_stay_additive_with_heart_series(body_env):
         "audit",
         "nearest",
     } <= set(payload)
-    assert {"heart_rate", "series", "blood_pressure", "facts"} <= set(payload["heart"])
+    assert {"heart_rate", "series", "blood_pressure", "rhythm", "facts"} <= set(
+        payload["heart"]
+    )
     # The glucose curve payload keeps its shape — the band is HR-only.
     glucose_svg = payload["glucose_series"][0]["svg"]
     assert {"width", "height", "paths", "dots", "y_min_label", "y_max_label"} <= set(

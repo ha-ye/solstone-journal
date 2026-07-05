@@ -128,6 +128,7 @@ _FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "VO2Max",
             "PeripheralPerfusionIndex",
             "AtrialFibrillation",
+            "IrregularHeartRhythm",
             "Electrocardiogram",
         ),
     ),
@@ -1849,6 +1850,105 @@ def _blood_pressure(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return result
 
 
+# Device-reported rhythm notifications (category rows) and the AFib-burden
+# percentage. These are the most sensitive rows the app renders: each line
+# states what the device reported and which device reported it — a count,
+# a device-stated value, an attribution — never interpretation, alarm
+# framing, or advice (§13).
+_RHYTHM_EVENT_FRAGMENTS = (
+    "IrregularHeartRhythmEvent",
+    "HighHeartRateEvent",
+    "LowHeartRateEvent",
+)
+_AFIB_BURDEN_FRAGMENT = "AtrialFibrillationBurden"
+
+
+def _is_rhythm_event_type(record_type: str) -> bool:
+    return any(fragment in record_type for fragment in _RHYTHM_EVENT_FRAGMENTS)
+
+
+def _rhythm_summary(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Factual rhythm lines: what the device reported, attributed to it.
+
+    Event lines state the notification type, how many the day holds, and
+    the reporting device(s): 'Irregular rhythm notification · 1 event ·
+    reported by Apple Watch'. AFib burden states the device's reported
+    percentage through the shared display normalizers: 'AFib burden ·
+    2.1% · reported by Apple Watch' (multi-entry days lead with the
+    latest reading and carry the entry count). Nothing is interpreted,
+    ranked, or advised.
+    """
+
+    event_rows: list[dict[str, Any]] = []
+    burden_rows: list[dict[str, Any]] = []
+    for row in rows:
+        record_type = str(row.get("record_type") or "")
+        if _is_rhythm_event_type(record_type):
+            event_rows.append(row)
+        elif _AFIB_BURDEN_FRAGMENT in record_type:
+            burden_rows.append(row)
+    if not event_rows and not burden_rows:
+        return None
+
+    events: list[dict[str, Any]] = []
+    grouped = _group_by_type(event_rows)
+    for record_type in sorted(grouped, key=friendly_type_name):
+        rows_for_type = grouped[record_type]
+        label = friendly_type_name(record_type)
+        count = len(rows_for_type)
+        sources = sorted({_source_label(row) for row in rows_for_type})
+        event_word = "event" if count == 1 else "events"
+        detail = f"{count:,} {event_word} · reported by {', '.join(sources)}"
+        events.append(
+            {
+                "label": label,
+                "count": count,
+                "count_label": f"{count:,}",
+                "sources": sources,
+                "detail": detail,
+                "line": f"{label} · {detail}",
+            }
+        )
+
+    burden: dict[str, Any] | None = None
+    if burden_rows:
+        record_type = str(burden_rows[0].get("record_type") or "")
+        label = friendly_type_name(record_type)
+        count = len(burden_rows)
+        sources = sorted({_source_label(row) for row in burden_rows})
+        valued = [
+            (row, value)
+            for row in burden_rows
+            if (value := _parse_float(row.get("value"))) is not None
+        ]
+        value_label: str | None = None
+        if valued:
+            latest_row, latest_value = max(
+                valued, key=lambda pair: _time_sort_key(_row_time(pair[0]) or "")
+            )
+            unit = str(latest_row.get("unit") or "").strip() or None
+            value_label = display_value(record_type, latest_value, unit)
+        attribution = f"reported by {', '.join(sources)}"
+        if value_label is None:
+            entry_word = "entry" if count == 1 else "entries"
+            detail = f"{count:,} {entry_word} · {attribution}"
+        elif count > 1:
+            detail = f"latest {value_label} · {count:,} entries · {attribution}"
+        else:
+            detail = f"{value_label} · {attribution}"
+        burden = {
+            "label": label,
+            "count": count,
+            "count_label": f"{count:,}",
+            "sources": sources,
+            "value": value_label,
+            "detail": detail,
+            "line": f"{label} · {detail}",
+        }
+
+    return {"events": events, "burden": burden}
+
+
 def _heart_rate_series(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Bucketed heart-rate day curve: median line plus min–max band.
 
@@ -1969,6 +2069,7 @@ def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         heart_rate = None
     series = _heart_rate_series(rows) if heart_rate else None
     blood_pressure = _blood_pressure(rows)
+    rhythm = _rhythm_summary(rows)
 
     fact_rows: list[dict[str, Any]] = []
     for row in rows:
@@ -1979,6 +2080,10 @@ def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             _BP_SYSTOLIC_FRAGMENT in record_type
             or _BP_DIASTOLIC_FRAGMENT in record_type
         ):
+            continue
+        if _is_rhythm_event_type(record_type) or _AFIB_BURDEN_FRAGMENT in record_type:
+            # Rhythm rows render only through their dedicated factual
+            # lines, never a second time as generic count facts.
             continue
         fact_rows.append(row)
 
@@ -2016,12 +2121,13 @@ def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
                 )
         facts.append(item)
 
-    if not (heart_rate or blood_pressure or facts):
+    if not (heart_rate or blood_pressure or rhythm or facts):
         return None
     return {
         "heart_rate": heart_rate,
         "series": series,
         "blood_pressure": blood_pressure,
+        "rhythm": rhythm,
         "facts": facts,
     }
 

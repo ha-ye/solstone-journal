@@ -46,6 +46,17 @@ FRIENDLY_TYPE_NAMES: Final[Mapping[str, str]] = {
     "HKQuantityTypeIdentifierRespiratoryRate": "Respiratory rate",
     "HKQuantityTypeIdentifierBloodPressureSystolic": "Blood pressure (systolic)",
     "HKQuantityTypeIdentifierBloodPressureDiastolic": "Blood pressure (diastolic)",
+    # Heart-rhythm notifications and AFib burden (Apple Watch, and rhythm-
+    # capable cuffs mirrored through HealthKit). Identifiers match the
+    # published HealthKit constants: the three category events shipped in
+    # iOS 12.2, AtrialFibrillationBurden in iOS 16. Names state what the
+    # device reported — notification/burden facts, never a diagnosis.
+    "HKCategoryTypeIdentifierIrregularHeartRhythmEvent": (
+        "Irregular rhythm notification"
+    ),
+    "HKCategoryTypeIdentifierHighHeartRateEvent": "High heart-rate notification",
+    "HKCategoryTypeIdentifierLowHeartRateEvent": "Low heart-rate notification",
+    "HKQuantityTypeIdentifierAtrialFibrillationBurden": "AFib burden",
     "HKQuantityTypeIdentifierVO2Max": "VO2 max",
     "HKQuantityTypeIdentifierStepCount": "Step count",
     "HKQuantityTypeIdentifierActiveEnergyBurned": "Active energy",
@@ -321,6 +332,12 @@ _FRACTION_PERCENT_FRAGMENTS: Final = (
     "WalkingAsymmetryPercentage",
     "WalkingDoubleSupportPercentage",
     "BodyFatPercentage",
+    # AFib burden is a HealthKit percent quantity; percent quantities in
+    # the XML export follow the 0–1 fraction convention (OxygenSaturation
+    # above is the verified precedent). Not yet confirmed against a real
+    # AtrialFibrillationBurden export row — if a device exports whole
+    # percents, revisit this entry.
+    "AtrialFibrillationBurden",
 )
 
 
