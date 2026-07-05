@@ -32,9 +32,9 @@ def test_render_packaging_check_reports_leaf_version_drift(tmp_path, capsys):
     # Derive the live root version so this test survives release bumps.
     import tomllib
 
-    root_version = tomllib.loads(
-        (root / "pyproject.toml").read_text(encoding="utf-8")
-    )["project"]["version"]
+    root_version = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]["version"]
     cpu_pyproject = root / "packages" / "solstone-journal" / "pyproject.toml"
     text = cpu_pyproject.read_text(encoding="utf-8")
     assert f'version = "{root_version}"' in text
