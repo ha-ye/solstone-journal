@@ -930,9 +930,10 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 chunk_data: dict[str, Any] = {
                     "type": "audio",
                     "time": time_str,
-                    "timestamp": _timestamp_from_day_time(
-                        day, time_str, chunk.get("timestamp", 0)
-                    ),
+                    # Audio "start" is segment-relative, not wall clock —
+                    # format_audio already computed the absolute epoch.
+                    "timestamp": chunk.get("timestamp")
+                    or _timestamp_from_day_time(day, time_str, 0),
                     "markdown": markdown,
                     "source_ref": {
                         "start": time_str,

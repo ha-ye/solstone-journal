@@ -1866,3 +1866,36 @@ def test_cancel_delete_segment_writes_cancelled_audit_row(
         and row["params"].get("phase") == "cancelled"
         for row in cancel_rows
     )
+
+
+def test_segment_content_audio_timestamps_are_absolute_not_midnight(
+    client, journal_copy
+):
+    # Audio "start" values are segment-relative offsets; the API timestamp
+    # must resolve to the segment's wall-clock time, not just past midnight
+    # (upstream PR review finding, 2026-07-04).
+    day = "20990110"
+    stream = "default"
+    segment = "093000_300"
+    _write_segment(journal_copy, day, stream, segment)
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    _write_jsonl(
+        segment_dir / "audio.jsonl",
+        [
+            {"raw": "raw.m4a", "duration": 42.0},
+            {
+                "start": "00:00:05",
+                "source": "mic",
+                "speaker": 1,
+                "text": "daytime words",
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    chunks = response.get_json()["chunks"]
+    audio_chunk = next(chunk for chunk in chunks if chunk["type"] == "audio")
+    stamped = datetime.fromtimestamp(audio_chunk["timestamp"] / 1000)
+    assert (stamped.hour, stamped.minute, stamped.second) == (9, 30, 5)
