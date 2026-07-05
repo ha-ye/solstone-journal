@@ -406,7 +406,9 @@ def test_read_routes_create_nothing_in_empty_journal(body_env):
     recent = env.client.get("/app/body/api/recent?before=20260703")
     assert recent.status_code == 200
     assert recent.get_json() == {"days": [], "has_more": False, "html": ""}
+    assert env.client.get("/app/body/api/trends").status_code == 200
     assert env.client.get("/app/body/").status_code == 200
+    assert env.client.get("/app/body/trends").status_code == 200
     assert env.client.get("/app/body/20260703").status_code == 200
 
     assert not imports_root.exists()
@@ -3636,21 +3638,30 @@ def test_day_audit_lists_every_bundle_containing_the_day(body_env):
 # --- Startup cache warm ------------------------------------------------------
 
 
-def test_events_module_import_kicks_stats_warm(monkeypatch):
-    """Convey startup — discover_handlers importing events.py — warms the cache.
+def test_events_module_import_kicks_cache_warms(monkeypatch):
+    """Convey startup — discover_handlers importing events.py — warms both caches.
 
     The import-time kick is the startup marker; the importer-completed
-    handler re-warms through the same guarded entry point.
+    handler re-warms through the same guarded entry points. The trends
+    warm receives the stats warm's thread so its build runs after the
+    stats fold instead of alongside it.
     """
-    calls: list[str] = []
+    calls: list[tuple[str, object]] = []
     monkeypatch.setattr(
-        body_routes, "warm_dedupe_stats_cache", lambda: calls.append("warm")
+        body_routes,
+        "warm_dedupe_stats_cache",
+        lambda: calls.append(("stats", None)) or "stats-thread",
+    )
+    monkeypatch.setattr(
+        body_routes,
+        "warm_trends_cache",
+        lambda after=None: calls.append(("trends", after)),
     )
 
     sys.modules.pop("solstone.apps.body.events", None)
     events = importlib.import_module("solstone.apps.body.events")
 
-    assert calls == ["warm"]
+    assert calls == [("stats", None), ("trends", "stats-thread")]
 
     ctx = EventContext(
         msg={"tract": "importer", "event": "completed"},
@@ -3658,9 +3669,9 @@ def test_events_module_import_kicks_stats_warm(monkeypatch):
         tract="importer",
         event="completed",
     )
-    events.rewarm_stats_after_import(ctx)
+    events.rewarm_caches_after_import(ctx)
 
-    assert calls == ["warm", "warm"]
+    assert calls == [("stats", None), ("trends", "stats-thread")] * 2
 
 
 def test_stats_warm_is_single_flight_and_recovers(monkeypatch):
@@ -3726,6 +3737,434 @@ def test_stats_warm_failure_is_contained_and_logged(body_env, caplog):
     assert recovery is not None
     recovery.join(timeout=5)
     assert not recovery.is_alive()
+
+
+# --- Trends ------------------------------------------------------------------
+
+
+def _drain_trends_flight() -> None:
+    """Wait out any in-flight trends build (the flight lock is held during one)."""
+    assert body_routes._trends_warm_flight.acquire(timeout=10)
+    body_routes._trends_warm_flight.release()
+
+
+def _trends_after_warm(client) -> dict:
+    """Kick the trends build through the API and return the warmed payload."""
+    _drain_trends_flight()
+    first = client.get("/app/body/api/trends").get_json()
+    if first["warming"]:
+        # While warming, nothing else rides along — the whole payload is
+        # the flag.
+        assert first == {"warming": True}
+        _drain_trends_flight()
+        first = client.get("/app/body/api/trends").get_json()
+    assert first["warming"] is False
+    return first
+
+
+HEART_RATE_TYPE = "HKQuantityTypeIdentifierHeartRate"
+BODY_MASS_TYPE = "HKQuantityTypeIdentifierBodyMass"
+
+
+def _seed_trend_days(journal: Path) -> None:
+    """Two June days exercising every ribbon's honesty rule at once.
+
+    June 1: resting HR (two readings — latest wins), a single-source step
+    total, a body-mass reading beside a lean-mass row that must not leak
+    into the mass ribbon, and two glucose readings averaging to one
+    decimal. June 2: raw heart-rate rows but no resting HR (the ribbon
+    stays absent), two-source interval-less steps (sample-only — absent),
+    BMI-only mass rows (absent), and the stage-aware night that started
+    June 1 at 10:30 PM — asleep minutes attribute to June 2, the morning
+    the night ended.
+    """
+    rows = [
+        # June 1 — resting HR: 7 AM reading superseded by the 9 PM one.
+        _row(
+            RESTING_HR_TYPE,
+            "2026-06-01T07:00:00-06:00",
+            value="60",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+        _row(
+            RESTING_HR_TYPE,
+            "2026-06-01T21:00:00-06:00",
+            value="58",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+        # June 1 — single-source steps sum to a real total.
+        _row(
+            STEP_TYPE,
+            "2026-06-01T08:00:00-06:00",
+            value="500",
+            unit="count",
+            source="Synthetic Phone",
+        ),
+        _row(
+            STEP_TYPE,
+            "2026-06-01T12:00:00-06:00",
+            value="700",
+            unit="count",
+            source="Synthetic Phone",
+        ),
+        # June 1 — body mass, plus a lean-mass row the ribbon must ignore.
+        _row(
+            BODY_MASS_TYPE,
+            "2026-06-01T08:00:00-06:00",
+            value="172.4",
+            unit="lb",
+            source="Synthetic Scale",
+        ),
+        _row(
+            "HKQuantityTypeIdentifierLeanBodyMass",
+            "2026-06-01T08:00:00-06:00",
+            value="140.0",
+            unit="lb",
+            source="Synthetic Scale",
+        ),
+        # June 1 — glucose readings average to one decimal.
+        _row(
+            GLUCOSE_TYPE,
+            "2026-06-01T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _row(
+            GLUCOSE_TYPE,
+            "2026-06-01T12:00:00-06:00",
+            value="141",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        # June 2 — raw heart-rate rows are never a resting-HR fallback.
+        _row(
+            HEART_RATE_TYPE,
+            "2026-06-02T12:00:00-06:00",
+            value="72",
+            unit="count/min",
+            source="Synthetic Watch",
+        ),
+        # June 2 — two sources, no intervals: no coverage to rank by, so
+        # the day has no honest total and stays absent.
+        _row(
+            STEP_TYPE,
+            "2026-06-02T08:00:00-06:00",
+            value="3000",
+            unit="count",
+            source="Synthetic Phone",
+        ),
+        _row(
+            STEP_TYPE,
+            "2026-06-02T09:00:00-06:00",
+            value="2000",
+            unit="count",
+            source="Synthetic Wrist",
+        ),
+        # June 2 — BMI is not the body-mass ribbon.
+        _row(
+            "HKQuantityTypeIdentifierBodyMassIndex",
+            "2026-06-02T08:00:00-06:00",
+            value="24.1",
+            unit="count",
+            source="Synthetic Scale",
+        ),
+        # June 2 — glucose.
+        _row(
+            GLUCOSE_TYPE,
+            "2026-06-02T08:00:00-06:00",
+            value="90",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        _row(
+            GLUCOSE_TYPE,
+            "2026-06-02T12:00:00-06:00",
+            value="110",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+        # The night crossing midnight: in-bed span with asleep stages —
+        # 180 + 210 = 390 asleep minutes, ending the morning of June 2.
+        _row(
+            SLEEP_TYPE,
+            "2026-06-01T22:30:00-06:00",
+            "2026-06-02T06:30:00-06:00",
+            value="HKCategoryValueSleepAnalysisInBed",
+            source="Synthetic Ring",
+        ),
+        _row(
+            SLEEP_TYPE,
+            "2026-06-01T23:00:00-06:00",
+            "2026-06-02T02:00:00-06:00",
+            value="HKCategoryValueSleepAnalysisAsleepCore",
+            source="Synthetic Ring",
+        ),
+        _row(
+            SLEEP_TYPE,
+            "2026-06-02T02:30:00-06:00",
+            "2026-06-02T06:00:00-06:00",
+            value="HKCategoryValueSleepAnalysisAsleepDeep",
+            source="Synthetic Ring",
+        ),
+    ]
+    _seed_import(journal, "20260901_000000", rows)
+
+
+def test_trends_page_renders_workspace_with_trends_flag(body_env, monkeypatch):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    # The static /trends rule wins over the /<day> converter.
+    assert env.client.get("/app/body/trends").status_code == 200
+
+    captured: dict[str, object] = {}
+
+    def _capture(template: str, **context: object) -> str:
+        captured["template"] = template
+        captured["context"] = context
+        return ""
+
+    monkeypatch.setattr(body_routes, "render_template", _capture)
+    assert env.client.get("/app/body/trends").status_code == 200
+
+    assert captured["template"] == "app.html"
+    context = captured["context"]
+    assert context["body_trends"] is True
+    # The trends page carries the same archive/status context the
+    # overview renders with.
+    assert "archive" in context["body_status"]
+
+
+def test_trends_api_contract_shape_and_signal_honesty(body_env):
+    env = body_env()
+    _seed_trend_days(env.journal)
+
+    payload = _trends_after_warm(env.client)
+
+    assert set(payload) == {"warming", "signals", "annotations", "generated_at_day"}
+    assert body_routes.DAY_RE.fullmatch(payload["generated_at_day"])
+
+    signals = {signal["key"]: signal for signal in payload["signals"]}
+    assert [signal["key"] for signal in payload["signals"]] == [
+        "resting_hr",
+        "asleep_minutes",
+        "steps",
+        "body_mass",
+        "glucose_avg",
+    ]
+    assert {key: signal["label"] for key, signal in signals.items()} == {
+        "resting_hr": "Resting heart rate",
+        "asleep_minutes": "Asleep",
+        "steps": "Steps",
+        "body_mass": "Body mass",
+        "glucose_avg": "Glucose average",
+    }
+    assert {key: signal["unit_label"] for key, signal in signals.items()} == {
+        "resting_hr": "bpm",
+        "asleep_minutes": "h",
+        "steps": "steps",
+        "body_mass": "lb",
+        "glucose_avg": "mg/dL",
+    }
+
+    # Latest resting reading wins; June 2's raw heart-rate rows never
+    # fabricate a resting value — the day is simply absent.
+    assert signals["resting_hr"]["daily"] == [["20260601", 58.0]]
+    # Canonical cross-midnight sleep: stage-aware asleep minutes on the
+    # morning the night ended, nothing on the evening it started.
+    assert signals["asleep_minutes"]["daily"] == [["20260602", 390.0]]
+    # Single-source total on June 1; the multi-source sample-only June 2
+    # stays absent instead of faking a total.
+    assert signals["steps"]["daily"] == [["20260601", 1200]]
+    # Sparse body mass stays sparse; lean mass and BMI never leak in.
+    assert signals["body_mass"]["daily"] == [["20260601", 172.4]]
+    # Daily mean to one decimal, days ascending.
+    assert signals["glucose_avg"]["daily"] == [
+        ["20260601", 120.5],
+        ["20260602", 100.0],
+    ]
+    assert signals["glucose_avg"]["coverage"] == {
+        "first_day": "20260601",
+        "last_day": "20260602",
+        "days": 2,
+    }
+    assert signals["steps"]["coverage"] == {
+        "first_day": "20260601",
+        "last_day": "20260601",
+        "days": 1,
+    }
+
+    # The only source arriving after the archive's first day is the June 2
+    # wrist — day-one sources draw no marker.
+    assert payload["annotations"] == [
+        {"day": "20260602", "label": "Synthetic Wrist data begins"}
+    ]
+
+
+def test_trends_api_warming_is_single_flight_and_never_blocks(body_env, monkeypatch):
+    env = body_env()
+    _seed_health_import(env.journal)
+    _drain_trends_flight()
+
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[Path] = []
+    real_build = body_routes._build_trends_payload
+
+    def _blocking_build(journal_root: Path) -> dict:
+        calls.append(journal_root)
+        started.set()
+        assert release.wait(timeout=5)
+        return real_build(journal_root)
+
+    monkeypatch.setattr(body_routes, "_build_trends_payload", _blocking_build)
+
+    # First request: cache empty → warming, build kicked.
+    assert env.client.get("/app/body/api/trends").get_json() == {"warming": True}
+    assert started.wait(timeout=5)
+    # Mid-build request: still warming, no second build stacked, and the
+    # response returns while the build is still blocked — it never waits.
+    assert env.client.get("/app/body/api/trends").get_json() == {"warming": True}
+
+    release.set()
+    _drain_trends_flight()
+    assert len(calls) == 1
+
+    payload = env.client.get("/app/body/api/trends").get_json()
+    assert payload["warming"] is False
+    assert payload["signals"]
+
+
+def test_trends_cache_invalidates_when_new_bundle_lands(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260901_000000",
+        [
+            _row(
+                GLUCOSE_TYPE,
+                "2026-06-01T08:00:00-06:00",
+                value="100",
+                unit="mg/dL",
+                source="Synthetic Stelo",
+            )
+        ],
+    )
+
+    first = _trends_after_warm(env.client)
+    glucose = next(s for s in first["signals"] if s["key"] == "glucose_avg")
+    assert [entry[0] for entry in glucose["daily"]] == ["20260601"]
+
+    # A new bundle writes the dedupe database — the signature change must
+    # invalidate the warmed payload.
+    _seed_import(
+        env.journal,
+        "20260902_000000",
+        [
+            _row(
+                GLUCOSE_TYPE,
+                "2026-07-05T08:00:00-06:00",
+                value="120",
+                unit="mg/dL",
+                source="Synthetic Stelo",
+            )
+        ],
+    )
+
+    _drain_trends_flight()
+    assert env.client.get("/app/body/api/trends").get_json() == {"warming": True}
+
+    second = _trends_after_warm(env.client)
+    glucose = next(s for s in second["signals"] if s["key"] == "glucose_avg")
+    assert [entry[0] for entry in glucose["daily"]] == ["20260601", "20260705"]
+
+
+def test_trends_api_empty_journal_serves_empty_payload_read_only(body_env):
+    env = body_env()
+    imports_root = env.journal / "imports"
+    assert not imports_root.exists()
+
+    payload = _trends_after_warm(env.client)
+
+    assert payload["signals"] == []
+    assert payload["annotations"] == []
+    assert body_routes.DAY_RE.fullmatch(payload["generated_at_day"])
+    # The warmed build read nothing into being.
+    assert not imports_root.exists()
+    assert env.client.get("/app/body/trends").status_code == 200
+    assert not imports_root.exists()
+
+
+def test_trends_annotations_mark_first_appearances(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            HEART_RATE_TYPE,
+            "2026-05-01T08:00:00-06:00",
+            value="70",
+            unit="count/min",
+            source="Synthetic Phone",
+        ),
+        _row(
+            HEART_RATE_TYPE,
+            "2026-06-10T08:00:00-06:00",
+            value="64",
+            unit="count/min",
+            source="Oura",
+        ),
+        _row(
+            GLUCOSE_TYPE,
+            "2026-06-15T08:00:00-06:00",
+            value="105",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        ),
+    ]
+    _seed_import(env.journal, "20260901_000000", rows)
+
+    payload = _trends_after_warm(env.client)
+
+    # First appearances only, day-ascending, none for the day-one source
+    # (its ribbon's left edge already says it), capped by the limit.
+    assert payload["annotations"] == [
+        {"day": "20260610", "label": "Oura data begins"},
+        {"day": "20260615", "label": "CGM readings begin"},
+        {"day": "20260615", "label": "Synthetic Stelo data begins"},
+    ]
+    assert len(payload["annotations"]) <= body_routes.TREND_ANNOTATION_LIMIT
+
+
+def test_trends_warm_builds_after_stats_thread(monkeypatch):
+    order: list[str] = []
+    release = threading.Event()
+
+    def _slow_stats() -> None:
+        assert release.wait(timeout=5)
+        order.append("stats")
+
+    stats_thread = threading.Thread(target=_slow_stats)
+    stats_thread.start()
+
+    def _fake_build(journal_root: Path) -> dict:
+        order.append("trends")
+        return {"signals": [], "annotations": [], "generated_at_day": "20260101"}
+
+    monkeypatch.setattr(body_routes, "_build_trends_payload", _fake_build)
+    _drain_trends_flight()
+    body_routes._trends_cache.clear()
+
+    warm = body_routes.warm_trends_cache(after=stats_thread)
+    assert warm is not None
+    release.set()
+    warm.join(timeout=5)
+    assert not warm.is_alive()
+
+    # The trends fold waited for the stats thread — the two heavy builds
+    # run sequentially on the shared warm path.
+    assert order == ["stats", "trends"]
 
 
 def test_stats_warm_leaves_first_request_hot(body_env):

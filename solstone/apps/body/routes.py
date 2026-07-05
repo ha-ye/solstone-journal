@@ -2812,6 +2812,316 @@ def _build_health_window(
     }
 
 
+# --- Trends ------------------------------------------------------------------
+#
+# The trends view folds every normalized shard into per-day signal series —
+# one pass over all months (~2M rows after the 5-year backfill), far too
+# slow for a request. The fold caches like the dedupe-stats fold above:
+# keyed by the same db+wal signature (an import rewrites the dedupe
+# database, so one signature change invalidates both caches together) and
+# built on the same background warm path (solstone/apps/body/events.py).
+# The API never blocks on a build: it answers {"warming": true} and kicks
+# the single-flight warm instead.
+
+_RESTING_HR_FRAGMENT = "RestingHeartRate"
+_STEP_COUNT_FRAGMENT = "StepCount"
+TREND_ANNOTATION_LIMIT = 6
+
+# Ribbon order is fixed: key, owner-facing label, unit label. Asleep values
+# travel as minutes; the client formats them against the "h" unit label.
+_TREND_SIGNALS: tuple[tuple[str, str, str], ...] = (
+    ("resting_hr", "Resting heart rate", "bpm"),
+    ("asleep_minutes", "Asleep", "h"),
+    ("steps", "Steps", "steps"),
+    ("body_mass", "Body mass", "lb"),
+    ("glucose_avg", "Glucose average", "mg/dL"),
+)
+
+
+def _is_body_mass_type(record_type: str) -> bool:
+    """Body-mass scale readings only — lean mass and BMI are other signals."""
+    return (
+        "BodyMass" in record_type
+        and "LeanBodyMass" not in record_type
+        and "BodyMassIndex" not in record_type
+    )
+
+
+def _coverage_month_keys(journal_root: Path) -> list[str]:
+    """Every month with a normalized shard in any import bundle, ascending."""
+    imports_root = journal_root / "imports"
+    if not imports_root.is_dir():
+        return []
+    return sorted(
+        {
+            path.stem
+            for path in imports_root.glob("*/normalized/*.jsonl")
+            if MONTH_RE.fullmatch(path.stem)
+        }
+    )
+
+
+def _day_key_offset(day: str, days: int) -> str:
+    moment = datetime.strptime(day, "%Y%m%d").date() + timedelta(days=days)
+    return moment.strftime("%Y%m%d")
+
+
+def _fold_latest_reading(
+    latest_by_day: dict[str, tuple[Any, float]], day: str, row: dict[str, Any]
+) -> None:
+    """Keep the day's latest parseable reading (by start time) in place."""
+    value = _parse_float(row.get("value"))
+    if value is None:
+        return
+    order = _time_sort_key(_row_time(row) or "")
+    kept = latest_by_day.get(day)
+    if kept is None or order > kept[0]:
+        latest_by_day[day] = (order, value)
+
+
+def _trend_asleep_by_day(
+    sleep_rows_by_day: dict[str, list[tuple[str, datetime, datetime, str | None]]],
+) -> dict[str, float]:
+    """Per-day asleep minutes through the canonical ``pick_day_sleep``.
+
+    Mirrors the day card exactly: a day's sleep merges from the previous,
+    the target, and the following day's intervals, so the night ending
+    that morning attributes to the morning day and a bedtime fragment
+    joins the following night instead of misreading as a nap. Candidate
+    days are every day with sleep rows plus the morning after — the only
+    days a main session can end on.
+    """
+    candidates: set[str] = set()
+    for day in sleep_rows_by_day:
+        candidates.add(day)
+        candidates.add(_day_key_offset(day, 1))
+    asleep: dict[str, float] = {}
+    for day in candidates:
+        intervals: dict[str, list[tuple[datetime, datetime, str | None]]] = {}
+        for nearby in (_day_key_offset(day, -1), day, _day_key_offset(day, 1)):
+            for source, start, end, stage in sleep_rows_by_day.get(nearby, ()):
+                intervals.setdefault(source, []).append((start, end, stage))
+        sleep = pick_day_sleep(
+            intervals, date(int(day[:4]), int(day[4:6]), int(day[6:8]))
+        )
+        if sleep is None or sleep.asleep_minutes is None:
+            continue
+        asleep[day] = round(sleep.asleep_minutes, 1)
+    return asleep
+
+
+def _trend_annotations(
+    first_day_by_source: dict[str, str],
+    first_glucose_day: str | None,
+    first_day: str | None,
+) -> list[dict[str, str]]:
+    """First-appearance markers for sources and glucose readings.
+
+    A marker on the archive's very first day would restate what every
+    ribbon's left edge already shows, so only later arrivals annotate —
+    the day a new device or app starts contributing, and the day glucose
+    readings begin. Wording stays factual (§13): something begins;
+    nothing is interpreted.
+    """
+    if first_day is None:
+        return []
+    candidates: list[tuple[str, str]] = [
+        (day, f"{source} data begins")
+        for source, day in first_day_by_source.items()
+        if day > first_day
+    ]
+    if first_glucose_day is not None and first_glucose_day > first_day:
+        candidates.append((first_glucose_day, "CGM readings begin"))
+    candidates.sort()
+    return [
+        {"day": day, "label": label}
+        for day, label in candidates[:TREND_ANNOTATION_LIMIT]
+    ]
+
+
+def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
+    """One streaming pass over all normalized months → per-day signals.
+
+    Month shards load one month at a time (the same newest-bundle-wins
+    dedupe rule as the day pages), and each month's rows fold straight
+    into per-day accumulators, so memory holds one month of rows plus
+    day-level results (~2k days × 5 signals). Only sleep rows persist
+    across months — their cross-midnight merge needs neighboring days
+    that can live in adjacent shards.
+
+    Honesty rules carry over from the day cards:
+
+    - resting_hr — the day's latest RestingHeartRate reading; never
+      fabricated from raw heart-rate rows.
+    - asleep_minutes — canonical ``pick_day_sleep`` minutes (stage-aware,
+      merged-span fallback), attributed to the morning the night ended.
+    - steps — the primary-source total per ``_primary_source_steps``;
+      multi-source days without coverage to rank by stay absent.
+    - body_mass — the day's latest scale reading (sparse days stay sparse).
+    - glucose_avg — the day's mean reading, one decimal.
+    """
+    resting_hr: dict[str, tuple[Any, float]] = {}
+    body_mass: dict[str, tuple[Any, float]] = {}
+    glucose_sums: dict[str, list[float]] = {}
+    steps: dict[str, int] = {}
+    sleep_rows_by_day: dict[str, list[tuple[str, datetime, datetime, str | None]]] = {}
+    first_day_by_source: dict[str, str] = {}
+    first_glucose_day: str | None = None
+    first_day: str | None = None
+
+    for month in _coverage_month_keys(journal_root):
+        step_rows_by_day: dict[str, list[dict[str, Any]]] = {}
+        for row in _iter_normalized_rows(journal_root, month=month):
+            day = str(row.get("day") or "")
+            if not DAY_RE.fullmatch(day):
+                continue
+            if first_day is None or day < first_day:
+                first_day = day
+            source = _source_label(row)
+            if day < first_day_by_source.get(source, "99999999"):
+                first_day_by_source[source] = day
+            record_type = str(row.get("record_type") or "")
+            if _is_sleep_type(record_type):
+                start = _parse_record_time(
+                    row.get("start_date") or row.get("start_time")
+                )
+                if start is None:
+                    continue
+                end = _parse_record_time(row.get("end_date")) or start
+                stage = str(row["value"]) if row.get("value") is not None else None
+                sleep_rows_by_day.setdefault(day, []).append(
+                    (source, start, end, stage)
+                )
+            elif row.get("kind") == "workout":
+                # Workout rows summarize on day cards; no ribbon total
+                # may fold them in.
+                continue
+            elif _STEP_COUNT_FRAGMENT in record_type:
+                step_rows_by_day.setdefault(day, []).append(row)
+            elif _is_glucose_type(record_type):
+                value = _parse_float(row.get("value"))
+                if value is None:
+                    continue
+                bucket = glucose_sums.setdefault(day, [0.0, 0.0])
+                bucket[0] += value
+                bucket[1] += 1
+                if first_glucose_day is None or day < first_glucose_day:
+                    first_glucose_day = day
+            elif _RESTING_HR_FRAGMENT in record_type:
+                _fold_latest_reading(resting_hr, day, row)
+            elif _is_body_mass_type(record_type):
+                _fold_latest_reading(body_mass, day, row)
+        for day, day_rows in step_rows_by_day.items():
+            picked = _primary_source_steps(day_rows)
+            if picked is not None:
+                # Sample-only days (multiple sources, no coverage to rank
+                # by) stay absent — a summed figure would double-count.
+                steps[day] = picked["total"]
+
+    daily_by_key: dict[str, dict[str, float | int]] = {
+        "resting_hr": {day: value for day, (_, value) in resting_hr.items()},
+        "asleep_minutes": _trend_asleep_by_day(sleep_rows_by_day),
+        "steps": steps,
+        "body_mass": {day: value for day, (_, value) in body_mass.items()},
+        "glucose_avg": {
+            day: round(total / count, 1) for day, (total, count) in glucose_sums.items()
+        },
+    }
+    signals: list[dict[str, Any]] = []
+    for key, label, unit_label in _TREND_SIGNALS:
+        per_day = daily_by_key[key]
+        if not per_day:
+            # A signal the journal has never held draws no empty ribbon.
+            continue
+        days = sorted(per_day)
+        signals.append(
+            {
+                "key": key,
+                "label": label,
+                "unit_label": unit_label,
+                "daily": [[day, per_day[day]] for day in days],
+                "coverage": {
+                    "first_day": days[0],
+                    "last_day": days[-1],
+                    "days": len(days),
+                },
+            }
+        )
+    return {
+        "signals": signals,
+        "annotations": _trend_annotations(
+            first_day_by_source, first_glucose_day, first_day
+        ),
+        "generated_at_day": datetime.now().strftime("%Y%m%d"),
+    }
+
+
+_trends_cache: dict[str, tuple[tuple[int, int, int, int], dict[str, Any]]] = {}
+_trends_warm_flight = threading.Lock()
+
+
+def _trends_db_path(journal_root: Path) -> Path:
+    return journal_root / "imports" / "health-dedupe.sqlite"
+
+
+def _trends_signature(journal_root: Path) -> tuple[int, int, int, int]:
+    try:
+        return _dedupe_db_signature(_trends_db_path(journal_root))
+    except FileNotFoundError:
+        # No imports yet — the empty payload stays valid until a dedupe
+        # database appears.
+        return (0, 0, 0, 0)
+
+
+def _load_trends_cache(journal_root: Path) -> dict[str, Any] | None:
+    """The cached trends payload when fresh; ``None`` when absent or stale."""
+    cached = _trends_cache.get(str(_trends_db_path(journal_root)))
+    if cached and cached[0] == _trends_signature(journal_root):
+        return cached[1]
+    return None
+
+
+def warm_trends_cache(
+    after: threading.Thread | None = None,
+) -> threading.Thread | None:
+    """Build the trends cache in a background daemon thread.
+
+    Single-flight like ``warm_dedupe_stats_cache``: returns ``None`` when
+    a build is already in flight instead of stacking shard scans. A fresh
+    cache entry short-circuits, so a re-warm after an import that changed
+    nothing costs one signature stat. ``after`` — the stats warm thread —
+    is joined first, keeping the two heavy folds sequential on the shared
+    warm path (events.py) instead of contending for the same disk.
+    Failures are logged and swallowed: the API keeps answering
+    ``{"warming": true}`` and the next request kicks a fresh build.
+    """
+    if not _trends_warm_flight.acquire(blocking=False):
+        return None
+
+    journal_root = _journal_root()
+
+    def _warm() -> None:
+        try:
+            if after is not None:
+                after.join()
+            if _load_trends_cache(journal_root) is not None:
+                return
+            # Signature before the fold: rows landing mid-build leave a
+            # stale signature behind, so the next request rebuilds rather
+            # than trusting a half-seen import.
+            signature = _trends_signature(journal_root)
+            payload = _build_trends_payload(journal_root)
+            _trends_cache[str(_trends_db_path(journal_root))] = (signature, payload)
+        except Exception:
+            logger.exception("Body trends cache warm failed")
+        finally:
+            _trends_warm_flight.release()
+
+    thread = threading.Thread(target=_warm, name="body-trends-warm", daemon=True)
+    thread.start()
+    return thread
+
+
 @body_bp.route("/")
 def index():
     # The overview is the stable Body home: no date-nav pill here — the
@@ -2821,6 +3131,19 @@ def index():
     return render_template(
         "app.html",
         body_status=_build_health_import_status(_journal_root()),
+    )
+
+
+@body_bp.route("/trends")
+def trends_view():
+    # Same shell and archive context as the overview; the ``body_trends``
+    # flag switches the workspace template to the trends view. Signal
+    # series arrive through /api/trends so the page never blocks on the
+    # aggregate fold.
+    return render_template(
+        "app.html",
+        body_status=_build_health_import_status(_journal_root()),
+        body_trends=True,
     )
 
 
@@ -2883,6 +3206,22 @@ def api_recent():
             "html": "".join(render_card(item) for item in days),
         }
     )
+
+
+@body_bp.get("/api/trends")
+def api_trends():
+    """Per-day trend signals, served only from the warmed cache.
+
+    Answers ``{"warming": true}`` and kicks the single-flight background
+    build whenever the cache is absent or an import invalidated it —
+    requests never block on the all-shards fold.
+    """
+    journal_root = _journal_root()
+    payload = _load_trends_cache(journal_root)
+    if payload is None:
+        warm_trends_cache()
+        return jsonify({"warming": True})
+    return jsonify({"warming": False, **payload})
 
 
 @body_bp.get("/api/day/<day>")
