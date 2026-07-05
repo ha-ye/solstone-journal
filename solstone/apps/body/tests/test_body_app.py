@@ -4328,3 +4328,12 @@ def test_trends_copy_avoids_surveillance_and_interpretation_words():
     interpretive = {"improving", "declining", "better", "worse"}
     found = {word for word in interpretive if word in source}
     assert found == set(), f"workspace.html contains interpretive copy: {found}"
+
+
+def test_trends_canvas_domain_floor_never_negative_for_nonnegative_signals():
+    # Steps rendered a "-1,117 steps" axis label when padding pushed the
+    # floor below zero (Codex trends review finding, 2026-07-05).
+    workspace_html = (
+        Path(__file__).resolve().parents[1] / "workspace.html"
+    ).read_text()
+    assert "if (vMin >= 0 && lo < 0) lo = 0;" in workspace_html

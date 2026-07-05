@@ -1363,7 +1363,11 @@ a.body-jump-day:focus-visible {
           if (point.value > vMax) vMax = point.value;
         });
         var pad = Math.max((vMax - vMin) * 0.08, 2.0);
-        return { lo: Math.floor(vMin - pad), hi: Math.ceil(vMax + pad) };
+        // Every trends signal is non-negative; the padded floor must never
+        // print an impossible negative axis label (review finding).
+        var lo = Math.floor(vMin - pad);
+        if (vMin >= 0 && lo < 0) lo = 0;
+        return { lo: lo, hi: Math.ceil(vMax + pad) };
       }
 
       function formatHours(minutes) {
