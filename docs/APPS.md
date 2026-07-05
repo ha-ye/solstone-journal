@@ -6,6 +6,8 @@ Apps are the primary way to extend solstone's web interface (Convey). Each app i
 
 > **How to use this document:** This guide serves as a catalog of patterns and references. Each section points to authoritative source files—read those files alongside this guide for complete details. When in doubt, the source code is the definitive reference.
 
+> **Frontend conventions:** the client-side rules every app UI follows — workspace fragments, initial-state endpoints, rendering and loading/error-state patterns — live in [`CONVEY-FRONTEND.md`](CONVEY-FRONTEND.md).
+
 ---
 
 ## Quick Start

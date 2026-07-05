@@ -67,6 +67,13 @@ The `solstone/convey/root.py` module provides essential routes:
 
 All functional views are accessed at `/app/{name}/` URLs.
 
+### Frontend conventions
+
+The client-side architecture — static shell + per-app workspace fragments, the
+`/api/shell` contract, initial-state endpoint conventions, rendering and
+loading/error-state rules — is specified in [`CONVEY-FRONTEND.md`](CONVEY-FRONTEND.md).
+Read it before touching any workspace, shell chrome, or shared client helper.
+
 ### HTTP API conventions
 
 These conventions apply to every app `routes.py` and the core blueprints. New and
