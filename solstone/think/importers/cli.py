@@ -849,10 +849,14 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             if not args.force:
                 from solstone.think.importers.shared import (
                     find_manifest_by_hash,
-                    hash_source,
+                    windowed_source_hash,
                 )
 
-                _source_hash = hash_source(Path(args.media))
+                _source_hash = windowed_source_hash(
+                    Path(args.media),
+                    getattr(args, "date_from", None),
+                    getattr(args, "date_to", None),
+                )
                 existing = find_manifest_by_hash(journal_root, _source_hash)
                 if existing:
                     imported_at = existing.get("imported_at", "unknown date")

@@ -1053,3 +1053,50 @@ def _read_jsonl(path: Path) -> list[dict]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def test_windowed_source_hash_separates_date_slices(tmp_path: Path):
+    # A date-windowed save covers only a slice of the export; a different
+    # window over the same file must not be reported as already imported
+    # (upstream PR review finding, 2026-07-04). Identical windows still
+    # dedupe, and unwindowed imports keep the plain content hash.
+    from solstone.think.importers.shared import hash_source, windowed_source_hash
+
+    source = tmp_path / "export.zip"
+    source.write_bytes(b"same bytes either way")
+
+    plain = windowed_source_hash(source)
+    assert plain == hash_source(source)
+
+    slice_one = windowed_source_hash(source, "2026-06-27", "2026-07-03")
+    slice_two = windowed_source_hash(source, "2026-07-04", None)
+    full = windowed_source_hash(source, None, None)
+
+    assert slice_one != slice_two
+    assert slice_one != plain
+    assert full == plain
+    assert slice_one == windowed_source_hash(source, "2026-06-27", "2026-07-03")
+
+
+def test_windowed_save_records_window_in_manifest_hash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    live_journal = tmp_path / "live-journal"
+    journal = tmp_path / "synthetic-journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(live_journal))
+
+    AppleHealthImporter().process(
+        FIXTURE_ROOT,
+        journal,
+        import_id="20260103_130000",
+        dry_run=False,
+        date_from="20260102",
+        date_to="20260102",
+    )
+
+    manifest = json.loads(
+        (journal / "imports" / "20260103_130000" / "manifest.json").read_text()
+    )
+    assert manifest["source_hash"].endswith("#window:20260102:20260102")
+    assert not live_journal.exists()

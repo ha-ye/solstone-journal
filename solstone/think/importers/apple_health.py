@@ -32,6 +32,7 @@ from solstone.think.importers.health_schema import (
 )
 from solstone.think.importers.shared import (
     hash_source,
+    windowed_source_hash,
     install_source_file,
     write_content_manifest,
     write_jsonl_records,
@@ -577,7 +578,7 @@ def _save_export(
         journal_root,
         import_id,
         SOURCE_APPLE_HEALTH,
-        hash_source(path),
+        windowed_source_hash(path, date_window.start_day, date_window.end_day),
         len(normalized_items),
         files_created,
         days_affected=sorted(summaries),

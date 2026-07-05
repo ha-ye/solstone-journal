@@ -605,6 +605,24 @@ def hash_source(path: Path) -> str:
     return h.hexdigest()
 
 
+def windowed_source_hash(
+    path: Path, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    """Source hash for whole-source dedupe, made window-aware.
+
+    A date-windowed save normalizes only a slice of the source, so a
+    different window over the same file must not be reported as already
+    imported. The window joins the recorded identity; an identical window
+    still dedupes, and unwindowed imports keep the plain content hash.
+    """
+    base = hash_source(path)
+    if date_from or date_to:
+        start = (date_from or "").replace("-", "") or "open"
+        end = (date_to or "").replace("-", "") or "open"
+        return f"{base}#window:{start}:{end}"
+    return base
+
+
 def write_manifest(
     journal_root: Path,
     import_id: str,
