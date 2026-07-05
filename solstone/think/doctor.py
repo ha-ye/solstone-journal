@@ -96,6 +96,13 @@ JOURNAL_DIR_WRITABLE_CHECK = Check(
     "journal_dir_writable", "blocker", ("linux", "darwin")
 )
 HOST_DEPENDENCIES_CHECK = Check("host_dependencies", "blocker", ("linux", "darwin"))
+JOURNAL_LEAF_EXCLUSIVITY_CHECK = Check(
+    "journal_leaf_exclusivity", "blocker", ("linux", "darwin")
+)
+JOURNAL_PACKAGE_VERSION_CHECK = Check(
+    "journal_package_version", "blocker", ("linux", "darwin")
+)
+RETIRED_HOST_SHIM_CHECK = Check("retired_host_shim", "advisory", ("linux", "darwin"))
 _HOST_DEPENDENCY_MODULES = (
     ("frontmatter", "python-frontmatter"),
     ("flask", "Flask"),
@@ -243,6 +250,145 @@ def sol_importable_check(args: Args) -> CheckResult:
         120,
     )
     return make_result(check, "fail", detail, fix)
+
+
+def _installed_packaging_versions() -> dict[str, str | None]:
+    result: dict[str, str | None] = {}
+    for name in (
+        "solstone",
+        "solstone-journal",
+        "solstone-journal-cuda",
+        "solstone-journal-host",
+    ):
+        try:
+            result[name] = _pkg_version(name)
+        except PackageNotFoundError:
+            result[name] = None
+    return result
+
+
+def _installed_journal_leaves(versions: dict[str, str | None]) -> dict[str, str]:
+    leaves: dict[str, str] = {}
+    for name in ("solstone-journal", "solstone-journal-cuda"):
+        version = versions[name]
+        if version is not None:
+            leaves[name] = version
+    return leaves
+
+
+def _preferred_leaf_name(leaves: dict[str, str]) -> str:
+    if "solstone-journal-cuda" in leaves:
+        return "solstone-journal-cuda"
+    return "solstone-journal"
+
+
+def journal_leaf_exclusivity_check(args: Args) -> CheckResult:
+    del args
+    versions = _installed_packaging_versions()
+    leaves = _installed_journal_leaves(versions)
+    if not leaves:
+        return make_result(
+            JOURNAL_LEAF_EXCLUSIVITY_CHECK,
+            "skip",
+            "no journal leaf installed",
+        )
+    if len(leaves) == 1:
+        leaf_name = next(iter(leaves))
+        return make_result(
+            JOURNAL_LEAF_EXCLUSIVITY_CHECK,
+            "ok",
+            f"single journal leaf installed: {leaf_name} {leaves[leaf_name]}",
+        )
+    return make_result(
+        JOURNAL_LEAF_EXCLUSIVITY_CHECK,
+        "fail",
+        (
+            "both journal leaves are installed: "
+            f"solstone-journal {leaves['solstone-journal']}, "
+            f"solstone-journal-cuda {leaves['solstone-journal-cuda']}; "
+            "CPU and CUDA ONNX runtimes own the same files"
+        ),
+        (
+            "uninstall both journal leaves, then reinstall exactly one: "
+            "pip uninstall -y solstone-journal solstone-journal-cuda; "
+            "then pip install solstone-journal OR pip install solstone-journal-cuda"
+        ),
+    )
+
+
+def journal_package_version_check(args: Args) -> CheckResult:
+    del args
+    versions = _installed_packaging_versions()
+    solstone_version = versions["solstone"]
+    if solstone_version is None:
+        return make_result(
+            JOURNAL_PACKAGE_VERSION_CHECK,
+            "skip",
+            "solstone distribution metadata unavailable",
+        )
+    leaves = _installed_journal_leaves(versions)
+    if not leaves:
+        return make_result(
+            JOURNAL_PACKAGE_VERSION_CHECK,
+            "skip",
+            "no journal leaf installed",
+        )
+    for leaf_name, leaf_version in leaves.items():
+        if leaf_version == solstone_version:
+            return make_result(
+                JOURNAL_PACKAGE_VERSION_CHECK,
+                "ok",
+                (
+                    "journal leaf version matches solstone: "
+                    f"solstone {solstone_version}, {leaf_name} {leaf_version}"
+                ),
+            )
+    leaf_name = _preferred_leaf_name(leaves)
+    return make_result(
+        JOURNAL_PACKAGE_VERSION_CHECK,
+        "fail",
+        (
+            "journal package version mismatch: "
+            f"solstone {solstone_version}, {leaf_name} {leaves[leaf_name]}; "
+            "a bare solstone upgrade may have outrun the journal leaf"
+        ),
+        (
+            "upgrade the installed journal leaf: "
+            f"pip install --upgrade {leaf_name}  |  uv tool install --upgrade {leaf_name}"
+        ),
+    )
+
+
+def retired_host_shim_check(args: Args) -> CheckResult:
+    del args
+    versions = _installed_packaging_versions()
+    host_version = versions["solstone-journal-host"]
+    if host_version is None:
+        return make_result(
+            RETIRED_HOST_SHIM_CHECK,
+            "ok",
+            "retired solstone-journal-host not installed",
+        )
+    leaves = _installed_journal_leaves(versions)
+    if not leaves:
+        return make_result(
+            RETIRED_HOST_SHIM_CHECK,
+            "skip",
+            (
+                f"solstone-journal-host {host_version} installed without a journal "
+                "leaf; journal service commands will show migration guidance"
+            ),
+        )
+    leaf_name = _preferred_leaf_name(leaves)
+    return make_result(
+        RETIRED_HOST_SHIM_CHECK,
+        "warn",
+        (
+            f"retired solstone-journal-host {host_version} is installed alongside "
+            f"{leaf_name} {leaves[leaf_name]}"
+        ),
+        "pip uninstall solstone-journal-host",
+    )
 
 
 def _host_module_present(module: str) -> bool:
@@ -896,12 +1042,18 @@ FEATURE_CHECKS: dict[str, tuple[Check, Runner]] = {
 UNIVERSAL_CHECKS: list[tuple[Check, Runner]] = [
     (PYTHON_VERSION_CHECK, python_sanity_check),
     (SOL_IMPORTABLE_CHECK, sol_importable_check),
+    (JOURNAL_LEAF_EXCLUSIVITY_CHECK, journal_leaf_exclusivity_check),
+    (JOURNAL_PACKAGE_VERSION_CHECK, journal_package_version_check),
+    (RETIRED_HOST_SHIM_CHECK, retired_host_shim_check),
     (LOCAL_BIN_SOL_REACHABLE_CHECK, local_bin_sol_reachable_check),
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="sol")),
     (SKILL_STATE_CHECK, skill_state_check),
 ]
 
 JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
+    (JOURNAL_LEAF_EXCLUSIVITY_CHECK, journal_leaf_exclusivity_check),
+    (JOURNAL_PACKAGE_VERSION_CHECK, journal_package_version_check),
+    (RETIRED_HOST_SHIM_CHECK, retired_host_shim_check),
     (HOST_DEPENDENCIES_CHECK, host_dependencies_check),
     (DISK_SPACE_CHECK, disk_space_check),
     (CONFIG_DIR_READABLE_CHECK, config_dir_readable_check),

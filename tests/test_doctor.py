@@ -615,6 +615,102 @@ class TestHostDependencies:
         assert "python-frontmatter" in result.detail
         assert result.fix == doctor.HOST_DEPENDENCY_REINSTALL_GUIDANCE
 
+
+class TestPackagingChecks:
+    def set_versions(self, doctor, monkeypatch, **overrides):
+        versions = {
+            "solstone": None,
+            "solstone-journal": None,
+            "solstone-journal-cuda": None,
+            "solstone-journal-host": None,
+        }
+        versions.update(overrides)
+        monkeypatch.setattr(doctor, "_installed_packaging_versions", lambda: versions)
+
+    def test_leaf_exclusivity_fails_when_both_leaves_installed(
+        self, doctor, monkeypatch
+    ):
+        self.set_versions(
+            doctor,
+            monkeypatch,
+            **{
+                "solstone-journal": "9.9.9",
+                "solstone-journal-cuda": "9.9.8",
+            },
+        )
+
+        result = doctor.journal_leaf_exclusivity_check(args(doctor))
+
+        assert result.status == "fail"
+        assert result.severity == "blocker"
+        assert "solstone-journal 9.9.9" in result.detail
+        assert "solstone-journal-cuda 9.9.8" in result.detail
+        assert "CPU and CUDA ONNX runtimes own the same files" in result.detail
+
+    @pytest.mark.parametrize(
+        ("leaf_name", "other_leaf"),
+        [
+            ("solstone-journal", "solstone-journal-cuda"),
+            ("solstone-journal-cuda", "solstone-journal"),
+        ],
+    )
+    def test_package_version_fails_when_leaf_mismatches_solstone(
+        self, doctor, monkeypatch, leaf_name, other_leaf
+    ):
+        self.set_versions(
+            doctor,
+            monkeypatch,
+            solstone="9.9.9",
+            **{leaf_name: "9.9.8"},
+        )
+
+        result = doctor.journal_package_version_check(args(doctor))
+
+        assert result.status == "fail"
+        assert result.severity == "blocker"
+        assert leaf_name in result.detail
+        if other_leaf == "solstone-journal":
+            assert "solstone-journal " not in result.detail
+        else:
+            assert other_leaf not in result.detail
+        assert "9.9.9" in result.detail
+        assert "9.9.8" in result.detail
+        assert leaf_name in (result.fix or "")
+
+    def test_retired_host_shim_warns_alongside_leaf(self, doctor, monkeypatch):
+        self.set_versions(
+            doctor,
+            monkeypatch,
+            **{
+                "solstone-journal": "9.9.9",
+                "solstone-journal-host": "0.7.0",
+            },
+        )
+
+        result = doctor.retired_host_shim_check(args(doctor))
+
+        assert result.status == "warn"
+        assert result.severity == "advisory"
+        assert "solstone-journal-host 0.7.0" in result.detail
+        assert "solstone-journal 9.9.9" in result.detail
+        assert result.fix == "pip uninstall solstone-journal-host"
+
+    def test_healthy_cuda_leaf_is_ok(self, doctor, monkeypatch):
+        self.set_versions(
+            doctor,
+            monkeypatch,
+            solstone="9.9.9",
+            **{"solstone-journal-cuda": "9.9.9"},
+        )
+
+        exclusivity = doctor.journal_leaf_exclusivity_check(args(doctor))
+        version = doctor.journal_package_version_check(args(doctor))
+        shim = doctor.retired_host_shim_check(args(doctor))
+
+        assert exclusivity.status == "ok"
+        assert version.status == "ok"
+        assert shim.status == "ok"
+
     def test_journal_readiness_json_fails_on_missing_host_dependency(
         self, doctor, monkeypatch, capsys
     ):
@@ -680,6 +776,9 @@ def test_default_universal_battery_check_names(doctor):
     assert {check.name for check, _runner in doctor.UNIVERSAL_CHECKS} == {
         "python_version",
         "sol_importable",
+        "journal_leaf_exclusivity",
+        "journal_package_version",
+        "retired_host_shim",
         "local_bin_sol_reachable",
         "stale_alias_symlink",
         "skill_state",
@@ -1228,6 +1327,9 @@ def test_sol_doctor_subprocess_json_shape():
     assert {check["name"] for check in payload["checks"]} == {
         "python_version",
         "sol_importable",
+        "journal_leaf_exclusivity",
+        "journal_package_version",
+        "retired_host_shim",
         "local_bin_sol_reachable",
         "stale_alias_symlink",
         "skill_state",
@@ -1259,6 +1361,9 @@ def test_doctor_runs_with_minimal_path_env(tmp_path):
     assert names == {
         "python_version",
         "sol_importable",
+        "journal_leaf_exclusivity",
+        "journal_package_version",
+        "retired_host_shim",
         "local_bin_sol_reachable",
         "stale_alias_symlink",
         "skill_state",
