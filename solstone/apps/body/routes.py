@@ -27,7 +27,13 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Callable
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import (
+    Blueprint,
+    get_template_attribute,
+    jsonify,
+    render_template,
+    request,
+)
 
 from solstone.convey import state
 from solstone.convey.reasons import INVALID_DAY, INVALID_REQUEST_VALUE
@@ -57,6 +63,9 @@ CURVE_SEGMENT_GAP_MINUTES = 45
 # The sleep bar axis runs 6 PM of the previous day to 6 PM of the day.
 SLEEP_AXIS_START_HOUR = 18
 RECENT_DAY_LIMIT = 14
+# Largest carousel batch one /api/recent call will build — a month and a
+# nudge, so a single fetch never folds an unbounded stretch of the archive.
+RECENT_BATCH_LIMIT_CAP = 31
 STALE_SOURCE_DAYS = 30
 
 CURVE_SVG_WIDTH = 1440.0
@@ -807,10 +816,25 @@ def _source_chips(recent: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _recent_day_rail(
-    journal_root: Path, by_day: dict[str, int], *, limit: int = RECENT_DAY_LIMIT
-) -> list[dict[str, Any]]:
-    """Compact facts for the last days that have entries, newest first."""
-    days = sorted(by_day)[-limit:][::-1]
+    journal_root: Path,
+    by_day: dict[str, int],
+    *,
+    before: str | None = None,
+    limit: int = RECENT_DAY_LIMIT,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Compact facts for days that have entries, newest first.
+
+    Without ``before`` this is the overview's initial rail: the newest
+    ``limit`` days with entries. With ``before`` it is the paged
+    continuation the carousel walks the whole archive with — only days
+    strictly older than the cursor, still newest first. Days without
+    entries never appear (``by_day`` holds only counted days), so gaps
+    and month boundaries fold away naturally. The second return value
+    says whether days with entries older than this batch remain.
+    """
+    eligible = sorted(day for day in by_day if before is None or day < before)
+    days = eligible[-limit:][::-1]
+    has_more = len(eligible) > len(days)
     reader = _month_reader(journal_root)
     items: list[dict[str, Any]] = []
     for day in days:
@@ -850,7 +874,7 @@ def _recent_day_rail(
                 else 0,
             }
         )
-    return items
+    return items, has_more
 
 
 def _build_archive(
@@ -863,6 +887,7 @@ def _build_archive(
     by_month = dedupe["by_month"]
     months = sorted(by_month)
     days = sorted(dedupe["by_day"])
+    recent_days, recent_days_has_more = _recent_day_rail(journal_root, dedupe["by_day"])
     coverage = None
     if months:
         coverage = {
@@ -880,7 +905,8 @@ def _build_archive(
         "coverage": coverage,
         "latest_day": days[-1] if days else None,
         "day_grid": _day_contribution_grid(dedupe["by_day"]),
-        "recent_days": _recent_day_rail(journal_root, dedupe["by_day"]),
+        "recent_days": recent_days,
+        "recent_days_has_more": recent_days_has_more,
         "families": _coverage_families(dedupe),
         "sources": _source_chips(recent),
     }
@@ -2664,6 +2690,49 @@ def day_view(day: str):
 @body_bp.get("/api/status")
 def api_status():
     return jsonify(_build_health_import_status(_journal_root()))
+
+
+@body_bp.get("/api/recent")
+def api_recent():
+    """The next carousel batch: day cards strictly older than ``before``.
+
+    Alongside the card payloads and the older-days-remain flag, the
+    response carries the batch rendered through the same ``body_day_card``
+    Jinja macro the overview's initial render uses — one card markup,
+    never a client-side copy that could drift.
+    """
+    before = request.args.get("before", "")
+    if not DAY_RE.fullmatch(before):
+        return error_response(INVALID_DAY)
+    try:
+        datetime.strptime(before, "%Y%m%d")
+    except ValueError:
+        return error_response(INVALID_DAY)
+    limit = RECENT_DAY_LIMIT
+    raw_limit = request.args.get("limit")
+    if raw_limit is not None:
+        try:
+            limit = int(raw_limit)
+        except ValueError:
+            return error_response(
+                INVALID_REQUEST_VALUE, detail="limit must be an integer"
+            )
+        if limit < 1:
+            return error_response(
+                INVALID_REQUEST_VALUE, detail="limit must be at least 1"
+            )
+        limit = min(limit, RECENT_BATCH_LIMIT_CAP)
+    journal_root = _journal_root()
+    by_day = _read_health_dedupe_stats(journal_root)["by_day"]
+    days, has_more = _recent_day_rail(journal_root, by_day, before=before, limit=limit)
+    render_card = get_template_attribute("body/workspace.html", "body_day_card")
+    return jsonify(
+        {
+            "days": days,
+            "has_more": has_more,
+            "html": "".join(render_card(item) for item in days),
+        }
+    )
 
 
 @body_bp.get("/api/day/<day>")

@@ -1,3 +1,35 @@
+{#
+  One card markup for the recent-days carousel: the overview's initial
+  render and the /app/body/api/recent HTML fragments both call this macro,
+  so paged-in cards can never drift from the server-rendered ones. It
+  stays top-level so routes.py can reach it via get_template_attribute.
+#}
+{% macro body_day_card(recent) %}
+<article class="body-card body-day-card" data-day="{{ recent.day }}">
+  <div class="body-date-badge" aria-hidden="true">
+    <div>
+      <div class="body-date-badge-month">{{ recent.label.split(" ")[0] }}</div>
+      <div class="body-date-badge-day">{{ recent.label.split(" ")[1] }}</div>
+    </div>
+  </div>
+  <div>
+    <h3 class="body-day-card-date">{{ recent.label }}</h3>
+    <ul class="body-facts">
+      {% if recent.sleep_duration %}
+        <li><span>Sleep</span><strong class="body-num">{{ recent.sleep_duration }}{% if recent.sleep_in_bed %} <span class="body-fact-kind">in bed {{ recent.sleep_in_bed }}</span>{% endif %}</strong></li>
+      {% endif %}
+      {% if recent.glucose_label %}
+        <li><span>Glucose</span><strong class="body-num">{{ recent.glucose_label }}</strong></li>
+      {% endif %}
+      {% if recent.workout_count %}
+        <li><span>Workouts</span><strong class="body-num">{{ recent.workout_count }}</strong></li>
+      {% endif %}
+      <li><span>Sources</span><strong class="body-num">{{ recent.source_count }}</strong></li>
+    </ul>
+    <p class="body-card-footer"><a class="body-link" href="/app/body/{{ recent.day }}">Open day</a></p>
+  </div>
+</article>
+{% endmacro %}
 <style>
 .body-header {
   margin-bottom: var(--space-5);
@@ -499,6 +531,14 @@ a.body-jump-day:focus-visible {
 .body-recent-nav:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 1px;
+}
+
+.body-recent-loading {
+  display: grid;
+  place-items: center;
+  min-height: 140px;
+  color: var(--ink-faint-paper);
+  font-size: 14px;
 }
 
 .body-day-card {
@@ -1312,8 +1352,13 @@ a.body-jump-day:focus-visible {
     </div>
   </details>
 
-{% else %}
-  {% set status = body_status or {} %}
+{% elif body_status %}
+  {#
+    An explicit elif, not a bare else: routes.py imports body_day_card
+    from this template's module, which executes this file with an empty
+    context — neither branch may dereference page state then.
+  #}
+  {% set status = body_status %}
   {% set archive = status.archive %}
 
   <header class="body-header">
@@ -1482,32 +1527,10 @@ a.body-jump-day:focus-visible {
           <button type="button" class="body-recent-nav" id="body-recent-fwd" aria-label="Earlier days">&rsaquo;</button>
         </div>
       </div>
-      <div class="body-recent-carousel" id="body-recent-carousel">
+      <div class="body-recent-carousel" id="body-recent-carousel"
+           data-has-more="{{ 'true' if archive.recent_days_has_more else 'false' }}">
         {% for recent in archive.recent_days %}
-          <article class="body-card body-day-card">
-            <div class="body-date-badge" aria-hidden="true">
-              <div>
-                <div class="body-date-badge-month">{{ recent.label.split(" ")[0] }}</div>
-                <div class="body-date-badge-day">{{ recent.label.split(" ")[1] }}</div>
-              </div>
-            </div>
-            <div>
-              <h3 class="body-day-card-date">{{ recent.label }}</h3>
-              <ul class="body-facts">
-                {% if recent.sleep_duration %}
-                  <li><span>Sleep</span><strong class="body-num">{{ recent.sleep_duration }}{% if recent.sleep_in_bed %} <span class="body-fact-kind">in bed {{ recent.sleep_in_bed }}</span>{% endif %}</strong></li>
-                {% endif %}
-                {% if recent.glucose_label %}
-                  <li><span>Glucose</span><strong class="body-num">{{ recent.glucose_label }}</strong></li>
-                {% endif %}
-                {% if recent.workout_count %}
-                  <li><span>Workouts</span><strong class="body-num">{{ recent.workout_count }}</strong></li>
-                {% endif %}
-                <li><span>Sources</span><strong class="body-num">{{ recent.source_count }}</strong></li>
-              </ul>
-              <p class="body-card-footer"><a class="body-link" href="/app/body/{{ recent.day }}">Open day</a></p>
-            </div>
-          </article>
+          {{ body_day_card(recent) }}
         {% endfor %}
       </div>
     </section>
@@ -1518,6 +1541,8 @@ a.body-jump-day:focus-visible {
         if (!carousel || !controls) return;
         var backBtn = document.getElementById("body-recent-back");
         var fwdBtn = document.getElementById("body-recent-fwd");
+        var hasMore = carousel.dataset.hasMore === "true";
+        var fetching = false;
 
         // Cards run newest to oldest, left to right: the back button pages
         // toward newer days, the forward button toward earlier days. Wheel
@@ -1530,14 +1555,70 @@ a.body-jump-day:focus-visible {
         }
 
         function syncControls() {
-          if (carousel.scrollWidth <= carousel.clientWidth + 1) {
+          if (carousel.scrollWidth <= carousel.clientWidth + 1 && !hasMore) {
             controls.hidden = true;
             return;
           }
           controls.hidden = false;
           var maxScroll = carousel.scrollWidth - carousel.clientWidth;
           backBtn.disabled = carousel.scrollLeft <= 1;
-          fwdBtn.disabled = carousel.scrollLeft >= maxScroll - 1;
+          // Forward only truly ends at the archive's oldest day: while
+          // earlier batches remain it stays live to pull them in.
+          fwdBtn.disabled = !hasMore && carousel.scrollLeft >= maxScroll - 1;
+        }
+
+        function oldestDay() {
+          var cards = carousel.querySelectorAll(".body-day-card[data-day]");
+          return cards.length ? cards[cards.length - 1].dataset.day : "";
+        }
+
+        function appendBatch(batchHtml) {
+          var holder = document.createElement("template");
+          holder.innerHTML = batchHtml;
+          var present = {};
+          carousel.querySelectorAll(".body-day-card[data-day]").forEach(function (card) {
+            present[card.dataset.day] = true;
+          });
+          holder.content.querySelectorAll(".body-day-card[data-day]").forEach(function (card) {
+            if (present[card.dataset.day]) return; // one card per day, ever
+            present[card.dataset.day] = true;
+            carousel.appendChild(card);
+          });
+        }
+
+        // Nearing the right end (within ~2 card widths) pulls the next
+        // batch of earlier days, cursored on the oldest card present.
+        // One fetch in flight at a time; a failed batch stays quiet and
+        // the next approach to the end retries.
+        function maybeFetchEarlier() {
+          if (!hasMore || fetching) return;
+          var remaining = carousel.scrollWidth - carousel.clientWidth - carousel.scrollLeft;
+          if (remaining > 2 * cardStep()) return;
+          var cursor = oldestDay();
+          if (!cursor) return;
+          fetching = true;
+          var placeholder = document.createElement("article");
+          placeholder.className = "body-card body-recent-loading";
+          placeholder.textContent = "Loading earlier days…";
+          carousel.appendChild(placeholder);
+          fetch("/app/body/api/recent?before=" + cursor)
+            .then(function (response) {
+              if (!response.ok) throw new Error("batch " + response.status);
+              return response.json();
+            })
+            .then(function (batch) {
+              hasMore = !!batch.has_more;
+              appendBatch(batch.html);
+              placeholder.remove();
+              fetching = false;
+              syncControls();
+              maybeFetchEarlier();
+            })
+            .catch(function () {
+              placeholder.remove();
+              fetching = false;
+              syncControls();
+            });
         }
 
         backBtn.addEventListener("click", function () {
@@ -1545,8 +1626,12 @@ a.body-jump-day:focus-visible {
         });
         fwdBtn.addEventListener("click", function () {
           carousel.scrollBy({ left: cardStep(), behavior: "smooth" });
+          maybeFetchEarlier();
         });
-        carousel.addEventListener("scroll", syncControls, { passive: true });
+        carousel.addEventListener("scroll", function () {
+          syncControls();
+          maybeFetchEarlier();
+        }, { passive: true });
         window.addEventListener("resize", syncControls);
         syncControls();
       })();

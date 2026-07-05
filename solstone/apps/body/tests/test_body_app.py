@@ -398,6 +398,9 @@ def test_read_routes_create_nothing_in_empty_journal(body_env):
     assert env.client.get("/app/body/api/status").status_code == 200
     assert env.client.get("/app/body/api/day/20260703").status_code == 200
     assert env.client.get("/app/body/api/stats/2026-07").status_code == 200
+    recent = env.client.get("/app/body/api/recent?before=20260703")
+    assert recent.status_code == 200
+    assert recent.get_json() == {"days": [], "has_more": False, "html": ""}
     assert env.client.get("/app/body/").status_code == 200
     assert env.client.get("/app/body/20260703").status_code == 200
 
@@ -1399,6 +1402,8 @@ def test_status_api_recent_day_rail_has_per_day_facts(body_env):
 
     rail = archive["recent_days"]
     assert [item["day"] for item in rail] == ["20260704", "20260703"]
+    # Both archive days fit in the initial rail — nothing older remains.
+    assert archive["recent_days_has_more"] is False
     glucose_day = rail[1]
     assert glucose_day["glucose_label"] == "100–140 mg/dL · avg 120"
     assert glucose_day["workout_count"] == 0
@@ -1422,13 +1427,16 @@ def test_status_api_recent_day_rail_caps_at_fourteen_days(body_env):
     ]
     _seed_import(env.journal, "20260801_000000", rows)
 
-    rail = env.client.get("/app/body/api/status").get_json()["archive"]["recent_days"]
+    archive = env.client.get("/app/body/api/status").get_json()["archive"]
+    rail = archive["recent_days"]
 
-    # 18 days with data collapse to the newest 14, newest first.
+    # 18 days with data collapse to the newest 14, newest first; the
+    # archive flags that older days remain for the carousel to page in.
     assert len(rail) == 14
     assert [item["day"] for item in rail] == [
         f"202607{day:02d}" for day in range(18, 4, -1)
     ]
+    assert archive["recent_days_has_more"] is True
 
 
 def test_overview_recent_days_render_as_snap_carousel(body_env):
@@ -1455,6 +1463,197 @@ def test_overview_recent_days_render_as_snap_carousel(body_env):
     assert "backBtn.disabled" in html
     assert "fwdBtn.disabled" in html
     assert "controls.hidden = true" in html
+
+
+def _seed_july_days(journal: Path, last_day: int) -> None:
+    """One glucose entry per day for 2026-07-01 … 2026-07-``last_day``."""
+    rows = [
+        _row(
+            GLUCOSE_TYPE,
+            f"2026-07-{day:02d}T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+        for day in range(1, last_day + 1)
+    ]
+    _seed_import(journal, "20260801_000000", rows)
+
+
+def test_recent_api_pages_strictly_older_newest_first(body_env):
+    env = body_env()
+    _seed_july_days(env.journal, 18)
+
+    response = env.client.get("/app/body/api/recent?before=20260715")
+
+    assert response.status_code == 200
+    batch = response.get_json()
+    days = [item["day"] for item in batch["days"]]
+    # Strictly older than the cursor, newest first, default batch of 14.
+    assert days == [f"202607{day:02d}" for day in range(14, 0, -1)]
+    assert all(day < "20260715" for day in days)
+    # The batch reaches the archive's earliest day, so nothing remains.
+    assert batch["has_more"] is False
+    # Same per-card payload the overview's rail carries.
+    assert batch["days"][0]["glucose_label"] == "100–100 mg/dL · avg 100"
+    assert batch["days"][0]["source_count"] == 1
+
+
+def test_recent_api_two_page_walk_covers_archive_without_duplicates(body_env):
+    env = body_env()
+    _seed_july_days(env.journal, 18)
+
+    first = env.client.get("/app/body/api/recent?before=20260719").get_json()
+    first_days = [item["day"] for item in first["days"]]
+    assert first_days == [f"202607{day:02d}" for day in range(18, 4, -1)]
+    assert first["has_more"] is True
+
+    # The next cursor is the oldest card of the previous page.
+    second = env.client.get(f"/app/body/api/recent?before={first_days[-1]}").get_json()
+    second_days = [item["day"] for item in second["days"]]
+    assert second_days == [f"202607{day:02d}" for day in range(4, 0, -1)]
+    assert second["has_more"] is False
+
+    assert set(first_days) & set(second_days) == set()
+    assert sorted(first_days + second_days) == [
+        f"202607{day:02d}" for day in range(1, 19)
+    ]
+
+
+def test_recent_api_limit_respected_and_capped(body_env):
+    env = body_env()
+    june = [
+        _row(
+            GLUCOSE_TYPE,
+            f"2026-06-{day:02d}T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+        for day in range(1, 31)
+    ]
+    july = [
+        _row(
+            GLUCOSE_TYPE,
+            f"2026-07-{day:02d}T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+        for day in range(1, 11)
+    ]
+    _seed_import(env.journal, "20260801_000000", june + july)
+
+    small = env.client.get("/app/body/api/recent?before=20260711&limit=3").get_json()
+    assert [item["day"] for item in small["days"]] == [
+        "20260710",
+        "20260709",
+        "20260708",
+    ]
+    assert small["has_more"] is True
+
+    # An oversized limit clamps to the batch cap instead of folding an
+    # unbounded stretch of the archive into one response.
+    large = env.client.get("/app/body/api/recent?before=20260711&limit=100").get_json()
+    assert len(large["days"]) == body_routes.RECENT_BATCH_LIMIT_CAP
+    assert large["days"][0]["day"] == "20260710"
+    assert large["days"][-1]["day"] == "20260610"
+    assert large["has_more"] is True
+
+
+def test_recent_api_rejects_invalid_before_and_limit(body_env):
+    env = body_env()
+
+    assert env.client.get("/app/body/api/recent").status_code == 400
+    assert env.client.get("/app/body/api/recent?before=2026-07-03").status_code == 400
+    assert env.client.get("/app/body/api/recent?before=notaday1").status_code == 400
+    assert env.client.get("/app/body/api/recent?before=20261399").status_code == 400
+    assert (
+        env.client.get("/app/body/api/recent?before=20260703&limit=abc").status_code
+        == 400
+    )
+    assert (
+        env.client.get("/app/body/api/recent?before=20260703&limit=0").status_code
+        == 400
+    )
+
+
+def test_recent_api_skips_empty_days_across_month_boundary(body_env):
+    env = body_env()
+    rows = [
+        _row(
+            GLUCOSE_TYPE,
+            f"{stamp}T08:00:00-06:00",
+            value="100",
+            unit="mg/dL",
+            source="Synthetic Stelo",
+        )
+        for stamp in ("2026-06-28", "2026-06-30", "2026-07-02")
+    ]
+    _seed_import(env.journal, "20260801_000000", rows)
+
+    first = env.client.get("/app/body/api/recent?before=20260704&limit=2").get_json()
+    # Only days with entries appear: the gaps at 06-29 and 07-01 fold away
+    # and the batch spans the June/July boundary.
+    assert [item["day"] for item in first["days"]] == ["20260702", "20260630"]
+    assert first["has_more"] is True
+
+    second = env.client.get("/app/body/api/recent?before=20260630").get_json()
+    assert [item["day"] for item in second["days"]] == ["20260628"]
+    assert second["has_more"] is False
+
+
+def test_recent_api_fragment_renders_shared_card_macro(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    page = env.client.get("/app/body/").get_data(as_text=True)
+    batch = env.client.get("/app/body/api/recent?before=20260704").get_json()
+
+    assert [item["day"] for item in batch["days"]] == ["20260703"]
+    assert batch["has_more"] is False
+    assert 'data-day="20260703"' in batch["html"]
+    assert 'href="/app/body/20260703"' in batch["html"]
+    # The fragment is the same macro output the overview rendered inline,
+    # so paged-in cards can never drift from the server-rendered ones.
+    assert batch["html"].strip() in page
+
+    body_root = Path(body_routes.__file__).resolve().parent
+    workspace = (body_root / "workspace.html").read_text(encoding="utf-8")
+    assert "{% macro body_day_card(recent) %}" in workspace
+    assert "{{ body_day_card(recent) }}" in workspace
+    routes_source = (body_root / "routes.py").read_text(encoding="utf-8")
+    assert (
+        'get_template_attribute("body/workspace.html", "body_day_card")'
+        in routes_source
+    )
+
+
+def test_overview_carousel_pages_archive_with_guarded_fetches(body_env):
+    env = body_env()
+    _seed_july_days(env.journal, 18)
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+
+    # The initial render stays the newest 14 SSR cards and flags that
+    # older days remain for the carousel to page in.
+    assert html.count('data-day="') == 14
+    assert 'data-has-more="true"' in html
+
+    # Cursor-paged fetch of earlier days, triggered within ~2 card widths
+    # of the right end, one request in flight at a time, deduped by day.
+    assert "/app/body/api/recent?before=" in html
+    assert "remaining > 2 * cardStep()" in html
+    assert "if (!hasMore || fetching) return;" in html
+    assert "present[card.dataset.day]" in html
+
+    # A neutral placeholder card shows while a batch loads.
+    assert "Loading earlier days" in html
+    assert "body-recent-loading" in html
+
+    # The forward control only hard-disables at the true archive end.
+    assert "fwdBtn.disabled = !hasMore && carousel.scrollLeft >= maxScroll - 1;" in html
+    assert "hasMore = !!batch.has_more;" in html
 
 
 def test_status_page_renders_archive_sections(body_env):
