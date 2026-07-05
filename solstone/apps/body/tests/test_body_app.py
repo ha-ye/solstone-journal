@@ -1753,6 +1753,54 @@ def test_overview_quick_entry_row_and_section_order(body_env):
     assert order == sorted(order)
 
 
+def test_overview_jump_popover_header_button_opens_year_month_picker(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+
+    # The header month-year text is a real button that discloses the
+    # two-step picker inside the same popover.
+    assert (
+        '<button type="button" class="body-jump-title" id="body-jump-title-btn"'
+        ' aria-expanded="false" aria-controls="body-jump-picker">' in html
+    )
+    assert 'titleBtn.setAttribute("aria-expanded", picking ? "true" : "false");' in html
+
+    # Step 1 offers the coverage years, step 2 the chosen year's months —
+    # both mounted inside the popover, after the day grid.
+    pop_at = html.index('id="body-jump-pop"')
+    days_at = html.index('id="body-jump-days"')
+    picker_at = html.index('id="body-jump-picker"')
+    years_at = html.index('id="body-jump-years"')
+    months_at = html.index('id="body-jump-months"')
+    assert pop_at < days_at < picker_at < years_at < months_at
+
+    # Coverage years derive from the bounds the popover already carries.
+    assert "parseInt(startMonth.slice(0, 4), 10)" in html
+    assert 'class="body-jump-year"' in html
+
+    # Months outside the archive's coverage bounds render disabled.
+    assert "var out = ym < startMonth || ym > endMonth;" in html
+    assert '(out ? " disabled" : "")' in html
+
+    # A back affordance returns from months to years; Escape still closes
+    # the whole popover from any picker depth.
+    assert 'id="body-jump-back"' in html
+    assert "backToYearsBtn.addEventListener" in html
+    assert 'if (event.key === "Escape") closePop(true);' in html
+
+    # Picking a month returns to the day grid on that month, and reopening
+    # the popover always resets to the day-grid view.
+    assert "function showDayGrid(month)" in html
+    assert "showDayGrid(pick.dataset.month);" in html
+    assert "showDayGrid(current);" in html
+
+    # The existing month-stepping chevrons stay wired.
+    assert "shiftMonth(current, -1)" in html
+    assert "shiftMonth(current, 1)" in html
+
+
 # --- Overview vs day-page navigation model --------------------------------------
 
 

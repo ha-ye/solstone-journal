@@ -396,9 +396,32 @@ a.body-day-cell:focus-visible {
 }
 
 .body-jump-title {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 30px;
+  padding: 0 var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
   font-size: 14px;
   font-weight: var(--weight-medium);
   color: var(--ink);
+  cursor: pointer;
+}
+
+.body-jump-title:hover {
+  background: var(--orange-wash);
+}
+
+.body-jump-title:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.body-jump-title-caret {
+  font-size: 10px;
+  color: var(--ink-faint-paper);
 }
 
 .body-jump-nav {
@@ -440,6 +463,75 @@ a.body-day-cell:focus-visible {
   font-size: 11px;
   text-align: center;
   color: var(--ink-faint-paper);
+}
+
+/* The hidden attribute must win over the display: grid/flex above. */
+.body-jump-dow[hidden],
+.body-jump-days[hidden],
+.body-jump-years[hidden],
+.body-jump-months[hidden],
+.body-jump-back[hidden] {
+  display: none;
+}
+
+.body-jump-back {
+  display: inline-flex;
+  align-items: center;
+  margin: 0 0 var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  font-size: 13px;
+  font-weight: var(--weight-medium);
+  color: var(--orange-ink);
+  cursor: pointer;
+}
+
+.body-jump-back:hover {
+  background: var(--orange-wash);
+}
+
+.body-jump-back:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.body-jump-years,
+.body-jump-months {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-2);
+}
+
+.body-jump-year,
+.body-jump-month {
+  display: grid;
+  place-items: center;
+  min-height: 34px;
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-sm);
+  background: var(--cream-bright);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.body-jump-year:hover:not(:disabled),
+.body-jump-month:hover:not(:disabled) {
+  background: var(--orange-wash);
+}
+
+.body-jump-month:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.body-jump-year:focus-visible,
+.body-jump-month:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
 }
 
 .body-jump-day {
@@ -1397,13 +1489,20 @@ a.body-jump-day:focus-visible {
            data-latest-day="{{ archive.latest_day }}">
         <div class="body-jump-head">
           <button type="button" class="body-jump-nav" id="body-jump-prev" aria-label="Previous month">&lsaquo;</button>
-          <span class="body-jump-title" id="body-jump-title" aria-live="polite"></span>
+          <button type="button" class="body-jump-title" id="body-jump-title-btn" aria-expanded="false" aria-controls="body-jump-picker">
+            <span id="body-jump-title" aria-live="polite"></span><span class="body-jump-title-caret" aria-hidden="true">&#9662;</span>
+          </button>
           <button type="button" class="body-jump-nav" id="body-jump-next" aria-label="Next month">&rsaquo;</button>
         </div>
-        <div class="body-jump-dow" aria-hidden="true">
+        <div class="body-jump-dow" id="body-jump-dow" aria-hidden="true">
           <span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span><span>Su</span>
         </div>
         <div class="body-jump-days" id="body-jump-days"></div>
+        <div id="body-jump-picker" hidden>
+          <button type="button" class="body-jump-back" id="body-jump-back" hidden>&lsaquo; All years</button>
+          <div class="body-jump-years" id="body-jump-years" role="group" aria-label="Choose a year"></div>
+          <div class="body-jump-months" id="body-jump-months" role="group" aria-label="Choose a month" hidden></div>
+        </div>
       </div>
     </div>
     <script>
@@ -1412,9 +1511,15 @@ a.body-jump-day:focus-visible {
         var pop = document.getElementById("body-jump-pop");
         if (!button || !pop) return;
         var titleEl = document.getElementById("body-jump-title");
+        var titleBtn = document.getElementById("body-jump-title-btn");
+        var dowEl = document.getElementById("body-jump-dow");
         var daysEl = document.getElementById("body-jump-days");
         var prevBtn = document.getElementById("body-jump-prev");
         var nextBtn = document.getElementById("body-jump-next");
+        var pickerEl = document.getElementById("body-jump-picker");
+        var yearsEl = document.getElementById("body-jump-years");
+        var monthsEl = document.getElementById("body-jump-months");
+        var backToYearsBtn = document.getElementById("body-jump-back");
         var startMonth = pop.dataset.startMonth;
         var endMonth = pop.dataset.endMonth;
         var latestDay = pop.dataset.latestDay || "";
@@ -1422,6 +1527,8 @@ a.body-jump-day:focus-visible {
           ? latestDay.slice(0, 4) + "-" + latestDay.slice(4, 6)
           : endMonth;
         var cache = {};
+        var view = "days";
+        var pickedYear = null;
         var monthNames = ["January", "February", "March", "April", "May", "June",
           "July", "August", "September", "October", "November", "December"];
 
@@ -1469,6 +1576,52 @@ a.body-jump-day:focus-visible {
           daysEl.innerHTML = cells.join("");
         }
 
+        // Two-step quick picker inside the same popover: the day grid
+        // swaps out for the coverage years, then a chosen year's months,
+        // and any pick swaps the day grid back in.
+        function setView(next) {
+          view = next;
+          var picking = next !== "days";
+          dowEl.hidden = picking;
+          daysEl.hidden = picking;
+          pickerEl.hidden = !picking;
+          yearsEl.hidden = next !== "years";
+          monthsEl.hidden = next !== "months";
+          backToYearsBtn.hidden = next !== "months";
+          titleBtn.setAttribute("aria-expanded", picking ? "true" : "false");
+          prevBtn.disabled = picking || current <= startMonth;
+          nextBtn.disabled = picking || current >= endMonth;
+          if (next === "years") titleEl.textContent = "Choose a year";
+          if (next === "months") titleEl.textContent = String(pickedYear);
+        }
+
+        function renderYears() {
+          var startYear = parseInt(startMonth.slice(0, 4), 10);
+          var endYear = parseInt(endMonth.slice(0, 4), 10);
+          var cells = [];
+          for (var year = startYear; year <= endYear; year += 1) {
+            cells.push(
+              '<button type="button" class="body-jump-year" data-year="' +
+              year + '">' + year + "</button>"
+            );
+          }
+          yearsEl.innerHTML = cells.join("");
+        }
+
+        function renderMonths(year) {
+          var cells = [];
+          for (var idx = 0; idx < 12; idx += 1) {
+            var ym = year + "-" + String(idx + 1).padStart(2, "0");
+            var out = ym < startMonth || ym > endMonth;
+            cells.push(
+              '<button type="button" class="body-jump-month" data-month="' + ym +
+              '" aria-label="' + monthNames[idx] + " " + year + '"' +
+              (out ? " disabled" : "") + ">" + monthNames[idx].slice(0, 3) + "</button>"
+            );
+          }
+          monthsEl.innerHTML = cells.join("");
+        }
+
         function showMonth(month) {
           current = month;
           if (cache[month]) {
@@ -1479,14 +1632,20 @@ a.body-jump-day:focus-visible {
             .then(function (response) { return response.json(); })
             .then(function (counts) {
               cache[month] = counts;
-              if (current === month) renderMonth(month, counts);
+              if (view === "days" && current === month) renderMonth(month, counts);
             });
+        }
+
+        function showDayGrid(month) {
+          setView("days");
+          showMonth(month);
         }
 
         function openPop() {
           pop.hidden = false;
           button.setAttribute("aria-expanded", "true");
-          showMonth(current);
+          // Reopening always resets to the day grid of the last-shown month.
+          showDayGrid(current);
         }
 
         function closePop(refocus) {
@@ -1498,6 +1657,30 @@ a.body-jump-day:focus-visible {
 
         button.addEventListener("click", function () {
           if (pop.hidden) openPop(); else closePop(false);
+        });
+        titleBtn.addEventListener("click", function () {
+          if (view === "days") {
+            renderYears();
+            setView("years");
+          } else {
+            showDayGrid(current);
+          }
+        });
+        yearsEl.addEventListener("click", function (event) {
+          var pick = event.target.closest(".body-jump-year");
+          if (!pick) return;
+          pickedYear = parseInt(pick.dataset.year, 10);
+          renderMonths(pickedYear);
+          setView("months");
+        });
+        monthsEl.addEventListener("click", function (event) {
+          var pick = event.target.closest(".body-jump-month");
+          if (!pick || pick.disabled) return;
+          showDayGrid(pick.dataset.month);
+        });
+        backToYearsBtn.addEventListener("click", function () {
+          renderYears();
+          setView("years");
         });
         prevBtn.addEventListener("click", function () {
           var target = shiftMonth(current, -1);
