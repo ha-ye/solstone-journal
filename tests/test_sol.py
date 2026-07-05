@@ -17,6 +17,34 @@ from solstone.think import sol_cli as sol
 from solstone.think.sol_cli import JOURNAL_ACCESS_CMD_ERROR
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+EMPTY_PACKAGING_VERSIONS = {
+    "solstone": None,
+    "solstone-journal": None,
+    "solstone-journal-cuda": None,
+    "solstone-journal-host": None,
+}
+MIGRATION_UV_LINE = (
+    "uv tool uninstall solstone && uv tool install solstone-journal && "
+    "uv tool install solstone"
+)
+
+
+@pytest.fixture(autouse=True, scope="module")
+def neutralize_journal_coherence_guard():
+    patch = pytest.MonkeyPatch()
+    patch.setattr(
+        sol,
+        "_installed_packaging_versions",
+        lambda: dict(EMPTY_PACKAGING_VERSIONS),
+    )
+    yield
+    patch.undo()
+
+
+def set_packaging_versions(monkeypatch, **overrides):
+    versions = dict(EMPTY_PACKAGING_VERSIONS)
+    versions.update(overrides)
+    monkeypatch.setattr(sol, "_installed_packaging_versions", lambda: versions)
 
 
 def service_command_names() -> list[str]:
@@ -135,6 +163,95 @@ class TestResolveCommand:
             assert surface == "service"
         finally:
             del sol.ALIASES["import"]
+
+
+class TestJournalCoherenceGuard:
+    @pytest.mark.parametrize(
+        "versions",
+        [
+            {
+                "solstone": "9.9.9",
+                "solstone-journal-cuda": "9.9.9",
+            },
+            {
+                "solstone": "9.9.9",
+                "solstone-journal": "9.9.9",
+            },
+            {
+                "solstone": "9.9.9",
+                "solstone-journal": "9.9.8",
+                "solstone-journal-cuda": "9.9.9",
+            },
+        ],
+    )
+    def test_allows_matching_leaf(self, monkeypatch, capsys, versions):
+        set_packaging_versions(monkeypatch, **versions)
+
+        sol._guard_journal_coherence()
+
+        assert capsys.readouterr().err == ""
+
+    def test_mismatch_names_cpu_leaf(self, monkeypatch, capsys):
+        set_packaging_versions(
+            monkeypatch,
+            solstone="9.9.9",
+            **{"solstone-journal": "9.9.8"},
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            sol._guard_journal_coherence()
+
+        assert exc_info.value.code == 1
+        stderr = capsys.readouterr().err
+        assert "solstone-journal" in stderr
+        assert "solstone-journal-cuda" not in stderr
+        assert "9.9.9" in stderr
+        assert "9.9.8" in stderr
+
+    def test_mismatch_names_cuda_leaf(self, monkeypatch, capsys):
+        set_packaging_versions(
+            monkeypatch,
+            solstone="9.9.9",
+            **{"solstone-journal-cuda": "9.9.8"},
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            sol._guard_journal_coherence()
+
+        assert exc_info.value.code == 1
+        stderr = capsys.readouterr().err
+        assert "solstone-journal-cuda" in stderr
+        assert "9.9.9" in stderr
+        assert "9.9.8" in stderr
+
+    def test_shim_migration_message(self, monkeypatch, capsys):
+        set_packaging_versions(
+            monkeypatch,
+            solstone="9.9.9",
+            **{"solstone-journal-host": "0.7.0"},
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            sol._guard_journal_coherence()
+
+        assert exc_info.value.code == 1
+        stderr = capsys.readouterr().err
+        assert "have moved" in stderr
+        assert MIGRATION_UV_LINE in stderr
+
+    @pytest.mark.parametrize(
+        "versions",
+        [
+            {},
+            {"solstone": "9.9.9"},
+        ],
+    )
+    def test_absence_returns(self, monkeypatch, capsys, versions):
+        set_packaging_versions(monkeypatch, **versions)
+
+        sol._guard_journal_coherence()
+
+        assert capsys.readouterr().err == ""
 
 
 class TestRunCommand:

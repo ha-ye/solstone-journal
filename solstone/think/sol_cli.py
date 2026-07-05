@@ -65,6 +65,83 @@ SOL_SERVICE_CMD_REMOVED_ERROR = (
     "('sol' is the journal-access surface; 'journal' surfaces journal-service "
     "commands; see 'journal --help'.)"
 )
+JOURNAL_VERSION_MISMATCH_ERROR = """Journal package versions are out of sync.
+
+solstone is installed at {solstone_version}, but {leaf_name} is installed at {leaf_version}.
+This usually happens when a bare `pip install --upgrade solstone` upgraded the
+thin client without upgrading the journal package.
+
+Upgrade the installed journal package:
+    pip install --upgrade {leaf_name}
+    uv tool install --upgrade {leaf_name}
+"""
+JOURNAL_HOST_SHIM_MIGRATION_ERROR = """solstone[journal] and solstone-journal-host have moved.
+
+The journal is now its own package:
+
+    pip install solstone-journal          # the journal (CPU)
+    pip install solstone-journal-cuda     # the journal on NVIDIA CUDA
+
+One-time migration for uv tool installs:
+
+    uv tool uninstall solstone && uv tool install solstone-journal && uv tool install solstone
+
+Nothing was changed by this failed command.
+See https://github.com/solpbc/solstone-journal/blob/main/INSTALL.md
+"""
+
+
+def _installed_packaging_versions() -> dict[str, str | None]:
+    """Installed versions of the split's four dists, each a version string or None."""
+    result: dict[str, str | None] = {}
+    for name in (
+        "solstone",
+        "solstone-journal",
+        "solstone-journal-cuda",
+        "solstone-journal-host",
+    ):
+        try:
+            result[name] = _pkg_version(name)
+        except PackageNotFoundError:
+            result[name] = None
+    return result
+
+
+def _guard_journal_coherence() -> None:
+    versions = _installed_packaging_versions()
+    solstone_version = versions["solstone"]
+    if solstone_version is None:
+        return  # source checkout / exotic env
+    leaves = {
+        name: v
+        for name, v in (
+            ("solstone-journal", versions["solstone-journal"]),
+            ("solstone-journal-cuda", versions["solstone-journal-cuda"]),
+        )
+        if v is not None
+    }
+    if any(v == solstone_version for v in leaves.values()):
+        return  # healthy (incl. both-leaves-one-matching — doctor's problem)
+    if leaves:
+        leaf_name = (
+            "solstone-journal-cuda"
+            if "solstone-journal-cuda" in leaves
+            else "solstone-journal"
+        )
+        leaf_version = leaves[leaf_name]
+        sys.stderr.write(
+            JOURNAL_VERSION_MISMATCH_ERROR.format(
+                solstone_version=solstone_version,
+                leaf_name=leaf_name,
+                leaf_version=leaf_version,
+            )
+        )
+        sys.exit(1)
+    if versions["solstone-journal-host"] is not None:
+        sys.stderr.write(JOURNAL_HOST_SHIM_MIGRATION_ERROR)
+        sys.exit(1)
+    return  # no leaf, no shim
+
 
 SOL_HELP_GROUP_CONVERSATION = "Conversation"
 SOL_HELP_GROUP_YOUR_JOURNAL = "Your journal"
@@ -443,6 +520,9 @@ def _dispatch(binary: str, allowed_surfaces: frozenset[str] | None) -> None:
     if allowed_surfaces is not None and surface not in allowed_surfaces:
         sys.stderr.write(JOURNAL_ACCESS_CMD_ERROR.format(cmd=cmd) + "\n")
         sys.exit(2)
+
+    if surface == "service":
+        _guard_journal_coherence()
 
     # Set process title for ps/top visibility
     setproctitle.setproctitle(f"{binary}:{cmd}")
