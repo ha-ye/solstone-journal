@@ -4,12 +4,16 @@
 #
 # Multi-wheel solstone release.
 #
-# Builds and uploads five artifacts to PyPI:
-#   - solstone-${VERSION}.tar.gz                                (sdist, Linux)
-#   - solstone-${VERSION}-py3-none-any.whl                      (Linux + Intel Mac + macOS<14)
-#   - solstone_journal_host-${VERSION}.tar.gz                   (host shim sdist)
-#   - solstone_journal_host-${VERSION}-py3-none-any.whl         (host shim wheel)
+# Builds and uploads the seven lockstep artifacts to PyPI:
+#   - solstone-${VERSION}.tar.gz                                (root sdist)
+#   - solstone-${VERSION}-py3-none-any.whl                      (root any wheel)
 #   - solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl        (Apple Silicon macOS 14+)
+#   - solstone_journal-${VERSION}.tar.gz                        (journal CPU sdist)
+#   - solstone_journal-${VERSION}-py3-none-any.whl              (journal CPU wheel)
+#   - solstone_journal_cuda-${VERSION}.tar.gz                   (journal CUDA sdist)
+#   - solstone_journal_cuda-${VERSION}-py3-none-any.whl         (journal CUDA wheel)
+# The independently-versioned solstone_journal_models sdist + wheel are included
+# only when their version is absent from the target package index.
 #
 # The Linux artifacts are built locally. The macOS arm64 wheel is built on
 # pro5e.local with a Developer-ID-signed + notarized parakeet-helper bundled
@@ -102,11 +106,12 @@ if [[ "$PUBLISH" == "yes" ]]; then
     GIT_REF=$(git rev-parse HEAD)
 fi
 
-# 1. Linux artifacts: root + host sdists and py3-none-any wheels
-echo "==> [1/5] building Linux + host artifacts"
+# 1. Local lockstep artifacts: root + journal leaves + models
+echo "==> [1/5] building local lockstep artifacts"
 python3 scripts/render_packaging.py --check
 rm -rf build/ dist/ *.egg-info/
 uv build --all-packages
+python3 scripts/check_wheel_contents.py dist/
 
 # Pre-flight the CHANGELOG block now — before the expensive pro5e leg and the
 # irreversible PyPI upload. extract_changelog.sh exits non-zero if the
@@ -114,6 +119,24 @@ uv build --all-packages
 # of after publish.
 VERSION=$(ls dist/solstone-[0-9]*-py3-none-any.whl | head -1 | sed -E 's/.*solstone-([^-]+)-.*/\1/')
 bash scripts/extract_changelog.sh "$VERSION" >/dev/null
+MODELS_VERSION=$(ls dist/solstone_journal_models-[0-9]*-py3-none-any.whl | head -1 | sed -E 's/.*solstone_journal_models-([^-]+)-.*/\1/')
+TEST_FLAG=""
+[[ "$TARGET" == "testpypi" ]] && TEST_FLAG="--test"
+MODELS_DECISION="$(python3 scripts/release_models_gate.py --version "$MODELS_VERSION" $TEST_FLAG)"
+echo "models gate: solstone-journal-models ${MODELS_VERSION} -> ${MODELS_DECISION}"
+
+LOCAL_LOCKSTEP_ARTIFACTS=(
+    "dist/solstone-${VERSION}.tar.gz"
+    "dist/solstone-${VERSION}-py3-none-any.whl"
+    "dist/solstone_journal-${VERSION}.tar.gz"
+    "dist/solstone_journal-${VERSION}-py3-none-any.whl"
+    "dist/solstone_journal_cuda-${VERSION}.tar.gz"
+    "dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl"
+)
+MODELS_ARTIFACTS=(
+    "dist/solstone_journal_models-${MODELS_VERSION}.tar.gz"
+    "dist/solstone_journal_models-${MODELS_VERSION}-py3-none-any.whl"
+)
 
 if [[ "$PUBLISH" == "no" ]]; then
     echo
@@ -122,14 +145,20 @@ if [[ "$PUBLISH" == "no" ]]; then
 
     echo
     echo "==> twine check (no publish)"
-    uvx twine check dist/*
+    uvx twine check "${LOCAL_LOCKSTEP_ARTIFACTS[@]}" "${MODELS_ARTIFACTS[@]}"
 
     echo
     echo "build/check complete (--no-publish); skipped pro5e, upload, git tag, git push, and GitHub release"
     echo "  root sdist: dist/solstone-${VERSION}.tar.gz"
     echo "  root any:   dist/solstone-${VERSION}-py3-none-any.whl"
-    echo "  host sdist: dist/solstone_journal_host-${VERSION}.tar.gz"
-    echo "  host any:   dist/solstone_journal_host-${VERSION}-py3-none-any.whl"
+    echo "  journal sdist: dist/solstone_journal-${VERSION}.tar.gz"
+    echo "  journal any:   dist/solstone_journal-${VERSION}-py3-none-any.whl"
+    echo "  cuda sdist:    dist/solstone_journal_cuda-${VERSION}.tar.gz"
+    echo "  cuda any:      dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl"
+    echo "  models sdist:  dist/solstone_journal_models-${MODELS_VERSION}.tar.gz"
+    echo "  models any:    dist/solstone_journal_models-${MODELS_VERSION}-py3-none-any.whl"
+    echo "  models gate:   ${MODELS_DECISION}"
+    echo "  macos:         pro5e/publish-time-only dist/solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl"
     exit 0
 fi
 
@@ -160,20 +189,45 @@ echo
 echo "release artifacts:"
 ls -la dist/
 
+ARTIFACTS=(
+    "dist/solstone-${VERSION}.tar.gz"
+    dist/solstone-${VERSION}-*.whl
+    "dist/solstone_journal-${VERSION}.tar.gz"
+    "dist/solstone_journal-${VERSION}-py3-none-any.whl"
+    "dist/solstone_journal_cuda-${VERSION}.tar.gz"
+    "dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl"
+)
+GH_RELEASE_ARTIFACT_HINT="dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl dist/solstone_journal-${VERSION}.tar.gz dist/solstone_journal-${VERSION}-*.whl dist/solstone_journal_cuda-${VERSION}.tar.gz dist/solstone_journal_cuda-${VERSION}-*.whl"
+if [[ "$MODELS_DECISION" == "publish" ]]; then
+    ARTIFACTS+=(
+        "dist/solstone_journal_models-${MODELS_VERSION}.tar.gz"
+        "dist/solstone_journal_models-${MODELS_VERSION}-py3-none-any.whl"
+    )
+    GH_RELEASE_ARTIFACT_HINT="${GH_RELEASE_ARTIFACT_HINT} dist/solstone_journal_models-${MODELS_VERSION}.tar.gz dist/solstone_journal_models-${MODELS_VERSION}-*.whl"
+fi
+
 # 4. twine check + upload
 echo
 echo "==> [4/5] twine check + upload to $TARGET"
-uvx twine check dist/*
+uvx twine check "${ARTIFACTS[@]}"
 TWINE_USERNAME=__token__ TWINE_PASSWORD="$TOKEN" \
-    uvx twine upload "${REPOSITORY_ARGS[@]}" dist/*
+    uvx twine upload "${REPOSITORY_ARGS[@]}" "${ARTIFACTS[@]}"
 
 echo
 echo "published solstone ${VERSION} to ${TARGET}:"
 echo "  root sdist: dist/solstone-${VERSION}.tar.gz"
 echo "  root any:   dist/solstone-${VERSION}-py3-none-any.whl"
-echo "  host sdist: dist/solstone_journal_host-${VERSION}.tar.gz"
-echo "  host any:   dist/solstone_journal_host-${VERSION}-py3-none-any.whl"
-echo "  macos:      dist/solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl"
+echo "  journal sdist: dist/solstone_journal-${VERSION}.tar.gz"
+echo "  journal any:   dist/solstone_journal-${VERSION}-py3-none-any.whl"
+echo "  cuda sdist:    dist/solstone_journal_cuda-${VERSION}.tar.gz"
+echo "  cuda any:      dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl"
+echo "  macos:         dist/solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl"
+if [[ "$MODELS_DECISION" == "publish" ]]; then
+    echo "  models sdist:  dist/solstone_journal_models-${MODELS_VERSION}.tar.gz"
+    echo "  models any:    dist/solstone_journal_models-${MODELS_VERSION}-py3-none-any.whl"
+else
+    echo "  models:        skipped; solstone-journal-models ${MODELS_VERSION} already exists on ${TARGET}"
+fi
 
 # 5. tag the commit + cut a GitHub Release. Production only — a TestPyPI dry-run
 #    should not leave a git tag or a public release behind. Mirrors the
@@ -192,7 +246,7 @@ git tag -a "$TAG" -m "solstone ${VERSION}"
 if ! git push origin "$TAG"; then
     echo "error: git push origin ${TAG} failed; the tag was created locally but not pushed." >&2
     echo "       PyPI is published and immutable. Resolve the push and create the release manually:" >&2
-    echo "       gh release create ${TAG} dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl dist/solstone_journal_host-${VERSION}.tar.gz dist/solstone_journal_host-${VERSION}-*.whl --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
+    echo "       gh release create ${TAG} ${GH_RELEASE_ARTIFACT_HINT} --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
     exit 1
 fi
 
@@ -201,16 +255,13 @@ trap 'rm -f "$NOTES_FILE"' EXIT
 scripts/extract_changelog.sh "$VERSION" > "$NOTES_FILE"
 
 if ! gh release create "$TAG" \
-    "dist/solstone-${VERSION}.tar.gz" \
-    dist/solstone-${VERSION}-*.whl \
-    "dist/solstone_journal_host-${VERSION}.tar.gz" \
-    dist/solstone_journal_host-${VERSION}-*.whl \
+    "${ARTIFACTS[@]}" \
     --title "solstone ${VERSION}" \
     --notes-file "$NOTES_FILE"; then
     echo "error: gh release create failed." >&2
     echo "       PyPI is published and immutable; the git tag ${TAG} is pushed." >&2
     echo "       Re-run manually:" >&2
-    echo "       gh release create ${TAG} dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl dist/solstone_journal_host-${VERSION}.tar.gz dist/solstone_journal_host-${VERSION}-*.whl --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
+    echo "       gh release create ${TAG} ${GH_RELEASE_ARTIFACT_HINT} --title 'solstone ${VERSION}' --notes-file <(scripts/extract_changelog.sh ${VERSION})" >&2
     exit 1
 fi
 
