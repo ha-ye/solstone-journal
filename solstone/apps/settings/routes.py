@@ -317,6 +317,7 @@ def update_config() -> Any:
                 "email_addresses",
                 "timezone",
             ],
+            "journal": ["name"],
             "transcribe": ["backend", "enrich", "preserve_all", "noise_upgrade"],
             "support": ["enabled", "proactive", "anonymous_feedback", "portal_url"],
             "agent": ["name", "name_status", "named_date"],
@@ -338,6 +339,14 @@ def update_config() -> Any:
                 INVALID_CONFIG_VALUE,
                 detail=f"Unknown section: {section}",
             )
+
+        if section == "journal" and "name" in data:
+            name_value = data["name"]
+            if isinstance(name_value, str) and not name_value.strip():
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail="Journal name cannot be empty",
+                )
 
         with hold_config_lock():
             # Load existing config
