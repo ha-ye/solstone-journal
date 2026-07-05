@@ -4,6 +4,29 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.7.0] - 2026-07-05
+
+### Added
+
+- `sol doctor` and `journal doctor` now check that the installed packages fit together, and name the exact fix when they don't. the checks read only what's installed locally, nothing goes over the network.
+- the `journal` command now refuses to start when an upgrade left packages out of step, and prints the fix command instead of running with mismatched pieces.
+
+### Changed
+
+- the journal is now its own package: install `solstone-journal` (or `solstone-journal-cuda` for NVIDIA GPUs) and sol comes included. bare `solstone` still installs just sol.
+- the old install spellings (`solstone[journal]`, `solstone[journal-cuda]`, and `solstone-journal-host`) are retired. they now stop at install time with a message pointing at the new packages, instead of quietly producing an install missing the `journal` command.
+- a sol-only install is much smaller: the speech models that used to ship inside every install now come with the journal, so a plain `solstone` install (and `uvx solstone` one-shots) drops from about 34 MB to about 3 MB, and journal upgrades no longer re-download models that haven't changed.
+
+### migrating from an earlier version
+
+if you already have solstone installed, run the one line that matches how you installed it:
+
+```
+pip uninstall solstone-journal-host && pip install solstone-journal
+pipx uninstall solstone && pipx install solstone-journal && pipx install solstone
+uv tool uninstall solstone && uv tool install solstone-journal && uv tool install solstone
+```
+
 ## [0.6.24] - 2026-07-04
 
 ### Fixed
