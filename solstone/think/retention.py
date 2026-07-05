@@ -46,8 +46,11 @@ logger = logging.getLogger(__name__)
 def is_raw_media(path: Path) -> bool:
     """Check if a file is raw media (layer 1 capture).
 
-    Raw media: *.flac, *.opus, *.ogg, *.m4a, *.mp3, *.wav (audio),
-    *.webm, *.mov, *.mp4 (video), monitor_*_diff.png (screen diffs).
+    Raw media: every registry container format in ``solstone.think.media.FORMATS``
+    — audio (*.flac, *.opus, *.ogg, *.m4a, *.mp3, *.wav), video (*.webm, *.mp4,
+    *.mov), and still images (*.png, *.jpg, *.jpeg, *.heic, *.heif, *.gif,
+    *.webp, *.tiff — e.g. mentra-live photos) — plus monitor_*_diff.png screen
+    diffs (covered by the registry since images joined it; kept explicit).
     """
     if path.suffix.lower() in RAW_MEDIA_EXTENSIONS:
         return True

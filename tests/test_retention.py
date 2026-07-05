@@ -107,6 +107,24 @@ class TestIsRawMedia:
         p2.touch()
         assert is_raw_media(p2)
 
+    def test_image_extensions(self, tmp_path):
+        # Still images joined the media registry with mentra-live photo
+        # support: captured/imported images are layer-1 raw media, same
+        # lifecycle as raw audio and video.
+        for ext in (
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".heic",
+            ".heif",
+            ".gif",
+            ".webp",
+            ".tiff",
+        ):
+            p = tmp_path / f"photo{ext}"
+            p.touch()
+            assert is_raw_media(p), f"{ext} should be raw media"
+
     def test_not_raw_media(self, tmp_path):
         for name in (
             "audio.jsonl",
@@ -115,7 +133,6 @@ class TestIsRawMedia:
             "speaker_labels.json",
             "audio.npz",
             "summary.md",
-            "regular.png",
         ):
             p = tmp_path / name
             p.touch()

@@ -13,9 +13,11 @@
         "box_2d": null,
         "filename": "screen.jsonl",
         "frame_id": null,
+        "media_kind": "video",
         "monitor": "",
         "offset": 0,
-        "participants": null
+        "participants": null,
+        "raw": "screen.webm"
       },
       "time": "09:00:00",
       "timestamp": 1772640000000,
@@ -33,9 +35,11 @@
         "box_2d": null,
         "filename": "screen.jsonl",
         "frame_id": null,
+        "media_kind": "video",
         "monitor": "",
         "offset": 60,
-        "participants": null
+        "participants": null,
+        "raw": "screen.webm"
       },
       "time": "09:01:00",
       "timestamp": 1772640060000,
@@ -133,6 +137,7 @@
     "screen": "analyzed"
   },
   "duration": 120.0,
+  "image_files": {},
   "md_files": {},
   "media_purged": {
     "audio": true,
@@ -143,6 +148,15 @@
     "screen": 0
   },
   "segment_key": "090000_300",
+  "signals": {
+    "calendar": {
+      "events": [],
+      "total": 0,
+      "unique": 0
+    },
+    "counts": {},
+    "events": []
+  },
   "video_files": {},
   "warning_details": [],
   "warnings": 0

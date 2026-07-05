@@ -3148,7 +3148,7 @@
     },
     "/app/observer/ingest": {
       "post": {
-        "description": "Upload one capture segment as multipart form data and trigger local observe processing. Media parts must use a registry container format \u2014 audio: flac (audio/flac), opus (audio/opus), ogg (audio/ogg), m4a (audio/mp4), mp3 (audio/mpeg), wav (audio/wav); video: webm (video/webm), mp4 (video/mp4), mov (video/quicktime). Headerless raw streams are not accepted as media containers; raw PCM must be WAV-wrapped before upload. Video segment timestamps are boundary-relative real capture offsets (seconds from the segment start), never synthetic frame indices.",
+        "description": "Upload one capture segment as multipart form data and trigger local observe processing. Media parts must use a registry container format \u2014 audio: flac (audio/flac), opus (audio/opus), ogg (audio/ogg), m4a (audio/mp4), mp3 (audio/mpeg), wav (audio/wav); video: webm (video/webm), mp4 (video/mp4), mov (video/quicktime); image: png (image/png), jpg (image/jpeg), jpeg (image/jpeg), heic (image/heic), heif (image/heif), gif (image/gif), webp (image/webp), tiff (image/tiff). Headerless raw streams are not accepted as media containers; raw PCM must be WAV-wrapped before upload. Video segment timestamps are boundary-relative real capture offsets (seconds from the segment start), never synthetic frame indices.",
         "operationId": "observer.ingestUpload",
         "parameters": [
           {

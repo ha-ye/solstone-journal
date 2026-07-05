@@ -483,6 +483,110 @@ body.has-app-bar .tr-card {
   margin-bottom: 12px;
 }
 
+.tr-signals {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  max-width: 920px;
+}
+
+.tr-signal-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tr-signal-chip {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: #fff;
+  color: #374151;
+  font-size: 12px;
+}
+
+.tr-signal-chip strong {
+  color: #111827;
+  font-weight: 700;
+}
+
+.tr-signal-section {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.tr-signal-section h3 {
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid #eef2f7;
+  color: #111827;
+  font-size: 14px;
+  font-weight: 650;
+  background: #f9fafb;
+}
+
+.tr-signal-body {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  color: #374151;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.tr-signal-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.tr-signal-label {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+.tr-signal-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.tr-signal-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tr-signal-list li {
+  padding: 8px 10px;
+  border: 1px solid #eef2f7;
+  border-radius: 6px;
+  background: #fbfdff;
+}
+
+.tr-signal-raw summary {
+  cursor: pointer;
+  color: #4b5563;
+  font-size: 13px;
+}
+
+.tr-signal-raw pre {
+  margin: 8px 0 0;
+  padding: 10px;
+  overflow-x: auto;
+  border-radius: 6px;
+  background: #f3f4f6;
+  color: #1f2937;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .tr-screen-text {
   padding: 8px 12px;
   color: #374151;
@@ -1684,7 +1788,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     nothing: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>',
     transcript: '<svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path><polyline points="14 2 14 8 20 8"></polyline><line x1="16" y1="13" x2="8" y2="13"></line><line x1="16" y1="17" x2="8" y2="17"></line></svg>',
     audio: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>',
-    screen: '<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>'
+    screen: '<svg viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>',
+    signals: '<svg viewBox="0 0 24 24"><path d="M4 12h4l2-7 4 14 2-7h4"></path></svg>'
   };
 
   const BTN_LABEL_PENDING = 'analyze now';
@@ -2545,7 +2650,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
   // Unified timeline state
   let segmentData = null;
-  let currentVideoFiles = {}; // filename -> video URL mapping
+  let currentVideoFiles = {}; // screen jsonl filename -> video URL mapping
+  let currentImageFiles = {}; // raw image filename -> image URL mapping
   let groupEntriesByIdx = new Map();
   let activeTab = null;
   let currentSegmentAbort = null;
@@ -2565,6 +2671,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     // Clear old data, videos, tabs, and show loading message immediately
     segmentData = null;
     currentVideoFiles = {};
+    currentImageFiles = {};
     tabPanes = {};
     activeTab = null;
     screenDecoded = false;
@@ -2616,6 +2723,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     }
 
     currentVideoFiles = data.video_files || {};
+    currentImageFiles = data.image_files || {};
 
     const nonBasicByVideo = new Map();
     (data.chunks || []).forEach(chunk => {
@@ -2729,6 +2837,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     if (dataState.screen) {
       addTab('screen', 'screen');
     }
+    if ((data.signals?.events || []).length > 0) {
+      addTab('signals', 'signals');
+    }
 
     const mdStems = Object.keys(data.md_files || {}).sort((a, b) => a.localeCompare(b));
     mdStems.forEach(stem => addTab(`md-${stem}`, stem));
@@ -2796,6 +2907,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
               desc: 'something went wrong decoding the screen data. try selecting the segment again.'
             });
           });
+      } else if (tabId === 'signals') {
+        renderSignalsTab(segmentData, pane);
       } else if (tabId.startsWith('md-')) {
         const stem = tabId.slice(3);
         const content = (segmentData.md_files || {})[stem] || '';
@@ -2919,6 +3032,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
 
   function rerenderSegmentAfterAnalysis(data, preferredTab = activeTab) {
     currentVideoFiles = {};
+    currentImageFiles = {};
     tabPanes = {};
     activeTab = null;
     screenDecoded = false;
@@ -3021,6 +3135,149 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     analyzePollTimer = setInterval(pollAnalyzeState, ANALYZE_POLL_INTERVAL_MS);
   }
 
+  function signalTimestampLabel(value) {
+    if (!value) return '';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return String(value);
+    return parsed.toLocaleString([], {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  }
+
+  function signalValue(value) {
+    if (value === null || value === undefined || value === '') return '-';
+    if (typeof value === 'number') {
+      return Number.isInteger(value) ? String(value) : value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+    }
+    if (typeof value === 'boolean') return value ? 'yes' : 'no';
+    return String(value);
+  }
+
+  function renderSignalRow(label, value) {
+    return `<div class="tr-signal-row"><div class="tr-signal-label">${escapeHtml(label)}</div><div class="tr-signal-value">${escapeHtml(signalValue(value))}</div></div>`;
+  }
+
+  function renderSignalSection(title, bodyHtml) {
+    if (!bodyHtml) return '';
+    return `<section class="tr-signal-section"><h3>${escapeHtml(title)}</h3><div class="tr-signal-body">${bodyHtml}</div></section>`;
+  }
+
+  function signalEventsOf(data, eventType) {
+    return (data.signals?.events || []).filter(event => event.event_type === eventType);
+  }
+
+  function latestSignal(data, eventType) {
+    const events = signalEventsOf(data, eventType);
+    return events.length ? events[events.length - 1] : null;
+  }
+
+  function renderSignalsTab(data, targetEl) {
+    const signals = data.signals || {};
+    const events = Array.isArray(signals.events) ? signals.events : [];
+    const counts = signals.counts || {};
+    if (events.length === 0) {
+      targetEl.innerHTML = window.SurfaceState.empty({
+        icon: emptyIcons.signals,
+        heading: 'no signal context',
+        desc: 'this segment has no imported Mentra telemetry'
+      });
+      return;
+    }
+
+    const countChips = Object.entries(counts)
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([type, count]) => `<span class="tr-signal-chip"><strong>${count}</strong>${escapeHtml(type)}</span>`)
+      .join('');
+
+    let html = `<div class="tr-signals">`;
+    html += `<div class="tr-signal-summary">${countChips}</div>`;
+
+    const locationEvents = signalEventsOf(data, 'location_update');
+    const latestLocation = latestSignal(data, 'location_update');
+    if (latestLocation) {
+      const payload = latestLocation.payload || {};
+      html += renderSignalSection(
+        'Location',
+        renderSignalRow('updates', locationEvents.length)
+        + renderSignalRow('latest', signalTimestampLabel(latestLocation.timestamp))
+        + renderSignalRow('latitude', payload.lat)
+        + renderSignalRow('longitude', payload.lng)
+        + renderSignalRow('accuracy', payload.accuracy ? `${payload.accuracy} m` : '')
+      );
+    }
+
+    const latestBattery = latestSignal(data, 'glasses_battery');
+    if (latestBattery) {
+      const payload = latestBattery.payload || {};
+      html += renderSignalSection(
+        'Glasses Battery',
+        renderSignalRow('latest', signalTimestampLabel(latestBattery.timestamp))
+        + renderSignalRow('level', payload.level !== undefined ? `${payload.level}%` : '')
+        + renderSignalRow('charging', payload.charging)
+      );
+    }
+
+    const photoTypes = [
+      'button_press',
+      'photo_request_started',
+      'photo_request_accepted',
+      'photo_request_succeeded',
+      'photo_request_failed',
+      'photo_request_skipped',
+      'photo_input_ignored'
+    ];
+    const photoRows = photoTypes
+      .filter(type => counts[type])
+      .map(type => renderSignalRow(type, counts[type]))
+      .join('');
+    if (photoRows) {
+      html += renderSignalSection('Photo And Button Events', photoRows);
+    }
+
+    const capabilities = latestSignal(data, 'capabilities_update') || latestSignal(data, 'session_start');
+    if (capabilities?.payload?.capabilities) {
+      const caps = capabilities.payload.capabilities;
+      html += renderSignalSection(
+        'Device Capabilities',
+        renderSignalRow('camera', caps.hasCamera)
+        + renderSignalRow('microphone', caps.hasMicrophone)
+        + renderSignalRow('speaker', caps.hasSpeaker)
+        + renderSignalRow('button', caps.hasButton)
+        + renderSignalRow('wifi', caps.hasWifi)
+        + renderSignalRow('camera resolution', caps.camera?.resolution ? `${caps.camera.resolution.width}x${caps.camera.resolution.height}` : '')
+        + renderSignalRow('video recording', caps.camera?.video?.canRecord)
+      );
+    }
+
+    const calendar = signals.calendar || {};
+    const calendarEvents = Array.isArray(calendar.events) ? calendar.events : [];
+    if (calendarEvents.length > 0) {
+      const items = calendarEvents.slice(0, 12).map(event => {
+        const when = `${signalTimestampLabel(event.dtStart)}${event.dtEnd ? ' - ' + signalTimestampLabel(event.dtEnd) : ''}`;
+        const repeats = event.seen_count > 1 ? ` · seen ${event.seen_count}x` : '';
+        return `<li><strong>${escapeHtml(event.title || 'Untitled event')}</strong><br><span class="tr-signal-label">${escapeHtml(when)}${escapeHtml(repeats)}</span></li>`;
+      }).join('');
+      const more = calendarEvents.length > 12
+        ? `<div class="tr-signal-label">${calendarEvents.length - 12} more deduped calendar events hidden in this compact view</div>`
+        : '';
+      html += renderSignalSection(
+        'Calendar Snapshot',
+        renderSignalRow('raw rows', calendar.total || 0)
+        + renderSignalRow('unique events', calendar.unique || calendarEvents.length)
+        + `<ul class="tr-signal-list">${items}</ul>${more}`
+      );
+    }
+
+    const latestRaw = events.slice(-12).reverse();
+    html += `<details class="tr-signal-raw"><summary>recent raw signal rows</summary><pre>${escapeHtml(JSON.stringify(latestRaw, null, 2))}</pre></details>`;
+    html += `</div>`;
+    targetEl.innerHTML = html;
+  }
+
   function renderSegmentTimeline(data, showAudio, showScreen, targetEl) {
     const chunks = (data.chunks || []).filter(c => {
       if (c.type === 'audio' && !showAudio) return false;
@@ -3029,7 +3286,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     });
     const dataState = data.data_state || {};
 
-    const textOnlyScreen = showScreen && Object.keys(currentVideoFiles).length === 0;
+    const textOnlyScreen = showScreen
+      && Object.keys(currentVideoFiles).length === 0
+      && Object.keys(currentImageFiles).length === 0;
 
     // Build flat list of all screen frames for modal navigation
     allScreenFrames = chunks.filter(c => c.type === 'screen');
@@ -3370,9 +3629,11 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   function findFrameIndex(chunk) {
     // Find this chunk's index in allScreenFrames by matching source_ref
     const ref = chunk.source_ref;
+    const raw = ref?.raw || '';
     return allScreenFrames.findIndex(f =>
       f.source_ref?.filename === ref?.filename &&
-      f.source_ref?.frame_id === ref?.frame_id
+      f.source_ref?.frame_id === ref?.frame_id &&
+      (!raw || (f.source_ref?.raw || '') === raw)
     );
   }
 
@@ -3380,6 +3641,11 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   function getVideoUrlForChunk(chunk) {
     const filename = chunk.source_ref?.filename;
     return filename ? currentVideoFiles[filename] : null;
+  }
+
+  function getImageUrlForChunk(chunk) {
+    const raw = chunk.source_ref?.raw;
+    return raw ? currentImageFiles[raw] : null;
   }
 
   function renderScreenGroup(group, idx) {
@@ -3400,13 +3666,19 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     html += `<div class="tr-group-grid" id="tr-group-grid-${idx}">`;
     for (const entry of group.entries) {
       const videoUrl = getVideoUrlForChunk(entry);
+      const imageUrl = getImageUrlForChunk(entry);
       const frameId = entry.source_ref?.frame_id;
       const analysis = entry.source_ref?.analysis || {};
       const category = analysis.primary || 'unknown';
       const description = analysis.visual_description || category;
       const frameIdx = findFrameIndex(entry);
 
-      if (videoUrl && frameId) {
+      if (imageUrl) {
+        html += `<div class="tr-group-item" data-frame-idx="${frameIdx}" title="${escapeHtml(description)}" role="button" tabindex="0">`;
+        html += `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(description || 'screen image')}">`;
+        html += `<span class="tr-group-item-badge">${escapeHtml(category)}</span>`;
+        html += '</div>';
+      } else if (videoUrl && frameId) {
         html += `<div class="tr-group-item" data-frame-idx="${frameIdx}" title="${escapeHtml(description)}" role="button" tabindex="0">`;
         html += `<canvas class="loading" data-video-url="${escapeHtml(videoUrl)}" data-frame-id="${frameId}"></canvas>`;
         html += `<span class="tr-group-item-badge">${escapeHtml(category)}</span>`;
@@ -3423,6 +3695,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     const timeStr = chunk.time || '';
     const monitor = chunk.source_ref?.monitor || '';
     const videoUrl = getVideoUrlForChunk(chunk);
+    const imageUrl = getImageUrlForChunk(chunk);
     const frameId = chunk.source_ref?.frame_id;
     const frameIdx = findFrameIndex(chunk);
 
@@ -3431,7 +3704,10 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     html += '<div class="tr-entry-content">';
     html += '<span class="sr-only">Screen: </span>';
 
-    if (videoUrl && frameId) {
+    if (imageUrl) {
+      const description = chunk.source_ref?.analysis?.visual_description || 'screen image';
+      html += `<img class="tr-entry-thumb" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(description)}">`;
+    } else if (videoUrl && frameId) {
       html += `<canvas class="tr-entry-thumb loading" data-video-url="${escapeHtml(videoUrl)}" data-frame-id="${frameId}"></canvas>`;
     }
 
@@ -3489,6 +3765,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       const analysis = f.source_ref?.analysis || {};
       const category = analysis.primary || '';
       const description = analysis.visual_description || '';
+      const imageUrl = getImageUrlForChunk(f);
       const aruco = f.source_ref?.aruco;
       const isMasked = aruco?.masked && !maskHidden;
       const hasPrev = currentFrameIndex > 0;
@@ -3506,7 +3783,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
             <button class="tr-modal-close" title="close (esc)" aria-label="close">&times;</button>
           </div>
           <div class="tr-modal-img-wrap">
-            <canvas id="trModalCanvas" class="loading${isMasked ? ' tr-masked-canvas' : ''}"></canvas>
+            ${imageUrl
+              ? `<img id="trModalImage" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(description || 'screen image')}">`
+              : `<canvas id="trModalCanvas" class="loading${isMasked ? ' tr-masked-canvas' : ''}"></canvas>`}
           </div>
           ${description ? `<div class="tr-modal-description">${escapeHtml(description)}</div>` : ''}
         </div>
@@ -3515,12 +3794,14 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         </div>
       `;
 
-      // Draw frame to modal canvas
+      // Draw video frames to modal canvas. Still images are loaded directly.
       const canvas = modal.querySelector('#trModalCanvas');
-      drawFrame(canvas, f, !maskHidden);
+      if (canvas) {
+        drawFrame(canvas, f, !maskHidden);
+      }
 
       // Add click-to-reveal handler for masked frames
-      if (aruco?.masked) {
+      if (aruco?.masked && canvas) {
         canvas.addEventListener('click', () => {
           if (!maskHidden) {
             maskHidden = true;
@@ -4093,6 +4374,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     selectedSegment = null;
     segmentData = null;
     currentVideoFiles = {};
+    currentImageFiles = {};
     activeTab = null;
     tabPanes = {};
     screenDecoded = false;

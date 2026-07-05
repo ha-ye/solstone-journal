@@ -627,6 +627,146 @@ def test_segment_content_renders_sense_json_over_stale_markdown(client, journal_
     assert "STALE MD" not in md_files["sense"]
 
 
+def test_segment_content_maps_still_images_to_screen_frames(client, journal_copy):
+    day = "20990117"
+    stream = "mentra-live"
+    segment = "164900_60"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "mentra-photo-1.jpg").write_bytes(b"first-image")
+    (segment_dir / "mentra-photo-2.jpg").write_bytes(b"second-image")
+    _write_jsonl(
+        segment_dir / "mentra-photo-1.jsonl",
+        [
+            {"raw": "mentra-photo-1.jpg", "kind": "image"},
+            {"start": "00:00:00", "text": "First Mentra image description."},
+        ],
+    )
+    _write_jsonl(
+        segment_dir / "mentra-photo-2.jsonl",
+        [
+            {"raw": "mentra-photo-2.jpg", "kind": "image"},
+            {"start": "00:00:00", "text": "Second Mentra image description."},
+        ],
+    )
+    _write_jsonl(
+        segment_dir / "screen.jsonl",
+        [
+            {"raw": "mentra-photo-1.jpg", "modality": "photo"},
+            {
+                "frame_id": 1,
+                "timestamp": 0,
+                "analysis": {
+                    "primary": "media",
+                    "visual_description": "Mentra Live photo captured.",
+                },
+                "content": {"media": {"description": ""}},
+            },
+            {
+                "frame_id": 1,
+                "timestamp": 10,
+                "analysis": {
+                    "primary": "media",
+                    "visual_description": "Mentra Live photo captured.",
+                },
+                "content": {"media": {"description": ""}},
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    screen_chunks = [chunk for chunk in data["chunks"] if chunk["type"] == "screen"]
+    assert data["image_files"] == {
+        "mentra-photo-1.jpg": (
+            f"/app/transcripts/api/serve_file/{day}/{stream}/{segment}/mentra-photo-1.jpg"
+        ),
+        "mentra-photo-2.jpg": (
+            f"/app/transcripts/api/serve_file/{day}/{stream}/{segment}/mentra-photo-2.jpg"
+        ),
+    }
+    assert [chunk["source_ref"]["raw"] for chunk in screen_chunks] == [
+        "mentra-photo-1.jpg",
+        "mentra-photo-2.jpg",
+    ]
+    assert [chunk["source_ref"]["media_kind"] for chunk in screen_chunks] == [
+        "image",
+        "image",
+    ]
+    assert "First Mentra image description." in screen_chunks[0]["markdown"]
+    assert "Second Mentra image description." in screen_chunks[1]["markdown"]
+    assert data["media_sizes"]["screen"] == len(b"first-image") + len(b"second-image")
+
+
+def test_segment_content_returns_deduped_signal_context(client, journal_copy):
+    day = "20990118"
+    stream = "mentra-live"
+    segment = "084300_60"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    _write_jsonl(
+        segment_dir / "audio.jsonl",
+        [
+            {"raw": "audio.wav", "duration": 60},
+            {"start": "08:43:05", "source": "mentra", "speaker": 1, "text": "hello"},
+        ],
+    )
+    _write_jsonl(
+        segment_dir / "signals.jsonl",
+        [
+            {
+                "timestamp": "2099-01-18T15:43:10Z",
+                "event_type": "location_update",
+                "payload": {
+                    "lat": 39.7,
+                    "lng": -104.9,
+                    "accuracy": 13,
+                    "timestamp": "2099-01-18T15:43:10Z",
+                },
+            },
+            {
+                "timestamp": "2099-01-18T15:43:12Z",
+                "event_type": "calendar_event",
+                "payload": {
+                    "eventId": "evt-1",
+                    "title": "Team Daily Standup",
+                    "dtStart": "2099-01-18T16:15:00.000Z",
+                    "dtEnd": "2099-01-18T16:30:00.000Z",
+                    "timezone": "MST",
+                },
+            },
+            {
+                "timestamp": "2099-01-18T15:43:30Z",
+                "event_type": "calendar_event",
+                "payload": {
+                    "eventId": "evt-1",
+                    "title": "Team Daily Standup",
+                    "dtStart": "2099-01-18T16:15:00.000Z",
+                    "dtEnd": "2099-01-18T16:30:00.000Z",
+                    "timezone": "MST",
+                },
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["signals"]["counts"] == {
+        "calendar_event": 2,
+        "location_update": 1,
+    }
+    assert data["signals"]["calendar"]["total"] == 2
+    assert data["signals"]["calendar"]["unique"] == 1
+    assert data["signals"]["calendar"]["events"][0]["seen_count"] == 2
+    assert data["signals"]["calendar"]["events"][0]["title"] == "Team Daily Standup"
+    assert data["signals"]["events"][0]["event_type"] == "location_update"
+    assert data["signals"]["events"][0]["time"]
+
+
 def test_segment_content_strips_duplicate_audio_markdown_timestamp(
     client, journal_copy
 ):

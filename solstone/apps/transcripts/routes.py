@@ -53,7 +53,7 @@ from solstone.convey.utils import (
 )
 from solstone.observe.hear import format_audio
 from solstone.observe.screen import format_screen
-from solstone.observe.utils import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
+from solstone.observe.utils import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 from solstone.think.cluster import (
     cluster,
     cluster_period,
@@ -368,6 +368,120 @@ def _format_time_from_offset(segment_key: str, offset_sec: float) -> str:
     return f"{h:02d}:{m:02d}:{s:02d}"
 
 
+def _timestamp_from_day_time(day: str, time_str: str, fallback: int = 0) -> int:
+    """Convert a journal day plus wall-clock HH:MM:SS to local unix ms."""
+    if not time_str:
+        return fallback
+    try:
+        dt = datetime.strptime(f"{day} {time_str}", "%Y%m%d %H:%M:%S")
+    except ValueError:
+        return fallback
+    return int(dt.timestamp() * 1000)
+
+
+def _timestamp_from_value(value: Any) -> int:
+    """Convert an ISO timestamp or epoch-ish value to unix ms."""
+    if isinstance(value, int | float):
+        return int(value if value > 10_000_000_000 else value * 1000)
+    if not isinstance(value, str) or not value:
+        return 0
+    try:
+        normalized = value.replace("Z", "+00:00")
+        return int(datetime.fromisoformat(normalized).timestamp() * 1000)
+    except ValueError:
+        return 0
+
+
+def _local_time_from_timestamp(timestamp_ms: int) -> str:
+    if timestamp_ms <= 0:
+        return ""
+    return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%H:%M:%S")
+
+
+def _load_segment_signals(segment_dir_path: Path) -> dict[str, Any]:
+    """Load optional Mentra signal context for display in the transcript app."""
+    signals_path = segment_dir_path / "signals.jsonl"
+    if not signals_path.is_file():
+        return {
+            "events": [],
+            "counts": {},
+            "calendar": {"total": 0, "unique": 0, "events": []},
+        }
+
+    events: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    calendar_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
+    try:
+        records = _load_jsonl(str(signals_path))
+    except (OSError, json.JSONDecodeError):
+        logger.debug("Failed to read segment signals %s", signals_path, exc_info=True)
+        records = []
+
+    for record in records:
+        event_type = record.get("event_type")
+        if not isinstance(event_type, str) or not event_type:
+            continue
+        payload = record.get("payload")
+        payload = payload if isinstance(payload, dict) else {}
+        timestamp = (
+            record.get("timestamp")
+            or payload.get("timestamp")
+            or payload.get("timeStamp")
+        )
+        timestamp_ms = _timestamp_from_value(timestamp)
+        event = {
+            "event_type": event_type,
+            "time": _local_time_from_timestamp(timestamp_ms),
+            "timestamp": timestamp if isinstance(timestamp, str) else "",
+            "timestamp_ms": timestamp_ms,
+            "payload": payload,
+        }
+        events.append(event)
+        counts[event_type] = counts.get(event_type, 0) + 1
+
+        if event_type == "calendar_event":
+            key = (
+                payload.get("eventId"),
+                payload.get("title"),
+                payload.get("dtStart"),
+                payload.get("dtEnd"),
+            )
+            calendar = calendar_by_key.get(key)
+            if calendar is None:
+                calendar = {
+                    "title": payload.get("title") or "Untitled event",
+                    "dtStart": payload.get("dtStart") or "",
+                    "dtEnd": payload.get("dtEnd") or "",
+                    "timezone": payload.get("timezone") or "",
+                    "eventId": payload.get("eventId") or "",
+                    "seen_count": 0,
+                    "first_seen": event["timestamp"],
+                    "last_seen": event["timestamp"],
+                }
+                calendar_by_key[key] = calendar
+            calendar["seen_count"] += 1
+            if event["timestamp"]:
+                calendar["last_seen"] = event["timestamp"]
+
+    events.sort(key=lambda event: (event["timestamp_ms"], event["event_type"]))
+    calendar_events = sorted(
+        calendar_by_key.values(),
+        key=lambda event: (
+            str(event.get("dtStart") or ""),
+            str(event.get("title") or ""),
+        ),
+    )
+    return {
+        "events": events,
+        "counts": counts,
+        "calendar": {
+            "total": counts.get("calendar_event", 0),
+            "unique": len(calendar_events),
+            "events": calendar_events,
+        },
+    }
+
+
 def _read_audio_duration_seconds(entries: list[dict], segment_key: str) -> float:
     """Best-effort segment audio duration in seconds (read-only).
 
@@ -584,11 +698,13 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
             - source_ref: key fields from source for media lookup
         - audio_file: URL to segment audio file (if exists)
         - video_files: dict mapping jsonl filename to video URL for client-side decoding
+        - image_files: dict mapping image filename to image URL for still-image frames
         - segment_key: segment directory name
         - cost: processing cost in USD (float, 0.0 if no data)
         - media_sizes: dict with audio/screen byte counts for raw media files
         - media_purged: dict with audio/screen raw-reference purge flags
         - data_state: dict of advertised modality states
+        - signals: optional Mentra signal sidecar context from signals.jsonl
     """
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, status=404, detail="Invalid day format")
@@ -620,6 +736,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
     audio_file_url = None
     audio_duration = 0.0
     video_files: dict[str, str] = {}  # jsonl filename -> video URL
+    image_files: dict[str, str] = {}  # raw image filename -> image URL
     media_sizes: dict[str, int] = {"audio": 0, "screen": 0}
     has_raw_reference = {"audio": False, "screen": False}
     has_raw_file = {"audio": False, "screen": False}
@@ -637,7 +754,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
             has_raw_present["audio"] = True
             counted_media_paths.add(raw_media.resolve())
             media_sizes["audio"] += raw_media.stat().st_size
-        elif suffix in VIDEO_EXTENSIONS:
+        elif suffix in VIDEO_EXTENSIONS or suffix in IMAGE_EXTENSIONS:
             has_raw_present["screen"] = True
             counted_media_paths.add(raw_media.resolve())
             media_sizes["screen"] += raw_media.stat().st_size
@@ -730,6 +847,10 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 chunk_data: dict[str, Any] = {
                     "type": "audio",
                     "time": time_str,
+                    # NOTE: audio `start` is an offset from segment start per the
+                    # journal format contract; format_audio anchors it correctly.
+                    # Do not reinterpret it as wall-clock here — writers that emit
+                    # wall-clock starts (early mentra bridge) fix it at the writer.
                     "timestamp": chunk.get("timestamp", 0),
                     "markdown": markdown,
                     "source_ref": {
@@ -763,7 +884,6 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
             entries = _load_jsonl(screen_path)
             record = read_processing_record(entries)
             processing_records["screen"] = processing_records["screen"] or record
-            formatted_chunks, meta = format_screen(entries, {"file_path": screen_path})
 
             filename = os.path.basename(screen_path)
             monitor = (
@@ -772,33 +892,136 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 else ""
             )
 
-            # Extract video URL from header (first entry without frame_id)
-            raw_video = None
+            image_candidates = [
+                path.name
+                for path in sorted(segment_dir_path.iterdir())
+                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+            ]
+
+            # Extract raw media from header (first entry without frame_id).
+            raw_media = None
             for entry in entries:
                 if "frame_id" not in entry and "raw" in entry:
-                    raw_video = entry["raw"]
+                    raw_media = entry["raw"]
                     break
 
-            # Validate raw points to a video file (skip if not, e.g. tmux)
-            if raw_video and raw_video.endswith(VIDEO_EXTENSIONS):
+            def register_screen_media(raw_name: Any) -> str | None:
+                if not isinstance(raw_name, str):
+                    return None
+                suffix = Path(raw_name).suffix.lower()
+                if suffix not in VIDEO_EXTENSIONS and suffix not in IMAGE_EXTENSIONS:
+                    return None
                 has_raw_reference["screen"] = True
-                video_full = segment_dir_path / raw_video
-                if video_full.is_file():
-                    has_raw_present["screen"] = True
-                    has_raw_file["screen"] = True
-                    rel_path = f"{stream}/{segment_key}/{raw_video}"
-                    video_files[filename] = (
-                        f"/app/transcripts/api/serve_file/{day}/{rel_path}"
+                media_full = segment_dir_path / raw_name
+                if not media_full.is_file():
+                    return None
+                has_raw_present["screen"] = True
+                has_raw_file["screen"] = True
+                rel_path = f"{stream}/{segment_key}/{raw_name}"
+                media_url = f"/app/transcripts/api/serve_file/{day}/{rel_path}"
+                if suffix in VIDEO_EXTENSIONS:
+                    video_files[filename] = media_url
+                else:
+                    image_files[raw_name] = media_url
+                resolved = media_full.resolve()
+                if resolved not in counted_media_paths:
+                    counted_media_paths.add(resolved)
+                    media_sizes["screen"] += media_full.stat().st_size
+                return "video" if suffix in VIDEO_EXTENSIONS else "image"
+
+            def image_description(raw_name: str | None) -> str:
+                if not raw_name:
+                    return ""
+                sidecar = (segment_dir_path / raw_name).with_suffix(".jsonl")
+                if not sidecar.is_file():
+                    return ""
+                try:
+                    for record in _load_jsonl(str(sidecar)):
+                        text = record.get("text")
+                        if isinstance(text, str) and text.strip():
+                            return text.strip()
+                except Exception:
+                    logger.debug(
+                        "Failed to read image sidecar %s", sidecar, exc_info=True
                     )
-                    resolved = video_full.resolve()
-                    if resolved not in counted_media_paths:
-                        counted_media_paths.add(resolved)
-                        media_sizes["screen"] += video_full.stat().st_size
+                return ""
+
+            register_screen_media(raw_media)
+
+            enriched_entries = []
+            frame_index = 0
+            for entry in entries:
+                if "timestamp" not in entry:
+                    enriched_entries.append(entry)
+                    continue
+
+                frame = dict(entry)
+                frame_content = dict(frame.get("content") or {})
+                media_content = dict(frame_content.get("media") or {})
+                frame_raw = (
+                    frame.get("raw")
+                    or media_content.get("photo_file")
+                    or media_content.get("photo_filename")
+                    or media_content.get("photo_name")
+                )
+
+                if not frame_raw and image_candidates:
+                    if len(image_candidates) == 1:
+                        frame_raw = image_candidates[0]
+                    elif frame_index < len(image_candidates):
+                        frame_raw = image_candidates[frame_index]
+                if not frame_raw:
+                    frame_raw = raw_media
+
+                media_kind = register_screen_media(frame_raw)
+                if media_kind == "image" and isinstance(frame_raw, str):
+                    frame["raw"] = frame_raw
+                    description = image_description(frame_raw)
+                    media_content.setdefault("photo_file", frame_raw)
+                    if description and not media_content.get("description"):
+                        media_content["description"] = description
+                    frame_content["media"] = media_content
+                    frame["content"] = frame_content
+                    if description:
+                        analysis = dict(frame.get("analysis") or {})
+                        existing_description = str(
+                            analysis.get("visual_description") or ""
+                        ).strip()
+                        if existing_description in {
+                            "",
+                            "Mentra Live photo captured.",
+                            "Photo capture",
+                        }:
+                            analysis["visual_description"] = description
+                        frame["analysis"] = analysis
+                else:
+                    register_screen_media(raw_media)
+
+                enriched_entries.append(frame)
+                frame_index += 1
+
+            formatted_chunks, meta = format_screen(
+                enriched_entries,
+                {"file_path": screen_path},
+            )
 
             for chunk in formatted_chunks:
                 source = chunk.get("source", {})
                 frame_id = source.get("frame_id")
                 offset = source.get("timestamp", 0)
+                source_raw = source.get("raw") or raw_media
+                source_suffix = (
+                    Path(source_raw).suffix.lower()
+                    if isinstance(source_raw, str)
+                    else ""
+                )
+                media_kind = (
+                    "image"
+                    if source_suffix in IMAGE_EXTENSIONS
+                    else "video"
+                    if source_suffix in VIDEO_EXTENSIONS
+                    else None
+                )
 
                 # Calculate wall-clock time from segment start + offset
                 time_str = _format_time_from_offset(segment_key, offset)
@@ -834,11 +1057,15 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                     {
                         "type": "screen",
                         "time": time_str,
-                        "timestamp": chunk.get("timestamp", 0),
+                        "timestamp": _timestamp_from_day_time(
+                            day, time_str, chunk.get("timestamp", 0)
+                        ),
                         "markdown": chunk.get("markdown", ""),
                         "source_ref": {
                             "frame_id": frame_id,
                             "filename": filename,
+                            "raw": source_raw,
+                            "media_kind": media_kind,
                             "monitor": monitor,
                             "offset": offset,
                             "box_2d": box_2d,
@@ -942,18 +1169,22 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 exc_info=True,
             )
 
+    signals = _load_segment_signals(segment_dir_path)
+
     return jsonify(
         {
             "chunks": chunks,
             "audio_file": audio_file_url,
             "duration": audio_duration,
             "video_files": video_files,
+            "image_files": image_files,
             "md_files": md_files,
             "segment_key": segment_key,
             "cost": cost_data["cost"],
             "media_sizes": media_sizes,
             "media_purged": media_purged,
             "data_state": data_state,
+            "signals": signals,
             "warnings": len(warning_details),
             "warning_details": warning_details,
         }
