@@ -16,7 +16,7 @@ from solstone.apps.thinking import local_bootstrap
 from solstone.apps.thinking.install_copy import INSTALL_FAILED_NO_PROGRESS
 from solstone.convey import create_app
 from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
-from solstone.think.providers import memory
+from solstone.think.providers import fit_report, memory
 from solstone.think.providers.install_state import (
     InstallState,
     InstallStatus,
@@ -116,6 +116,18 @@ def _mlx_readiness(**overrides):
     }
     readiness.update(overrides)
     return readiness
+
+
+def _fit(
+    severity: fit_report.FitSeverity,
+    *,
+    name: str = "test",
+    detail: str | None = None,
+) -> fit_report.FitReport:
+    return fit_report.FitReport(
+        artifact="test bootstrap",
+        checks=(fit_report.FitCheck(name, severity, detail or f"{severity} detail"),),
+    )
 
 
 def test_mlx_backend_predicate_tracks_sys_platform(monkeypatch):
@@ -474,6 +486,9 @@ def test_start_bootstrap_payload_for_canonical_states(
         "disk_usage",
         lambda _path: SimpleNamespace(free=100 * 1024**3),
     )
+    monkeypatch.setattr(
+        local_bootstrap, "_fit_report_for_model", lambda _model: _fit("ok")
+    )
     _FakeThread.init_count = 0
     _FakeThread.start_count = 0
     monkeypatch.setattr(local_bootstrap.threading, "Thread", _FakeThread)
@@ -499,6 +514,9 @@ def test_start_bootstrap_low_memory_warning_does_not_block(settings_env, monkeyp
         memory.shutil,
         "disk_usage",
         lambda _path: SimpleNamespace(free=100 * 1024**3),
+    )
+    monkeypatch.setattr(
+        local_bootstrap, "_fit_report_for_model", lambda _model: _fit("warning")
     )
     _FakeThread.init_count = 0
     _FakeThread.start_count = 0
@@ -531,6 +549,15 @@ def test_start_bootstrap_insufficient_disk_blocks_before_worker(
         memory.shutil,
         "disk_usage",
         lambda _path: SimpleNamespace(free=1 * 1024**3),
+    )
+    monkeypatch.setattr(
+        local_bootstrap,
+        "_fit_report_for_model",
+        lambda _model: _fit(
+            "blocked",
+            name="disk",
+            detail="insufficient disk space for known downloads",
+        ),
     )
     _FakeThread.init_count = 0
     _FakeThread.start_count = 0
@@ -684,6 +711,9 @@ def test_local_bootstrap_migrates_preexisting_install_without_worker(
         lambda: SimpleNamespace(available=32 * 1024**3, total=32 * 1024**3),
     )
     monkeypatch.setattr(
+        local_bootstrap, "_fit_report_for_model", lambda _model: _fit("ok")
+    )
+    monkeypatch.setattr(
         local_bootstrap.threading,
         "Thread",
         lambda *args, **kwargs: pytest.fail("worker should not be created"),
@@ -725,6 +755,9 @@ def test_mlx_start_bootstrap_dispatches_to_mlx_worker(settings_env, monkeypatch)
         memory.shutil,
         "disk_usage",
         lambda _path: SimpleNamespace(free=100 * 1024**3),
+    )
+    monkeypatch.setattr(
+        local_bootstrap, "_fit_report_for_model", lambda _model: _fit("ok")
     )
     monkeypatch.setattr(local_bootstrap.threading, "Thread", _FakeThread)
 

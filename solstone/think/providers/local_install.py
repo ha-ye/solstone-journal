@@ -10,6 +10,7 @@ It performs no network access at import time.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import platform
 import shutil
@@ -35,8 +36,10 @@ from solstone.think.providers.local import (
     normalize_model_id,
 )
 from solstone.think.providers.memory import assess_memory
+from solstone.think.providers.oci_image import OciSignaturePolicy
 from solstone.think.utils import get_journal
 
+LOG = logging.getLogger(__name__)
 LOCAL_PROVIDER_NAME = "local"
 _PROBE_TIMEOUT_SECONDS = 10
 _LOCAL_METADATA_KEYS = frozenset(
@@ -64,6 +67,7 @@ class CudaServerPin:
     visible_devices_env: str
     shared_wanted_files: tuple[str, ...]
     cpu_wanted_files_by_arch: dict[str, tuple[str, ...]]
+    signature_policy: OciSignaturePolicy | None = None
 
     def wanted_files_for_arch(self, arch: str) -> tuple[str, ...]:
         cpu_wanted_files = self.cpu_wanted_files_by_arch.get(arch)
@@ -163,6 +167,15 @@ CUDA_SERVER_PIN = CudaServerPin(
             "libggml-cpu-armv9.2_2.so",
         ),
     },
+    # TODO(AC10): narrow this to the exact upstream workflow identity after
+    # validating the pinned CUDA image signature on hardware.
+    signature_policy=OciSignaturePolicy(
+        certificate_identity_regexp=(
+            r"^https://github\.com/ggml-org/llama\.cpp/\.github/workflows/"
+            r".+@refs/(heads|tags)/.+$"
+        ),
+        oidc_issuer="https://token.actions.githubusercontent.com",
+    ),
 )
 
 
@@ -500,6 +513,7 @@ def _install_cuda_llama_server() -> dict[str, Any]:
             arch,
             wanted_files,
             cuda_binary_dir(),
+            policy=CUDA_SERVER_PIN.signature_policy,
         )
         _write_local_status(
             transition_state(_read_local_status(), new_state="verifying")
@@ -558,8 +572,24 @@ def install_model(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
 
 
 def install_local(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
+    from solstone.think.providers import fit_report
+
+    selected_model = normalize_model_id(model_id)
+    readiness = inspect_readiness(selected_model)
+    if readiness["binary_installed"] and readiness["model_installed"]:
+        return _write_local_status(
+            transition_state(_read_local_status(), new_state="installed")
+        )
+
+    report = fit_report.build_local_fit_report(selected_model)
+    rendered = fit_report.render_fit_report(report)
+    if report.overall == "blocked":
+        raise LocalProviderError("host_unfit", rendered)
+    if report.overall == "warning":
+        LOG.warning("local provider host fit warning:\n%s", rendered)
+
     install_llama_server()
-    return install_model(model_id)
+    return install_model(selected_model)
 
 
 def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:

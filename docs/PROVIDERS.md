@@ -318,10 +318,15 @@ OpenAI-compatible ``/v1`` surface. Key differences from cloud providers:
   vision-capable unified VLM ``local/qwen3.5-4b`` from
   ``unsloth/Qwen3.5-4B-GGUF``: ``Qwen3.5-4B-Q4_K_M.gguf`` (2740937888 bytes,
   8 GiB minimum RAM) with ``mmproj-F16.gguf``. v1 ships macOS arm64 Metal and
-  Linux x86_64 Vulkan slices. The Linux slice is vendor-neutral: AMD, NVIDIA,
-  and Intel hardware GPUs can work when they expose a real Vulkan device. CPU
-  or software Vulkan devices such as llvmpipe, lavapipe, and SwiftShader are
-  rejected, with no CPU fallback.
+  Linux Vulkan slices plus a CUDA OCI image. CUDA image pulls verify the pinned
+  image signature before any blob download. The Vulkan slice is vendor-neutral:
+  AMD, NVIDIA, and Intel hardware GPUs can work when they expose a real Vulkan
+  device. CPU or software Vulkan devices such as llvmpipe, lavapipe, and
+  SwiftShader are rejected, with no CPU fallback.
+- **Install fit checks.** Installers render a platform/RAM/disk/GPU fit report
+  before first download unless artifacts are already installed. Local RAM
+  shortfalls warn but do not block; unsupported platform and insufficient disk
+  for known-size artifacts block before download.
 - **Linux GPU override:** operators can set
   ``providers.bundled.local.vulkan_device_index`` to a raw Vulkan physical-device
   index when auto-selection chooses the wrong GPU. The override is still gated:
@@ -351,8 +356,9 @@ as **"MLX (Local, Apple Silicon)"**.
 - **No API key.** ``env_key`` is empty and ``validate_key()`` always returns
   ``{"valid": True}`` — availability is gated on platform + RAM, not a secret.
 - **Availability gating.** ``is_mlx_available()`` requires Apple Silicon plus the
-  ``mlx``/``mlx-vlm`` packages; ``is_mlx_available_for_model(spec)`` additionally
-  enforces each model's ``min_ram_bytes`` floor.
+  ``mlx``/``mlx-vlm`` packages. MLX installs also run the shared fit report and
+  block before download when platform, package, RAM, or known-size disk checks
+  fail.
 - **Model registry (`_MLX_MODEL_REGISTRY`).** Pinned by repo + revision:
   ``qwen3.5:9b`` (`mlx-community/Qwen3.5-9B-MLX-8bit`, ≥16 GB) and
   ``gemma-4-26b-a4b-it-mlx-4bit`` (`mlx-community/gemma-4-26b-a4b-it-4bit`, ≥24 GB,

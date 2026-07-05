@@ -39,6 +39,7 @@ from solstone.think.parakeet_readiness import (
     _verify_mac_cache,
     _verify_variant_cache,
 )
+from solstone.think.providers.fit_report import FitReport
 from solstone.think.utils import is_packaged_install
 
 JOURNAL_VARIANT_ENV = "JOURNAL_VARIANT"
@@ -377,6 +378,16 @@ def _install_models(
     return 0
 
 
+def _render_and_gate_fit_report(report: FitReport) -> int | None:
+    from solstone.think.providers import fit_report
+
+    rendered = fit_report.render_fit_report(report)
+    if report.overall == "blocked":
+        return _fail(rendered)
+    print(rendered, file=sys.stderr)
+    return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -445,6 +456,13 @@ def main() -> int:
             else:
                 print(f"model ready: {paths['model']}")
                 return 0
+        from solstone.think.providers import fit_report
+
+        gate_result = _render_and_gate_fit_report(
+            fit_report.build_parakeet_fit_report()
+        )
+        if gate_result is not None:
+            return gate_result
         return _install_models(os_name, arch, variant, force=args.force)
 
     sentinel_path = _sentinel_path(variant)
@@ -472,6 +490,17 @@ def main() -> int:
             print(f"model ready: {ready_cache}")
             return 0
 
+    from solstone.think.providers import fit_report
+
+    gate_result = _render_and_gate_fit_report(
+        fit_report.build_coreml_parakeet_fit_report(
+            os_name,
+            arch,
+            _cache_dir(variant),
+        )
+    )
+    if gate_result is not None:
+        return gate_result
     return _install_models(os_name, arch, variant, force=args.force)
 
 

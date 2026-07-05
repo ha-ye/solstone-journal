@@ -10,6 +10,14 @@ from pathlib import Path
 import pytest
 
 from solstone.think import install_models, parakeet_readiness
+from solstone.think.providers import fit_report
+
+
+def _fit(severity: fit_report.FitSeverity) -> fit_report.FitReport:
+    return fit_report.FitReport(
+        artifact="test install models",
+        checks=(fit_report.FitCheck("test", severity, f"{severity} detail"),),
+    )
 
 
 def _sha256(data: bytes) -> str:
@@ -294,6 +302,7 @@ def test_main_force_reinstalls_linux_cpp(
     monkeypatch.setattr(
         install_models, "_check_linux_cpp_ready", lambda: _ready_paths(tmp_path)
     )
+    monkeypatch.setattr(fit_report, "build_parakeet_fit_report", lambda: _fit("ok"))
     monkeypatch.setattr(
         install_models,
         "_install_models",
@@ -304,6 +313,74 @@ def test_main_force_reinstalls_linux_cpp(
 
     assert install_models.main() == 0
     assert calls == [("linux", "x86_64", "cpu", {"force": True})]
+
+
+def test_main_linux_blocks_before_install_models(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    monkeypatch.setattr(sys, "argv", ["sol install-models", "--force"])
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
+    monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        fit_report, "build_parakeet_fit_report", lambda: _fit("blocked")
+    )
+    monkeypatch.setattr(
+        install_models,
+        "_install_models",
+        lambda *_args, **_kwargs: pytest.fail("install should not start"),
+    )
+
+    assert install_models.main() == 1
+    assert "blocked detail" in capsys.readouterr().err
+
+
+def test_main_linux_warning_continues_to_install_models(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["sol install-models", "--force"])
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
+    monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        fit_report, "build_parakeet_fit_report", lambda: _fit("warning")
+    )
+    monkeypatch.setattr(
+        install_models,
+        "_install_models",
+        lambda os_name, arch, variant, **kwargs: (
+            calls.append((os_name, arch, variant, kwargs)) or 0
+        ),
+    )
+
+    assert install_models.main() == 0
+    assert calls == [("linux", "x86_64", "cpu", {"force": True})]
+    assert "warning detail" in capsys.readouterr().err
+
+
+def test_main_coreml_blocks_before_install_models(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    monkeypatch.setattr(sys, "argv", ["sol install-models", "--force"])
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("darwin", "arm64"))
+    monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        fit_report,
+        "build_coreml_parakeet_fit_report",
+        lambda os_name, arch, cache_dir: _fit("blocked"),
+    )
+    monkeypatch.setattr(
+        install_models,
+        "_install_models",
+        lambda *_args, **_kwargs: pytest.fail("install should not start"),
+    )
+
+    assert install_models.main() == 1
+    assert "blocked detail" in capsys.readouterr().err
 
 
 def test_main_skips_install_when_linux_cpp_ready(

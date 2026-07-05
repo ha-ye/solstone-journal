@@ -17,7 +17,7 @@ from huggingface_hub import constants as hf_constants
 
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import GEMMA4_26B_A4B_4BIT, QWEN_35_9B
-from solstone.think.providers import memory, mlx_install
+from solstone.think.providers import fit_report, memory, mlx_install
 from solstone.think.providers.install_state import read_install_status
 
 
@@ -46,6 +46,13 @@ def _allow_install(monkeypatch: pytest.MonkeyPatch, *, ram_gb: int = 64) -> None
         memory.psutil,
         "virtual_memory",
         lambda: SimpleNamespace(available=ram_gb * 1024**3, total=64 * 1024**3),
+    )
+
+
+def _fit(severity: fit_report.FitSeverity) -> fit_report.FitReport:
+    return fit_report.FitReport(
+        artifact="test MLX",
+        checks=(fit_report.FitCheck("test", severity, f"{severity} detail"),),
     )
 
 
@@ -121,34 +128,6 @@ def test_default_model_and_registry_contents() -> None:
     )
 
 
-def test_is_mlx_available_uses_available_floor(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(mlx_install, "_check_platform_and_package", lambda: (True, ""))
-    spec = mlx_install.resolve_model_spec(QWEN_35_9B)
-    monkeypatch.setattr(
-        memory.psutil,
-        "virtual_memory",
-        lambda: SimpleNamespace(
-            available=memory.MLX_AVAILABLE_FLOOR_BYTES,
-            total=64 * 1024**3,
-        ),
-    )
-
-    assert mlx_install.is_mlx_available_for_model(spec) == (True, "")
-
-    monkeypatch.setattr(
-        memory.psutil,
-        "virtual_memory",
-        lambda: SimpleNamespace(
-            available=memory.MLX_AVAILABLE_FLOOR_BYTES - 1,
-            total=64 * 1024**3,
-        ),
-    )
-
-    ok, reason = mlx_install.is_mlx_available_for_model(spec)
-    assert ok is False
-    assert reason.startswith("insufficient RAM")
-
-
 def test_inspect_readiness_ram_sufficient_matches_available_floor(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -189,9 +168,9 @@ def test_install_local_mlx_writes_canonical_sequence(
     variant_dir = mlx_install.variant_dir_for_snapshot(snapshot_dir)
     observed: list[tuple[str, str, dict]] = []
 
-    def fake_available(_spec):
-        observed.append(("resolve", _local_status()["install_state"], {}))
-        return True, ""
+    def fake_fit(_model_id):
+        observed.append(("fit", _local_status()["install_state"], {}))
+        return _fit("ok")
 
     def fake_snapshot_download(*, repo_id, revision):
         assert repo_id == spec.repo
@@ -207,7 +186,7 @@ def test_install_local_mlx_writes_canonical_sequence(
         variant_dir.mkdir(parents=True, exist_ok=True)
         return variant_dir
 
-    monkeypatch.setattr(mlx_install, "is_mlx_available_for_model", fake_available)
+    monkeypatch.setattr(fit_report, "build_mlx_fit_report", fake_fit)
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
     monkeypatch.setattr(mlx_install, "validate_snapshot_sha256", fake_verify)
     monkeypatch.setattr(mlx_install, "create_gemma4_variant", fake_create)
@@ -215,7 +194,7 @@ def test_install_local_mlx_writes_canonical_sequence(
     result = mlx_install.install_local_mlx(GEMMA4_26B_A4B_4BIT)
 
     assert [entry[0] for entry in observed] == [
-        "resolve",
+        "fit",
         "download",
         "verify",
         "install",
@@ -261,11 +240,58 @@ def test_insufficient_ram_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     assert "insufficient RAM" in _local_status()["install_error"]
 
 
+def test_install_local_mlx_blocks_before_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _allow_install(monkeypatch)
+    monkeypatch.setattr(
+        fit_report, "build_mlx_fit_report", lambda _model_id: _fit("blocked")
+    )
+    monkeypatch.setattr(
+        huggingface_hub,
+        "snapshot_download",
+        lambda **_kwargs: pytest.fail("download should not start"),
+    )
+
+    with pytest.raises(mlx_install.MLXInstallUnavailableError, match="blocked detail"):
+        mlx_install.install_local_mlx()
+
+
+def test_install_local_mlx_warning_continues_to_download(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    _allow_install(monkeypatch)
+    spec = mlx_install._MLX_MODEL_REGISTRY[QWEN_35_9B]
+    snapshot_dir = mlx_install.snapshot_dir_for_spec(spec)
+    calls = {"download": 0}
+    monkeypatch.setattr(
+        fit_report, "build_mlx_fit_report", lambda _model_id: _fit("warning")
+    )
+
+    def fake_snapshot_download(**_kwargs):
+        calls["download"] += 1
+        _write_snapshot(spec)
+        return str(snapshot_dir)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr(mlx_install, "validate_snapshot_sha256", lambda *_args: None)
+
+    assert mlx_install.install_local_mlx()["install_state"] == "installed"
+    assert calls == {"download": 1}
+
+
 def test_download_failure_transitions_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _init_journal(tmp_path, monkeypatch)
     _allow_install(monkeypatch)
+    monkeypatch.setattr(
+        fit_report, "build_mlx_fit_report", lambda _model_id: _fit("ok")
+    )
 
     def fail_download(**_kwargs):
         raise RuntimeError("download broke")
@@ -286,6 +312,9 @@ def test_verify_failure_transitions_failed(
     _allow_install(monkeypatch)
     spec = mlx_install._MLX_MODEL_REGISTRY[QWEN_35_9B]
     snapshot_dir = mlx_install.snapshot_dir_for_spec(spec)
+    monkeypatch.setattr(
+        fit_report, "build_mlx_fit_report", lambda _model_id: _fit("ok")
+    )
 
     def fake_snapshot_download(**_kwargs):
         _write_snapshot(spec)
@@ -311,6 +340,9 @@ def test_installing_failure_transitions_failed(
     _allow_install(monkeypatch)
     spec = mlx_install._MLX_MODEL_REGISTRY[GEMMA4_26B_A4B_4BIT]
     snapshot_dir, _sha = _write_snapshot(spec)
+    monkeypatch.setattr(
+        fit_report, "build_mlx_fit_report", lambda _model_id: _fit("ok")
+    )
 
     monkeypatch.setattr(
         huggingface_hub, "snapshot_download", lambda **_kwargs: str(snapshot_dir)
@@ -332,6 +364,9 @@ def test_idempotent_rerun_skips_network(
     spec = mlx_install._MLX_MODEL_REGISTRY[QWEN_35_9B]
     snapshot_dir = mlx_install.snapshot_dir_for_spec(spec)
     calls = {"download": 0, "verify": 0}
+    monkeypatch.setattr(
+        fit_report, "build_mlx_fit_report", lambda _model_id: _fit("ok")
+    )
 
     def fake_snapshot_download(**_kwargs):
         calls["download"] += 1
@@ -347,6 +382,11 @@ def test_idempotent_rerun_skips_network(
     assert mlx_install.install_local_mlx()["install_state"] == "installed"
     assert calls == {"download": 1, "verify": 1}
 
+    monkeypatch.setattr(
+        fit_report,
+        "build_mlx_fit_report",
+        lambda _model_id: pytest.fail("fit report should not run"),
+    )
     assert mlx_install.install_local_mlx()["install_state"] == "installed"
     assert calls == {"download": 1, "verify": 1}
     assert _local_slot()["mlx_model_id"] == QWEN_35_9B

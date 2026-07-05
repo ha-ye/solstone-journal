@@ -177,6 +177,16 @@ _ENTRIES: dict[str, _Entry] = {
         detail="Use a cloud provider or try local model setup on a supported machine.",
         recovery_action=_LOCAL_SETUP_ACTION,
     ),
+    "host_unfit": _Entry(
+        klass="setup",
+        summary="this computer doesn't meet the local model's requirements",
+        detail=(
+            "A pre-download check found this computer can't run the selected "
+            "local model. Choose a smaller local model or use a cloud provider "
+            "for screen descriptions and journal interpretation."
+        ),
+        recovery_action=_LOCAL_SETUP_ACTION,
+    ),
     "unsupported_model": _Entry(
         klass="setup",
         summary="this local model is not supported",

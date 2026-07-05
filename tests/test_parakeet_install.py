@@ -14,7 +14,7 @@ import pytest
 
 from solstone.think import parakeet_readiness
 from solstone.think.journal_config import read_journal_config
-from solstone.think.providers import parakeet_install
+from solstone.think.providers import fit_report, parakeet_install
 from solstone.think.providers.install_state import read_install_status
 
 
@@ -34,6 +34,13 @@ def _parakeet_status() -> dict:
 
 def _parakeet_slot() -> dict:
     return read_journal_config()["providers"]["bundled"]["parakeet"]
+
+
+def _fit(severity: fit_report.FitSeverity) -> fit_report.FitReport:
+    return fit_report.FitReport(
+        artifact="test parakeet",
+        checks=(fit_report.FitCheck("test", severity, f"{severity} detail"),),
+    )
 
 
 def _server_tarball(tmp_path: Path, backend: str) -> Path:
@@ -217,6 +224,60 @@ def test_install_parakeet_writes_distinct_binary_and_model_metadata(
     assert slot["model_revision"] == parakeet_readiness.PARAKEET_CPP_MODEL_REVISION
     assert slot["model_path"] == str(parakeet_install.model_path())
     assert Path(slot["model_path"]).is_file()
+
+
+def test_install_parakeet_blocks_before_downloads(tmp_path, monkeypatch) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        fit_report,
+        "build_parakeet_fit_report",
+        lambda journal_path=None: _fit("blocked"),
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "_download_file",
+        lambda *_args, **_kwargs: pytest.fail("download should not start"),
+    )
+
+    with pytest.raises(parakeet_install.ParakeetProviderError) as exc_info:
+        parakeet_install.install_parakeet()
+
+    assert exc_info.value.reason_code == "host_unfit"
+
+
+def test_install_parakeet_warning_continues_to_download(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    tarballs = {
+        "cpu": _server_tarball(tmp_path, "cpu"),
+        "vulkan": _server_tarball(tmp_path, "vulkan"),
+    }
+    downloads: list[Path] = []
+
+    monkeypatch.setattr(
+        fit_report,
+        "build_parakeet_fit_report",
+        lambda journal_path=None: _fit("warning"),
+    )
+
+    def fake_download(_url, dest, **_kwargs):
+        downloads.append(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if dest.name.endswith(".gguf"):
+            dest.write_bytes(b"fake gguf")
+            return
+        backend = "vulkan" if "vulkan" in dest.name else "cpu"
+        shutil.copy2(tarballs[backend], dest)
+
+    monkeypatch.setattr(parakeet_install, "_download_file", fake_download)
+    monkeypatch.setattr(
+        parakeet_install, "_verify_sha256", lambda _path, _expected: None
+    )
+
+    assert parakeet_install.install_parakeet()["install_state"] == "installed"
+    assert downloads
 
 
 def test_install_parakeet_rechecks_readiness_under_provider_lock(

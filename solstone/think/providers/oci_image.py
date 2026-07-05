@@ -13,8 +13,10 @@ import json
 import logging
 import re
 import shutil
+import subprocess
 import tarfile
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
@@ -27,6 +29,7 @@ LOG = logging.getLogger(__name__)
 SIDECAR_NAME = ".oci-install.json"
 _GHCR_HOST = "ghcr.io"
 _DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+_COSIGN_TIMEOUT_SECONDS = 60.0
 _MANIFEST_ACCEPT = ", ".join(
     (
         "application/vnd.oci.image.index.v1+json",
@@ -85,6 +88,24 @@ class OciInstallResult:
     already_present: bool
 
 
+@dataclass(frozen=True, kw_only=True)
+class OciSignaturePolicy:
+    certificate_identity: str | None = None
+    certificate_identity_regexp: str | None = None
+    oidc_issuer: str
+
+    def __post_init__(self) -> None:
+        has_identity = bool(self.certificate_identity)
+        has_regexp = bool(self.certificate_identity_regexp)
+        if has_identity == has_regexp:
+            raise ValueError(
+                "exactly one of certificate_identity or "
+                "certificate_identity_regexp is required"
+            )
+        if not self.oidc_issuer:
+            raise ValueError("oidc_issuer is required")
+
+
 def pull_and_install(
     image_ref: str,
     arch: str,
@@ -92,6 +113,8 @@ def pull_and_install(
     target_dir: Path,
     *,
     client: httpx.Client | None = None,
+    policy: OciSignaturePolicy | None = None,
+    verifier: Callable[[str, OciSignaturePolicy], None] | None = None,
 ) -> OciInstallResult:
     repo, digest = _parse_image_ref(image_ref)
     wanted = _validate_wanted_files(wanted_files)
@@ -100,6 +123,9 @@ def pull_and_install(
     offline = _offline_result(image_ref, arch, wanted, target_dir)
     if offline is not None:
         return offline
+
+    if policy is not None:
+        (verifier or verify_image_signature)(image_ref, policy)
 
     import httpx
 
@@ -131,6 +157,47 @@ def pull_and_install(
         shutil.rmtree(work_root, ignore_errors=True)
         if created_client:
             client.close()
+
+
+def verify_image_signature(image_ref: str, policy: OciSignaturePolicy) -> None:
+    command = ["cosign", "verify", image_ref]
+    if policy.certificate_identity is not None:
+        command.extend(["--certificate-identity", policy.certificate_identity])
+    elif policy.certificate_identity_regexp is not None:
+        command.extend(
+            ["--certificate-identity-regexp", policy.certificate_identity_regexp]
+        )
+    command.extend(["--certificate-oidc-issuer", policy.oidc_issuer])
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=_COSIGN_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise OciImageError(
+            "signature_verify_failed",
+            f"cosign verify timed out after {_COSIGN_TIMEOUT_SECONDS:g}s",
+        ) from exc
+    except OSError as exc:
+        raise OciImageError(
+            "cosign_missing", f"cosign verify could not start: {exc}"
+        ) from exc
+
+    if completed.returncode == 0:
+        return
+
+    detail = (
+        (completed.stderr or "").strip()
+        or (completed.stdout or "").strip()
+        or f"exited with status {completed.returncode}"
+    )
+    raise OciImageError(
+        "signature_verify_failed", f"cosign verify failed for {image_ref}: {detail}"
+    )
 
 
 def _parse_image_ref(image_ref: str) -> tuple[str, str]:
@@ -560,7 +627,9 @@ __all__ = [
     "OciImageError",
     "OciInstallRecord",
     "OciInstallResult",
+    "OciSignaturePolicy",
     "SIDECAR_NAME",
     "pull_and_install",
+    "verify_image_signature",
     "verify_sidecar_install",
 ]

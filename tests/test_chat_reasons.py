@@ -25,6 +25,7 @@ EXPECTED_CODES = {
     "local_endpoint_unreachable",
     "local_endpoint_contract_failed",
     "unsupported_platform",
+    "host_unfit",
     "unsupported_model",
     "sha256_mismatch",
     "archive_path_traversal",

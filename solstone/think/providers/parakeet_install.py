@@ -12,6 +12,7 @@ from __future__ import annotations
 import errno
 import fcntl
 import hashlib
+import logging
 import os
 import random
 import shutil
@@ -35,6 +36,7 @@ from solstone.think.providers.install_state import (
 )
 from solstone.think.utils import get_journal
 
+LOG = logging.getLogger(__name__)
 PARAKEET_PROVIDER_NAME = "parakeet"
 _PROBE_TIMEOUT_SECONDS = 10
 _INSTALL_LOCK_TIMEOUT_SECONDS = 60.0 * 60.0
@@ -539,6 +541,14 @@ def install_parakeet(
             ready_status = _ready_status_if_installed(journal_path)
             if ready_status is not None:
                 return ready_status
+        from solstone.think.providers import fit_report
+
+        report = fit_report.build_parakeet_fit_report(journal_path)
+        rendered = fit_report.render_fit_report(report)
+        if report.overall == "blocked":
+            raise ParakeetProviderError("host_unfit", rendered)
+        if report.overall == "warning":
+            LOG.warning("parakeet.cpp host fit warning:\n%s", rendered)
         for backend in parakeet_readiness.PARAKEET_CPP_BINARY_BACKENDS:
             _install_parakeet_server_unlocked(backend, journal_path)
         return _install_model_unlocked(journal_path)

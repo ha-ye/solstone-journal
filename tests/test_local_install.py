@@ -15,7 +15,14 @@ import pytest
 
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import LOCAL_MODEL
-from solstone.think.providers import local_cuda, local_install, local_vulkan, memory
+from solstone.think.providers import (
+    fit_report,
+    local_cuda,
+    local_install,
+    local_vulkan,
+    memory,
+    oci_image,
+)
 from solstone.think.providers.install_state import read_install_status
 from solstone.think.providers.local import LOCAL_MODEL_SPECS
 
@@ -36,6 +43,13 @@ def _local_status() -> dict:
 
 def _local_slot() -> dict:
     return read_journal_config()["providers"]["bundled"]["local"]
+
+
+def _fit(severity: fit_report.FitSeverity) -> fit_report.FitReport:
+    return fit_report.FitReport(
+        artifact="test local",
+        checks=(fit_report.FitCheck("test", severity, f"{severity} detail"),),
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -283,8 +297,6 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
     expected_cpu: str,
     unexpected_cpu: str,
 ):
-    from solstone.think.providers import oci_image
-
     _init_journal(tmp_path, monkeypatch)
     monkeypatch.setattr(local_install.platform, "machine", lambda: machine)
     monkeypatch.setattr(
@@ -300,7 +312,10 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
         arch: str,
         wanted_files: tuple[str, ...],
         target_dir: Path,
+        *,
+        policy: oci_image.OciSignaturePolicy | None = None,
     ) -> oci_image.OciInstallResult:
+        assert policy is local_install.CUDA_SERVER_PIN.signature_policy
         target_dir.mkdir(parents=True, exist_ok=True)
         binary = target_dir / local_install.CUDA_SERVER_PIN.binary_name
         binary.write_text("binary", encoding="utf-8")
@@ -337,8 +352,6 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
 
 
 def test_install_llama_server_vulkan_choice_does_not_pull_oci(tmp_path, monkeypatch):
-    from solstone.think.providers import oci_image
-
     _init_journal(tmp_path, monkeypatch)
     pin = {
         "release_tag": "v1",
@@ -507,6 +520,114 @@ def test_install_model_threads_optional_mmproj_artifact(tmp_path, monkeypatch):
     slot = _local_slot()
     assert slot["mmproj_path"] == str(mmproj_path)
     assert slot["mmproj_sha256"] == "mmproj-sha"
+
+
+def test_install_local_blocks_before_downloads(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda model_id: {"binary_installed": False, "model_installed": False},
+    )
+    monkeypatch.setattr(
+        fit_report, "build_local_fit_report", lambda model_id: _fit("blocked")
+    )
+    monkeypatch.setattr(
+        local_install,
+        "_download_file",
+        lambda *_args, **_kwargs: pytest.fail("download should not start"),
+    )
+    monkeypatch.setattr(
+        oci_image,
+        "pull_and_install",
+        lambda *_args, **_kwargs: pytest.fail("OCI pull should not start"),
+    )
+
+    with pytest.raises(local_install.LocalProviderError) as exc_info:
+        local_install.install_local(LOCAL_MODEL)
+
+    assert exc_info.value.reason_code == "host_unfit"
+
+
+def test_install_local_warning_continues_to_download(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    pin = {
+        "release_tag": "v1",
+        "filename": "llama.tar.gz",
+        "sha256": "abc123",
+        "binary_name": "llama-server",
+    }
+    final_path = local_install.binary_path_for_pin("test-platform", pin)
+    final_path.parent.mkdir(parents=True)
+    final_path.write_text("binary", encoding="utf-8")
+    downloads: list[Path] = []
+
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda model_id: {"binary_installed": False, "model_installed": False},
+    )
+    monkeypatch.setattr(
+        fit_report, "build_local_fit_report", lambda model_id: _fit("warning")
+    )
+    monkeypatch.setattr(
+        local_install, "llama_server_artifact_key", lambda: "test-platform"
+    )
+    monkeypatch.setattr(local_install, "pin_for_current_platform", lambda: pin)
+
+    def fake_download(_url, dest, **_kwargs):
+        downloads.append(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(b"artifact")
+
+    monkeypatch.setattr(local_install, "_download_file", fake_download)
+    monkeypatch.setattr(local_install, "_verify_sha256", lambda _path, _expected: None)
+    monkeypatch.setattr(
+        local_install, "_safe_extract_tarball", lambda _tarball, _dest: None
+    )
+    monkeypatch.setattr(
+        local_install, "_find_extracted_binary", lambda _dest, _name: final_path
+    )
+    monkeypatch.setattr(local_install, "_chmod_executable", lambda _path: None)
+    monkeypatch.setattr(local_install, "_clear_macos_quarantine", lambda _path: None)
+    monkeypatch.setattr(
+        oci_image,
+        "pull_and_install",
+        lambda *_args, **_kwargs: pytest.fail("OCI pull should not start"),
+    )
+
+    assert local_install.install_local(LOCAL_MODEL)["install_state"] == "installed"
+
+    assert downloads
+
+
+def test_install_local_ready_short_circuits_before_fit_report(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda model_id: {"binary_installed": True, "model_installed": True},
+    )
+    monkeypatch.setattr(
+        fit_report,
+        "build_local_fit_report",
+        lambda model_id: pytest.fail("fit report should not run"),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "_download_file",
+        lambda *_args, **_kwargs: pytest.fail("download should not start"),
+    )
+    monkeypatch.setattr(
+        oci_image,
+        "pull_and_install",
+        lambda *_args, **_kwargs: pytest.fail("OCI pull should not start"),
+    )
+
+    result = local_install.install_local(LOCAL_MODEL)
+
+    assert result["name"] == local_install.LOCAL_PROVIDER_NAME
+    assert result["install_state"] == "installed"
 
 
 def test_ensure_artifacts_installed_returns_binary_gguf_and_optional_mmproj(

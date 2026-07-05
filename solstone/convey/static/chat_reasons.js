@@ -66,6 +66,10 @@
       "template": "this machine is not supported for local model setup",
       "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
+    "host_unfit": {
+      "template": "this computer doesn't meet the local model's requirements",
+      "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
+    },
     "unsupported_model": {
       "template": "this local model is not supported",
       "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}

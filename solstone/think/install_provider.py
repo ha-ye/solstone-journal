@@ -14,6 +14,7 @@ import json
 import sys
 
 from solstone.think.providers import local_install, parakeet_install
+from solstone.think.providers.fit_report import FitReport
 from solstone.think.utils import require_solstone
 
 PARAKEET_DOWNLOAD_DISCLOSURE = (
@@ -21,6 +22,12 @@ PARAKEET_DOWNLOAD_DISCLOSURE = (
     "cache before it can run: the parakeet.cpp server binary from github.com "
     "(MIT) and the speech model from huggingface.co (CC-BY-4.0)."
 )
+
+
+def _render_fit_report(report: FitReport) -> None:
+    from solstone.think.providers import fit_report
+
+    print(fit_report.render_fit_report(report), file=sys.stderr)
 
 
 def main() -> int:
@@ -42,10 +49,36 @@ def main() -> int:
 
     if args.name == "parakeet":
         print(PARAKEET_DOWNLOAD_DISCLOSURE, file=sys.stderr)
-        print(json.dumps(parakeet_install.install_parakeet(), indent=2))
+        readiness = parakeet_install.inspect_readiness()
+        installed = bool(readiness["binary_installed"] and readiness["model_installed"])
+        if installed:
+            print("parakeet already installed", file=sys.stderr)
+        else:
+            from solstone.think.providers import fit_report
+
+            _render_fit_report(fit_report.build_parakeet_fit_report())
+        try:
+            status = parakeet_install.install_parakeet()
+        except parakeet_install.ParakeetProviderError as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
+        print(json.dumps(status, indent=2))
         return 0
 
-    print(json.dumps(local_install.install_local(), indent=2))
+    readiness = local_install.inspect_readiness()
+    installed = bool(readiness["binary_installed"] and readiness["model_installed"])
+    if installed:
+        print("local already installed", file=sys.stderr)
+    else:
+        from solstone.think.providers import fit_report
+
+        _render_fit_report(fit_report.build_local_fit_report(local_install.LOCAL_MODEL))
+    try:
+        status = local_install.install_local()
+    except local_install.LocalProviderError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    print(json.dumps(status, indent=2))
     return 0
 
 

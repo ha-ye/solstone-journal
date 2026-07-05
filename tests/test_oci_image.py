@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import subprocess
 import tarfile
 from pathlib import Path
 
@@ -22,6 +23,13 @@ ALT_IMAGE_REF = f"ghcr.io/{REPO}@sha256:{'d' * 64}"
 TOP_REF = f"sha256:{IMAGE_DIGEST}"
 MANIFEST_REF = f"sha256:{MANIFEST_DIGEST}"
 ARM_MANIFEST_REF = f"sha256:{ARM_MANIFEST_DIGEST}"
+
+
+def _policy() -> oci_image.OciSignaturePolicy:
+    return oci_image.OciSignaturePolicy(
+        certificate_identity_regexp=r"^https://github\.com/acme/tool/.+$",
+        oidc_issuer="https://token.actions.githubusercontent.com",
+    )
 
 
 def _sha256_bytes(data: bytes) -> str:
@@ -169,6 +177,8 @@ def _pull_with_registry(
     wanted: list[str],
     *,
     image_ref: str = IMAGE_REF,
+    policy: oci_image.OciSignaturePolicy | None = None,
+    verifier=None,
 ) -> oci_image.OciInstallResult:
     with registry.client() as client:
         return oci_image.pull_and_install(
@@ -177,6 +187,8 @@ def _pull_with_registry(
             wanted,
             target,
             client=client,
+            policy=policy,
+            verifier=verifier,
         )
 
 
@@ -223,6 +235,81 @@ def test_ac1_record_round_trip_and_invalid_inputs(tmp_path: Path) -> None:
         assert exc_info.value.reason_code == "invalid_wanted_file"
 
 
+def test_signature_policy_requires_exactly_one_identity() -> None:
+    with pytest.raises(ValueError, match="exactly one"):
+        oci_image.OciSignaturePolicy(
+            oidc_issuer="https://token.actions.githubusercontent.com"
+        )
+    with pytest.raises(ValueError, match="exactly one"):
+        oci_image.OciSignaturePolicy(
+            certificate_identity="identity",
+            certificate_identity_regexp="identity-regexp",
+            oidc_issuer="https://token.actions.githubusercontent.com",
+        )
+
+
+def test_verify_image_signature_invokes_cosign_with_keyless_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+    policy = _policy()
+
+    def fake_run(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(oci_image.subprocess, "run", fake_run)
+
+    oci_image.verify_image_signature(IMAGE_REF, policy)
+
+    assert calls == [
+        {
+            "command": [
+                "cosign",
+                "verify",
+                IMAGE_REF,
+                "--certificate-identity-regexp",
+                policy.certificate_identity_regexp,
+                "--certificate-oidc-issuer",
+                policy.oidc_issuer,
+            ],
+            "capture_output": True,
+            "text": True,
+            "timeout": oci_image._COSIGN_TIMEOUT_SECONDS,
+            "check": False,
+        }
+    ]
+
+
+def test_verify_image_signature_maps_missing_cosign(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_run(_command, **_kwargs):
+        raise FileNotFoundError("cosign missing")
+
+    monkeypatch.setattr(oci_image.subprocess, "run", fail_run)
+
+    with pytest.raises(oci_image.OciImageError) as exc_info:
+        oci_image.verify_image_signature(IMAGE_REF, _policy())
+
+    assert exc_info.value.reason_code == "cosign_missing"
+
+
+def test_verify_image_signature_maps_nonzero_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(command, **_kwargs):
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="bad sig")
+
+    monkeypatch.setattr(oci_image.subprocess, "run", fake_run)
+
+    with pytest.raises(oci_image.OciImageError) as exc_info:
+        oci_image.verify_image_signature(IMAGE_REF, _policy())
+
+    assert exc_info.value.reason_code == "signature_verify_failed"
+    assert "bad sig" in str(exc_info.value)
+
+
 def test_ac2_happy_path_installs_files_and_sidecar(tmp_path: Path) -> None:
     layer = _layer_bytes(
         {
@@ -265,6 +352,60 @@ def test_ac2_happy_path_installs_files_and_sidecar(tmp_path: Path) -> None:
         "application/vnd.oci.image.index.v1+json" in request.headers["accept"]
         for request in manifest_requests
     )
+
+
+def test_signature_verifier_runs_before_first_blob_fetch(tmp_path: Path) -> None:
+    layer = _layer_bytes({"bin/tool": b"tool"})
+    registry = _registry_for_layers([layer])
+    target = tmp_path / "target"
+    events: list[str] = []
+    original_handle = registry.handle
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if "/blobs/" in request.url.path:
+            events.append("blob")
+        return original_handle(request)
+
+    def verifier(_image_ref: str, _policy: oci_image.OciSignaturePolicy) -> None:
+        events.append("verify")
+
+    registry.handle = handle  # type: ignore[method-assign]
+
+    _pull_with_registry(
+        registry,
+        target,
+        ["tool"],
+        policy=_policy(),
+        verifier=verifier,
+    )
+
+    assert events.index("verify") < events.index("blob")
+
+
+def test_signature_verifier_failure_leaves_target_unchanged(tmp_path: Path) -> None:
+    layer = _layer_bytes({"bin/tool": b"tool"})
+    registry = _registry_for_layers([layer])
+    target = tmp_path / "target"
+    target.mkdir()
+    (target / "old").write_text("old\n", encoding="utf-8")
+
+    def verifier(_image_ref: str, _policy: oci_image.OciSignaturePolicy) -> None:
+        raise oci_image.OciImageError("cosign_missing", "cosign missing")
+
+    with pytest.raises(oci_image.OciImageError) as exc_info:
+        _pull_with_registry(
+            registry,
+            target,
+            ["tool"],
+            policy=_policy(),
+            verifier=verifier,
+        )
+
+    assert exc_info.value.reason_code == "cosign_missing"
+    assert (target / "old").read_text(encoding="utf-8") == "old\n"
+    assert not (target / "tool").exists()
+    assert list(tmp_path.rglob("*.tmp")) == []
+    assert {path.name for path in tmp_path.iterdir()} == {"target"}
 
 
 def test_ac3_fetch_failures_raise_reason_codes(tmp_path: Path) -> None:
@@ -501,7 +642,21 @@ def test_ac6_publish_replace_failure_restores_moved_aside_target(
 def test_ac7_offline_short_circuit_uses_zero_requests(tmp_path: Path) -> None:
     layer = _layer_bytes({"bin/tool": b"tool"})
     target = tmp_path / "target"
-    _pull_with_registry(_registry_for_layers([layer]), target, ["tool"])
+    verifier_calls = 0
+
+    def verifier(_image_ref: str, _policy: oci_image.OciSignaturePolicy) -> None:
+        nonlocal verifier_calls
+        verifier_calls += 1
+
+    policy = _policy()
+    _pull_with_registry(
+        _registry_for_layers([layer]),
+        target,
+        ["tool"],
+        policy=policy,
+        verifier=verifier,
+    )
+    assert verifier_calls == 1
     request_count = 0
 
     def counting_handler(request: httpx.Request) -> httpx.Response:
@@ -516,9 +671,12 @@ def test_ac7_offline_short_circuit_uses_zero_requests(tmp_path: Path) -> None:
             ["tool"],
             target,
             client=client,
+            policy=policy,
+            verifier=verifier,
         )
 
     assert request_count == 0
+    assert verifier_calls == 1
     assert result.already_present is True
     assert result.files["tool"] == _sha256_file(target / "tool")
 

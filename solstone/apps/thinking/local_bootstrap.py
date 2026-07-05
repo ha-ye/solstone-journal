@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 import sys
 import threading
-from pathlib import Path
 
 from solstone.apps.thinking.install_copy import (
     INSTALL_FAILED_NO_PROGRESS,
@@ -19,6 +18,7 @@ from solstone.apps.thinking.install_copy import (
 from solstone.think.callosum import callosum_send
 from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
 from solstone.think.providers import local_install, mlx_install
+from solstone.think.providers.fit_report import FitReport
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     InstallStatus,
@@ -38,7 +38,6 @@ from solstone.think.providers.local_endpoint import resolve_local_endpoint
 from solstone.think.providers.memory import (
     MLX_AVAILABLE_FLOOR_BYTES,
     assess_memory,
-    free_bytes,
     gb,
     gb_label,
     read_total_bytes,
@@ -312,7 +311,8 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         return {"install_state": "installed"}, 200
 
     availability = get_availability_payload(model_id)
-    blocked_reason = _blocked_reason(availability)
+    report = _fit_report_for_model(model_id)
+    blocked_reason = _blocked_reason(report)
     if blocked_reason:
         raise LocalBootstrapUnavailableError(blocked_reason)
 
@@ -335,7 +335,7 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         if status["install_state"] in IN_FLIGHT_STATES:
             return {"install_state": status["install_state"]}, 200
 
-        disk_reason = _disk_blocked_reason(availability)
+        disk_reason = _disk_blocked_reason(report)
         if disk_reason:
             raise LocalBootstrapUnavailableError(disk_reason)
 
@@ -371,38 +371,28 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
     return {"install_state": "downloading"}, 202
 
 
-def _blocked_reason(availability: dict[str, bool | float | int | str | None]) -> str:
-    if not availability["platform_supported"]:
-        return str(availability["reason"])
-    reason = str(availability["reason"])
-    if reason.startswith("insufficient RAM"):
-        return reason
-    if reason.startswith("insufficient disk"):
-        return reason
-    if _is_mlx_backend() and reason == "mlx-vlm runtime is not installed":
-        return reason
+def _fit_report_for_model(model_id: str) -> FitReport:
+    from solstone.think.providers import fit_report
+
+    if _is_mlx_backend():
+        return fit_report.build_mlx_fit_report(model_id)
+    return fit_report.build_local_fit_report(model_id)
+
+
+def _blocked_reason(report: FitReport) -> str:
+    for check in report.checks:
+        if check.name == "disk":
+            continue
+        if check.severity == "blocked":
+            return check.detail
     return ""
 
 
-def _disk_target() -> Path:
-    if _is_mlx_backend():
-        from huggingface_hub import constants
-
-        return Path(constants.HF_HUB_CACHE)
-    return local_install.cache_root()
-
-
-def _disk_blocked_reason(
-    availability: dict[str, bool | float | int | str | None],
-) -> str:
-    need = int(availability["download_bytes"] or 0)
-    free = free_bytes(_disk_target())
-    if free >= need:
-        return ""
-    return (
-        "insufficient disk space "
-        f"(need {gb_label(need)} GB, have {gb_label(free)} GB free)"
-    )
+def _disk_blocked_reason(report: FitReport) -> str:
+    for check in report.checks:
+        if check.name == "disk" and check.severity == "blocked":
+            return check.detail
+    return ""
 
 
 def _mlx_bootstrap_worker(model: str) -> None:

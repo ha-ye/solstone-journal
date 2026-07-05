@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import logging
 import platform
 import shutil
 import uuid
@@ -26,9 +27,9 @@ from solstone.think.providers.install_state import (
 from solstone.think.providers.memory import (
     MLX_AVAILABLE_FLOOR_BYTES,
     assess_memory,
-    gb_label,
 )
 
+LOG = logging.getLogger(__name__)
 MLX_SOFT_TOKEN_BUDGET = 1120
 _GEMMA4_MIN_POSITION_EMBEDDING_SIZE = 10240
 _LOCAL_NAME = "local"
@@ -110,21 +111,6 @@ def _check_platform_and_package() -> tuple[bool, str]:
     except ImportError:
         return False, "mlx-vlm package not installed"
 
-    return True, ""
-
-
-def is_mlx_available_for_model(spec: MLXModelSpec) -> tuple[bool, str]:
-    ok, reason = _check_platform_and_package()
-    if not ok:
-        return ok, reason
-    verdict = assess_memory(MLX_AVAILABLE_FLOOR_BYTES, block_below_floor=True)
-    if verdict.severity == "blocked":
-        assert verdict.available_bytes is not None
-        return False, (
-            f"insufficient RAM for {spec.name} "
-            f"(need {gb_label(verdict.required_bytes)} GB available, "
-            f"have {gb_label(verdict.available_bytes)} GB available)"
-        )
     return True, ""
 
 
@@ -415,10 +401,6 @@ def install_local_mlx(model_id: str = QWEN_35_9B) -> InstallStatus:
     try:
         _write_status(transition_state(_read_status(), new_state="resolving"))
         spec = resolve_model_spec(model_id)
-        ok, reason = is_mlx_available_for_model(spec)
-        if not ok:
-            raise MLXInstallUnavailableError(reason)
-
         presence = _artifact_presence(spec)
         if presence["model_installed"]:
             _write_mlx_metadata(
@@ -429,6 +411,15 @@ def install_local_mlx(model_id: str = QWEN_35_9B) -> InstallStatus:
             return _write_status(
                 transition_state(_read_status(), new_state="installed")
             )
+
+        from solstone.think.providers import fit_report
+
+        report = fit_report.build_mlx_fit_report(spec.name)
+        rendered = fit_report.render_fit_report(report)
+        if report.overall == "blocked":
+            raise MLXInstallUnavailableError(rendered)
+        if report.overall == "warning":
+            LOG.warning("MLX provider host fit warning:\n%s", rendered)
 
         _write_status(transition_state(_read_status(), new_state="downloading"))
         snapshot_dir = Path(
@@ -467,7 +458,6 @@ __all__ = [
     "create_gemma4_variant",
     "inspect_readiness",
     "install_local_mlx",
-    "is_mlx_available_for_model",
     "is_mlx_platform_supported",
     "resolve_model_spec",
     "snapshot_dir_for_spec",
