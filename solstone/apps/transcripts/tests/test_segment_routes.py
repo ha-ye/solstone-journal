@@ -1899,3 +1899,37 @@ def test_segment_content_audio_timestamps_are_absolute_not_midnight(
     audio_chunk = next(chunk for chunk in chunks if chunk["type"] == "audio")
     stamped = datetime.fromtimestamp(audio_chunk["timestamp"] / 1000)
     assert (stamped.hour, stamped.minute, stamped.second) == (9, 30, 5)
+
+
+def test_segment_content_audio_wall_clock_starts_stay_on_their_hour(
+    client, journal_copy
+):
+    # Newer capture segments write wall-clock audio starts ("12:02:41" in a
+    # noon segment); the formatter's base+offset math double-adds these and
+    # lands hours late (final-QA finding, 2026-07-05). The API must resolve
+    # the dialect against the segment window.
+    day = "20990110"
+    stream = "default"
+    segment = "120000_300"
+    _write_segment(journal_copy, day, stream, segment)
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    _write_jsonl(
+        segment_dir / "audio.jsonl",
+        [
+            {"raw": "raw.m4a", "duration": 42.0},
+            {
+                "start": "12:02:41",
+                "source": "mic",
+                "speaker": 1,
+                "text": "noon words",
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    chunks = response.get_json()["chunks"]
+    audio_chunk = next(chunk for chunk in chunks if chunk["type"] == "audio")
+    stamped = datetime.fromtimestamp(audio_chunk["timestamp"] / 1000)
+    assert (stamped.day, stamped.hour, stamped.minute) == (10, 12, 2)

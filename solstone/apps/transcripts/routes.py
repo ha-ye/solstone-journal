@@ -462,6 +462,34 @@ def _timestamp_from_day_time(day: str, time_str: str, fallback: int = 0) -> int:
     return int(dt.timestamp() * 1000)
 
 
+def _audio_chunk_timestamp(
+    day: str, segment_key: str, time_str: str, formatter_ts: int
+) -> int:
+    """Resolve an audio chunk's absolute timestamp across two start dialects.
+
+    Audio "start" fields carry either wall-clock times ("12:02:41" inside a
+    noon segment) or segment-relative offsets ("00:00:05" inside any
+    segment). The formatter's base+offset timestamp is only correct for the
+    relative dialect - for wall-clock entries it double-adds the segment
+    start and lands hours late. Classify against the segment window.
+    """
+    try:
+        parts = time_str.split(":")
+        t = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+        seg_start = (
+            int(segment_key[0:2]) * 3600
+            + int(segment_key[2:4]) * 60
+            + int(segment_key[4:6])
+        )
+        duration = int(segment_key.split("_", 1)[1])
+    except (ValueError, IndexError):
+        return formatter_ts
+    slack = 120
+    if seg_start - slack <= t <= seg_start + duration + slack:
+        return _timestamp_from_day_time(day, time_str, formatter_ts)
+    return formatter_ts
+
+
 def _timestamp_from_value(value: Any) -> int:
     """Convert an ISO timestamp or epoch-ish value to unix ms."""
     if isinstance(value, int | float):
@@ -930,10 +958,13 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 chunk_data: dict[str, Any] = {
                     "type": "audio",
                     "time": time_str,
-                    # Audio "start" is segment-relative, not wall clock —
-                    # format_audio already computed the absolute epoch.
-                    "timestamp": chunk.get("timestamp")
-                    or _timestamp_from_day_time(day, time_str, 0),
+                    "timestamp": _audio_chunk_timestamp(
+                        day,
+                        segment_key,
+                        time_str,
+                        chunk.get("timestamp")
+                        or _timestamp_from_day_time(day, time_str, 0),
+                    ),
                     "markdown": markdown,
                     "source_ref": {
                         "start": time_str,
