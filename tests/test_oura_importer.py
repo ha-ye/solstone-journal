@@ -6,14 +6,21 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from solstone.apps.body.routes import _iter_normalized_rows
 from solstone.think.importers import oura
 from solstone.think.importers.file_importer import (
     FILE_IMPORTER_REGISTRY,
     get_file_importer,
+)
+from solstone.think.importers.health_dedupe import (
+    get_health_dedupe_record,
+    health_dedupe_db_path,
+    upsert_health_dedupe_records,
 )
 from solstone.think.importers.health_schema import (
     SOURCE_APPLE_HEALTH,
@@ -34,6 +41,7 @@ from solstone.think.importers.sync import SYNCABLE_REGISTRY
 FIXTURE_ROOT = (
     Path(__file__).parent / "fixtures" / "importers" / "health" / "oura_synthetic"
 )
+REVISION_ROOT = FIXTURE_ROOT / "revisions"
 APPLE_FIXTURE_ROOT = (
     Path(__file__).parent
     / "fixtures"
@@ -286,6 +294,297 @@ def test_normalized_rows_round_trip_through_jsonl_encoding():
     for row in decoded:
         assert row["schema"] == oura.NORMALIZED_SCHEMA
         assert row["source_family"] == SOURCE_OURA_API
+
+
+# ---------------------------------------------------------------------------
+# Revision / upsert de-risk — Oura re-issues documents with corrections
+# (same document id, changed payload; scores settle for a day or two).
+# Design requirement (oura_design_20260705.md §4c): same id → same dedupe
+# key → the upsert UPDATES in place, never duplicates. Fixtures:
+# revisions/ re-issues the base daily_readiness page (see README.md).
+# Two strict xfails below pin exposed defects for the phase O1/O2 sessions;
+# remove each marker together with its fix.
+# ---------------------------------------------------------------------------
+
+_IMPORT_A = "20260105_000000"  # earlier bundle
+_IMPORT_B = "20260112_000000"  # later re-fetch of a trailing window
+
+
+def _normalize_for_import(path: Path, import_id: str) -> list[oura.OuraNormalizedItem]:
+    bundle = oura.parse_oura_bundle(path)
+    return oura.normalize_bundle(
+        bundle,
+        import_id=import_id,
+        raw_ref_root=f"imports/{import_id}/raw/oura",
+    )
+
+
+def _items_by_row_identity(
+    items: list[oura.OuraNormalizedItem],
+) -> dict[tuple[str, str], oura.OuraNormalizedItem]:
+    return {
+        (item.row["record_type"], item.row["source_record_id"]): item for item in items
+    }
+
+
+def _dedupe_row_count(journal: Path) -> int:
+    with sqlite3.connect(health_dedupe_db_path(journal)) as conn:
+        return conn.execute("SELECT COUNT(*) FROM health_dedupe").fetchone()[0]
+
+
+def _write_bundle_shard(
+    journal: Path, import_id: str, items: list[oura.OuraNormalizedItem]
+) -> None:
+    """Materialize one bundle's normalized month shards in a temp journal.
+
+    Mirrors the storage the design doc fixes for phase O1 ("mirrors
+    apple_health exactly"): per-bundle ``imports/<id>/normalized/<month>.jsonl``
+    with ``import_id`` / ``month`` / bundle-prefixed ``normalized_ref``
+    stamped on each row, exactly as ``apple_health._save_export`` writes them.
+    """
+
+    by_month: dict[str, list[str]] = {}
+    for item in items:
+        lines = by_month.setdefault(item.month, [])
+        row = dict(item.row)
+        row["import_id"] = import_id
+        row["month"] = item.month
+        row["normalized_ref"] = (
+            f"imports/{import_id}/normalized/{item.month}.jsonl#L{len(lines) + 1}"
+        )
+        lines.append(json.dumps(row, sort_keys=True))
+    for month, lines in by_month.items():
+        shard = journal / "imports" / import_id / "normalized" / f"{month}.jsonl"
+        shard.parent.mkdir(parents=True, exist_ok=True)
+        shard.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_revision_reissue_keeps_dedupe_keys_payload_independent():
+    base = _items_by_row_identity(
+        _normalize_for_import(FIXTURE_ROOT / "daily_readiness.json", _IMPORT_A)
+    )
+    revised = _items_by_row_identity(_normalize_for_import(REVISION_ROOT, _IMPORT_B))
+
+    assert set(base) == set(revised)
+    changed_id = ("oura.daily_readiness", "synthetic-readiness-2026-01-02")
+    # Same document id → same key, even though the score, both temperature
+    # fields, a contributor, and the timestamp all changed. The key must
+    # not include the payload or revisions would insert instead of update.
+    assert revised[changed_id].row["dedupe_key"] == base[changed_id].row["dedupe_key"]
+    assert base[changed_id].row["value"] == 82
+    assert revised[changed_id].row["value"] == 79
+    assert revised[changed_id].row["start_date"] != base[changed_id].row["start_date"]
+    assert (
+        revised[changed_id].dedupe_record.value_hash
+        != base[changed_id].dedupe_record.value_hash
+    )
+
+    # The derived temperature-deviation row revises through the same id.
+    temp_id = (
+        "oura.temperature_deviation",
+        "synthetic-readiness-2026-01-02/temperature_deviation",
+    )
+    assert revised[temp_id].row["dedupe_key"] == base[temp_id].row["dedupe_key"]
+    assert base[temp_id].row["value"] == -0.21
+    assert revised[temp_id].row["value"] == -0.05
+
+    # The byte-identical re-issue is a pure duplicate: same key, same hash.
+    same_id = ("oura.daily_readiness", "synthetic-readiness-2026-01-03")
+    assert revised[same_id].row["dedupe_key"] == base[same_id].row["dedupe_key"]
+    assert (
+        revised[same_id].dedupe_record.value_hash
+        == base[same_id].dedupe_record.value_hash
+    )
+
+
+def test_identical_payload_reimport_adds_no_dedupe_rows(tmp_path: Path):
+    journal = tmp_path
+    first = _normalize_for_import(FIXTURE_ROOT, _IMPORT_A)
+    again = _normalize_for_import(FIXTURE_ROOT, _IMPORT_B)
+
+    first_result = upsert_health_dedupe_records(
+        journal, [item.dedupe_record for item in first]
+    )
+    again_result = upsert_health_dedupe_records(
+        journal, [item.dedupe_record for item in again]
+    )
+
+    assert first_result.inserted == len(first)
+    assert first_result.updated == 0
+    assert again_result.inserted == 0
+    assert again_result.updated == len(again)
+    assert _dedupe_row_count(journal) == len(first)
+    sample = get_health_dedupe_record(journal, first[0].dedupe_record.dedupe_key)
+    assert sample is not None
+    assert sample["first_import_id"] == _IMPORT_A
+    assert sample["last_seen_import_id"] == _IMPORT_B
+
+
+def test_changed_payload_revision_updates_in_place(tmp_path: Path):
+    journal = tmp_path
+    base = _normalize_for_import(FIXTURE_ROOT / "daily_readiness.json", _IMPORT_A)
+    revised = _normalize_for_import(REVISION_ROOT, _IMPORT_B)
+
+    upsert_health_dedupe_records(journal, [item.dedupe_record for item in base])
+    result = upsert_health_dedupe_records(
+        journal, [item.dedupe_record for item in revised]
+    )
+
+    # Corrected documents update the existing ledger rows — never a second
+    # row per document (the revision requirement, design doc §4c).
+    assert result.inserted == 0
+    assert result.updated == len(revised)
+    assert _dedupe_row_count(journal) == len(base)
+    changed = _items_by_row_identity(revised)[
+        ("oura.daily_readiness", "synthetic-readiness-2026-01-02")
+    ]
+    row = get_health_dedupe_record(journal, changed.dedupe_record.dedupe_key)
+    assert row is not None
+    assert row["first_import_id"] == _IMPORT_A
+    assert row["last_seen_import_id"] == _IMPORT_B
+    # The ledger names the latest sighting of the document.
+    assert row["raw_ref"] == changed.dedupe_record.raw_ref
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Exposed defect: the shared dedupe upsert's ON CONFLICT clause never "
+        "refreshes value_hash, so after an Oura revision the ledger still "
+        "claims the superseded payload. oura_design_20260705.md §4c requires "
+        "'value_hash records that the payload changed'. Fix belongs in "
+        "solstone/think/importers/health_dedupe.py (shared with apple_health)"
+        " — outside this suite's ownership. Remove this marker with that fix."
+    ),
+)
+def test_revision_refreshes_value_hash_in_dedupe_ledger(tmp_path: Path):
+    journal = tmp_path
+    base = _normalize_for_import(FIXTURE_ROOT / "daily_readiness.json", _IMPORT_A)
+    revised = _items_by_row_identity(_normalize_for_import(REVISION_ROOT, _IMPORT_B))
+
+    upsert_health_dedupe_records(journal, [item.dedupe_record for item in base])
+    changed = revised[("oura.daily_readiness", "synthetic-readiness-2026-01-02")]
+    upsert_health_dedupe_records(journal, [changed.dedupe_record])
+
+    row = get_health_dedupe_record(journal, changed.dedupe_record.dedupe_key)
+    assert row is not None
+    assert row["value_hash"] == changed.dedupe_record.value_hash
+
+
+def test_within_bundle_page_overlap_collapses_to_one_row(tmp_path: Path):
+    journal = tmp_path
+    document = oura.parse_oura_bundle(FIXTURE_ROOT / "daily_readiness.json")
+    # Oura pagination overlap: the same document arrives on two pages of
+    # one sync run. Both copies carry one dedupe key; the batch counts the
+    # second as an update and the ledger holds exactly one row.
+    overlapped = {"daily_readiness": document["daily_readiness"][:1] * 2}
+    items = oura.normalize_bundle(
+        overlapped,
+        import_id=_IMPORT_A,
+        raw_ref_root=f"imports/{_IMPORT_A}/raw/oura",
+    )
+
+    result = upsert_health_dedupe_records(
+        journal, [item.dedupe_record for item in items]
+    )
+
+    assert len(items) == 4  # readiness + temperature deviation, twice
+    assert len({item.row["dedupe_key"] for item in items}) == 2
+    assert result.inserted == 2
+    assert result.updated == 2
+    assert _dedupe_row_count(journal) == 2
+
+
+def test_document_id_shared_across_endpoints_never_collides():
+    shared_id = "synthetic-shared-2026-01-02"
+    day = "2026-01-02"
+    bundle = {
+        "daily_sleep": [{"id": shared_id, "day": day, "score": 80}],
+        "daily_readiness": [{"id": shared_id, "day": day, "score": 70}],
+        "daily_resilience": [{"id": shared_id, "day": day, "level": "solid"}],
+        "daily_stress": [{"id": shared_id, "day": day, "day_summary": "normal"}],
+        "daily_spo2": [
+            {"id": shared_id, "day": day, "spo2_percentage": {"average": 97.0}}
+        ],
+        "sleep": [
+            {
+                "id": shared_id,
+                "day": day,
+                "bedtime_start": "2026-01-01T22:41:00-07:00",
+                "total_sleep_duration": 26340,
+            }
+        ],
+    }
+    items = oura.normalize_bundle(
+        bundle,
+        import_id=_IMPORT_A,
+        raw_ref_root=f"imports/{_IMPORT_A}/raw/oura",
+    )
+
+    keys = [item.row["dedupe_key"] for item in items]
+    assert len(items) == len(bundle)
+    assert len(set(keys)) == len(keys)
+    by_type = {item.row["record_type"]: item.row["dedupe_key"] for item in items}
+    # The most collision-prone pair: one endpoint name prefixes the other.
+    assert by_type["oura.daily_sleep"] != by_type["oura.sleep"]
+
+
+def test_cross_bundle_day_read_surfaces_one_row_per_key(tmp_path: Path):
+    journal = tmp_path
+    base = _normalize_for_import(FIXTURE_ROOT, _IMPORT_A)
+    revised = _normalize_for_import(REVISION_ROOT, _IMPORT_B)
+    _write_bundle_shard(journal, _IMPORT_A, base)
+    _write_bundle_shard(journal, _IMPORT_B, revised)
+
+    rows = _iter_normalized_rows(journal, month="2026-01")
+
+    keys = [row["dedupe_key"] for row in rows]
+    assert len(keys) == len(set(keys)), "day reads must dedupe by key"
+    assert len(rows) == len(base)  # revision re-issues add no rows
+    readiness = next(
+        row
+        for row in rows
+        if row["record_type"] == "oura.daily_readiness" and row["day"] == "20260102"
+    )
+    # The surfaced row remembers both bundles for the audit drawer.
+    assert readiness["import_ids"] == [_IMPORT_A, _IMPORT_B]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Exposed defect: body's _iter_normalized_rows keeps the first row "
+        "per dedupe key over bundles sorted oldest-first, so a revision "
+        "arriving in a later bundle surfaces the superseded payload. The "
+        "trailing-window re-fetch exists to pick up revisions "
+        "(oura_design_20260705.md §5), so the newest revision must win at "
+        "day-level reads. Fix belongs in solstone/apps/body/routes.py or "
+        "the phase-O1 save path — outside this suite's ownership. Remove "
+        "this marker with that fix."
+    ),
+)
+def test_cross_bundle_day_read_surfaces_latest_revision(tmp_path: Path):
+    journal = tmp_path
+    base = _normalize_for_import(FIXTURE_ROOT, _IMPORT_A)
+    revised = _normalize_for_import(REVISION_ROOT, _IMPORT_B)
+    _write_bundle_shard(journal, _IMPORT_A, base)
+    _write_bundle_shard(journal, _IMPORT_B, revised)
+
+    rows = _iter_normalized_rows(journal, month="2026-01")
+
+    readiness = next(
+        row
+        for row in rows
+        if row["record_type"] == "oura.daily_readiness" and row["day"] == "20260102"
+    )
+    temperature = next(
+        row
+        for row in rows
+        if row["record_type"] == "oura.temperature_deviation"
+        and row["day"] == "20260102"
+    )
+    assert readiness["value"] == 79, "the corrected readiness score must surface"
+    assert temperature["value"] == -0.05
 
 
 # ---------------------------------------------------------------------------
