@@ -10,7 +10,7 @@ SILERO_VAD_MODEL_FILENAME = "silero_vad_v6.onnx"
 _MISSING_MODELS_MESSAGE = (
     "solstone-journal-models is not installed; it ships solstone's bundled "
     "speaker/VAD model weights and is included with a journal-host install "
-    "(for example: pip install 'solstone[journal]')."
+    "(for example: pip install solstone-journal)."
 )
 
 

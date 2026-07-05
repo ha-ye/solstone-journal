@@ -19,7 +19,7 @@ The CLI has two tiers with distinct purposes:
 
 **Interactive entry points** (`sol chat`, `sol help`, `journal engage`) are top-level for discoverability even though they're user-facing. Agents don't invoke these.
 
-Console scripts are split across distributions. The base `solstone` package ships `sol` and `solstone`, both pointing at `solstone.think.sol_cli:main`. The `solstone-journal-host` distribution, pulled in by `solstone[journal]` / `solstone[journal-cuda]`, ships the host-only `journal` and `mlx-vlm-server` console scripts. The dispatcher, including `journal_main()`, still lives in base `solstone.think.sol_cli`; only the console-script wrapper moved. A thin/bare install therefore has no `journal` executable on PATH.
+Console scripts are split across distributions. The base `solstone` package ships `sol` and `solstone`, both pointing at `solstone.think.sol_cli:main`. The `solstone-journal` / `solstone-journal-cuda` distributions ship the host-only `journal` and `mlx-vlm-server` console scripts. The dispatcher, including `journal_main()`, still lives in base `solstone.think.sol_cli`; only the console-script wrapper moved. A thin/bare install therefore has no `journal` executable on PATH.
 
 ## Top-Level Commands (`sol <cmd>`)
 
@@ -281,7 +281,7 @@ instead of false failures. Its battery is:
   command when missing.
 
 `host_dependencies` fix guidance is: Reinstall the journal host stack:
-`pip install --upgrade 'solstone[journal]'`  |  `uv tool install --upgrade --with-executables-from solstone-journal-host 'solstone[journal]'`  |  `pipx install --force --include-deps 'solstone[journal]'`. On an NVIDIA host use the 'solstone[journal-cuda]' extra instead of 'solstone[journal]'.
+`pip install --upgrade solstone-journal`  |  `uv tool install --upgrade solstone-journal`  |  `pipx install --force solstone-journal`. On an NVIDIA host use `solstone-journal-cuda` instead — never install both.
 
 Journal-host blocker failures include invalid service config, service identity
 mismatch, crash loops, systemd failed state, and journal-sync conflicts. An

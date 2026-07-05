@@ -35,7 +35,7 @@ Use the diagnostic command that matches the question:
   `uv` exist?
 - `journal health` — what live supervisor status is being reported right now?
 
-`journal`-prefixed commands, including `journal doctor` and `journal setup`, require a journal-host install because the `journal` executable ships in the `solstone-journal-host` distribution (`solstone[journal]`), not in the thin `sol` client.
+`journal`-prefixed commands, including `journal doctor` and `journal setup`, require a journal-host install because the `journal` executable ships in the `solstone-journal` distribution, not in the thin `sol` client.
 
 `sol doctor` runs four checks:
 
@@ -62,7 +62,7 @@ Use the diagnostic command that matches the question:
 | `feature:pdf`, `feature:whisper` | advisory | Optional extras with exact install commands. |
 
 `host_dependencies` fix guidance is: Reinstall the journal host stack:
-`pip install --upgrade 'solstone[journal]'`  |  `uv tool install --upgrade --with-executables-from solstone-journal-host 'solstone[journal]'`  |  `pipx install --force --include-deps 'solstone[journal]'`. On an NVIDIA host use the 'solstone[journal-cuda]' extra instead of 'solstone[journal]'.
+`pip install --upgrade solstone-journal`  |  `uv tool install --upgrade solstone-journal`  |  `pipx install --force solstone-journal`. On an NVIDIA host use `solstone-journal-cuda` instead — never install both.
 
 `journal doctor` is role-aware. If there is no local journal directory or no
 installed service, folder and service checks emit `skip` (`no local journal` or

@@ -71,22 +71,20 @@ Python 3.11+, Linux + macOS, AGPL-3.0-only, maintained by [sol pbc](https://solp
 run a journal here — the full host:
 
 ```bash
-uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'
+uv tool install solstone-journal && uv tool install solstone
 journal setup
 ```
 
 pip and pipx equivalents, followed by `journal setup`:
 
 ```bash
-pip install 'solstone[journal]'
-pipx install --include-deps 'solstone[journal]'
+pip install solstone-journal
+pipx install solstone-journal && pipx install solstone
 ```
 
-The `journal` and `mlx-vlm-server` commands live in the `solstone-journal-host` package that `[journal]` pulls in. `pip` exposes them natively; `uv tool` and `pipx` need the flag shown above. For GPU transcription, replace `[journal]` with `[journal-cuda]`.
+A `pip install solstone-journal` puts `journal` and `mlx-vlm-server` on PATH natively; `uv tool` and `pipx` expose each tool's own commands, so the journal install is two commands — the journal tool plus the thin `solstone` tool. For GPU transcription, install `solstone-journal-cuda` instead.
 
 want only the thin `sol` client — to talk to a journal running elsewhere? `uv tool install solstone` (no extras), or `uvx solstone` for an ephemeral one-shot.
-
-*(packaging note: the journal is becoming its own installable package, so this install story will simplify — the commands above stay accurate today.)*
 
 then open http://localhost:5015 in a browser; the first-run wizard handles identity and the gemini API key.
 

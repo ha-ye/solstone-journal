@@ -29,24 +29,22 @@ most people install solstone to **run the journal here** — the full host that
 transcribes, makes sense of your day, and holds everything:
 
 ```bash
-pip install 'solstone[journal]'
-uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'
-pipx install --include-deps 'solstone[journal]'
+pip install solstone-journal                                    # includes sol on PATH
+uv tool install solstone-journal && uv tool install solstone   # journal tool + sol tool
+pipx install solstone-journal && pipx install solstone         # same two-tool story
 ```
 
-Pick one installer. The quotes matter — they keep your shell from treating the
-`[journal]` brackets as a glob.
+Pick one installer.
 
-A host install puts `sol`, `solstone`, `journal`, and `mlx-vlm-server` on PATH
-(`~/.local/bin/` for uv tool and pipx), which most shells already include. If
-not: `exec $SHELL -l` or restart your shell.
-
-`journal` and `mlx-vlm-server` live in the `solstone-journal-host` distribution
-that `[journal]` pulls in. `pip` exposes dependency scripts natively; `uv tool`
-and `pipx` need the flags shown above to expose those host commands.
+A pip install of solstone-journal puts `sol`, `solstone`, `journal`, and
+`mlx-vlm-server` on PATH (`~/.local/bin/` for uv tool and pipx, which most
+shells already include). uv tool and pipx expose each installed tool's own
+commands — the journal tool provides `journal` and `mlx-vlm-server`, and the
+thin solstone tool provides `sol` and `solstone`, which is why their install
+lines above are two commands.
 
 NVIDIA GPU owners who want GPU-accelerated transcription install
-`solstone[journal-cuda]` **instead of** `solstone[journal]` with the same
+`solstone-journal-cuda` **instead of** `solstone-journal` with the same
 installer command shape.
 
 ### just the `sol` client
@@ -62,10 +60,7 @@ uvx solstone --help             # or ephemerally — no install, one-shot
 ```
 
 A thin/no-extras install carries only `sol` and `solstone`; `journal setup`,
-`journal start`, and `mlx-vlm-server` require a `solstone[journal]` host install.
-
-(packaging note: the journal is becoming its own installable package, so this
-install story will simplify — the commands above stay accurate today.)
+`journal start`, and `mlx-vlm-server` require a `solstone-journal` host install.
 
 ## set up
 
@@ -77,9 +72,9 @@ this runs the setup readiness doctor battery, confirms the journal directory at 
 
 let your human know: **open http://localhost:5015 in a browser**. the first-run wizard walks them through setting their identity and connecting a gemini API key.
 
-a `solstone[journal]` install bundles everything a journal host needs — PDF rendering, whisper, and the default CPU transcription stack are all included; `journal setup` downloads the transcription model. there are no separate à-la-carte extras to add. if the readiness doctor step (`journal doctor --readiness`) finds missing system libraries, it will tell you the exact install command to run for your platform.
+a `solstone-journal` install bundles everything a journal host needs — PDF rendering, whisper, and the default CPU transcription stack are all included; `journal setup` downloads the transcription model. there are no separate à-la-carte extras to add. if the readiness doctor step (`journal doctor --readiness`) finds missing system libraries, it will tell you the exact install command to run for your platform.
 
-Pick one of `solstone[journal]` or `solstone[journal-cuda]` — the CPU and GPU ONNX runtimes share the same files and must not both be installed. `journal doctor` reports whether the transcription runtime and model are ready.
+Pick one of `solstone-journal` or `solstone-journal-cuda` — the CPU and GPU ONNX runtimes share the same files and must not both be installed. `journal doctor` reports whether the transcription runtime and model are ready.
 
 This CUDA extra is only for transcription. The Linux local model provider uses Vulkan for screen analysis, so a hardware Vulkan GPU from AMD, NVIDIA, or Intel can work; CPU/software Vulkan devices are rejected instead of falling back silently. On AMD, the local model path runs through Mesa/RADV Vulkan, while transcription stays on the bundled CPU runtime.
 
@@ -123,27 +118,37 @@ journal observer create tmux-laptop
 
 (for observer packages, `uv tool install solstone-tmux` is also fine if you prefer uv.)
 
+## migrating from a pre-split install
+
+If you installed the journal before the package split, run the one-time migration
+line for your installer family, then run `journal setup`.
+
+```bash
+pip uninstall solstone-journal-host && pip install solstone-journal
+pipx uninstall solstone && pipx install solstone-journal && pipx install solstone
+uv tool uninstall solstone && uv tool install solstone-journal && uv tool install solstone
+```
+
 ## upgrading
 
 ```bash
-pip install --upgrade 'solstone[journal]' && journal setup
-uv tool install --upgrade --with-executables-from solstone-journal-host 'solstone[journal]' && journal setup
-pipx install --force --include-deps 'solstone[journal]' && journal setup
+pip install --upgrade solstone-journal && journal setup
+uv tool install --upgrade solstone-journal && uv tool install --upgrade solstone && journal setup
+pipx upgrade solstone-journal && journal setup
 ```
 
-Use the same installer family you used for install. The `uv tool` form must
-keep `--with-executables-from solstone-journal-host`, and the pipx form must
-keep `--include-deps`, so the `journal` and `mlx-vlm-server` host scripts stay
-on PATH after the upgrade. For GPU transcription, replace `[journal]` with
-`[journal-cuda]`. The `journal setup` step refreshes runtime artifacts and
-reconciles the service unit if anything has changed.
+Use the same installer family you used for install. The `uv tool` form upgrades both
+the journal package and the thin `solstone` client, while the pipx form upgrades
+the journal tool. For GPU transcription, upgrade `solstone-journal-cuda` instead
+of `solstone-journal`. The `journal setup` step refreshes runtime artifacts and
+reconciles the systemd/launchd unit if anything has changed.
 
 ## uninstall
 
 1. remove setup-managed runtime files: `journal setup --clean-uninstall`
    this removes the user service, managed `~/.local/bin/sol` wrapper, user config, and setup manifest. it does not remove your journal.
 2. optional: remove the installed `sol` agent skill: `sol skills uninstall`.
-3. uninstall the python package: `uv tool uninstall solstone` (or `pipx uninstall solstone`).
+3. uninstall the python packages: `uv tool uninstall solstone-journal && uv tool uninstall solstone` (or `pipx uninstall solstone-journal`).
 4. macOS only: drag `/Applications/solstone.app` to Trash.
 5. macOS only, optional: remove observer app data and the parakeet model cache:
    ```bash

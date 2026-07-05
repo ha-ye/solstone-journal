@@ -14,7 +14,7 @@ Required everywhere:
 - ripgrep (`rg`)
 - ffmpeg for audio processing
 
-Linux is the primary development platform. macOS is supported. Source-checkout installs on Apple Silicon need Xcode command line tools to build the CoreML parakeet helper; packaged host installs (`uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'`) on macOS 14 or newer ship the helper as a pre-built binary.
+Linux is the primary development platform. macOS is supported. Source-checkout installs on Apple Silicon need Xcode command line tools to build the CoreML parakeet helper; packaged host installs (`uv tool install solstone-journal && uv tool install solstone`) on macOS 14 or newer ship the helper as a pre-built binary.
 
 Fedora/RHEL:
 
@@ -166,7 +166,7 @@ That target first runs `sol skills build` to regenerate the checked-in reference
 
 ## Migrating from a source install to a packaged install
 
-A packaged host install puts `sol`, `solstone`, `journal`, and `mlx-vlm-server` on PATH directly. With uv tool, use `uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'` so the host scripts from the `solstone-journal-host` dependency are exposed. It does not use the source-checkout managed wrapper, and it does not use `.venv/bin/sol`.
+A packaged host install puts `sol`, `solstone`, `journal`, and `mlx-vlm-server` on PATH directly. `pip install solstone-journal` exposes those commands in one environment; uv tool and pipx expose each tool's own commands, so install both the journal tool and the thin `solstone` tool. It does not use the source-checkout managed wrapper, and it does not use `.venv/bin/sol`.
 
 `make uninstall` is disabled by design. To migrate cleanly from a source checkout to a packaged install, remove user-runtime artifacts explicitly:
 
@@ -174,12 +174,12 @@ A packaged host install puts `sol`, `solstone`, `journal`, and `mlx-vlm-server` 
 journal service uninstall
 sol skills uninstall
 python -m solstone.think.install_guard uninstall
-uv tool install --with-executables-from solstone-journal-host 'solstone[journal]'
+uv tool install solstone-journal && uv tool install solstone
 journal setup
 ```
 
-For pip or pipx packaged installs, use `pip install 'solstone[journal]'` or
-`pipx install --include-deps 'solstone[journal]'` before `journal setup`.
+For pip or pipx packaged installs, use `pip install solstone-journal` or
+`pipx install solstone-journal && pipx install solstone` before `journal setup`.
 
 Your journal is preserved at `~/journal`; solstone does not remove it during install or uninstall. Do not add backwards-compatibility shims for the old source-checkout layout. This migration is a clean break.
 

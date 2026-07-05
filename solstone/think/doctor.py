@@ -110,12 +110,10 @@ _HOST_DEPENDENCY_MODULES = (
 )
 HOST_DEPENDENCY_REINSTALL_GUIDANCE = (
     "Reinstall the journal host stack: "
-    "pip install --upgrade 'solstone[journal]'  |  "
-    "uv tool install --upgrade --with-executables-from solstone-journal-host "
-    "'solstone[journal]'  |  "
-    "pipx install --force --include-deps 'solstone[journal]'. "
-    "On an NVIDIA host use the 'solstone[journal-cuda]' extra instead of "
-    "'solstone[journal]'."
+    "pip install --upgrade solstone-journal  |  "
+    "uv tool install --upgrade solstone-journal  |  "
+    "pipx install --force solstone-journal. "
+    "On an NVIDIA host use solstone-journal-cuda instead — never install both."
 )
 SERVICE_IDENTITY_CHECK = Check("service_identity", "blocker", ("linux", "darwin"))
 SERVICE_RUNNING_CHECK = Check("service_running", "blocker", ("linux", "darwin"))
