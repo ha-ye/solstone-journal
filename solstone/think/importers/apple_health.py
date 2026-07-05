@@ -31,9 +31,8 @@ from solstone.think.importers.health_schema import (
     pick_day_sleep,
 )
 from solstone.think.importers.shared import (
-    hash_source,
-    windowed_source_hash,
     install_source_file,
+    windowed_source_hash,
     write_content_manifest,
     write_jsonl_records,
     write_manifest,
