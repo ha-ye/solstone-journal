@@ -72,6 +72,9 @@ FILE_IMPORTER_REGISTRY: dict[str, str] = {
     "image": "solstone.think.importers.images",
     "journal_archive": "solstone.think.importers.journal_archive",
     "apple_health": "solstone.think.importers.apple_health",
+    # Preview/dry-run only: the oura save path is gated (pre_save_gate)
+    # and stops at a NotImplementedError seam until its later phase.
+    "oura": "solstone.think.importers.oura",
 }
 
 
