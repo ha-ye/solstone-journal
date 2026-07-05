@@ -20,6 +20,7 @@ import logging
 import math
 import re
 import sqlite3
+import threading
 from collections import Counter, defaultdict
 from contextlib import closing
 from datetime import date, datetime, timedelta, timezone
@@ -601,6 +602,14 @@ def _read_health_dedupe_stats(journal_root: Path) -> dict[str, Any]:
     uri = f"file:{db_path}?mode=ro"
     with closing(sqlite3.connect(uri, uri=True)) as conn:
         conn.row_factory = sqlite3.Row
+        # The GROUP BY below sorts the whole table (~2M rows); with the
+        # default temp_store that sort spills hundreds of MB to disk temp
+        # files — the same class of spill as the recent disk-full incident.
+        # Keep the sorter in memory: the footprint is transient, released
+        # at connection close, and an allocation failure fails this one
+        # stats build instead of filling the disk. Per-connection pragma;
+        # the read-only database itself is untouched.
+        conn.execute("PRAGMA temp_store = MEMORY")
         # One scan for every grouped aggregate; folded in Python below.
         grouped = conn.execute(
             """
@@ -666,6 +675,41 @@ def _read_health_dedupe_stats(journal_root: Path) -> dict[str, Any]:
     }
     _dedupe_stats_cache[cache_key] = (signature, result)
     return result
+
+
+# The stats cache above dies with the process, so the first request after
+# every convey restart used to pay the cold full-table scan (~10s on a 2M-row
+# database). solstone/apps/body/events.py kicks this warm once at service
+# startup and again when an import completes.
+_stats_warm_flight = threading.Lock()
+
+
+def warm_dedupe_stats_cache() -> threading.Thread | None:
+    """Build the dedupe-stats cache entry in a background daemon thread.
+
+    Single-flight: returns ``None`` when a warm is already running instead
+    of stacking table scans. The request path never touches the flight
+    lock — a request arriving mid-warm computes exactly as before, and the
+    two results agree because the cache is keyed by the db+wal signature.
+    Failures are logged and swallowed: warming is an optimization and must
+    never break startup or serving.
+    """
+    if not _stats_warm_flight.acquire(blocking=False):
+        return None
+
+    journal_root = _journal_root()
+
+    def _warm() -> None:
+        try:
+            _read_health_dedupe_stats(journal_root)
+        except Exception:
+            logger.exception("Body dedupe-stats cache warm failed")
+        finally:
+            _stats_warm_flight.release()
+
+    thread = threading.Thread(target=_warm, name="body-stats-warm", daemon=True)
+    thread.start()
+    return thread
 
 
 def _grid_cell(day_key: str, count: int, scale: float) -> dict[str, Any]:

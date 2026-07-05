@@ -1652,6 +1652,7 @@ a.body-jump-day:focus-visible {
           if (pop.hidden) return;
           pop.hidden = true;
           button.setAttribute("aria-expanded", "false");
+          setView("days");
           if (refocus) button.focus();
         }
 

@@ -3,15 +3,20 @@
 
 from __future__ import annotations
 
+import importlib
 import json
+import logging
 import math
 import sqlite3
+import sys
+import threading
 from datetime import date
 from pathlib import Path
 
 import pytest
 
 from solstone.apps.body import routes as body_routes
+from solstone.apps.events import EventContext
 from solstone.think.importers import health_schema
 
 DEDUPE_TABLE_SQL = """
@@ -3371,3 +3376,124 @@ def test_day_audit_lists_every_bundle_containing_the_day(body_env):
         "20260903_000000",
         "20260903_010000",
     ]
+
+
+# --- Startup cache warm ------------------------------------------------------
+
+
+def test_events_module_import_kicks_stats_warm(monkeypatch):
+    """Convey startup — discover_handlers importing events.py — warms the cache.
+
+    The import-time kick is the startup marker; the importer-completed
+    handler re-warms through the same guarded entry point.
+    """
+    calls: list[str] = []
+    monkeypatch.setattr(
+        body_routes, "warm_dedupe_stats_cache", lambda: calls.append("warm")
+    )
+
+    sys.modules.pop("solstone.apps.body.events", None)
+    events = importlib.import_module("solstone.apps.body.events")
+
+    assert calls == ["warm"]
+
+    ctx = EventContext(
+        msg={"tract": "importer", "event": "completed"},
+        app="body",
+        tract="importer",
+        event="completed",
+    )
+    events.rewarm_stats_after_import(ctx)
+
+    assert calls == ["warm", "warm"]
+
+
+def test_stats_warm_is_single_flight_and_recovers(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[Path] = []
+
+    def _blocking_stats(journal_root: Path) -> dict:
+        calls.append(journal_root)
+        started.set()
+        assert release.wait(timeout=5)
+        return {}
+
+    monkeypatch.setattr(body_routes, "_read_health_dedupe_stats", _blocking_stats)
+
+    first = body_routes.warm_dedupe_stats_cache()
+    assert first is not None
+    assert started.wait(timeout=5)
+
+    # A second kick while the first is in flight is a no-op.
+    assert body_routes.warm_dedupe_stats_cache() is None
+
+    release.set()
+    first.join(timeout=5)
+    assert not first.is_alive()
+    assert len(calls) == 1
+
+    # The flight lock is released once the warm finishes — a new warm runs.
+    follow_up = body_routes.warm_dedupe_stats_cache()
+    assert follow_up is not None
+    follow_up.join(timeout=5)
+    assert not follow_up.is_alive()
+    assert len(calls) == 2
+
+
+def test_stats_warm_failure_is_contained_and_logged(body_env, caplog):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    def _boom(journal_root: Path) -> dict:
+        raise RuntimeError("synthetic warm failure")
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(body_routes, "_read_health_dedupe_stats", _boom)
+    try:
+        with caplog.at_level(logging.ERROR, logger="solstone.apps.body.routes"):
+            thread = body_routes.warm_dedupe_stats_cache()
+            assert thread is not None
+            thread.join(timeout=5)
+            assert not thread.is_alive()
+    finally:
+        mp.undo()
+
+    assert any("cache warm failed" in record.getMessage() for record in caplog.records)
+
+    # The failed warm released the flight lock and never touched serving:
+    # the request path recomputes on demand exactly as before.
+    response = env.client.get("/app/body/api/status")
+    assert response.status_code == 200
+    assert response.get_json()["dedupe"]["total"] == 4
+
+    recovery = body_routes.warm_dedupe_stats_cache()
+    assert recovery is not None
+    recovery.join(timeout=5)
+    assert not recovery.is_alive()
+
+
+def test_stats_warm_leaves_first_request_hot(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    thread = body_routes.warm_dedupe_stats_cache()
+    assert thread is not None
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+
+    # After the warm the overview no longer needs the database at all:
+    # block sqlite in the routes module and the warmed cache still serves.
+    class _NoSqlite:
+        def connect(self, *args, **kwargs):
+            raise AssertionError("dedupe stats were not served from the warm cache")
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(body_routes, "sqlite3", _NoSqlite())
+    try:
+        response = env.client.get("/app/body/api/status")
+    finally:
+        mp.undo()
+
+    assert response.status_code == 200
+    assert response.get_json()["dedupe"]["total"] == 4
