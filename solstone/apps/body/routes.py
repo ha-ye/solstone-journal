@@ -277,12 +277,12 @@ def _iter_normalized_rows(
     pattern = f"*/normalized/{month}.jsonl" if month else "*/normalized/*.jsonl"
     rows: list[dict[str, Any]] = []
     kept_by_key: dict[str, dict[str, Any]] = {}
-    for path in sorted(imports_root.glob(pattern)):
+    # Newest bundle first: a source that re-issues corrected documents
+    # (Oura revisions) lands them in a later bundle, and the newest
+    # payload must be the one day pages surface. Older sightings still
+    # register in import_ids (kept oldest-first) for the day audit.
+    for path in sorted(imports_root.glob(pattern), reverse=True):
         for row in _read_shard_rows(path):
-            # The same entry appears in every bundle that imported it
-            # (e.g. a test-week import overlapped by the full backfill);
-            # keep one row per dedupe key, remembering every bundle it
-            # appeared in so the day audit can list them all.
             dedupe_key = row.get("dedupe_key")
             if isinstance(dedupe_key, str) and dedupe_key:
                 kept = kept_by_key.get(dedupe_key)
@@ -291,7 +291,7 @@ def _iter_normalized_rows(
                     if import_id:
                         bundles = kept.setdefault("import_ids", [])
                         if str(import_id) not in bundles:
-                            bundles.append(str(import_id))
+                            bundles.insert(0, str(import_id))
                     continue
                 kept_by_key[dedupe_key] = row
                 if row.get("import_id"):

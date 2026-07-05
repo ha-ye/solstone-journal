@@ -539,19 +539,6 @@ def test_cross_bundle_day_read_surfaces_one_row_per_key(tmp_path: Path):
     assert readiness["import_ids"] == [_IMPORT_A, _IMPORT_B]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Exposed defect: body's _iter_normalized_rows keeps the first row "
-        "per dedupe key over bundles sorted oldest-first, so a revision "
-        "arriving in a later bundle surfaces the superseded payload. The "
-        "trailing-window re-fetch exists to pick up revisions "
-        "(oura_design_20260705.md §5), so the newest revision must win at "
-        "day-level reads. Fix belongs in solstone/apps/body/routes.py or "
-        "the phase-O1 save path — outside this suite's ownership. Remove "
-        "this marker with that fix."
-    ),
-)
 def test_cross_bundle_day_read_surfaces_latest_revision(tmp_path: Path):
     journal = tmp_path
     base = _normalize_for_import(FIXTURE_ROOT, _IMPORT_A)
