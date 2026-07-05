@@ -311,11 +311,6 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         return {"install_state": "installed"}, 200
 
     availability = get_availability_payload(model_id)
-    report = _fit_report_for_model(model_id)
-    blocked_reason = _blocked_reason(report)
-    if blocked_reason:
-        raise LocalBootstrapUnavailableError(blocked_reason)
-
     installed = bool(availability["binary_present"] and availability["model_present"])
     with _INSTALL_LOCK:
         status = _read_status()
@@ -334,6 +329,14 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
 
         if status["install_state"] in IN_FLIGHT_STATES:
             return {"install_state": status["install_state"]}, 200
+
+        # Only genuinely-missing artifacts reach here: build the host-fit report
+        # and gate the download. Already-installed/in-flight paths returned above
+        # without ever constructing a fit report.
+        report = _fit_report_for_model(model_id)
+        blocked_reason = _blocked_reason(report)
+        if blocked_reason:
+            raise LocalBootstrapUnavailableError(blocked_reason)
 
         disk_reason = _disk_blocked_reason(report)
         if disk_reason:

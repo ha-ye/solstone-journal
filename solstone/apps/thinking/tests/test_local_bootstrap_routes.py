@@ -711,7 +711,11 @@ def test_local_bootstrap_migrates_preexisting_install_without_worker(
         lambda: SimpleNamespace(available=32 * 1024**3, total=32 * 1024**3),
     )
     monkeypatch.setattr(
-        local_bootstrap, "_fit_report_for_model", lambda _model: _fit("ok")
+        local_bootstrap,
+        "_fit_report_for_model",
+        lambda _model: pytest.fail(
+            "fit report must not be built for an already-installed artifact set"
+        ),
     )
     monkeypatch.setattr(
         local_bootstrap.threading,
