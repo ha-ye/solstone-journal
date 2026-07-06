@@ -13,6 +13,11 @@ from solstone.think import install_models, parakeet_readiness
 from solstone.think.providers import fit_report
 
 
+@pytest.fixture(autouse=True)
+def _skip_provider_cache_seed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(install_models, "seed_provider_cache", lambda: None)
+
+
 def _fit(severity: fit_report.FitSeverity) -> fit_report.FitReport:
     return fit_report.FitReport(
         artifact="test install models",

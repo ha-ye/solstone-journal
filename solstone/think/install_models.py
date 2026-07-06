@@ -39,6 +39,7 @@ from solstone.think.parakeet_readiness import (
     _verify_mac_cache,
     _verify_variant_cache,
 )
+from solstone.think.provider_cache_seed import seed_provider_cache
 from solstone.think.providers.fit_report import FitReport
 from solstone.think.utils import is_packaged_install
 
@@ -498,6 +499,9 @@ def main() -> int:
         os_name,
         arch,
     )
+
+    if not args.check and not args.force:
+        seed_provider_cache()
 
     try:
         # Why: local asset corruption makes downloading parakeet pointless.
