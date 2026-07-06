@@ -18,6 +18,12 @@ def _read_config(journal_dir):
     return json.loads((journal_dir / "config" / "journal.json").read_text())
 
 
+def _read_init_state(client):
+    response = client.get("/init/api/state")
+    assert response.status_code == 200
+    return response.get_json()
+
+
 def _make_empty_client(tmp_path, monkeypatch, *, timezone="America/Denver"):
     journal = tmp_path / "journal"
     journal.mkdir()
@@ -99,8 +105,9 @@ class TestInitDetection:
         resp = fresh_client.get("/init")
         assert resp.status_code == 200
         assert b"create your journal" in resp.data
-        assert b'value="Test User"' in resp.data
-        assert b'value="Tester"' in resp.data
+        state = _read_init_state(fresh_client)
+        assert state["identity_name"] == "Test User"
+        assert state["identity_preferred"] == "Tester"
         assert b'id="section-password"' not in resp.data
         assert b'id="password"' not in resp.data
 
@@ -116,18 +123,14 @@ class TestInitDetection:
         except Exception:
             expected = "dev"
 
-        resp = fresh_client.get("/init")
-        assert (
-            f"journal version {expected}".encode() in resp.data
-            or b"journal version dev" in resp.data
-        )
+        assert _read_init_state(fresh_client)["version"] in {expected, "dev"}
 
     def test_init_renders_journal_path_in_welcome(self, fresh_client):
         journal_path = str(Path(get_journal()))
 
         resp = fresh_client.get("/init")
 
-        assert f"<code>{journal_path}</code>".encode() in resp.data
+        assert _read_init_state(fresh_client)["journal_path"] == journal_path
         assert b"solstone is three things working together" not in resp.data
         assert b"solstone is two things working together" not in resp.data
         assert b"your journal lives on this computer." in resp.data
@@ -247,7 +250,8 @@ class TestInitDetection:
     def test_init_retention_radios_present(self, fresh_client):
         resp = fresh_client.get("/init")
         assert resp.data.count(b'<input type="radio" name="retention_mode"') == 3
-        assert b'name="retention_mode" value="keep" checked' in resp.data
+        assert _read_init_state(fresh_client)["retention_mode"] == "keep"
+        assert b'name="retention_mode" value="keep"' in resp.data
         assert b'name="retention_mode" value="days"' in resp.data
         assert b'name="retention_mode" value="processed"' in resp.data
 
@@ -263,8 +267,10 @@ class TestInitDetection:
 
         resp = app.test_client().get("/init")
 
-        assert b'name="retention_mode" value="days" checked' in resp.data
-        assert b'id="retention-days-input" min="1" value="14"' in resp.data
+        assert b'name="retention_mode" value="days"' in resp.data
+        state = app.test_client().get("/init/api/state").get_json()
+        assert state["retention_mode"] == "days"
+        assert state["retention_days"] == 14
 
     def test_init_observed_media_copy_updated(self, fresh_client):
         resp = fresh_client.get("/init")
@@ -305,8 +311,9 @@ class TestInitDetection:
         assert config["identity"]["preferred"] == "osuser"
         assert config["identity"]["timezone"] == "America/Denver"
         assert "convey" not in config
-        assert b'value="OS User"' in resp.data
-        assert b'value="osuser"' in resp.data
+        state = _read_init_state(client)
+        assert state["identity_name"] == "OS User"
+        assert state["identity_preferred"] == "osuser"
 
     def test_init_escapes_identity_values(self, journal_copy):
         config = _read_config(journal_copy)
@@ -320,8 +327,9 @@ class TestInitDetection:
 
         resp = app.test_client().get("/init")
 
-        assert b"&lt;script&gt;alert(1)&lt;/script&gt;" in resp.data
         assert b"<script>alert(1)</script>" not in resp.data
+        state = app.test_client().get("/init/api/state").get_json()
+        assert state["identity_name"] == "<script>alert(1)</script>"
 
     def test_init_does_not_overwrite_existing_identity(self, journal_copy):
         config = _read_config(journal_copy)

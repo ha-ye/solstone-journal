@@ -28,6 +28,8 @@
   window.marked = { parse(value) { return value; } };
   window.DOMPurify = { sanitize(value) { return value; } };
 </script>
+<script src="../shell_gate.js"></script>
+<script>window.resolveSolShellReady({source: 'static-test'});</script>
 <script src="../app.js"></script>
 <script>
   const results = document.getElementById('results');

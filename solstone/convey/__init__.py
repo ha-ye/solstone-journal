@@ -73,6 +73,7 @@ def create_app(journal: str = "") -> Flask:
     from .push import push_bp
     from .request_id import install_request_id_stamper
     from .root import bp as root_bp
+    from .shell_api import create_shell_api_blueprint
     from .voice import voice_bp
 
     app = Flask(
@@ -144,6 +145,7 @@ def create_app(journal: str = "") -> Flask:
     registry = AppRegistry()
     registry.discover()
     registry.register_blueprints(app)
+    app.register_blueprint(create_shell_api_blueprint(registry))
     # One deliberate legacy alias: shipped iOS clients pair against /app/link/*.
     # Serve the SAME view objects at the legacy prefix under endpoint names
     # app:link.* so the cert-less gate's app:link.pair references keep resolving.

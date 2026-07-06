@@ -41,8 +41,8 @@ def _context(
     app = Flask(__name__)
     registry = AppRegistry()
     monkeypatch.setattr(convey_state, "journal_root", str(tmp_path))
-    monkeypatch.setattr("solstone.convey.apps._get_facets_data", lambda: [])
-    monkeypatch.setattr("solstone.convey.apps._get_selected_facet", lambda: None)
+    monkeypatch.setattr("solstone.convey.shell_data._get_facets_data", lambda: [])
+    monkeypatch.setattr("solstone.convey.shell_data._get_selected_facet", lambda: None)
     monkeypatch.setattr("solstone.think.awareness.get_current", lambda: awareness)
     monkeypatch.setattr(
         "solstone.think.utils.day_dirs",
@@ -89,8 +89,8 @@ def test_menu_bar_renders_discovered_app_lucide_svg(monkeypatch, tmp_path):
     registry = AppRegistry()
     registry.discover()
     monkeypatch.setattr(convey_state, "journal_root", str(tmp_path))
-    monkeypatch.setattr("solstone.convey.apps._get_facets_data", lambda: [])
-    monkeypatch.setattr("solstone.convey.apps._get_selected_facet", lambda: None)
+    monkeypatch.setattr("solstone.convey.shell_data._get_facets_data", lambda: [])
+    monkeypatch.setattr("solstone.convey.shell_data._get_selected_facet", lambda: None)
     monkeypatch.setattr("solstone.think.awareness.get_current", lambda: {})
     monkeypatch.setattr("solstone.think.utils.day_dirs", lambda: {})
     register_app_context(app, registry)
@@ -123,7 +123,7 @@ def test_menu_bar_falls_back_to_emoji_without_icon_svg():
 
 
 def test_get_facets_data_adds_icon_svg_and_preserves_emoji(monkeypatch):
-    from solstone.convey.apps import _get_facets_data
+    from solstone.convey.shell_data import _get_facets_data
 
     monkeypatch.setattr(
         "solstone.think.facets.get_facets",
@@ -152,7 +152,7 @@ def test_get_facets_data_adds_icon_svg_and_preserves_emoji(monkeypatch):
             },
         },
     )
-    monkeypatch.setattr("solstone.convey.config.load_convey_config", lambda: {})
+    monkeypatch.setattr("solstone.convey.shell_data.load_convey_config", lambda: {})
 
     facets = _get_facets_data()
     by_name = {facet["name"]: facet for facet in facets}
@@ -175,20 +175,20 @@ def test_get_facets_data_adds_icon_svg_and_preserves_emoji(monkeypatch):
 
 class TestPlaceholderResolution:
     def test_no_imports_young(self):
-        from solstone.convey.apps import _resolve_placeholder
+        from solstone.convey.shell_data import _resolve_placeholder
 
         result = _resolve_placeholder({}, 0)
         assert "Bring in past conversations" in result
 
     def test_no_daily(self):
-        from solstone.convey.apps import _resolve_placeholder
+        from solstone.convey.shell_data import _resolve_placeholder
 
         current = {"imports": {"has_imported": True}}
         result = _resolve_placeholder(current, 0)
         assert "observing" in result
 
     def test_first_daily_young(self):
-        from solstone.convey.apps import _resolve_placeholder
+        from solstone.convey.shell_data import _resolve_placeholder
 
         current = {
             "imports": {"has_imported": True},
@@ -198,7 +198,7 @@ class TestPlaceholderResolution:
         assert "first daily analysis is ready" in result
 
     def test_first_daily_mid(self):
-        from solstone.convey.apps import _resolve_placeholder
+        from solstone.convey.shell_data import _resolve_placeholder
 
         current = {"journal": {"first_daily_ready": True}}
         result = _resolve_placeholder(current, 3)
@@ -206,14 +206,14 @@ class TestPlaceholderResolution:
         assert "first" not in result
 
     def test_first_daily_mature(self):
-        from solstone.convey.apps import _resolve_placeholder
+        from solstone.convey.shell_data import _resolve_placeholder
 
         current = {"journal": {"first_daily_ready": True}}
         result = _resolve_placeholder(current, 10)
         assert "Ask me about your day" in result
 
     def test_default_fallback(self):
-        from solstone.convey.apps import _resolve_placeholder
+        from solstone.convey.shell_data import _resolve_placeholder
 
         result = _resolve_placeholder({}, 5)
         assert "observing" in result
@@ -308,46 +308,48 @@ class TestInjectedChatBarContext:
         app = Flask(__name__)
         registry = AppRegistry()
         monkeypatch.setattr(convey_state, "journal_root", str(tmp_path))
-        monkeypatch.setattr("solstone.convey.apps._get_facets_data", lambda: [])
-        monkeypatch.setattr("solstone.convey.apps._get_selected_facet", lambda: None)
+        monkeypatch.setattr("solstone.convey.shell_data._get_facets_data", lambda: [])
+        monkeypatch.setattr(
+            "solstone.convey.shell_data._get_selected_facet", lambda: None
+        )
         monkeypatch.setattr("solstone.think.awareness.get_current", fail_current)
         register_app_context(app, registry)
 
-        with caplog.at_level("WARNING", logger="solstone.convey.apps"):
+        with caplog.at_level("WARNING", logger="solstone.convey.shell_data"):
             with app.test_request_context("/"):
                 context: dict = {}
                 app.update_template_context(context)
 
         assert context["chat_bar_placeholder"] == "Send a message..."
         assert context["chat_bar_attention"] is None
-        assert "failed to resolve chat bar awareness context" in caplog.text
+        assert "failed to resolve chat bar shell context" in caplog.text
 
 
 class TestAttentionResolution:
     """Tests for _resolve_attention() and attention-aware placeholder resolution."""
 
     def test_no_attention_returns_none(self):
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         assert _resolve_attention({}) is None
 
     def test_no_attention_empty_sections(self):
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         current = {"imports": {"has_imported": True}, "journal": {}}
         assert _resolve_attention(current) is None
 
     def test_cortex_attention_failure_logs_and_falls_through(self, monkeypatch, caplog):
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         def fail_scan():
             raise RuntimeError("boom")
 
         monkeypatch.setattr(
-            "solstone.convey.apps.read_unresolved_agent_failures", fail_scan
+            "solstone.convey.shell_data.read_unresolved_agent_failures", fail_scan
         )
 
-        with caplog.at_level("WARNING", logger="solstone.convey.apps"):
+        with caplog.at_level("WARNING", logger="solstone.convey.shell_data"):
             assert _resolve_attention({}) is None
 
         assert "failed to resolve chat bar cortex attention" in caplog.text
@@ -355,7 +357,7 @@ class TestAttentionResolution:
     def test_p1_recent_import(self):
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         current = {
             "imports": {
@@ -372,7 +374,7 @@ class TestAttentionResolution:
     def test_p2_old_import_no_attention(self):
         from datetime import datetime, timedelta
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         old_time = (datetime.now() - timedelta(hours=2)).isoformat()
         current = {
@@ -389,7 +391,7 @@ class TestAttentionResolution:
         import json
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -432,7 +434,7 @@ class TestAttentionResolution:
         import json
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -474,7 +476,7 @@ class TestAttentionResolution:
         import json
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -518,7 +520,7 @@ class TestAttentionResolution:
         import json
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -564,7 +566,7 @@ class TestAttentionResolution:
         import json
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -618,7 +620,7 @@ class TestAttentionResolution:
         from datetime import datetime
 
         from solstone.apps.health.routes import _build_agent_error_seed
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
         from solstone.think.talent_runs import read_unresolved_agent_failures
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
@@ -678,7 +680,7 @@ class TestAttentionResolution:
         import json
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -721,7 +723,7 @@ class TestAttentionResolution:
         import json
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -755,7 +757,7 @@ class TestAttentionResolution:
 
     def test_placeholder_no_attention_preserves_behavior(self):
         """When no attention items, existing placeholder logic unchanged."""
-        from solstone.convey.apps import _resolve_placeholder
+        from solstone.convey.shell_data import _resolve_placeholder
 
         current = {"journal": {"first_daily_ready": True}}
         result = _resolve_placeholder(current, 10)
@@ -766,7 +768,7 @@ class TestAttentionResolution:
         import json
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
@@ -799,7 +801,7 @@ class TestAttentionResolution:
         """P3: daily analysis outputs available."""
         from datetime import datetime
 
-        from solstone.convey.apps import _resolve_attention
+        from solstone.convey.shell_data import _resolve_attention
 
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 

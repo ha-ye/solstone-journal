@@ -1,4 +1,5 @@
 {
   "icon": "🔍",
-  "label": "search"
+  "label": "search",
+  "spa": true
 }

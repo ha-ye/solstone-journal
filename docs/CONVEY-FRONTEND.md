@@ -13,7 +13,9 @@ server.
 
 - **One static shell** (`convey/static/shell.html`) is served for every
   `/app/{name}` route. The client derives the current app from
-  `location.pathname` and boots from `GET /api/shell`.
+  `location.pathname` and boots from `GET /api/shell`. During the transitional
+  conversion, apps opt into this path with `"spa": true` in `app.json`;
+  unflagged apps continue through the legacy Jinja shell.
 - **Per-app workspace fragments** stay one file per app
   (`apps/{name}/workspace.html`): markup + `<style>` + `<script>`, served
   verbatim as a static asset — zero server-side template processing. The shell
@@ -60,7 +62,8 @@ them in HTML.
       "date_nav": false,
       "app_bar": true,
       "allow_future_dates": false,
-      "workspace_url": "/app/home/workspace",
+      "spa": false,
+      "workspace_url": null,
       "background_url": null
     }
   ],
@@ -80,7 +83,8 @@ Notes:
 - `apps` is **ordered** (owner's configured order, starred handling applied
   server-side, agent-chosen `sol` label already resolved). The menu renders
   the list as given.
-- `workspace_url`/`background_url` point at the static fragment routes; a
+- `workspace_url`/`background_url` point at the static fragment routes. During
+  transitional opt-in, `workspace_url` is `null` for non-`spa` apps, and a
   `null` `background_url` means the app registers no background service.
 - The shell endpoint carries **state the chrome needs on every page**, nothing
   app-specific. App state never rides on `/api/shell`.

@@ -7,7 +7,7 @@ from pathlib import Path
 
 CHAT_EVENT = Path("solstone/apps/chat/_chat_event.html")
 WORKSPACE = Path("solstone/apps/chat/workspace.html")
-APP_TEMPLATE = Path("solstone/convey/templates/app.html")
+CHAT_CHROME = Path("solstone/convey/static/chat_chrome.js")
 
 
 def _read(path: Path) -> str:
@@ -79,7 +79,7 @@ def test_workspace_live_rendering_keeps_dispatch_origin_and_queued_paths_distinc
 
 
 def test_app_bar_jobs_indicator_and_composer_state_are_source_wired():
-    source = _read(APP_TEMPLATE)
+    source = _read(CHAT_CHROME)
 
     pending_block = _js_function_block(source, "setPendingState")
     assert "pendingSend = !!active;" in pending_block
@@ -112,7 +112,7 @@ def test_app_bar_jobs_indicator_and_composer_state_are_source_wired():
 
 
 def test_app_bar_talent_tray_reflects_in_flight_only():
-    source = _read(APP_TEMPLATE)
+    source = _read(CHAT_CHROME)
 
     # Removal helper exists and re-renders, mirroring upsertTalent.
     assert "function removeTalent(useId)" in source

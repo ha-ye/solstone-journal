@@ -530,15 +530,9 @@
 
   loadEntries();
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', () => {
-      bindDrawer();
-      renderDrawer();
-      dispatchUpdate();
-    }, { once: true });
-  } else {
+  window.whenShellReady(() => {
     bindDrawer();
     renderDrawer();
     dispatchUpdate();
-  }
+  });
 })();

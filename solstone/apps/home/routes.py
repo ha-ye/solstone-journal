@@ -20,8 +20,8 @@ from flask import Blueprint, jsonify, render_template
 from solstone.apps.home.health_glance import build_health_glance
 from solstone.apps.home.needs_you import classify_needs_you
 from solstone.apps.home.thinking_readiness import _thinking_blocked
-from solstone.convey.apps import _resolve_attention
 from solstone.convey.bridge import get_cached_state
+from solstone.convey.shell_data import _resolve_attention
 from solstone.convey.utils import DATE_RE, format_date, relative_time
 from solstone.think.awareness import get_current
 from solstone.think.capture_health import get_capture_health

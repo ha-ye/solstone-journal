@@ -146,9 +146,16 @@ Override default icon, label, and other app settings.
 - `label` - Display label in menu (default: title-cased app name)
 - `facets` - Enable facet integration (default: true)
 - `date_nav` - Show date navigation bar (default: false)
+- `app_bar` - Show the universal chat bar (default: true)
 - `allow_future_dates` - Allow clicking future dates in month picker (default: false)
+- `spa` - Transitional opt-in for the static shell and `/workspace` fragment route (default: false)
 
 **When to disable facets:** Set `"facets": false` for apps that don't use facet-based organization (e.g., system settings, dev tools).
+
+**Static shell opt-in:** Set `"spa": true` only after the app's
+`workspace.html` is construct-free: no `{{`, `{%`, or `{#` Jinja constructs.
+Flagged apps serve `convey/static/shell.html` at `/app/{name}/` and their
+workspace bytes at `/app/{name}/workspace`.
 
 **Examples:** Browse `solstone/apps/*/app.json` for reference configurations.
 
@@ -171,6 +178,8 @@ Keyboard shortcuts: `←`/`→` for day navigation, `t` for today.
 ### 5. `background.html` - Background Service
 
 JavaScript service that runs globally, even when app is not active.
+If present, the optional `background.html` file is served verbatim at
+`/app/{name}/background`; it must also be construct-free.
 
 **AppServices API:**
 

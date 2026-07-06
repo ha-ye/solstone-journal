@@ -36,7 +36,9 @@ def chat_client(tmp_path, monkeypatch):
 def chat_html(chat_client):
     response = chat_client.get("/app/chat/20990109")
     assert response.status_code == 200
-    return response.get_data(as_text=True)
+    return response.get_data(as_text=True) + Path(
+        "solstone/convey/static/chat_chrome.js"
+    ).read_text(encoding="utf-8")
 
 
 def test_chat_bar_sets_phase_one_from_owner_message(chat_html):
@@ -97,7 +99,7 @@ def test_chat_bar_terminal_overwrites_liveness_without_retry_button(chat_html):
     assert "statusErrorActive = true;" in chat_html
     assert "window.location.href = '/app/chat/';" in chat_html
 
-    app_template = Path("solstone/convey/templates/app.html").read_text(
+    app_template = Path("solstone/convey/static/chat_chrome.js").read_text(
         encoding="utf-8"
     )
     retry_class = "-".join(("chat", "error", "retry"))

@@ -23,7 +23,6 @@ from flask import (
     g,
     jsonify,
     redirect,
-    render_template,
     request,
     send_from_directory,
     stream_with_context,
@@ -85,6 +84,7 @@ def require_access() -> Any:
 
     if request.endpoint in {
         "root.init",
+        "root.init_state",
         "root.init_mark",
         "root.init_mark_regenerate",
         "root.init_mark_lock",
@@ -241,11 +241,7 @@ def callosum_sse() -> Response:
     )
 
 
-@bp.route("/init")
-def init() -> Any:
-    if _is_setup_complete():
-        return redirect(url_for("root.index"))
-
+def _build_init_state() -> dict[str, Any]:
     config = ensure_journal_config()
     identity = config.get("identity", {})
     identity_name = identity.get("name", "") or ""
@@ -258,15 +254,30 @@ def init() -> Any:
     except PackageNotFoundError:
         version = "dev"
     journal_path = str(Path(get_journal()))
-    return render_template(
-        "init.html",
-        version=version,
-        journal_path=journal_path,
-        identity_name=identity_name,
-        identity_preferred=identity_preferred,
-        retention_mode=retention_mode,
-        retention_days=retention_days,
-    )
+    return {
+        "version": version,
+        "journal_path": journal_path,
+        "identity_name": identity_name,
+        "identity_preferred": identity_preferred,
+        "retention_mode": retention_mode,
+        "retention_days": retention_days,
+    }
+
+
+@bp.route("/init/api/state")
+def init_state() -> Any:
+    return jsonify(_build_init_state())
+
+
+@bp.route("/init")
+def init() -> Any:
+    if _is_setup_complete():
+        return redirect(url_for("root.index"))
+
+    # Preserve the setup page's historical config materialization on page load;
+    # /init/api/state supplies the rendered values to the static page.
+    ensure_journal_config()
+    return send_from_directory(Path(__file__).parent / "templates", "init.html")
 
 
 @bp.route("/init/validate-provider", methods=["POST"])

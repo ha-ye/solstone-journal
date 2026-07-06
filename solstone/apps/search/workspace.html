@@ -502,9 +502,9 @@ button.day-header {
 
 <script>
 (function() {
-  const searchUrl = '{{ url_for("app:search.search_journal_api") }}';
-  const dayResultsUrl = '{{ url_for("app:search.day_results_api") }}';
-  const activitiesDayBase = '{{ url_for("app:activities.activities_day", day="") }}';
+  const searchUrl = '/app/search/api/search';
+  const dayResultsUrl = '/app/search/api/day_results';
+  const activitiesDayBase = '/app/activities/';
   const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 
   // State

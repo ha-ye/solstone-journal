@@ -3,12 +3,12 @@
 
 /**
  * App System JavaScript
- * Handles facet selection, menu interactions, and responsive UI for app.html
+ * Handles facet selection, menu interactions, and responsive shell UI
  *
  * Requires:
- * - window.facetsData - Array of facet objects from server
- * - window.selectedFacet - Currently selected facet name or null (initialized by server)
- * - window.appFacetCounts - Object mapping facet names to counts (injected per-app)
+ * - window.facetsData - Array of facet objects from the hosting shell
+ * - window.selectedFacet - Currently selected facet name or null
+ * - window.appFacetCounts - Object mapping facet names to counts
  *
  * Public API:
  * - window.selectedFacet - Current facet selection (read/write)
@@ -738,7 +738,7 @@
     let canMove = () => false;
     const mobileQuery = window.matchMedia('(max-width: 768px)');
 
-    // window.selectedFacet already initialized by server (see app.html)
+    // window.selectedFacet is initialized by the hosting shell before init runs.
     // Load facet chooser
     loadFacetChooser();
 
@@ -1516,12 +1516,8 @@
     }
   }
 
-  // Run initialization when DOM is ready
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
-  }
+  // Run initialization after DOM and shell seed data are both ready.
+  window.whenShellReady(init);
 })();
 
 /**

@@ -255,7 +255,7 @@ def test_draft_card_copy_present():
 
 
 def test_support_attach_draft_card_branch_present():
-    text = Path("solstone/convey/templates/app.html").read_text(encoding="utf-8")
+    text = Path("solstone/convey/static/chat_chrome.js").read_text(encoding="utf-8")
     assert "function formatAttachmentSize(size)" in text
     assert "function renderAttachDraftBody(parent, payload)" in text
     assert "window.solChatCopy.CHAT_DRAFT_KIND_ATTACH" in text

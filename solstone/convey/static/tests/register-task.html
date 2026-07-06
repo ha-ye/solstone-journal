@@ -27,6 +27,8 @@
   window.DOMPurify = { sanitize(value) { return value; } };
 </script>
 <script src="../api.js"></script>
+<script src="../shell_gate.js"></script>
+<script>window.resolveSolShellReady({source: 'static-test'});</script>
 <script src="../app.js"></script>
 <script>
   const results = document.getElementById('results');
