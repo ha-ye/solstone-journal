@@ -1628,3 +1628,35 @@ def test_module_has_no_reachable_network_imports():
                         f"network-capable import {name!r} outside "
                         f"_default_transport (in {func.name!r})"
                     )
+
+
+def test_save_records_fetch_windows_and_catalog_reports_known_refetch(
+    tmp_path: Path, monkeypatch
+):
+    # Upstream verification findings: catalog counted trailing-refetch rows
+    # as importable, and bundles carried no fetch-window evidence for the
+    # chunker. Both pinned here.
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+
+    first = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 4),
+    )
+    bundle_dir = journal / "imports" / first["import_id"]
+    windows_doc = json.loads((bundle_dir / "fetch_windows.json").read_text())
+    assert windows_doc["schema"] == "solstone.oura_fetch_windows.v1"
+    assert "daily_readiness" in windows_doc["windows"]
+    assert windows_doc["chunk_limits"]["heartrate"] == 31
+
+    catalog = oura.backend.sync(
+        journal,
+        dry_run=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 4),
+    )
+    assert catalog["available"] == 0
+    assert catalog["known_refetch"] == catalog["rows"]

@@ -1127,6 +1127,7 @@ class OuraSyncBackend:
             items = normalize_bundle(
                 bundle, import_id="catalog", raw_ref_root="catalog"
             )
+            known = _count_known_rows(journal_root, items)
             return _sync_result(
                 dry_run=True,
                 items=items,
@@ -1138,6 +1139,7 @@ class OuraSyncBackend:
                 updated=0,
                 months=[],
                 cron_hint=None,
+                known_rows=known,
             )
 
         import_id = _new_import_id(journal_root)
@@ -1152,6 +1154,7 @@ class OuraSyncBackend:
             items=items,
             raw_pages=raw_pages,
             bundle=bundle,
+            windows=windows,
         )
 
         # The cursor advances only after every bundle write succeeded; a
@@ -1186,6 +1189,33 @@ class OuraSyncBackend:
 backend = OuraSyncBackend()
 
 
+def _count_known_rows(journal_root: Path, items: list[OuraNormalizedItem]) -> int:
+    """How many normalized rows the dedupe ledger already holds (read-only)."""
+
+    keys = [item.dedupe_record.dedupe_key for item in items]
+    if not keys:
+        return 0
+    db_path = journal_root / "imports" / "health-dedupe.sqlite"
+    if not db_path.is_file():
+        return 0
+    import sqlite3
+
+    known = 0
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=15)
+    try:
+        for start in range(0, len(keys), 500):
+            chunk = keys[start : start + 500]
+            marks = ",".join("?" for _ in chunk)
+            (count,) = conn.execute(
+                f"SELECT COUNT(*) FROM health_dedupe WHERE dedupe_key IN ({marks})",
+                chunk,
+            ).fetchone()
+            known += count
+    finally:
+        conn.close()
+    return known
+
+
 def _sync_result(
     *,
     dry_run: bool,
@@ -1198,6 +1228,7 @@ def _sync_result(
     updated: int,
     months: list[str],
     cron_hint: str | None,
+    known_rows: int = 0,
 ) -> dict[str, Any]:
     rows = len(items)
     days = sorted({item.day for item in items if item.day})
@@ -1220,8 +1251,12 @@ def _sync_result(
         "source_label": SOURCE_LABEL,
         # Keys the generic sync CLI prints:
         "total": rows,
-        "available": rows if dry_run else 0,
-        "imported": 0 if dry_run else updated,
+        # Catalog "available" counts only rows the dedupe ledger has never
+        # seen; trailing-refetch re-reads are reported separately (upstream
+        # verification finding: refetch rows masqueraded as importable).
+        "available": max(rows - known_rows, 0) if dry_run else 0,
+        "known_refetch": known_rows if dry_run else 0,
+        "imported": known_rows if dry_run else updated,
         "downloaded": 0 if dry_run else inserted,
         "errors": [],
         # Oura-specific detail:
@@ -1398,6 +1433,7 @@ def _save_sync_bundle(
     items: list[OuraNormalizedItem],
     raw_pages: Mapping[str, list[dict[str, Any]]],
     bundle: Mapping[str, list[dict[str, Any]]],
+    windows: Mapping[str, tuple[str, str]],
 ) -> dict[str, Any]:
     """Write one sync run's import bundle, mirroring apple_health save mode.
 
@@ -1448,6 +1484,23 @@ def _save_sync_bundle(
         _content_manifest_entries(normalized_paths, import_id=import_id),
         journal_root=journal_root,
     )
+    fetch_windows_path = import_dir / "fetch_windows.json"
+    fetch_windows_path.write_text(
+        json.dumps(
+            {
+                "schema": "solstone.oura_fetch_windows.v1",
+                "windows": {ep: list(win) for ep, win in windows.items()},
+                "chunk_limits": {
+                    ep: _MAX_WINDOW_DAYS.get(ep, _DEFAULT_MAX_WINDOW_DAYS)
+                    for ep in SYNC_ENDPOINTS
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
     write_manifest(
         journal_root,
         import_id,
