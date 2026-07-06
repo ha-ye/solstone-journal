@@ -915,7 +915,7 @@ def test_render_day_summary_attributes_every_score_to_oura():
     assert summary.splitlines()[0] == "# Body · January 2, 2026"
     assert "Readiness 82 · Oura's score" in summary
     assert "Sleep score 88 · Oura's score" in summary
-    assert "Resilience solid · Oura's level" in summary
+    assert "Resilience solid · Oura's label" in summary
     assert "Day stress summary normal · Oura's label" in summary
     assert "Nightly blood oxygen 97.4% · Oura's average" in summary
     assert "Temperature deviation -0.21 °C · Oura's measurement" in summary

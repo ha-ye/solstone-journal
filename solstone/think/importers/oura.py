@@ -639,7 +639,7 @@ def _fact_line(row: Mapping[str, Any]) -> str | None:
     if record_type == "oura.daily_sleep":
         return f"Sleep score {value} · Oura's score"
     if record_type == "oura.daily_resilience":
-        return f"Resilience {value} · Oura's level"
+        return f"Resilience {value} · Oura's label"
     if record_type == "oura.daily_stress":
         return f"Day stress summary {value} · Oura's label"
     if record_type == "oura.daily_spo2":
