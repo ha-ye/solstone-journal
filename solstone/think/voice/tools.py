@@ -438,7 +438,14 @@ def handle_journal_search(payload: dict[str, Any], app: Any) -> dict[str, Any]:
     day_from = None
     if days_value is not None:
         day_from = (_today() - timedelta(days=days_value)).strftime("%Y%m%d")
-    count, rows = search_journal(query, limit=limit, facet=facet, day_from=day_from)
+    count, rows = search_journal(
+        query,
+        limit=limit,
+        facet=facet,
+        day_from=day_from,
+        relax=True,
+        rerank=True,
+    )
     results: list[dict[str, Any]] = []
     for row in rows:
         metadata = row.get("metadata", {})

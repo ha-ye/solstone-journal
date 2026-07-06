@@ -130,10 +130,12 @@ def search(
     if stream is not None:
         kwargs["stream"] = stream
 
-    total, results = search_journal_impl(query, limit, offset, **kwargs)
+    total, results = search_journal_impl(
+        query, limit, offset, relax=True, rerank=True, **kwargs
+    )
 
     # Counts summary
-    counts = search_counts_impl(query, **kwargs)
+    counts = search_counts_impl(query, relax=True, **kwargs)
     typer.echo(f"{total} results")
 
     facet_counts = counts.get("facets", {})

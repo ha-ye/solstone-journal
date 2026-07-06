@@ -152,10 +152,12 @@ def search_journal(
             filters["time_bucket"] = time_bucket
 
         # Get search results
-        total, results = search_journal_impl(query, limit, offset, **kwargs)
+        total, results = search_journal_impl(
+            query, limit, offset, relax=True, rerank=True, **kwargs
+        )
 
         # Get aggregation counts
-        counts_data = search_counts_impl(query, **kwargs)
+        counts_data = search_counts_impl(query, relax=True, **kwargs)
 
         # Build result items with full metadata
         items = []

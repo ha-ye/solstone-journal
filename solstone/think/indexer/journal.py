@@ -34,6 +34,7 @@ from solstone.think.formatters import (
     format_file,
     get_formatter,
 )
+from solstone.think.indexer.rerank_scorer import score
 from solstone.think.markdown import format_markdown
 from solstone.think.utils import (
     DATE_RE,
@@ -720,6 +721,21 @@ def _build_temporal_patterns():
 
 _TEMPORAL_PATTERNS = _build_temporal_patterns()
 
+_RELAX_STOPWORDS: frozenset[str] = frozenset(
+    """
+    what who whom whose when where why how which
+    did do does doing done is are was were am be been being
+    the a an this that these those there here
+    i we you it me us them they he she his her its my our your their
+    about with for of to in on at by from as into over under up down out off
+    and or not any some
+    have has had will would can could should shall may might must
+    get got gets
+    """.split()
+)
+_RERANK_POOL_SIZE = 50
+_FTS_MATCH_PREFIX = "chunks MATCH"
+
 
 def extract_temporal_references(
     query: str, reference_date: datetime | None = None
@@ -871,6 +887,13 @@ def _quote_term(word: str) -> str:
     return word
 
 
+def _formulate_fts(words: list[str]) -> str:
+    quoted = [_quote_term(word) for word in words]
+    if len(quoted) > 1:
+        return f"NEAR({' '.join(quoted)}, 10) OR ({' AND '.join(quoted)})"
+    return " ".join(quoted)
+
+
 def sanitize_fts_query(
     query: str, reference_date: datetime | None = None
 ) -> tuple[str, str | None, str | None]:
@@ -904,53 +927,30 @@ def sanitize_fts_query(
         return result, day_from, day_to
     # No user quotes present: phrase-quote each bare term so apostrophes are
     # FTS5-valid. has_operators/has_quotes were computed on the pre-quoted words.
-    quoted = [_quote_term(word) for word in words]
     if len(words) > 1 and not has_operators:
-        near_terms = " ".join(quoted)
-        and_terms = " AND ".join(quoted)
-        result = f"NEAR({near_terms}, 10) OR ({and_terms})"
+        result = _formulate_fts(words)
     else:
-        result = " ".join(quoted)
+        result = " ".join(_quote_term(word) for word in words)
     return result, day_from, day_to
 
 
-def _build_where_clause(
-    query: str,
+def _where_from_fts(
+    fts_match: str,
     day: str | None = None,
     day_from: str | None = None,
     day_to: str | None = None,
+    extracted_from: str | None = None,
+    extracted_to: str | None = None,
     facet: str | None = None,
     agent: str | None = None,
     stream: str | None = None,
     time_bucket: str | None = None,
 ) -> tuple[str, list[Any]]:
-    """Build WHERE clause and params for FTS5 search.
-
-    Args:
-        query: FTS5 search query
-        day: Filter by exact day (YYYYMMDD) - mutually exclusive with day_from/day_to
-        day_from: Filter by date range start (YYYYMMDD, inclusive)
-        day_to: Filter by date range end (YYYYMMDD, inclusive)
-        facet: Filter by facet name
-        agent: Filter by agent
-        stream: Filter by stream name
-        time_bucket: Filter by time of day bucket (morning, afternoon, evening, night)
-
-    Returns:
-        Tuple of (where_clause, params)
-    """
     params: list[Any] = []
 
-    extracted_from: str | None = None
-    extracted_to: str | None = None
-
-    if query:
-        sanitized, extracted_from, extracted_to = sanitize_fts_query(query)
-        if sanitized:
-            where_clause = "chunks MATCH ?"
-            params.append(sanitized)
-        else:
-            where_clause = "1=1"
+    if fts_match:
+        where_clause = "chunks MATCH ?"
+        params.append(fts_match)
     else:
         where_clause = "1=1"
 
@@ -987,26 +987,8 @@ def _build_where_clause(
     return where_clause, params
 
 
-def known_agents() -> set[str]:
-    """Return the distinct, non-empty agent names present in the index.
-
-    Read-only: used to validate an explicit ``--agent`` filter before searching,
-    so an unknown agent fails loudly instead of silently matching nothing. Agent
-    names are stored lowercased at index time, so the returned set is lowercase.
-    """
-    conn, _ = get_journal_index()
-    rows = conn.execute(
-        "SELECT DISTINCT agent FROM chunks WHERE agent IS NOT NULL AND agent != ''"
-    ).fetchall()
-    conn.close()
-    return {row[0] for row in rows}
-
-
-def search_journal(
+def _build_where_clause(
     query: str,
-    limit: int = 10,
-    offset: int = 0,
-    *,
     day: str | None = None,
     day_from: str | None = None,
     day_to: str | None = None,
@@ -1014,40 +996,105 @@ def search_journal(
     agent: str | None = None,
     stream: str | None = None,
     time_bucket: str | None = None,
-) -> tuple[int, list[dict[str, Any]]]:
-    """Search the journal index.
+) -> tuple[str, list[Any]]:
+    """Build WHERE clause and params for FTS5 search.
 
     Args:
-        query: FTS5 search query. Words are AND'd by default; use OR to match any,
-            quotes for exact phrases, * for prefix match. Empty string returns all.
-        limit: Maximum results to return
-        offset: Number of results to skip for pagination
+        query: FTS5 search query
         day: Filter by exact day (YYYYMMDD) - mutually exclusive with day_from/day_to
         day_from: Filter by date range start (YYYYMMDD, inclusive)
         day_to: Filter by date range end (YYYYMMDD, inclusive)
         facet: Filter by facet name
-        agent: Filter by agent (e.g., "flow", "event", "news")
+        agent: Filter by agent
         stream: Filter by stream name
-        time_bucket: Filter by time of day (morning, afternoon, evening, night)
+        time_bucket: Filter by time of day bucket (morning, afternoon, evening, night)
 
     Returns:
-        Tuple of (total_count, results) where each result has:
-            - id: "{path}:{idx}"
-            - text: The matched markdown chunk
-            - metadata: {day, facet, agent, stream, path, idx}
-            - score: BM25 relevance score
+        Tuple of (where_clause, params)
     """
-    conn, _ = get_journal_index()
-    where_clause, params = _build_where_clause(
-        query, day, day_from, day_to, facet, agent, stream, time_bucket
+    if query:
+        sanitized, extracted_from, extracted_to = sanitize_fts_query(query)
+    else:
+        sanitized, extracted_from, extracted_to = "", None, None
+
+    return _where_from_fts(
+        sanitized,
+        day,
+        day_from,
+        day_to,
+        extracted_from,
+        extracted_to,
+        facet,
+        agent,
+        stream,
+        time_bucket,
     )
 
-    # Get total count
-    total = conn.execute(
-        f"SELECT count(*) FROM chunks WHERE {where_clause}", params
-    ).fetchone()[0]
 
-    # Get results
+def _relax_where(
+    conn: sqlite3.Connection,
+    query: str,
+    day: str | None = None,
+    day_from: str | None = None,
+    day_to: str | None = None,
+    facet: str | None = None,
+    agent: str | None = None,
+    stream: str | None = None,
+    time_bucket: str | None = None,
+) -> tuple[str, list[Any], int] | None:
+    cleaned, extracted_from, extracted_to = extract_temporal_references(query)
+    stripped = re.sub(r"[^a-zA-Z0-9\s\"'*]", " ", cleaned)
+    if stripped.count('"') % 2:
+        stripped = stripped.replace('"', "")
+    words = stripped.split()
+    if any(word in ("AND", "OR", "NOT") for word in words) or ('"' in stripped):
+        return None
+
+    content = [word for word in words if word.lower() not in _RELAX_STOPWORDS]
+
+    def probe(fts_match: str) -> tuple[str, list[Any], int]:
+        where_clause, params = _where_from_fts(
+            fts_match,
+            day,
+            day_from,
+            day_to,
+            extracted_from,
+            extracted_to,
+            facet,
+            agent,
+            stream,
+            time_bucket,
+        )
+        total = conn.execute(
+            f"SELECT count(*) FROM chunks WHERE {where_clause}", params
+        ).fetchone()[0]
+        return where_clause, params, total
+
+    if content and content != words:
+        where_clause, params, total = probe(_formulate_fts(content))
+        if total > 0:
+            return where_clause, params, total
+
+    if len(content) > 1:
+        where_clause, params, total = probe(
+            " OR ".join(_quote_term(word) for word in content)
+        )
+        if total > 0:
+            return where_clause, params, total
+
+    if not content and (day or day_from or day_to or extracted_from or extracted_to):
+        return probe("")
+
+    return None
+
+
+def _fetch_results(
+    conn: sqlite3.Connection,
+    where_clause: str,
+    params: list[Any],
+    limit: int,
+    offset: int,
+) -> list[dict[str, Any]]:
     cursor = conn.execute(
         f"""
         SELECT content, path, day, facet, agent, stream, idx, bm25(chunks) as rank
@@ -1083,6 +1130,124 @@ def search_journal(
                 "score": rank,
             }
         )
+    return results
+
+
+def _reranked_results(
+    conn: sqlite3.Connection,
+    where_clause: str,
+    params: list[Any],
+    cleaned_query: str,
+    limit: int,
+    offset: int,
+) -> list[dict[str, Any]]:
+    pool = _fetch_results(conn, where_clause, params, _RERANK_POOL_SIZE, 0)
+    if len(pool) <= 1:
+        return pool[offset : offset + limit]
+
+    scores = score(cleaned_query, [result["text"] for result in pool])
+    if scores is None:
+        return pool[offset : offset + limit]
+
+    order = sorted(range(len(pool)), key=lambda i: -scores[i])
+    reranked = [{**pool[i], "rerank_score": scores[i]} for i in order]
+    return reranked[offset : offset + limit]
+
+
+def known_agents() -> set[str]:
+    """Return the distinct, non-empty agent names present in the index.
+
+    Read-only: used to validate an explicit ``--agent`` filter before searching,
+    so an unknown agent fails loudly instead of silently matching nothing. Agent
+    names are stored lowercased at index time, so the returned set is lowercase.
+    """
+    conn, _ = get_journal_index()
+    rows = conn.execute(
+        "SELECT DISTINCT agent FROM chunks WHERE agent IS NOT NULL AND agent != ''"
+    ).fetchall()
+    conn.close()
+    return {row[0] for row in rows}
+
+
+def search_journal(
+    query: str,
+    limit: int = 10,
+    offset: int = 0,
+    *,
+    day: str | None = None,
+    day_from: str | None = None,
+    day_to: str | None = None,
+    facet: str | None = None,
+    agent: str | None = None,
+    stream: str | None = None,
+    time_bucket: str | None = None,
+    relax: bool = False,
+    rerank: bool = False,
+) -> tuple[int, list[dict[str, Any]]]:
+    """Search the journal index.
+
+    Args:
+        query: FTS5 search query. Words are AND'd by default; use OR to match any,
+            quotes for exact phrases, * for prefix match. Empty string returns all.
+        limit: Maximum results to return
+        offset: Number of results to skip for pagination
+        day: Filter by exact day (YYYYMMDD) - mutually exclusive with day_from/day_to
+        day_from: Filter by date range start (YYYYMMDD, inclusive)
+        day_to: Filter by date range end (YYYYMMDD, inclusive)
+        facet: Filter by facet name
+        agent: Filter by agent (e.g., "flow", "event", "news")
+        stream: Filter by stream name
+        time_bucket: Filter by time of day (morning, afternoon, evening, night)
+        relax: If True, try a recall-oriented relaxation ladder when tier-0 FTS
+            returns zero matches and the query has no power-user syntax.
+        rerank: If True, reorder the top FTS pool with the local rerank scorer
+            when available.
+
+    Returns:
+        Tuple of (total_count, results) where each result has:
+            - id: "{path}:{idx}"
+            - text: The matched markdown chunk
+            - metadata: {day, facet, agent, stream, path, idx}
+            - score: BM25 relevance score
+            - rerank_score: Optional rerank score on reranked result pages
+    """
+    conn, _ = get_journal_index()
+    where_clause, params = _build_where_clause(
+        query, day, day_from, day_to, facet, agent, stream, time_bucket
+    )
+
+    # Get total count
+    total = conn.execute(
+        f"SELECT count(*) FROM chunks WHERE {where_clause}", params
+    ).fetchone()[0]
+
+    if relax and total == 0:
+        relaxed = _relax_where(
+            conn,
+            query,
+            day,
+            day_from,
+            day_to,
+            facet,
+            agent,
+            stream,
+            time_bucket,
+        )
+        if relaxed is not None:
+            where_clause, params, total = relaxed
+
+    do_rerank = (
+        rerank
+        and where_clause.startswith(_FTS_MATCH_PREFIX)
+        and offset + limit <= _RERANK_POOL_SIZE
+    )
+    if do_rerank:
+        cleaned_query = extract_temporal_references(query)[0]
+        results = _reranked_results(
+            conn, where_clause, params, cleaned_query, limit, offset
+        )
+    else:
+        results = _fetch_results(conn, where_clause, params, limit, offset)
 
     conn.close()
     return total, results
@@ -1098,6 +1263,7 @@ def search_counts(
     agent: str | None = None,
     stream: str | None = None,
     time_bucket: str | None = None,
+    relax: bool = False,
 ) -> dict[str, Any]:
     """Get aggregated counts for a search query.
 
@@ -1112,6 +1278,8 @@ def search_counts(
         agent: Filter by agent
         stream: Filter by stream name
         time_bucket: Filter by time of day (morning, afternoon, evening, night)
+        relax: If True, use the same recall-oriented relaxation ladder as
+            search_journal when tier-0 FTS returns zero matches.
 
     Returns:
         Dict with:
@@ -1131,6 +1299,25 @@ def search_counts(
     rows = conn.execute(
         f"SELECT facet, agent, day, stream FROM chunks WHERE {where_clause}", params
     ).fetchall()
+
+    if relax and not rows:
+        relaxed = _relax_where(
+            conn,
+            query,
+            day,
+            day_from,
+            day_to,
+            facet,
+            agent,
+            stream,
+            time_bucket,
+        )
+        if relaxed is not None:
+            where_clause, params, _ = relaxed
+            rows = conn.execute(
+                f"SELECT facet, agent, day, stream FROM chunks WHERE {where_clause}",
+                params,
+            ).fetchall()
 
     conn.close()
 

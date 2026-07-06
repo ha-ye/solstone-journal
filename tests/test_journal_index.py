@@ -17,6 +17,7 @@ from solstone.think.indexer.journal import (
     _build_where_clause,
     extract_temporal_references,
     get_journal_index,
+    search_counts,
     search_journal,
 )
 
@@ -355,6 +356,91 @@ def journal_fixture(tmp_path, monkeypatch):
     )
 
     return journal
+
+
+@pytest.fixture
+def relax_fixture(tmp_path, monkeypatch):
+    """Create a focused journal for search relaxation and rerank tests."""
+    journal = tmp_path
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+
+    from solstone.think.indexer.journal import scan_journal
+    from solstone.think.streams import write_segment_stream
+
+    day = journal / "chronicle" / "20240101"
+    day.mkdir(parents=True)
+
+    segment = day / "default" / "100000_300"
+    talents = segment / "talents"
+    talents.mkdir(parents=True)
+    (talents / "activity.md").write_text(
+        "# Activity\n\nMet with Scott Ward about Acme deal.\n",
+        encoding="utf-8",
+    )
+    (talents / "screen.md").write_text(
+        "# Screen\n\nViewed documentation.\n",
+        encoding="utf-8",
+    )
+    write_segment_stream(str(segment), "default", None, None, 1)
+
+    day_talents = day / "talents"
+    day_talents.mkdir()
+    (day_talents / "apostrophe.md").write_text(
+        "# Apostrophe\n\nOwner's decision log mentions budget.\n",
+        encoding="utf-8",
+    )
+    (day_talents / "android.md").write_text(
+        "# Android\n\nANDROID migration checklist.\n",
+        encoding="utf-8",
+    )
+    (day_talents / "oracle.md").write_text(
+        "# Oracle\n\nORACLE support matrix.\n",
+        encoding="utf-8",
+    )
+    (day_talents / "rerank_a.md").write_text(
+        "# Rerank A\n\nsharedrank alpha lowmark.\n",
+        encoding="utf-8",
+    )
+    (day_talents / "rerank_b.md").write_text(
+        "# Rerank B\n\nsharedrank beta midmark.\n",
+        encoding="utf-8",
+    )
+    (day_talents / "rerank_c.md").write_text(
+        "# Rerank C\n\nsharedrank gamma highmark.\n",
+        encoding="utf-8",
+    )
+    (day_talents / "single.md").write_text(
+        "# Single\n\nsinglematch only here.\n",
+        encoding="utf-8",
+    )
+
+    events_dir = journal / "facets" / "work" / "events"
+    events_dir.mkdir(parents=True)
+    event = {
+        "type": "meeting",
+        "start": "09:00:00",
+        "end": "09:30:00",
+        "title": "Standup",
+        "summary": "Daily sync meeting",
+        "facet": "work",
+        "occurred": True,
+    }
+    (events_dir / "20240101.jsonl").write_text(json.dumps(event), encoding="utf-8")
+
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    yesterday_talents = journal / "chronicle" / yesterday / "talents"
+    yesterday_talents.mkdir(parents=True)
+    (yesterday_talents / "temporal.md").write_text(
+        "# Temporal\n\nCalypso ladder recall happened.\n",
+        encoding="utf-8",
+    )
+
+    scan_journal(str(journal), full=True)
+    return {"journal": journal, "yesterday": yesterday}
 
 
 def test_scan_journal(journal_fixture):
@@ -824,6 +910,269 @@ def test_search_counts_date_range(journal_fixture):
     # Counts with date range excluding test data
     counts = search_counts("", day_from="20240102", day_to="20240105")
     assert counts["total"] == 0
+
+
+def _joined_text(results):
+    return "\n".join(result["text"] for result in results)
+
+
+def _ids(results):
+    return [result["id"] for result in results]
+
+
+def test_relax_all_stopwords_without_filter_never_browses(relax_fixture):
+    assert search_journal("what did i do", relax=True) == (0, [])
+
+
+def test_relax_keeps_tier_zero_matches_identical(relax_fixture):
+    plain = search_journal("singlematch", relax=False)
+    relaxed = search_journal("singlematch", relax=True)
+
+    assert relaxed == plain
+
+
+def test_relax_stopword_ladder_rescues_natural_question(relax_fixture):
+    unrelaxed_total, unrelaxed_results = search_journal(
+        "what was the Acme deal", relax=False
+    )
+    relaxed_total, relaxed_results = search_journal(
+        "what was the Acme deal", relax=True
+    )
+    browse_total, _ = search_journal("", relax=False)
+
+    assert (unrelaxed_total, unrelaxed_results) == (0, [])
+    assert 0 < relaxed_total < browse_total
+    assert "Acme deal" in _joined_text(relaxed_results)
+
+
+def test_relax_or_tier_rescues_terms_in_different_chunks(relax_fixture):
+    unrelaxed_total, unrelaxed_results = search_journal(
+        "documentation Standup", relax=False
+    )
+    relaxed_total, relaxed_results = search_journal("documentation Standup", relax=True)
+    text = _joined_text(relaxed_results)
+
+    assert (unrelaxed_total, unrelaxed_results) == (0, [])
+    assert relaxed_total >= 2
+    assert "documentation" in text
+    assert "Standup" in text
+
+
+def test_relax_or_tier_quotes_apostrophe_terms(relax_fixture):
+    total, results = search_journal("owner's Standup", relax=True)
+    text = _joined_text(results)
+
+    assert total >= 2
+    assert "Owner's decision" in text
+    assert "Standup" in text
+
+
+def test_relax_temporal_content_threads_day_filter(relax_fixture):
+    yesterday = relax_fixture["yesterday"]
+    total, results = search_journal("what was Calypso yesterday", relax=True)
+
+    assert total >= 1
+    assert any("Calypso ladder recall" in result["text"] for result in results)
+    assert all(result["metadata"]["day"] == yesterday for result in results)
+
+
+def test_relax_power_user_queries_stay_empty(relax_fixture):
+    assert search_journal("Acme AND Standup", relax=True) == (0, [])
+    assert search_journal('"Acme deal" Standup', relax=True) == (0, [])
+
+
+def test_relax_operator_detection_is_token_level(relax_fixture):
+    total, results = search_journal("ANDROID ORACLE", relax=True)
+    text = _joined_text(results)
+
+    assert total >= 2
+    assert "ANDROID migration" in text
+    assert "ORACLE support" in text
+
+
+def test_relax_preserves_facet_and_date_range_filters(relax_fixture):
+    facet_total, facet_results = search_journal(
+        "what was Standup", facet="work", relax=True
+    )
+    range_total, range_results = search_journal(
+        "what was the Acme deal",
+        day_from="20240101",
+        day_to="20240101",
+        relax=True,
+    )
+
+    assert facet_total >= 1
+    assert all(result["metadata"]["facet"] == "work" for result in facet_results)
+    assert range_total >= 1
+    assert all(result["metadata"]["day"] == "20240101" for result in range_results)
+
+
+def test_relax_counts_and_results_choose_same_tier_for_all_tiers(relax_fixture):
+    for query in (
+        "what was the Acme deal",
+        "documentation Standup",
+        "what did i do yesterday",
+    ):
+        total, _ = search_journal(query, relax=True)
+        counts = search_counts(query, relax=True)
+
+        assert total > 0
+        assert counts["total"] == total
+
+
+def test_rerank_reorders_top_fts_pool(monkeypatch, relax_fixture):
+    total, bm25_results = search_journal("sharedrank", limit=3, rerank=False)
+    assert total == 3
+    score_by_text = {
+        result["text"]: float(index)
+        for index, result in enumerate(bm25_results, start=1)
+    }
+
+    def stub(query, texts):
+        assert query == "sharedrank"
+        return [score_by_text[text] for text in texts]
+
+    monkeypatch.setattr("solstone.think.indexer.journal.score", stub)
+
+    _, reranked = search_journal("sharedrank", limit=3, rerank=True)
+
+    assert _ids(reranked) == list(reversed(_ids(bm25_results)))
+    assert all("rerank_score" in result for result in reranked)
+
+
+def test_rerank_score_none_falls_back_to_bm25(monkeypatch, relax_fixture):
+    _, bm25_results = search_journal("sharedrank", limit=3, rerank=False)
+    monkeypatch.setattr("solstone.think.indexer.journal.score", lambda *_args: None)
+
+    _, results = search_journal("sharedrank", limit=3, rerank=True)
+
+    assert results == bm25_results
+    assert all("rerank_score" not in result for result in results)
+
+
+def test_rerank_skips_without_calling_score(monkeypatch, relax_fixture):
+    def fail_score(*_args):
+        raise AssertionError("score should not be called")
+
+    monkeypatch.setattr("solstone.think.indexer.journal.score", fail_score)
+
+    search_journal("sharedrank", limit=2, offset=49, rerank=True)
+    search_journal("", limit=2, rerank=True)
+    search_journal("singlematch", rerank=True)
+    search_journal("yesterday", rerank=True)
+
+
+def test_rerank_equal_scores_keep_bm25_order(monkeypatch, relax_fixture):
+    _, bm25_results = search_journal("sharedrank", limit=3, rerank=False)
+
+    def stub(_query, texts):
+        return [1.0 for _text in texts]
+
+    monkeypatch.setattr("solstone.think.indexer.journal.score", stub)
+
+    _, results = search_journal("sharedrank", limit=3, rerank=True)
+
+    assert _ids(results) == _ids(bm25_results)
+    assert all(result["rerank_score"] == 1.0 for result in results)
+
+
+def test_search_tool_flips_relax_and_rerank(monkeypatch):
+    from collections import Counter
+
+    from solstone.think.tools import search as search_tool
+
+    calls = {}
+
+    def fake_search(query, limit, offset, **kwargs):
+        calls["search"] = (query, limit, offset, kwargs)
+        return 0, []
+
+    def fake_counts(query, **kwargs):
+        calls["counts"] = (query, kwargs)
+        return {
+            "total": 0,
+            "facets": Counter(),
+            "agents": Counter(),
+            "days": Counter(),
+            "streams": Counter(),
+        }
+
+    monkeypatch.setattr(search_tool, "search_journal_impl", fake_search)
+    monkeypatch.setattr(search_tool, "search_counts_impl", fake_counts)
+
+    search_tool.search_journal("needle", facet="work")
+
+    assert calls["search"][3]["relax"] is True
+    assert calls["search"][3]["rerank"] is True
+    assert calls["search"][3]["facet"] == "work"
+    assert calls["counts"][1]["relax"] is True
+    assert "rerank" not in calls["counts"][1]
+
+
+def test_call_tool_flips_relax_and_rerank(monkeypatch):
+    from collections import Counter
+
+    from solstone.think.indexer import journal as journal_index
+    from solstone.think.tools import call as call_tool
+
+    calls = {}
+
+    def fake_search(query, limit, offset, **kwargs):
+        calls["search"] = (query, limit, offset, kwargs)
+        return 0, []
+
+    def fake_counts(query, **kwargs):
+        calls["counts"] = (query, kwargs)
+        return {
+            "total": 0,
+            "facets": Counter(),
+            "agents": Counter(),
+            "days": Counter(),
+            "streams": Counter(),
+        }
+
+    monkeypatch.setattr(journal_index, "search_journal", fake_search)
+    monkeypatch.setattr(journal_index, "search_counts", fake_counts)
+
+    call_tool.search(
+        query="needle",
+        query_opt=None,
+        limit=5,
+        offset=2,
+        day=None,
+        day_from=None,
+        day_to=None,
+        facet=None,
+        agent=None,
+        stream=None,
+    )
+
+    assert calls["search"][3]["relax"] is True
+    assert calls["search"][3]["rerank"] is True
+    assert calls["counts"][1]["relax"] is True
+    assert "rerank" not in calls["counts"][1]
+
+
+def test_voice_tool_flips_relax_and_rerank(monkeypatch):
+    from solstone.think.voice import tools as voice_tools
+
+    calls = {}
+
+    def fake_search(query, **kwargs):
+        calls["search"] = (query, kwargs)
+        return 0, []
+
+    monkeypatch.setattr(voice_tools, "search_journal", fake_search)
+
+    result = voice_tools.handle_journal_search(
+        {"query": "needle", "facet": "work", "days": 7, "limit": 3},
+        app=None,
+    )
+
+    assert result["count"] == 0
+    assert calls["search"][1]["relax"] is True
+    assert calls["search"][1]["rerank"] is True
+    assert calls["search"][1]["facet"] == "work"
 
 
 def test_search_journal_returns_counts(monkeypatch):
