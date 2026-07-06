@@ -245,3 +245,36 @@ def test_refresh_tokens_uses_refresh_grant_without_exposing_existing_token():
     assert refreshed.access_token == "new-access-sensitive"
     assert refreshed.refresh_token == "new-refresh-sensitive"
     assert refreshed.expires_at > time.time()
+
+
+def test_token_grants_attach_client_secret_only_when_present(tmp_path, monkeypatch):
+    # Server-side-flow apps (Jack's registration) require the secret at
+    # exchange and refresh; public PKCE clients must send requests
+    # unchanged. The secret must come from the local boundary only.
+    import solstone.think.importers.oura_auth as oura_auth
+    from solstone.think.importers.local_secrets import OuraTokens
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    captured: list[dict] = []
+
+    def transport(url, data, headers, timeout_s):
+        captured.append(dict(data))
+        return {
+            "access_token": "at",
+            "refresh_token": "rt",
+            "expires_at": 4102444800.0,
+            "token_type": "Bearer",
+        }
+
+    tokens = OuraTokens("old-at", "old-rt", 4102444800.0)
+    oura_auth.refresh_tokens(tokens, client_id="cid", http_transport=transport)
+    assert "client_secret" not in captured[-1]
+
+    secret_dir = (
+        tmp_path / "Library" / "Application Support" / "Solstone" / "secrets" / "oura"
+    )
+    secret_dir.mkdir(parents=True)
+    (secret_dir / "client_secret").write_text("shh-42\n", encoding="utf-8")
+    oura_auth.refresh_tokens(tokens, client_id="cid", http_transport=transport)
+    assert captured[-1]["client_secret"] == "shh-42"
+    assert captured[-1]["code_verifier" if False else "client_id"] == "cid"

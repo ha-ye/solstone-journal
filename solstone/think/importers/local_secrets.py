@@ -127,3 +127,18 @@ def _fsync_dir(path: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def load_oura_client_secret() -> str | None:
+    """Machine-local Oura client secret for confidential-client apps.
+
+    Server-side-flow Oura apps require the client secret at token exchange
+    and refresh. It lives beside the token files, never in the journal or
+    chat transcripts; absent file means a public (PKCE-only) client.
+    """
+    path = Path.home() / _APP_SUPPORT_RELATIVE / "client_secret"
+    try:
+        secret = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    return secret or None

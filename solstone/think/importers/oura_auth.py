@@ -97,8 +97,23 @@ def refresh_tokens(
         "refresh_token": tokens.refresh_token,
         "client_id": client_id,
     }
+    _attach_client_secret(data)
     payload = _post_token_request(data, transport=transport, timeout_s=timeout_s)
     return _tokens_from_response(payload)
+
+
+def _attach_client_secret(data: dict[str, str]) -> None:
+    """Server-side-flow Oura apps require the client secret on token grants.
+
+    The secret lives in the machine-local boundary (never journal, config,
+    or transcripts); absent secret means a public PKCE-only client and the
+    request goes out unchanged.
+    """
+    from solstone.think.importers.local_secrets import load_oura_client_secret
+
+    secret = load_oura_client_secret()
+    if secret:
+        data["client_secret"] = secret
 
 
 def _authorization_url(
@@ -136,6 +151,7 @@ def _exchange_authorization_code(
         "client_id": client_id,
         "code_verifier": verifier,
     }
+    _attach_client_secret(data)
     payload = _post_token_request(data, transport=transport, timeout_s=timeout_s)
     return _tokens_from_response(payload)
 
