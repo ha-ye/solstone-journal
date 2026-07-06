@@ -13,12 +13,14 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from datetime import datetime
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Callable
 
 from solstone.observe.describe import CATEGORIES
+from solstone.observe.detect import qualified_objects
 from solstone.observe.utils import load_analysis_frames, parse_screen_filename
 
 logger = logging.getLogger(__name__)
@@ -214,6 +216,21 @@ def format_screen(
             lines.append("")
             if description:
                 lines.append(description)
+                lines.append("")
+
+        # Detected-object tags — read-side qualified-objects policy is the
+        # single source of truth (detect.py); stored rows are raw/unfiltered.
+        detections = frame.get("detections")
+        if detections:
+            qualified = qualified_objects(detections)
+            if qualified:
+                counts = Counter(obj["class_name"] for obj in qualified)
+                ordered = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+                tags = ", ".join(
+                    name if count == 1 else f"{name} ×{count}"
+                    for name, count in ordered
+                )
+                lines.append(f"**Tags:** {tags}")
                 lines.append("")
 
         # Build context for category formatters

@@ -219,6 +219,28 @@ Example frame record:
 - `requests` – list of vision API requests made for this frame (type: "describe" for initial, "category" for follow-ups)
 - `analysis` – categorization result with `primary`, `secondary`, `overlap`, and `visual_description`
 - `content` – object containing category-specific extracted content (see below)
+- `detections` – optional detector provenance and object block with `engine`, `engine_ref`, `model`, `threshold`, `source` (`screen` or `still`), `gate`, `image`, and `objects`. `objects` is the RAW, UNFILTERED detector output at the run threshold; consumers that need user-facing tags should filter with the qualified-objects policy in `solstone/observe/detect.py`, which is the read-time source of truth.
+
+  ```json
+  {
+    "engine": "rf-detr.cpp",
+    "engine_ref": "65c0ffcc",
+    "model": "rfdetr-nano-f16",
+    "threshold": 0.25,
+    "source": "screen",
+    "gate": "primary:media",
+    "image": {"width": 100, "height": 50},
+    "objects": [
+      {
+        "class_id": 1,
+        "class_name": "cup",
+        "score": 0.72,
+        "bbox": [1, 2, 3, 4]
+      }
+    ]
+  }
+  ```
+
 - `error` – present when processing failed after retries
 
 **Category-specific content (inside `content` object):**

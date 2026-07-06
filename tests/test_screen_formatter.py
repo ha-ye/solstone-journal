@@ -226,6 +226,81 @@ def test_format_screen_includes_category_content():
     assert "| Test | 123 |" in markdown
 
 
+def test_format_screen_renders_qualified_detection_tags():
+    """Test that qualified detector objects render as counted tags."""
+    frames = [
+        {
+            "timestamp": 0,
+            "analysis": {
+                "primary": "media",
+                "visual_description": "Video frame with objects",
+            },
+            "detections": {
+                "source": "screen",
+                "objects": [
+                    {"class_name": "person", "score": 0.61},
+                    {"class_name": "person", "score": 0.61},
+                    {"class_name": "car", "score": 0.50},
+                    {"class_name": "laptop", "score": 0.90},
+                    {"class_name": "hot dog", "score": 0.50},
+                    {"class_name": "person", "score": 0.35},
+                ],
+            },
+        },
+    ]
+
+    context = {"include_entity_context": False}
+
+    chunks, meta = format_screen(frames, context)
+    markdown = "\n".join([meta.get("header", "")] + [c["markdown"] for c in chunks])
+
+    assert "**Tags:** person ×2, car" in markdown
+
+
+def test_format_screen_no_detections_renders_no_tags():
+    """Test that frames without detector output do not render tags."""
+    frames = [
+        {
+            "timestamp": 0,
+            "analysis": {
+                "primary": "media",
+                "visual_description": "Video frame without detections",
+            },
+        },
+    ]
+
+    context = {"include_entity_context": False}
+
+    chunks, meta = format_screen(frames, context)
+    markdown = "\n".join([meta.get("header", "")] + [c["markdown"] for c in chunks])
+
+    assert "**Tags:**" not in markdown
+
+
+def test_format_screen_all_unqualified_renders_no_tags():
+    """Test that unqualified detector objects do not render tags."""
+    frames = [
+        {
+            "timestamp": 0,
+            "detections": {
+                "source": "screen",
+                "objects": [
+                    {"class_name": "laptop", "score": 0.9},
+                    {"class_name": "person", "score": 0.35},
+                    {"class_name": "sandwich", "score": 0.9},
+                ],
+            },
+        },
+    ]
+
+    context = {"include_entity_context": False}
+
+    chunks, meta = format_screen(frames, context)
+    markdown = "\n".join([meta.get("header", "")] + [c["markdown"] for c in chunks])
+
+    assert "**Tags:**" not in markdown
+
+
 def test_format_screen_returns_chunks_with_timestamps():
     """Test that format_screen returns chunks with timestamp metadata."""
     frames = [
