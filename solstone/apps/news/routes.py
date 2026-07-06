@@ -10,12 +10,13 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import frontmatter
-from flask import Blueprint, Response, render_template, url_for
+from flask import Blueprint, Response, current_app, jsonify, render_template, url_for
 from markdown import Markdown
 
 from solstone.apps.news import copy as news_copy
 from solstone.apps.news.dates import format_news_list_date, next_newsletter_when
-from solstone.convey.utils import DATE_RE
+from solstone.convey.reasons import FILE_NOT_FOUND
+from solstone.convey.utils import DATE_RE, error_response
 from solstone.think.features import require_extra
 from solstone.think.utils import get_journal, get_owner_timezone
 
@@ -121,7 +122,12 @@ def _render_newsletter_pdf(
 
 
 @news_bp.route("/")
-def index() -> str:
+def index() -> Any:
+    return current_app.send_static_file("shell.html")
+
+
+@news_bp.route("/api/state")
+def api_state() -> Any:
     rows = _list_newsletters()
     when = next_newsletter_when(_today())
 
@@ -140,37 +146,42 @@ def index() -> str:
     if not _journal_has_any_observer_input():
         empty_next = news_copy.NEWS_EMPTY_NO_DATE
 
-    return render_template(
-        "app.html",
-        app="news",
-        view_mode="index",
-        newsletters=newsletters,
-        kicker=news_copy.NEWS_KICKER,
-        index_h1=news_copy.NEWS_INDEX_H1,
-        subtitle=news_copy.NEWS_SUBTITLE,
-        empty_body=news_copy.NEWS_EMPTY_BODY,
-        empty_next=empty_next,
-        empty_until_then=news_copy.NEWS_EMPTY_UNTIL_THEN,
-        sample_link_label=news_copy.NEWS_SAMPLE_LINK_LABEL,
-        sample_url=url_for("app:news.sample"),
-        populated_framing=news_copy.NEWS_POPULATED_FRAMING,
-        populated_sample_link=news_copy.NEWS_POPULATED_SAMPLE_LINK,
-        populated_next_footer=populated_next_footer,
+    return jsonify(
+        {
+            "newsletters": newsletters,
+            "copy": {
+                "kicker": news_copy.NEWS_KICKER,
+                "index_h1": news_copy.NEWS_INDEX_H1,
+                "subtitle": news_copy.NEWS_SUBTITLE,
+                "empty_body": news_copy.NEWS_EMPTY_BODY,
+                "empty_next": empty_next,
+                "empty_until_then": news_copy.NEWS_EMPTY_UNTIL_THEN,
+                "sample_link_label": news_copy.NEWS_SAMPLE_LINK_LABEL,
+                "sample_url": url_for("app:news.sample"),
+                "populated_framing": news_copy.NEWS_POPULATED_FRAMING,
+                "populated_sample_link": news_copy.NEWS_POPULATED_SAMPLE_LINK,
+                "populated_next_footer": populated_next_footer,
+            },
+        }
     )
 
 
 @news_bp.route("/sample")
 def sample() -> Any:
+    return current_app.send_static_file("shell.html")
+
+
+@news_bp.route("/api/sample")
+def api_sample() -> Any:
     post = frontmatter.loads(news_copy.SAMPLE_CONTENT)
-    return render_template(
-        "app.html",
-        app="news",
-        view_mode="sample",
-        kicker=news_copy.NEWS_KICKER,
-        sample_h1=news_copy.NEWS_SAMPLE_H1,
-        newsletter_markdown=post.content,
-        raw_url=url_for("app:news.sample_raw"),
-        sample_banner=news_copy.NEWS_SAMPLE_BANNER,
+    return jsonify(
+        {
+            "markdown": post.content,
+            "raw_url": url_for("app:news.sample_raw"),
+            "kicker": news_copy.NEWS_KICKER,
+            "sample_h1": news_copy.NEWS_SAMPLE_H1,
+            "sample_banner": news_copy.NEWS_SAMPLE_BANNER,
+        }
     )
 
 
@@ -185,27 +196,31 @@ def sample_raw() -> Any:
 
 @news_bp.route("/<facet>/<day>")
 def detail(facet: str, day: str) -> Any:
+    return current_app.send_static_file("shell.html")
+
+
+@news_bp.route("/api/<facet>/<day>")
+def api_detail(facet: str, day: str) -> Any:
     if not _FACET_RE.fullmatch(facet) or not DATE_RE.fullmatch(day):
-        return _plain_not_found()
+        return error_response(FILE_NOT_FOUND, detail="Newsletter not found")
 
     try:
         _path, _raw_markdown, post = _load_newsletter(facet, day)
     except FileNotFoundError:
-        return _plain_not_found()
+        return error_response(FILE_NOT_FOUND, detail="Newsletter not found")
 
-    return render_template(
-        "app.html",
-        app="news",
-        view_mode="detail",
-        kicker=news_copy.NEWS_KICKER,
-        detail_facet=facet,
-        detail_date_label=format_news_list_date(day),
-        detail_subtitle=news_copy.NEWS_DETAIL_SUBTITLE.format(facet=facet),
-        debug_link_label=news_copy.NEWS_DETAIL_DEBUG_LINK,
-        debug_link_url=f"/app/sol/{day}/talents/facet_newsletter",
-        newsletter_markdown=post.content,
-        raw_url=url_for("app:news.detail_raw", facet=facet, day=day),
-        pdf_url=url_for("app:news.detail_pdf", facet=facet, day=day),
+    return jsonify(
+        {
+            "markdown": post.content,
+            "raw_url": url_for("app:news.detail_raw", facet=facet, day=day),
+            "pdf_url": url_for("app:news.detail_pdf", facet=facet, day=day),
+            "kicker": news_copy.NEWS_KICKER,
+            "facet": facet,
+            "date_label": format_news_list_date(day),
+            "subtitle": news_copy.NEWS_DETAIL_SUBTITLE.format(facet=facet),
+            "debug_link_label": news_copy.NEWS_DETAIL_DEBUG_LINK,
+            "debug_link_url": f"/app/sol/{day}/talents/facet_newsletter",
+        }
     )
 
 

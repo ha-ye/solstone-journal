@@ -145,68 +145,126 @@
 </style>
 
 <section class="curation-shell" data-curation-root>
-  <h1 class="curation-header">{{ curation_copy.CUR_HEADING }}</h1>
-
-  {% if not curation_facet_items and not curation_entity_items and not curation_speaker_items %}
-    <p class="curation-empty">{{ curation_copy.CUR_EMPTY_STATE }}</p>
-  {% endif %}
-
-  <div class="curation-list" data-curation-list>
-    {% for item in curation_facet_items %}
-      <article class="curation-item" data-curation-item data-kind="facet_candidate" data-name-key="{{ item.key }}">
-        <p class="curation-body">{{ curation_copy.CUR_FACET_BODY.format(name=item.name) }}</p>
-        <div class="curation-actions">
-          <button class="curation-button curation-button-primary" type="button" data-action="facet-accept" data-name-key="{{ item.key }}">{{ curation_copy.CUR_FACET_CREATE_ACTION }}</button>
-          <button class="curation-button" type="button" data-action="facet-dismiss" data-name-key="{{ item.key }}">{{ curation_copy.CUR_FACET_DISMISS_ACTION }}</button>
-          <button class="curation-button curation-button-link" type="button" data-action="toggle-evidence">{{ curation_copy.CUR_FACET_EVIDENCE_ACTION }}</button>
-        </div>
-        <div class="curation-evidence" hidden>
-          <ol class="curation-evidence-list">
-            {% for sample in item.evidence.samples or [] %}
-              <li>
-                <span>{{ sample.day }}</span>
-                {% if sample.stream %}<span> · {{ sample.stream }}</span>{% endif %}
-                {% if sample.segment %}<span> · {{ sample.segment }}</span>{% endif %}
-              </li>
-            {% endfor %}
-          </ol>
-        </div>
-        <p class="curation-item-error" hidden></p>
-      </article>
-    {% endfor %}
-
-    {% for item in curation_entity_items %}
-      <article class="curation-item" data-curation-item data-kind="entity_merge" data-facet="{{ item.facet }}" data-source-slug="{{ item.source_slug }}" data-target-slug="{{ item.target_slug }}">
-        <p class="curation-body">{{ curation_copy.CUR_ENTITY_BODY.format(a=item.source, b=item.target) }}</p>
-        <div class="curation-actions">
-          <button class="curation-button curation-button-primary" type="button" data-action="entity-preview" data-facet="{{ item.facet }}" data-source-slug="{{ item.source_slug }}" data-target-slug="{{ item.target_slug }}">{{ curation_copy.CUR_ENTITY_MERGE_ACTION }}</button>
-          <button class="curation-button" type="button" data-action="entity-dismiss" data-facet="{{ item.facet }}" data-source-slug="{{ item.source_slug }}" data-target-slug="{{ item.target_slug }}">{{ curation_copy.CUR_ENTITY_DISMISS_ACTION }}</button>
-        </div>
-        <div class="curation-preview" hidden></div>
-        <p class="curation-item-error" hidden></p>
-      </article>
-    {% endfor %}
-
-    {% for item in curation_speaker_items %}
-      <article class="curation-item" data-curation-item data-kind="speaker_name_variant" data-key="{{ item.key }}" data-source-id="{{ item.source_slug }}" data-target-id="{{ item.target_slug }}">
-        <p class="curation-body">{{ curation_copy.CUR_SPEAKER_BODY.format(source=item.source, target=item.target) }}</p>
-        <div class="curation-actions">
-          <button class="curation-button curation-button-primary" type="button" data-action="speaker-preview">{{ curation_copy.CUR_SPEAKER_MERGE_ACTION }}</button>
-          <button class="curation-button" type="button" data-action="speaker-dismiss">{{ curation_copy.CUR_SPEAKER_DISMISS_ACTION }}</button>
-        </div>
-        <div class="curation-preview" hidden></div>
-        <p class="curation-item-error" hidden></p>
-      </article>
-    {% endfor %}
-  </div>
 </section>
 
 <script>
-const CUR_COPY = {{ curation_copy_payload|tojson|safe }};
+let CUR_COPY = {};
+window.CUR_COPY = CUR_COPY;
 
 (function() {
   const root = document.querySelector('[data-curation-root]');
   if (!root) return;
+
+  function renderLoading() {
+    root.innerHTML = window.SurfaceState
+      ? window.SurfaceState.loading({text: 'loading suggestions...'})
+      : '<p>loading suggestions...</p>';
+  }
+
+  function renderError(err, retry) {
+    window.logError?.(err, {context: 'curation-state'});
+    root.innerHTML = window.SurfaceState
+      ? window.SurfaceState.error({
+          retry: true,
+          serverMessage: err?.serverMessage || err?.message || '',
+          detail: err
+        })
+      : '<p>could not load suggestions.</p><button type="button" class="surface-state-retry">try again</button>';
+    root.querySelector('.surface-state-retry')?.addEventListener('click', retry, {once: true});
+  }
+
+  function copyFormat(template, values) {
+    let result = String(template || '');
+    Object.entries(values).forEach(([key, value]) => {
+      result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value ?? ''));
+    });
+    return result;
+  }
+
+  function evidenceHtml(item) {
+    const samples = item?.evidence?.samples || [];
+    return samples.map((sample) => `
+      <li>
+        <span>${escapeHtml(sample.day)}</span>
+        ${sample.stream ? `<span> · ${escapeHtml(sample.stream)}</span>` : ''}
+        ${sample.segment ? `<span> · ${escapeHtml(sample.segment)}</span>` : ''}
+      </li>
+    `).join('');
+  }
+
+  function facetItemHtml(item) {
+    return `
+      <article class="curation-item" data-curation-item data-kind="facet_candidate" data-name-key="${escapeHtml(item.key)}">
+        <p class="curation-body">${escapeHtml(copyFormat(CUR_COPY.CUR_FACET_BODY, {name: item.name}))}</p>
+        <div class="curation-actions">
+          <button class="curation-button curation-button-primary" type="button" data-action="facet-accept" data-name-key="${escapeHtml(item.key)}">${escapeHtml(CUR_COPY.CUR_FACET_CREATE_ACTION)}</button>
+          <button class="curation-button" type="button" data-action="facet-dismiss" data-name-key="${escapeHtml(item.key)}">${escapeHtml(CUR_COPY.CUR_FACET_DISMISS_ACTION)}</button>
+          <button class="curation-button curation-button-link" type="button" data-action="toggle-evidence">${escapeHtml(CUR_COPY.CUR_FACET_EVIDENCE_ACTION)}</button>
+        </div>
+        <div class="curation-evidence" hidden>
+          <ol class="curation-evidence-list">${evidenceHtml(item)}</ol>
+        </div>
+        <p class="curation-item-error" hidden></p>
+      </article>
+    `;
+  }
+
+  function entityItemHtml(item) {
+    return `
+      <article class="curation-item" data-curation-item data-kind="entity_merge" data-facet="${escapeHtml(item.facet)}" data-source-slug="${escapeHtml(item.source_slug)}" data-target-slug="${escapeHtml(item.target_slug)}">
+        <p class="curation-body">${escapeHtml(copyFormat(CUR_COPY.CUR_ENTITY_BODY, {a: item.source, b: item.target}))}</p>
+        <div class="curation-actions">
+          <button class="curation-button curation-button-primary" type="button" data-action="entity-preview" data-facet="${escapeHtml(item.facet)}" data-source-slug="${escapeHtml(item.source_slug)}" data-target-slug="${escapeHtml(item.target_slug)}">${escapeHtml(CUR_COPY.CUR_ENTITY_MERGE_ACTION)}</button>
+          <button class="curation-button" type="button" data-action="entity-dismiss" data-facet="${escapeHtml(item.facet)}" data-source-slug="${escapeHtml(item.source_slug)}" data-target-slug="${escapeHtml(item.target_slug)}">${escapeHtml(CUR_COPY.CUR_ENTITY_DISMISS_ACTION)}</button>
+        </div>
+        <div class="curation-preview" hidden></div>
+        <p class="curation-item-error" hidden></p>
+      </article>
+    `;
+  }
+
+  function speakerItemHtml(item) {
+    return `
+      <article class="curation-item" data-curation-item data-kind="speaker_name_variant" data-key="${escapeHtml(item.key)}" data-source-id="${escapeHtml(item.source_slug)}" data-target-id="${escapeHtml(item.target_slug)}">
+        <p class="curation-body">${escapeHtml(copyFormat(CUR_COPY.CUR_SPEAKER_BODY, {source: item.source, target: item.target}))}</p>
+        <div class="curation-actions">
+          <button class="curation-button curation-button-primary" type="button" data-action="speaker-preview">${escapeHtml(CUR_COPY.CUR_SPEAKER_MERGE_ACTION)}</button>
+          <button class="curation-button" type="button" data-action="speaker-dismiss">${escapeHtml(CUR_COPY.CUR_SPEAKER_DISMISS_ACTION)}</button>
+        </div>
+        <div class="curation-preview" hidden></div>
+        <p class="curation-item-error" hidden></p>
+      </article>
+    `;
+  }
+
+  function renderState(payload) {
+    CUR_COPY = payload.copy || {};
+    window.CUR_COPY = CUR_COPY;
+    const facetItems = payload.facet_items || [];
+    const entityItems = payload.entity_items || [];
+    const speakerItems = payload.speaker_items || [];
+    const empty = !facetItems.length && !entityItems.length && !speakerItems.length;
+    root.innerHTML = `
+      <h1 class="curation-header">${escapeHtml(CUR_COPY.CUR_HEADING)}</h1>
+      ${empty ? `<p class="curation-empty">${escapeHtml(CUR_COPY.CUR_EMPTY_STATE)}</p>` : ''}
+      <div class="curation-list" data-curation-list>
+        ${facetItems.map(facetItemHtml).join('')}
+        ${entityItems.map(entityItemHtml).join('')}
+        ${speakerItems.map(speakerItemHtml).join('')}
+      </div>
+    `;
+  }
+
+  async function loadInitialState() {
+    renderLoading();
+    try {
+      renderState(await window.apiJson('/app/curation/api/state'));
+    } catch (err) {
+      renderError(err, loadInitialState);
+    }
+  }
+
+  loadInitialState();
 
   function setBusy(button, busy) {
     if (!button) return;
@@ -305,17 +363,17 @@ const CUR_COPY = {{ curation_copy_payload|tojson|safe }};
     const errors = preview.segment_errors || [];
     const listHtml = rows.length
       ? `<ul class="curation-preview-list">${rows.map((row) => `<li>${escapeHtml(row)}</li>`).join('')}</ul>`
-      : `<p class="curation-empty">${CUR_COPY.CUR_ENTITY_PREVIEW_EMPTY}</p>`;
+      : `<p class="curation-empty">${escapeHtml(CUR_COPY.CUR_ENTITY_PREVIEW_EMPTY)}</p>`;
     const errorHtml = errors.length
-      ? `<p class="curation-preview-error">${CUR_COPY.CUR_ENTITY_PREVIEW_ERRORS}</p>`
+      ? `<p class="curation-preview-error">${escapeHtml(CUR_COPY.CUR_ENTITY_PREVIEW_ERRORS)}</p>`
       : '';
     previewNode.innerHTML = `
-      <p class="curation-preview-lead">${CUR_COPY.CUR_ENTITY_PREVIEW_LEAD}</p>
+      <p class="curation-preview-lead">${escapeHtml(CUR_COPY.CUR_ENTITY_PREVIEW_LEAD)}</p>
       ${listHtml}
       ${errorHtml}
       <div class="curation-actions">
-        <button class="curation-button curation-button-primary" type="button" data-action="${escapeHtml(acceptAction)}" ${payloadAttrs(payload)}>${CUR_COPY.CUR_ENTITY_CONFIRM_ACTION}</button>
-        <button class="curation-button" type="button" data-action="${escapeHtml(cancelAction)}">${CUR_COPY.CUR_ENTITY_CANCEL_ACTION}</button>
+        <button class="curation-button curation-button-primary" type="button" data-action="${escapeHtml(acceptAction)}" ${payloadAttrs(payload)}>${escapeHtml(CUR_COPY.CUR_ENTITY_CONFIRM_ACTION)}</button>
+        <button class="curation-button" type="button" data-action="${escapeHtml(cancelAction)}">${escapeHtml(CUR_COPY.CUR_ENTITY_CANCEL_ACTION)}</button>
       </div>
     `;
     previewNode.hidden = false;

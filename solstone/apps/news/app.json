@@ -1,6 +1,7 @@
 {
   "icon": "📰",
   "label": "newsletters",
+  "spa": true,
   "date_nav": false,
   "facets": {
     "disabled": true

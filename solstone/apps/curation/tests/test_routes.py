@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import html as html_lib
 import json
 from pathlib import Path
 
@@ -203,12 +202,15 @@ def _seed_speaker_entities(env) -> Path:
 def test_index_renders_empty_state(curation_env):
     env = curation_env()
 
-    resp = env.client.get("/app/curation/")
+    resp = env.client.get("/app/curation/api/state")
 
     assert resp.status_code == 200
-    html = html_lib.unescape(resp.get_data(as_text=True))
-    assert CUR_HEADING in html
-    assert CUR_EMPTY_STATE in html
+    data = resp.get_json()
+    assert data["facet_items"] == []
+    assert data["entity_items"] == []
+    assert data["speaker_items"] == []
+    assert data["copy"]["CUR_HEADING"] == CUR_HEADING
+    assert data["copy"]["CUR_EMPTY_STATE"] == CUR_EMPTY_STATE
 
 
 def test_index_renders_facet_and_entity_candidates(curation_env):
@@ -216,13 +218,13 @@ def test_index_renders_facet_and_entity_candidates(curation_env):
     _seed_facet_candidate()
     _seed_entity_candidate()
 
-    resp = env.client.get("/app/curation/")
+    resp = env.client.get("/app/curation/api/state")
 
     assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert "Home Reno" in html
-    assert "Kognova Inc" in html
-    assert "Kognova" in html
+    data = resp.get_json()
+    assert data["facet_items"][0]["name"] == "Home Reno"
+    assert data["entity_items"][0]["source"] == "Kognova Inc"
+    assert data["entity_items"][0]["target"] == "Kognova"
 
 
 def test_index_renders_speaker_candidate(curation_env):
@@ -235,13 +237,13 @@ def test_index_renders_speaker_candidate(curation_env):
         similarity=0.99,
     )
 
-    resp = env.client.get("/app/curation/")
+    resp = env.client.get("/app/curation/api/state")
 
     assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    assert 'data-kind="speaker_name_variant"' in html
-    assert "Alice" in html
-    assert "Alice Johnson" in html
+    data = resp.get_json()
+    assert data["speaker_items"][0]["kind"] == "speaker_name_variant"
+    assert data["speaker_items"][0]["source"] == "Alice"
+    assert data["speaker_items"][0]["target"] == "Alice Johnson"
 
 
 def test_facet_accept_creates_facet_and_flips_status(curation_env):
@@ -446,9 +448,9 @@ def test_speaker_dismiss_sets_watermark_and_removes_from_open_list(curation_env)
     row = load_speaker_candidates()[0]
     assert row["status"] == "dismissed"
     assert row["dismissed_detection_count"] == 1
-    index_resp = env.client.get("/app/curation/")
+    index_resp = env.client.get("/app/curation/api/state")
     assert index_resp.status_code == 200
-    assert 'data-kind="speaker_name_variant"' not in index_resp.get_data(as_text=True)
+    assert index_resp.get_json()["speaker_items"] == []
 
 
 def test_speaker_payload_missing_field_returns_400(curation_env):
@@ -484,11 +486,10 @@ def test_speaker_payload_key_mismatch_returns_400(curation_env):
 def test_rendered_payload_matches_copy_source(curation_env):
     env = curation_env()
 
-    resp = env.client.get("/app/curation/")
+    resp = env.client.get("/app/curation/api/state")
 
     assert resp.status_code == 200
-    assert "CUR_COPY" in resp.get_data(as_text=True)
-    assert json.dumps(CUR_HEADING) in resp.get_data(as_text=True)
+    assert resp.get_json()["copy"]["CUR_HEADING"] == CUR_HEADING
 
 
 def test_app_metadata_exists():
@@ -496,3 +497,55 @@ def test_app_metadata_exists():
 
     assert metadata["label"] == "curation"
     assert metadata["facets"]["disabled"] is True
+    assert metadata["spa"] is True
+
+
+def test_curation_index_serves_spa_shell(curation_env):
+    env = curation_env()
+
+    response = env.client.get("/app/curation/")
+
+    assert response.status_code == 200
+    assert b'data-solstone-shell="spa"' in response.data
+
+
+def test_curation_workspace_is_served_verbatim(curation_env):
+    env = curation_env()
+    workspace_path = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    response = env.client.get("/app/curation/workspace")
+
+    assert response.status_code == 200
+    assert response.data == workspace_path.read_bytes()
+
+
+def test_curation_api_state_route_resolves(curation_env):
+    env = curation_env()
+    adapter = env.app.url_map.bind("localhost")
+
+    endpoint, _args = adapter.match("/app/curation/api/state", method="GET")
+
+    assert endpoint == "app:curation.api_state"
+
+
+def test_curation_state_payload_shape_includes_nested_evidence(curation_env):
+    env = curation_env()
+    _seed_facet_candidate()
+
+    response = env.client.get("/app/curation/api/state")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert set(data) == {"copy", "entity_items", "facet_items", "speaker_items"}
+    assert data["entity_items"] == []
+    assert data["speaker_items"] == []
+    assert data["facet_items"][0]["evidence"]["samples"] == [
+        {"day": "20260602", "stream": "archon", "segment": "090000_300"}
+    ]
+    assert data["copy"]["CUR_HEADING"] == CUR_HEADING
+
+
+def test_curation_routes_do_not_use_render_template():
+    routes_path = Path(__file__).resolve().parents[1] / "routes.py"
+
+    assert "render_template" not in routes_path.read_text(encoding="utf-8")

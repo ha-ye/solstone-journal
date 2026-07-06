@@ -721,7 +721,7 @@ h1 {
 }
 </style>
 
-<div class="dashboard" data-stats-url="{{ url_for('app:stats.stats_data') }}">
+<div class="dashboard" data-stats-url="/app/stats/api/stats">
   <h1>journal dashboard</h1>
 
   <p id="statsFreshness" class="stats-freshness"></p>
@@ -773,37 +773,37 @@ h1 {
 
 <script>
   window.BACKLOG_COPY = {
-    ACTION_PROCESS_NOW: {{ backlog_copy.BACKLOG_ACTION_PROCESS_NOW | tojson }},
-    ACTION_REDO_SCRATCH: {{ backlog_copy.BACKLOG_ACTION_REDO_SCRATCH | tojson }},
-    CONFIRM_REDO_SCRATCH: {{ backlog_copy.BACKLOG_CONFIRM_REDO_SCRATCH | tojson }},
-    QUEUED_FEEDBACK: {{ backlog_copy.BACKLOG_QUEUED_FEEDBACK | tojson }},
-    VERDICT_CAUGHT_UP: {{ backlog_copy.BACKLOG_VERDICT_CAUGHT_UP | tojson }},
-    VERDICT_STUCK_ONLY_PLURAL: {{ backlog_copy.BACKLOG_VERDICT_STUCK_ONLY_PLURAL | tojson }},
-    VERDICT_STUCK_ONLY_SINGULAR: {{ backlog_copy.BACKLOG_VERDICT_STUCK_ONLY_SINGULAR | tojson }},
-    VERDICT_PENDING_ONLY_PLURAL: {{ backlog_copy.BACKLOG_VERDICT_PENDING_ONLY_PLURAL | tojson }},
-    VERDICT_PENDING_ONLY_SINGULAR: {{ backlog_copy.BACKLOG_VERDICT_PENDING_ONLY_SINGULAR | tojson }},
-    VERDICT_MIXED_STUCK_PLURAL: {{ backlog_copy.BACKLOG_VERDICT_MIXED_STUCK_PLURAL | tojson }},
-    VERDICT_MIXED_STUCK_SINGULAR: {{ backlog_copy.BACKLOG_VERDICT_MIXED_STUCK_SINGULAR | tojson }},
-    VERDICT_MIXED_PENDING_PLURAL: {{ backlog_copy.BACKLOG_VERDICT_MIXED_PENDING_PLURAL | tojson }},
-    VERDICT_MIXED_PENDING_SINGULAR: {{ backlog_copy.BACKLOG_VERDICT_MIXED_PENDING_SINGULAR | tojson }},
-    VERDICT_CANT_TELL: {{ backlog_copy.BACKLOG_VERDICT_CANT_TELL | tojson }},
-    BUCKET_HEADING: {{ backlog_copy.BACKLOG_BUCKET_HEADING | tojson }},
-    BUCKET_DESCRIPTION: {{ backlog_copy.BACKLOG_BUCKET_DESCRIPTION | tojson }},
-    DAY_BADGE: {{ backlog_copy.BACKLOG_DAY_BADGE | tojson }},
-    REASON_CORRUPT_RAW: {{ backlog_copy.BACKLOG_REASON_CORRUPT_RAW | tojson }},
-    REASON_FAILING_STEP: {{ backlog_copy.BACKLOG_REASON_FAILING_STEP | tojson }},
-    REASON_MISSING_CONFIG: {{ backlog_copy.BACKLOG_REASON_MISSING_CONFIG | tojson }},
-    REASON_PROVIDER_DOWN: {{ backlog_copy.BACKLOG_REASON_PROVIDER_DOWN | tojson }},
-    WHY_NEVER_ATTEMPTED: {{ backlog_copy.BACKLOG_WHY_NEVER_ATTEMPTED | tojson }},
-    WHY_FAILED: {{ backlog_copy.BACKLOG_WHY_FAILED | tojson }},
-    WHY_SENSED_NOT_THOUGHT: {{ backlog_copy.BACKLOG_WHY_SENSED_NOT_THOUGHT | tojson }},
-    CATCHING_UP_DAY: {{ backlog_copy.BACKLOG_CATCHING_UP_DAY | tojson }},
-    CATCHING_UP_AGGREGATE: {{ backlog_copy.BACKLOG_CATCHING_UP_AGGREGATE | tojson }},
-    CATCHING_UP_TAIL: {{ backlog_copy.BACKLOG_CATCHING_UP_TAIL | tojson }},
+    ACTION_PROCESS_NOW: "process now",
+    ACTION_REDO_SCRATCH: "redo from scratch",
+    CONFIRM_REDO_SCRATCH: "redo this whole day from scratch? this re-does the parts sol already finished, so it'll take longer. the day you see now won't change until it's done.",
+    QUEUED_FEEDBACK: "queued — processing now",
+    VERDICT_CAUGHT_UP: "your journal's all caught up.",
+    VERDICT_STUCK_ONLY_PLURAL: "caught up except {stuck_n} days that need a hand.",
+    VERDICT_STUCK_ONLY_SINGULAR: "caught up except 1 day that needs a hand.",
+    VERDICT_PENDING_ONLY_PLURAL: "{pending_n} days are still catching up.",
+    VERDICT_PENDING_ONLY_SINGULAR: "1 day is still catching up.",
+    VERDICT_MIXED_STUCK_PLURAL: "{stuck_n} days need a hand",
+    VERDICT_MIXED_STUCK_SINGULAR: "1 day needs a hand",
+    VERDICT_MIXED_PENDING_PLURAL: "{pending_n} more days are still catching up",
+    VERDICT_MIXED_PENDING_SINGULAR: "1 more day is still catching up",
+    VERDICT_CANT_TELL: "still checking — give me a moment to see where your journal stands.",
+    BUCKET_HEADING: "days that need a hand",
+    BUCKET_DESCRIPTION: "these days stopped on their own and can't pick back up without you — here's why, and what to try.",
+    DAY_BADGE: "stuck",
+    REASON_CORRUPT_RAW: "original raw media is missing or damaged — re-import it",
+    REASON_FAILING_STEP: "a processing step keeps failing — try again",
+    REASON_MISSING_CONFIG: "a setting's missing — check your journal's setup",
+    REASON_PROVIDER_DOWN: "the AI service was unreachable — try again",
+    WHY_NEVER_ATTEMPTED: "not looked at yet",
+    WHY_FAILED: "couldn't finish — will retry",
+    WHY_SENSED_NOT_THOUGHT: "observed, not yet thought through",
+    CATCHING_UP_DAY: "catching up",
+    CATCHING_UP_AGGREGATE: "{pending_n} day(s) catching up",
+    CATCHING_UP_TAIL: "sol's working through these on its own, freshest day first.",
   };
 </script>
-<script src="{{ url_for('app:stats.static', filename='dashboard.js') }}"></script>
+<script src="/app/stats/static/dashboard.js"></script>
 <script>
   // Load dashboard data when page loads
-  Dashboard.load('{{ url_for('app:stats.stats_data') }}');
+  Dashboard.load('/app/stats/api/stats');
 </script>

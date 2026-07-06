@@ -9,12 +9,20 @@ from typing import Any, Callable
 from urllib.parse import urlsplit
 
 import frontmatter
-from flask import Blueprint, Response, jsonify, redirect, render_template, url_for
+from flask import (
+    Blueprint,
+    Response,
+    current_app,
+    jsonify,
+    redirect,
+    render_template,
+    url_for,
+)
 from markdown import Markdown
 
 from solstone.apps.reflections import copy as reflections_copy
 from solstone.apps.reflections.dates import next_reflection_sunday
-from solstone.convey.reasons import INVALID_MONTH
+from solstone.convey.reasons import FILE_NOT_FOUND, INVALID_MONTH
 from solstone.convey.utils import DATE_RE, error_response, format_date
 from solstone.think.features import require_extra
 from solstone.think.utils import get_journal, get_owner_timezone, sunday_of_week
@@ -117,7 +125,12 @@ def _canonical_redirect(endpoint: str, day: str) -> Response | None:
 
 
 @reflections_bp.route("/")
-def index() -> str:
+def index() -> Any:
+    return current_app.send_static_file("shell.html")
+
+
+@reflections_bp.route("/api/state")
+def api_state() -> Any:
     tz = get_owner_timezone()
     today: date = datetime.now(tz).date()
     journal = Path(get_journal())
@@ -139,48 +152,48 @@ def index() -> str:
         }
         for day in _list_reflection_days()
     ]
-    return render_template(
-        "app.html",
-        app="reflections",
-        view_mode="index",
-        weeks=weeks,
-        subtitle=reflections_copy.SUBTITLE,
-        empty_body=reflections_copy.EMPTY_BODY,
-        empty_next=empty_next,
-        empty_until_then=reflections_copy.EMPTY_UNTIL_THEN,
-        sample_link_label=reflections_copy.SAMPLE_LINK_LABEL,
-        sample_url=url_for("app:reflections.sample"),
-        populated_framing=reflections_copy.POPULATED_FRAMING,
-        populated_sample_link=reflections_copy.POPULATED_SAMPLE_LINK,
-        populated_next_footer=populated_next_footer,
+    return jsonify(
+        {
+            "weeks": weeks,
+            "copy": {
+                "subtitle": reflections_copy.SUBTITLE,
+                "empty_body": reflections_copy.EMPTY_BODY,
+                "empty_next": empty_next,
+                "empty_until_then": reflections_copy.EMPTY_UNTIL_THEN,
+                "sample_link_label": reflections_copy.SAMPLE_LINK_LABEL,
+                "sample_url": url_for("app:reflections.sample"),
+                "populated_framing": reflections_copy.POPULATED_FRAMING,
+                "populated_sample_link": reflections_copy.POPULATED_SAMPLE_LINK,
+                "populated_next_footer": populated_next_footer,
+            },
+        }
     )
 
 
 @reflections_bp.route("/<day>")
 def week_view(day: str) -> Any:
-    redirect_response = _canonical_redirect("app:reflections.week_view", day)
-    if redirect_response is not None:
-        return redirect_response
+    return current_app.send_static_file("shell.html")
 
+
+@reflections_bp.route("/api/<day>")
+def api_week(day: str) -> Any:
     canonical_day = _canonical_week_day(day)
     if canonical_day is None:
-        return _plain_not_found("Reflection not found")
+        return error_response(FILE_NOT_FOUND, detail="Reflection not found")
 
     try:
         _path, _raw_markdown, post = _load_reflection(canonical_day)
     except FileNotFoundError:
-        return _plain_not_found("Reflection not found")
+        return error_response(FILE_NOT_FOUND, detail="Reflection not found")
 
-    return render_template(
-        "app.html",
-        app="reflections",
-        day=canonical_day,
-        view_mode="detail",
-        reflection_day=canonical_day,
-        reflection_week_label=format_date(canonical_day),
-        reflection_markdown=post.content,
-        raw_url=url_for("app:reflections.week_raw", day=canonical_day),
-        pdf_url=url_for("app:reflections.week_pdf", day=canonical_day),
+    return jsonify(
+        {
+            "day": canonical_day,
+            "week_label": format_date(canonical_day),
+            "markdown": post.content,
+            "raw_url": url_for("app:reflections.week_raw", day=canonical_day),
+            "pdf_url": url_for("app:reflections.week_pdf", day=canonical_day),
+        }
     )
 
 
@@ -237,14 +250,18 @@ def week_pdf(day: str) -> Any:
 
 @reflections_bp.route("/sample")
 def sample() -> Any:
+    return current_app.send_static_file("shell.html")
+
+
+@reflections_bp.route("/api/sample")
+def api_sample() -> Any:
     post = frontmatter.loads(reflections_copy.SAMPLE_CONTENT)
-    return render_template(
-        "app.html",
-        app="reflections",
-        view_mode="sample",
-        reflection_markdown=post.content,
-        raw_url=url_for("app:reflections.sample_raw"),
-        sample_banner=reflections_copy.SAMPLE_BANNER,
+    return jsonify(
+        {
+            "markdown": post.content,
+            "raw_url": url_for("app:reflections.sample_raw"),
+            "sample_banner": reflections_copy.SAMPLE_BANNER,
+        }
     )
 
 

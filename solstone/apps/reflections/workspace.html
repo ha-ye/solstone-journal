@@ -165,80 +165,61 @@
 }
 </style>
 
-<div class="reflection-shell">
-  {# view_mode ∈ {"index", "detail", "sample"} #}
-  {% if view_mode == "index" %}
-    <header class="reflection-header">
-      <div>
-        <p class="reflection-kicker">weekly reflection</p>
-        <h2 class="reflection-title">reflections</h2>
-        <p class="reflection-subtitle">{{ subtitle }}</p>
-      </div>
-    </header>
-    <section class="reflection-index">
-      {% if not weeks %}
-        <div class="reflection-empty-state">
-          <p class="reflection-empty-body">{{ empty_body }}</p>
-          <p class="reflection-empty-next">{{ empty_next }}</p>
-          <p class="reflection-empty-until-then">{{ empty_until_then }}</p>
-          <p class="reflection-empty-sample"><a href="{{ sample_url }}">{{ sample_link_label }}</a></p>
-        </div>
-      {% else %}
-        <div class="reflection-populated-framing">
-          <p>{{ populated_framing }} <a href="{{ sample_url }}">{{ populated_sample_link }}</a></p>
-        </div>
-        <ul class="reflection-index-list">
-          {% for week in weeks %}
-            <li>
-              <a class="reflection-index-link" href="{{ week.url }}">
-                <span class="reflection-index-day">week of {{ week.label }}</span>
-                <span class="reflection-index-token">{{ week.day }}</span>
-              </a>
-            </li>
-          {% endfor %}
-        </ul>
-        {% if populated_next_footer %}
-          <p class="reflection-next-footer">{{ populated_next_footer }}</p>
-        {% endif %}
-      {% endif %}
-    </section>
-  {% elif view_mode == "detail" %}
-    <header class="reflection-header">
-      <div>
-        <p class="reflection-kicker">weekly reflection</p>
-        <h2 class="reflection-title">{{ reflection_week_label }}</h2>
-        <p class="reflection-subtitle">week of {{ reflection_week_label }}</p>
-      </div>
-      <div class="reflection-actions">
-        <button type="button" class="reflection-button" id="copyReflectionButton">copy</button>
-        <a class="reflection-link-button" href="{{ pdf_url }}">download PDF</a>
-      </div>
-    </header>
-
-    <section class="reflection-body" id="reflectionBody"></section>
-  {% elif view_mode == "sample" %}
-    <header class="reflection-header">
-      <div>
-        <p class="reflection-kicker">weekly reflection</p>
-        <h2 class="reflection-title">sample reflection</h2>
-      </div>
-      <div class="reflection-actions">
-        <button type="button" class="reflection-button" id="copyReflectionButton">copy</button>
-      </div>
-    </header>
-
-    <div class="reflection-sample-banner">{{ sample_banner }}</div>
-    <section class="reflection-body" id="reflectionBody"></section>
-  {% endif %}
+<div class="reflection-shell" id="reflectionApp">
+  <div id="reflectionContent"></div>
 </div>
 
-{% if view_mode in ("detail", "sample") %}
 <script>
 (() => {
-  const markdownSource = {{ reflection_markdown|tojson|safe }};
-  const reflectionBody = document.getElementById('reflectionBody');
-  const copyButton = document.getElementById('copyReflectionButton');
-  const rawUrl = {{ raw_url|tojson|safe }};
+  const content = document.getElementById('reflectionContent');
+
+  function escapeHtml(value) {
+    const holder = document.createElement('div');
+    holder.textContent = value == null ? '' : String(value);
+    return holder.innerHTML;
+  }
+
+  function decodePart(value) {
+    try {
+      return decodeURIComponent(value || '');
+    } catch (_error) {
+      return value || '';
+    }
+  }
+
+  function viewContext() {
+    const parts = window.location.pathname.split('/');
+    if (!parts[3]) {
+      return {mode: 'index', url: '/app/reflections/api/state'};
+    }
+    const first = decodePart(parts[3]);
+    if (first === 'sample') {
+      return {mode: 'sample', url: '/app/reflections/api/sample'};
+    }
+    return {
+      mode: 'detail',
+      day: first,
+      url: `/app/reflections/api/${encodeURIComponent(first)}`
+    };
+  }
+
+  function renderLoading() {
+    content.innerHTML = window.SurfaceState
+      ? window.SurfaceState.loading({text: 'loading reflections...'})
+      : '<p>loading reflections...</p>';
+  }
+
+  function renderError(err, retry) {
+    window.logError?.(err, {context: 'reflections-state'});
+    content.innerHTML = window.SurfaceState
+      ? window.SurfaceState.error({
+          retry: true,
+          serverMessage: err?.serverMessage || err?.message || '',
+          detail: err
+        })
+      : '<p>could not load reflections.</p><button type="button" class="surface-state-retry">try again</button>';
+    content.querySelector('.surface-state-retry')?.addEventListener('click', retry, {once: true});
+  }
 
   function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -256,17 +237,13 @@
     return Promise.resolve();
   }
 
-  function initReflectionDetail() {
-    if (reflectionBody) {
-      reflectionBody.innerHTML = window.AppServices.renderMarkdown(markdownSource);
-    }
-  }
-
-  if (copyButton) {
+  function attachCopyButton(rawUrl) {
+    const copyButton = document.getElementById('copyReflectionButton');
+    if (!copyButton) return;
     copyButton.addEventListener('click', async () => {
       const originalLabel = copyButton.textContent;
       try {
-        const response = await fetch(rawUrl, { credentials: 'same-origin' });
+        const response = await fetch(rawUrl, {credentials: 'same-origin'});
         if (!response.ok) throw new Error('copy failed');
         await copyText(await response.text());
         copyButton.textContent = 'copied';
@@ -277,14 +254,119 @@
           copyButton.textContent = originalLabel;
         }, 2000);
       }
-      });
+    });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initReflectionDetail);
-  } else {
-    initReflectionDetail();
+  function renderMarkdown(markdownSource) {
+    const reflectionBody = document.getElementById('reflectionBody');
+    if (reflectionBody) {
+      reflectionBody.innerHTML = window.AppServices.renderMarkdown(markdownSource || '');
+    }
   }
+
+  function renderIndex(payload) {
+    const copy = payload.copy || {};
+    const weeks = payload.weeks || [];
+    const listHtml = weeks.length
+      ? `
+        <div class="reflection-populated-framing">
+          <p>${escapeHtml(copy.populated_framing)} <a href="${escapeHtml(copy.sample_url)}">${escapeHtml(copy.populated_sample_link)}</a></p>
+        </div>
+        <ul class="reflection-index-list">
+          ${weeks.map((week) => `
+            <li>
+              <a class="reflection-index-link" href="${escapeHtml(week.url)}">
+                <span class="reflection-index-day">week of ${escapeHtml(week.label)}</span>
+                <span class="reflection-index-token">${escapeHtml(week.day)}</span>
+              </a>
+            </li>
+          `).join('')}
+        </ul>
+        ${copy.populated_next_footer ? `<p class="reflection-next-footer">${escapeHtml(copy.populated_next_footer)}</p>` : ''}
+      `
+      : `
+        <div class="reflection-empty-state">
+          <p class="reflection-empty-body">${escapeHtml(copy.empty_body)}</p>
+          <p class="reflection-empty-next">${escapeHtml(copy.empty_next)}</p>
+          <p class="reflection-empty-until-then">${escapeHtml(copy.empty_until_then)}</p>
+          <p class="reflection-empty-sample"><a href="${escapeHtml(copy.sample_url)}">${escapeHtml(copy.sample_link_label)}</a></p>
+        </div>
+      `;
+    content.innerHTML = `
+      <header class="reflection-header">
+        <div>
+          <p class="reflection-kicker">weekly reflection</p>
+          <h2 class="reflection-title">reflections</h2>
+          <p class="reflection-subtitle">${escapeHtml(copy.subtitle)}</p>
+        </div>
+      </header>
+      <section class="reflection-index">${listHtml}</section>
+    `;
+  }
+
+  function renderDetail(payload, requestedDay) {
+    if (payload.day && requestedDay && payload.day !== requestedDay) {
+      window.history.replaceState(
+        window.history.state,
+        '',
+        `/app/reflections/${encodeURIComponent(payload.day)}`
+      );
+    }
+    content.innerHTML = `
+      <header class="reflection-header">
+        <div>
+          <p class="reflection-kicker">weekly reflection</p>
+          <h2 class="reflection-title">${escapeHtml(payload.week_label)}</h2>
+          <p class="reflection-subtitle">week of ${escapeHtml(payload.week_label)}</p>
+        </div>
+        <div class="reflection-actions">
+          <button type="button" class="reflection-button" id="copyReflectionButton">copy</button>
+          <a class="reflection-link-button" href="${escapeHtml(payload.pdf_url)}">download PDF</a>
+        </div>
+      </header>
+
+      <section class="reflection-body" id="reflectionBody"></section>
+    `;
+    renderMarkdown(payload.markdown);
+    attachCopyButton(payload.raw_url);
+  }
+
+  function renderSample(payload) {
+    content.innerHTML = `
+      <header class="reflection-header">
+        <div>
+          <p class="reflection-kicker">weekly reflection</p>
+          <h2 class="reflection-title">sample reflection</h2>
+        </div>
+        <div class="reflection-actions">
+          <button type="button" class="reflection-button" id="copyReflectionButton">copy</button>
+        </div>
+      </header>
+
+      <div class="reflection-sample-banner">${escapeHtml(payload.sample_banner)}</div>
+      <section class="reflection-body" id="reflectionBody"></section>
+    `;
+    renderMarkdown(payload.markdown);
+    attachCopyButton(payload.raw_url);
+  }
+
+  async function load() {
+    const context = viewContext();
+    renderLoading();
+    try {
+      const payload = await window.apiJson(context.url);
+      if (context.mode === 'sample') {
+        renderSample(payload);
+      } else if (context.mode === 'detail') {
+        renderDetail(payload, context.day);
+      } else {
+        renderIndex(payload);
+      }
+    } catch (err) {
+      renderError(err, load);
+    }
+  }
+
+  load();
 })();
 </script>
-{% endif %}

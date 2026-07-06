@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -59,13 +58,10 @@ def test_speaker_copy_avoids_banned_verbs():
     assert hits == {}
 
 
-def test_curation_index_injects_copy(curation_env):
+def test_curation_state_serves_copy(curation_env):
     env = curation_env()
 
-    resp = env.client.get("/app/curation/")
+    resp = env.client.get("/app/curation/api/state")
 
     assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    match = re.search(r"const CUR_COPY = (\{.*\});", html)
-    assert match, "CUR_COPY assignment not found in rendered page"
-    assert json.loads(match.group(1)) == curation_copy_payload()
+    assert resp.get_json()["copy"] == curation_copy_payload()

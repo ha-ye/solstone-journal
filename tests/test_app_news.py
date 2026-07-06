@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from html import unescape
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,10 +20,6 @@ def _make_client(journal: Path):
     app.config["TESTING"] = True
     client = app.test_client()
     return client
-
-
-def _html(response) -> str:
-    return unescape(response.get_data(as_text=True))
 
 
 def _seed_news(journal: Path, facet: str, day: str, body: str) -> None:
@@ -51,41 +46,39 @@ def test_news_app_json_icon_and_label():
     data = json.loads(Path("solstone/apps/news/app.json").read_text())
     assert data["icon"] == "📰"
     assert data["label"] == "newsletters"
+    assert data["spa"] is True
 
 
 def test_news_sidebar_adjacent_to_reflections(journal_copy):
     client = _make_client(journal_copy)
-    response = client.get("/app/news/")
-    html = _html(response)
-    # After convey config seeding, news and reflections sit next to each
-    # other in the unstarred drawer (DEFAULT_APP_ORDER ends in
-    # `reflections, news`).
-    news_idx = html.find('data-app-name="news"')
-    refl_idx = html.find('data-app-name="reflections"')
-    assert news_idx > 0
-    assert refl_idx > 0
-    between = html[min(news_idx, refl_idx) : max(news_idx, refl_idx)]
-    # No other app entry should appear between them.
-    assert not re.search(r'data-app-name="(?!news"|reflections")[^"]+"', between)
+    response = client.get("/api/shell")
+
+    assert response.status_code == 200
+    names = [app["name"] for app in response.get_json()["apps"]]
+    news_idx = names.index("news")
+    refl_idx = names.index("reflections")
+    between = names[min(news_idx, refl_idx) + 1 : max(news_idx, refl_idx)]
+    assert between == []
 
 
 def test_news_index_empty_state_self_explains(journal_copy):
     _clear_news(journal_copy)
     client = _make_client(journal_copy)
 
-    response = client.get("/app/news/")
-    html = _html(response)
+    response = client.get("/app/news/api/state")
+    data = response.get_json()
+    copy = data["copy"]
 
     assert response.status_code == 200
-    assert news_copy.NEWS_KICKER in html
-    assert ">" + news_copy.NEWS_INDEX_H1 + "<" in html
-    assert news_copy.NEWS_SUBTITLE in html
-    assert news_copy.NEWS_EMPTY_BODY in html
-    # Tomorrow cue with the date token interpolated as the safe fallback.
-    assert "Your first newsletters arrive tomorrow morning." in html
-    assert news_copy.NEWS_EMPTY_UNTIL_THEN in html
-    assert news_copy.NEWS_SAMPLE_LINK_LABEL in html
-    assert 'href="/app/news/sample"' in html
+    assert data["newsletters"] == []
+    assert copy["kicker"] == news_copy.NEWS_KICKER
+    assert copy["index_h1"] == news_copy.NEWS_INDEX_H1
+    assert copy["subtitle"] == news_copy.NEWS_SUBTITLE
+    assert copy["empty_body"] == news_copy.NEWS_EMPTY_BODY
+    assert copy["empty_next"] == "Your first newsletters arrive tomorrow morning."
+    assert copy["empty_until_then"] == news_copy.NEWS_EMPTY_UNTIL_THEN
+    assert copy["sample_link_label"] == news_copy.NEWS_SAMPLE_LINK_LABEL
+    assert copy["sample_url"] == "/app/news/sample"
 
 
 def test_news_index_empty_state_no_date_when_journal_brand_new(journal_copy):
@@ -93,12 +86,12 @@ def test_news_index_empty_state_no_date_when_journal_brand_new(journal_copy):
     _clear_chronicle(journal_copy)
     client = _make_client(journal_copy)
 
-    response = client.get("/app/news/")
-    html = _html(response)
+    response = client.get("/app/news/api/state")
+    copy = response.get_json()["copy"]
 
     assert response.status_code == 200
-    assert news_copy.NEWS_EMPTY_NO_DATE in html
-    assert "Your first newsletters arrive" not in html
+    assert copy["empty_next"] == news_copy.NEWS_EMPTY_NO_DATE
+    assert "Your first newsletters arrive" not in copy["empty_next"]
 
 
 def test_news_index_populated_lists_files_reverse_chrono(journal_copy):
@@ -108,27 +101,27 @@ def test_news_index_populated_lists_files_reverse_chrono(journal_copy):
     _seed_news(journal_copy, "kognova", "20260525", "# kognova 5/25")
 
     client = _make_client(journal_copy)
-    response = client.get("/app/news/")
-    html = _html(response)
+    response = client.get("/app/news/api/state")
+    data = response.get_json()
+    copy = data["copy"]
 
     assert response.status_code == 200
-    assert news_copy.NEWS_POPULATED_FRAMING in html
-    assert news_copy.NEWS_POPULATED_SAMPLE_LINK in html
-    assert 'href="/app/news/personal/20260526"' in html
-    assert 'href="/app/news/solstone/20260526"' in html
-    assert 'href="/app/news/kognova/20260525"' in html
-    # Reverse-chrono: 5/26 entries appear before the 5/25 entry.
-    p26 = html.find('href="/app/news/personal/20260526"')
-    k25 = html.find('href="/app/news/kognova/20260525"')
-    assert 0 < p26 < k25
-    # Date label format `Tue May 26, 2026` with no leading zero on day.
-    assert "Tue May 26, 2026" in html
-    assert "20260526" in html
-    # Footer line.
-    assert "next newsletters: tomorrow morning" in html
+    assert copy["populated_framing"] == news_copy.NEWS_POPULATED_FRAMING
+    assert copy["populated_sample_link"] == news_copy.NEWS_POPULATED_SAMPLE_LINK
+    assert copy["populated_next_footer"] == "next newsletters: tomorrow morning"
+    urls = [item["url"] for item in data["newsletters"]]
+    assert "/app/news/personal/20260526" in urls
+    assert "/app/news/solstone/20260526" in urls
+    assert "/app/news/kognova/20260525" in urls
+    assert [item["day"] for item in data["newsletters"]][:2] == [
+        "20260526",
+        "20260526",
+    ]
+    assert data["newsletters"][2]["day"] == "20260525"
+    assert data["newsletters"][0]["label"] == "Tue May 26, 2026"
 
 
-def test_news_detail_renders_file(journal_copy):
+def test_news_detail_api_returns_file(journal_copy):
     _clear_news(journal_copy)
     _seed_news(
         journal_copy,
@@ -138,42 +131,45 @@ def test_news_detail_renders_file(journal_copy):
     )
     client = _make_client(journal_copy)
 
-    response = client.get("/app/news/personal/20260526")
-    html = _html(response)
+    response = client.get("/app/news/api/personal/20260526")
+    data = response.get_json()
 
     assert response.status_code == 200
-    assert news_copy.NEWS_KICKER in html
-    assert "personal · Tue May 26, 2026" in html
-    assert "sol's notes for personal on this day." in html
-    assert ">copy<" in html
-    assert ">download PDF<" in html
-    assert 'href="/app/sol/20260526/talents/facet_newsletter"' in html
-    assert news_copy.NEWS_DETAIL_DEBUG_LINK in html
+    assert data["kicker"] == news_copy.NEWS_KICKER
+    assert data["facet"] == "personal"
+    assert data["date_label"] == "Tue May 26, 2026"
+    assert data["subtitle"] == "sol's notes for personal on this day."
+    assert data["raw_url"] == "/app/news/personal/20260526/raw"
+    assert data["pdf_url"] == "/app/news/personal/20260526/pdf"
+    assert data["debug_link_url"] == "/app/sol/20260526/talents/facet_newsletter"
+    assert data["debug_link_label"] == news_copy.NEWS_DETAIL_DEBUG_LINK
+    assert data["markdown"].startswith("# 2026-05-26 personal")
 
 
-def test_news_detail_404_on_missing(journal_copy):
+def test_news_detail_missing_page_shell_and_api_404(journal_copy):
     _clear_news(journal_copy)
     client = _make_client(journal_copy)
 
-    response = client.get("/app/news/nonexistent/20260526")
+    page_response = client.get("/app/news/nonexistent/20260526")
+    api_response = client.get("/app/news/api/nonexistent/20260526")
 
-    assert response.status_code == 404
-    assert response.mimetype == "text/plain"
-    assert "Newsletter not found" in response.get_data(as_text=True)
+    assert page_response.status_code == 200
+    assert b'data-solstone-shell="spa"' in page_response.data
+    assert api_response.status_code == 404
+    assert api_response.get_json()["reason_code"] == "file_not_found"
 
 
-def test_news_sample_renders_inlined_content(journal_copy):
+def test_news_sample_api_returns_inlined_content(journal_copy):
     client = _make_client(journal_copy)
-    response = client.get("/app/news/sample")
-    html = _html(response)
+    response = client.get("/app/news/api/sample")
+    data = response.get_json()
 
     assert response.status_code == 200
-    assert news_copy.NEWS_SAMPLE_BANNER in html
-    assert ">" + news_copy.NEWS_SAMPLE_H1 + "<" in html
-    assert "Verona Platform Joint Venture" in html
-    assert 'const rawUrl = "/app/news/sample/raw";' in html
-    # PDF button hidden on sample page.
-    assert "download PDF" not in html
+    assert data["sample_banner"] == news_copy.NEWS_SAMPLE_BANNER
+    assert data["sample_h1"] == news_copy.NEWS_SAMPLE_H1
+    assert "Verona Platform Joint Venture" in data["markdown"]
+    assert data["raw_url"] == "/app/news/sample/raw"
+    assert "pdf_url" not in data
 
 
 def test_news_sample_raw_returns_markdown(journal_copy):
@@ -202,41 +198,43 @@ def test_news_h1s_are_lowercase(journal_copy):
     _seed_news(journal_copy, "personal", "20260526", "# 2026-05-26 personal\n")
     client = _make_client(journal_copy)
 
-    index_html = client.get("/app/news/").get_data(as_text=True)
-    detail_html = client.get("/app/news/personal/20260526").get_data(as_text=True)
-    sample_html = client.get("/app/news/sample").get_data(as_text=True)
+    index_data = client.get("/app/news/api/state").get_json()
+    detail_data = client.get("/app/news/api/personal/20260526").get_json()
+    sample_data = client.get("/app/news/api/sample").get_json()
+    workspace_html = client.get("/app/news/workspace").get_data(as_text=True)
 
-    # Visible H1 / title strings stay lowercase as authored.
-    assert ">newsletters<" in index_html
-    assert "personal · Tue May 26, 2026" in detail_html
-    assert ">sample newsletter<" in sample_html
+    assert index_data["copy"]["index_h1"] == "newsletters"
+    assert f"{detail_data['facet']} · {detail_data['date_label']}" == (
+        "personal · Tue May 26, 2026"
+    )
+    assert sample_data["sample_h1"] == "sample newsletter"
 
-    # No CSS text-transform: capitalize/uppercase on news selectors.
-    for html in (index_html, detail_html, sample_html):
-        for selector in (".news-shell", ".news-title", ".news-header"):
-            match = re.search(
-                rf"{re.escape(selector)}\s*\{{(?P<body>.*?)\}}", html, re.S
-            )
-            if match is None:
-                continue
-            rule_body = match.group("body")
-            assert "text-transform: uppercase" not in rule_body
-            assert "text-transform: capitalize" not in rule_body
+    for selector in (".news-shell", ".news-title", ".news-header"):
+        match = re.search(
+            rf"{re.escape(selector)}\s*\{{(?P<body>.*?)\}}",
+            workspace_html,
+            re.S,
+        )
+        if match is None:
+            continue
+        rule_body = match.group("body")
+        assert "text-transform: uppercase" not in rule_body
+        assert "text-transform: capitalize" not in rule_body
 
 
 def test_news_no_run_log_string_in_surface(journal_copy):
     _seed_news(journal_copy, "personal", "20260526", "# 2026-05-26 personal\n")
     client = _make_client(journal_copy)
 
-    for url in (
-        "/app/news/",
-        "/app/news/personal/20260526",
-        "/app/news/sample",
-    ):
-        response = client.get(url)
-        html = _html(response)
-        assert response.status_code == 200
-        assert "run log" not in html.lower()
+    texts = [
+        client.get("/app/news/workspace").get_data(as_text=True),
+        json.dumps(client.get("/app/news/api/state").get_json()),
+        json.dumps(client.get("/app/news/api/personal/20260526").get_json()),
+        json.dumps(client.get("/app/news/api/sample").get_json()),
+    ]
+
+    for text in texts:
+        assert "run log" not in text.lower()
 
 
 def test_news_detail_raw_returns_markdown(journal_copy):

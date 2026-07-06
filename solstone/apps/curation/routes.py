@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from flask import Blueprint, Response, jsonify, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
 from solstone.apps.curation import copy as curation_copy
 from solstone.convey.reasons import (
@@ -36,26 +36,29 @@ from solstone.think.journal_io import LockTimeout
 curation_bp = Blueprint("app:curation", __name__, url_prefix="/app/curation")
 
 
-@curation_bp.app_context_processor
-def _inject_curation_copy() -> dict[str, Any]:
-    return {"curation_copy": curation_copy}
-
-
 @curation_bp.route("/")
-def index() -> str:
+def index() -> Any:
+    return current_app.send_static_file("shell.html")
+
+
+@curation_bp.route("/api/state")
+def api_state() -> Response:
     items = load_open_items()
-    return render_template(
-        "app.html",
-        curation_facet_items=[
-            item.to_dict() for item in items if item.kind == KIND_FACET_CANDIDATE
-        ],
-        curation_entity_items=[
-            item.to_dict() for item in items if item.kind == KIND_ENTITY_MERGE
-        ],
-        curation_speaker_items=[
-            item.to_dict() for item in items if item.kind == KIND_SPEAKER_NAME_VARIANT
-        ],
-        curation_copy_payload=curation_copy.curation_copy_payload(),
+    return jsonify(
+        {
+            "facet_items": [
+                item.to_dict() for item in items if item.kind == KIND_FACET_CANDIDATE
+            ],
+            "entity_items": [
+                item.to_dict() for item in items if item.kind == KIND_ENTITY_MERGE
+            ],
+            "speaker_items": [
+                item.to_dict()
+                for item in items
+                if item.kind == KIND_SPEAKER_NAME_VARIANT
+            ],
+            "copy": curation_copy.curation_copy_payload(),
+        }
     )
 
 

@@ -188,83 +188,65 @@
 }
 </style>
 
-<div class="news-shell">
-  {# view_mode ∈ {"index", "detail", "sample"} #}
-  {% if view_mode == "index" %}
-    <header class="news-header">
-      <div>
-        <p class="news-kicker">{{ kicker }}</p>
-        <h2 class="news-title">{{ index_h1 }}</h2>
-        <p class="news-subtitle">{{ subtitle }}</p>
-      </div>
-    </header>
-    <section class="news-index">
-      {% if not newsletters %}
-        <div class="news-empty-state">
-          <p class="news-empty-body">{{ empty_body }}</p>
-          <p class="news-empty-next">{{ empty_next }}</p>
-          <p class="news-empty-until-then">{{ empty_until_then }}</p>
-          <p class="news-empty-sample"><a href="{{ sample_url }}">{{ sample_link_label }}</a></p>
-        </div>
-      {% else %}
-        <div class="news-populated-framing">
-          <p>{{ populated_framing }} <a href="{{ sample_url }}">{{ populated_sample_link }}</a></p>
-        </div>
-        <ul class="news-index-list">
-          {% for item in newsletters %}
-            <li>
-              <a class="news-index-link" href="{{ item.url }}">
-                <span class="news-index-facet">{{ item.facet }}</span>
-                <span class="news-index-day">{{ item.label }}</span>
-                <span class="news-index-token">{{ item.day }}</span>
-              </a>
-            </li>
-          {% endfor %}
-        </ul>
-        {% if populated_next_footer %}
-          <p class="news-next-footer">{{ populated_next_footer }}</p>
-        {% endif %}
-      {% endif %}
-    </section>
-  {% elif view_mode == "detail" %}
-    <header class="news-header">
-      <div>
-        <p class="news-kicker">{{ kicker }}</p>
-        <h2 class="news-title">{{ detail_facet }} · {{ detail_date_label }}</h2>
-        <p class="news-subtitle">{{ detail_subtitle }}</p>
-      </div>
-      <div class="news-actions">
-        <button type="button" class="news-button" id="copyNewsletterButton">copy</button>
-        <a class="news-link-button" href="{{ pdf_url }}">download PDF</a>
-      </div>
-    </header>
-
-    <section class="news-body" id="newsletterBody"></section>
-
-    <p class="news-debug-link"><a href="{{ debug_link_url }}">{{ debug_link_label }}</a></p>
-  {% elif view_mode == "sample" %}
-    <header class="news-header">
-      <div>
-        <p class="news-kicker">{{ kicker }}</p>
-        <h2 class="news-title">{{ sample_h1 }}</h2>
-      </div>
-      <div class="news-actions">
-        <button type="button" class="news-button" id="copyNewsletterButton">copy</button>
-      </div>
-    </header>
-
-    <div class="news-sample-banner">{{ sample_banner }}</div>
-    <section class="news-body" id="newsletterBody"></section>
-  {% endif %}
+<div class="news-shell" id="newsApp">
+  <div id="newsContent"></div>
 </div>
 
-{% if view_mode in ("detail", "sample") %}
 <script>
 (() => {
-  const markdownSource = {{ newsletter_markdown|tojson|safe }};
-  const newsletterBody = document.getElementById('newsletterBody');
-  const copyButton = document.getElementById('copyNewsletterButton');
-  const rawUrl = {{ raw_url|tojson|safe }};
+  const content = document.getElementById('newsContent');
+
+  function escapeHtml(value) {
+    const holder = document.createElement('div');
+    holder.textContent = value == null ? '' : String(value);
+    return holder.innerHTML;
+  }
+
+  function decodePart(value) {
+    try {
+      return decodeURIComponent(value || '');
+    } catch (_error) {
+      return value || '';
+    }
+  }
+
+  function viewContext() {
+    const parts = window.location.pathname.split('/');
+    if (!parts[3]) {
+      return {mode: 'index', url: '/app/news/api/state'};
+    }
+    const first = decodePart(parts[3]);
+    if (first === 'sample') {
+      return {mode: 'sample', url: '/app/news/api/sample'};
+    }
+    if (parts[3] && parts[4]) {
+      const facet = decodePart(parts[3]);
+      const day = decodePart(parts[4]);
+      return {
+        mode: 'detail',
+        url: `/app/news/api/${encodeURIComponent(facet)}/${encodeURIComponent(day)}`
+      };
+    }
+    return {mode: 'index', url: '/app/news/api/state'};
+  }
+
+  function renderLoading() {
+    content.innerHTML = window.SurfaceState
+      ? window.SurfaceState.loading({text: 'loading newsletters...'})
+      : '<p>loading newsletters...</p>';
+  }
+
+  function renderError(err, retry) {
+    window.logError?.(err, {context: 'news-state'});
+    content.innerHTML = window.SurfaceState
+      ? window.SurfaceState.error({
+          retry: true,
+          serverMessage: err?.serverMessage || err?.message || '',
+          detail: err
+        })
+      : '<p>could not load newsletters.</p><button type="button" class="surface-state-retry">try again</button>';
+    content.querySelector('.surface-state-retry')?.addEventListener('click', retry, {once: true});
+  }
 
   function copyText(text) {
     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -282,17 +264,13 @@
     return Promise.resolve();
   }
 
-  function initNewsletterDetail() {
-    if (newsletterBody) {
-      newsletterBody.innerHTML = window.AppServices.renderMarkdown(markdownSource);
-    }
-  }
-
-  if (copyButton) {
+  function attachCopyButton(rawUrl) {
+    const copyButton = document.getElementById('copyNewsletterButton');
+    if (!copyButton) return;
     copyButton.addEventListener('click', async () => {
       const originalLabel = copyButton.textContent;
       try {
-        const response = await fetch(rawUrl, { credentials: 'same-origin' });
+        const response = await fetch(rawUrl, {credentials: 'same-origin'});
         if (!response.ok) throw new Error('copy failed');
         await copyText(await response.text());
         copyButton.textContent = 'copied';
@@ -306,11 +284,112 @@
     });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initNewsletterDetail);
-  } else {
-    initNewsletterDetail();
+  function renderMarkdown(markdownSource) {
+    const newsletterBody = document.getElementById('newsletterBody');
+    if (newsletterBody) {
+      newsletterBody.innerHTML = window.AppServices.renderMarkdown(markdownSource || '');
+    }
   }
+
+  function renderIndex(payload) {
+    const copy = payload.copy || {};
+    const newsletters = payload.newsletters || [];
+    const listHtml = newsletters.length
+      ? `
+        <div class="news-populated-framing">
+          <p>${escapeHtml(copy.populated_framing)} <a href="${escapeHtml(copy.sample_url)}">${escapeHtml(copy.populated_sample_link)}</a></p>
+        </div>
+        <ul class="news-index-list">
+          ${newsletters.map((item) => `
+            <li>
+              <a class="news-index-link" href="${escapeHtml(item.url)}">
+                <span class="news-index-facet">${escapeHtml(item.facet)}</span>
+                <span class="news-index-day">${escapeHtml(item.label)}</span>
+                <span class="news-index-token">${escapeHtml(item.day)}</span>
+              </a>
+            </li>
+          `).join('')}
+        </ul>
+        ${copy.populated_next_footer ? `<p class="news-next-footer">${escapeHtml(copy.populated_next_footer)}</p>` : ''}
+      `
+      : `
+        <div class="news-empty-state">
+          <p class="news-empty-body">${escapeHtml(copy.empty_body)}</p>
+          <p class="news-empty-next">${escapeHtml(copy.empty_next)}</p>
+          <p class="news-empty-until-then">${escapeHtml(copy.empty_until_then)}</p>
+          <p class="news-empty-sample"><a href="${escapeHtml(copy.sample_url)}">${escapeHtml(copy.sample_link_label)}</a></p>
+        </div>
+      `;
+    content.innerHTML = `
+      <header class="news-header">
+        <div>
+          <p class="news-kicker">${escapeHtml(copy.kicker)}</p>
+          <h2 class="news-title">${escapeHtml(copy.index_h1)}</h2>
+          <p class="news-subtitle">${escapeHtml(copy.subtitle)}</p>
+        </div>
+      </header>
+      <section class="news-index">${listHtml}</section>
+    `;
+  }
+
+  function renderDetail(payload) {
+    content.innerHTML = `
+      <header class="news-header">
+        <div>
+          <p class="news-kicker">${escapeHtml(payload.kicker)}</p>
+          <h2 class="news-title">${escapeHtml(payload.facet)} · ${escapeHtml(payload.date_label)}</h2>
+          <p class="news-subtitle">${escapeHtml(payload.subtitle)}</p>
+        </div>
+        <div class="news-actions">
+          <button type="button" class="news-button" id="copyNewsletterButton">copy</button>
+          <a class="news-link-button" href="${escapeHtml(payload.pdf_url)}">download PDF</a>
+        </div>
+      </header>
+
+      <section class="news-body" id="newsletterBody"></section>
+
+      <p class="news-debug-link"><a href="${escapeHtml(payload.debug_link_url)}">${escapeHtml(payload.debug_link_label)}</a></p>
+    `;
+    renderMarkdown(payload.markdown);
+    attachCopyButton(payload.raw_url);
+  }
+
+  function renderSample(payload) {
+    content.innerHTML = `
+      <header class="news-header">
+        <div>
+          <p class="news-kicker">${escapeHtml(payload.kicker)}</p>
+          <h2 class="news-title">${escapeHtml(payload.sample_h1)}</h2>
+        </div>
+        <div class="news-actions">
+          <button type="button" class="news-button" id="copyNewsletterButton">copy</button>
+        </div>
+      </header>
+
+      <div class="news-sample-banner">${escapeHtml(payload.sample_banner)}</div>
+      <section class="news-body" id="newsletterBody"></section>
+    `;
+    renderMarkdown(payload.markdown);
+    attachCopyButton(payload.raw_url);
+  }
+
+  async function load() {
+    const context = viewContext();
+    renderLoading();
+    try {
+      const payload = await window.apiJson(context.url);
+      if (context.mode === 'sample') {
+        renderSample(payload);
+      } else if (context.mode === 'detail') {
+        renderDetail(payload);
+      } else {
+        renderIndex(payload);
+      }
+    } catch (err) {
+      renderError(err, load);
+    }
+  }
+
+  load();
 })();
 </script>
-{% endif %}

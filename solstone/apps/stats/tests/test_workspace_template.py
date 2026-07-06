@@ -12,6 +12,7 @@ import pytest
 from solstone.convey import backlog_copy
 
 DASHBOARD_JS_PATH = Path(__file__).resolve().parents[1] / "static" / "dashboard.js"
+APP_ROOT = Path(__file__).resolve().parents[1]
 
 BACKLOG_COPY_KEYS = [
     "BACKLOG_ACTION_PROCESS_NOW",
@@ -133,7 +134,7 @@ def stats_env(tmp_path, monkeypatch):
 
 def _render_stats_workspace(stats_env) -> str:
     env = stats_env()
-    response = env.client.get("/app/stats/")
+    response = env.client.get("/app/stats/workspace")
     assert response.status_code == 200
     return response.get_data(as_text=True)
 
@@ -147,6 +148,9 @@ def test_backlog_copy_script_carries_all_keys(stats_env):
     rendered = _render_stats_workspace(stats_env)
 
     assert "window.BACKLOG_COPY" in rendered
+    assert 'data-stats-url="/app/stats/api/stats"' in rendered
+    assert '<script src="/app/stats/static/dashboard.js"></script>' in rendered
+    assert "Dashboard.load('/app/stats/api/stats')" in rendered
     for key in BACKLOG_COPY_KEYS:
         js_key = key.removeprefix("BACKLOG_")
         assert f"{js_key}:" in rendered
@@ -190,3 +194,44 @@ def test_dashboard_backlog_verdict_uses_mixed_arms_without_string_surgery():
     assert "VERDICT_MIXED_STUCK_PLURAL" in body
     assert "VERDICT_MIXED_PENDING_SINGULAR" in body
     assert "VERDICT_MIXED_PENDING_PLURAL" in body
+
+
+def test_stats_index_serves_spa_shell(stats_env):
+    env = stats_env()
+
+    response = env.client.get("/app/stats/")
+
+    assert response.status_code == 200
+    assert b'data-solstone-shell="spa"' in response.data
+
+
+def test_stats_workspace_is_served_verbatim(stats_env):
+    env = stats_env()
+
+    response = env.client.get("/app/stats/workspace")
+
+    assert response.status_code == 200
+    assert response.data == (APP_ROOT / "workspace.html").read_bytes()
+
+
+def test_stats_routes_resolve(stats_env):
+    env = stats_env()
+    adapter = env.app.url_map.bind("localhost")
+
+    expected = {
+        "/app/stats/api/stats": "app:stats.stats_data",
+        "/app/stats/static/dashboard.js": "app:stats.static",
+    }
+    for path, endpoint in expected.items():
+        matched, _args = adapter.match(path, method="GET")
+        assert matched == endpoint
+
+
+def test_stats_app_metadata_is_spa():
+    metadata = json.loads((APP_ROOT / "app.json").read_text(encoding="utf-8"))
+
+    assert metadata["spa"] is True
+
+
+def test_stats_routes_do_not_use_render_template():
+    assert "render_template" not in (APP_ROOT / "routes.py").read_text(encoding="utf-8")

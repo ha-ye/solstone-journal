@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-from html import unescape
 from pathlib import Path
 from unittest.mock import patch
 
@@ -34,10 +33,6 @@ def _make_client(journal: Path):
     return client
 
 
-def _html(response) -> str:
-    return unescape(response.get_data(as_text=True))
-
-
 def _clear_weekly_reflections(journal: Path) -> None:
     shutil.rmtree(journal / "reflections" / "weekly", ignore_errors=True)
 
@@ -46,14 +41,18 @@ def test_reflections_index_lists_available_weeks(journal_copy):
     _seed_reflection(journal_copy)
     client = _make_client(journal_copy)
 
-    response = client.get("/app/reflections/")
-    html = _html(response)
+    response = client.get("/app/reflections/api/state")
+    data = response.get_json()
 
     assert response.status_code == 200
-    assert "Every Sunday, sol writes one reflection" in html
-    assert "Available weekly reflections" not in html
-    assert "No weekly reflections yet." not in html
-    assert 'href="/app/reflections/20260308"' in html
+    assert data["copy"]["populated_framing"] == reflections_copy.POPULATED_FRAMING
+    assert data["weeks"] == [
+        {
+            "day": "20260308",
+            "label": "Sunday March 8th",
+            "url": "/app/reflections/20260308",
+        }
+    ]
 
 
 def test_reflections_index_empty_state_shows_new_copy_next_date_and_sample_link(
@@ -66,18 +65,18 @@ def test_reflections_index_empty_state_shows_new_copy_next_date_and_sample_link(
     )
     client = _make_client(journal_copy)
 
-    response = client.get("/app/reflections/")
-    html = _html(response)
+    response = client.get("/app/reflections/api/state")
+    data = response.get_json()
+    copy = data["copy"]
 
     assert response.status_code == 200
-    assert reflections_copy.SUBTITLE in html
-    assert "Every Sunday, sol takes the week you've just lived through" in html
-    assert "Your first reflection arrives on Sunday, March 15." in html
-    assert reflections_copy.EMPTY_UNTIL_THEN in html
-    assert 'href="/app/reflections/sample"' in html
-    assert reflections_copy.SAMPLE_LINK_LABEL in html
-    assert "Available weekly reflections" not in html
-    assert "No weekly reflections yet." not in html
+    assert data["weeks"] == []
+    assert copy["subtitle"] == reflections_copy.SUBTITLE
+    assert copy["empty_body"] == reflections_copy.EMPTY_BODY
+    assert copy["empty_next"] == "Your first reflection arrives on Sunday, March 15."
+    assert copy["empty_until_then"] == reflections_copy.EMPTY_UNTIL_THEN
+    assert copy["sample_url"] == "/app/reflections/sample"
+    assert copy["sample_link_label"] == reflections_copy.SAMPLE_LINK_LABEL
 
 
 def test_reflections_index_empty_state_uses_fallback_when_next_date_unavailable(
@@ -90,12 +89,12 @@ def test_reflections_index_empty_state_uses_fallback_when_next_date_unavailable(
     )
     client = _make_client(journal_copy)
 
-    response = client.get("/app/reflections/")
-    html = _html(response)
+    response = client.get("/app/reflections/api/state")
+    copy = response.get_json()["copy"]
 
     assert response.status_code == 200
-    assert reflections_copy.EMPTY_NEXT_NO_DATE in html
-    assert "next reflection:" not in html
+    assert copy["empty_next"] == reflections_copy.EMPTY_NEXT_NO_DATE
+    assert copy["populated_next_footer"] is None
 
 
 def test_reflections_index_populated_state_shows_framing_sample_link_and_next_footer(
@@ -108,42 +107,42 @@ def test_reflections_index_populated_state_shows_framing_sample_link_and_next_fo
     )
     client = _make_client(journal_copy)
 
-    response = client.get("/app/reflections/")
-    html = _html(response)
+    response = client.get("/app/reflections/api/state")
+    copy = response.get_json()["copy"]
 
     assert response.status_code == 200
-    assert reflections_copy.POPULATED_FRAMING in html
-    assert 'href="/app/reflections/sample"' in html
-    assert reflections_copy.POPULATED_SAMPLE_LINK in html
-    assert "next reflection: Sunday, March 15" in html
+    assert copy["populated_framing"] == reflections_copy.POPULATED_FRAMING
+    assert copy["sample_url"] == "/app/reflections/sample"
+    assert copy["populated_sample_link"] == reflections_copy.POPULATED_SAMPLE_LINK
+    assert copy["populated_next_footer"] == "next reflection: Sunday, March 15"
 
 
-def test_reflections_detail_renders_week(journal_copy):
+def test_reflections_detail_api_returns_week(journal_copy):
     _seed_reflection(journal_copy)
     client = _make_client(journal_copy)
 
-    response = client.get("/app/reflections/20260308")
-    html = _html(response)
+    response = client.get("/app/reflections/api/20260308")
+    data = response.get_json()
 
     assert response.status_code == 200
-    assert "weekly reflection" in html
-    assert "week of Sunday March 8th" in html
-    assert ">copy<" in html
-    assert ">download PDF<" in html
+    assert data["day"] == "20260308"
+    assert data["week_label"] == "Sunday March 8th"
+    assert data["raw_url"] == "/app/reflections/20260308/raw"
+    assert data["pdf_url"] == "/app/reflections/20260308/pdf"
+    assert "boardroom balcony inflection" in data["markdown"]
 
 
-def test_reflections_sample_renders_fixture_markdown(journal_copy):
+def test_reflections_sample_api_returns_fixture_markdown(journal_copy):
     client = _make_client(journal_copy)
 
-    response = client.get("/app/reflections/sample")
-    html = _html(response)
+    response = client.get("/app/reflections/api/sample")
+    data = response.get_json()
 
     assert response.status_code == 200
-    assert reflections_copy.SAMPLE_BANNER in html
-    assert "sample reflection" in html
-    assert "boardroom balcony inflection" in html
-    assert 'const rawUrl = "/app/reflections/sample/raw";' in html
-    assert "download PDF" not in html
+    assert data["sample_banner"] == reflections_copy.SAMPLE_BANNER
+    assert "boardroom balcony inflection" in data["markdown"]
+    assert data["raw_url"] == "/app/reflections/sample/raw"
+    assert "pdf_url" not in data
 
 
 def test_reflections_sample_raw_returns_markdown(journal_copy):
@@ -166,14 +165,11 @@ def test_reflections_sample_content_matches_fixture_on_disk():
 def test_reflections_no_uppercase_transform_on_title(journal_copy):
     client = _make_client(journal_copy)
 
-    response = client.get("/app/reflections/")
+    response = client.get("/app/reflections/workspace")
     html = response.get_data(as_text=True)
 
-    assert '<h1 class="visually-hidden">reflections</h1>' in html
+    assert response.status_code == 200
     for selector in (
-        "body",
-        "main",
-        ".workspace",
         ".reflection-shell",
         ".reflection-header",
         ".reflection-title",
@@ -190,43 +186,48 @@ def test_reflections_no_mirror_string_in_surface(journal_copy):
     _seed_reflection(journal_copy)
     client = _make_client(journal_copy)
 
-    responses = [
-        client.get("/app/reflections/"),
-        client.get("/app/reflections/20260308"),
-        client.get("/app/reflections/sample"),
+    texts = [
+        client.get("/app/reflections/workspace").get_data(as_text=True),
+        json.dumps(client.get("/app/reflections/api/state").get_json()),
+        json.dumps(client.get("/app/reflections/api/20260308").get_json()),
+        json.dumps(client.get("/app/reflections/api/sample").get_json()),
     ]
 
-    for response in responses:
-        html = _html(response)
-        assert response.status_code == 200
-        assert "mirror" not in html.lower()
-        assert "🪞" not in html
+    for text in texts:
+        assert "mirror" not in text.lower()
+        assert "🪞" not in text
 
 
 def test_reflections_app_json_icon_is_moon():
     data = json.loads(Path("solstone/apps/reflections/app.json").read_text())
 
     assert data["icon"] == "🌙"
+    assert data["spa"] is True
 
 
-def test_reflections_detail_canonicalizes_to_sunday(journal_copy):
+def test_reflections_detail_canonicalizes_to_sunday_in_api(journal_copy):
     _seed_reflection(journal_copy)
     client = _make_client(journal_copy)
 
-    response = client.get("/app/reflections/20260310")
+    page_response = client.get("/app/reflections/20260310")
+    api_response = client.get("/app/reflections/api/20260310")
 
-    assert response.status_code == 302
-    assert response.headers["Location"].endswith("/app/reflections/20260308")
+    assert page_response.status_code == 200
+    assert b'data-solstone-shell="spa"' in page_response.data
+    assert api_response.status_code == 200
+    assert api_response.get_json()["day"] == "20260308"
 
 
-def test_reflections_missing_week_returns_plain_text_404(journal_copy):
+def test_reflections_missing_week_returns_api_404(journal_copy):
     client = _make_client(journal_copy)
 
-    response = client.get("/app/reflections/20260315")
+    page_response = client.get("/app/reflections/20260315")
+    api_response = client.get("/app/reflections/api/20260315")
 
-    assert response.status_code == 404
-    assert response.mimetype == "text/plain"
-    assert "Reflection not found" in response.get_data(as_text=True)
+    assert page_response.status_code == 200
+    assert b'data-solstone-shell="spa"' in page_response.data
+    assert api_response.status_code == 404
+    assert api_response.get_json()["reason_code"] == "file_not_found"
 
 
 def test_reflections_raw_returns_markdown(journal_copy):

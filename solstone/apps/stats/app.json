@@ -1,5 +1,6 @@
 {
   "icon": "📊",
   "label": "stats",
+  "spa": true,
   "facets": {"disabled": true}
 }

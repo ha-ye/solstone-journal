@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 from flask import Blueprint, jsonify
 
-from solstone.convey import backlog_copy, state
+from solstone.convey import state
 from solstone.convey.reasons import FILE_READ_FAILED
 from solstone.convey.utils import error_response
 from solstone.think.talent import get_talent_configs
@@ -24,11 +24,6 @@ stats_bp = Blueprint(
     static_folder="static",
     static_url_path="/static",
 )
-
-
-@stats_bp.app_context_processor
-def _inject_backlog_copy() -> dict:
-    return {"backlog_copy": backlog_copy}
 
 
 @stats_bp.route("/api/stats")
