@@ -343,12 +343,16 @@ _FRACTION_PERCENT_FRAGMENTS: Final = (
 
 # Raw units whose owner-facing label differs regardless of record type.
 # HealthKit exports audio levels as 'dBASPL', speeds as 'mi/hr' / 'km/hr';
-# energy rows say 'Cal' natively but other exporters write 'kcal'.
+# energy rows say 'Cal' natively but other exporters write 'kcal'. Oura API
+# rows carry 'score' (a unitless number — the label drops) and 'degC' for
+# the temperature deviation, whose value renders with its explicit sign.
 _FRIENDLY_UNIT_LABELS: Final[Mapping[str, str]] = {
     "dBASPL": "dB",
     "kcal": "Cal",
     "mi/hr": "mph",
     "km/hr": "km/h",
+    "score": "",
+    "degC": "°C",
 }
 
 
@@ -359,8 +363,9 @@ def friendly_unit_label(record_type: str, unit: str | None) -> str | None:
     resting heart rate, walking heart rate average, heart-rate recovery)
     and 'breaths/min' for respiratory rate. Type-independent raw units
     relabel through ``_FRIENDLY_UNIT_LABELS`` ('dBASPL' → 'dB', 'mi/hr' →
-    'mph'). A bare 'count' drops to an empty label so values render as
-    plain numbers. '%' stays '%'; unknown units pass through unchanged.
+    'mph', 'degC' → '°C'). A bare 'count' or Oura 'score' drops to an
+    empty label so values render as plain numbers. '%' stays '%'; unknown
+    units pass through unchanged.
     """
 
     if unit is None:
