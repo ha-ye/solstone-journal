@@ -32,6 +32,7 @@ from typing import List, Optional
 
 from PIL import Image
 
+from solstone.observe.detect import detect_objects, detections_block, screen_gate
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
 from solstone.observe.extract import (
     DEFAULT_MAX_EXTRACTIONS,
@@ -968,6 +969,13 @@ class VideoProcessor:
 
                 if req.json_analysis:
                     result["analysis"] = req.json_analysis
+                    gate = screen_gate(req.json_analysis)
+                    if gate is not None:
+                        cli = await asyncio.to_thread(detect_objects, req.frame_bytes)
+                        if cli is not None:
+                            result["detections"] = detections_block(
+                                cli, source="screen", gate=gate
+                            )
 
                 # Check if this frame is selected for extraction
                 if frame_id not in selected_ids or req.json_analysis is None:

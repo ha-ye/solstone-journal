@@ -344,6 +344,10 @@
                 "additionalProperties": true,
                 "type": "object"
               },
+              "detections": {
+                "additionalProperties": true,
+                "type": "object"
+              },
               "enhanced": {
                 "type": "boolean"
               },

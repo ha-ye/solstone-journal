@@ -3,6 +3,7 @@
 
 import io
 import json
+import logging
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,7 +11,9 @@ import pytest
 from PIL import Image
 
 from solstone.observe import describe as describe_module
+from solstone.observe import detect as detect_module
 from solstone.observe import processing_record as processing_record_module
+from solstone.think.providers.rfdetr_install import RfdetrPaths
 
 
 def _video_path(tmp_path: Path) -> Path:
@@ -21,9 +24,9 @@ def _video_path(tmp_path: Path) -> Path:
     return video_path
 
 
-def _png_bytes() -> bytes:
+def _png_bytes(size: tuple[int, int] = (8, 8)) -> bytes:
     image_bytes = io.BytesIO()
-    Image.new("RGB", (8, 8), "white").save(image_bytes, format="PNG")
+    Image.new("RGB", size, "white").save(image_bytes, format="PNG")
     return image_bytes.getvalue()
 
 
@@ -52,6 +55,28 @@ def _assert_no_describe_temp(directory: Path) -> None:
     assert not any(
         name.startswith(".describe_") or name.endswith(".tmp") for name in names
     )
+
+
+def _jsonl_rows(path: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+
+
+def _canned_detection() -> dict:
+    return {
+        "image": {"width": 8, "height": 8},
+        "detections": [
+            {
+                "class_id": 42,
+                "class_name": "cup",
+                "score": 0.7,
+                "bbox": [1, 2, 3, 4],
+            }
+        ],
+    }
 
 
 def _install_fakes(monkeypatch, outcomes: dict[int, dict]) -> list[tuple]:
@@ -255,6 +280,347 @@ async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
     assert output_path.read_text() == expected
     assert output_path.name in [path.name for path in output_path.parent.iterdir()]
     _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_detection_blocks_attach_to_media_and_social_frames(
+    tmp_path, monkeypatch
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(
+        video_path,
+        [
+            _frame(1, 0.0, frame_bytes),
+            _frame(2, 1.25, frame_bytes),
+        ],
+        monkeypatch,
+    )
+    canned = _canned_detection()
+    calls = []
+    _install_fakes(
+        monkeypatch,
+        {
+            1: {
+                "response": json.dumps(
+                    {"primary": "media", "secondary": "none", "overlap": True}
+                )
+            },
+            2: {
+                "response": json.dumps(
+                    {"primary": "code", "secondary": "social", "overlap": True}
+                )
+            },
+        },
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def fake_detect(image_bytes):
+        calls.append(image_bytes)
+        return canned
+
+    monkeypatch.setattr(describe_module, "detect_objects", fake_detect)
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    frame1, frame2 = _jsonl_rows(output_path)[1:]
+    assert frame1["detections"] == {
+        "engine": "rf-detr.cpp",
+        "engine_ref": "65c0ffcc",
+        "model": "rfdetr-nano-f16",
+        "threshold": 0.25,
+        "source": "screen",
+        "gate": "primary:media",
+        "image": canned["image"],
+        "objects": canned["detections"],
+    }
+    assert frame2["detections"] == {
+        "engine": "rf-detr.cpp",
+        "engine_ref": "65c0ffcc",
+        "model": "rfdetr-nano-f16",
+        "threshold": 0.25,
+        "source": "screen",
+        "gate": "secondary:social",
+        "image": canned["image"],
+        "objects": canned["detections"],
+    }
+    assert calls == [frame_bytes, frame_bytes]
+
+
+@pytest.mark.asyncio
+async def test_detection_gate_off_never_invokes_detector(tmp_path, monkeypatch):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(
+        video_path,
+        [
+            _frame(1, 0.0, frame_bytes),
+            _frame(2, 1.25, frame_bytes),
+            _frame(3, 2.5, frame_bytes),
+        ],
+        monkeypatch,
+    )
+    calls = 0
+    _install_fakes(
+        monkeypatch,
+        {
+            1: {
+                "response": json.dumps(
+                    {"primary": "code", "secondary": "none", "overlap": True}
+                )
+            },
+            2: {
+                "response": json.dumps(
+                    {"primary": "terminal", "secondary": "none", "overlap": True}
+                )
+            },
+            3: {
+                "response": json.dumps(
+                    {"primary": "browsing", "secondary": "none", "overlap": True}
+                )
+            },
+        },
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def fake_detect(_image_bytes):
+        nonlocal calls
+        calls += 1
+        return _canned_detection()
+
+    monkeypatch.setattr(describe_module, "detect_objects", fake_detect)
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    rows = _jsonl_rows(output_path)[1:]
+    assert all("detections" not in row for row in rows)
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_detection_skips_categorization_failed_frame(tmp_path, monkeypatch):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    gated_frame_bytes = _png_bytes((8, 8))
+    failed_frame_bytes = _png_bytes((10, 10))
+    processor = _processor(
+        video_path,
+        [
+            _frame(1, 0.0, gated_frame_bytes),
+            _frame(2, 1.25, failed_frame_bytes),
+        ],
+        monkeypatch,
+    )
+    calls = []
+    _install_fakes(
+        monkeypatch,
+        {
+            1: {
+                "response": json.dumps(
+                    {"primary": "media", "secondary": "none", "overlap": True}
+                )
+            },
+            2: {"fail": True, "error": "boom"},
+        },
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def fake_detect(image_bytes):
+        calls.append(image_bytes)
+        return _canned_detection()
+
+    monkeypatch.setattr(describe_module, "detect_objects", fake_detect)
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    frame1, frame2 = _jsonl_rows(output_path)[1:]
+    assert "detections" in frame1
+    assert "detections" not in frame2
+    assert calls == [gated_frame_bytes]
+
+
+@pytest.mark.asyncio
+async def test_detection_provider_absence_latches_across_gated_frames(
+    tmp_path, monkeypatch, caplog
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(
+        video_path,
+        [
+            _frame(1, 0.0, frame_bytes),
+            _frame(2, 1.25, frame_bytes),
+            _frame(3, 2.5, frame_bytes),
+        ],
+        monkeypatch,
+    )
+    calls = 0
+    monkeypatch.setattr(detect_module, "_disabled", False)
+    monkeypatch.setattr(describe_module, "detect_objects", detect_module.detect_objects)
+
+    def fake_paths():
+        nonlocal calls
+        calls += 1
+        return RfdetrPaths(status="not_installed")
+
+    monkeypatch.setattr(detect_module, "rfdetr_paths", fake_paths)
+    caplog.set_level(logging.WARNING, logger=detect_module.LOG.name)
+    _install_fakes(
+        monkeypatch,
+        {
+            1: {
+                "response": json.dumps(
+                    {"primary": "media", "secondary": "none", "overlap": True}
+                )
+            },
+            2: {
+                "response": json.dumps(
+                    {"primary": "social", "secondary": "none", "overlap": True}
+                )
+            },
+            3: {
+                "response": json.dumps(
+                    {"primary": "code", "secondary": "social", "overlap": True}
+                )
+            },
+        },
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    rows = _jsonl_rows(output_path)[1:]
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == detect_module.LOG.name and record.levelno == logging.WARNING
+    ]
+    assert all("detections" not in row for row in rows)
+    assert len(warnings) == 1
+    assert warnings[0].getMessage() == (
+        "object detection disabled: rf-detr provider not_installed"
+    )
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_detection_empty_result_stores_empty_objects(tmp_path, monkeypatch):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(
+        video_path,
+        [_frame(1, 0.0, frame_bytes)],
+        monkeypatch,
+    )
+    _install_fakes(
+        monkeypatch,
+        {
+            1: {
+                "response": json.dumps(
+                    {"primary": "media", "secondary": "none", "overlap": True}
+                )
+            },
+        },
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "detect_objects",
+        lambda _image_bytes: {"image": {"width": 8, "height": 8}, "detections": []},
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    frame = _jsonl_rows(output_path)[1]
+    assert frame["detections"]["objects"] == []
+
+
+@pytest.mark.asyncio
+async def test_detection_uses_full_resolution_frame_bytes(tmp_path, monkeypatch):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes((2100, 20))
+    processor = _processor(
+        video_path,
+        [_frame(1, 0.0, frame_bytes)],
+        monkeypatch,
+    )
+    observed_sizes = []
+    _install_fakes(
+        monkeypatch,
+        {
+            1: {
+                "response": json.dumps(
+                    {"primary": "media", "secondary": "none", "overlap": True}
+                )
+            },
+        },
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    def fake_detect(image_bytes):
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            observed_sizes.append(img.size)
+        return _canned_detection()
+
+    monkeypatch.setattr(describe_module, "detect_objects", fake_detect)
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    assert observed_sizes == [(2100, 20)]
+    assert observed_sizes[0][0] > 1920
 
 
 @pytest.mark.asyncio

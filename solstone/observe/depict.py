@@ -4,6 +4,7 @@
 """Segment still-image description handler."""
 
 import argparse
+import io
 import json
 import logging
 import os
@@ -11,6 +12,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from solstone.observe.detect import detect_objects, detections_block
 from solstone.observe.utils import get_segment_key, resize_for_vlm
 from solstone.think.journal_io import write_jsonl
 from solstone.think.models import generate
@@ -51,6 +53,9 @@ def run(image_path: Path, *, redo: bool = False) -> Path | None:
 
     with Image.open(image_path) as img:
         img.load()
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        detect_png = buf.getvalue()
         prepared = resize_for_vlm(img)
         description = generate(
             contents=[_DESCRIBE_PROMPT, prepared], context="observe.depict"
@@ -58,6 +63,9 @@ def run(image_path: Path, *, redo: bool = False) -> Path | None:
 
     header = _build_header(image_path.name, "image")
     entry = {"start": "00:00:00", "text": description}
+    cli = detect_objects(detect_png)
+    if cli is not None:
+        entry["detections"] = detections_block(cli, source="still", gate="still")
     write_jsonl(output_path, [header, entry])
     return output_path
 

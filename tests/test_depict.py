@@ -49,6 +49,43 @@ def test_run_writes_image_jsonl_with_header_metadata(tmp_path, monkeypatch):
     assert entry == {"start": "00:00:00", "text": "A concise image description"}
 
 
+def test_run_attaches_still_detection_block(tmp_path, monkeypatch):
+    image_path = _segment_image(tmp_path)
+
+    def fake_generate(*, contents, context):
+        return "A concise image description"
+
+    canned = {
+        "image": {"width": 4, "height": 4},
+        "detections": [
+            {
+                "class_id": 7,
+                "class_name": "bottle",
+                "score": 0.67,
+                "bbox": [0, 1, 2, 3],
+            }
+        ],
+    }
+
+    monkeypatch.setattr(depict, "generate", fake_generate)
+    monkeypatch.setattr(depict, "detect_objects", lambda _image_bytes: canned)
+
+    output_path = depict.run(image_path)
+
+    lines = output_path.read_text(encoding="utf-8").splitlines()
+    entry = json.loads(lines[1])
+    assert entry["detections"] == {
+        "engine": "rf-detr.cpp",
+        "engine_ref": "65c0ffcc",
+        "model": "rfdetr-nano-f16",
+        "threshold": 0.25,
+        "source": "still",
+        "gate": "still",
+        "image": canned["image"],
+        "objects": canned["detections"],
+    }
+
+
 def test_run_writes_image_jsonl_bytes_unchanged(tmp_path, monkeypatch):
     image_path = _segment_image(tmp_path)
     monkeypatch.setenv("OBSERVER_NAME", "camera")

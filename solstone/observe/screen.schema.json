@@ -26,6 +26,7 @@
         "frame_id": {"type": ["integer", "string"]},
         "analysis": {"type": "object", "additionalProperties": true},
         "content": {"type": "object", "additionalProperties": true},
+        "detections": {"type": "object", "additionalProperties": true},
         "aruco": {},
         "enhanced": {"type": "boolean"},
         "error": {"type": "string"},
