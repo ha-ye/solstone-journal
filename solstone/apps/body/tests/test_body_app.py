@@ -11,7 +11,7 @@ import re
 import sqlite3
 import sys
 import threading
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -5844,3 +5844,356 @@ def test_trends_fine_scale_domain_keeps_temp_deviation_legible():
     # Both call sites pass the signal-aware flag.
     assert "paddedDomain(points, fineScale(signal))" in source
     assert "paddedDomain(inWindow, fineScale(signal));" in source
+
+
+# --- Ring resting HR: one ribbon, attributed day facts (oura.sleep) -----------
+#
+# The watch's RestingHeartRate channel went quiet; the ring measures the
+# same physiological quantity nightly (``lowest_heart_rate`` in each
+# ``oura.sleep`` period's metadata, beside ``average_heart_rate``). O-5C
+# cross-device rule: one resting_hr signal, never double-counted — the
+# genuine measurement present wins, the watch staying primary on days
+# both measured.
+
+
+def _ring_sleep_period(
+    day: str,
+    *,
+    lowest: float | int | None = None,
+    average: float = 62.0,
+    start: str | None = None,
+    end: str | None = None,
+) -> dict:
+    """An ``oura.sleep`` period row shaped like the live normalized shards."""
+    iso = f"{day[:4]}-{day[4:6]}-{day[6:8]}"
+    metadata: dict = {"average_heart_rate": average, "type": "long_sleep"}
+    if lowest is not None:
+        metadata["lowest_heart_rate"] = lowest
+    return _oura_row(
+        OURA_SLEEP_PERIOD_TYPE,
+        day,
+        value=24480,
+        unit="s",
+        start=start or f"{iso}T00:30:00-06:00",
+        end=end or f"{iso}T07:30:00-06:00",
+        kind="sleep_period",
+        metadata=metadata,
+    )
+
+
+def test_trends_resting_hr_ribbon_fills_watch_gap_with_ring_lowest(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260907_000000",
+        [
+            # June 1 — both devices measured: the watch's reading stays
+            # primary; the ring's lowest never averages in.
+            _row(
+                RESTING_HR_TYPE,
+                "2026-06-01T21:00:00-06:00",
+                value="58",
+                unit="count/min",
+                source="Synthetic Watch",
+            ),
+            _ring_sleep_period("20260601", lowest=51),
+            # June 2 — ring only, two periods: the day's minimum wins.
+            _ring_sleep_period("20260602", lowest=53),
+            _ring_sleep_period(
+                "20260602",
+                lowest=51,
+                start="2026-06-02T14:00:00-06:00",
+                end="2026-06-02T15:00:00-06:00",
+            ),
+            # June 3 — unmeasured periods: Oura writes zeros into dozes it
+            # did not measure; neither a missing field nor a zero ever
+            # fabricates a resting value, so the day stays absent.
+            _ring_sleep_period("20260603", lowest=None, average=0.0),
+            _ring_sleep_period(
+                "20260603",
+                lowest=0,
+                start="2026-06-03T14:00:00-06:00",
+                end="2026-06-03T15:00:00-06:00",
+            ),
+            # June 4 — watch only.
+            _row(
+                RESTING_HR_TYPE,
+                "2026-06-04T07:00:00-06:00",
+                value="60",
+                unit="count/min",
+                source="Synthetic Watch",
+            ),
+        ],
+    )
+
+    payload = _trends_after_warm(env.client)
+
+    # One ribbon — the same physiological quantity measured by whichever
+    # device was present, never a second ring-only signal.
+    keys = [signal["key"] for signal in payload["signals"]]
+    assert keys.count("resting_hr") == 1
+    resting = next(s for s in payload["signals"] if s["key"] == "resting_hr")
+    assert resting["label"] == "Resting heart rate"
+    assert resting["unit_label"] == "bpm"
+    assert resting["daily"] == [
+        ["20260601", 58.0],
+        ["20260602", 51.0],
+        ["20260604", 60.0],
+    ]
+
+
+def test_day_api_resting_fact_ring_only_day_attributes_oura(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260907_010000",
+        [_ring_sleep_period("20260610", lowest=51)],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260610").get_json()
+
+    heart = payload["heart"]
+    assert heart is not None
+    resting = {fact["label"]: fact for fact in heart["facts"]}["Resting heart rate"]
+    # §13 attributed-fact style, same register as the recovery card.
+    assert resting["value"] == "51 bpm · Oura's measurement"
+    assert heart["resting_comparison_line"] is None
+
+    html = env.client.get("/app/body/20260610").get_data(as_text=True)
+    assert "51 bpm · Oura&#39;s measurement" in html
+
+
+def test_day_api_resting_fact_keeps_watch_primary_and_juxtaposes_ring(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260907_020000",
+        [
+            # June 11 — both devices measured.
+            _row(
+                RESTING_HR_TYPE,
+                "2026-06-11T21:00:00-06:00",
+                value="58",
+                unit="count/min",
+                source="Synthetic Watch",
+            ),
+            _ring_sleep_period("20260611", lowest=51),
+            # June 12 — watch only: no juxtaposition, no ring fact.
+            _row(
+                RESTING_HR_TYPE,
+                "2026-06-12T07:00:00-06:00",
+                value="60",
+                unit="count/min",
+                source="Synthetic Watch",
+            ),
+        ],
+    )
+
+    both = env.client.get("/app/body/api/day/20260611").get_json()["heart"]
+    resting_facts = [
+        fact for fact in both["facts"] if fact["label"] == "Resting heart rate"
+    ]
+    # One fact: the genuine cross-device reading stays primary and
+    # unattributed to the ring; the ring's figure rides the day card's
+    # comparison-line pattern — juxtaposition, no verdict.
+    assert len(resting_facts) == 1
+    assert resting_facts[0]["value"] == "58 bpm"
+    assert both["resting_comparison_line"] == (
+        "Synthetic Watch 58 bpm · Oura (API) 51 bpm"
+    )
+
+    html = env.client.get("/app/body/20260611").get_data(as_text=True)
+    assert "Synthetic Watch 58 bpm · Oura (API) 51 bpm" in html
+
+    watch_only = env.client.get("/app/body/api/day/20260612").get_json()["heart"]
+    resting = {f["label"]: f for f in watch_only["facts"]}["Resting heart rate"]
+    assert resting["value"] == "60 bpm"
+    assert watch_only["resting_comparison_line"] is None
+    assert "Oura's measurement" not in json.dumps(watch_only)
+
+
+def test_day_api_ring_resting_fact_carries_typical_after_warm(body_env):
+    env = body_env()
+    _seed_typical_history(env.journal)
+    # July 16 — ring only; its own value never joins its baseline.
+    _seed_import(
+        env.journal,
+        "20260907_030000",
+        [_ring_sleep_period("20260716", lowest=51)],
+    )
+
+    _trends_after_warm(env.client)
+
+    payload = env.client.get("/app/body/api/day/20260716").get_json()
+    resting = {f["label"]: f for f in payload["heart"]["facts"]}["Resting heart rate"]
+    assert resting["value"] == "51 bpm · Oura's measurement"
+    # 21 prior daily values (20 watch June days + July 15) → median 52.
+    assert resting["typical_label"] == "your 90-day median 52 bpm"
+
+
+# --- Source-freshness sentinel ------------------------------------------------
+#
+# For each expected source the status payload states days-since-last-data;
+# the overview names quiet sources in a slim muted strip and lists every
+# expected source's last-delivered day in the coverage area. Copy is §13-
+# factual: names, dates, day counts — never advice, never alarm styling.
+# Fixtures seed days relative to the real clock so the assertions hold on
+# any run date.
+
+
+def _day_key_ago(days: int) -> str:
+    return (date.today() - timedelta(days=days)).strftime("%Y%m%d")
+
+
+def _delivery_row(source: str, days_ago: int) -> dict:
+    day = _day_key_ago(days_ago)
+    iso = f"{day[:4]}-{day[4:6]}-{day[6:8]}"
+    return _row(
+        GLUCOSE_TYPE,
+        f"{iso}T08:00:00-06:00",
+        value="100",
+        unit="mg/dL",
+        source=source,
+    )
+
+
+def test_status_api_freshness_names_quiet_source_factually(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260907_040000",
+        [
+            _delivery_row("Stelo", 6),
+            # The ring delivers through its API pipe — the "Oura (API)"
+            # label must satisfy the "Oura" expectation.
+            _oura_row(OURA_READINESS_TYPE, _day_key_ago(1), value=82, unit="score"),
+            # Live device names carry a typographic apostrophe; the ASCII
+            # config key must still match.
+            _delivery_row("Jack’s iPhone", 1),
+            _delivery_row("Lingo", 3),
+        ],
+    )
+
+    freshness = env.client.get("/app/body/api/status").get_json()["freshness"]
+
+    by_name = {source["name"]: source for source in freshness["sources"]}
+    assert set(by_name) == set(body_routes.EXPECTED_SOURCE_QUIET_DAYS)
+    stelo = by_name["Stelo"]
+    assert stelo["quiet"] is True
+    assert stelo["days_since"] == 6
+    assert stelo["quiet_after_days"] == 4
+    assert stelo["last_day"] == _day_key_ago(6)
+    assert stelo["line"] == "Stelo last delivered 6 days ago"
+    assert by_name["Oura"]["quiet"] is False
+    assert by_name["Oura"]["days_since"] == 1
+    assert by_name["Jack's iPhone"]["quiet"] is False
+    assert by_name["Lingo"]["quiet"] is False
+    assert freshness["quiet"] is True
+    assert freshness["quiet_lines"] == ["Stelo last delivered 6 days ago"]
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+    # The strip is present, muted, and states the fact verbatim.
+    assert 'aria-label="Source freshness"' in html
+    assert "Stelo last delivered 6 days ago" in html
+    # §13: facts only — the banner never advises.
+    assert "you should" not in html.lower()
+    assert "check your" not in html.lower()
+
+
+def test_status_api_freshness_states_no_data_for_absent_source(body_env):
+    env = body_env()
+    _seed_import(env.journal, "20260907_050000", [_delivery_row("Stelo", 1)])
+
+    freshness = env.client.get("/app/body/api/status").get_json()["freshness"]
+
+    by_name = {source["name"]: source for source in freshness["sources"]}
+    lingo = by_name["Lingo"]
+    assert lingo["last_day"] is None
+    assert lingo["days_since"] is None
+    assert lingo["quiet"] is True
+    cap = body_routes.FRESHNESS_SCAN_MONTH_CAP
+    assert lingo["line"] == f"Lingo — no data in the last {cap} months"
+    assert by_name["Stelo"]["quiet"] is False
+
+
+def test_overview_freshness_banner_absent_when_sources_fresh(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260907_060000",
+        [
+            _delivery_row("Stelo", 1),
+            _delivery_row("Lingo", 1),
+            _delivery_row("Jack’s iPhone", 1),
+            _oura_row(OURA_READINESS_TYPE, _day_key_ago(1), value=82, unit="score"),
+        ],
+    )
+
+    status = env.client.get("/app/body/api/status").get_json()
+    assert status["freshness"]["quiet"] is False
+    assert status["freshness"]["quiet_lines"] == []
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+    assert 'aria-label="Source freshness"' not in html
+    # The coverage-area Sources block still lists every expected source
+    # with its last-delivered day.
+    assert 'id="body-sources-fresh-title"' in html
+    assert "Expected sources" in html
+    for name in body_routes.EXPECTED_SOURCE_QUIET_DAYS:
+        assert name.replace("'", "&#39;") in html
+    yesterday_label = body_routes._format_day_long(_day_key_ago(1))
+    assert f"{yesterday_label} · 1 day ago" in html
+
+
+def test_freshness_empty_journal_stays_silent(body_env):
+    env = body_env()
+
+    status = env.client.get("/app/body/api/status").get_json()
+
+    # A journal that has never held body data has no sources to go
+    # quiet: the sentinel stays empty rather than naming four absences.
+    assert status["freshness"] == {"sources": [], "quiet_lines": [], "quiet": False}
+
+    html = env.client.get("/app/body/").get_data(as_text=True)
+    assert 'aria-label="Source freshness"' not in html
+    assert 'id="body-sources-fresh-title"' not in html
+
+
+def test_freshness_scan_is_calendar_bounded_and_signature_cached(body_env, monkeypatch):
+    env = body_env()
+    old_day = _day_key_ago(250)
+    iso = f"{old_day[:4]}-{old_day[4:6]}-{old_day[6:8]}"
+    _seed_import(
+        env.journal,
+        "20260907_070000",
+        [
+            # Stelo's only delivery sits ~8 months back — outside the
+            # bounded window the sentinel is allowed to walk.
+            _row(
+                GLUCOSE_TYPE,
+                f"{iso}T08:00:00-06:00",
+                value="100",
+                unit="mg/dL",
+                source="Stelo",
+            ),
+            _delivery_row("Lingo", 1),
+        ],
+    )
+
+    freshness = env.client.get("/app/body/api/status").get_json()["freshness"]
+    by_name = {source["name"]: source for source in freshness["sources"]}
+    cap = body_routes.FRESHNESS_SCAN_MONTH_CAP
+    # Never a full-archive scan: the fold states the fact it verified
+    # within the window instead of walking back to the old shard.
+    assert by_name["Stelo"]["last_day"] is None
+    assert by_name["Stelo"]["line"] == f"Stelo — no data in the last {cap} months"
+    assert by_name["Lingo"]["days_since"] == 1
+
+    # Signature-cached (the trends pattern): with no new import, a second
+    # status call serves the fold from cache without touching shards.
+    def _boom(*args, **kwargs):
+        raise AssertionError("freshness fold must serve from its cache")
+
+    monkeypatch.setattr(body_routes, "_recent_month_keys", _boom)
+    second = env.client.get("/app/body/api/status").get_json()["freshness"]
+    assert second == freshness

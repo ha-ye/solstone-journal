@@ -730,6 +730,18 @@ a.body-jump-day:focus-visible {
   margin: var(--space-2) 0 0;
 }
 
+/* Source-freshness strip: a slim informational band in the archive's own
+   muted inks — factual copy only, never alarm colors. */
+.body-freshness {
+  margin-bottom: var(--space-4);
+  padding: var(--space-2) var(--space-4);
+}
+
+.body-freshness p {
+  margin: 0;
+  font-size: 14px;
+}
+
 .body-anatomy-btn {
   display: inline-flex;
   align-items: center;
@@ -2111,6 +2123,13 @@ a.body-jump-day:focus-visible {
             {% endfor %}
           </ul>
         {% endif %}
+        {% if body_day.heart.resting_comparison_line %}
+          {# Both devices measured a resting figure: the server's
+             pre-formatted juxtaposition — the cross-device reading stays
+             the fact above, the ring's nightly lowest rides along here.
+             No verdict. #}
+          <p class="body-muted body-num body-device-compare">{{ body_day.heart.resting_comparison_line }}</p>
+        {% endif %}
         {% if body_day.heart.blood_pressure %}
           {% set bp = body_day.heart.blood_pressure %}
           <h3 class="body-card-label">Blood pressure</h3>
@@ -2346,6 +2365,15 @@ a.body-jump-day:focus-visible {
     <h1 class="body-title">Body</h1>
     <p class="body-subtitle">Personal health context imported into Solstone.</p>
   </header>
+
+  {% if status.freshness and status.freshness.quiet_lines %}
+    {# Freshness sentinel: facts only — a source's name and when it last
+       delivered. Muted and informational; never alarm styling, never
+       advice. #}
+    <section class="body-card body-freshness" aria-label="Source freshness">
+      <p class="body-muted body-num">{{ status.freshness.quiet_lines|join(" · ") }}</p>
+    </section>
+  {% endif %}
 
   <section class="body-card body-archive-hero" aria-labelledby="body-archive-title">
     <div class="body-hero-icon" aria-hidden="true">♡</div>
@@ -2792,6 +2820,23 @@ a.body-jump-day:focus-visible {
             </span>
           {% endfor %}
         </div>
+      </section>
+    {% endif %}
+
+    {% if status.freshness and status.freshness.sources %}
+      {# Each expected source with its last-delivered day — the same
+         facts the freshness strip states, always listed. #}
+      <section class="body-card" aria-labelledby="body-sources-fresh-title">
+        <h2 id="body-sources-fresh-title" class="body-section-title">Sources</h2>
+        <ul class="body-list">
+          {% for source in status.freshness.sources %}
+            <li>
+              <span>{{ source.name }}</span>
+              <strong class="body-num">{{ source.detail }}</strong>
+            </li>
+          {% endfor %}
+        </ul>
+        <p class="body-card-footer">Expected sources &middot; last delivered day.</p>
       </section>
     {% endif %}
   </div>

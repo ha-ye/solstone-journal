@@ -74,11 +74,34 @@ RECENT_DAY_LIMIT = 14
 RECENT_BATCH_LIMIT_CAP = 31
 STALE_SOURCE_DAYS = 30
 
+# --- Source-freshness sentinel ------------------------------------------------
+#
+# Expected sources and how many quiet days each may go without delivering
+# before the overview names the quiet. Keys match owner-facing source
+# labels (the same labels the chips and day pages show) by case- and
+# apostrophe-insensitive substring, so "Oura" covers both of the ring's
+# pipes ("Oura", "Oura (API)"). Copy stays factual (§13): a name, a day
+# count — never advice, never alarm styling. The Apple Watch is
+# intentionally absent until its channel heals; restoring it is one line
+# here.
+EXPECTED_SOURCE_QUIET_DAYS: dict[str, int] = {
+    "Oura": 2,
+    "Jack's iPhone": 4,
+    "Stelo": 4,
+    "Lingo": 7,
+}
+# The freshness walk reads month shards for the most recent calendar
+# months only, newest first, stopping early once every expected source is
+# found — a page load never pays a full-archive scan. A source absent
+# from the whole window states "no data in the last N months".
+FRESHNESS_SCAN_MONTH_CAP = 6
+
 CURVE_SVG_WIDTH = 1440.0
 CURVE_SVG_HEIGHT = 260.0
 MAX_WINDOW_DAYS = 7
 
 HEART_RATE_TYPE = "HKQuantityTypeIdentifierHeartRate"
+RESTING_HEART_RATE_TYPE = "HKQuantityTypeIdentifierRestingHeartRate"
 
 # Normalized Oura API v2 record types (solstone.think.importers.oura).
 OURA_READINESS_TYPE = "oura.daily_readiness"
@@ -1145,6 +1168,10 @@ def _build_health_import_status(journal_root: Path) -> dict[str, Any]:
             _format_month_full(recent["month"]) if recent["month"] else None
         ),
         "day_counts": dedupe["by_day"],
+        # Source-freshness sentinel: days-since-last-data per expected
+        # source, exposed on the status payload for future notification
+        # use alongside the overview banner.
+        "freshness": _build_source_freshness(journal_root),
         "archive": _build_archive(
             journal_root, dedupe=dedupe, imports=imports, recent=recent
         ),
@@ -2349,9 +2376,45 @@ def _heart_comparison_line(rows: list[dict[str, Any]]) -> str | None:
     return " · ".join(parts)
 
 
+def _ring_lowest_heart_rate(row: dict[str, Any]) -> float | None:
+    """The ring's lowest sleeping HR from one ``oura.sleep`` period row.
+
+    Lives in the period's metadata as ``lowest_heart_rate`` (beside
+    ``average_heart_rate``). Oura writes zeros into short periods it did
+    not measure — a five-minute doze carries ``average_heart_rate: 0.0``
+    and often no ``lowest_heart_rate`` at all — so only positive values
+    count as measurements.
+    """
+    if str(row.get("record_type") or "") != OURA_SLEEP_PERIOD_TYPE:
+        return None
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    value = _parse_float(metadata.get("lowest_heart_rate"))
+    if value is None or value <= 0:
+        return None
+    return value
+
+
+def _ring_resting_hr(day_rows: list[dict[str, Any]]) -> float | None:
+    """The day's ring resting figure: the lowest sleeping HR across periods.
+
+    A day can hold several ``oura.sleep`` periods (the night plus naps);
+    the day's lowest measured sleeping HR is the ring's nightly resting
+    figure. ``None`` when no period measured one.
+    """
+    values = [
+        value
+        for value in (_ring_lowest_heart_rate(row) for row in day_rows)
+        if value is not None
+    ]
+    return min(values) if values else None
+
+
 def _heart_analysis(
     rows: list[dict[str, Any]],
     typical: dict[str, float] | None = None,
+    ring_resting_hr: float | None = None,
 ) -> dict[str, Any] | None:
     """The heart card: an HR range and curve, paired blood pressure, facts.
 
@@ -2359,10 +2422,20 @@ def _heart_analysis(
     a 90-day self-baseline is available from the trends fold;
     ``comparison_line`` juxtaposes the ring and a cross-device source
     when both sampled the day.
+
+    ``ring_resting_hr`` is the ring's nightly lowest sleeping HR (from
+    the day's ``oura.sleep`` periods). O-5C cross-device rule: it is the
+    same physiological quantity as a RestingHeartRate reading, measured
+    by whichever device was present — on days without a cross-device
+    resting value it becomes the resting fact, attributed "· Oura's
+    measurement"; on days with one, the cross-device reading stays the
+    fact and the ring's figure rides ``resting_comparison_line`` in the
+    card's device-juxtaposition pattern. Never both folded into one
+    number.
     """
 
     typical = typical or {}
-    if not rows:
+    if not rows and ring_resting_hr is None:
         return None
     heart_rate: dict[str, Any] | None = _window_heart_rate(rows)
     if heart_rate and heart_rate["count"]:
@@ -2396,6 +2469,8 @@ def _heart_analysis(
         fact_rows.append(row)
 
     facts: list[dict[str, Any]] = []
+    resting_fact: dict[str, Any] | None = None
+    resting_source: str | None = None
     grouped = _group_by_type(fact_rows)
     for record_type in sorted(
         grouped, key=lambda rt: (-len(grouped[rt]), friendly_type_name(rt))
@@ -2421,6 +2496,8 @@ def _heart_analysis(
                 latest_value = _parse_float(latest.get("value"))
                 if latest_value is not None:
                     item["value"] = display_value(record_type, latest_value, unit)
+                    resting_fact = item
+                    resting_source = _source_label(latest)
                 if "resting_hr" in typical:
                     item.update(
                         _typical_fact_fields(
@@ -2435,6 +2512,30 @@ def _heart_analysis(
                 )
         facts.append(item)
 
+    # The ring's nightly lowest joins the resting-HR fact per O-5C: the
+    # genuine measurement present wins the fact; when both devices
+    # measured, the cross-device reading stays primary and the ring's is
+    # juxtaposed — never double-counted, never averaged.
+    resting_comparison_line: str | None = None
+    if ring_resting_hr is not None:
+        ring_label = f"{_format_number(ring_resting_hr)} bpm"
+        if resting_fact is not None:
+            resting_comparison_line = (
+                f"{resting_source} {resting_fact['value']} · Oura (API) {ring_label}"
+            )
+        else:
+            ring_fact: dict[str, Any] = {
+                "label": friendly_type_name(RESTING_HEART_RATE_TYPE),
+                "count": 1,
+                "count_label": "1",
+                "value": f"{ring_label} · Oura's measurement",
+            }
+            if "resting_hr" in typical:
+                ring_fact.update(
+                    _typical_fact_fields(f"{_format_number(typical['resting_hr'])} bpm")
+                )
+            facts.append(ring_fact)
+
     if not (heart_rate or blood_pressure or rhythm or facts):
         return None
     return {
@@ -2443,6 +2544,7 @@ def _heart_analysis(
         "blood_pressure": blood_pressure,
         "rhythm": rhythm,
         "comparison_line": _heart_comparison_line(rows) if heart_rate else None,
+        "resting_comparison_line": resting_comparison_line,
         "facts": facts,
     }
 
@@ -2764,7 +2866,9 @@ def _build_health_day(
     glucose_series = _glucose_series(day_rows)
     activity = _activity_analysis(day_rows)
     # The nightly SpO2 average renders on the recovery card only, never a
-    # second time as a generic heart fact.
+    # second time as a generic heart fact. The ring's nightly lowest
+    # sleeping HR (oura.sleep metadata, Sleep family) feeds the resting-HR
+    # fact for days the resting signal would otherwise lack.
     heart = _heart_analysis(
         [
             row
@@ -2772,6 +2876,7 @@ def _build_health_day(
             if str(row.get("record_type") or "") != OURA_SPO2_TYPE
         ],
         typical,
+        ring_resting_hr=_ring_resting_hr(day_rows),
     )
     recovery = _recovery_analysis(day_rows, typical)
     mind_sound_facts = _fact_items(
@@ -3482,8 +3587,12 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
 
     Honesty rules carry over from the day cards:
 
-    - resting_hr — the day's latest RestingHeartRate reading; never
-      fabricated from raw heart-rate rows.
+    - resting_hr — the day's latest RestingHeartRate reading; on days
+      without one, the ring's nightly lowest sleeping HR (oura.sleep
+      metadata) stands in — one ribbon, because it is the same
+      physiological quantity measured by whichever device was present
+      (O-5C: the genuine measurement wins, a day never folds both).
+      Never fabricated from raw heart-rate rows.
     - asleep_minutes — canonical ``pick_day_sleep`` minutes (stage-aware,
       merged-span fallback), attributed to the morning the night ended.
     - sleep_score — the day's Oura sleep score, Oura's number verbatim.
@@ -3506,6 +3615,7 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
     regardless of which pipe aggregates.
     """
     resting_hr: dict[str, tuple[Any, float]] = {}
+    ring_resting: dict[str, float] = {}
     readiness: dict[str, tuple[Any, float]] = {}
     sleep_score: dict[str, tuple[Any, float]] = {}
     temp_deviation: dict[str, tuple[Any, float]] = {}
@@ -3535,6 +3645,15 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
             for row in _resolve_canonical_day_rows(bucket_rows):
                 record_type = str(row.get("record_type") or "")
                 if _is_sleep_type(record_type):
+                    # Ring sleep periods carry the nightly lowest sleeping
+                    # HR; the day's minimum across periods is the ring's
+                    # resting figure (merged with the cross-device signal
+                    # below, watch-measured days staying primary).
+                    lowest = _ring_lowest_heart_rate(row)
+                    if lowest is not None:
+                        kept = ring_resting.get(day)
+                        if kept is None or lowest < kept:
+                            ring_resting[day] = lowest
                     start = _parse_record_time(
                         row.get("start_date") or row.get("start_time")
                     )
@@ -3596,8 +3715,17 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
                 # by) stay absent — a summed figure would double-count.
                 steps[day] = picked["total"]
 
+    # One resting ribbon across devices (O-5C): the watch's reading stays
+    # primary; the ring's nightly lowest fills only the days the watch
+    # left empty — never double-counted, never averaged across pipes.
+    resting_hr_daily: dict[str, float | int] = {
+        day: value for day, (_, value) in resting_hr.items()
+    }
+    for day, value in ring_resting.items():
+        resting_hr_daily.setdefault(day, value)
+
     daily_by_key: dict[str, dict[str, float | int]] = {
-        "resting_hr": {day: value for day, (_, value) in resting_hr.items()},
+        "resting_hr": resting_hr_daily,
         "asleep_minutes": _trend_asleep_by_day(sleep_rows_by_day),
         "sleep_score": {day: value for day, (_, value) in sleep_score.items()},
         "readiness": {day: value for day, (_, value) in readiness.items()},
@@ -3744,6 +3872,145 @@ def warm_trends_cache(
     thread = threading.Thread(target=_warm, name="body-trends-warm", daemon=True)
     thread.start()
     return thread
+
+
+# --- Source-freshness sentinel ------------------------------------------------
+#
+# For each expected source (EXPECTED_SOURCE_QUIET_DAYS, top of file) the
+# overview states when it last delivered data. Quiet sources — past their
+# threshold — are named in a slim muted strip, factually ("Stelo last
+# delivered 6 days ago"), never as alarm or advice (§13). The fold walks
+# only the most recent calendar months of shards and caches by the same
+# dedupe-db signature the trends fold keys on.
+
+
+def _normalize_source_text(text: str) -> str:
+    """Casefolded, ASCII-apostrophe text for freshness label matching.
+
+    Live device names carry typographic apostrophes ("Jack's iPhone"
+    with U+2019); the config keys stay plain ASCII.
+    """
+    return text.replace("’", "'").casefold()
+
+
+def _source_matches_expected(label: str, expected: str) -> bool:
+    return _normalize_source_text(expected) in _normalize_source_text(label)
+
+
+def _recent_month_keys(today: date, cap: int) -> list[str]:
+    """The last ``cap`` calendar month keys, newest first."""
+    year, month = today.year, today.month
+    keys: list[str] = []
+    for _ in range(cap):
+        keys.append(f"{year}-{month:02d}")
+        month -= 1
+        if month == 0:
+            year, month = year - 1, 12
+    return keys
+
+
+_freshness_cache: dict[
+    str, tuple[tuple[tuple[int, int, int, int], str], dict[str, str | None]]
+] = {}
+
+
+def _expected_source_last_days(journal_root: Path) -> dict[str, str | None]:
+    """Last-delivered day per expected source, from a bounded shard walk.
+
+    Walks the most recent ``FRESHNESS_SCAN_MONTH_CAP`` calendar months'
+    shards newest-first and stops as soon as every expected source has a
+    day — typically the newest month alone — so a page load never pays a
+    full-archive scan; older data honestly reads "no data in the last N
+    months". Cached by the dedupe-db signature (the trends-cache
+    pattern) plus the current month: an import invalidates, and page
+    loads in between cost one stat call.
+    """
+    this_month = datetime.now().strftime("%Y-%m")
+    signature = (_trends_signature(journal_root), this_month)
+    cache_key = str(_trends_db_path(journal_root))
+    cached = _freshness_cache.get(cache_key)
+    if cached and cached[0] == signature:
+        return cached[1]
+
+    last_days: dict[str, str | None] = dict.fromkeys(EXPECTED_SOURCE_QUIET_DAYS)
+    existing = set(_coverage_month_keys(journal_root))
+    for month in _recent_month_keys(datetime.now().date(), FRESHNESS_SCAN_MONTH_CAP):
+        pending = [name for name, day in last_days.items() if day is None]
+        if not pending:
+            break
+        if month not in existing:
+            continue
+        for row in _iter_normalized_rows(journal_root, month=month):
+            day = str(row.get("day") or "")
+            if not DAY_RE.fullmatch(day):
+                continue
+            label = _source_label(row)
+            for name in pending:
+                kept = last_days[name]
+                if (kept is None or day > kept) and _source_matches_expected(
+                    label, name
+                ):
+                    last_days[name] = day
+    _freshness_cache[cache_key] = (signature, last_days)
+    return last_days
+
+
+def _build_source_freshness(journal_root: Path) -> dict[str, Any]:
+    """The freshness payload: last-delivered facts per expected source.
+
+    Every string is a fact — a source's name, a date, a day count. A
+    journal with no normalized shards yet carries an empty payload: the
+    sentinel speaks about sources going quiet within an archive, not
+    about an archive that has never held body data.
+    """
+    if not _coverage_month_keys(journal_root):
+        return {"sources": [], "quiet_lines": [], "quiet": False}
+    last_days = _expected_source_last_days(journal_root)
+    today = datetime.now().date()
+    sources: list[dict[str, Any]] = []
+    quiet_lines: list[str] = []
+    for name, threshold in EXPECTED_SOURCE_QUIET_DAYS.items():
+        last_day = last_days.get(name)
+        if last_day is None:
+            detail = f"no data in the last {FRESHNESS_SCAN_MONTH_CAP} months"
+            entry: dict[str, Any] = {
+                "name": name,
+                "last_day": None,
+                "last_label": None,
+                "days_since": None,
+                "quiet_after_days": threshold,
+                "quiet": True,
+                "detail": detail,
+                "line": f"{name} — {detail}",
+            }
+        else:
+            last = datetime.strptime(last_day, "%Y%m%d").date()
+            days_since = max((today - last).days, 0)
+            if days_since == 0:
+                ago = "today"
+            elif days_since == 1:
+                ago = "1 day ago"
+            else:
+                ago = f"{days_since} days ago"
+            quiet = days_since > threshold
+            entry = {
+                "name": name,
+                "last_day": last_day,
+                "last_label": _format_day_long(last_day),
+                "days_since": days_since,
+                "quiet_after_days": threshold,
+                "quiet": quiet,
+                "detail": f"{_format_day_long(last_day)} · {ago}",
+                "line": f"{name} last delivered {ago}" if quiet else None,
+            }
+        if entry["line"]:
+            quiet_lines.append(entry["line"])
+        sources.append(entry)
+    return {
+        "sources": sources,
+        "quiet_lines": quiet_lines,
+        "quiet": bool(quiet_lines),
+    }
 
 
 @body_bp.route("/")
