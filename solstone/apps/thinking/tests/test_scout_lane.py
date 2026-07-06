@@ -10,6 +10,7 @@ import pytest
 
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.apps.thinking import scout_lane
+from solstone.think.importers import local_secrets
 from solstone.think.journal_config import write_journal_config
 from solstone.think.services import scout
 
@@ -38,6 +39,7 @@ def _clear_scout(journal: Path) -> None:
     services = config.setdefault("services", {})
     services.pop("scout", None)
     _write_config(config)
+    local_secrets.delete_env_secret("GOOGLE_API_KEY", journal_path=journal)
 
 
 @pytest.mark.parametrize(
@@ -61,9 +63,11 @@ def test_resting_state_maps_storage_states(
     elif setup == "pending":
         scout.record_scout_pending("acct-pending", 1770000000000)
     elif setup == "manual":
-        config = _read_config(journal_copy)
-        config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual-key"
-        _write_config(config)
+        local_secrets.save_env_secret(
+            "GOOGLE_API_KEY",
+            "manual-key",
+            journal_path=journal_copy,
+        )
 
     assert scout_lane.resting_state() == expected
 
@@ -164,9 +168,11 @@ def test_provenance_payload_is_secret_free_for_approved_and_pending(
 def test_manual_key_takes_precedence_over_pending_block(journal_copy: Path) -> None:
     _clear_scout(journal_copy)
     scout.record_scout_pending("acct-pending", 1770000000000)
-    config = _read_config(journal_copy)
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual-key"
-    _write_config(config)
+    local_secrets.save_env_secret(
+        "GOOGLE_API_KEY",
+        "manual-key",
+        journal_path=journal_copy,
+    )
 
     assert scout_lane.resting_state() == thinking_copy.SCOUT_STATE_MANUAL_KEY_PRESENT
 
@@ -235,6 +241,7 @@ def test_stale_approved_block_without_key_is_off_with_provenance(
 ) -> None:
     _clear_scout(journal_copy)
     scout.provision_scout_handoff(_approved_payload())
+    local_secrets.delete_env_secret("GOOGLE_API_KEY", journal_path=journal_copy)
     config = _read_config(journal_copy)
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     _write_config(config)

@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from solstone.think.importers import local_secrets
+
 INIT_HTML = Path(__file__).resolve().parents[1] / "templates" / "init.html"
 BRAND_CANON_RE = re.compile(
     r"\b("
@@ -100,9 +102,13 @@ def test_finalize_empty_gemini_key_preserves_existing_scout_config(
     env = convey_env_setup_pending()
     config = _read_config(env.journal)
     scout_block = {"account_id": "x", "enrolled_at_ms": 1}
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "SCOUT_FIXTURE"
     config.setdefault("services", {})["scout"] = scout_block.copy()
     _write_config(env.journal, config)
+    local_secrets.save_env_secret(
+        "GOOGLE_API_KEY",
+        "SCOUT_FIXTURE",
+        journal_path=env.journal,
+    )
     _commit_journal_identity()
 
     response = env.client.post(
@@ -114,7 +120,15 @@ def test_finalize_empty_gemini_key_preserves_existing_scout_config(
     assert response.status_code == 200
     assert response.get_json()["success"] is True
     saved = _read_config(env.journal)
-    assert saved["env"]["GOOGLE_API_KEY"] == "SCOUT_FIXTURE"
+    assert "GOOGLE_API_KEY" not in saved.get("env", {})
+    assert (
+        local_secrets.load_env_secret(
+            "GOOGLE_API_KEY",
+            journal_path=env.journal,
+            include_process=False,
+        )
+        == "SCOUT_FIXTURE"
+    )
     assert saved["services"]["scout"] == scout_block
 
 
@@ -131,4 +145,12 @@ def test_finalize_manual_paste_writes_gemini_key(convey_env_setup_pending) -> No
     assert response.status_code == 200
     assert response.get_json()["success"] is True
     saved = _read_config(env.journal)
-    assert saved["env"]["GOOGLE_API_KEY"] == "MANUAL_FIXTURE"
+    assert "GOOGLE_API_KEY" not in saved.get("env", {})
+    assert (
+        local_secrets.load_env_secret(
+            "GOOGLE_API_KEY",
+            journal_path=env.journal,
+            include_process=False,
+        )
+        == "MANUAL_FIXTURE"
+    )

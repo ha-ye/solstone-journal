@@ -339,9 +339,10 @@ class PlaudBackend:
         Returns:
             Summary dict with total, imported, available, downloaded, errors.
         """
+        from solstone.think.importers.local_secrets import load_env_secret
         from solstone.think.importers.sync import load_sync_state, save_sync_state
 
-        token = os.getenv("PLAUD_ACCESS_TOKEN")
+        token = load_env_secret("PLAUD_ACCESS_TOKEN")
         if not token:
             raise ValueError(
                 "PLAUD_ACCESS_TOKEN not configured — set in Settings > API Keys"

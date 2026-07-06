@@ -32,7 +32,6 @@ timeout_s : float, optional
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from anthropic import AsyncAnthropic
@@ -223,7 +222,9 @@ def _get_anthropic_client():
     if _anthropic_client is None:
         from anthropic import Anthropic
 
-        api_key = os.getenv("ANTHROPIC_API_KEY")
+        from solstone.think.importers.local_secrets import load_env_secret
+
+        api_key = load_env_secret("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
         _anthropic_client = Anthropic(
@@ -237,7 +238,9 @@ def _get_async_anthropic_client():
     """Get or create async Anthropic client."""
     global _async_anthropic_client
     if _async_anthropic_client is None:
-        api_key = os.getenv("ANTHROPIC_API_KEY")
+        from solstone.think.importers.local_secrets import load_env_secret
+
+        api_key = load_env_secret("ANTHROPIC_API_KEY")
         if not api_key:
             raise ValueError("ANTHROPIC_API_KEY not found in environment")
         _async_anthropic_client = AsyncAnthropic(

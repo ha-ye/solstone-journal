@@ -13,6 +13,7 @@ import pytest
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.apps.thinking import scout_lane
 from solstone.convey import create_app
+from solstone.think.importers import local_secrets
 from solstone.think.journal_config import write_journal_config
 from solstone.think.services import operations, scout, scout_handoff
 
@@ -41,6 +42,7 @@ def _clear_scout(journal: Path) -> None:
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.setdefault("services", {}).pop("scout", None)
     _write_config(config)
+    local_secrets.delete_env_secret("GOOGLE_API_KEY", journal_path=journal)
 
 
 @pytest.fixture
@@ -148,9 +150,11 @@ def test_enable_blocked_when_manual_key_present(
     journal_copy: Path,
     thinking_client,
 ) -> None:
-    config = _read_config(journal_copy)
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual-key"
-    _write_config(config)
+    local_secrets.save_env_secret(
+        "GOOGLE_API_KEY",
+        "manual-key",
+        journal_path=journal_copy,
+    )
 
     response = thinking_client.post("/app/thinking/api/scout/enable")
 
@@ -218,16 +222,26 @@ def test_disable_preserves_different_manual_key(
     thinking_client,
 ) -> None:
     scout.provision_scout_handoff(_approved_payload("hosted-key"))
-    config = _read_config(journal_copy)
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual-key"
-    _write_config(config)
+    local_secrets.save_env_secret(
+        "GOOGLE_API_KEY",
+        "manual-key",
+        journal_path=journal_copy,
+    )
 
     response = thinking_client.post("/app/thinking/api/scout/disable")
 
     assert response.status_code == 200
     data = response.get_json()
     assert data["result"] == {"was_enabled": True, "env_key_preserved": True}
-    assert _read_config(journal_copy)["env"]["GOOGLE_API_KEY"] == "manual-key"
+    assert (
+        local_secrets.load_env_secret(
+            "GOOGLE_API_KEY",
+            journal_path=journal_copy,
+            include_process=False,
+        )
+        == "manual-key"
+    )
+    assert "GOOGLE_API_KEY" not in _read_config(journal_copy).get("env", {})
 
 
 def test_check_route_forces_status_payload_without_operation_registry(

@@ -142,7 +142,9 @@ def _active_backend() -> str | None:
     configured = get_config().get("providers", {}).get("google_backend", "auto")
     if configured in ("aistudio", "vertex"):
         return configured
-    api_key = os.getenv("GOOGLE_API_KEY")
+    from solstone.think.importers.local_secrets import load_env_secret
+
+    api_key = load_env_secret("GOOGLE_API_KEY")
     if api_key:
         return _get_effective_backend(api_key)
     return None
@@ -205,7 +207,9 @@ def get_or_create_client(client: genai.Client | None = None) -> genai.Client:
         retry_options=types.HttpRetryOptions(attempts=3),
     )
 
-    api_key = os.getenv("GOOGLE_API_KEY")
+    from solstone.think.importers.local_secrets import load_env_secret
+
+    api_key = load_env_secret("GOOGLE_API_KEY")
 
     # Determine backend
     configured_backend = providers_config.get("google_backend", "auto")

@@ -360,8 +360,8 @@ Journal config additions:
 Reader functions:
 
 - `think.voice.config.get_openai_api_key()`:
-  - Read `get_config().get("voice", {}).get("openai_api_key")`.
-  - If that value is blank, fall back to `OPENAI_API_KEY`.
+  - Read the voice-specific local secret (`voice.openai_api_key`) from the Solstone machine-local secret boundary.
+  - If that value is blank, fall back to the managed local `OPENAI_API_KEY` secret / process environment.
   - If still blank, return `None`.
 - `think.voice.config.get_voice_model()`:
   - Read `config.voice.model`.
@@ -458,7 +458,7 @@ Journal-data rule:
 - Routing location: this design uses a root-level `solstone/convey/voice.py` blueprint, not `solstone/apps/voice/`, because the feature is a root API and the app shell assumes `/app/<name>` plus `workspace.html`.
 - Briefing source path: `_load_briefing_md(...)` reads the canonical `chronicle/<day>/talents/morning_briefing.md` talent output. (Updated 2026-07-02: an earlier revision read the phantom identity-dir briefing file; retired in the H1 lode.)
 - Commitments resolution mapping: this design maps `done|sent|signed|deferred -> as_state="closed"` and `dropped -> as_state="dropped"` because `think.surfaces.ledger.close(...)` only accepts `closed|dropped`.
-- OpenAI key sourcing: this design uses `config.voice.openai_api_key` in `journal/config/journal.json` first, then `OPENAI_API_KEY`, and does not add `journal/config/openai.json`.
+- OpenAI key sourcing: this design uses the machine-local voice secret first, then managed local `OPENAI_API_KEY`, and does not add a replicated journal config secret.
 - `ask_sol` clause: this design removes it from the brain init prompt and does not add a 10th tool to the manifest.
 - Decision-record location: this design keeps the Wave 2 voice decisions in `docs/design/voice-server.md` because `records/decisions/` does not exist in the repo.
 - Config keys: this design adds a `voice` block to journal config and defaults, which is a scope-visible contract change.

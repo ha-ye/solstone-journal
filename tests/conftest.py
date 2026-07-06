@@ -199,6 +199,9 @@ def journal_copy(tmp_path, monkeypatch):
     src = Path(__file__).resolve().parent / "fixtures" / "journal"
     dst = tmp_path / "journal"
     copytree_tracked(src, dst)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(dst.resolve()))
     import solstone.think.utils as think_utils
 

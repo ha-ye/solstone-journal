@@ -15,6 +15,7 @@ import solstone.apps.thinking.call as thinking_call
 import solstone.apps.thinking.routes as thinking_routes
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.think.convey_client import ConveyClient
+from solstone.think.importers import local_secrets
 from solstone.think.services import operations, scout, scout_handoff
 from tests._baseline_harness import make_test_client
 
@@ -300,8 +301,14 @@ def test_keys_set_clear_validate_and_invalid_env(
             "timestamp": "2026-04-17T12:00:00+00:00",
         },
     }
+    assert "ANTHROPIC_API_KEY" not in _read_config(journal_copy).get("env", {})
     assert (
-        _read_config(journal_copy)["env"]["ANTHROPIC_API_KEY"] == "anthropic-test-key"
+        local_secrets.load_env_secret(
+            "ANTHROPIC_API_KEY",
+            journal_path=journal_copy,
+            include_process=False,
+        )
+        == "anthropic-test-key"
     )
 
     keys_shown = runner.invoke(thinking_call.app, ["keys", "show"])
@@ -311,6 +318,14 @@ def test_keys_set_clear_validate_and_invalid_env(
     cleared = runner.invoke(thinking_call.app, ["keys", "clear", "ANTHROPIC_API_KEY"])
     _assert_json(cleared, {"env_var": "ANTHROPIC_API_KEY", "cleared": True})
     assert "ANTHROPIC_API_KEY" not in _read_config(journal_copy)["env"]
+    assert (
+        local_secrets.load_env_secret(
+            "ANTHROPIC_API_KEY",
+            journal_path=journal_copy,
+            include_process=False,
+        )
+        is None
+    )
 
     before = (journal_copy / "config" / "journal.json").read_text(encoding="utf-8")
     validate = runner.invoke(thinking_call.app, ["keys", "validate"])

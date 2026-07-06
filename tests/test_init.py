@@ -11,6 +11,7 @@ import pytest
 from solstone.apps.observer.routes import ACTIVE_THRESHOLD_MS, STALE_THRESHOLD_MS
 from solstone.apps.observer.utils import save_observer
 from solstone.convey import create_app
+from solstone.think.importers import local_secrets
 from solstone.think.utils import get_journal, now_ms
 
 
@@ -21,6 +22,9 @@ def _read_config(journal_dir):
 def _make_empty_client(tmp_path, monkeypatch, *, timezone="America/Denver"):
     journal = tmp_path / "journal"
     journal.mkdir()
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     monkeypatch.setattr(
         "solstone.think.utils._resolve_os_identity", lambda: ("OS User", "osuser")
@@ -636,7 +640,15 @@ class TestInitFinalize:
         assert config["identity"]["preferred"] == "Jane"
         assert config["identity"]["timezone"] == "America/Denver"
         # Provider
-        assert config["env"]["GOOGLE_API_KEY"] == "test-api-key-123"
+        assert "GOOGLE_API_KEY" not in config.get("env", {})
+        assert (
+            local_secrets.load_env_secret(
+                "GOOGLE_API_KEY",
+                journal_path=journal_copy,
+                include_process=False,
+            )
+            == "test-api-key-123"
+        )
         # Setup
         assert "completed_at" in config["setup"]
 

@@ -145,9 +145,11 @@ def linux_stt_uses_parakeet_cpp() -> bool:
     if isinstance(backend, str):
         return backend not in {"revai", "gemini"}
 
+    from solstone.think.importers.local_secrets import is_env_secret_configured
+
     selected = select_stt_backend(
         read_available_bytes(),
-        google_key_present=bool(os.getenv("GOOGLE_API_KEY")),
+        google_key_present=is_env_secret_configured("GOOGLE_API_KEY"),
         floor_bytes=stt_local_floor_bytes(),
         local_backend=local_stt_backend(),
     )

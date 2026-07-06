@@ -920,11 +920,11 @@ def init_cli_runtime(verbose: bool, debug: bool) -> None:
     """Configure logging and the journal/provider runtime for a CLI entry point.
 
     Sets the root log level from the ``verbose``/``debug`` flags, resolves the
-    journal path via :func:`get_journal`, and loads ``journal.json``'s ``env``
-    section into ``os.environ`` — stripping any managed provider key (registry-
-    derived) that config does not set, so a stray shell-set provider key is never
-    used. Shared by :func:`setup_cli` (argparse entry points) and the house Typer
-    service commands so both honour the same ``-v``/``-d`` + provider-env contract.
+    journal path via :func:`get_journal`, loads non-secret ``journal.json``
+    ``env`` values into ``os.environ``, and loads managed credentials from the
+    machine-local secret boundary. Managed provider keys remain exclusive: a
+    stray shell-set provider key is stripped unless the local boundary contains
+    that key.
     """
     if debug:
         log_level = logging.DEBUG
@@ -938,17 +938,20 @@ def init_cli_runtime(verbose: bool, debug: bool) -> None:
     # Initialize journal path (auto-creates if needed)
     get_journal()
 
-    # journal.json's `env` section is the authoritative and exclusive source for
-    # managed provider API keys. Load every config-declared var into os.environ,
-    # then strip any managed provider key (registry-derived) that config does not
-    # set, so a stray shell-set provider key is never used. Non-managed vars are
-    # loaded as-is; Vertex/ADC auth vars are not managed keys and are never stripped.
+    # Non-secret env values may remain in journal config. Credential-shaped env
+    # values live in the local secret boundary keyed by journal fingerprint.
     config = get_config()
     config_env = config.get("env", {})
+    from solstone.think.importers import local_secrets
+
     for key, value in config_env.items():
+        if key in local_secrets.ENV_SECRET_INTEGRATIONS:
+            continue
         os.environ[key] = str(value)
+    for key, value in local_secrets.load_env_secrets().items():
+        os.environ[key] = value
     for env_key in managed_provider_env_keys():
-        if not config_env.get(env_key):
+        if not local_secrets.load_env_secret(env_key, include_process=False):
             os.environ.pop(env_key, None)
 
 
@@ -956,12 +959,11 @@ def setup_cli(parser: argparse.ArgumentParser, *, parse_known: bool = False):
     """Parse command line arguments and configure logging.
 
     The parser will be extended with ``-v``/``--verbose`` and ``-d``/``--debug`` flags.
-    The journal path is resolved via get_journal() which auto-creates a default path
-    if needed. Environment variables from the journal config's ``env`` section
-    (in ``journal.json``) are loaded into ``os.environ``. journal.json is the
-    authoritative and exclusive source for managed provider API keys (the
-    provider registry's ``env_key`` values): a managed provider key absent from
-    config is stripped so a shell-set value is never used. Vertex/ADC auth vars
+    The journal path is resolved via get_journal() which auto-creates a default
+    path if needed. Non-secret environment variables from journal config are
+    loaded into ``os.environ``. Managed provider API keys are loaded from the
+    machine-local secret boundary; a managed provider key absent from that
+    boundary is stripped so a shell-set value is never used. Vertex/ADC auth vars
     are not managed keys and are never stripped; non-managed vars load as
     declared.
     The parsed arguments are returned. If ``parse_known`` is ``True`` a tuple of

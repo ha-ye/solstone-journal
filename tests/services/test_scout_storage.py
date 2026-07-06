@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+from solstone.think.importers import local_secrets
 from solstone.think.journal_config import write_journal_config
 from solstone.think.services import scout as scout_module
 from solstone.think.services import status as service_status
@@ -46,6 +47,18 @@ def _read_config(journal_copy):
     return json.loads(_config_path(journal_copy).read_text())
 
 
+def _save_google_key(value: str, journal_copy) -> None:
+    local_secrets.save_env_secret("GOOGLE_API_KEY", value, journal_path=journal_copy)
+
+
+def _load_google_key(journal_copy) -> str | None:
+    return local_secrets.load_env_secret(
+        "GOOGLE_API_KEY",
+        journal_path=journal_copy,
+        include_process=False,
+    )
+
+
 def test_provision_scout_handoff_round_trip_preserves_config(journal_copy) -> None:
     before = _read_config(journal_copy)
 
@@ -56,7 +69,8 @@ def test_provision_scout_handoff_round_trip_preserves_config(journal_copy) -> No
     if "retention" in before:
         assert after["retention"] == before["retention"]
     assert after["convey"] == before["convey"]
-    assert after["env"]["GOOGLE_API_KEY"] == "google-one"
+    assert "GOOGLE_API_KEY" not in after.get("env", {})
+    assert _load_google_key(journal_copy) == "google-one"
     scout = after["services"]["scout"]
     assert set(scout) == {
         "enabled_at",
@@ -114,9 +128,7 @@ def test_scout_three_state_matrix(journal_copy) -> None:
     assert not is_manual_key_present()
     assert scout_provenance() is None
 
-    config = _read_config(journal_copy)
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual"
-    write_journal_config(config)
+    _save_google_key("manual", journal_copy)
     assert not is_scout_enabled()
     assert is_manual_key_present()
 
@@ -150,16 +162,17 @@ def test_pending_marker_alone_predicates(journal_copy) -> None:
 
 def test_pending_marker_with_manual_key_predicates(journal_copy) -> None:
     config = _read_config(journal_copy)
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual"
     config.pop("services", None)
     write_journal_config(config)
+    _save_google_key("manual", journal_copy)
 
     record_scout_pending("acct-p", 1_700_000_000_000)
 
     assert not is_scout_enabled()
     assert is_manual_key_present()
     saved = _read_config(journal_copy)
-    assert saved["env"]["GOOGLE_API_KEY"] == "manual"
+    assert "GOOGLE_API_KEY" not in saved.get("env", {})
+    assert _load_google_key(journal_copy) == "manual"
 
 
 def test_record_scout_pending_requires_account_id(journal_copy) -> None:
@@ -312,21 +325,17 @@ def test_payload_validation_wrong_type_values(
 
 def test_provision_preserves_other_env_and_top_level_keys(journal_copy) -> None:
     config = _read_config(journal_copy)
-    config["env"] = {
-        "GOOGLE_API_KEY": "old",
-        "ANTHROPIC_API_KEY": "keep-me",
-        "OPENAI_API_KEY": "keep-me-too",
-    }
+    config["env"] = {"SOL_DAY": "20260706"}
     config["convey"] = {"port": 5015}
     config["custom_block"] = {"survives": True}
     write_journal_config(config)
+    _save_google_key("old", journal_copy)
 
     provision_scout_handoff(_payload("new"))
 
     saved = _read_config(journal_copy)
-    assert saved["env"]["GOOGLE_API_KEY"] == "google-new"
-    assert saved["env"]["ANTHROPIC_API_KEY"] == "keep-me"
-    assert saved["env"]["OPENAI_API_KEY"] == "keep-me-too"
+    assert saved["env"] == {"SOL_DAY": "20260706"}
+    assert _load_google_key(journal_copy) == "google-new"
     assert saved["convey"] == {"port": 5015}
     assert saved["custom_block"] == {"survives": True}
 
@@ -341,6 +350,7 @@ def test_disable_scout_when_enabled_returns_outcome_clears_block_and_env_key(
     assert outcome == DisableOutcome(was_enabled=True, env_key_preserved=False)
     saved = _read_config(journal_copy)
     assert "GOOGLE_API_KEY" not in saved["env"]
+    assert _load_google_key(journal_copy) is None
     assert saved["services"] == {}
 
 
@@ -348,15 +358,14 @@ def test_disable_scout_preserves_env_key_when_fingerprint_mismatches(
     journal_copy,
 ) -> None:
     provision_scout_handoff(_payload("manual"))
-    config = _read_config(journal_copy)
-    config["env"]["GOOGLE_API_KEY"] = "manual-replacement"
-    write_journal_config(config)
+    _save_google_key("manual-replacement", journal_copy)
 
     outcome = disable_scout()
 
     assert outcome == DisableOutcome(was_enabled=True, env_key_preserved=True)
     saved = _read_config(journal_copy)
-    assert saved["env"]["GOOGLE_API_KEY"] == "manual-replacement"
+    assert "GOOGLE_API_KEY" not in saved.get("env", {})
+    assert _load_google_key(journal_copy) == "manual-replacement"
     assert saved["services"] == {}
 
 
@@ -417,7 +426,8 @@ def test_locked_parallel_writes_do_not_corrupt_config(journal_copy) -> None:
     scout = config["services"]["scout"]
     assert scout["account_id"] in {"acct-alpha", "acct-bravo"}
     suffix = scout["account_id"].removeprefix("acct-")
-    assert config["env"]["GOOGLE_API_KEY"] == f"google-{suffix}"
+    assert "GOOGLE_API_KEY" not in config.get("env", {})
+    assert _load_google_key(journal_copy) == f"google-{suffix}"
 
 
 def test_atomic_write_leaves_existing_config_on_replace_failure(
@@ -425,7 +435,7 @@ def test_atomic_write_leaves_existing_config_on_replace_failure(
 ) -> None:
     original_text = _config_path(journal_copy).read_text()
     config = _read_config(journal_copy)
-    config.setdefault("env", {})["GOOGLE_API_KEY"] = "after"
+    config.setdefault("env", {})["SOL_DAY"] = "after"
 
     def fail_replace(_tmp, _path) -> None:
         raise OSError("replace failed")

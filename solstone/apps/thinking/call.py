@@ -327,7 +327,7 @@ def keys_set(
     env_var: str = typer.Argument(..., help="Environment variable to set."),
     value: str = typer.Argument(..., help="API key value."),
 ) -> None:
-    """Set an AI key in journal config."""
+    """Set an AI key in the local machine secret store."""
 
     _validate_env_var_or_exit(env_var)
     try:
@@ -355,7 +355,7 @@ def keys_set(
 def keys_clear(
     env_var: str = typer.Argument(..., help="Environment variable to clear."),
 ) -> None:
-    """Clear an AI key from journal config."""
+    """Clear an AI key from the local machine secret store."""
 
     _validate_env_var_or_exit(env_var)
     _request(

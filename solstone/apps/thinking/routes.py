@@ -40,6 +40,7 @@ from solstone.convey.reasons import (
     SETTINGS_OPERATION_FAILED,
 )
 from solstone.convey.utils import error_response
+from solstone.think.importers import local_secrets
 from solstone.think.journal_config import (
     hold_config_lock,
     read_journal_config,
@@ -239,17 +240,15 @@ def _active_lane_payload(
 
 
 def _api_key_status(config: dict[str, Any]) -> dict[str, bool]:
-    env_config = config.get("env", {})
     return {
-        provider: bool(env_config.get(env_var) or os.getenv(env_var))
+        provider: local_secrets.is_env_secret_configured(env_var)
         for env_var, provider in AI_ENV_TO_PROVIDER.items()
     }
 
 
 def _env_key_status(config: dict[str, Any]) -> dict[str, bool]:
-    env_config = config.get("env", {})
     return {
-        env_var: bool(env_config.get(env_var) or os.getenv(env_var))
+        env_var: local_secrets.is_env_secret_configured(env_var)
         for env_var in AI_KEY_ENV_VARS
     }
 
@@ -277,11 +276,10 @@ def _keys_payload(config: dict[str, Any]) -> dict[str, Any]:
 def _compute_ai_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     """Validate configured AI provider keys without mutating config."""
 
-    env_config = config.get("env", {})
     key_validation: dict[str, Any] = {}
 
     for env_var, provider in AI_ENV_TO_PROVIDER.items():
-        api_key = env_config.get(env_var, "")
+        api_key = local_secrets.load_env_secret(env_var)
         if api_key:
             result = validate_key(provider, api_key)
             result["timestamp"] = datetime.now(timezone.utc).isoformat()
@@ -561,15 +559,20 @@ def keys() -> Any:
             env = config.setdefault("env", {})
             providers_config = config.setdefault("providers", {})
             key_validation = providers_config.setdefault("key_validation", {})
-            old_value = env.get(env_var)
+            old_value = local_secrets.load_env_secret(
+                env_var,
+                include_process=False,
+            )
             new_value = str(value or "").strip()
             if new_value:
-                env[env_var] = new_value
+                local_secrets.save_env_secret(env_var, new_value)
+                env.pop(env_var, None)
                 os.environ[env_var] = new_value
                 validation = validate_key(provider, new_value)
                 validation["timestamp"] = datetime.now(timezone.utc).isoformat()
                 key_validation[provider] = validation
             else:
+                local_secrets.delete_env_secret(env_var)
                 env.pop(env_var, None)
                 os.environ.pop(env_var, None)
                 key_validation.pop(provider, None)

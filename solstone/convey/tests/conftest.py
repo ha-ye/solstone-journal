@@ -15,6 +15,8 @@ def convey_env(tmp_path, monkeypatch):
     def _create():
         journal = tmp_path / "journal"
         journal.mkdir()
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
 
         config_dir = journal / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -28,6 +30,7 @@ def convey_env(tmp_path, monkeypatch):
             )
         )
 
+        monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
         from solstone.convey import create_app
@@ -51,6 +54,8 @@ def convey_env_setup_pending(tmp_path, monkeypatch):
     def _create():
         journal = tmp_path / "journal"
         journal.mkdir()
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
 
         config_dir = journal / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -64,6 +69,7 @@ def convey_env_setup_pending(tmp_path, monkeypatch):
             )
         )
 
+        monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
         from solstone.convey import create_app

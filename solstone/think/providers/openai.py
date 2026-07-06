@@ -32,7 +32,6 @@ Note: GPT-5+ reasoning models don't support custom temperature (fixed at 1.0).
 
 from __future__ import annotations
 
-import os
 import re
 from typing import Any
 
@@ -77,7 +76,9 @@ def _get_openai_client():
     if _openai_client is None:
         import openai
 
-        api_key = os.getenv("OPENAI_API_KEY")
+        from solstone.think.importers.local_secrets import load_env_secret
+
+        api_key = load_env_secret("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment")
         _openai_client = openai.OpenAI(
@@ -93,7 +94,9 @@ def _get_async_openai_client():
     if _async_openai_client is None:
         import openai
 
-        api_key = os.getenv("OPENAI_API_KEY")
+        from solstone.think.importers.local_secrets import load_env_secret
+
+        api_key = load_env_secret("OPENAI_API_KEY")
         if not api_key:
             raise ValueError("OPENAI_API_KEY not found in environment")
         _async_openai_client = openai.AsyncOpenAI(
