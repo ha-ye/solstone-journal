@@ -48,6 +48,8 @@ _ACTIVITY_WORK_EVENTS = frozenset(
 )
 SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("documents",)
 SEGMENT_NONGATING_TALENTS: tuple[str, ...] = ("entities:detection",)
+# A legacy segment talent is non-blocking only once its replacement has completed.
+SEGMENT_SUPERSEDED_TALENTS: dict[str, str] = {"entities": "entities:detection"}
 # Floor talents are capped after repeated failures spanning at least two hours.
 CAP = 5
 MIN_SPAN_MS = 7_200_000
@@ -969,6 +971,9 @@ def segment_fully_thought(progress: SegmentProgress | None) -> tuple[bool, str |
             return False, f"floor:{name}"
     for name in sorted(progress.dispatched):
         if name in SEGMENT_NONGATING_TALENTS:
+            continue
+        replacement = SEGMENT_SUPERSEDED_TALENTS.get(name)
+        if replacement is not None and replacement in progress.completed:
             continue
         if name not in progress.completed and name not in progress.capped:
             return False, f"dispatched:{name}"

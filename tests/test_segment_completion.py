@@ -1174,3 +1174,67 @@ def test_empty_segment_progress_withholds_and_logs_blocker(
     assert SEGMENT in caplog.text
     assert "not_thought" in caplog.text
     assert "no_sense_complete" in caplog.text
+
+
+def test_segment_fully_thought_allows_superseded_entities_after_detection_completion():
+    progress = SegmentProgress(
+        sensed=True,
+        density="active",
+        change_class=None,
+        dispatched=frozenset({"sense", "documents", "entities"}),
+        completed=frozenset({"sense", "documents", "entities:detection"}),
+        unconfigured=frozenset(),
+        capped=frozenset(),
+    )
+
+    assert segment_fully_thought(progress) == (True, None)
+
+
+def test_segment_fully_thought_blocks_superseded_entities_without_detection_completion():
+    progress = SegmentProgress(
+        sensed=True,
+        density="active",
+        change_class=None,
+        dispatched=frozenset({"sense", "documents", "entities"}),
+        completed=frozenset({"sense", "documents"}),
+        unconfigured=frozenset(),
+        capped=frozenset(),
+    )
+
+    assert segment_fully_thought(progress) == (False, "dispatched:entities")
+
+
+def test_stream_keyed_superseded_entities_detection_completion_unblocks(
+    segment_journal,
+):
+    day = "20990422"
+    stream = "delta"
+    _seed_segment(segment_journal, day, SEGMENT, stream=stream)
+    _write_health(
+        segment_journal,
+        day,
+        "001_segment.jsonl",
+        _complete_segment_events(SEGMENT, stream=stream)
+        + [
+            _dispatch(SEGMENT, "entities", 30, stream=stream),
+            _fail(SEGMENT, "entities", 31, stream=stream),
+            _dispatch(SEGMENT, "entities:detection", 32, stream=stream),
+            _complete(SEGMENT, "entities:detection", 33, stream=stream),
+        ],
+    )
+
+    progress = read_segment_progress(day)
+    segment_progress = progress[(stream, SEGMENT)]
+
+    assert "entities" in segment_progress.dispatched
+    assert "entities" not in segment_progress.completed
+    assert "entities:detection" in segment_progress.completed
+    assert segment_fully_thought(
+        lookup_segment_progress(progress, stream, SEGMENT)
+    ) == (True, None)
+
+    completion = classify_segment_completion(cluster_segments(day), progress)
+    assert completion.not_thought == 0
+    assert all(
+        blocker["detail"] != "dispatched:entities" for blocker in completion.blockers
+    )
