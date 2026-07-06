@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -38,16 +39,19 @@ def chat_client(tmp_path, monkeypatch):
 
 
 def test_live_append_origin_tag_script_handles_sol_initiated_events(chat_client):
-    response = chat_client.get("/app/chat/20990109")
+    response = chat_client.get("/app/chat/workspace")
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert "let pendingSolChatRequest = null;" in html
-    assert "renderOriginTag" in html
-    assert "origin: origin" in html
-    assert "item.dataset.requestId = event.origin.request_id;" in html
-    assert "const supersededRequestId = msg.request_id || '';" in html
-    assert KIND_SOL_CHAT_REQUEST in html
-    assert KIND_SOL_CHAT_REQUEST_SUPERSEDED in html
-    assert KIND_OWNER_CHAT_OPEN in html
-    assert KIND_OWNER_CHAT_DISMISSED in html
+    fragment = response.get_data(as_text=True)
+    renderer = Path("solstone/convey/static/chat_render.js").read_text(encoding="utf-8")
+
+    assert "let pendingSolChatRequest = null;" in fragment
+    assert "origin: origin" in fragment
+    assert "const supersededRequestId = msg.request_id || '';" in fragment
+    assert KIND_SOL_CHAT_REQUEST in fragment
+    assert KIND_SOL_CHAT_REQUEST_SUPERSEDED in fragment
+    assert KIND_OWNER_CHAT_OPEN in fragment
+    assert KIND_OWNER_CHAT_DISMISSED in fragment
+
+    assert "renderOriginTag" in renderer
+    assert "item.dataset.requestId = event.origin.request_id;" in renderer

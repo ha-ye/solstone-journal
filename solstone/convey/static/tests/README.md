@@ -1,4 +1,5 @@
 Open `solstone/convey/static/tests/api.html` in a browser; each assertion reports pass/fail inline.
+Open `solstone/convey/static/tests/chat-render.html` in a browser; each assertion reports pass/fail inline.
 Open `solstone/convey/static/tests/chat-thinking-expander.html` in a browser; each assertion reports pass/fail inline.
 Open `solstone/convey/static/tests/diagnostic-console.html` in a browser; each assertion reports pass/fail inline.
 Open `solstone/convey/static/tests/quiet-notifs-disclosure.html` in a browser; each assertion reports pass/fail inline (manual, not CI-gated).

@@ -13,15 +13,15 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from markupsafe import escape as markupsafe_escape
 
-from solstone.apps.chat import copy as chat_copy
+from solstone.apps.chat.config import DEFAULT_THINKING_SURFACES
 from solstone.convey import create_app
 from solstone.convey.chat_stream import append_chat_event, read_chat_events
 from solstone.convey.sol_initiated.copy import (
     CATEGORIES,
     KIND_OWNER_CHAT_OPEN,
     KIND_SOL_CHAT_REQUEST,
+    KIND_SOL_CHAT_REQUEST_SUPERSEDED,
 )
 
 
@@ -116,6 +116,19 @@ def _write_chat_config(journal: Path, thinking_surfaces: str) -> None:
     )
 
 
+def _state_json(env: ChatTestEnv, day: str) -> tuple[Any, dict[str, Any]]:
+    response = env.client.get(f"/app/chat/api/state?day={day}")
+    return response, response.get_json()
+
+
+def _owner_chat_open_events(day: str) -> list[dict[str, Any]]:
+    return [
+        event
+        for event in read_chat_events(day)
+        if event.get("kind") == KIND_OWNER_CHAT_OPEN
+    ]
+
+
 def test_chat_index_redirects_to_today(journal_copy, monkeypatch):
     today = "20990101"
     _set_today(monkeypatch, today)
@@ -127,20 +140,52 @@ def test_chat_index_redirects_to_today(journal_copy, monkeypatch):
     assert response.headers["Location"].endswith(f"/app/chat/{today}")
 
 
-def test_chat_day_renders_empty_state_for_today(journal_copy, monkeypatch):
-    today = "20990101"
+def test_chat_invalid_days_return_404(journal_copy, monkeypatch):
+    _set_today(monkeypatch, "20990101")
+    env = _make_env(journal_copy, monkeypatch)
+
+    assert env.client.get("/app/chat/abcd1234").status_code == 404
+    assert env.client.get("/app/chat/20260101extra").status_code == 404
+    assert env.client.get("/app/chat/api/state?day=abcd1234").status_code == 404
+    assert env.client.get("/app/chat/api/state?day=20260101extra").status_code == 404
+
+
+def test_chat_day_serves_shell_with_chat_bar(journal_copy, monkeypatch):
+    today = "20990102"
+    past_day = "20990101"
     _set_today(monkeypatch, today)
     env = _make_env(journal_copy, monkeypatch)
 
-    response = env.client.get(f"/app/chat/{today}")
-    html = response.get_data(as_text=True)
+    today_response = env.client.get(f"/app/chat/{today}")
+    past_response = env.client.get(f"/app/chat/{past_day}")
 
-    assert response.status_code == 200
-    assert "no chat yet on this day" in html
-    assert 'id="chatBarForm"' in html
+    assert today_response.status_code == 200
+    assert past_response.status_code == 200
+    for response in (today_response, past_response):
+        html = response.get_data(as_text=True)
+        assert 'id="chatBarForm"' in html
+        assert html.count('id="chatBarForm"') == 1
 
 
-def test_chat_day_renders_all_event_kinds(journal_copy, monkeypatch):
+def test_chat_thinking_css_selector_is_wired():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    assert ".chat-thinking-content" in css
+    assert "opacity: 0.7" in css
+    assert "font-style: italic" in css
+    assert "white-space: pre-wrap" in css
+
+
+def test_chat_error_detail_css_selector_is_wired():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    assert ".chat-error-detail-content" in css
+    assert "opacity: 0.7" in css
+    assert "font-style: italic" in css
+    assert "white-space: pre-wrap" in css
+
+
+def test_state_returns_all_event_kinds(journal_copy, monkeypatch):
     day = "20990102"
     _set_today(monkeypatch, "20990103")
     env = _make_env(journal_copy, monkeypatch)
@@ -196,455 +241,183 @@ def test_chat_day_renders_all_event_kinds(journal_copy, monkeypatch):
         url="/app/reflections/20981228",
     )
 
-    response = env.client.get(f"/app/chat/{day}")
-    html = response.get_data(as_text=True)
+    response, state = _state_json(env, day)
 
     assert response.status_code == 200
-    assert "owner hello" in html
-    assert "sol reply" in html
-    assert 'title="full note"' in html
-    assert 'data-talent-use-id="use-2"' in html
-    assert 'data-talent-use-id="use-3"' in html
-    assert "weekly reflection ready" in html
-    assert 'href="/app/reflections/20981228"' in html
-    assert "I couldn&#39;t reach the network" in html
-
-
-def test_chat_error_detail_replaces_retry_button_without_mutating_events(
-    journal_copy, monkeypatch
-):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
-    env = _make_env(journal_copy, monkeypatch)
-    append_chat_event(
+    assert {
+        "events",
+        "owner_name",
+        "agent_name",
+        "thinking_surfaces",
+        "today_day",
+        "sol_open_request_id",
+        "sol_message_origins",
+    } <= set(state)
+    events = state["events"]
+    assert [event["kind"] for event in events] == [
         "owner_message",
-        ts=_ms(2099, 1, 2, 9, 0),
-        text="owner text",
-        app="chat",
-        path=f"/app/chat/{day}",
-        facet="work",
-    )
-    append_chat_event(
-        "chat_error",
-        ts=_ms(2099, 1, 2, 9, 1),
-        reason="network_unreachable",
-        use_id="use-error-detail-1",
-        detail="provider <detail> & context",
-    )
-
-    response = env.client.get(f"/app/chat/{day}")
-    html = response.get_data(as_text=True)
-
-    assert response.status_code == 200
-    assert 'class="chat-error-detail-expander"' in html
-    assert 'aria-expanded="false"' in html
-    assert 'data-error-detail-id="chat-error-detail-1"' in html
-    retry_class = "-".join(("chat", "error", "retry"))
-    assert f'class="{retry_class}"' not in html
-    assert "data-retry-text" not in html
-    expected_content = (
-        '<div class="chat-error-detail-content" id="chat-error-detail-1" hidden>'
-        f"<code>{markupsafe_escape('provider <detail> & context')}</code></div>"
-    )
-    assert expected_content in html
-    events = read_chat_events(day)
-    retry_key = "".join(("retry", "_text"))
-    assert all(retry_key not in event for event in events)
-
-
-def test_chat_day_renders_owner_language_talent_labels(journal_copy, monkeypatch):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
-    env = _make_env(journal_copy, monkeypatch)
-
-    for index, target in enumerate(("read", "exec", "support")):
-        append_chat_event(
-            "talent_spawned",
-            ts=_ms(2099, 1, 2, 10 + index, 0),
-            use_id=f"use-{target}-running",
-            name=target,
-            task=f"{target} task",
-            started_at=_ms(2099, 1, 2, 10 + index, 0),
-        )
-        append_chat_event(
-            "talent_finished",
-            ts=_ms(2099, 1, 2, 10 + index, 1),
-            use_id=f"use-{target}-finished",
-            name=target,
-            summary=f"{target} summary",
-        )
-        append_chat_event(
-            "talent_errored",
-            ts=_ms(2099, 1, 2, 10 + index, 2),
-            use_id=f"use-{target}-errored",
-            name=target,
-            reason=f"{target} reason",
-        )
-
-    response = env.client.get(f"/app/chat/{day}")
-    html = response.get_data(as_text=True)
-
-    assert response.status_code == 200
-    for target in ("read", "exec", "support"):
-        for status in ("running", "finished", "errored"):
-            label = chat_copy.talent_label_for(target, status)
-            assert str(markupsafe_escape(label)) in html
-        for raw in ("started", "finished", "errored"):
-            assert f"{target} {raw}" not in html
-
-
-def test_chat_day_emits_raw_talent_markdown_source_for_bootstrap(
-    journal_copy, monkeypatch
-):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
-    env = _make_env(journal_copy, monkeypatch)
-    append_chat_event(
+        "sol_message",
+        "talent_spawned",
         "talent_finished",
-        ts=_ms(2099, 1, 2, 9, 3),
-        use_id="use-md-1",
-        name="exec",
-        summary="**done**",
-    )
-    append_chat_event(
         "talent_errored",
-        ts=_ms(2099, 1, 2, 9, 4),
-        use_id="use-md-2",
-        name="exec",
-        reason="**bad args**",
-    )
+        "chat_error",
+        "reflection_ready",
+    ]
+    assert events[0]["text"] == "owner hello"
+    assert events[1]["notes"] == "full note"
+    assert [events[index]["use_id"] for index in (2, 3, 4)] == [
+        "use-2",
+        "use-2",
+        "use-3",
+    ]
+    assert events[5]["reason"] == "network_unreachable"
+    assert events[6]["url"] == "/app/reflections/20981228"
 
-    response = env.client.get(f"/app/chat/{day}")
-    html = response.get_data(as_text=True)
+
+def test_state_empty_day_returns_200_empty(journal_copy, monkeypatch):
+    day = "20990104"
+    _set_today(monkeypatch, "20990105")
+    (journal_copy / "chronicle" / day / "chat").mkdir(parents=True)
+    env = _make_env(journal_copy, monkeypatch)
+
+    response, state = _state_json(env, day)
 
     assert response.status_code == 200
-    assert (
-        html.count(
-            '<div class="chat-talent-card-detail '
-            'chat-talent-card-detail--markdown" data-markdown="1">'
-        )
-        == 2
-    )
-    assert (
-        '<div class="chat-talent-card-detail '
-        'chat-talent-card-detail--markdown" data-markdown="1">**done**</div>'
-    ) in html
-    assert (
-        '<div class="chat-talent-card-detail '
-        'chat-talent-card-detail--markdown" data-markdown="1">**bad args**</div>'
-    ) in html
-    assert "<strong>done</strong>" not in html
-    assert "<strong>bad args</strong>" not in html
+    assert state["events"] == []
+    assert state["sol_open_request_id"] is None
 
 
-def test_chat_event_anchor_ids_are_stable(journal_copy, monkeypatch):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
+def test_state_missing_events_file_returns_empty(journal_copy, monkeypatch):
+    day = "20990131"
+    _set_today(monkeypatch, "20990201")
+    env = _make_env(journal_copy, monkeypatch)
+
+    response, state = _state_json(env, day)
+
+    assert response.status_code == 200
+    assert state["events"] == []
+
+
+def test_state_corrupt_chat_stream_returns_200_empty(journal_copy, monkeypatch):
+    day = "20990104"
+    _set_today(monkeypatch, "20990105")
+
+    def raise_chat_events(_day: str) -> list[dict[str, Any]]:
+        raise ValueError("corrupt stream")
+
+    monkeypatch.setattr("solstone.apps.chat.routes.read_chat_events", raise_chat_events)
+    env = _make_env(journal_copy, monkeypatch)
+
+    response, state = _state_json(env, day)
+
+    # Intentional improvement over the old SSR behavior: a corrupt stream falls
+    # back to an empty client state instead of returning a 500.
+    assert response.status_code == 200
+    assert state["events"] == []
+    assert state["sol_message_origins"] == {}
+    assert {
+        "owner_name",
+        "agent_name",
+        "thinking_surfaces",
+        "today_day",
+        "sol_open_request_id",
+    } <= set(state)
+
+
+def test_state_thinking_surfaces_reflects_config(journal_copy, monkeypatch):
+    day = "20990106"
+    thinking = {
+        "content": "reasoning text",
+        "provider": "openai",
+        "model": "gpt",
+        "tokens": 10,
+    }
+    _set_today(monkeypatch, "20990107")
     env = _make_env(journal_copy, monkeypatch)
     append_chat_event(
-        "owner_message",
-        ts=_ms(2099, 1, 2, 10, 0),
-        text="first",
-        app="chat",
-        path=f"/app/chat/{day}",
-        facet="work",
-    )
-    append_chat_event(
         "sol_message",
-        ts=_ms(2099, 1, 2, 10, 1),
-        use_id="use-5",
-        text="second",
-        notes="",
-        requested_target=None,
-        requested_task=None,
-    )
-
-    first = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
-    second = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
-
-    assert first.count('id="event-0"') == 1
-    assert first.count('id="event-1"') == 1
-    assert second.count('id="event-0"') == 1
-    assert second.count('id="event-1"') == 1
-
-
-def test_chat_time_separator_is_inserted_client_side(journal_copy, monkeypatch):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
-    env = _make_env(journal_copy, monkeypatch)
-    append_chat_event(
-        "owner_message",
-        ts=_ms(2099, 1, 2, 8, 0),
-        text="early",
-        app="chat",
-        path=f"/app/chat/{day}",
-        facet="work",
-    )
-    append_chat_event(
-        "sol_message",
-        ts=_ms(2099, 1, 2, 8, 25),
-        use_id="use-6",
-        text="later",
-        notes="",
-        requested_target=None,
-        requested_task=None,
-    )
-
-    html = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
-
-    assert "early" in html
-    assert "later" in html
-    assert "insertTimeSeparators(transcript);" in html
-
-
-def test_chat_thinking_renders_expander_on_tap(journal_copy, monkeypatch):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
-    _write_chat_config(journal_copy, "on_tap")
-    env = _make_env(journal_copy, monkeypatch)
-    reasoning = "X reasoning <text>"
-    talent_reasoning = "Talent reasoning text"
-    append_chat_event(
-        "sol_message",
-        ts=_ms(2099, 1, 2, 9, 1),
-        use_id="use-thinking-sol",
+        ts=_ms(2099, 1, 6, 9, 1),
+        use_id="use-thinking",
         text="sol reply",
         notes="",
         requested_target=None,
         requested_task=None,
-        thinking={
-            "content": reasoning,
-            "provider": "openai",
-            "model": "gpt",
-            "tokens": 10,
-        },
-    )
-    append_chat_event(
-        "talent_finished",
-        ts=_ms(2099, 1, 2, 9, 2),
-        use_id="use-thinking-talent",
-        name="exec",
-        summary="done",
-        thinking={
-            "content": talent_reasoning,
-            "provider": "openai",
-            "model": "gpt",
-            "tokens": 10,
-        },
+        thinking=thinking,
     )
 
-    html = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
+    for thinking_surfaces in ("always", "never", "on_tap"):
+        _write_chat_config(journal_copy, thinking_surfaces)
+        response, state = _state_json(env, day)
 
-    assert html.count('class="chat-thinking-expander"') == 2
-    assert 'aria-expanded="false"' in html
-    assert 'data-thinking-id="chat-thinking-0"' in html
-    assert f">{chat_copy.CHAT_THINKING_EXPANDER_LABEL}</button>" in html
-    expected_content = (
-        '<div class="chat-thinking-content" id="chat-thinking-0" hidden>'
-        f"{markupsafe_escape(reasoning)}</div>"
+        assert response.status_code == 200
+        assert state["thinking_surfaces"] == thinking_surfaces
+        assert state["events"][0]["thinking"] == thinking
+
+
+def test_state_load_chat_config_failure_falls_back(journal_copy, monkeypatch):
+    day = "20990108"
+    _set_today(monkeypatch, "20990109")
+
+    def raise_load_chat_config() -> dict[str, Any]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(
+        "solstone.apps.chat.routes.load_chat_config", raise_load_chat_config
     )
-    assert expected_content in html
-    assert markupsafe_escape(talent_reasoning) in html
-
-
-def test_chat_thinking_always_show_renders_inline_without_button(
-    journal_copy, monkeypatch
-):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
-    _write_chat_config(journal_copy, "always")
-    env = _make_env(journal_copy, monkeypatch)
-    reasoning = "Always visible reasoning"
-    append_chat_event(
-        "sol_message",
-        ts=_ms(2099, 1, 2, 9, 1),
-        use_id="use-thinking-always",
-        text="sol reply",
-        notes="",
-        requested_target=None,
-        requested_task=None,
-        thinking={
-            "content": reasoning,
-            "provider": "openai",
-            "model": "gpt",
-            "tokens": 10,
-        },
-    )
-
-    html = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
-
-    assert 'class="chat-thinking-expander"' not in html
-    assert (
-        f'<div class="chat-thinking-content" id="chat-thinking-0">{reasoning}</div>'
-        in html
-    )
-
-
-def test_chat_thinking_never_show_hides_reasoning(journal_copy, monkeypatch):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
-    _write_chat_config(journal_copy, "never")
-    env = _make_env(journal_copy, monkeypatch)
-    reasoning = "Hidden reasoning"
-    append_chat_event(
-        "sol_message",
-        ts=_ms(2099, 1, 2, 9, 1),
-        use_id="use-thinking-never",
-        text="sol reply",
-        notes="",
-        requested_target=None,
-        requested_task=None,
-        thinking={
-            "content": reasoning,
-            "provider": "openai",
-            "model": "gpt",
-            "tokens": 10,
-        },
-    )
-
-    html = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
-
-    assert 'class="chat-thinking-expander"' not in html
-    assert '<div class="chat-thinking-content" id="chat-thinking-0"' not in html
-    assert reasoning not in html
-
-
-def test_chat_thinking_css_selector_is_wired():
-    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
-
-    assert ".chat-thinking-content" in css
-    assert "opacity: 0.7" in css
-    assert "font-style: italic" in css
-    assert "white-space: pre-wrap" in css
-
-
-def test_chat_thinking_live_js_handler_is_wired():
-    source = Path("solstone/apps/chat/workspace.html").read_text(encoding="utf-8")
-
-    assert "button.chat-thinking-expander" in source
-    assert "toggleThinkingSurface(thinkingExpander)" in source
-    assert "button.dataset.thinkingId" in source
-    assert "content.textContent = contentText" in source
-    assert "innerHTML = contentText" not in source
-
-
-def test_chat_error_detail_renders_expander_on_tap(journal_copy, monkeypatch):
-    day = "20990102"
-    _set_today(monkeypatch, "20990103")
-    env = _make_env(journal_copy, monkeypatch)
-    detail = "Raw provider <detail>"
-    append_chat_event(
-        "chat_error",
-        ts=_ms(2099, 1, 2, 9, 1),
-        reason="unknown",
-        use_id="use-error-detail",
-        detail=detail,
-    )
-
-    html = env.client.get(f"/app/chat/{day}").get_data(as_text=True)
-
-    assert 'class="chat-error-detail-expander"' in html
-    assert 'aria-expanded="false"' in html
-    assert 'data-error-detail-id="chat-error-detail-0"' in html
-    assert f">{chat_copy.CHAT_ERROR_DETAIL_EXPANDER_LABEL}</button>" in html
-    expected_content = (
-        '<div class="chat-error-detail-content" id="chat-error-detail-0" hidden>'
-        f"<code>{markupsafe_escape(detail)}</code></div>"
-    )
-    assert expected_content in html
-    retry_class = "-".join(("chat", "error", "retry"))
-    assert f'class="{retry_class}"' not in html
-
-
-def test_chat_error_detail_css_selector_is_wired():
-    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
-
-    assert ".chat-error-detail-content" in css
-    assert "opacity: 0.7" in css
-    assert "font-style: italic" in css
-    assert "white-space: pre-wrap" in css
-
-
-def test_chat_error_detail_live_js_handler_is_wired():
-    source = Path("solstone/apps/chat/workspace.html").read_text(encoding="utf-8")
-
-    assert "button.chat-error-detail-expander" in source
-    assert "toggleErrorDetailSurface(errorDetailExpander)" in source
-    assert "button.dataset.errorDetailId" in source
-    assert "detail: msg.detail || ''" in source
-    assert "provider: msg.provider || ''" in source
-    assert "code.textContent = detailText" in source
-    assert "innerHTML = detailText" not in source
-
-
-def test_chat_invalid_days_return_404(journal_copy, monkeypatch):
-    _set_today(monkeypatch, "20990101")
     env = _make_env(journal_copy, monkeypatch)
 
-    assert env.client.get("/app/chat/abcd1234").status_code == 404
-    assert env.client.get("/app/chat/20260101extra").status_code == 404
+    response, state = _state_json(env, day)
+
+    assert response.status_code == 200
+    assert state["thinking_surfaces"] == DEFAULT_THINKING_SURFACES
 
 
-def test_universal_chat_bar_renders_on_today_and_past_day(journal_copy, monkeypatch):
-    today = "20990102"
-    past_day = "20990101"
-    _set_today(monkeypatch, today)
-    env = _make_env(journal_copy, monkeypatch)
+def test_state_missing_identity_returns_default_names(tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    config_dir = journal / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps({"setup": {"completed_at": "2026-05-09T00:00:00Z"}}) + "\n",
+        encoding="utf-8",
+    )
+    _set_today(monkeypatch, "20990110")
+    env = _make_env(journal, monkeypatch)
 
-    today_html = env.client.get(f"/app/chat/{today}").get_data(as_text=True)
-    past_html = env.client.get(f"/app/chat/{past_day}").get_data(as_text=True)
+    response, state = _state_json(env, "20990109")
 
-    for html in (today_html, past_html):
-        assert 'id="chatBarForm"' in html
-        assert "past-day view" not in html
-        assert html.count('id="chatBarForm"') == 1
+    assert response.status_code == 200
+    assert state["owner_name"] == "Owner"
+    assert state["agent_name"] == "Sol"
 
 
-def test_chat_today_page_does_not_record_owner_chat_open_for_unresolved_request(
-    journal_copy,
-    monkeypatch,
-):
+def test_state_today_unresolved_request_sets_open_id(journal_copy, monkeypatch):
     today = "20990102"
     _set_today(monkeypatch, today)
     _set_chat_stream_now(monkeypatch, today)
     env = _make_env(journal_copy, monkeypatch)
     _append_sol_request(today, "req")
 
-    response = env.client.get(f"/app/chat/{today}")
+    response, state = _state_json(env, today)
 
     assert response.status_code == 200
-    assert [
-        event
-        for event in read_chat_events(today)
-        if event.get("kind") == KIND_OWNER_CHAT_OPEN
-    ] == []
-    assert 'data-sol-open-request-id="req"' in response.get_data(as_text=True)
+    assert state["sol_open_request_id"] == "req"
+    assert _owner_chat_open_events(today) == []
 
 
-def test_chat_today_page_without_unresolved_request_writes_no_open(
-    journal_copy,
-    monkeypatch,
-):
+def test_state_no_unresolved_request_open_id_null(journal_copy, monkeypatch):
     today = "20990102"
     _set_today(monkeypatch, today)
     _set_chat_stream_now(monkeypatch, today)
     env = _make_env(journal_copy, monkeypatch)
 
-    response = env.client.get(f"/app/chat/{today}")
+    response, state = _state_json(env, today)
 
     assert response.status_code == 200
-    assert 'data-sol-open-request-id=""' in response.get_data(as_text=True)
-    assert [
-        event
-        for event in read_chat_events(today)
-        if event.get("kind") == KIND_OWNER_CHAT_OPEN
-    ] == []
+    assert state["sol_open_request_id"] is None
+    assert _owner_chat_open_events(today) == []
 
 
-def test_chat_past_day_request_does_not_record_owner_chat_open(
-    journal_copy,
-    monkeypatch,
-):
+def test_state_past_day_request_open_id_null(journal_copy, monkeypatch):
     today = "20990103"
     past_day = "20990102"
     _set_today(monkeypatch, today)
@@ -652,57 +425,130 @@ def test_chat_past_day_request_does_not_record_owner_chat_open(
     env = _make_env(journal_copy, monkeypatch)
     _append_sol_request(past_day, "req")
 
-    response = env.client.get(f"/app/chat/{past_day}")
+    response, state = _state_json(env, past_day)
 
     assert response.status_code == 200
-    assert 'data-sol-open-request-id=""' in response.get_data(as_text=True)
-    assert [
-        event
-        for event in read_chat_events(past_day)
-        if event.get("kind") == KIND_OWNER_CHAT_OPEN
-    ] == []
+    assert state["sol_open_request_id"] is None
+    assert _owner_chat_open_events(past_day) == []
 
 
-def test_chat_today_repeated_loads_record_no_open(
-    journal_copy,
-    monkeypatch,
-):
+def test_state_repeated_loads_are_read_only(journal_copy, monkeypatch):
     today = "20990102"
     _set_today(monkeypatch, today)
     _set_chat_stream_now(monkeypatch, today)
     env = _make_env(journal_copy, monkeypatch)
     _append_sol_request(today, "req")
 
-    first = env.client.get(f"/app/chat/{today}")
-    second = env.client.get(f"/app/chat/{today}")
+    first_response, first_state = _state_json(env, today)
+    second_response, second_state = _state_json(env, today)
 
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert 'data-sol-open-request-id="req"' in first.get_data(as_text=True)
-    assert 'data-sol-open-request-id="req"' in second.get_data(as_text=True)
-    opens = [
-        event
-        for event in read_chat_events(today)
-        if event.get("kind") == KIND_OWNER_CHAT_OPEN
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_state["sol_open_request_id"] == "req"
+    assert second_state["sol_open_request_id"] == "req"
+    assert _owner_chat_open_events(today) == []
+
+
+def test_state_sol_message_origins_keyed_by_raw_index(journal_copy, monkeypatch):
+    day = "20990113"
+    _set_today(monkeypatch, "20990114")
+    env = _make_env(journal_copy, monkeypatch)
+    base_ts = _ms(2099, 1, 13, 9, 0)
+    dispatch_origin = {"logical_use_id": "use-x", "ask": "follow up?"}
+
+    append_chat_event(
+        "owner_message",
+        ts=base_ts,
+        text="owner",
+        app="chat",
+        path=f"/app/chat/{day}",
+        facet="work",
+    )
+    append_chat_event(
+        KIND_SOL_CHAT_REQUEST,
+        ts=base_ts + 1,
+        request_id="r1",
+        summary="notice",
+        message="",
+        category=CATEGORIES[0],
+        dedupe="r1",
+        dedupe_window="24h",
+        since_ts=123,
+        trigger_talent="reflection",
+    )
+    append_chat_event(
+        "sol_message",
+        ts=base_ts + 2,
+        use_id="use-provenance",
+        text="provenance reply",
+        notes="",
+        requested_target=None,
+        requested_task=None,
+    )
+    append_chat_event(
+        KIND_SOL_CHAT_REQUEST_SUPERSEDED,
+        ts=base_ts + 3,
+        request_id="r1",
+        replaced_by="r2",
+    )
+    append_chat_event(
+        KIND_OWNER_CHAT_OPEN,
+        ts=base_ts + 4,
+        request_id="r1",
+        surface="convey",
+    )
+    append_chat_event(
+        "sol_message",
+        ts=base_ts + 5,
+        use_id="use-dispatch",
+        text="dispatch reply",
+        notes="",
+        requested_target=None,
+        requested_task=None,
+        origin=dispatch_origin,
+    )
+    append_chat_event(
+        KIND_SOL_CHAT_REQUEST,
+        ts=base_ts + 6,
+        request_id="r3",
+        summary="later notice",
+        message="",
+        category=CATEGORIES[1],
+        dedupe="r3",
+        dedupe_window="24h",
+        since_ts=456,
+        trigger_talent="support",
+    )
+    append_chat_event(
+        "sol_message",
+        ts=base_ts + 7,
+        use_id="use-post-control",
+        text="post-control reply",
+        notes="",
+        requested_target=None,
+        requested_task=None,
+    )
+
+    response, state = _state_json(env, day)
+
+    assert response.status_code == 200
+    events = state["events"]
+    assert len(events) == 8
+    assert [event["kind"] for event in events] == [
+        "owner_message",
+        KIND_SOL_CHAT_REQUEST,
+        "sol_message",
+        KIND_SOL_CHAT_REQUEST_SUPERSEDED,
+        KIND_OWNER_CHAT_OPEN,
+        "sol_message",
+        KIND_SOL_CHAT_REQUEST,
+        "sol_message",
     ]
-    assert opens == []
-
-
-def test_chat_today_get_is_read_only_and_renders_request_var(
-    journal_copy,
-    monkeypatch,
-):
-    today = "20990102"
-    _set_today(monkeypatch, today)
-    _set_chat_stream_now(monkeypatch, today)
-    env = _make_env(journal_copy, monkeypatch)
-    _append_sol_request(today, "req")
-
-    response = env.client.get(f"/app/chat/{today}")
-    html = response.get_data(as_text=True)
-
-    assert response.status_code == 200
-    assert 'id="event-0"' in html
-    assert 'id="event-1"' not in html
-    assert len(read_chat_events(today)) == 1
-    assert 'data-sol-open-request-id="req"' in html
+    origins = state["sol_message_origins"]
+    assert set(origins) == {"2", "7"}
+    assert origins["2"]["trigger_talent"] == "reflection"
+    assert origins["2"]["superseded_by_id"] == "r2"
+    assert origins["2"]["superseded_at"] == base_ts + 3
+    assert origins["2"]["superseded_time"]
+    assert origins["7"]["request_id"] == "r3"
+    assert events[5]["origin"] == dispatch_origin

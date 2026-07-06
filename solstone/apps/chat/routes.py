@@ -4,16 +4,15 @@
 from __future__ import annotations
 
 import calendar
+import logging
 from datetime import date, datetime
 from typing import Any
 
-from flask import Blueprint, abort, jsonify, redirect, render_template, url_for
+from flask import Blueprint, abort, current_app, jsonify, redirect, request, url_for
 
-from solstone.apps.chat import copy as chat_copy
-from solstone.apps.chat.config import load_chat_config
+from solstone.apps.chat.config import DEFAULT_THINKING_SURFACES, load_chat_config
 from solstone.convey.chat_stream import read_chat_events
-from solstone.convey.reasons import INVALID_MONTH
-from solstone.convey.sol_initiated import copy as sol_voice_copy
+from solstone.convey.reasons import INVALID_DAY, INVALID_MONTH
 from solstone.convey.sol_initiated.copy import (
     KIND_OWNER_CHAT_OPEN,
     KIND_SOL_CHAT_REQUEST,
@@ -28,6 +27,7 @@ chat_bp = Blueprint(
     __name__,
     url_prefix="/app/chat",
 )
+logger = logging.getLogger(__name__)
 
 
 @chat_bp.route("/")
@@ -37,14 +37,33 @@ def index() -> Any:
 
 
 @chat_bp.route("/<day>")
-def day(day: str) -> str:
+def day(day: str) -> Any:
     if not DATE_RE.fullmatch(day):
         abort(404)
 
+    return current_app.send_static_file("shell.html")
+
+
+@chat_bp.route("/api/state")
+def api_state() -> Any:
+    day = request.args.get("day", "")
+    if not DATE_RE.fullmatch(day):
+        return error_response(INVALID_DAY, status=404, detail="Day not found")
+
     today_day = date.today().strftime("%Y%m%d")
     owner_name, agent_name = _resolve_identity()
-    events = read_chat_events(day)
-    chat_config = load_chat_config()
+    try:
+        events = read_chat_events(day)
+    except ValueError:
+        logger.warning("corrupt chat stream for %s", day, exc_info=True)
+        events = []
+
+    try:
+        thinking_surfaces = load_chat_config()["thinking_surfaces"]
+    except Exception:
+        logger.warning("failed to load chat config", exc_info=True)
+        thinking_surfaces = DEFAULT_THINKING_SURFACES
+
     sol_open_request_id = None
     if day == today_day:
         # Page loads are engagement signals in Lode 2, so prior open facts do not
@@ -58,21 +77,21 @@ def day(day: str) -> str:
         unresolved_request = latest_unresolved_sol_chat_request(openable_events)
         if unresolved_request is not None:
             sol_open_request_id = unresolved_request["request_id"]
-    sol_message_origins = _build_sol_message_origins(events)
+    sol_message_origins = {
+        str(index): origin
+        for index, origin in _build_sol_message_origins(events).items()
+    }
 
-    return render_template(
-        "app.html",
-        app="chat",
-        events=events,
-        day=day,
-        today_day=today_day,
-        owner_name=owner_name,
-        agent_name=agent_name,
-        sol_message_origins=sol_message_origins,
-        thinking_surfaces=chat_config["thinking_surfaces"],
-        chat_copy=chat_copy,
-        sol_voice_copy=sol_voice_copy,
-        sol_open_request_id=sol_open_request_id,
+    return jsonify(
+        {
+            "events": events,
+            "sol_message_origins": sol_message_origins,
+            "owner_name": owner_name,
+            "agent_name": agent_name,
+            "thinking_surfaces": thinking_surfaces,
+            "today_day": today_day,
+            "sol_open_request_id": sol_open_request_id,
+        }
     )
 
 

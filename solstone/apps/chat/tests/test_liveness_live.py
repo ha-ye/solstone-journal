@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -33,7 +34,7 @@ def chat_client(tmp_path, monkeypatch):
 
 @pytest.fixture
 def chat_html(chat_client):
-    response = chat_client.get("/app/chat/20990109")
+    response = chat_client.get("/app/chat/workspace")
     assert response.status_code == 200
     return response.get_data(as_text=True)
 
@@ -67,3 +68,42 @@ def test_live_script_removes_placeholder_on_terminal_events(chat_html):
         "placeholder.element.parentNode.removeChild(placeholder.element)" in chat_html
     )
     assert "detail: msg.detail || ''" in chat_html
+
+
+def test_chat_thinking_live_js_handler_is_wired(chat_html):
+    renderer = Path("solstone/convey/static/chat_render.js").read_text(encoding="utf-8")
+
+    assert "button.chat-thinking-expander" in chat_html
+    assert "toggleThinkingSurface(thinkingExpander)" in chat_html
+    assert "button.dataset.thinkingId" in chat_html
+    assert "content.textContent = contentText" in renderer
+    assert "innerHTML = contentText" not in renderer
+
+
+def test_chat_error_detail_live_js_handler_is_wired(chat_html):
+    renderer = Path("solstone/convey/static/chat_render.js").read_text(encoding="utf-8")
+
+    assert "button.chat-error-detail-expander" in chat_html
+    assert "toggleErrorDetailSurface(errorDetailExpander)" in chat_html
+    assert "button.dataset.errorDetailId" in chat_html
+    assert "detail: msg.detail || ''" in chat_html
+    assert "provider: msg.provider || ''" in chat_html
+    assert "code.textContent = detailText" in renderer
+    assert "innerHTML = detailText" not in renderer
+    assert "button.dataset.errorDetailId" in renderer
+
+
+def test_empty_state_copy_is_distinct_from_error_state(chat_html):
+    history_block = chat_html.split("function renderHistory", 1)[1].split(
+        "function emptyEventItem", 1
+    )[0]
+    error_block = chat_html.split("function renderErrorState(error)", 1)[1].split(
+        "function renderHistory", 1
+    )[0]
+
+    assert "const CHAT_EMPTY_COPY = 'no chat yet on this day';" in chat_html
+    assert "item.className = 'chat-empty';" in history_block
+    assert "item.textContent = CHAT_EMPTY_COPY;" in history_block
+    assert "item.className = 'chat-state';" not in history_block
+    assert "item.className = 'chat-state';" in error_block
+    assert "window.SurfaceState.error" in error_block
