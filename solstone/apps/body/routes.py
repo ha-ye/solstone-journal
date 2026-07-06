@@ -44,9 +44,12 @@ from solstone.think.importers.health_schema import (
     SOURCE_OURA_API,
     display_number,
     display_value,
+    friendly_contributor_name,
     friendly_type_name,
     friendly_unit_label,
+    merge_sleep_sessions,
     pick_day_sleep,
+    pick_main_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,6 +88,15 @@ OURA_RESILIENCE_TYPE = "oura.daily_resilience"
 OURA_STRESS_TYPE = "oura.daily_stress"
 OURA_SPO2_TYPE = "oura.daily_spo2"
 OURA_TEMPERATURE_DEVIATION_TYPE = "oura.temperature_deviation"
+# AH-mirror overlap endpoints (O-5C): the API pipe's raw beat series and
+# the ring's daily activity document.
+OURA_HEARTRATE_TYPE = "oura.heartrate"
+OURA_DAILY_ACTIVITY_TYPE = "oura.daily_activity"
+
+# Raw heart-rate sample rows, either pipe: HealthKit samples and the Oura
+# API beat series join one range/curve computation — it was always
+# multi-source, and ring beats widen the honest band.
+_HEART_RATE_SAMPLE_TYPES = frozenset({HEART_RATE_TYPE, OURA_HEARTRATE_TYPE})
 # Heart-rate readings fold into buckets this wide; the median draws the
 # line and the bucket min–max renders as a translucent band.
 HEART_BUCKET_MINUTES = 5
@@ -154,6 +166,7 @@ _FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "IrregularHeartRhythm",
             "Electrocardiogram",
             OURA_SPO2_TYPE,
+            OURA_HEARTRATE_TYPE,
         ),
     ),
     (
@@ -201,6 +214,7 @@ _FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "PushCount",
             "TimeInDaylight",
             "UVExposure",
+            OURA_DAILY_ACTIVITY_TYPE,
         ),
     ),
 )
@@ -586,7 +600,38 @@ def _is_sleep_type(record_type: str) -> bool:
 _MIRROR_SUPERSEDED_FRAGMENTS: dict[str, tuple[str, ...]] = {
     OURA_SLEEP_PERIOD_TYPE: ("SleepAnalysis",),
     OURA_SPO2_TYPE: ("OxygenSaturation",),
+    # The ring's raw beat series: the API pipe supersedes the mirror's
+    # HeartRate sample rows — exactly that type. The mirror's HRV,
+    # resting-HR, and HR-recovery rows carry signals the API pipe has no
+    # row type for; the full-identifier fragment matches exactly (see
+    # ``_mirror_fragment_matches``) so those keep aggregating.
+    OURA_HEARTRATE_TYPE: (HEART_RATE_TYPE,),
+    # The ring's daily activity document carries its step/energy/distance
+    # totals, so the mirror's step and activity quantity rows for the same
+    # day stay out of aggregation — the API pipe is the ring's one
+    # canonical device (steps must never see "Oura" and "Oura (API)" as
+    # two devices).
+    OURA_DAILY_ACTIVITY_TYPE: (
+        "StepCount",
+        "ActiveEnergyBurned",
+        "BasalEnergyBurned",
+        "DistanceWalkingRunning",
+    ),
 }
+
+
+def _mirror_fragment_matches(record_type: str, fragment: str) -> bool:
+    """Supersede-fragment match: substring, except full HK identifiers.
+
+    A fragment that is itself a complete HealthKit identifier (starts
+    with ``HK``) matches only that exact type —
+    ``HKQuantityTypeIdentifierHeartRate`` as a substring would also claim
+    HRV (``…HeartRateVariabilitySDNN``) and heart-rate-recovery mirror
+    rows, signals the API pipe carries no row type for.
+    """
+    if fragment.startswith("HK"):
+        return record_type == fragment
+    return fragment in record_type
 
 
 def _is_oura_named_mirror_row(row: dict[str, Any]) -> bool:
@@ -594,6 +639,11 @@ def _is_oura_named_mirror_row(row: dict[str, Any]) -> bool:
     if str(row.get("source_family") or "") != SOURCE_APPLE_HEALTH:
         return False
     return "oura" in str(row.get("source_name") or "").lower()
+
+
+def _is_ring_source_label(label: str) -> bool:
+    """A source label naming the ring — either pipe ("Oura (API)", "Oura")."""
+    return "oura" in label.lower()
 
 
 def _resolve_canonical_day_rows(
@@ -606,20 +656,23 @@ def _resolve_canonical_day_rows(
     surfaces keep the unfiltered rows. Days without Oura API rows pass
     through unchanged, so mirror-only archives aggregate exactly as before.
     """
-    superseded: list[str] = []
+    superseded: set[str] = set()
     for row in day_rows:
         if str(row.get("source_family") or "") != SOURCE_OURA_API:
             continue
         fragments = _MIRROR_SUPERSEDED_FRAGMENTS.get(str(row.get("record_type") or ""))
         if fragments:
-            superseded.extend(fragments)
+            superseded.update(fragments)
     if not superseded:
         return day_rows
     kept: list[dict[str, Any]] = []
     for row in day_rows:
         if _is_oura_named_mirror_row(row):
             record_type = str(row.get("record_type") or "")
-            if any(fragment in record_type for fragment in superseded):
+            if any(
+                _mirror_fragment_matches(record_type, fragment)
+                for fragment in superseded
+            ):
                 continue
         kept.append(row)
     return kept
@@ -1229,6 +1282,35 @@ def _axis_minute(moment: datetime, axis_day: date) -> float:
     return float(minute - SLEEP_AXIS_START_HOUR * 60)
 
 
+def _sleep_comparison_line(
+    intervals_by_source: dict[str, list[tuple[datetime, datetime, str | None]]],
+    target: date,
+) -> str | None:
+    """Cross-device sleep juxtaposition, only when both devices measured.
+
+    Present only when a genuine cross-device source (Watch, iPhone …) AND
+    the ring pipe both hold a main session for the day — the O-5C
+    supersede already keeps the ring to one source, so two ring labels
+    never juxtapose. Each figure is that source's merged main-session
+    span, the same figure that source's headline would state. Pure
+    statement of two measurements (§13): no delta, no better/worse, no
+    winner. Cross-device sources lead, the ring closes.
+    """
+    spans: dict[str, float] = {}
+    for source, intervals in intervals_by_source.items():
+        sessions = merge_sleep_sessions([(start, end) for start, end, _ in intervals])
+        main, _ = pick_main_session(sessions, target)
+        if main is not None:
+            spans[source] = (main[1] - main[0]).total_seconds() / 60
+    ring = sorted(name for name in spans if _is_ring_source_label(name))
+    others = sorted(name for name in spans if not _is_ring_source_label(name))
+    if not ring or not others:
+        return None
+    return " · ".join(
+        f"{name} saw {_format_duration(spans[name])}" for name in others + ring
+    )
+
+
 def _sleep_analysis(
     day_rows: list[dict[str, Any]],
     prev_rows: list[dict[str, Any]],
@@ -1245,7 +1327,8 @@ def _sleep_analysis(
     sources are never summed: the longest-coverage source is primary,
     others are named in the footer. The merge + main-session rule is the
     shared canonical implementation in ``health_schema`` — the importer's
-    day cards use the same one.
+    day cards use the same one. ``comparison_line`` juxtaposes the ring
+    and a genuine cross-device source when both measured the night.
     """
     target = date(int(day[:4]), int(day[4:6]), int(day[6:8]))
     intervals_by_source: dict[str, list[tuple[datetime, datetime, str | None]]] = {}
@@ -1321,6 +1404,7 @@ def _sleep_analysis(
         "in_bed_duration": in_bed_duration,
         "has_stage_detail": sleep.has_stage_detail,
         "naps": [_session_view(nap) for nap in naps],
+        "comparison_line": _sleep_comparison_line(intervals_by_source, target),
         "bar": {
             "segments": segments,
             "ticks": [
@@ -1502,6 +1586,36 @@ def _primary_source_steps(step_rows: list[dict[str, Any]]) -> dict[str, Any] | N
         "samples": picked["samples"],
         "others": picked["others"],
         "others_label": picked["others_label"],
+    }
+
+
+def _oura_api_step_row(row: dict[str, Any]) -> dict[str, Any] | None:
+    """The ring's daily step total as one full-day step contribution.
+
+    The API pipe is the ring's canonical pipe (O-5C): where the mirror's
+    Oura-named StepCount rows are superseded, the daily-activity
+    document's ``steps`` total stands in as the ring's single step
+    contribution — "Oura (API)" and the mirror's "Oura" are one device,
+    never two summed sources. The synthesized row spans the whole day so
+    the primary-source rule ranks the ring's coverage honestly against
+    per-sample sources.
+    """
+    if str(row.get("record_type") or "") != OURA_DAILY_ACTIVITY_TYPE:
+        return None
+    metadata = row.get("metadata")
+    steps = _parse_float(metadata.get("steps")) if isinstance(metadata, dict) else None
+    if steps is None:
+        return None
+    day = str(row.get("day") or "")
+    if not DAY_RE.fullmatch(day):
+        return None
+    day_start = date(int(day[:4]), int(day[4:6]), int(day[6:8]))
+    return {
+        "record_type": "StepCount/oura.daily_activity",
+        "source_family": SOURCE_OURA_API,
+        "value": steps,
+        "start_date": f"{day_start.isoformat()}T00:00:00",
+        "end_date": f"{(day_start + timedelta(days=1)).isoformat()}T00:00:00",
     }
 
 
@@ -1725,9 +1839,18 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     step_rows = [
         row for row in activity_rows if "StepCount" in str(row.get("record_type") or "")
     ]
+    # The ring's daily step total (oura.daily_activity metadata) competes
+    # as one more source through the same primary-source rule — never
+    # summed with the others. Mirror-Oura step rows are already out of
+    # ``day_rows`` on API days (O-5C), so the ring is one device here.
+    api_step_rows = [
+        api_row
+        for api_row in (_oura_api_step_row(row) for row in activity_rows)
+        if api_row is not None
+    ]
     steps: dict[str, Any] | None = None
-    if step_rows:
-        steps = _primary_source_steps(step_rows)
+    if step_rows or api_step_rows:
+        steps = _primary_source_steps(step_rows + api_step_rows)
         if steps is None:
             # No source has usable coverage to rank by; totals would
             # double-count, so present sample counts only.
@@ -1757,7 +1880,15 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
             "count_label": f"{len(rows_for_type):,}",
             "value": None,
         }
-        if any(fragment in record_type for fragment in _SUMMABLE_FRAGMENTS):
+        if record_type == OURA_DAILY_ACTIVITY_TYPE:
+            # Oura's activity score renders as one attributed number —
+            # the same format as the recovery card's facts. The document's
+            # step total already competed through the steps figure above;
+            # nothing here re-sums it.
+            score = _parse_float(rows_for_type[0].get("value"))
+            if score is not None:
+                item["value"] = f"{_format_number(score)} · Oura's score"
+        elif any(fragment in record_type for fragment in _SUMMABLE_FRAGMENTS):
             unit, consistent = _single_unit(rows_for_type)
             picked = _primary_source_totals(rows_for_type) if consistent else None
             if picked is not None:
@@ -2053,35 +2184,64 @@ def _rhythm_summary(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     return {"events": events, "burden": burden}
 
 
+def _heart_rate_unit(rows: list[dict[str, Any]]) -> tuple[str | None, bool]:
+    """The joined HR sample rows' unit and whether readings agree.
+
+    HealthKit samples say ``count/min`` and Oura API samples say ``bpm``
+    — the same beats-per-minute after the friendly relabel — so
+    consistency is judged on the display unit. The returned unit keeps
+    the single raw spelling when there is one (payload compatibility for
+    single-pipe days), else the shared display unit.
+    """
+    raw = sorted({str(row["unit"]) for row in rows if row.get("unit") is not None})
+    if not raw:
+        return None, True
+    if len(raw) == 1:
+        return raw[0], True
+    display = sorted(
+        {
+            str(
+                friendly_unit_label(str(row.get("record_type") or ""), str(row["unit"]))
+            )
+            for row in rows
+            if row.get("unit") is not None
+        }
+    )
+    if len(display) == 1:
+        return display[0], True
+    return None, False
+
+
 def _heart_rate_series(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     """Bucketed heart-rate day curve: median line plus min–max band.
 
     Heart rate swings within any five minutes, so raw readings fold into
     ``HEART_BUCKET_MINUTES`` buckets — the per-bucket median draws the
     line and the per-bucket min–max renders as a translucent band, the
-    honest render for the signal's instantaneous variability. Mirrors
-    ``_glucose_series`` geometry: 12 AM → 12 AM x-axis, padded y-domain
-    with outward-rounded integer labels, gaps over
+    honest render for the signal's instantaneous variability. Readings
+    join from every raw-sample pipe (``_HEART_RATE_SAMPLE_TYPES``): the
+    computation was always multi-source, and ring beats widen the honest
+    band. Mirrors ``_glucose_series`` geometry: 12 AM → 12 AM x-axis,
+    padded y-domain with outward-rounded integer labels, gaps over
     ``CURVE_SEGMENT_GAP_MINUTES`` split segments, isolated buckets render
     as dots. Returns ``None`` on sparse days (fewer than
     ``HEART_CURVE_MIN_READINGS`` readings) or mixed units — the card
     keeps its text-only range row.
     """
     readings: list[tuple[int, float]] = []
-    units: set[str] = set()
+    sample_rows: list[dict[str, Any]] = []
     for row in rows:
-        if str(row.get("record_type") or "") != HEART_RATE_TYPE:
+        if str(row.get("record_type") or "") not in _HEART_RATE_SAMPLE_TYPES:
             continue
         moment = _parse_record_time(row.get("start_date") or row.get("start_time"))
         value = _parse_float(row.get("value"))
         if moment is None or value is None:
             continue
-        if row.get("unit") is not None:
-            units.add(str(row["unit"]))
+        sample_rows.append(row)
         readings.append((moment.hour * 60 + moment.minute, value))
-    if len(readings) < HEART_CURVE_MIN_READINGS or len(units) > 1:
+    unit, consistent = _heart_rate_unit(sample_rows)
+    if len(readings) < HEART_CURVE_MIN_READINGS or not consistent:
         return None
-    unit = next(iter(units)) if units else None
 
     buckets: dict[int, list[float]] = defaultdict(list)
     for minute, value in readings:
@@ -2155,9 +2315,53 @@ def _heart_rate_series(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     }
 
 
-def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The heart card: an HR range and curve, paired blood pressure, facts."""
+def _heart_comparison_line(rows: list[dict[str, Any]]) -> str | None:
+    """Cross-device HR-range juxtaposition, only when both devices sampled.
 
+    Present only when a genuine cross-device source AND the ring pipe both
+    carry raw heart-rate samples for the day (post-supersede, the ring is
+    the API pipe). Each part states that source's own min–max — pure
+    juxtaposition (§13): no delta, no better/worse. Cross-device sources
+    lead, the ring closes.
+    """
+    by_source: dict[str, list[float]] = {}
+    for row in rows:
+        if str(row.get("record_type") or "") not in _HEART_RATE_SAMPLE_TYPES:
+            continue
+        value = _parse_float(row.get("value"))
+        if value is None:
+            continue
+        by_source.setdefault(_source_label(row), []).append(value)
+    ring = sorted(name for name in by_source if _is_ring_source_label(name))
+    others = sorted(name for name in by_source if not _is_ring_source_label(name))
+    if not ring or not others:
+        return None
+    parts: list[str] = []
+    for name in others + ring:
+        values = by_source[name]
+        low, high = min(values), max(values)
+        span = (
+            _format_number(low)
+            if low == high
+            else f"{_format_number(low)}–{_format_number(high)}"
+        )
+        parts.append(f"{name} {span} bpm")
+    return " · ".join(parts)
+
+
+def _heart_analysis(
+    rows: list[dict[str, Any]],
+    typical: dict[str, float] | None = None,
+) -> dict[str, Any] | None:
+    """The heart card: an HR range and curve, paired blood pressure, facts.
+
+    The resting-heart-rate fact gains ``typical``/``typical_label`` when
+    a 90-day self-baseline is available from the trends fold;
+    ``comparison_line`` juxtaposes the ring and a cross-device source
+    when both sampled the day.
+    """
+
+    typical = typical or {}
     if not rows:
         return None
     heart_rate: dict[str, Any] | None = _window_heart_rate(rows)
@@ -2178,7 +2382,7 @@ def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     fact_rows: list[dict[str, Any]] = []
     for row in rows:
         record_type = str(row.get("record_type") or "")
-        if heart_rate and record_type == HEART_RATE_TYPE:
+        if heart_rate and record_type in _HEART_RATE_SAMPLE_TYPES:
             continue
         if blood_pressure and (
             _BP_SYSTOLIC_FRAGMENT in record_type
@@ -2217,6 +2421,12 @@ def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
                 latest_value = _parse_float(latest.get("value"))
                 if latest_value is not None:
                     item["value"] = display_value(record_type, latest_value, unit)
+                if "resting_hr" in typical:
+                    item.update(
+                        _typical_fact_fields(
+                            f"{_format_number(typical['resting_hr'])} bpm"
+                        )
+                    )
             elif len(values) == 1:
                 item["value"] = display_value(record_type, values[0], unit)
             else:
@@ -2232,6 +2442,7 @@ def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         "series": series,
         "blood_pressure": blood_pressure,
         "rhythm": rhythm,
+        "comparison_line": _heart_comparison_line(rows) if heart_rate else None,
         "facts": facts,
     }
 
@@ -2245,31 +2456,85 @@ def _first_row_of_type(
     return None
 
 
-def _recovery_fact(label: str, detail: str) -> dict[str, str]:
+def _recovery_fact(label: str, detail: str) -> dict[str, Any]:
     return {"label": label, "detail": detail, "line": f"{label} {detail}"}
 
 
-def _recovery_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The "How recovered am I?" card: Oura's daily numbers, attributed.
+def _typical_fact_fields(formatted: str) -> dict[str, Any]:
+    """The per-fact self-baseline keys, both display-ready.
 
-    §13-strict and numbers-only by decision (Oura display v1): every line
-    is a number Oura reported, attributed to Oura — never our gloss, never
-    an interpretation. Oura's own qualitative labels (the resilience level,
-    the stress day summary) are deliberately not rendered; those rows still
-    count in coverage families, the window signals, and the audit drawer.
-    Line formats agree with the importer's ``render_day_summary`` copy
-    reference in ``solstone.think.importers.oura``.
+    Copy contract (round 2, owner-approved): "your 90-day median N" —
+    the owner's own median, stated factually, never better/worse framing.
+    ``typical`` is the formatted value alone (for templates that supply
+    the fixed copy themselves); ``typical_label`` is the full pinned line.
+    """
+    return {"typical": formatted, "typical_label": f"your 90-day median {formatted}"}
+
+
+def _contributor_items(row: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Oura score contributors as attributed {label, value} items.
+
+    The anatomy of a score: each contributor is Oura's own number, named
+    through the shared friendly labels and sorted by key for a stable
+    order. Non-numeric values are skipped — nothing is coerced into a
+    number that was not one.
+    """
+    if row is None:
+        return []
+    metadata = row.get("metadata")
+    contributors = metadata.get("contributors") if isinstance(metadata, dict) else None
+    if not isinstance(contributors, dict):
+        return []
+    items: list[dict[str, Any]] = []
+    for key in sorted(contributors):
+        value = contributors[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        items.append({"label": friendly_contributor_name(str(key)), "value": value})
+    return items
+
+
+def _recovery_analysis(
+    day_rows: list[dict[str, Any]],
+    typical: dict[str, float] | None = None,
+) -> dict[str, Any] | None:
+    """The "How recovered am I?" card: Oura's daily facts, attributed.
+
+    §13-strict: every line states what Oura reported, attributed to Oura
+    — never our gloss, never an interpretation. Numbers render as
+    attributed values; Oura's own qualitative labels (the resilience
+    level, the stress day summary) render as attributed facts in the
+    fixed "``value`` · Oura's label" format (round-2 owner decision:
+    adjectives shown with attribution — never as Solstone's conclusion).
+    ``contributors`` carries the readiness score's anatomy as attributed
+    numbers. The readiness fact gains ``typical``/``typical_label`` when
+    a 90-day self-baseline is available. Line formats agree with the
+    importer's ``render_day_summary`` copy reference in
+    ``solstone.think.importers.oura`` (the resilience line's attribution
+    tail follows the owner's round-2 "· Oura's label" format).
     """
 
-    facts: list[dict[str, str]] = []
+    typical = typical or {}
+    facts: list[dict[str, Any]] = []
     readiness = _first_row_of_type(day_rows, OURA_READINESS_TYPE)
     if readiness is not None:
         value = _parse_float(readiness.get("value"))
         if value is not None:
+            fact = _recovery_fact(
+                friendly_type_name(OURA_READINESS_TYPE),
+                f"{_format_number(value)} · Oura's score",
+            )
+            if "readiness" in typical:
+                fact.update(_typical_fact_fields(_format_number(typical["readiness"])))
+            facts.append(fact)
+    resilience = _first_row_of_type(day_rows, OURA_RESILIENCE_TYPE)
+    if resilience is not None:
+        level = str(resilience.get("value") or "").strip()
+        if level:
             facts.append(
                 _recovery_fact(
-                    friendly_type_name(OURA_READINESS_TYPE),
-                    f"{_format_number(value)} · Oura's score",
+                    friendly_type_name(OURA_RESILIENCE_TYPE),
+                    f"{level} · Oura's label",
                 )
             )
     deviation = _first_row_of_type(day_rows, OURA_TEMPERATURE_DEVIATION_TYPE)
@@ -2310,9 +2575,17 @@ def _recovery_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
                     " · ".join(parts) + " · Oura's measurement",
                 )
             )
+        day_summary = str(stress.get("value") or "").strip()
+        if day_summary:
+            facts.append(
+                _recovery_fact(
+                    "Day stress summary",
+                    f"{day_summary} · Oura's label",
+                )
+            )
     if not facts:
         return None
-    return {"facts": facts}
+    return {"facts": facts, "contributors": _contributor_items(readiness)}
 
 
 def _oura_sleep_score_line(day_rows: list[dict[str, Any]]) -> str | None:
@@ -2464,9 +2737,30 @@ def _build_health_day(
     for row in day_rows:
         families[_family_for_type(str(row.get("record_type") or ""))].append(row)
 
+    # 90-day self-baselines, from the warmed trends fold only — never a
+    # fresh all-shards scan on the request path. A cold cache simply
+    # means no "vs your typical" facts until the warm lands (events.py
+    # warms at startup and after imports).
+    typical = _typical_by_signal(_load_trends_cache(journal_root), day)
+
     sleep = _sleep_analysis(day_rows, prev_rows, next_rows, day)
     if sleep is not None:
         sleep["score_line"] = _oura_sleep_score_line(day_rows)
+        sleep["score_contributors"] = _contributor_items(
+            _first_row_of_type(day_rows, OURA_SLEEP_SCORE_TYPE)
+        )
+        if sleep["score_line"] and "sleep_score" in typical:
+            score_typical = _typical_fact_fields(_format_number(typical["sleep_score"]))
+            sleep["score_typical"] = score_typical["typical"]
+            sleep["score_typical_label"] = score_typical["typical_label"]
+        if (
+            sleep.get("asleep_duration") or sleep.get("duration")
+        ) and "asleep_minutes" in typical:
+            asleep_typical = _typical_fact_fields(
+                _format_duration(typical["asleep_minutes"])
+            )
+            sleep["asleep_typical"] = asleep_typical["typical"]
+            sleep["asleep_typical_label"] = asleep_typical["typical_label"]
     glucose_series = _glucose_series(day_rows)
     activity = _activity_analysis(day_rows)
     # The nightly SpO2 average renders on the recovery card only, never a
@@ -2476,9 +2770,10 @@ def _build_health_day(
             row
             for row in families.get("Heart", [])
             if str(row.get("record_type") or "") != OURA_SPO2_TYPE
-        ]
+        ],
+        typical,
     )
-    recovery = _recovery_analysis(day_rows)
+    recovery = _recovery_analysis(day_rows, typical)
     mind_sound_facts = _fact_items(
         families.get("Mindfulness", []) + families.get("Hearing & audio", [])
     )
@@ -2630,7 +2925,9 @@ def _window_signal_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _window_heart_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     heart_rows = [
-        row for row in rows if str(row.get("record_type") or "") == HEART_RATE_TYPE
+        row
+        for row in rows
+        if str(row.get("record_type") or "") in _HEART_RATE_SAMPLE_TYPES
     ]
     values = [
         value
@@ -2639,10 +2936,9 @@ def _window_heart_rate(rows: list[dict[str, Any]]) -> dict[str, Any]:
     ]
     if not values:
         return {"count": 0, "min": None, "max": None, "unit": None, "label": None}
-    units = sorted(
-        {str(row.get("unit")) for row in heart_rows if row.get("unit") is not None}
-    )
-    unit = units[0] if len(units) == 1 else ("mixed" if units else None)
+    unit, consistent = _heart_rate_unit(heart_rows)
+    if not consistent:
+        unit = "mixed"
     low = min(values)
     high = max(values)
     range_label = (
@@ -3046,14 +3342,18 @@ _RESTING_HR_FRAGMENT = "RestingHeartRate"
 _STEP_COUNT_FRAGMENT = "StepCount"
 TREND_ANNOTATION_LIMIT = 6
 
-# Ribbon order is fixed: key, owner-facing label, unit label. Asleep values
-# travel as minutes; the client formats them against the "h" unit label.
-# Readiness is Oura's unitless daily score — its empty unit label renders
-# the plain number.
+# Ribbon order is fixed: key, owner-facing label, unit label. Asleep and
+# stress-high values travel as minutes; the client formats them against
+# the "h" unit label. Readiness and the sleep score are Oura's unitless
+# daily scores — their empty unit labels render plain numbers. The
+# temperature deviation is signed °C.
 _TREND_SIGNALS: tuple[tuple[str, str, str], ...] = (
     ("resting_hr", "Resting heart rate", "bpm"),
     ("asleep_minutes", "Asleep", "h"),
+    ("sleep_score", "Sleep score", ""),
     ("readiness", "Readiness", ""),
+    ("temp_deviation", "Temperature deviation", "°C"),
+    ("stress_high_minutes", "Daytime stress high", "h"),
     ("steps", "Steps", "steps"),
     ("body_mass", "Body mass", "lb"),
     ("glucose_avg", "Glucose average", "mg/dL"),
@@ -3089,10 +3389,19 @@ def _day_key_offset(day: str, days: int) -> str:
 
 
 def _fold_latest_reading(
-    latest_by_day: dict[str, tuple[Any, float]], day: str, row: dict[str, Any]
+    latest_by_day: dict[str, tuple[Any, float]],
+    day: str,
+    row: dict[str, Any],
+    *,
+    value: float | None = None,
 ) -> None:
-    """Keep the day's latest parseable reading (by start time) in place."""
-    value = _parse_float(row.get("value"))
+    """Keep the day's latest reading (by start time) in place.
+
+    ``value`` overrides the row's own value for signals whose figure
+    lives in metadata (the stress-high minutes) rather than ``value``.
+    """
+    if value is None:
+        value = _parse_float(row.get("value"))
     if value is None:
         return
     order = _time_sort_key(_row_time(row) or "")
@@ -3177,8 +3486,15 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
       fabricated from raw heart-rate rows.
     - asleep_minutes — canonical ``pick_day_sleep`` minutes (stage-aware,
       merged-span fallback), attributed to the morning the night ended.
+    - sleep_score — the day's Oura sleep score, Oura's number verbatim.
     - readiness — the day's Oura readiness score, Oura's number verbatim.
+    - temp_deviation — Oura's nightly temperature deviation, signed °C
+      verbatim.
+    - stress_high_minutes — Oura's daytime stress-high seconds as
+      minutes; never derived from anything but Oura's own figure.
     - steps — the primary-source total per ``_primary_source_steps``;
+      the ring's daily-activity step total competes as the "Oura (API)"
+      source (one device with the superseded mirror, API pipe canonical);
       multi-source days without coverage to rank by stay absent.
     - body_mass — the day's latest scale reading (sparse days stay sparse).
     - glucose_avg — the day's mean reading, one decimal.
@@ -3191,6 +3507,9 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
     """
     resting_hr: dict[str, tuple[Any, float]] = {}
     readiness: dict[str, tuple[Any, float]] = {}
+    sleep_score: dict[str, tuple[Any, float]] = {}
+    temp_deviation: dict[str, tuple[Any, float]] = {}
+    stress_high: dict[str, tuple[Any, float]] = {}
     body_mass: dict[str, tuple[Any, float]] = {}
     glucose_sums: dict[str, list[float]] = {}
     steps: dict[str, int] = {}
@@ -3245,6 +3564,29 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
                     _fold_latest_reading(resting_hr, day, row)
                 elif record_type == OURA_READINESS_TYPE:
                     _fold_latest_reading(readiness, day, row)
+                elif record_type == OURA_SLEEP_SCORE_TYPE:
+                    _fold_latest_reading(sleep_score, day, row)
+                elif record_type == OURA_TEMPERATURE_DEVIATION_TYPE:
+                    _fold_latest_reading(temp_deviation, day, row)
+                elif record_type == OURA_STRESS_TYPE:
+                    # The ribbon figure is the stress-high minutes; the
+                    # row's own value is Oura's day-summary label.
+                    metadata = row.get("metadata")
+                    seconds = (
+                        _parse_float(metadata.get("stress_high"))
+                        if isinstance(metadata, dict)
+                        else None
+                    )
+                    if seconds is not None:
+                        _fold_latest_reading(
+                            stress_high, day, row, value=round(seconds / 60, 1)
+                        )
+                elif record_type == OURA_DAILY_ACTIVITY_TYPE:
+                    # The ring's daily step total competes through the
+                    # same primary-source rule as every other source.
+                    api_row = _oura_api_step_row(row)
+                    if api_row is not None:
+                        step_rows_by_day.setdefault(day, []).append(api_row)
                 elif _is_body_mass_type(record_type):
                     _fold_latest_reading(body_mass, day, row)
         for day, day_rows in step_rows_by_day.items():
@@ -3257,7 +3599,10 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
     daily_by_key: dict[str, dict[str, float | int]] = {
         "resting_hr": {day: value for day, (_, value) in resting_hr.items()},
         "asleep_minutes": _trend_asleep_by_day(sleep_rows_by_day),
+        "sleep_score": {day: value for day, (_, value) in sleep_score.items()},
         "readiness": {day: value for day, (_, value) in readiness.items()},
+        "temp_deviation": {day: value for day, (_, value) in temp_deviation.items()},
+        "stress_high_minutes": {day: value for day, (_, value) in stress_high.items()},
         "steps": steps,
         "body_mass": {day: value for day, (_, value) in body_mass.items()},
         "glucose_avg": {
@@ -3316,6 +3661,48 @@ def _load_trends_cache(journal_root: Path) -> dict[str, Any] | None:
     if cached and cached[0] == _trends_signature(journal_root):
         return cached[1]
     return None
+
+
+# "vs your typical" self-baselines (round-2 owner decision): the median of
+# the owner's own daily values over the 90 days before the day shown —
+# factual, self-referenced, never a population norm or a judgment.
+TYPICAL_BASELINE_DAYS = 90
+# Below this many daily values in the window the baseline stays absent —
+# a handful of readings is not "typical" yet.
+TYPICAL_MIN_VALUES = 14
+
+# Which trend signals feed per-fact "typical" values on day pages.
+_TYPICAL_SIGNAL_KEYS = frozenset(
+    {"readiness", "sleep_score", "asleep_minutes", "resting_hr"}
+)
+
+
+def _typical_by_signal(trends: dict[str, Any] | None, day: str) -> dict[str, float]:
+    """Per-signal 90-day self-baseline medians for ``day``.
+
+    Derived from the warmed trends fold — never a fresh shard scan on the
+    request path; a cold cache (``None``) yields no baselines. The window
+    is the ``TYPICAL_BASELINE_DAYS`` days strictly before ``day``, so a
+    day is never measured against itself. Signals with fewer than
+    ``TYPICAL_MIN_VALUES`` values in the window carry no baseline.
+    """
+    if not trends:
+        return {}
+    window_start = _day_key_offset(day, -TYPICAL_BASELINE_DAYS)
+    typical: dict[str, float] = {}
+    for signal in trends.get("signals", []):
+        key = str(signal.get("key") or "")
+        if key not in _TYPICAL_SIGNAL_KEYS:
+            continue
+        values = [
+            value
+            for value_day, value in signal.get("daily", [])
+            if window_start <= value_day < day
+        ]
+        if len(values) < TYPICAL_MIN_VALUES:
+            continue
+        typical[key] = float(median(values))
+    return typical
 
 
 def warm_trends_cache(

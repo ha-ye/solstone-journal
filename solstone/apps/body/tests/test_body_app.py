@@ -7,6 +7,7 @@ import importlib
 import json
 import logging
 import math
+import re
 import sqlite3
 import sys
 import threading
@@ -4609,16 +4610,19 @@ def test_trends_asleep_supersedes_mirror_on_api_days(body_env):
 
 # --- Day view: recovery card + Oura sleep score --------------------------------
 #
-# "How recovered am I?" renders Oura's daily numbers as attributed facts.
-# Numbers only (Oura display v1): Oura's qualitative labels — the
-# resilience level, the stress day summary — are deliberately absent even
-# though the rows carry them; they still count in coverage and audit.
+# "How recovered am I?" renders Oura's daily facts, attributed. Round 2
+# (owner decision): Oura's qualitative labels — the resilience level, the
+# stress day summary — render as attributed facts in the fixed
+# "<value> · Oura's label" format. They are Oura's words, named as
+# Oura's, never Solstone's conclusion.
 
 # Oura's own qualitative vocabulary (resilience levels, stress day
-# summaries) plus generic judgment words — none may reach the rendered
-# card under the numbers-only decision. ("strong" stays off the list only
-# because <strong> tags would false-positive; "solid"/"adequate"/"limited"
-# cover the resilience levels that could actually leak.)
+# summaries) plus generic judgment words — each may reach the rendered
+# card ONLY inside the attributed-label format, immediately followed by
+# " · Oura's label". Anywhere else it is an unattributed judgment and
+# fails the sweep. ("strong" stays off the list only because <strong>
+# tags would false-positive; "solid"/"adequate"/"limited" cover the
+# resilience levels that could actually leak.)
 RECOVERY_BANNED_ADJECTIVES = (
     "solid",
     "normal",
@@ -4631,6 +4635,21 @@ RECOVERY_BANNED_ADJECTIVES = (
     "limited",
     "adequate",
 )
+
+# The lowercased, HTML-escaped attribution tail that must immediately
+# follow any adjective in the rendered card.
+_ATTRIBUTED_LABEL_TAIL = " · oura&#39;s label"
+
+
+def _assert_adjectives_only_attributed(card: str) -> None:
+    """Every banned adjective in ``card`` sits in an attributed-label line."""
+    for word in RECOVERY_BANNED_ADJECTIVES:
+        for match in re.finditer(re.escape(word), card):
+            tail = card[match.end() : match.end() + len(_ATTRIBUTED_LABEL_TAIL)]
+            assert tail == _ATTRIBUTED_LABEL_TAIL, (
+                f"unattributed adjective in recovery card: {word!r} "
+                f"(followed by {tail!r})"
+            )
 
 
 def _recovery_card_slice(html: str) -> str:
@@ -4676,13 +4695,21 @@ def test_day_api_recovery_card_pins_attributed_number_lines(body_env):
     payload = env.client.get("/app/body/api/day/20260715").get_json()
 
     # Exact attributed lines, in fixed order, matching the importer's
-    # render_day_summary copy reference. The resilience level and the
-    # stress day summary — Oura's adjectives — never render.
+    # render_day_summary copy reference. Round 2: the resilience level
+    # and the stress day summary render as attributed facts in the
+    # "<value> · Oura's label" format — Oura's words, named as Oura's.
     assert [fact["line"] for fact in payload["recovery"]["facts"]] == [
         "Readiness 82 · Oura's score",
+        "Resilience solid · Oura's label",
         "Temperature deviation +0.34 °C · Oura's measurement",
         "Nightly blood oxygen 97.4% · Oura's average",
         "Daytime stress high 2h 00m · recovery 5h 40m · Oura's measurement",
+        "Day stress summary normal · Oura's label",
+    ]
+    # The readiness contributors ride along as attributed numbers with
+    # owner-facing labels — the score's anatomy.
+    assert payload["recovery"]["contributors"] == [
+        {"label": "HRV balance", "value": 88}
     ]
     # The nightly average never doubles as a generic heart fact.
     assert payload["heart"] is None
@@ -4695,9 +4722,11 @@ def test_day_api_recovery_card_pins_attributed_number_lines(body_env):
     assert '<strong class="body-num">82 · Oura&#39;s score</strong>' in html
     assert '<strong class="body-num">+0.34 °C · Oura&#39;s measurement</strong>' in html
     assert '<strong class="body-num">97.4% · Oura&#39;s average</strong>' in html
+    # Adjectives render only inside the attributed-label format; the
+    # sweep still bans every unattributed appearance.
+    assert '<strong class="body-num">solid · Oura&#39;s label</strong>' in html
     card = _recovery_card_slice(html).lower()
-    for word in RECOVERY_BANNED_ADJECTIVES:
-        assert word not in card, f"qualitative label in recovery card: {word!r}"
+    _assert_adjectives_only_attributed(card)
 
     # The window API picks up the same rows with their friendly labels.
     window = env.client.get(
@@ -4876,6 +4905,617 @@ def test_trends_readiness_signal_folds_daily_scores(body_env):
         "last_day": "20260602",
         "days": 2,
     }
+
+
+# --- Round-2 Oura display SERVER: overlap endpoints, anatomy, typical ----------
+#
+# Owned by the round-2 SERVER change-set (routes.py + health_schema.py).
+# Covers: the AH-mirror overlap endpoints (oura.heartrate joins the heart
+# range/curve; oura.daily_activity joins Activity with the ring's step
+# total as the one canonical device), the extended O-5C supersede, score
+# contributors, attributed adjectives, per-fact "vs your typical"
+# medians, cross-device comparison lines, and the new trends ribbons.
+
+OURA_ACTIVITY_TYPE = "oura.daily_activity"
+OURA_HR_SAMPLE_TYPE = "oura.heartrate"
+
+
+def _hr_sample_row(day: str, clock: str, bpm: int) -> dict:
+    """A normalized oura.heartrate sample row (the API pipe's raw beats)."""
+    iso = f"{day[:4]}-{day[4:6]}-{day[6:8]}"
+    return _oura_row(
+        OURA_HR_SAMPLE_TYPE,
+        day,
+        value=bpm,
+        unit="bpm",
+        start=f"{iso}T{clock}:00-06:00",
+        kind="sample",
+    )
+
+
+def test_day_api_heart_range_and_curve_join_ring_beats(body_env):
+    env = body_env()
+    watch = _hr_rows("2026-07-22", [(f"06:{i:02d}", 60 + i) for i in range(12)])
+    ring = [
+        _hr_sample_row("20260722", "06:00", 45),
+        _hr_sample_row("20260722", "06:11", 150),
+    ]
+    _seed_import(env.journal, "20260906_100000", watch + ring)
+
+    payload = env.client.get("/app/body/api/day/20260722").get_json()
+
+    heart = payload["heart"]
+    # Ring beats join the one range computation and widen the honest band.
+    assert heart["heart_rate"]["count"] == 14
+    assert heart["heart_rate"]["min"] == 45.0
+    assert heart["heart_rate"]["max"] == 150.0
+    assert heart["heart_rate"]["label"] == "45–150 bpm"
+    # count/min and bpm are one display unit — the curve still draws,
+    # and its buckets fold watch and ring beats together.
+    series = heart["series"]
+    assert series is not None
+    assert series["count"] == 14
+    assert series["unit"] == "bpm"
+    assert series["unit_label"] == "bpm"
+    assert series["bands"][0] == [362.5, 45.0, 64.0]
+    assert series["bands"][-1] == [372.5, 70.0, 150.0]
+    # Both devices sampled: the comparison line juxtaposes their ranges,
+    # cross-device first, the ring closing — no delta, no winner.
+    assert heart["comparison_line"] == (
+        "Synthetic Watch 60–71 bpm · Oura (API) 45–150 bpm"
+    )
+    # The ring's beat rows never re-list as generic heart facts, and the
+    # catch-all relinquishes the overlap type.
+    assert all(fact["label"] != "Heart rate" for fact in heart["facts"])
+    assert payload["other_signals"] is None
+
+
+def test_day_api_ring_api_beats_supersede_mirror_heart_rows(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_110000",
+        [
+            # The mirror's copy of the ring's beats — superseded on API days.
+            _row(
+                HR_TYPE,
+                "2026-07-23T06:00:00-06:00",
+                value="40",
+                unit="count/min",
+                source="Oura",
+            ),
+            _row(
+                HR_TYPE,
+                "2026-07-23T07:00:00-06:00",
+                value="41",
+                unit="count/min",
+                source="Oura",
+            ),
+            # The mirror's HRV row carries a signal the API pipe has no row
+            # type for — the exact-type match keeps it aggregating.
+            _row(
+                HRV_TYPE,
+                "2026-07-23T06:30:00-06:00",
+                value="52",
+                unit="ms",
+                source="Oura",
+            ),
+            # Genuine cross-device beats always stay.
+            _row(
+                HR_TYPE,
+                "2026-07-23T12:00:00-06:00",
+                value="88",
+                unit="count/min",
+                source="Synthetic Watch",
+            ),
+            # The API pipe carries the ring's beats.
+            _hr_sample_row("20260723", "06:00", 47),
+            _hr_sample_row("20260723", "06:05", 52),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260723").get_json()
+
+    heart = payload["heart"]
+    # Range and count fold the Watch and the API pipe only — the mirror's
+    # 40/41 never widen the band.
+    assert heart["heart_rate"]["count"] == 3
+    assert heart["heart_rate"]["min"] == 47.0
+    assert heart["heart_rate"]["max"] == 88.0
+    # Post-supersede the ring is the API pipe; the juxtaposition names it.
+    assert heart["comparison_line"] == ("Synthetic Watch 88 bpm · Oura (API) 47–52 bpm")
+    # The mirror's HRV row is NOT superseded (exact-type match only).
+    facts = {fact["label"]: fact["value"] for fact in heart["facts"]}
+    assert facts["Heart rate variability"] == "52 ms"
+    # The audit drawer still lists every row from both pipes.
+    assert payload["audit"]["types"]["HKQuantityTypeIdentifierHeartRate"] == 3
+    assert payload["audit"]["types"][OURA_HR_SAMPLE_TYPE] == 2
+
+
+def test_day_api_steps_treat_ring_api_and_mirror_as_one_device(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_120000",
+        [
+            # The mirror's step and energy rows for the ring — superseded.
+            _row(
+                STEP_TYPE,
+                "2026-07-24T08:00:00-06:00",
+                "2026-07-24T09:00:00-06:00",
+                value="4000",
+                unit="count",
+                source="Oura",
+            ),
+            _row(
+                STEP_TYPE,
+                "2026-07-24T09:00:00-06:00",
+                "2026-07-24T10:00:00-06:00",
+                value="5000",
+                unit="count",
+                source="Oura",
+            ),
+            _row(
+                "HKQuantityTypeIdentifierActiveEnergyBurned",
+                "2026-07-24T08:00:00-06:00",
+                "2026-07-24T09:00:00-06:00",
+                value="300",
+                unit="Cal",
+                source="Oura",
+            ),
+            # Genuine cross-device sources with partial coverage.
+            _row(
+                STEP_TYPE,
+                "2026-07-24T08:00:00-06:00",
+                "2026-07-24T08:30:00-06:00",
+                value="3000",
+                unit="count",
+                source="Synthetic Watch",
+            ),
+            _row(
+                "HKQuantityTypeIdentifierActiveEnergyBurned",
+                "2026-07-24T08:00:00-06:00",
+                "2026-07-24T09:00:00-06:00",
+                value="500",
+                unit="Cal",
+                source="Synthetic Watch",
+            ),
+            # The ring's API daily-activity document.
+            _oura_row(
+                OURA_ACTIVITY_TYPE,
+                "20260724",
+                value=85,
+                unit="score",
+                metadata={"steps": 9500, "active_calories": 320},
+            ),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260724").get_json()
+
+    steps = payload["activity"]["steps"]
+    # One ring device, the API pipe canonical: its daily total is the
+    # figure, the mirror's 9,000 never sums in and never appears as a
+    # second Oura source. Full-day coverage outranks the Watch half hour.
+    assert steps["mode"] == "total"
+    assert steps["total"] == 9500
+    assert steps["source"] == "Oura (API)"
+    assert steps["others"] == ["Synthetic Watch"]
+    counters = {item["label"]: item for item in payload["activity"]["counters"]}
+    # The mirror's energy rows are out too: the Watch total stands alone,
+    # no "also contributed" suffix.
+    assert counters["Active energy"]["value"] == "500 Cal"
+    # Oura's activity score renders as an attributed number.
+    assert counters["Daily activity"]["value"] == "85 · Oura's score"
+    # Nothing leaks into the Other-signals catch-all.
+    assert payload["other_signals"] is None
+
+
+def test_day_api_mirror_activity_aggregates_when_no_api_rows(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_130000",
+        [
+            _row(
+                STEP_TYPE,
+                "2026-07-25T08:00:00-06:00",
+                "2026-07-25T09:00:00-06:00",
+                value="4000",
+                unit="count",
+                source="Oura",
+            ),
+            _row(
+                STEP_TYPE,
+                "2026-07-25T09:00:00-06:00",
+                "2026-07-25T10:00:00-06:00",
+                value="5000",
+                unit="count",
+                source="Oura",
+            ),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260725").get_json()
+
+    # Backward compatible: without API rows the mirror aggregates exactly
+    # as before the supersede seam covered activity.
+    steps = payload["activity"]["steps"]
+    assert steps["mode"] == "total"
+    assert steps["total"] == 9000
+    assert steps["source"] == "Oura"
+
+
+def test_day_api_catch_all_relinquishes_oura_overlap_types(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_140000",
+        [
+            _hr_sample_row("20260726", "10:00", 64),
+            _oura_row(
+                OURA_ACTIVITY_TYPE,
+                "20260726",
+                value=70,
+                unit="score",
+                metadata={"steps": 4200},
+            ),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260726").get_json()
+
+    # Both overlap types land in their families — never raw in Other
+    # signals (the leak the owner saw).
+    assert payload["other_signals"] is None
+    assert payload["heart"]["heart_rate"]["label"] == "64 bpm"
+    # Ring-only day: no cross-device source, so no comparison line.
+    assert payload["heart"]["comparison_line"] is None
+    assert payload["activity"]["steps"]["total"] == 4200
+    assert payload["activity"]["steps"]["source"] == "Oura (API)"
+
+
+def test_day_api_sleep_score_contributors_join_sleep_card(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_150000",
+        [
+            _oura_row(
+                OURA_SLEEP_PERIOD_TYPE,
+                "20260727",
+                value=27000,
+                unit="s",
+                start="2026-07-27T00:00:00-06:00",
+                end="2026-07-27T07:30:00-06:00",
+                kind="sleep_period",
+            ),
+            _oura_row(
+                OURA_SLEEP_SCORE_TYPE,
+                "20260727",
+                value=88,
+                unit="score",
+                metadata={
+                    "contributors": {
+                        "deep_sleep": 92,
+                        "efficiency": 85,
+                        "latency": 60,
+                        "rem_sleep": 74,
+                        "restfulness": 55,
+                        "timing": 61,
+                        "total_sleep": 90,
+                    }
+                },
+            ),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260727").get_json()
+
+    sleep = payload["sleep"]
+    assert sleep["score_line"] == "Sleep score 88 · Oura's score"
+    # The sleep score's anatomy: Oura's contributor numbers with the
+    # shared owner-facing labels, in stable key order.
+    assert sleep["score_contributors"] == [
+        {"label": "Deep sleep", "value": 92},
+        {"label": "Efficiency", "value": 85},
+        {"label": "Latency", "value": 60},
+        {"label": "REM sleep", "value": 74},
+        {"label": "Restfulness", "value": 55},
+        {"label": "Timing", "value": 61},
+        {"label": "Total sleep", "value": 90},
+    ]
+    # Ring-only night: no cross-device source, so no comparison line.
+    assert sleep["comparison_line"] is None
+
+
+def test_day_api_recovery_contributors_full_anatomy(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_160000",
+        [
+            _oura_row(
+                OURA_READINESS_TYPE,
+                "20260728",
+                value=82,
+                unit="score",
+                metadata={
+                    "contributors": {
+                        "activity_balance": 77,
+                        "body_temperature": 98,
+                        "hrv_balance": 88,
+                        "previous_day_activity": 90,
+                        "previous_night": 66,
+                        "recovery_index": 84,
+                        "resting_heart_rate": 92,
+                        "sleep_balance": 71,
+                    },
+                    "temperature_trend_deviation": 0.1,
+                },
+            ),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260728").get_json()
+
+    assert payload["recovery"]["contributors"] == [
+        {"label": "Activity balance", "value": 77},
+        {"label": "Body temperature", "value": 98},
+        {"label": "HRV balance", "value": 88},
+        {"label": "Previous day activity", "value": 90},
+        {"label": "Previous night", "value": 66},
+        {"label": "Recovery index", "value": 84},
+        {"label": "Resting heart rate", "value": 92},
+        {"label": "Sleep balance", "value": 71},
+    ]
+
+
+def test_day_api_sleep_comparison_line_requires_both_devices(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_170000",
+        [
+            _row(
+                SLEEP_TYPE,
+                "2026-07-29T00:10:00-06:00",
+                "2026-07-29T08:08:00-06:00",
+                value="HKCategoryValueSleepAnalysisAsleepUnspecified",
+                source="Synthetic Watch",
+            ),
+            _oura_row(
+                OURA_SLEEP_PERIOD_TYPE,
+                "20260729",
+                value=29400,
+                unit="s",
+                start="2026-07-29T00:00:00-06:00",
+                end="2026-07-29T08:10:00-06:00",
+                kind="sleep_period",
+            ),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260729").get_json()
+
+    # Both devices measured the night: the juxtaposition states both
+    # spans verbatim, cross-device first, the ring closing.
+    assert payload["sleep"]["comparison_line"] == (
+        "Synthetic Watch saw 7h 58m · Oura (API) saw 8h 10m"
+    )
+
+
+# --- Round-2: "vs your typical" self-baselines ---------------------------------
+
+
+def _seed_typical_history(journal: Path) -> None:
+    """Twenty June days of history plus a July 15 target day.
+
+    Readiness 61–80, sleep score 71–90, nightly sleep 7h, resting HR
+    cycling 50–54 — enough density for every 90-day median, with target-
+    day values chosen to prove the day never joins its own baseline.
+    """
+    rows: list[dict] = []
+    for i in range(1, 21):
+        day = f"202606{i:02d}"
+        iso = f"2026-06-{i:02d}"
+        rows.append(_oura_row(OURA_READINESS_TYPE, day, value=60 + i, unit="score"))
+        rows.append(_oura_row(OURA_SLEEP_SCORE_TYPE, day, value=70 + i, unit="score"))
+        rows.append(
+            _oura_row(
+                OURA_SLEEP_PERIOD_TYPE,
+                day,
+                value=25200,
+                unit="s",
+                start=f"{iso}T00:00:00-06:00",
+                end=f"{iso}T07:00:00-06:00",
+                kind="sleep_period",
+            )
+        )
+        rows.append(
+            _row(
+                RESTING_HR_TYPE,
+                f"{iso}T07:00:00-06:00",
+                value=str(50 + (i % 5)),
+                unit="count/min",
+                source="Synthetic Watch",
+            )
+        )
+    rows.append(_oura_row(OURA_READINESS_TYPE, "20260715", value=82, unit="score"))
+    rows.append(_oura_row(OURA_SLEEP_SCORE_TYPE, "20260715", value=95, unit="score"))
+    rows.append(
+        _oura_row(
+            OURA_SLEEP_PERIOD_TYPE,
+            "20260715",
+            value=30600,
+            unit="s",
+            start="2026-07-15T00:00:00-06:00",
+            end="2026-07-15T08:30:00-06:00",
+            kind="sleep_period",
+        )
+    )
+    rows.append(
+        _row(
+            RESTING_HR_TYPE,
+            "2026-07-15T07:00:00-06:00",
+            value="58",
+            unit="count/min",
+            source="Synthetic Watch",
+        )
+    )
+    _seed_import(journal, "20260906_180000", rows)
+
+
+def test_day_api_typical_medians_ride_facts_after_trends_warm(body_env):
+    env = body_env()
+    _seed_typical_history(env.journal)
+
+    # Cold trends cache: the day payload carries no baselines at all —
+    # day pages never block on (or kick) the all-shards fold.
+    cold = env.client.get("/app/body/api/day/20260715").get_json()
+    assert "typical" not in cold["recovery"]["facts"][0]
+    assert "score_typical" not in cold["sleep"]
+    assert "asleep_typical" not in cold["sleep"]
+
+    _trends_after_warm(env.client)
+
+    payload = env.client.get("/app/body/api/day/20260715").get_json()
+    readiness_fact = payload["recovery"]["facts"][0]
+    # The window is the 90 days strictly before the day: the day's own
+    # 82 never joins its own baseline (61–80 → median 70.5).
+    assert readiness_fact["typical"] == "70.5"
+    assert readiness_fact["typical_label"] == "your 90-day median 70.5"
+    sleep = payload["sleep"]
+    assert sleep["score_typical"] == "80.5"
+    assert sleep["score_typical_label"] == "your 90-day median 80.5"
+    assert sleep["asleep_typical"] == "7h 00m"
+    assert sleep["asleep_typical_label"] == "your 90-day median 7h 00m"
+    heart_facts = {fact["label"]: fact for fact in payload["heart"]["facts"]}
+    resting = heart_facts["Resting heart rate"]
+    assert resting["value"] == "58 bpm"
+    assert resting["typical"] == "52 bpm"
+    assert resting["typical_label"] == "your 90-day median 52 bpm"
+
+
+def test_day_api_typical_absent_below_value_floor(body_env):
+    env = body_env()
+    rows = [
+        _oura_row(OURA_READINESS_TYPE, f"202607{i:02d}", value=70 + i, unit="score")
+        for i in range(1, 6)
+    ]
+    rows.append(_oura_row(OURA_READINESS_TYPE, "20260715", value=82, unit="score"))
+    _seed_import(env.journal, "20260906_190000", rows)
+
+    _trends_after_warm(env.client)
+
+    payload = env.client.get("/app/body/api/day/20260715").get_json()
+    fact = payload["recovery"]["facts"][0]
+    # Five prior days is not "typical": below the 14-value floor the
+    # baseline stays absent even with a warm cache.
+    assert "typical" not in fact
+    assert "typical_label" not in fact
+
+
+# --- Round-2: new trends ribbons ------------------------------------------------
+
+
+def test_trends_sleep_score_temp_and_stress_ribbons(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_200000",
+        [
+            _oura_row(OURA_SLEEP_SCORE_TYPE, "20260601", value=88, unit="score"),
+            _oura_row(OURA_SLEEP_SCORE_TYPE, "20260602", value=74, unit="score"),
+            _oura_row(OURA_TEMP_DEV_TYPE, "20260601", value=-0.21, unit="degC"),
+            _oura_row(OURA_TEMP_DEV_TYPE, "20260602", value=0.34, unit="degC"),
+            _oura_row(
+                OURA_STRESS_TYPE,
+                "20260601",
+                value="normal",
+                metadata={"stress_high": 7200, "recovery_high": 20400},
+            ),
+            _oura_row(
+                OURA_STRESS_TYPE,
+                "20260602",
+                value="stressful",
+                metadata={"stress_high": 5430},
+            ),
+        ],
+    )
+
+    payload = _trends_after_warm(env.client)
+
+    # The three new ribbons hold their fixed order slots; signals the
+    # journal has never held draw no ribbon.
+    assert [signal["key"] for signal in payload["signals"]] == [
+        "sleep_score",
+        "temp_deviation",
+        "stress_high_minutes",
+    ]
+    by_key = {signal["key"]: signal for signal in payload["signals"]}
+    score = by_key["sleep_score"]
+    assert score["label"] == "Sleep score"
+    # Oura's score is unitless — plain numbers, like readiness.
+    assert score["unit_label"] == ""
+    assert score["daily"] == [["20260601", 88.0], ["20260602", 74.0]]
+    temp = by_key["temp_deviation"]
+    assert temp["label"] == "Temperature deviation"
+    assert temp["unit_label"] == "°C"
+    # Signed values verbatim — a genuinely negative-capable ribbon.
+    assert temp["daily"] == [["20260601", -0.21], ["20260602", 0.34]]
+    stress = by_key["stress_high_minutes"]
+    assert stress["label"] == "Daytime stress high"
+    # Values travel as minutes against the "h" duration unit label,
+    # mirroring the asleep ribbon's convention.
+    assert stress["unit_label"] == "h"
+    assert stress["daily"] == [["20260601", 120.0], ["20260602", 90.5]]
+    assert stress["coverage"] == {
+        "first_day": "20260601",
+        "last_day": "20260602",
+        "days": 2,
+    }
+
+
+def test_trends_steps_use_ring_api_total_over_mirror(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_210000",
+        [
+            # June 3: mirror-only — the ring's mirror steps still total.
+            _row(
+                STEP_TYPE,
+                "2026-06-03T08:00:00-06:00",
+                "2026-06-03T09:00:00-06:00",
+                value="4000",
+                unit="count",
+                source="Oura",
+            ),
+            # June 5: the API document carries the canonical total; the
+            # mirror's rows stay out (one device, API pipe canonical).
+            _row(
+                STEP_TYPE,
+                "2026-06-05T08:00:00-06:00",
+                "2026-06-05T09:00:00-06:00",
+                value="8000",
+                unit="count",
+                source="Oura",
+            ),
+            _oura_row(
+                OURA_ACTIVITY_TYPE,
+                "20260605",
+                value=85,
+                unit="score",
+                metadata={"steps": 9500},
+            ),
+        ],
+    )
+
+    payload = _trends_after_warm(env.client)
+
+    steps = next(s for s in payload["signals"] if s["key"] == "steps")
+    assert steps["daily"] == [["20260603", 4000], ["20260605", 9500]]
 
 
 # --- Round-2 Oura display front-end: anatomy, medians, juxtaposition ----------

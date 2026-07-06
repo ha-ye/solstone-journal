@@ -89,7 +89,48 @@ FRIENDLY_TYPE_NAMES: Final[Mapping[str, str]] = {
     "oura.daily_spo2": "Nightly blood oxygen",
     "oura.temperature_deviation": "Temperature deviation",
     "oura.sleep": "Sleep period",
+    # AH-mirror overlap endpoints (O-5C): the same ring data can also
+    # arrive mirrored through Apple Health. Names match the signal, not
+    # the pipe — presentation-side supersede keeps one canonical pipe.
+    "oura.daily_activity": "Daily activity",
+    "oura.heartrate": "Heart rate",
 }
+
+# Owner-facing names for Oura score-contributor keys — the anatomies of
+# the readiness and sleep scores (Oura API v2 ``contributors`` objects).
+# Values are Oura's numbers and render attributed; these labels only name
+# them. Unknown keys prettify through ``friendly_contributor_name``.
+FRIENDLY_CONTRIBUTOR_NAMES: Final[Mapping[str, str]] = {
+    # Readiness contributors.
+    "activity_balance": "Activity balance",
+    "body_temperature": "Body temperature",
+    "hrv_balance": "HRV balance",
+    "previous_day_activity": "Previous day activity",
+    "previous_night": "Previous night",
+    "recovery_index": "Recovery index",
+    "resting_heart_rate": "Resting heart rate",
+    "sleep_balance": "Sleep balance",
+    "sleep_regularity": "Sleep regularity",
+    # Sleep-score contributors.
+    "deep_sleep": "Deep sleep",
+    "efficiency": "Efficiency",
+    "latency": "Latency",
+    "rem_sleep": "REM sleep",
+    "restfulness": "Restfulness",
+    "timing": "Timing",
+    "total_sleep": "Total sleep",
+}
+
+
+def friendly_contributor_name(key: str) -> str:
+    """Owner-facing name for an Oura contributor key, never a raw key."""
+
+    known = FRIENDLY_CONTRIBUTOR_NAMES.get(key)
+    if known:
+        return known
+    words = key.replace("_", " ").strip()
+    return (words[:1].upper() + words[1:]) if words else key
+
 
 # Sleep-analysis intervals from one source separated by less than this gap
 # merge into one session (brief wake windows stay inside the night).
