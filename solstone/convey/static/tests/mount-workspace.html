@@ -20,6 +20,7 @@
 
   <script src="../shell_gate.js"></script>
   <script>window.resolveSolShellReady({source: 'mount-workspace-test'});</script>
+  <script src="../convey_copy.js"></script>
   <script src="../app.js"></script>
   <script src="../mount-workspace.js"></script>
   <script>
@@ -72,8 +73,12 @@
       } catch (_) {}
       const retry = document.querySelector('.surface-state-retry');
       assertRow('failure state', !!retry);
+      const remounted = new Promise((resolve) => {
+        document.addEventListener('workspace:mounted', resolve, { once: true });
+        setTimeout(resolve, 2000);
+      });
       retry.click();
-      await new Promise((resolve) => setTimeout(resolve, 0));
+      await remounted;
       assertRow('retry recovered', document.getElementById('main-content').textContent.includes('retry mounted'));
     }
 
