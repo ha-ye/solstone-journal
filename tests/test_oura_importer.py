@@ -1471,6 +1471,279 @@ def test_sync_rejects_nonpositive_window_days(tmp_path: Path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Quiet runs — save mode writes nothing when every fetched row is already
+# in the dedupe ledger with an identical value hash (hourly schedules)
+# ---------------------------------------------------------------------------
+
+
+def _imports_stat_snapshot(
+    journal: Path, *, exclude: tuple[str, ...] = ()
+) -> dict[str, tuple[int, int | None]]:
+    """(mtime_ns, size) for everything under imports/, minus exclusions."""
+
+    snapshot: dict[str, tuple[int, int | None]] = {}
+    for path in sorted((journal / "imports").rglob("*")):
+        rel = path.relative_to(journal).as_posix()
+        if rel in exclude:
+            continue
+        stat = path.stat()
+        snapshot[rel] = (stat.st_mtime_ns, stat.st_size if path.is_file() else None)
+    return snapshot
+
+
+def test_quiet_second_sync_writes_nothing_and_advances_cursor(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+
+    first = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 4),
+    )
+    assert first["quiet_run"] is False
+
+    listing_before = _imports_contents(journal)
+    stats_before = _imports_stat_snapshot(journal, exclude=("imports/oura.json",))
+
+    # Second run re-fetches the byte-identical pages: nothing new, nothing
+    # revised — a quiet run.
+    second = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 5),
+    )
+
+    assert second["quiet_run"] is True
+    assert "import_id" not in second
+    # NO bundle, NO raw pages, NO shards, NO manifest: the imports/ dir
+    # listing is identical and every pre-existing path is mtime-stable —
+    # only the cursor file changed.
+    assert _imports_contents(journal) == listing_before
+    assert (
+        _imports_stat_snapshot(journal, exclude=("imports/oura.json",)) == stats_before
+    )
+
+    # CLI-facing keys: total says what was fetched, nothing importable.
+    assert second["total"] == _FIXTURE_ROW_COUNT
+    assert second["available"] == 0
+    assert second["imported"] == 0
+    assert second["downloaded"] == 0
+    assert second["months"] == []
+    assert second["summary"] == (
+        f"Oura (API) sync quiet run: nothing new (rows={_FIXTURE_ROW_COUNT} all known)"
+    )
+
+    # The cursor advanced exactly as a full save would have.
+    state = json.loads((journal / "imports" / "oura.json").read_text())
+    assert state["schema"] == oura.SYNC_STATE_SCHEMA
+    assert state["endpoints"]["daily_readiness"]["high_water_day"] == "2026-01-03"
+    assert state["last_result"]["quiet_run"] is True
+    assert state["last_result"]["import_id"] is None
+    assert state["last_result"]["rows"] == _FIXTURE_ROW_COUNT
+
+    # The dedupe ledger is untouched (reads only).
+    assert _dedupe_row_count(journal) == _FIXTURE_ROW_COUNT
+
+
+def test_revision_within_refetch_window_triggers_full_bundle_not_quiet(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 4),
+    )
+
+    # Oura re-issued the readiness page with corrections inside the
+    # trailing refetch window; every other endpoint returns empty.
+    transport = ScriptedTransport()
+    for endpoint in oura.SYNC_ENDPOINTS:
+        if endpoint == "daily_readiness":
+            transport.script(endpoint, _fixture_page(endpoint, REVISION_ROOT))
+        else:
+            transport.script(endpoint, _ok_page([]))
+
+    second = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(transport),
+        today=dt.date(2026, 1, 5),
+    )
+
+    # A changed value hash is the revision-capture path — never quiet.
+    assert second["quiet_run"] is False
+    import_dir = journal / "imports" / second["import_id"]
+    shard = import_dir / "normalized" / "2026-01.jsonl"
+    rows = [json.loads(line) for line in shard.read_text().splitlines()]
+    # The bundle is the complete fetch — all four readiness-page rows,
+    # including the byte-identical re-issue — not a changed-rows delta.
+    assert len(rows) == 4
+    assert (import_dir / "manifest.json").exists()
+    assert second["downloaded"] == 0  # nothing inserted
+    assert second["imported"] == 4  # updated in place
+    state = json.loads((journal / "imports" / "oura.json").read_text())
+    assert state["last_result"]["import_id"] == second["import_id"]
+    assert state["last_result"]["quiet_run"] is False
+
+
+def test_new_data_run_writes_full_bundle_with_all_rows(tmp_path: Path, monkeypatch):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 4),
+    )
+
+    # One brand-new document arrives alongside the known re-fetch.
+    new_doc = {
+        "id": "synthetic-sleep-2026-01-04",
+        "day": "2026-01-04",
+        "timestamp": "2026-01-04T00:00:00-07:00",
+        "score": 91,
+    }
+    transport = ScriptedTransport()
+    for endpoint in oura.SYNC_ENDPOINTS:
+        if endpoint == "daily_sleep":
+            transport.script(endpoint, _ok_page(_fixture_items(endpoint) + [new_doc]))
+        else:
+            transport.script(endpoint, _fixture_page(endpoint))
+
+    second = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(transport),
+        today=dt.date(2026, 1, 5),
+    )
+
+    # Any new row means a full save, unaffected by the quiet-run path:
+    # the bundle keeps the complete-fetch property (all rows, not a delta).
+    assert second["quiet_run"] is False
+    shard = journal / "imports" / second["import_id"] / "normalized" / "2026-01.jsonl"
+    rows = [json.loads(line) for line in shard.read_text().splitlines()]
+    assert len(rows) == _FIXTURE_ROW_COUNT + 1
+    assert second["downloaded"] == 1  # the new document
+    assert second["imported"] == _FIXTURE_ROW_COUNT  # known rows upserted
+    assert _dedupe_row_count(journal) == _FIXTURE_ROW_COUNT + 1
+    state = json.loads((journal / "imports" / "oura.json").read_text())
+    assert state["endpoints"]["daily_sleep"]["high_water_day"] == "2026-01-04"
+
+
+def test_gate_still_blocks_would_be_quiet_run(tmp_path: Path, monkeypatch):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    first = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 4),
+    )
+
+    # The gate governs the RUN, not just the write: a run that would have
+    # been quiet still blocks without per-run confirmation — before any
+    # fetch, and the cursor does not move.
+    transport = _fixture_transport()
+    with pytest.raises(PreSaveGateError) as exc_info:
+        oura.backend.sync(
+            journal,
+            dry_run=False,
+            client=_canned_client(transport),
+            today=dt.date(2026, 1, 5),
+        )
+
+    assert exc_info.value.to_dict()["gate_reason"] == "per_run_confirmation_missing"
+    assert transport.calls == []
+    state = json.loads((journal / "imports" / "oura.json").read_text())
+    assert state["last_result"]["import_id"] == first["import_id"]
+
+
+def test_scheduled_quiet_run_relies_on_standing_consent(tmp_path: Path, monkeypatch):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _sync_artifact(journal)
+    artifact["scheduled_sync"] = {"approved": True, "cadence": "every 6 hours"}
+    _write_sync_artifact(journal, artifact)
+
+    oura.backend.sync(
+        journal,
+        dry_run=False,
+        scheduled=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 4),
+    )
+    listing_before = _imports_contents(journal)
+
+    # The --scheduled consent check is orthogonal to quiet runs: standing
+    # consent still substitutes for the per-run flag, and the quiet run
+    # still returns the cron hint.
+    second = oura.backend.sync(
+        journal,
+        dry_run=False,
+        scheduled=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 5),
+    )
+
+    assert second["quiet_run"] is True
+    assert "import_id" not in second
+    assert second["cron_hint"].startswith("0 */6 * * * ")
+    assert _imports_contents(journal) == listing_before
+
+
+def test_quiet_backfill_with_window_days_writes_nothing(tmp_path: Path, monkeypatch):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 10),
+    )
+    listing_before = _imports_contents(journal)
+
+    # An explicit 90-day backfill window re-fetches only known rows (the
+    # heartrate lane chunks into three requests). Quiet backfills are rare
+    # but must also write nothing.
+    transport = _fixture_transport()
+    transport.script(
+        "heartrate", _fixture_page("heartrate"), _fixture_page("heartrate")
+    )
+    second = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        window_days=90,
+        client=_canned_client(transport),
+        today=dt.date(2026, 1, 10),
+    )
+
+    # --window-days behavior is preserved on the quiet path.
+    readiness_url = next(u for u, _ in transport.calls if "daily_readiness" in u)
+    assert "start_date=2025-10-12" in readiness_url
+    assert len([u for u, _ in transport.calls if "heartrate" in u]) == 3
+
+    assert second["quiet_run"] is True
+    assert second["total"] > _FIXTURE_ROW_COUNT  # chunk overlap re-reads
+    assert _imports_contents(journal) == listing_before
+    assert _dedupe_row_count(journal) == _FIXTURE_ROW_COUNT
+
+
+# ---------------------------------------------------------------------------
 # CLI wiring — connect stub, gate output, cron-hint guidance
 # ---------------------------------------------------------------------------
 

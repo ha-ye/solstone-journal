@@ -18,7 +18,10 @@ Scope of this module:
   whose save mode writes one import bundle per run exactly like the
   apple_health save path (normalized monthly shards + manifests + dedupe
   upserts), gated by ``enforce_oura_sync_gate``. Catalog (dry-run) sync
-  writes nothing, including no cursor.
+  writes nothing, including no cursor. A save run whose fetched rows are
+  all already in the dedupe ledger with identical value hashes is a
+  quiet run: it writes no bundle at all — only the cursor advances — and
+  returns ``quiet_run: true`` (built for hourly scheduled syncs).
 
 Timezone rule (load-bearing): Oura documents carry their own ``day``
 field, already attributed by Oura (a night belongs to the day it ended,
@@ -1142,6 +1145,44 @@ class OuraSyncBackend:
                 known_rows=known,
             )
 
+        # Quiet-run check: classify the fetch against the dedupe ledger
+        # BEFORE allocating an import id or writing anything. Dedupe keys
+        # and value hashes are import-id-independent, so a placeholder
+        # normalization compares exactly.
+        probe_items = normalize_bundle(bundle, import_id="quiet", raw_ref_root="quiet")
+        new_rows, changed_rows = _ledger_delta(journal_root, probe_items)
+        if new_rows == 0 and changed_rows == 0:
+            # Nothing new and nothing revised: write NO bundle, NO raw
+            # pages, NO normalized shards, NO manifest — only the cursor
+            # advances (watermarks/last_sync exactly as a full save would
+            # have). A changed value hash anywhere — a trailing-refetch
+            # revision — never reaches this branch; that is the
+            # revision-capture path and always writes a full bundle.
+            new_state = _advance_cursor_state(
+                state,
+                bundle=bundle,
+                import_id=None,
+                rows=len(probe_items),
+                inserted=0,
+                updated=0,
+                pages=pages_fetched,
+                quiet_run=True,
+            )
+            save_sync_state(journal_root, SYNC_BACKEND_NAME, new_state)
+            return _sync_result(
+                dry_run=False,
+                items=probe_items,
+                bundle=bundle,
+                windows=windows,
+                pages_fetched=pages_fetched,
+                import_id=None,
+                inserted=0,
+                updated=0,
+                months=[],
+                cron_hint=_scheduled_cron_hint(journal_root),
+                quiet_run=True,
+            )
+
         import_id = _new_import_id(journal_root)
         items = normalize_bundle(
             bundle,
@@ -1216,6 +1257,53 @@ def _count_known_rows(journal_root: Path, items: list[OuraNormalizedItem]) -> in
     return known
 
 
+def _ledger_delta(
+    journal_root: Path, items: list[OuraNormalizedItem]
+) -> tuple[int, int]:
+    """(new, changed) dedupe keys vs the dedupe ledger (read-only).
+
+    ``new`` counts keys the ledger has never seen; ``changed`` counts
+    known keys whose stored ``value_hash`` differs from this fetch's.
+    Both sides of that comparison come from ``health_value_hash`` — the
+    fetch side via ``_build_item``, the stored side persisted verbatim by
+    ``upsert_health_dedupe_records`` — so the canonicalization cannot
+    drift. Any duplicate of a key within the batch (page overlap) counts
+    as changed if any copy's hash mismatches.
+    """
+
+    if not items:
+        return (0, 0)
+    keys = sorted({item.dedupe_record.dedupe_key for item in items})
+    db_path = journal_root / "imports" / "health-dedupe.sqlite"
+    stored: dict[str, str | None] = {}
+    if db_path.is_file():
+        import sqlite3
+
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=15)
+        try:
+            for start in range(0, len(keys), 500):
+                chunk = keys[start : start + 500]
+                marks = ",".join("?" for _ in chunk)
+                stored.update(
+                    conn.execute(
+                        "SELECT dedupe_key, value_hash FROM health_dedupe "
+                        f"WHERE dedupe_key IN ({marks})",
+                        chunk,
+                    )
+                )
+        finally:
+            conn.close()
+    new_keys: set[str] = set()
+    changed_keys: set[str] = set()
+    for item in items:
+        key = item.dedupe_record.dedupe_key
+        if key not in stored:
+            new_keys.add(key)
+        elif stored[key] != item.dedupe_record.value_hash:
+            changed_keys.add(key)
+    return (len(new_keys), len(changed_keys))
+
+
 def _sync_result(
     *,
     dry_run: bool,
@@ -1229,6 +1317,7 @@ def _sync_result(
     months: list[str],
     cron_hint: str | None,
     known_rows: int = 0,
+    quiet_run: bool = False,
 ) -> dict[str, Any]:
     rows = len(items)
     days = sorted({item.day for item in items if item.day})
@@ -1238,6 +1327,8 @@ def _sync_result(
             f"{SOURCE_LABEL} catalog: rows={rows}, days={len(days)}, "
             f"pages={pages_fetched} (nothing written)"
         )
+    elif quiet_run:
+        summary = f"{SOURCE_LABEL} sync quiet run: nothing new (rows={rows} all known)"
     else:
         summary = (
             f"Saved {SOURCE_LABEL} sync import: rows={rows}, new={inserted}, "
@@ -1247,6 +1338,7 @@ def _sync_result(
     result: dict[str, Any] = {
         "backend": SYNC_BACKEND_NAME,
         "dry_run": dry_run,
+        "quiet_run": quiet_run,
         "source_family": SOURCE_OURA_API,
         "source_label": SOURCE_LABEL,
         # Keys the generic sync CLI prints:
@@ -1381,11 +1473,12 @@ def _advance_cursor_state(
     previous: Mapping[str, Any] | None,
     *,
     bundle: Mapping[str, list[dict[str, Any]]],
-    import_id: str,
+    import_id: str | None,
     rows: int,
     inserted: int,
     updated: int,
     pages: int,
+    quiet_run: bool = False,
 ) -> dict[str, Any]:
     endpoints_state: dict[str, dict[str, Any]] = {}
     for endpoint in SYNC_ENDPOINTS:
@@ -1409,7 +1502,9 @@ def _advance_cursor_state(
         "trailing_refetch_days": TRAILING_REFETCH_DAYS,
         "endpoints": endpoints_state,
         "last_result": {
+            # A quiet run has no import bundle — import_id stays None.
             "import_id": import_id,
+            "quiet_run": quiet_run,
             "rows": rows,
             "inserted": inserted,
             "updated": updated,
