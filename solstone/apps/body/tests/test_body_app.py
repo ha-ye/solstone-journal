@@ -85,6 +85,56 @@ def _row(
     return row
 
 
+OURA_READINESS_TYPE = "oura.daily_readiness"
+OURA_SLEEP_SCORE_TYPE = "oura.daily_sleep"
+OURA_SLEEP_PERIOD_TYPE = "oura.sleep"
+OURA_RESILIENCE_TYPE = "oura.daily_resilience"
+OURA_STRESS_TYPE = "oura.daily_stress"
+OURA_SPO2_TYPE = "oura.daily_spo2"
+OURA_TEMP_DEV_TYPE = "oura.temperature_deviation"
+
+
+def _oura_row(
+    record_type: str,
+    day: str,
+    *,
+    value=None,
+    unit: str | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    kind: str = "daily_summary",
+    metadata: dict | None = None,
+) -> dict:
+    """A normalized Oura API row matching the oura design doc's row schema.
+
+    Values stay native JSON (ints, floats, strings) exactly as the
+    importer's normalizer emits them — no stringly-typed values.
+    """
+
+    iso_day = f"{day[:4]}-{day[4:6]}-{day[6:8]}"
+    start = start or f"{iso_day}T04:00:00+00:00"
+    row = {
+        "schema": "solstone.health.oura.v1",
+        "source_family": "oura_api",
+        "kind": kind,
+        "dedupe_key": f"oura-api:{record_type}:{day}:{start}",
+        "record_type": record_type,
+        "day": day,
+        "start_date": start,
+        "source_record_id": f"{record_type}-{day}",
+        "month": iso_day[:7],
+    }
+    if end is not None:
+        row["end_date"] = end
+    if value is not None:
+        row["value"] = value
+    if unit is not None:
+        row["unit"] = unit
+    if metadata is not None:
+        row["metadata"] = metadata
+    return row
+
+
 def _insert_dedupe_rows(journal: Path, rows: list[dict], import_id: str) -> None:
     db_path = journal / "imports" / "health-dedupe.sqlite"
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1932,6 +1982,15 @@ def test_display_normalizers_scale_fraction_percents_and_relabel_units():
         )
         == "Cal"
     )
+    # Oura API units: scores are unitless numbers ('82', never '82 score');
+    # the temperature deviation reads in °C.
+    assert health_schema.friendly_unit_label(OURA_READINESS_TYPE, "score") == ""
+    assert health_schema.display_value(OURA_READINESS_TYPE, 82, "score") == "82"
+    assert health_schema.friendly_unit_label(OURA_TEMP_DEV_TYPE, "degC") == "°C"
+    # Oura's nightly SpO2 average arrives as whole percents — the HealthKit
+    # 0–1 fraction-percent scaling must never touch it.
+    assert health_schema.display_number(OURA_SPO2_TYPE, 97.4, "%") == "97.4"
+    assert health_schema.display_value(OURA_SPO2_TYPE, 97.4, "%") == "97.4%"
 
 
 # --- Day view: heart card ------------------------------------------------------
@@ -2471,6 +2530,7 @@ def test_day_api_payload_keys_stay_additive_with_heart_series(body_env):
         "glucose_series",
         "activity",
         "heart",
+        "recovery",
         "mind_sound",
         "walking",
         "body_measurements",
@@ -4337,3 +4397,482 @@ def test_trends_canvas_domain_floor_never_negative_for_nonnegative_signals():
         Path(__file__).resolve().parents[1] / "workspace.html"
     ).read_text()
     assert "if (vMin >= 0 && lo < 0) lo = 0;" in workspace_html
+
+
+# --- Oura display: O-5C same-device supersede ---------------------------------
+#
+# The same ring's data can arrive twice: normalized Oura API rows
+# (source_family "oura_api") and rows the Oura app mirrored into Apple
+# Health (Oura-named source). Day-level aggregation uses ONE canonical
+# pipe: where API rows exist for a day+signal, the mirror's rows for that
+# signal stay out of aggregates, curves, and counts. Cross-device data
+# (Apple Watch, iPhone) is never touched. The audit drawer lists all.
+
+
+def test_day_api_same_device_supersede_prefers_api_pipe(body_env):
+    env = body_env()
+    # One bundle carries the Apple Health rows: a genuine Watch night and
+    # SpO2 reading, plus the ring's mirror rows for the same night.
+    _seed_import(
+        env.journal,
+        "20260801_100000",
+        [
+            _row(
+                SLEEP_TYPE,
+                "2026-07-10T00:15:00-06:00",
+                "2026-07-10T07:00:00-06:00",
+                value="HKCategoryValueSleepAnalysisAsleepUnspecified",
+                source="Synthetic Watch",
+            ),
+            _row(
+                SPO2_TYPE,
+                "2026-07-10T03:30:00-06:00",
+                value="0.97",
+                unit="%",
+                source="Synthetic Watch",
+            ),
+            _row(
+                SLEEP_TYPE,
+                "2026-07-10T00:05:00-06:00",
+                "2026-07-10T03:00:00-06:00",
+                value="HKCategoryValueSleepAnalysisAsleepCore",
+                source="Oura",
+            ),
+            _row(
+                SLEEP_TYPE,
+                "2026-07-10T03:00:00-06:00",
+                "2026-07-10T07:20:00-06:00",
+                value="HKCategoryValueSleepAnalysisAsleepDeep",
+                source="Oura",
+            ),
+            _row(
+                SPO2_TYPE,
+                "2026-07-10T03:00:00-06:00",
+                value="0.94",
+                unit="%",
+                source="Oura",
+            ),
+            _row(
+                SPO2_TYPE,
+                "2026-07-10T04:00:00-06:00",
+                value="0.99",
+                unit="%",
+                source="Oura",
+            ),
+        ],
+    )
+    # A second bundle carries the same night through the API pipe.
+    _seed_import(
+        env.journal,
+        "20260805_100000",
+        [
+            _oura_row(
+                OURA_SLEEP_PERIOD_TYPE,
+                "20260710",
+                value=27000,
+                unit="s",
+                start="2026-07-10T00:00:00-06:00",
+                end="2026-07-10T07:45:00-06:00",
+                kind="sleep_period",
+            ),
+            _oura_row(
+                OURA_SPO2_TYPE,
+                "20260710",
+                value=97.4,
+                unit="%",
+                metadata={"breathing_disturbance_index": 3},
+            ),
+            _oura_row(OURA_READINESS_TYPE, "20260710", value=82, unit="score"),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260710").get_json()
+
+    # Sleep aggregates from the API period and the Watch only; the mirror
+    # source vanishes from the card (API supersedes mirror).
+    sleep = payload["sleep"]
+    assert sleep["source"] == "Oura (API)"
+    assert sleep["other_sources"] == ["Synthetic Watch"]
+    assert sleep["window"] == "12:00 AM – 7:45 AM"
+    assert sleep["duration"] == "7h 45m"
+    assert sleep["score_line"] is None
+    # Blood oxygen keeps only the genuine cross-device reading — the
+    # mirror's 94/99 samples never widen the range.
+    assert payload["heart"]["facts"] == [
+        {"label": "Blood oxygen", "count": 1, "count_label": "1", "value": "97%"}
+    ]
+    # The API's nightly average renders on the recovery card, attributed.
+    assert [fact["line"] for fact in payload["recovery"]["facts"]] == [
+        "Readiness 82 · Oura's score",
+        "Nightly blood oxygen 97.4% · Oura's average",
+    ]
+    # Counts follow the canonical pipe.
+    assert payload["entry_total"] == 5
+    sources = payload["sources"]
+    assert sources["names"] == ["Oura (API)", "Synthetic Watch"]
+    assert sources["via"] == "Apple Health + Oura API"
+    # The audit drawer still lists every row from both pipes and both
+    # bundles — superseded mirror rows included.
+    assert payload["audit"]["types"] == {
+        "HKCategoryTypeIdentifierSleepAnalysis": 3,
+        "HKQuantityTypeIdentifierOxygenSaturation": 3,
+        "oura.daily_readiness": 1,
+        "oura.daily_spo2": 1,
+        "oura.sleep": 1,
+    }
+    assert payload["audit"]["import_ids"] == ["20260801_100000", "20260805_100000"]
+
+
+def test_day_api_mirror_rows_aggregate_when_no_api_rows(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260801_110000",
+        [
+            _row(
+                SLEEP_TYPE,
+                "2026-07-12T00:10:00-06:00",
+                "2026-07-12T07:30:00-06:00",
+                value="HKCategoryValueSleepAnalysisInBed",
+                source="Oura",
+            ),
+            _row(
+                SPO2_TYPE,
+                "2026-07-12T03:00:00-06:00",
+                value="0.94",
+                unit="%",
+                source="Oura",
+            ),
+            _row(
+                SPO2_TYPE,
+                "2026-07-12T04:00:00-06:00",
+                value="0.99",
+                unit="%",
+                source="Oura",
+            ),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260712").get_json()
+
+    # Backward compatible: without API rows the mirror aggregates exactly
+    # as before the supersede seam existed.
+    sleep = payload["sleep"]
+    assert sleep["source"] == "Oura"
+    assert sleep["window"] == "12:10 AM – 7:30 AM"
+    assert payload["heart"]["facts"] == [
+        {"label": "Blood oxygen", "count": 2, "count_label": "2", "value": "94–99%"}
+    ]
+    assert payload["recovery"] is None
+
+
+def test_trends_asleep_supersedes_mirror_on_api_days(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260901_170000",
+        [
+            # June 3: mirror-only night — folds as today.
+            _row(
+                SLEEP_TYPE,
+                "2026-06-03T00:00:00-06:00",
+                "2026-06-03T08:20:00-06:00",
+                value="HKCategoryValueSleepAnalysisInBed",
+                source="Oura",
+            ),
+            # June 5: the mirror's longer span would win coverage, but the
+            # API pipe carries the same night — the mirror stays out.
+            _row(
+                SLEEP_TYPE,
+                "2026-06-05T00:00:00-06:00",
+                "2026-06-05T09:00:00-06:00",
+                value="HKCategoryValueSleepAnalysisInBed",
+                source="Oura",
+            ),
+            _oura_row(
+                OURA_SLEEP_PERIOD_TYPE,
+                "20260605",
+                value=25200,
+                unit="s",
+                start="2026-06-05T00:30:00-06:00",
+                end="2026-06-05T07:30:00-06:00",
+                kind="sleep_period",
+            ),
+        ],
+    )
+
+    payload = _trends_after_warm(env.client)
+
+    asleep = next(s for s in payload["signals"] if s["key"] == "asleep_minutes")
+    assert asleep["daily"] == [["20260603", 500.0], ["20260605", 420.0]]
+
+
+# --- Day view: recovery card + Oura sleep score --------------------------------
+#
+# "How recovered am I?" renders Oura's daily numbers as attributed facts.
+# Numbers only (Oura display v1): Oura's qualitative labels — the
+# resilience level, the stress day summary — are deliberately absent even
+# though the rows carry them; they still count in coverage and audit.
+
+# Oura's own qualitative vocabulary (resilience levels, stress day
+# summaries) plus generic judgment words — none may reach the rendered
+# card under the numbers-only decision. ("strong" stays off the list only
+# because <strong> tags would false-positive; "solid"/"adequate"/"limited"
+# cover the resilience levels that could actually leak.)
+RECOVERY_BANNED_ADJECTIVES = (
+    "solid",
+    "normal",
+    "stressful",
+    "restored",
+    "optimal",
+    "good",
+    "poor",
+    "excellent",
+    "limited",
+    "adequate",
+)
+
+
+def _recovery_card_slice(html: str) -> str:
+    start = html.index('id="body-recovery-title"')
+    return html[start : html.index("</section>", start)]
+
+
+def _seed_recovery_day(journal: Path, day: str = "20260715") -> None:
+    _seed_import(
+        journal,
+        "20260905_100000",
+        [
+            _oura_row(
+                OURA_READINESS_TYPE,
+                day,
+                value=82,
+                unit="score",
+                metadata={"contributors": {"hrv_balance": 88}},
+            ),
+            _oura_row(OURA_TEMP_DEV_TYPE, day, value=0.34, unit="degC"),
+            _oura_row(
+                OURA_SPO2_TYPE,
+                day,
+                value=97.4,
+                unit="%",
+                metadata={"breathing_disturbance_index": 3},
+            ),
+            _oura_row(
+                OURA_STRESS_TYPE,
+                day,
+                value="normal",
+                metadata={"stress_high": 7200, "recovery_high": 20400},
+            ),
+            _oura_row(OURA_RESILIENCE_TYPE, day, value="solid"),
+        ],
+    )
+
+
+def test_day_api_recovery_card_pins_attributed_number_lines(body_env):
+    env = body_env()
+    _seed_recovery_day(env.journal)
+
+    payload = env.client.get("/app/body/api/day/20260715").get_json()
+
+    # Exact attributed lines, in fixed order, matching the importer's
+    # render_day_summary copy reference. The resilience level and the
+    # stress day summary — Oura's adjectives — never render.
+    assert [fact["line"] for fact in payload["recovery"]["facts"]] == [
+        "Readiness 82 · Oura's score",
+        "Temperature deviation +0.34 °C · Oura's measurement",
+        "Nightly blood oxygen 97.4% · Oura's average",
+        "Daytime stress high 2h 00m · recovery 5h 40m · Oura's measurement",
+    ]
+    # The nightly average never doubles as a generic heart fact.
+    assert payload["heart"] is None
+    # Recovery rows never leak into the Other-signals catch-all.
+    assert payload["other_signals"] is None
+
+    html = env.client.get("/app/body/20260715").get_data(as_text=True)
+    assert "How recovered am I?" in html
+    assert "<span>Readiness</span>" in html
+    assert '<strong class="body-num">82 · Oura&#39;s score</strong>' in html
+    assert '<strong class="body-num">+0.34 °C · Oura&#39;s measurement</strong>' in html
+    assert '<strong class="body-num">97.4% · Oura&#39;s average</strong>' in html
+    card = _recovery_card_slice(html).lower()
+    for word in RECOVERY_BANNED_ADJECTIVES:
+        assert word not in card, f"qualitative label in recovery card: {word!r}"
+
+    # The window API picks up the same rows with their friendly labels.
+    window = env.client.get(
+        "/app/body/api/window?from=2026-07-15T00:00:00Z&to=2026-07-15T23:00:00Z"
+    ).get_json()
+    labels = {signal["label"] for signal in window["signals"]}
+    assert "Readiness" in labels
+    assert "Nightly blood oxygen" in labels
+
+
+def test_day_api_recovery_temperature_sign_is_explicit(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260905_110000",
+        [_oura_row(OURA_TEMP_DEV_TYPE, "20260716", value=-0.21, unit="degC")],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260716").get_json()
+
+    assert [fact["line"] for fact in payload["recovery"]["facts"]] == [
+        "Temperature deviation -0.21 °C · Oura's measurement"
+    ]
+
+
+def test_day_api_recovery_absent_without_oura_rows(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    payload = env.client.get("/app/body/api/day/20260703").get_json()
+
+    assert payload["recovery"] is None
+
+
+def test_day_api_sleep_card_gains_oura_score_line(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260905_120000",
+        [
+            _oura_row(
+                OURA_SLEEP_PERIOD_TYPE,
+                "20260718",
+                value=27000,
+                unit="s",
+                start="2026-07-18T00:00:00-06:00",
+                end="2026-07-18T07:30:00-06:00",
+                kind="sleep_period",
+            ),
+            _oura_row(OURA_SLEEP_SCORE_TYPE, "20260718", value=88, unit="score"),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260718").get_json()
+
+    sleep = payload["sleep"]
+    assert sleep["source"] == "Oura (API)"
+    assert sleep["score_line"] == "Sleep score 88 · Oura's score"
+    # The score renders only as the sleep card's attributed line, never as
+    # an unattributed count fact elsewhere.
+    assert payload["other_signals"] is None
+
+    html = env.client.get("/app/body/20260718").get_data(as_text=True)
+    assert "Sleep score 88" in html
+    assert "Oura&#39;s score" in html
+
+
+def test_status_api_recovery_family_and_oura_api_source_chip(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260905_130000",
+        [
+            _oura_row(OURA_READINESS_TYPE, "20260720", value=82, unit="score"),
+            _oura_row(OURA_RESILIENCE_TYPE, "20260720", value="solid"),
+            _oura_row(
+                OURA_STRESS_TYPE,
+                "20260720",
+                value="normal",
+                metadata={"stress_high": 3600, "recovery_high": 7200},
+            ),
+            _oura_row(OURA_TEMP_DEV_TYPE, "20260720", value=0.1, unit="degC"),
+            _oura_row(OURA_SLEEP_SCORE_TYPE, "20260720", value=88, unit="score"),
+            _oura_row(
+                OURA_SLEEP_PERIOD_TYPE,
+                "20260720",
+                value=27000,
+                unit="s",
+                start="2026-07-20T00:00:00-06:00",
+                end="2026-07-20T07:30:00-06:00",
+                kind="sleep_period",
+            ),
+            _oura_row(OURA_SPO2_TYPE, "20260720", value=97.4, unit="%"),
+            _row(
+                GLUCOSE_TYPE,
+                "2026-07-20T08:00:00-06:00",
+                value="100",
+                unit="mg/dL",
+                source="Synthetic Stelo",
+            ),
+            _row(
+                STEP_TYPE,
+                "2026-07-20T09:00:00-06:00",
+                value="1200",
+                unit="count",
+                source="Synthetic Phone",
+            ),
+        ],
+    )
+
+    status = env.client.get("/app/body/api/status").get_json()
+
+    # The Recovery family folds the four Oura daily types, ordered after
+    # Glucose and before Activity; sleep types stay in Sleep, SpO2 in Heart.
+    families = {chip["name"]: chip for chip in status["archive"]["families"]}
+    assert [chip["name"] for chip in status["archive"]["families"]] == [
+        "Sleep",
+        "Glucose",
+        "Recovery",
+        "Activity",
+        "Heart",
+    ]
+    assert families["Recovery"]["count"] == 4
+    assert families["Recovery"]["types_label"] == (
+        "Daytime stress, Readiness, Resilience, Temperature deviation"
+    )
+    # Rows without a device source name chip as the pipe they arrived by.
+    assert "Oura (API)" in status["normalized"]["by_source"]
+
+
+# --- Trends: readiness ribbon ---------------------------------------------------
+
+
+def test_trends_readiness_signal_folds_daily_scores(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260905_140000",
+        [
+            _row(
+                RESTING_HR_TYPE,
+                "2026-06-01T21:00:00-06:00",
+                value="58",
+                unit="count/min",
+                source="Synthetic Watch",
+            ),
+            _oura_row(OURA_READINESS_TYPE, "20260601", value=82, unit="score"),
+            _oura_row(OURA_READINESS_TYPE, "20260602", value=74, unit="score"),
+            _row(
+                STEP_TYPE,
+                "2026-06-01T09:00:00-06:00",
+                value="1200",
+                unit="count",
+                source="Synthetic Phone",
+            ),
+        ],
+    )
+
+    payload = _trends_after_warm(env.client)
+
+    # Readiness joins the fixed ribbon order between Asleep and Steps;
+    # signals the journal has never held (asleep, body mass, glucose)
+    # draw no ribbon at all.
+    assert [signal["key"] for signal in payload["signals"]] == [
+        "resting_hr",
+        "readiness",
+        "steps",
+    ]
+    readiness = next(s for s in payload["signals"] if s["key"] == "readiness")
+    assert readiness["label"] == "Readiness"
+    # Oura's score is unitless — the empty label renders plain numbers.
+    assert readiness["unit_label"] == ""
+    assert readiness["daily"] == [["20260601", 82.0], ["20260602", 74.0]]
+    assert readiness["coverage"] == {
+        "first_day": "20260601",
+        "last_day": "20260602",
+        "days": 2,
+    }

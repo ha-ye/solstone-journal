@@ -40,6 +40,8 @@ from solstone.convey import state
 from solstone.convey.reasons import INVALID_DAY, INVALID_REQUEST_VALUE
 from solstone.convey.utils import error_response
 from solstone.think.importers.health_schema import (
+    SOURCE_APPLE_HEALTH,
+    SOURCE_OURA_API,
     display_number,
     display_value,
     friendly_type_name,
@@ -74,6 +76,15 @@ CURVE_SVG_HEIGHT = 260.0
 MAX_WINDOW_DAYS = 7
 
 HEART_RATE_TYPE = "HKQuantityTypeIdentifierHeartRate"
+
+# Normalized Oura API v2 record types (solstone.think.importers.oura).
+OURA_READINESS_TYPE = "oura.daily_readiness"
+OURA_SLEEP_SCORE_TYPE = "oura.daily_sleep"
+OURA_SLEEP_PERIOD_TYPE = "oura.sleep"
+OURA_RESILIENCE_TYPE = "oura.daily_resilience"
+OURA_STRESS_TYPE = "oura.daily_stress"
+OURA_SPO2_TYPE = "oura.daily_spo2"
+OURA_TEMPERATURE_DEVIATION_TYPE = "oura.temperature_deviation"
 # Heart-rate readings fold into buckets this wide; the median draws the
 # line and the bucket min–max renders as a translucent band.
 HEART_BUCKET_MINUTES = 5
@@ -116,8 +127,20 @@ _MONTH_FULL = (
 # Rule order matters: Sleep claims "Sleeping" types (wrist temperature),
 # Heart claims "HeartRate" before the walking rules could see gait names.
 _FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("Sleep", ("SleepAnalysis", "Sleeping")),
+    (
+        "Sleep",
+        ("SleepAnalysis", "Sleeping", OURA_SLEEP_SCORE_TYPE, OURA_SLEEP_PERIOD_TYPE),
+    ),
     ("Glucose", ("Glucose",)),
+    (
+        "Recovery",
+        (
+            OURA_READINESS_TYPE,
+            OURA_RESILIENCE_TYPE,
+            OURA_STRESS_TYPE,
+            OURA_TEMPERATURE_DEVIATION_TYPE,
+        ),
+    ),
     (
         "Heart",
         (
@@ -130,6 +153,7 @@ _FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "AtrialFibrillation",
             "IrregularHeartRhythm",
             "Electrocardiogram",
+            OURA_SPO2_TYPE,
         ),
     ),
     (
@@ -184,6 +208,7 @@ _FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
 _FAMILY_ORDER = (
     "Sleep",
     "Glucose",
+    "Recovery",
     "Activity",
     "Heart",
     "Mindfulness",
@@ -314,8 +339,27 @@ def _month_reader(journal_root: Path) -> Callable[[str], list[dict[str, Any]]]:
 
 
 def _source_label(row: dict[str, Any]) -> str:
-    source = row.get("source_name") or row.get("source_family") or "unknown"
-    return str(source)
+    source = row.get("source_name")
+    if source:
+        return str(source)
+    family = str(row.get("source_family") or "")
+    if family == SOURCE_OURA_API:
+        # Oura API rows carry no per-device source name; the owner-facing
+        # chip names the pipe the data arrived through.
+        return "Oura (API)"
+    return family or "unknown"
+
+
+# Source families whose owner-facing "brought in via" label is not the
+# generic underscores-to-title rendering.
+_SOURCE_FAMILY_VIA_LABELS = {SOURCE_OURA_API: "Oura API"}
+
+
+def _family_via_label(family: str) -> str:
+    known = _SOURCE_FAMILY_VIA_LABELS.get(family)
+    if known is not None:
+        return known
+    return family.replace("_", " ").title()
 
 
 def _row_time(row: dict[str, Any]) -> str | None:
@@ -518,7 +562,67 @@ def _is_glucose_type(record_type: str) -> bool:
 
 
 def _is_sleep_type(record_type: str) -> bool:
-    return "SleepAnalysis" in record_type
+    # Oura API sleep periods carry bedtime intervals and join the same
+    # session pool as HealthKit sleep-analysis rows.
+    return "SleepAnalysis" in record_type or record_type == OURA_SLEEP_PERIOD_TYPE
+
+
+# --- O-5C: same-device supersede (the API pipe wins over the AH mirror) ------
+#
+# The same ring's data can arrive through two pipes: normalized Oura API
+# rows (source_family "oura_api") and rows the Oura app mirrored into
+# Apple Health (source_family "apple_health" with an Oura-named source).
+# Day-level aggregation must use ONE canonical pipe, never both: for any
+# day+signal where API rows exist, the mirror's rows for that signal are
+# excluded from aggregates, curves, and counts — the API supersedes the
+# mirror. Genuine cross-DEVICE data (Apple Watch, iPhone) is never touched
+# by this rule: Watch-vs-Ring comparison is a feature. The audit drawer
+# still lists both pipes with their bundles.
+
+# Which Apple-Health record-type fragments each Oura API record type
+# supersedes. Only signals both pipes can genuinely carry appear here —
+# scores, readiness, resilience, stress, and the temperature deviation
+# never cross into HealthKit, so they need no entry.
+_MIRROR_SUPERSEDED_FRAGMENTS: dict[str, tuple[str, ...]] = {
+    OURA_SLEEP_PERIOD_TYPE: ("SleepAnalysis",),
+    OURA_SPO2_TYPE: ("OxygenSaturation",),
+}
+
+
+def _is_oura_named_mirror_row(row: dict[str, Any]) -> bool:
+    """An Apple-Health row whose source names the Oura ring (the mirror)."""
+    if str(row.get("source_family") or "") != SOURCE_APPLE_HEALTH:
+        return False
+    return "oura" in str(row.get("source_name") or "").lower()
+
+
+def _resolve_canonical_day_rows(
+    day_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """One day's rows for aggregation, with superseded mirror rows dropped.
+
+    The O-5C seam: applied wherever one day's rows fold into day-level
+    aggregates (day cards, the recent-day rail, the trends fold). Audit
+    surfaces keep the unfiltered rows. Days without Oura API rows pass
+    through unchanged, so mirror-only archives aggregate exactly as before.
+    """
+    superseded: list[str] = []
+    for row in day_rows:
+        if str(row.get("source_family") or "") != SOURCE_OURA_API:
+            continue
+        fragments = _MIRROR_SUPERSEDED_FRAGMENTS.get(str(row.get("record_type") or ""))
+        if fragments:
+            superseded.extend(fragments)
+    if not superseded:
+        return day_rows
+    kept: list[dict[str, Any]] = []
+    for row in day_rows:
+        if _is_oura_named_mirror_row(row):
+            record_type = str(row.get("record_type") or "")
+            if any(fragment in record_type for fragment in superseded):
+                continue
+        kept.append(row)
+    return kept
 
 
 # --- Archive aggregates ------------------------------------------------------
@@ -2132,6 +2236,97 @@ def _heart_analysis(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
     }
 
 
+def _first_row_of_type(
+    rows: list[dict[str, Any]], record_type: str
+) -> dict[str, Any] | None:
+    for row in rows:
+        if str(row.get("record_type") or "") == record_type:
+            return row
+    return None
+
+
+def _recovery_fact(label: str, detail: str) -> dict[str, str]:
+    return {"label": label, "detail": detail, "line": f"{label} {detail}"}
+
+
+def _recovery_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The "How recovered am I?" card: Oura's daily numbers, attributed.
+
+    §13-strict and numbers-only by decision (Oura display v1): every line
+    is a number Oura reported, attributed to Oura — never our gloss, never
+    an interpretation. Oura's own qualitative labels (the resilience level,
+    the stress day summary) are deliberately not rendered; those rows still
+    count in coverage families, the window signals, and the audit drawer.
+    Line formats agree with the importer's ``render_day_summary`` copy
+    reference in ``solstone.think.importers.oura``.
+    """
+
+    facts: list[dict[str, str]] = []
+    readiness = _first_row_of_type(day_rows, OURA_READINESS_TYPE)
+    if readiness is not None:
+        value = _parse_float(readiness.get("value"))
+        if value is not None:
+            facts.append(
+                _recovery_fact(
+                    friendly_type_name(OURA_READINESS_TYPE),
+                    f"{_format_number(value)} · Oura's score",
+                )
+            )
+    deviation = _first_row_of_type(day_rows, OURA_TEMPERATURE_DEVIATION_TYPE)
+    if deviation is not None:
+        value = _parse_float(deviation.get("value"))
+        if value is not None:
+            facts.append(
+                _recovery_fact(
+                    friendly_type_name(OURA_TEMPERATURE_DEVIATION_TYPE),
+                    f"{value:+.2f} °C · Oura's measurement",
+                )
+            )
+    spo2 = _first_row_of_type(day_rows, OURA_SPO2_TYPE)
+    if spo2 is not None:
+        value = _parse_float(spo2.get("value"))
+        if value is not None:
+            facts.append(
+                _recovery_fact(
+                    friendly_type_name(OURA_SPO2_TYPE),
+                    f"{_format_number(value)}% · Oura's average",
+                )
+            )
+    stress = _first_row_of_type(day_rows, OURA_STRESS_TYPE)
+    if stress is not None:
+        metadata = stress.get("metadata")
+        metadata = metadata if isinstance(metadata, dict) else {}
+        parts: list[str] = []
+        high = _parse_float(metadata.get("stress_high"))
+        if high is not None:
+            parts.append(f"high {_format_duration(high / 60)}")
+        recovery_high = _parse_float(metadata.get("recovery_high"))
+        if recovery_high is not None:
+            parts.append(f"recovery {_format_duration(recovery_high / 60)}")
+        if parts:
+            facts.append(
+                _recovery_fact(
+                    friendly_type_name(OURA_STRESS_TYPE),
+                    " · ".join(parts) + " · Oura's measurement",
+                )
+            )
+    if not facts:
+        return None
+    return {"facts": facts}
+
+
+def _oura_sleep_score_line(day_rows: list[dict[str, Any]]) -> str | None:
+    """The sleep card's attributed score line, when Oura scored the day."""
+
+    row = _first_row_of_type(day_rows, OURA_SLEEP_SCORE_TYPE)
+    if row is None:
+        return None
+    value = _parse_float(row.get("value"))
+    if value is None:
+        return None
+    return f"Sleep score {_format_number(value)} · Oura's score"
+
+
 def _nearest_days_with_data(by_day: dict[str, int], day: str) -> dict[str, Any]:
     before = [d for d in by_day if d < day]
     after = [d for d in by_day if d > day]
@@ -2252,31 +2447,52 @@ def _build_health_day(
         months.append(next_month)
     read = reader or _month_reader(journal_root)
     rows = [row for shard_month in months for row in read(shard_month)]
-    day_rows = [row for row in rows if row.get("day") == day]
+    # Audit surfaces list every row from every pipe; aggregation works on
+    # the canonical rows after the O-5C same-device supersede.
+    audit_rows = [row for row in rows if row.get("day") == day]
+    day_rows = _resolve_canonical_day_rows(audit_rows)
     prev_day = (target - timedelta(days=1)).strftime("%Y%m%d")
-    prev_rows = [row for row in rows if row.get("day") == prev_day]
+    prev_rows = _resolve_canonical_day_rows(
+        [row for row in rows if row.get("day") == prev_day]
+    )
     next_day = next_date.strftime("%Y%m%d")
-    next_rows = [row for row in rows if row.get("day") == next_day]
+    next_rows = _resolve_canonical_day_rows(
+        [row for row in rows if row.get("day") == next_day]
+    )
 
     families: dict[str, list[dict[str, Any]]] = defaultdict(list)
     for row in day_rows:
         families[_family_for_type(str(row.get("record_type") or ""))].append(row)
 
     sleep = _sleep_analysis(day_rows, prev_rows, next_rows, day)
+    if sleep is not None:
+        sleep["score_line"] = _oura_sleep_score_line(day_rows)
     glucose_series = _glucose_series(day_rows)
     activity = _activity_analysis(day_rows)
-    heart = _heart_analysis(families.get("Heart", []))
+    # The nightly SpO2 average renders on the recovery card only, never a
+    # second time as a generic heart fact.
+    heart = _heart_analysis(
+        [
+            row
+            for row in families.get("Heart", [])
+            if str(row.get("record_type") or "") != OURA_SPO2_TYPE
+        ]
+    )
+    recovery = _recovery_analysis(day_rows)
     mind_sound_facts = _fact_items(
         families.get("Mindfulness", []) + families.get("Hearing & audio", [])
     )
     walking_facts = _walking_metrics(families.get("Walking metrics", []))
     body_facts = _body_measurement_facts(families.get("Body measurements", []))
     # Leftover signals: the explicit "Other" family plus sleep-family rows
-    # that are not sleep-analysis intervals (wrist temperature and kin).
+    # that are neither sleep-session intervals (wrist temperature and kin)
+    # nor the Oura sleep score, which renders only as the sleep card's
+    # attributed line.
     leftover_rows = families.get("Other", []) + [
         row
         for row in families.get("Sleep", [])
         if not _is_sleep_type(str(row.get("record_type") or ""))
+        and str(row.get("record_type") or "") != OURA_SLEEP_SCORE_TYPE
     ]
     other_facts = _fact_items(leftover_rows)
 
@@ -2286,7 +2502,7 @@ def _build_health_day(
         " + ".join(
             sorted(
                 {
-                    str(row.get("source_family") or "").replace("_", " ").title()
+                    _family_via_label(str(row.get("source_family")))
                     for row in day_rows
                     if row.get("source_family")
                 }
@@ -2332,6 +2548,7 @@ def _build_health_day(
         "glucose_series": glucose_series,
         "activity": activity,
         "heart": heart,
+        "recovery": recovery,
         "mind_sound": {"facts": mind_sound_facts} if mind_sound_facts else None,
         "walking": {"facts": walking_facts} if walking_facts else None,
         "body_measurements": {"facts": body_facts} if body_facts else None,
@@ -2349,10 +2566,12 @@ def _build_health_day(
             else []
         ),
         "audit": {
+            # Audit counts every row from every pipe — rows the O-5C
+            # supersede excluded from aggregation still list here.
             "types": dict(
                 sorted(
                     Counter(
-                        str(row.get("record_type") or "") for row in day_rows
+                        str(row.get("record_type") or "") for row in audit_rows
                     ).items()
                 )
             ),
@@ -2361,7 +2580,7 @@ def _build_health_day(
             "import_ids": sorted(
                 {
                     import_id
-                    for row in day_rows
+                    for row in audit_rows
                     for import_id in (
                         row.get("import_ids")
                         or ([str(row["import_id"])] if row.get("import_id") else [])
@@ -2829,9 +3048,12 @@ TREND_ANNOTATION_LIMIT = 6
 
 # Ribbon order is fixed: key, owner-facing label, unit label. Asleep values
 # travel as minutes; the client formats them against the "h" unit label.
+# Readiness is Oura's unitless daily score — its empty unit label renders
+# the plain number.
 _TREND_SIGNALS: tuple[tuple[str, str, str], ...] = (
     ("resting_hr", "Resting heart rate", "bpm"),
     ("asleep_minutes", "Asleep", "h"),
+    ("readiness", "Readiness", ""),
     ("steps", "Steps", "steps"),
     ("body_mass", "Body mass", "lb"),
     ("glucose_avg", "Glucose average", "mg/dL"),
@@ -2955,12 +3177,20 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
       fabricated from raw heart-rate rows.
     - asleep_minutes — canonical ``pick_day_sleep`` minutes (stage-aware,
       merged-span fallback), attributed to the morning the night ended.
+    - readiness — the day's Oura readiness score, Oura's number verbatim.
     - steps — the primary-source total per ``_primary_source_steps``;
       multi-source days without coverage to rank by stay absent.
     - body_mass — the day's latest scale reading (sparse days stay sparse).
     - glucose_avg — the day's mean reading, one decimal.
+
+    Each day folds through ``_resolve_canonical_day_rows`` first (O-5C):
+    where the Oura API pipe carries a signal, the Apple-Health mirror's
+    Oura-named rows for that signal stay out of the fold. First-appearance
+    annotations keep reading every row — a source's arrival is a fact
+    regardless of which pipe aggregates.
     """
     resting_hr: dict[str, tuple[Any, float]] = {}
+    readiness: dict[str, tuple[Any, float]] = {}
     body_mass: dict[str, tuple[Any, float]] = {}
     glucose_sums: dict[str, list[float]] = {}
     steps: dict[str, int] = {}
@@ -2970,7 +3200,7 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
     first_day: str | None = None
 
     for month in _coverage_month_keys(journal_root):
-        step_rows_by_day: dict[str, list[dict[str, Any]]] = {}
+        rows_by_day: dict[str, list[dict[str, Any]]] = {}
         for row in _iter_normalized_rows(journal_root, month=month):
             day = str(row.get("day") or "")
             if not DAY_RE.fullmatch(day):
@@ -2980,37 +3210,43 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
             source = _source_label(row)
             if day < first_day_by_source.get(source, "99999999"):
                 first_day_by_source[source] = day
-            record_type = str(row.get("record_type") or "")
-            if _is_sleep_type(record_type):
-                start = _parse_record_time(
-                    row.get("start_date") or row.get("start_time")
-                )
-                if start is None:
+            rows_by_day.setdefault(day, []).append(row)
+        step_rows_by_day: dict[str, list[dict[str, Any]]] = {}
+        for day, bucket_rows in rows_by_day.items():
+            for row in _resolve_canonical_day_rows(bucket_rows):
+                record_type = str(row.get("record_type") or "")
+                if _is_sleep_type(record_type):
+                    start = _parse_record_time(
+                        row.get("start_date") or row.get("start_time")
+                    )
+                    if start is None:
+                        continue
+                    end = _parse_record_time(row.get("end_date")) or start
+                    stage = str(row["value"]) if row.get("value") is not None else None
+                    sleep_rows_by_day.setdefault(day, []).append(
+                        (_source_label(row), start, end, stage)
+                    )
+                elif row.get("kind") == "workout":
+                    # Workout rows summarize on day cards; no ribbon total
+                    # may fold them in.
                     continue
-                end = _parse_record_time(row.get("end_date")) or start
-                stage = str(row["value"]) if row.get("value") is not None else None
-                sleep_rows_by_day.setdefault(day, []).append(
-                    (source, start, end, stage)
-                )
-            elif row.get("kind") == "workout":
-                # Workout rows summarize on day cards; no ribbon total
-                # may fold them in.
-                continue
-            elif _STEP_COUNT_FRAGMENT in record_type:
-                step_rows_by_day.setdefault(day, []).append(row)
-            elif _is_glucose_type(record_type):
-                value = _parse_float(row.get("value"))
-                if value is None:
-                    continue
-                bucket = glucose_sums.setdefault(day, [0.0, 0.0])
-                bucket[0] += value
-                bucket[1] += 1
-                if first_glucose_day is None or day < first_glucose_day:
-                    first_glucose_day = day
-            elif _RESTING_HR_FRAGMENT in record_type:
-                _fold_latest_reading(resting_hr, day, row)
-            elif _is_body_mass_type(record_type):
-                _fold_latest_reading(body_mass, day, row)
+                elif _STEP_COUNT_FRAGMENT in record_type:
+                    step_rows_by_day.setdefault(day, []).append(row)
+                elif _is_glucose_type(record_type):
+                    value = _parse_float(row.get("value"))
+                    if value is None:
+                        continue
+                    bucket = glucose_sums.setdefault(day, [0.0, 0.0])
+                    bucket[0] += value
+                    bucket[1] += 1
+                    if first_glucose_day is None or day < first_glucose_day:
+                        first_glucose_day = day
+                elif _RESTING_HR_FRAGMENT in record_type:
+                    _fold_latest_reading(resting_hr, day, row)
+                elif record_type == OURA_READINESS_TYPE:
+                    _fold_latest_reading(readiness, day, row)
+                elif _is_body_mass_type(record_type):
+                    _fold_latest_reading(body_mass, day, row)
         for day, day_rows in step_rows_by_day.items():
             picked = _primary_source_steps(day_rows)
             if picked is not None:
@@ -3021,6 +3257,7 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
     daily_by_key: dict[str, dict[str, float | int]] = {
         "resting_hr": {day: value for day, (_, value) in resting_hr.items()},
         "asleep_minutes": _trend_asleep_by_day(sleep_rows_by_day),
+        "readiness": {day: value for day, (_, value) in readiness.items()},
         "steps": steps,
         "body_mass": {day: value for day, (_, value) in body_mass.items()},
         "glucose_avg": {

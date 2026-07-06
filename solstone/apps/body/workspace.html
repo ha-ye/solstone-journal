@@ -1794,6 +1794,10 @@ a.body-jump-day:focus-visible {
             &middot; <span class="body-num">{{ body_day.sleep.duration }}</span>
           </p>
         {% endif %}
+        {% if body_day.sleep.score_line %}
+          {# Oura's number, attributed to Oura — never our reading of it. #}
+          <p class="body-muted body-num">{{ body_day.sleep.score_line }}</p>
+        {% endif %}
         <svg class="body-sleep-bar" viewBox="0 0 1440 34" preserveAspectRatio="none" aria-hidden="true">
           <rect class="body-sleep-axis" x="0" y="15" width="1440" height="4" rx="2"></rect>
           {% for tick in body_day.sleep.bar.ticks %}
@@ -1993,6 +1997,23 @@ a.body-jump-day:focus-visible {
             {% endif %}
           </ul>
         {% endif %}
+      </section>
+    {% endif %}
+
+    {% if body_day.recovery %}
+      <section class="body-card body-card--accent" aria-labelledby="body-recovery-title">
+        <h2 id="body-recovery-title" class="body-question-title">How recovered am I?</h2>
+        {# Numbers only, each attributed to Oura (§13): Oura's scores and
+           measurements verbatim — no qualitative labels, no advice. #}
+        <ul class="body-facts">
+          {% for fact in body_day.recovery.facts %}
+            <li>
+              <span>{{ fact.label }}</span>
+              <strong class="body-num">{{ fact.detail }}</strong>
+            </li>
+          {% endfor %}
+        </ul>
+        <p class="body-card-footer">Oura's daily numbers &middot; brought in via the Oura API</p>
       </section>
     {% endif %}
     </div>
