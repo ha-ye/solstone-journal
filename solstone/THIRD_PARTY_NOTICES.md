@@ -43,6 +43,46 @@ Source:
 License notice: Creative Commons Attribution 4.0 International (CC-BY-4.0).
 License text: https://creativecommons.org/licenses/by/4.0/legalcode.txt
 
+## runtime-downloaded provider artifacts (ced.cpp sound-tag engine)
+
+These artifacts are fetched on demand into the journal provider cache for local
+ambient sound tagging; they are not bundled in this repository.
+
+### ced.cpp v0.1.0 engine
+
+Attribution: ced.cpp project (localai-org).
+
+Source:
+
+- Release binaries: https://github.com/localai-org/ced.cpp/releases/tag/v0.1.0
+- Project: https://github.com/localai-org/ced.cpp
+- Downloaded file: `ced-v0.1.0-lib-linux-cpu-x64.tar.gz`
+- SHA-256: `915e0573bc4e17197a7a893d0eb98e1a851abb64451b2e1a8ad51f5f99040360`
+- Downloaded file: `ced-v0.1.0-lib-linux-cpu-arm64.tar.gz`
+- SHA-256: `a87de0a8b086429aa5d6544a6f881a70e62726d07901734640ac85dbf146181e`
+- Downloaded file: `ced-v0.1.0-lib-macos-metal-arm64.tar.gz`
+- SHA-256: `4c913ba0ece1d06ba2210da9fcaee3d8199ca3c62697c331810f224444e4054b`
+
+License notice: MIT.
+
+## runtime-downloaded provider artifacts (ced-tiny sound-tag model)
+
+This artifact is fetched on demand into the journal provider cache for local
+ambient sound tagging; it is not bundled in this repository.
+
+### ced-tiny-q8_0 GGUF model
+
+Attribution: `mudler/ced-gguf`.
+
+Source:
+
+- Model repository: https://huggingface.co/mudler/ced-gguf
+- Pinned revision: b5e9a4aad6438763c8da16079d77563fbed35c65
+- Downloaded file: `ced-tiny-q8_0.gguf`
+- SHA-256: `48bee4e2fc3cc85d7806e03471db24e77fda6c2a2e81ffe9ef67caebaf2bd674`
+
+License notice: Apache License 2.0 (Apache-2.0).
+
 ## runtime-downloaded provider artifacts (rerank cross-encoder)
 
 These artifacts are fetched on demand into the journal provider cache for local

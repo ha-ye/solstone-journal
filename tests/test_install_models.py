@@ -219,6 +219,9 @@ def _prepare_check_main(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         install_models, "_install_rerank_model", lambda *, check, force: 0
     )
+    monkeypatch.setattr(
+        install_models, "_install_ced_assets", lambda *, check, force: 0
+    )
 
 
 def test_main_check_missing_cpp_artifacts_returns_nonzero(
@@ -265,6 +268,11 @@ def test_main_rerank_failure_short_circuits_before_parakeet(
     )
     monkeypatch.setattr(
         install_models,
+        "_install_ced_assets",
+        lambda *, check, force: pytest.fail("ced install should not start"),
+    )
+    monkeypatch.setattr(
+        install_models,
         "_check_linux_cpp_ready",
         lambda: pytest.fail("parakeet check should not start"),
     )
@@ -278,7 +286,7 @@ def test_main_rerank_failure_short_circuits_before_parakeet(
     assert calls == [(True, False)]
 
 
-def test_main_rerank_success_continues_to_parakeet(
+def test_main_runs_ced_after_rerank_before_parakeet(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ):
@@ -292,12 +300,140 @@ def test_main_rerank_success_continues_to_parakeet(
     monkeypatch.setattr(
         install_models,
         "_install_rerank_model",
-        lambda *, check, force: calls.append((check, force)) or 0,
+        lambda *, check, force: calls.append(("rerank", check, force)) or 0,
     )
-    monkeypatch.setattr(install_models, "_check_linux_cpp_ready", lambda: paths)
+    monkeypatch.setattr(
+        install_models,
+        "_install_ced_assets",
+        lambda *, check, force: calls.append(("ced", check, force)) or 0,
+    )
+    monkeypatch.setattr(
+        install_models,
+        "_check_linux_cpp_ready",
+        lambda: calls.append(("parakeet",)) or paths,
+    )
 
     assert install_models.main() == 0
-    assert calls == [(True, False)]
+    assert calls == [
+        ("rerank", True, False),
+        ("ced", True, False),
+        ("parakeet",),
+    ]
+
+
+def test_main_ced_failure_short_circuits_before_parakeet(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    monkeypatch.setattr(sys, "argv", ["sol install-models", "--check"])
+    monkeypatch.delenv(install_models.JOURNAL_VARIANT_ENV, raising=False)
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
+    monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        install_models, "_install_rerank_model", lambda *, check, force: 0
+    )
+    monkeypatch.setattr(
+        install_models, "_install_ced_assets", lambda *, check, force: 8
+    )
+    monkeypatch.setattr(
+        install_models,
+        "_check_linux_cpp_ready",
+        lambda: pytest.fail("parakeet check should not start"),
+    )
+
+    assert install_models.main() == 8
+
+
+def test_install_ced_assets_unsupported_platform_prints_skip(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    from solstone.think.providers import ced_install
+
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("windows", "amd64"))
+    monkeypatch.setattr(
+        ced_install, "ced_engine_artifact_key", lambda os_name=None, arch=None: None
+    )
+    monkeypatch.setattr(
+        ced_install,
+        "install_ced_assets",
+        lambda **_kwargs: pytest.fail("ced install should not start"),
+    )
+
+    assert install_models._install_ced_assets(check=False, force=False) == 0
+    assert (
+        "ced install: unsupported platform windows/amd64; skipping ced sound-tag assets"
+    ) in capsys.readouterr().out
+
+
+def test_install_ced_assets_threads_check_and_force(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    from solstone.think.providers import ced_install
+
+    calls = []
+    record = object()
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(
+        ced_install,
+        "ced_engine_artifact_key",
+        lambda os_name=None, arch=None: "linux-cpu-x64",
+    )
+    monkeypatch.setattr(ced_install, "model_path", lambda: tmp_path / "ced.gguf")
+    monkeypatch.setattr(
+        ced_install, "check_ced_assets", lambda: calls.append(("check",)) or record
+    )
+    monkeypatch.setattr(
+        ced_install,
+        "install_ced_assets",
+        lambda *, force: calls.append(("install", force)) or record,
+    )
+
+    assert install_models._install_ced_assets(check=True, force=False) == 0
+    assert f"model ready: {tmp_path / 'ced.gguf'}" in capsys.readouterr().out
+
+    assert install_models._install_ced_assets(check=False, force=True) == 0
+    stdout = capsys.readouterr().out
+    assert install_models.CED_DOWNLOAD_DISCLOSURE in stdout
+    assert f"model ready: {tmp_path / 'ced.gguf'}" in stdout
+    assert calls == [("check",), ("install", True)]
+
+
+def test_install_ced_assets_downloads_when_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+):
+    from solstone.think.providers import ced_install
+
+    calls = []
+    record = object()
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(
+        ced_install,
+        "ced_engine_artifact_key",
+        lambda os_name=None, arch=None: "linux-cpu-x64",
+    )
+    monkeypatch.setattr(ced_install, "model_path", lambda: tmp_path / "ced.gguf")
+
+    def missing_check():
+        calls.append(("check",))
+        raise ced_install.CedInstallError("sidecar_missing", "missing")
+
+    monkeypatch.setattr(ced_install, "check_ced_assets", missing_check)
+    monkeypatch.setattr(
+        ced_install,
+        "install_ced_assets",
+        lambda *, force: calls.append(("install", force)) or record,
+    )
+
+    assert install_models._install_ced_assets(check=False, force=False) == 0
+    stdout = capsys.readouterr().out
+    assert install_models.CED_DOWNLOAD_DISCLOSURE in stdout
+    assert f"model ready: {tmp_path / 'ced.gguf'}" in stdout
+    assert calls == [("check",), ("install", False)]
 
 
 def test_run_mac_helper_soft_fails_on_packaged_install(
@@ -357,6 +493,9 @@ def test_main_force_reinstalls_linux_cpp(
         install_models, "_install_rerank_model", lambda *, check, force: 0
     )
     monkeypatch.setattr(
+        install_models, "_install_ced_assets", lambda *, check, force: 0
+    )
+    monkeypatch.setattr(
         install_models, "_check_linux_cpp_ready", lambda: _ready_paths(tmp_path)
     )
     monkeypatch.setattr(fit_report, "build_parakeet_fit_report", lambda: _fit("ok"))
@@ -384,6 +523,9 @@ def test_main_linux_blocks_before_install_models(
         install_models, "_install_rerank_model", lambda *, check, force: 0
     )
     monkeypatch.setattr(
+        install_models, "_install_ced_assets", lambda *, check, force: 0
+    )
+    monkeypatch.setattr(
         fit_report, "build_parakeet_fit_report", lambda: _fit("blocked")
     )
     monkeypatch.setattr(
@@ -407,6 +549,9 @@ def test_main_linux_warning_continues_to_install_models(
     monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
     monkeypatch.setattr(
         install_models, "_install_rerank_model", lambda *, check, force: 0
+    )
+    monkeypatch.setattr(
+        install_models, "_install_ced_assets", lambda *, check, force: 0
     )
     monkeypatch.setattr(
         fit_report, "build_parakeet_fit_report", lambda: _fit("warning")
@@ -435,6 +580,9 @@ def test_main_coreml_blocks_before_install_models(
         install_models, "_install_rerank_model", lambda *, check, force: 0
     )
     monkeypatch.setattr(
+        install_models, "_install_ced_assets", lambda *, check, force: 0
+    )
+    monkeypatch.setattr(
         fit_report,
         "build_coreml_parakeet_fit_report",
         lambda os_name, arch, cache_dir: _fit("blocked"),
@@ -459,6 +607,9 @@ def test_main_skips_install_when_linux_cpp_ready(
     monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
     monkeypatch.setattr(
         install_models, "_install_rerank_model", lambda *, check, force: 0
+    )
+    monkeypatch.setattr(
+        install_models, "_install_ced_assets", lambda *, check, force: 0
     )
     monkeypatch.setattr(
         install_models, "_check_linux_cpp_ready", lambda: _ready_paths(tmp_path)

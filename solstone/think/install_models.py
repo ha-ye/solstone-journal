@@ -44,6 +44,10 @@ from solstone.think.utils import is_packaged_install
 
 JOURNAL_VARIANT_ENV = "JOURNAL_VARIANT"
 HELPER_ENV_KEY = "SOLSTONE_PARAKEET_HELPER"
+CED_DOWNLOAD_DISCLOSURE = (
+    "ced assets: downloading ced.cpp v0.1.0 engine from github.com (MIT) "
+    "and ced-tiny-q8_0 model from huggingface.co (Apache-2.0)"
+)
 
 
 def _now_utc() -> str:
@@ -324,6 +328,48 @@ def _install_rerank_model(*, check: bool, force: bool) -> int:
     return 0
 
 
+def _install_ced_assets(*, check: bool, force: bool) -> int:
+    from solstone.think.providers import ced_install
+
+    os_name, arch = _platform_info()
+    if ced_install.ced_engine_artifact_key(os_name, arch) is None:
+        print(
+            f"ced install: unsupported platform {os_name}/{arch}; "
+            "skipping ced sound-tag assets"
+        )
+        return 0
+
+    try:
+        if check:
+            record = ced_install.check_ced_assets()
+            if record is not None:
+                print(f"model ready: {ced_install.model_path()}")
+            return 0
+
+        if not force:
+            try:
+                record = ced_install.check_ced_assets()
+            except ced_install.CedInstallError:
+                record = None
+            if record is not None:
+                print(f"model ready: {ced_install.model_path()}")
+                return 0
+
+        print(CED_DOWNLOAD_DISCLOSURE)
+        record = ced_install.install_ced_assets(force=force)
+        if record is None:
+            print(
+                f"ced install: unsupported platform {os_name}/{arch}; "
+                "skipping ced sound-tag assets"
+            )
+            return 0
+    except ced_install.CedInstallError as exc:
+        return _fail(str(exc))
+
+    print(f"model ready: {ced_install.model_path()}")
+    return 0
+
+
 def _install_linux_cpp(*, force: bool = False) -> int:
     from solstone.think.providers import parakeet_install
 
@@ -447,6 +493,10 @@ def main() -> int:
         return _fail(str(exc))
 
     result = _install_rerank_model(check=args.check, force=args.force)
+    if result != 0:
+        return result
+
+    result = _install_ced_assets(check=args.check, force=args.force)
     if result != 0:
         return result
 

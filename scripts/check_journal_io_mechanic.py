@@ -96,6 +96,7 @@ EXCLUDED_FILES: frozenset[str] = frozenset(
         "solstone/think/providers/local_install.py",
         "solstone/think/providers/oci_image.py",
         "solstone/think/providers/mlx_install.py",
+        "solstone/think/providers/ced_install.py",
         "solstone/think/providers/rerank_install.py",
         "solstone/think/services/scout.py",
         "solstone/think/services/spl.py",
