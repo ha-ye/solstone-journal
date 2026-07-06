@@ -91,6 +91,24 @@ def test_register_loopback_returns_pinned_response(observer_env):
     assert data["protocol_version"] == 2
 
 
+def test_register_extension_origin_returns_pinned_response(observer_env):
+    env = observer_env()
+
+    resp = env.client.post(
+        "/app/observer/register",
+        json=VALID_REGISTER_PAYLOAD,
+        headers={
+            "Origin": "chrome-extension://fgfnkcefedeheoeamppkiiloncfekakf",
+            "Sec-Fetch-Site": "cross-site",
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert set(data) == {"key", "prefix", "name", "ingest_url", "protocol_version"}
+    assert data["name"] == "fedora.tmux"
+
+
 def test_register_same_stream_twice_reuses_key(observer_env):
     env = observer_env()
 

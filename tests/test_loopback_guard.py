@@ -35,9 +35,9 @@ def app(tmp_path, monkeypatch):
     return create_app(str(journal))
 
 
-def _guard(app, *, headers, method="GET", mode="dl"):
+def _guard(app, *, headers, method="GET", mode="dl", path="/api/whatever"):
     """Run the guard in a request context; return None (pass) or (resp, status)."""
-    with app.test_request_context("/api/whatever", method=method, headers=headers):
+    with app.test_request_context(path, method=method, headers=headers):
         g.identity = _identity(mode)
         return guard_loopback_origin()
 
@@ -151,6 +151,83 @@ def test_pl_via_spl_unaffected(app):
         )
         is None
     )
+
+
+# --- Trusted observer extension exception ---
+
+
+TRUSTED_EXT_ORIGIN = "chrome-extension://fgfnkcefedeheoeamppkiiloncfekakf"
+
+
+def test_dl_trusted_extension_origin_on_observer_path_passes(app):
+    result = _guard(
+        app,
+        method="POST",
+        path="/app/observer/register",
+        headers={
+            "Host": "127.0.0.1:5015",
+            "Origin": TRUSTED_EXT_ORIGIN,
+            "Sec-Fetch-Site": "cross-site",
+        },
+    )
+
+    assert result is None
+
+
+def test_dl_trusted_extension_origin_on_nonobserver_path_rejected(app):
+    result = _guard(
+        app,
+        method="POST",
+        headers={
+            "Host": "127.0.0.1:5015",
+            "Origin": TRUSTED_EXT_ORIGIN,
+            "Sec-Fetch-Site": "cross-site",
+        },
+    )
+
+    assert _rejected(result)
+
+
+def test_dl_other_extension_origin_on_observer_path_rejected(app):
+    result = _guard(
+        app,
+        method="POST",
+        path="/app/observer/register",
+        headers={
+            "Host": "127.0.0.1:5015",
+            "Origin": "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+    )
+
+    assert _rejected(result)
+
+
+def test_dl_trusted_extension_nonloopback_host_rejected(app):
+    result = _guard(
+        app,
+        method="POST",
+        path="/app/observer/register",
+        headers={
+            "Host": "attacker.example",
+            "Origin": TRUSTED_EXT_ORIGIN,
+        },
+    )
+
+    assert _rejected(result)
+
+
+def test_dl_trusted_extension_path_boundary_rejected(app):
+    result = _guard(
+        app,
+        method="POST",
+        path="/app/observerX",
+        headers={
+            "Host": "127.0.0.1:5015",
+            "Origin": TRUSTED_EXT_ORIGIN,
+        },
+    )
+
+    assert _rejected(result)
 
 
 # --- Wiring: the guard fires through real request dispatch (before_app_request) ---

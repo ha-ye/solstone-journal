@@ -141,6 +141,9 @@ def require_access() -> Any:
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _SAME_SITE_FETCH = frozenset({"same-origin", "same-site", "none"})
 _STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+_TRUSTED_OBSERVER_EXTENSION_ORIGIN = (
+    "chrome-extension://fgfnkcefedeheoeamppkiiloncfekakf"
+)
 
 
 def _hostname(value: str, *, has_scheme: bool) -> str | None:
@@ -154,6 +157,22 @@ def _hostname(value: str, *, has_scheme: bool) -> str | None:
         return urlparse(reference).hostname
     except ValueError:
         return None
+
+
+def _is_trusted_observer_extension_request() -> bool:
+    """The pinned solstone-browser extension calling the observer API.
+
+    Chrome's extension service worker sends its ``chrome-extension://``
+    Origin (and may send ``Sec-Fetch-Site: cross-site``) on its loopback
+    observer POSTs. Grant exactly the pinned extension id, and only on the
+    ``/app/observer`` path namespace, an exemption from the browser
+    CSRF/Origin checks. The observer route's own direct-loopback gate
+    (``_is_trusted_register_caller``) remains the real authorization.
+    """
+    path = request.path
+    if not (path == "/app/observer" or path.startswith("/app/observer/")):
+        return False
+    return request.headers.get("Origin") == _TRUSTED_OBSERVER_EXTENSION_ORIGIN
 
 
 @bp.before_app_request
@@ -178,6 +197,11 @@ def guard_loopback_origin() -> Any:
 
     # Cross-site guard (state-changing methods) — closes same-host CSRF.
     if request.method in _STATE_CHANGING_METHODS:
+        # The pinned observer extension is a trusted local caller; its
+        # chrome-extension:// Origin / cross-site Sec-Fetch would otherwise trip
+        # the browser CSRF guard. The observer route still gates on loopback.
+        if _is_trusted_observer_extension_request():
+            return None
         sec_fetch = request.headers.get("Sec-Fetch-Site")
         if sec_fetch is not None and sec_fetch not in _SAME_SITE_FETCH:
             return error_response(
