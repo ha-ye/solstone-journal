@@ -334,6 +334,11 @@
       "label": "Reading",
       "tier": 2
     },
+    "observe.describe.social": {
+      "group": "Screen Analysis",
+      "label": "Social",
+      "tier": 2
+    },
     "observe.describe.terminal": {
       "group": "Screen Analysis",
       "label": "Terminal",

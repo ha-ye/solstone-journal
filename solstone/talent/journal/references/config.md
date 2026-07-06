@@ -199,15 +199,21 @@ The `describe` block configures screen analysis settings for `journal describe`:
 **Fields:**
 - `max_extractions` (integer) – Maximum number of frames to run detailed content extraction on per video. The first qualified frame is always extracted regardless of this limit. When more frames are eligible, selection uses AI-based prioritization (falling back to random selection). Default: `20`.
 - `categories` (object) – Per-category overrides for importance and extraction guidance.
+- `scene_cut_threshold` (integer) – Scene-change sensitivity for screen frame analysis. Frames at or above this perceptual-distance threshold bypass the stride floor. Default: `25`.
+- `min_stride_seconds` (number) – Minimum seconds between analyzed frames when the frame is not a scene cut. Default: `5.0`.
+- `max_concurrent` (integer) – Maximum concurrent screen describe jobs. Default: `1`.
+- `max_runtime` (integer or duration string) – Wall-clock cap for each screen describe job, in seconds or a duration like `"30m"`. Default: `1800`.
+
+`depict` (still-image description) is a sense handler with the same `max_concurrent` / `max_runtime` config shape. Its `max_runtime` default is `600` seconds.
 
 ### Category overrides
 
-Each category (e.g., `code`, `meeting`, `browsing`) can have:
+Each category (e.g., `code`, `meeting`, `browsing`, `social`) can have:
 
 | Field | Values | Description |
 |-------|--------|-------------|
 | `importance` | `high`, `normal`, `low`, `ignore` | Advisory priority hint for AI frame selection. `high` prioritizes these frames, `low` deprioritizes unless unique, `ignore` suggests skipping unless categorization seems wrong. Default: `normal`. |
-| `extraction` | string | Custom guidance for when to extract content from this category. Overrides the default from the category's `.json` file. |
+| `extraction` | string | Custom guidance for when to extract content from this category. Overrides the default from the category's `.md` frontmatter. |
 
 Importance levels are advisory hints passed to the AI selection process, not hard filters. The AI may still select frames from `ignore` categories if it determines the content is valuable or the categorization may be incorrect.
 

@@ -22,6 +22,7 @@
         "messaging",
         "productivity",
         "reading",
+        "social",
         "terminal"
       ]
     },
@@ -36,6 +37,7 @@
         "messaging",
         "productivity",
         "reading",
+        "social",
         "terminal",
         "none"
       ]

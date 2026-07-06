@@ -320,8 +320,8 @@ async function loadSegment(origin) {
 const SCREEN_CATEGORY_COLOR = {
   terminal:    "var(--ink)",
   code:        "var(--ink)",
-  coding:      "var(--ink)",
   browsing:    "var(--teal)",
+  social:      "var(--blue)",
   productivity:"var(--amber)",
   reading:     "var(--muted)",
   messaging:   "var(--coral)",

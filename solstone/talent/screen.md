@@ -31,7 +31,7 @@ Spoken content captured during the segment - use this to understand context for 
 Frame-by-frame analyses with:
 - **Timestamp**: Wall-clock time (HH:MM:SS)
 - **Monitor**: Which display (when multiple monitors present)
-- **Category**: Activity type (terminal, code, messaging, meeting, browsing, reading, media, productivity)
+- **Category**: Activity type (terminal, code, messaging, meeting, browsing, reading, media, gaming, productivity, social)
 - **Visual description**: What was visible on screen
 - **Extracted text**: OCR content (commands, code, messages, documents)
 - **Meeting analysis**: Participants, topics, shared content when meetings detected

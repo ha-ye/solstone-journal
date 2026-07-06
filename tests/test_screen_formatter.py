@@ -435,13 +435,14 @@ def test_categories_includes_all_expected():
         "meeting",
         "browsing",
         "reading",
+        "social",
         "media",
         "gaming",
         "productivity",
     ]
     for cat in expected:
         assert cat in CATEGORIES, f"Expected category {cat} not found"
-    assert len(CATEGORIES) == 9
+    assert len(CATEGORIES) == 10
 
 
 def test_tmux_formatter_output():

@@ -49,6 +49,12 @@
       "importance": "high",
       "label": "Reading"
     },
+    "social": {
+      "extraction": "Extract when platform, feed context, or visible thread changes",
+      "group": "Screen Analysis",
+      "importance": "normal",
+      "label": "Social"
+    },
     "terminal": {
       "extraction": "Extract when showing distinctly different content (code diffs vs logs vs documentation)",
       "group": "Screen Analysis",

@@ -1,6 +1,6 @@
 {
 
-  "description": "Video players/streams, YouTube, image/video-heavy feeds",
+  "description": "Video players/streams, YouTube, image/video galleries",
   "output": "markdown",
   "extraction": "Extract 1 frame only - video playback content does not benefit from text extraction",
   "importance": "low"

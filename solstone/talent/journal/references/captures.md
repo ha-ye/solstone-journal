@@ -222,16 +222,12 @@ Example frame record:
 - `error` – present when processing failed after retries
 
 **Category-specific content (inside `content` object):**
-- `messaging` – markdown content when frame contains chat/email apps
-- `browsing` – markdown content when frame contains web browsing
-- `reading` – markdown content when frame contains documents/articles
-- `productivity` – markdown content when frame contains spreadsheets/slides/calendars
-- `meeting` – JSON object when frame contains video conferencing, includes participant detection and bounding boxes
+Each category file in `solstone/observe/categories/*.md` carries an extraction prompt; results are keyed by category name. `meeting` emits structured JSON, and other categories emit formatted markdown.
 
 The vision analysis uses multi-stage conditional processing:
-1. Initial categorization determines content type (e.g., `code`, `meeting`, `browsing`, `reading`). See `solstone/observe/categories/` for the full list of categories.
+1. Initial categorization determines content type. See `solstone/observe/categories/` for the full list of categories.
 2. Category-specific follow-up prompts are discovered from `solstone/observe/categories/*.md` files
-3. Follow-ups are triggered for categories that have extraction content in their `.md` file (currently: messaging, browsing, reading, productivity output markdown; meeting outputs JSON)
+3. Follow-ups run from the matching category `.md` file; `meeting` outputs JSON, and other categories output markdown
 
 ### Historical event extracts
 

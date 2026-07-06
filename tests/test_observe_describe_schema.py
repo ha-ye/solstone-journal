@@ -36,6 +36,22 @@ def test_describe_schema_accepts_and_rejects_expected_values():
             "overlap": False,
         }
     )
+    assert validator.is_valid(
+        {
+            "visual_description": "A social feed shows posts and replies.",
+            "primary": "social",
+            "secondary": "none",
+            "overlap": False,
+        }
+    )
+    assert validator.is_valid(
+        {
+            "visual_description": "A browser page is open beside a social thread.",
+            "primary": "browsing",
+            "secondary": "social",
+            "overlap": True,
+        }
+    )
     assert not validator.is_valid(
         {
             "visual_description": "A dashboard view.",

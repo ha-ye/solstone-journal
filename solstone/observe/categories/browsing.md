@@ -1,6 +1,6 @@
 {
 
-  "description": "General web browsing, social feeds, shopping",
+  "description": "General web browsing, news, shopping",
   "output": "markdown",
   "extraction": "Extract when visiting distinctly different websites or search results"
 
