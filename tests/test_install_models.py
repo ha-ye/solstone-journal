@@ -216,6 +216,9 @@ def _prepare_check_main(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
     monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
     monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        install_models, "_install_rerank_model", lambda *, check, force: 0
+    )
 
 
 def test_main_check_missing_cpp_artifacts_returns_nonzero(
@@ -244,6 +247,57 @@ def test_main_check_ready_cpp_artifacts_returns_zero(
 
     assert install_models.main() == 0
     assert f"model ready: {paths['model']}" in capsys.readouterr().out
+
+
+def test_main_rerank_failure_short_circuits_before_parakeet(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    calls = []
+    monkeypatch.setattr(sys, "argv", ["sol install-models", "--check"])
+    monkeypatch.delenv(install_models.JOURNAL_VARIANT_ENV, raising=False)
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
+    monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        install_models,
+        "_install_rerank_model",
+        lambda *, check, force: calls.append((check, force)) or 7,
+    )
+    monkeypatch.setattr(
+        install_models,
+        "_check_linux_cpp_ready",
+        lambda: pytest.fail("parakeet check should not start"),
+    )
+    monkeypatch.setattr(
+        install_models,
+        "_install_models",
+        lambda *_args, **_kwargs: pytest.fail("parakeet install should not start"),
+    )
+
+    assert install_models.main() == 7
+    assert calls == [(True, False)]
+
+
+def test_main_rerank_success_continues_to_parakeet(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
+    calls = []
+    paths = _ready_paths(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["sol install-models", "--check"])
+    monkeypatch.delenv(install_models.JOURNAL_VARIANT_ENV, raising=False)
+    monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
+    monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
+    monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        install_models,
+        "_install_rerank_model",
+        lambda *, check, force: calls.append((check, force)) or 0,
+    )
+    monkeypatch.setattr(install_models, "_check_linux_cpp_ready", lambda: paths)
+
+    assert install_models.main() == 0
+    assert calls == [(True, False)]
 
 
 def test_run_mac_helper_soft_fails_on_packaged_install(
@@ -300,6 +354,9 @@ def test_main_force_reinstalls_linux_cpp(
     monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
     monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
     monkeypatch.setattr(
+        install_models, "_install_rerank_model", lambda *, check, force: 0
+    )
+    monkeypatch.setattr(
         install_models, "_check_linux_cpp_ready", lambda: _ready_paths(tmp_path)
     )
     monkeypatch.setattr(fit_report, "build_parakeet_fit_report", lambda: _fit("ok"))
@@ -324,6 +381,9 @@ def test_main_linux_blocks_before_install_models(
     monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
     monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
     monkeypatch.setattr(
+        install_models, "_install_rerank_model", lambda *, check, force: 0
+    )
+    monkeypatch.setattr(
         fit_report, "build_parakeet_fit_report", lambda: _fit("blocked")
     )
     monkeypatch.setattr(
@@ -345,6 +405,9 @@ def test_main_linux_warning_continues_to_install_models(
     monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
     monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
     monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        install_models, "_install_rerank_model", lambda *, check, force: 0
+    )
     monkeypatch.setattr(
         fit_report, "build_parakeet_fit_report", lambda: _fit("warning")
     )
@@ -369,6 +432,9 @@ def test_main_coreml_blocks_before_install_models(
     monkeypatch.setattr(install_models, "_platform_info", lambda: ("darwin", "arm64"))
     monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
     monkeypatch.setattr(
+        install_models, "_install_rerank_model", lambda *, check, force: 0
+    )
+    monkeypatch.setattr(
         fit_report,
         "build_coreml_parakeet_fit_report",
         lambda os_name, arch, cache_dir: _fit("blocked"),
@@ -391,6 +457,9 @@ def test_main_skips_install_when_linux_cpp_ready(
     monkeypatch.setattr(install_models, "_platform_info", lambda: ("linux", "x86_64"))
     monkeypatch.setattr(install_models, "_detect_linux_variant", lambda: "cpu")
     monkeypatch.setattr(install_models, "_verify_bundled_assets", lambda: None)
+    monkeypatch.setattr(
+        install_models, "_install_rerank_model", lambda *, check, force: 0
+    )
     monkeypatch.setattr(
         install_models, "_check_linux_cpp_ready", lambda: _ready_paths(tmp_path)
     )

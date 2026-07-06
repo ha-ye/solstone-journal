@@ -43,6 +43,24 @@ Source:
 License notice: Creative Commons Attribution 4.0 International (CC-BY-4.0).
 License text: https://creativecommons.org/licenses/by/4.0/legalcode.txt
 
+## runtime-downloaded provider artifacts (rerank cross-encoder)
+
+These artifacts are fetched on demand into the journal provider cache for local
+rerank scoring; they are not bundled in this repository.
+
+### rerank cross-encoder ONNX model
+
+Attribution: `Xenova/ms-marco-MiniLM-L-6-v2`, an ONNX export of
+`cross-encoder/ms-marco-MiniLM-L-6-v2`.
+
+Source:
+
+- Model repository: https://huggingface.co/Xenova/ms-marco-MiniLM-L-6-v2
+- Pinned revision: a09144355adeed5f58c8ed011d209bf8ee5a1fec
+- Downloaded files: `onnx/model.onnx`, `tokenizer.json`
+
+License notice: Apache License 2.0 (Apache-2.0).
+
 ## WeSpeaker ResNet34 / VoxCeleb
 
 Attribution: WeSpeaker project, ResNet34 speaker embedding model trained on

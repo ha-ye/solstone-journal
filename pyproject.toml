@@ -95,6 +95,7 @@ journal-host = [
     "packaging",
     "Pillow>=11.0.0",
     "numpy",
+    "tokenizers>=0.20",
     "av",
     "openai>=1.2.0",
     "openhands-sdk==1.27.*",
@@ -246,6 +247,7 @@ filterwarnings = [
 dev = [
     "freezegun",
     "mypy",
+    "onnx",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",

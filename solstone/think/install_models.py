@@ -311,6 +311,19 @@ def _check_linux_cpp_ready() -> dict[str, Path]:
     )
 
 
+def _install_rerank_model(*, check: bool, force: bool) -> int:
+    from solstone.think.providers import rerank_install
+
+    try:
+        if check:
+            rerank_install.check_rerank_model()
+        else:
+            rerank_install.install_rerank_model(force=force)
+    except rerank_install.RerankInstallError as exc:
+        return _fail(str(exc))
+    return 0
+
+
 def _install_linux_cpp(*, force: bool = False) -> int:
     from solstone.think.providers import parakeet_install
 
@@ -432,6 +445,10 @@ def main() -> int:
         _verify_bundled_assets()
     except RuntimeError as exc:
         return _fail(str(exc))
+
+    result = _install_rerank_model(check=args.check, force=args.force)
+    if result != 0:
+        return result
 
     if variant is None:
         print(
