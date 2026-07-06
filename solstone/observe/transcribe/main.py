@@ -88,6 +88,7 @@ from solstone.observe.transcribe.resource import (
     select_stt_backend,
     stt_local_floor_bytes,
 )
+from solstone.observe.transcribe.sound_tags import is_salient, tag_audio
 from solstone.observe.utils import (
     SAMPLE_RATE,
     AudioDecodeError,
@@ -471,6 +472,7 @@ def _statements_to_jsonl(
     overlap_fraction: float | None = None,
     overlap_detector: str | None = None,
     processing_record: dict | None = None,
+    sound_tags: dict | None = None,
 ) -> list[str]:
     """Convert statements to JSONL lines.
 
@@ -487,6 +489,10 @@ def _statements_to_jsonl(
         segment_meta: Optional metadata dict from SEGMENT_META env var
             (facet, setting, host, platform, etc.). Setting overrides enrichment.
         backend: Optional STT backend name (e.g., "parakeet", "revai")
+        overlap_fraction: Optional fraction of speech containing overlapping speakers
+        overlap_detector: Optional overlap detector identifier
+        processing_record: Optional _solstone_processing record
+        sound_tags: Optional ambient sound-tag metadata
 
     Returns:
         List of JSON strings (metadata line first, then entries)
@@ -536,6 +542,8 @@ def _statements_to_jsonl(
 
     if processing_record is not None:
         metadata["_solstone_processing"] = processing_record
+    if sound_tags is not None:
+        metadata["sound_tags"] = sound_tags
 
     lines = [json.dumps(metadata)]
 
@@ -589,6 +597,7 @@ def _write_empty_processing_jsonl(
     vad_result: VadResult | None,
     segment_meta: dict | None,
     backend: str | None,
+    sound_tags: dict | None = None,
 ) -> None:
     record = build_processing_record(
         state=STATE_EMPTY,
@@ -606,6 +615,7 @@ def _write_empty_processing_jsonl(
         segment_meta=segment_meta,
         backend=backend,
         processing_record=record,
+        sound_tags=sound_tags,
     )
     write_text(jsonl_path, "\n".join(lines) + "\n")
 
@@ -628,6 +638,7 @@ def _write_failed_processing_jsonl(
         datetime.datetime.min,
         {},
         processing_record=record,
+        sound_tags=None,
     )
     write_text(jsonl_path, "\n".join(lines) + "\n")
 
@@ -642,6 +653,8 @@ def process_audio(
     reduced_audio: np.ndarray | None = None,
     backend: str | None = None,
     entity_names: list[str] | None = None,
+    *,
+    sound_tags: dict | None = None,
 ) -> None:
     """Process a raw audio file with pre-computed VAD.
 
@@ -662,6 +675,7 @@ def process_audio(
         reduced_audio: Optional reduced audio buffer (used if reduction provided)
         backend: STT backend name. If omitted, uses DEFAULT_BACKEND.
         entity_names: Optional list of entity names for STT and enrichment context
+        sound_tags: Optional ambient sound-tag metadata computed from full audio
     """
     start_time = time.time()
     resolved_backend = backend or DEFAULT_BACKEND
@@ -745,12 +759,30 @@ def process_audio(
                     vad_result=vad_result,
                     segment_meta=segment_meta,
                     backend=resolved_backend,
+                    sound_tags=sound_tags,
                 )
                 logging.info(
                     f"No speech detected in {raw_path}, preserving file "
                     f"(preserve_all=true, VAD: {vad_result.speech_duration:.1f}s "
                     f"of {vad_result.duration:.1f}s)"
                 )
+            elif sound_tags is not None and is_salient(sound_tags["tags"]):
+                event["outcome"] = "filtered"
+                _write_empty_processing_jsonl(
+                    raw_path,
+                    jsonl_path,
+                    model_info=model_info,
+                    observer=observer,
+                    vad_result=vad_result,
+                    segment_meta=segment_meta,
+                    backend=resolved_backend,
+                    sound_tags=sound_tags,
+                )
+                logging.info(
+                    "No speech detected in %s, wrote salient sound metadata before removing file",
+                    raw_path,
+                )
+                raw_path.unlink()
             else:
                 event["outcome"] = "filtered"
                 logging.info(f"No speech detected in {raw_path}, removing file")
@@ -866,6 +898,7 @@ def process_audio(
             overlap_fraction=overlap_fraction_value,
             overlap_detector=OVERLAP_DETECTOR_ID,
             processing_record=processing_record,
+            sound_tags=sound_tags,
         )
 
         # Write JSONL
@@ -1001,6 +1034,16 @@ def _process_one(
 
     # Stage 1: Run VAD to detect speech (lightweight, before loading STT model)
     vad_result = run_vad(audio_buffer, min_speech_seconds=min_speech_seconds)
+    try:
+        sound_tags = tag_audio(audio_buffer, SAMPLE_RATE)
+    except Exception as exc:
+        logging.warning(
+            "sound tagging failed for %s: %s",
+            audio_path,
+            exc,
+            exc_info=True,
+        )
+        sound_tags = None
 
     # Early exit if no speech detected (skip loading heavy STT model)
     if not vad_result.has_speech:
@@ -1018,12 +1061,30 @@ def _process_one(
                 vad_result=vad_result,
                 segment_meta=None,
                 backend=None,
+                sound_tags=sound_tags,
             )
             logging.info(
                 f"Insufficient speech in {audio_path}, preserving file "
                 f"(preserve_all=true, VAD: {vad_result.speech_duration:.1f}s "
                 f"of {vad_result.duration:.1f}s, threshold: {min_speech_seconds:.1f}s)"
             )
+        elif sound_tags is not None and is_salient(sound_tags["tags"]):
+            event["outcome"] = "filtered"
+            _write_empty_processing_jsonl(
+                audio_path,
+                _get_jsonl_path(audio_path),
+                model_info={},
+                observer=observer,
+                vad_result=vad_result,
+                segment_meta=None,
+                backend=None,
+                sound_tags=sound_tags,
+            )
+            logging.info(
+                "Insufficient speech in %s, wrote salient sound metadata before removing file",
+                audio_path,
+            )
+            audio_path.unlink()
         else:
             event["outcome"] = "filtered"
             logging.info(
@@ -1142,6 +1203,7 @@ def _process_one(
         reduced_audio=reduced_audio,
         backend=backend,
         entity_names=entity_names,
+        sound_tags=sound_tags,
     )
 
 

@@ -451,6 +451,31 @@ class TestFormatAudio:
         assert "solstone.processing" not in header
         assert len(chunks) == 1
 
+    def test_format_audio_skips_sound_tags(self):
+        from solstone.observe.hear import format_audio
+
+        entries = [
+            {
+                "raw": "audio.flac",
+                "sound_tags": {
+                    "engine": "ced.cpp v0.1.0",
+                    "model": "ced-tiny-q8_0",
+                    "threshold": 0.1,
+                    "window_s": 10,
+                    "agg": "max",
+                    "windows": 1,
+                    "tags": {"Music": 0.201},
+                },
+            },
+            {"start": "00:00:01", "text": "Test"},
+        ]
+        chunks, meta = format_audio(entries)
+        header = meta.get("header", "")
+        assert "sound_tags" not in header
+        assert "ced.cpp" not in header
+        assert "Music" not in header
+        assert len(chunks) == 1
+
     def test_format_audio_imported_metadata(self):
         """Test audio formatting with imported metadata."""
         from solstone.observe.hear import format_audio

@@ -21,7 +21,24 @@
         "warning": {"type": "string"},
         "imported": {"type": "object", "additionalProperties": true},
         "facet": {"type": "string"},
-        "id": {"type": "string"}
+        "id": {"type": "string"},
+        "sound_tags": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["engine", "model", "threshold", "window_s", "agg", "windows", "tags"],
+          "properties": {
+            "engine": {"type": "string"},
+            "model": {"type": "string"},
+            "threshold": {"type": "number"},
+            "window_s": {"type": "number"},
+            "agg": {"type": "string"},
+            "windows": {"type": "integer"},
+            "tags": {
+              "type": "object",
+              "additionalProperties": {"type": "number"}
+            }
+          }
+        }
       }
     },
     "record": {

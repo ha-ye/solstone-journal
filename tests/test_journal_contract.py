@@ -86,6 +86,26 @@ def test_contract_validator_accepts_producer_headers_with_raw() -> None:
     assert journal.validate_contract_file("audio.jsonl", audio, audio_schema) == []
 
 
+def test_contract_validator_accepts_audio_sound_tags_header() -> None:
+    bundle = journal.build_bundle()
+    audio_schema = bundle["schemas"]["audio-jsonl"]["schema"]
+    header = {
+        "raw": "audio.flac",
+        "sound_tags": {
+            "engine": "ced.cpp v0.1.0",
+            "model": "ced-tiny-q8_0",
+            "threshold": 0.1,
+            "window_s": 10,
+            "agg": "max",
+            "windows": 2,
+            "tags": {"Speech": 0.872, "Music": 0.201},
+        },
+    }
+    audio = json.dumps(header).encode("utf-8") + b'\n{"start":"00:00:00","text":"hi"}\n'
+
+    assert journal.validate_contract_file("audio.jsonl", audio, audio_schema) == []
+
+
 def test_contract_validator_still_rejects_non_raw_floor_violations() -> None:
     bundle = journal.build_bundle()
     screen_schema = bundle["schemas"]["screen-jsonl"]["schema"]

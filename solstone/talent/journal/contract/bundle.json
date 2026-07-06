@@ -82,6 +82,45 @@
               "setting": {
                 "type": "string"
               },
+              "sound_tags": {
+                "additionalProperties": true,
+                "properties": {
+                  "agg": {
+                    "type": "string"
+                  },
+                  "engine": {
+                    "type": "string"
+                  },
+                  "model": {
+                    "type": "string"
+                  },
+                  "tags": {
+                    "additionalProperties": {
+                      "type": "number"
+                    },
+                    "type": "object"
+                  },
+                  "threshold": {
+                    "type": "number"
+                  },
+                  "window_s": {
+                    "type": "number"
+                  },
+                  "windows": {
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "engine",
+                  "model",
+                  "threshold",
+                  "window_s",
+                  "agg",
+                  "windows",
+                  "tags"
+                ],
+                "type": "object"
+              },
               "topics": {
                 "type": "array"
               },
