@@ -1173,6 +1173,12 @@ def test_first_sync_save_writes_bundle_dedupe_and_cursor(tmp_path: Path, monkeyp
 def test_window_days_overrides_first_sync_window(tmp_path: Path, monkeypatch):
     journal = _use_journal(tmp_path, monkeypatch)
     transport = _fixture_transport()
+    # A 91-inclusive-day window chunks heartrate into three <=31-day
+    # requests (Oura 400s over-wide heartrate ranges — found live during
+    # the 2026-07-06 full-history backfill).
+    transport.script(
+        "heartrate", _fixture_page("heartrate"), _fixture_page("heartrate")
+    )
     client = _canned_client(transport)
 
     oura.backend.sync(
@@ -1185,6 +1191,27 @@ def test_window_days_overrides_first_sync_window(tmp_path: Path, monkeypatch):
 
     readiness_url = next(u for u, _ in transport.calls if "daily_readiness" in u)
     assert "start_date=2025-10-12" in readiness_url
+    heartrate_urls = [u for u, _ in transport.calls if "heartrate" in u]
+    assert len(heartrate_urls) == 3
+    assert "start_datetime=2025-10-12" in heartrate_urls[0]
+    assert "start_datetime=2025-11-12" in heartrate_urls[1]
+    assert "start_datetime=2025-12-13" in heartrate_urls[2]
+    assert "end_datetime=2026-01-10" in heartrate_urls[2]
+
+
+def test_window_chunks_split_per_endpoint_limits():
+    chunks = oura._window_chunks("heartrate", "2025-10-12", "2026-01-10")
+    assert chunks == [
+        ("2025-10-12", "2025-11-11"),
+        ("2025-11-12", "2025-12-12"),
+        ("2025-12-13", "2026-01-10"),
+    ]
+    assert oura._window_chunks("daily_readiness", "2025-10-12", "2026-01-10") == [
+        ("2025-10-12", "2026-01-10")
+    ]
+    long = oura._window_chunks("daily_readiness", "2022-06-01", "2026-07-06")
+    assert len(long) == 5
+    assert long[0][0] == "2022-06-01" and long[-1][1] == "2026-07-06"
 
 
 def test_second_sync_refetches_trailing_window_and_upserts_revisions(

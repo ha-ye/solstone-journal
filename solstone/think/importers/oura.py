@@ -160,6 +160,13 @@ SYNC_ENDPOINTS: Final[tuple[str, ...]] = (
 # not by day, and its rows carry no document id or day field.
 _DATETIME_PAGED_ENDPOINTS: Final = frozenset({"heartrate"})
 
+# Oura rejects over-wide windows per endpoint (heartrate 400s past ~1
+# month of datetime range — hit live during the 2026-07-06 full-history
+# backfill). Requests are chunked to these maxima and results
+# concatenated; pagination still runs within every chunk.
+_MAX_WINDOW_DAYS: Final = {"heartrate": 31}
+_DEFAULT_MAX_WINDOW_DAYS: Final = 364
+
 
 class OuraDocumentError(ValueError):
     """Raised when an Oura-shaped JSON document does not match the API shape."""
@@ -882,13 +889,32 @@ class OuraApiClient:
     def fetch_endpoint(
         self, endpoint: str, *, start_day: str, end_day: str
     ) -> OuraFetchResult:
-        """Fetch every page of one endpoint for a day window."""
+        """Fetch every page of one endpoint for a day window.
+
+        Wide windows are split into per-endpoint chunks (Oura rejects
+        over-wide ranges; see _MAX_WINDOW_DAYS) and concatenated.
+        """
 
         if endpoint not in ENDPOINT_RECORD_TYPES:
             supported = ", ".join(sorted(ENDPOINT_RECORD_TYPES))
             raise OuraApiError(
                 f"Unsupported Oura endpoint {endpoint!r}; supported: {supported}"
             )
+        items: list[dict[str, Any]] = []
+        pages: list[dict[str, Any]] = []
+        requests_made = 0
+        for chunk_start, chunk_end in _window_chunks(endpoint, start_day, end_day):
+            result = self._fetch_window(
+                endpoint, start_day=chunk_start, end_day=chunk_end
+            )
+            items.extend(result.items)
+            pages.extend(result.pages)
+            requests_made += result.requests
+        return OuraFetchResult(items=items, pages=pages, requests=requests_made)
+
+    def _fetch_window(
+        self, endpoint: str, *, start_day: str, end_day: str
+    ) -> OuraFetchResult:
         params = _endpoint_query(endpoint, start_day, end_day)
         items: list[dict[str, Any]] = []
         pages: list[dict[str, Any]] = []
@@ -996,6 +1022,27 @@ class OuraApiClient:
                 "run owner-present: sol import --connect oura"
             )
         return client_id
+
+
+def _window_chunks(
+    endpoint: str, start_day: str, end_day: str
+) -> list[tuple[str, str]]:
+    """Split a day window into endpoint-safe chunks, inclusive bounds."""
+
+    import datetime as _dt
+
+    limit = _MAX_WINDOW_DAYS.get(endpoint, _DEFAULT_MAX_WINDOW_DAYS)
+    start = _dt.date.fromisoformat(start_day)
+    end = _dt.date.fromisoformat(end_day)
+    if start > end:
+        return [(start_day, end_day)]
+    chunks: list[tuple[str, str]] = []
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + _dt.timedelta(days=limit - 1), end)
+        chunks.append((cursor.isoformat(), chunk_end.isoformat()))
+        cursor = chunk_end + _dt.timedelta(days=1)
+    return chunks
 
 
 def _endpoint_query(endpoint: str, start_day: str, end_day: str) -> dict[str, str]:
