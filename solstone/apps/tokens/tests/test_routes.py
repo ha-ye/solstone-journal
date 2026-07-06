@@ -9,7 +9,6 @@ from datetime import timedelta
 
 import pytest
 
-from solstone.apps.tokens import copy as tokens_copy
 from solstone.apps.tokens import routes as token_routes
 
 
@@ -149,24 +148,51 @@ def test_api_daily_cross_month_boundary(tokens_env, monkeypatch):
     assert expected_rate == pytest.approx(0.4)
 
 
-def test_tokens_page_renders_copy_payload_and_static_labels(tokens_env):
+def test_tokens_page_serves_spa_shell(tokens_env):
     env = tokens_env({})
 
     response = env.client.get("/app/tokens/20260304")
 
     assert response.status_code == 200
+    assert b'data-solstone-shell="spa"' in response.data
+
+
+def test_tokens_index_redirects_to_shell(tokens_env):
+    env = tokens_env({})
+
+    response = env.client.get("/app/tokens/", follow_redirects=True)
+
+    assert response.status_code == 200
+    assert b'data-solstone-shell="spa"' in response.data
+
+
+def test_tokens_day_guard_still_404s(tokens_env):
+    env = tokens_env({})
+
+    response = env.client.get("/app/tokens/notaday")
+
+    assert response.status_code == 404
+
+
+def test_tokens_workspace_contains_client_copy_and_static_labels(tokens_env):
+    env = tokens_env({})
+
+    response = env.client.get("/app/tokens/workspace")
+
+    assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert tokens_copy.TOKENS_TILE_COST_LABEL in html
-    assert tokens_copy.TOKENS_TILE_TOKENS_LABEL in html
-    assert tokens_copy.TOKENS_TILE_RUN_RATE_LABEL in html
-    assert tokens_copy.TOKENS_TILE_TOP_DRIVER_LABEL in html
-    assert "window.TOKENS_COPY = {" in html
+    assert 'TOKENS_TILE_COST_LABEL: "today\'s cost"' in html
+    assert 'TOKENS_TILE_TOKENS_LABEL: "today\'s tokens"' in html
+    assert 'TOKENS_TILE_RUN_RATE_LABEL: "7-day run rate"' in html
+    assert 'TOKENS_TILE_TOP_DRIVER_LABEL: "today\'s biggest cost"' in html
+    assert 'data-tokens-copy-key="TOKENS_TILE_COST_LABEL"' in html
+    assert "window.TOKENS_COPY = TOKENS_COPY" in html
 
 
 def test_tokens_page_renders_collapsed_details_for_all_breakdowns(tokens_env):
     env = tokens_env({})
 
-    response = env.client.get("/app/tokens/20260304")
+    response = env.client.get("/app/tokens/workspace")
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)

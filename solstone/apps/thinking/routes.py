@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, current_app, jsonify, request
 
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.apps.thinking import local_bootstrap, scout_lane
@@ -426,11 +426,19 @@ def _initial_payload() -> dict[str, Any]:
 
 
 @thinking_bp.route("/")
-def index() -> str:
-    return render_template(
-        "app.html",
-        thinking_copy=thinking_copy_payload(),
-        thinking_initial=_initial_payload(),
+def index() -> Any:
+    return current_app.send_static_file("shell.html")
+
+
+@thinking_bp.route("/api/state")
+def api_state() -> Any:
+    payload = _initial_payload()
+    return jsonify(
+        {
+            "providers": payload.get("providers", {}),
+            "keys": payload.get("keys", {}),
+            "copy": thinking_copy_payload(),
+        }
     )
 
 

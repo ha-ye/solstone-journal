@@ -16,9 +16,9 @@ from typing import Any
 from flask import (
     Blueprint,
     Response,
+    current_app,
     jsonify,
     redirect,
-    render_template,
     request,
     url_for,
 )
@@ -39,7 +39,7 @@ from solstone.convey.reasons import (
     TALENT_RUN_MALFORMED,
     TALENT_RUN_PENDING,
 )
-from solstone.convey.utils import DATE_RE, error_response, format_date
+from solstone.convey.utils import DATE_RE, error_response
 from solstone.think.facets import get_facets
 from solstone.think.identity import ensure_identity_directory
 from solstone.think.journal_config import read_journal_config, write_journal_config
@@ -421,14 +421,12 @@ def index() -> Any:
 
 
 @sol_bp.route("/<day>")
-def talents_day(day: str) -> str:
-    """Render talent history viewer for a specific day."""
+def talents_day(day: str) -> Any:
+    """Serve the talent history SPA shell for a specific day."""
     if not DATE_RE.fullmatch(day):
         return "", 404
 
-    title = format_date(day)
-
-    return render_template("app.html", title=title)
+    return current_app.send_static_file("shell.html")
 
 
 # =============================================================================

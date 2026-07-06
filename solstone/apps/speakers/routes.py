@@ -18,8 +18,8 @@ from typing import TYPE_CHECKING, Any
 
 from flask import (
     Blueprint,
+    current_app,
     jsonify,
-    render_template,
     request,
     send_file,
 )
@@ -72,6 +72,7 @@ from solstone.convey.reasons import (
     ENTITY_BLOCKED,
     ENTITY_NOT_FOUND,
     FILE_NOT_FOUND,
+    FILE_READ_FAILED,
     INVALID_DAY,
     INVALID_MONTH,
     INVALID_REQUEST_VALUE,
@@ -91,7 +92,6 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import (
     DATE_RE,
     error_response,
-    format_date,
     safe_day_path,
     success_response,
 )
@@ -622,40 +622,43 @@ def _get_sentence_embedding(
 
 @speakers_bp.route("/")
 def index() -> Any:
-    """Render the speakers overview."""
-    today = date.today().strftime("%Y%m%d")
-    return render_template(
-        "speakers/overview.html",
-        title="speakers",
-        day=None,
-        today=today,
-        speaker_copy=speaker_copy_payload(),
-        owner_min_statements=OWNER_BOOTSTRAP_MIN_STMTS,
-    )
+    """Serve the speakers SPA shell."""
+    return current_app.send_static_file("shell.html")
 
 
 @speakers_bp.route("/<day>")
-def speakers_day(day: str) -> str:
-    """Render speaker management view for a specific day."""
+def speakers_day(day: str) -> Any:
+    """Serve the speakers SPA shell for a specific day."""
     if not DATE_RE.fullmatch(day):
         return "", 404
 
-    speaker_filter = request.args.get("speaker")
-    speaker_filter = speaker_filter.strip() if speaker_filter else ""
-    speaker_name = speaker_filter
-    if speaker_filter:
-        entity = load_journal_entity(speaker_filter)
-        if entity:
-            speaker_name = str(entity.get("name") or speaker_filter)
+    return current_app.send_static_file("shell.html")
 
-    title = format_date(day)
-    return render_template(
-        "app.html",
-        title=title,
-        speaker_copy=speaker_copy_payload(),
-        speaker_filter=speaker_filter,
-        speaker_filter_name=speaker_name,
-    )
+
+@speakers_bp.route("/api/state")
+def api_state() -> Any:
+    """Return initial speakers workspace state."""
+    try:
+        speaker_filter = (request.args.get("speaker") or "").strip()
+        speaker_filter_name = None
+        if speaker_filter:
+            entity = load_journal_entity(speaker_filter)
+            if entity:
+                speaker_filter_name = str(entity.get("name") or speaker_filter)
+        return jsonify(
+            {
+                "today": date.today().strftime("%Y%m%d"),
+                "owner_min_statements": OWNER_BOOTSTRAP_MIN_STMTS,
+                "speaker_copy": speaker_copy_payload(),
+                "speaker_filter_name": speaker_filter_name,
+            }
+        )
+    except Exception:
+        logger.exception("error loading speakers state")
+        return error_response(
+            FILE_READ_FAILED,
+            detail="Failed to load speaker state.",
+        )
 
 
 @speakers_bp.route("/api/stats/<month>")

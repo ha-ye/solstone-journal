@@ -12,7 +12,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, jsonify, redirect, render_template, url_for
+from flask import Blueprint, current_app, jsonify, redirect, url_for
 
 from solstone.convey import state
 from solstone.convey.reasons import (
@@ -308,31 +308,16 @@ def index():
 
 
 @timeline_bp.route("/year")
-def timeline_year_view() -> str:
-    return render_template(
-        "app.html",
-        view="year",
-        title="timeline",
-        initial={"view": "year", "day": None, "month": None},
-    )
+def timeline_year_view() -> Any:
+    return current_app.send_static_file("shell.html")
 
 
 @timeline_bp.route("/<value>")
-def timeline_value_view(value: str) -> tuple[str, int] | str:
+def timeline_value_view(value: str) -> Any:
     if _DAY_RE.fullmatch(value):
-        return render_template(
-            "app.html",
-            view="day",
-            title=f"timeline · {value}",
-            initial={"view": "day", "day": value, "month": None},
-        )
+        return current_app.send_static_file("shell.html")
     if _MONTH_RE.fullmatch(value):
-        return render_template(
-            "app.html",
-            view="month",
-            title=f"timeline · {value}",
-            initial={"view": "month", "day": None, "month": value},
-        )
+        return current_app.send_static_file("shell.html")
     return "", 404
 
 

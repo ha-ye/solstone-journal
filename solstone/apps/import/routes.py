@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, g, jsonify, render_template, request
+from flask import Blueprint, current_app, g, jsonify, request
 from werkzeug.utils import secure_filename
 
 from solstone.apps.utils import log_app_action
@@ -933,17 +933,9 @@ def import_guide(source: str) -> Any:
 
 
 @import_bp.route("/<timestamp>")
-def import_detail(timestamp: str) -> str:
-    """Show detailed view of a specific import."""
-    import_dir = Path(state.journal_root) / "imports" / timestamp
-    if not import_dir.exists():
-        return render_template("error.html", error="Import not found"), 404
-
-    return render_template(
-        "app.html",
-        view="detail",
-        timestamp=timestamp,
-    )
+def import_detail(timestamp: str) -> Any:
+    """Serve the import SPA shell for a specific timestamp."""
+    return current_app.send_static_file("shell.html")
 
 
 @import_bp.route("/api/<timestamp>")

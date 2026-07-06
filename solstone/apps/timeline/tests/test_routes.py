@@ -55,15 +55,16 @@ def empty_client(empty_timeline_env):
     return app.test_client()
 
 
+def _assert_spa_shell(response):
+    assert response.status_code == 200
+    assert b'data-solstone-shell="spa"' in response.data
+
+
 def test_workspace_root_renders(client):
     response = client.get("/app/timeline/", follow_redirects=True)
 
-    assert response.status_code == 200
-    assert b'id="timeline-shell"' in response.data
-    assert b"/app/timeline/static/timeline.css" in response.data
+    _assert_spa_shell(response)
     assert b"/app/timeline/static/data-mock.js" not in response.data
-    assert b"/app/timeline/static/timeline.js" in response.data
-    assert b"defer" in response.data
 
 
 def test_root_redirects_to_today(client, monkeypatch):
@@ -83,44 +84,25 @@ def test_root_redirects_to_today(client, monkeypatch):
 def test_year_view_renders_shell(client):
     response = client.get("/app/timeline/year")
 
-    assert response.status_code == 200
-    assert b'id="timeline-shell"' in response.data
-    assert (
-        b'window.timelineInitial = {"day": null, "month": null, "view": "year"}'
-        in response.data
-    )
+    _assert_spa_shell(response)
 
 
 def test_month_view_renders_shell(client):
     response = client.get("/app/timeline/202605")
 
-    assert response.status_code == 200
-    assert b'id="timeline-shell"' in response.data
-    assert (
-        b'window.timelineInitial = {"day": null, "month": "202605", "view": "month"}'
-        in response.data
-    )
+    _assert_spa_shell(response)
 
 
 def test_day_view_renders_shell(client):
     response = client.get("/app/timeline/20260510")
 
-    assert response.status_code == 200
-    assert b'id="timeline-shell"' in response.data
-    assert (
-        b'window.timelineInitial = {"day": "20260510", "month": null, "view": "day"}'
-        in response.data
-    )
+    _assert_spa_shell(response)
 
 
 def test_day_view_accepts_calendar_invalid(client):
     response = client.get("/app/timeline/20260230")
 
-    assert response.status_code == 200
-    assert (
-        b'window.timelineInitial = {"day": "20260230", "month": null, "view": "day"}'
-        in response.data
-    )
+    _assert_spa_shell(response)
 
 
 def test_unknown_path_returns_404(client):
@@ -134,12 +116,22 @@ def test_unknown_path_returns_404(client):
 def test_empty_journal_workspace_has_no_demo_shell(empty_client):
     response = empty_client.get("/app/timeline/", follow_redirects=True)
 
-    assert response.status_code == 200
-    assert b'id="timeline-shell"' in response.data
+    _assert_spa_shell(response)
     assert b"Start timeline demo" not in response.data
     assert b"solstone.app/install" not in response.data
     assert b"data-mock.js" not in response.data
     assert b"no observations yet" not in response.data
+
+
+def test_timeline_static_literal_paths_resolve(client):
+    adapter = client.application.url_map.bind("localhost")
+
+    for path in (
+        "/app/timeline/static/timeline.css",
+        "/app/timeline/static/timeline.js",
+    ):
+        endpoint, _args = adapter.match(path, method="GET")
+        assert endpoint
 
 
 def test_empty_journal_index_returns_empty_recent_months(empty_client):

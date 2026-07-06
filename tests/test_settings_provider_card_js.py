@@ -36,7 +36,8 @@ def test_thinking_workspace_exposes_providers_anchor_and_lanes():
     assert 'id="lane-scout"' in text
     assert 'id="lane-byo"' in text
     assert 'id="lane-local"' in text
-    assert "window.THINKING = {{ thinking_initial | tojson }};" in text
+    assert "window.THINKING =" not in text
+    assert "/app/thinking/api/state" in _static_text()
 
 
 def test_thinking_static_uses_moved_endpoints_and_local_reason():

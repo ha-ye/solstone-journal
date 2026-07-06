@@ -1,6 +1,17 @@
-<link rel="stylesheet" href="{{ url_for('app:timeline.static', filename='timeline.css') }}">
+<link rel="stylesheet" href="/app/timeline/static/timeline.css">
 <script>
-window.timelineInitial = {{ initial|tojson }};
+(function() {
+  const { segment } = window.solPathContext();
+  let initial = { view: "day", day: segment, month: null };
+  if (segment === "year") {
+    initial = { view: "year", day: null, month: null };
+  } else if (/^\d{6}$/.test(segment || "")) {
+    initial = { view: "month", day: null, month: segment };
+  } else if (!/^\d{8}$/.test(segment || "")) {
+    initial = { view: "day", day: null, month: null };
+  }
+  window.timelineInitial = initial;
+})();
 </script>
 
 <div class="workspace-content-wide">
@@ -11,4 +22,4 @@ window.timelineInitial = {{ initial|tojson }};
   </div>
 </div>
 
-<script defer src="{{ url_for('app:timeline.static', filename='timeline.js') }}"></script>
+<script defer src="/app/timeline/static/timeline.js"></script>

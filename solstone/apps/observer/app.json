@@ -1,5 +1,6 @@
 {
   "icon": "📡",
   "label": "observers",
+  "spa": true,
   "facets": {"disabled": true}
 }

@@ -25,10 +25,26 @@ def test_workspace_renders_each_lane(settings_env):
     app = create_app(str(journal_path))
     app.config["TESTING"] = True
 
-    response = app.test_client().get("/app/thinking/", follow_redirects=True)
+    client = app.test_client()
+    response = client.get("/app/thinking/", follow_redirects=True)
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
+    assert b'data-solstone-shell="spa"' in response.data
+
+    workspace_response = client.get("/app/thinking/workspace")
+    assert workspace_response.status_code == 200
+    html = workspace_response.get_data(as_text=True)
+    assert 'id="thinkingHeading"' in html
+    assert "/app/thinking/static/thinking.js" in html
+    assert "window.THINKING =" not in html
+    assert "window.THINKING_COPY =" not in html
+
+    state_response = client.get("/app/thinking/api/state")
+    assert state_response.status_code == 200
+    payload = state_response.get_json()
+    assert set(payload) == {"providers", "keys", "copy"}
+    assert payload["copy"] == thinking_copy.thinking_copy_payload()
+
     assert 'id="providers"' in html
     assert 'id="lane-scout"' in html
     assert 'id="lane-byo"' in html
@@ -63,9 +79,54 @@ def test_workspace_renders_each_lane(settings_env):
         assert f'id="{control_id}"' in html
     assert "<details" in html
     assert "Choose how sol thinks" not in html
-    assert "window.THINKING =" in html
-    assert "window.THINKING_COPY =" in html
-    assert "thinking/static/thinking.js" in html
+    assert "window.THINKING =" not in html
+    assert "window.THINKING_COPY =" not in html
+    assert "/app/thinking/static/thinking.js" in html
+
+
+def test_thinking_literal_paths_resolve(settings_env):
+    journal_path, config = settings_env()
+    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    (journal_path / "config" / "journal.json").write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    app = create_app(str(journal_path))
+
+    adapter = app.url_map.bind("localhost")
+
+    endpoint, _args = adapter.match("/app/thinking/static/thinking.js", method="GET")
+    assert endpoint == "app:thinking.static"
+
+    endpoint, _args = adapter.match("/app/thinking/api/state", method="GET")
+    assert endpoint == "app:thinking.api_state"
+
+
+def test_thinking_state_degrades_when_initial_payload_fails(
+    settings_env,
+    monkeypatch,
+):
+    from solstone.apps.thinking import routes
+
+    journal_path, config = settings_env()
+    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    (journal_path / "config" / "journal.json").write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    def raise_config():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(routes, "get_journal_config", raise_config)
+    app = create_app(str(journal_path))
+    response = app.test_client().get("/app/thinking/api/state")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["providers"] == {}
+    assert payload["keys"] == {}
+    assert payload["copy"] == thinking_copy.thinking_copy_payload()
 
 
 def test_scout_consent_static_behavior_is_wired() -> None:

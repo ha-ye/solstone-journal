@@ -415,12 +415,19 @@
     }
   </style>
 
-  <div class="appframe">
+  <div id="thinking-loading">
+    <div class="surface-state surface-state--loading" role="status" aria-busy="true">
+      <div class="surface-state-spinner" aria-hidden="true"></div>
+      <span class="surface-state-text" data-role="loading-status">loading thinking settings...</span>
+    </div>
+  </div>
+
+  <div class="appframe" id="thinkingApp" hidden>
     <section class="view" data-view="main">
       <header class="topline">
         <div class="panelbody">
           <p class="brandlock">your journal is always private, only yours.</p>
-          <h1>{{ thinking_copy.heading }}</h1>
+          <h1 id="thinkingHeading"></h1>
           <p class="intro">sol needs a way to think — to answer you, make sense of your journal, and do what you ask. choose one. you can switch anytime.</p>
         </div>
       </header>
@@ -700,8 +707,4 @@
   </div>
 </div>
 
-<script>
-window.THINKING = {{ thinking_initial | tojson }};
-window.THINKING_COPY = {{ thinking_copy | tojson }};
-</script>
-<script src="{{ url_for('app:thinking.static', filename='thinking.js') }}"></script>
+<script src="/app/thinking/static/thinking.js"></script>

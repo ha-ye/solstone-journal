@@ -1,6 +1,7 @@
 {
   "icon": "🕰️",
   "label": "timeline",
+  "spa": true,
   "facets": {"disabled": true},
   "date_nav": true,
   "allow_future_dates": false

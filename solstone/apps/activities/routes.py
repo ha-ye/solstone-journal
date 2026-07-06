@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, jsonify, redirect, render_template, request, url_for
+from flask import Blueprint, current_app, jsonify, redirect, request, url_for
 
 from solstone.convey import state
 from solstone.convey.reasons import (
@@ -25,7 +25,6 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import (
     DATE_RE,
     error_response,
-    format_date,
     respond_collection,
 )
 from solstone.think.activities import (
@@ -65,18 +64,12 @@ def index():
 
 
 @activities_bp.route("/<day>")
-def activities_day(day: str) -> str:
-    """Render the day view for a specific day."""
+def activities_day(day: str) -> Any:
+    """Serve the activities SPA shell for a specific day."""
     if not DATE_RE.fullmatch(day):
         return "", 404
 
-    title = format_date(day)
-
-    return render_template(
-        "app.html",
-        view="day",
-        title=title,
-    )
+    return current_app.send_static_file("shell.html")
 
 
 def _month_activity_counts(month: str) -> dict[str, dict[str, int]]:

@@ -1,6 +1,7 @@
 {
   "icon": "🎙️",
   "label": "speakers",
+  "spa": true,
   "date_nav": true,
   "facets": {
     "disabled": true

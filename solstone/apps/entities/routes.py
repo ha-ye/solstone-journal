@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, current_app, jsonify, request
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +106,21 @@ ENTITY_DELETE_TTL = 10.0
 
 @entities_bp.route("/")
 def index() -> Any:
-    """Render the entities workspace with owner-facing copy injected."""
-    return render_template("app.html", entities_copy=entities_copy_payload())
+    """Serve the entities SPA shell."""
+    return current_app.send_static_file("shell.html")
+
+
+@entities_bp.route("/api/state")
+def api_state() -> Any:
+    """Return initial entities workspace state."""
+    try:
+        return jsonify({"entities_copy": entities_copy_payload()})
+    except Exception:
+        logger.exception("error loading entities state")
+        return error_response(
+            ENTITY_OPERATION_FAILED,
+            detail="Failed to load entities state.",
+        )
 
 
 def _get_entity_metadata(facet_name: str, entity_name: str) -> dict:

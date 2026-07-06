@@ -22,9 +22,9 @@ from typing import Any
 
 from flask import (
     Blueprint,
+    current_app,
     jsonify,
     redirect,
-    render_template,
     request,
     send_file,
     url_for,
@@ -47,7 +47,6 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import (
     DATE_RE,
     error_response,
-    format_date,
     safe_day_path,
     success_response,
 )
@@ -207,14 +206,12 @@ def index() -> Any:
 
 
 @transcripts_bp.route("/<day>")
-def transcripts_day(day: str) -> str:
-    """Render transcript viewer for a specific day."""
+def transcripts_day(day: str) -> Any:
+    """Serve the transcript SPA shell for a specific day."""
     if not DATE_RE.fullmatch(day):
         return error_response(INVALID_DAY, status=404, detail="Day not found")
 
-    title = format_date(day)
-
-    return render_template("app.html", title=title)
+    return current_app.send_static_file("shell.html")
 
 
 @transcripts_bp.route("/api/ranges/<day>")

@@ -1,6 +1,7 @@
 {
   "icon": "📅",
   "label": "activities",
+  "spa": true,
   "date_nav": true,
   "allow_future_dates": true
 }

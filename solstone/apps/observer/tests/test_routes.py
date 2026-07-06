@@ -57,6 +57,15 @@ def _api_list_observers(env):
     return _api_list_payload(env)["observers"]
 
 
+def test_observer_index_serves_injected_spa_shell(observer_env):
+    env = observer_env()
+
+    response = env.client.get("/app/observer/")
+
+    assert response.status_code == 200
+    assert b'data-solstone-shell="spa"' in response.data
+
+
 def _day_dir(env, day: str = "20250103"):
     return env.journal / "chronicle" / day
 

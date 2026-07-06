@@ -152,10 +152,10 @@ Override default icon, label, and other app settings.
 
 **When to disable facets:** Set `"facets": false` for apps that don't use facet-based organization (e.g., system settings, dev tools).
 
-**Static shell opt-in:** Set `"spa": true` only after the app's
-`workspace.html` is construct-free: no `{{`, `{%`, or `{#` Jinja constructs.
-Flagged apps serve `convey/static/shell.html` at `/app/{name}/` and their
-workspace bytes at `/app/{name}/workspace`.
+**Static shell default:** New apps should use `"spa": true` with a
+construct-free `workspace.html`: no `{{`, `{%`, or `{#` Jinja constructs.
+SPA apps serve `convey/static/shell.html` at `/app/{name}/` and their workspace
+bytes at `/app/{name}/workspace`.
 
 **Examples:** Browse `solstone/apps/*/app.json` for reference configurations.
 
@@ -723,7 +723,7 @@ def handle_action():
 
 **Examples:**
 - Standard: `solstone/apps/home/workspace.html`, `solstone/apps/entities/workspace.html`, `solstone/apps/activities/workspace.html`
-- Wide: `solstone/apps/search/workspace.html`, `solstone/apps/activities/_day.html`, `solstone/apps/import/workspace.html`
+- Wide: `solstone/apps/search/workspace.html`, `solstone/apps/activities/workspace.html`, `solstone/apps/import/workspace.html`
 
 ### CSS Variables
 

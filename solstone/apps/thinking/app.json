@@ -1,6 +1,7 @@
 {
   "icon": "🧠",
   "label": "thinking",
+  "spa": true,
   "facets": {
     "disabled": true
   }

@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from pathlib import Path
 
@@ -43,9 +42,36 @@ def test_all_copy_constants_referenced_by_render_surface():
 
 
 def test_entities_index_injects_copy(client):
-    resp = client.get("/app/entities/")
+    resp = client.get("/app/entities/api/state")
     assert resp.status_code == 200
-    html = resp.get_data(as_text=True)
-    match = re.search(r"const ENT_COPY = (\{.*\});", html)
-    assert match, "ENT_COPY assignment not found in rendered page"
-    assert json.loads(match.group(1)) == entities_copy_payload()
+    assert resp.get_json() == {"entities_copy": entities_copy_payload()}
+
+
+def test_entities_index_serves_spa_shell(client):
+    resp = client.get("/app/entities/")
+
+    assert resp.status_code == 200
+    assert b'data-solstone-shell="spa"' in resp.data
+
+
+def test_entities_state_path_resolves(client):
+    adapter = client.application.url_map.bind("localhost")
+
+    endpoint, _args = adapter.match("/app/entities/api/state", method="GET")
+
+    assert endpoint == "app:entities.api_state"
+
+
+def test_entities_state_error_returns_envelope(client, monkeypatch):
+    from solstone.apps.entities import routes
+
+    def raise_copy_payload():
+        raise RuntimeError("copy failed")
+
+    monkeypatch.setattr(routes, "entities_copy_payload", raise_copy_payload)
+    resp = client.get("/app/entities/api/state")
+
+    assert resp.status_code == 500
+    payload = resp.get_json()
+    assert payload["reason_code"] == "entity_operation_failed"
+    assert payload["detail"] == "Failed to load entities state."

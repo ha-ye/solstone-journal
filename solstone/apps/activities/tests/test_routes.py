@@ -15,6 +15,45 @@ if str(ROOT) not in sys.path:
 from tests._baseline_harness import make_test_client
 
 
+def test_activities_day_serves_spa_shell(activities_env):
+    journal, _facet, day, _day_path = activities_env(None)
+    client = create_app(journal=str(journal)).test_client()
+
+    response = client.get(f"/app/activities/{day}")
+
+    assert response.status_code == 200
+    assert b'data-solstone-shell="spa"' in response.data
+
+
+def test_activities_index_redirects_to_spa_shell(activities_env):
+    journal, _facet, _day, _day_path = activities_env(None)
+    client = create_app(journal=str(journal)).test_client()
+
+    response = client.get("/app/activities/", follow_redirects=True)
+
+    assert response.status_code == 200
+    assert b'data-solstone-shell="spa"' in response.data
+
+
+def test_activities_day_guard_still_404s(activities_env):
+    journal, _facet, _day, _day_path = activities_env(None)
+    client = create_app(journal=str(journal)).test_client()
+
+    response = client.get("/app/activities/notaday")
+
+    assert response.status_code == 404
+
+
+def test_activities_colors_literal_path_resolves(activities_env):
+    journal, _facet, _day, _day_path = activities_env(None)
+    app = create_app(journal=str(journal))
+    adapter = app.url_map.bind("localhost")
+
+    endpoint, _args = adapter.match("/static/colors.js", method="GET")
+
+    assert endpoint
+
+
 def test_day_activities_returns_collection_envelope(activities_env):
     journal, _facet, day, _day_path = activities_env(
         [

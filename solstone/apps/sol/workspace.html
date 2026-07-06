@@ -1,5 +1,3 @@
-{# Agents day view - historical agent runs browser #}
-
 <style>
 /* ============================================================================
    Layout & Navigation
@@ -1163,11 +1161,8 @@
   let previousPreviewFocus = null;
   let previewFocusTrapHandler = null;
 
-  // Get current day from URL path
   function getDayFromUrl() {
-    const path = window.location.pathname;
-    const match = path.match(/\/app\/sol\/(\d{8})$/);
-    return match ? match[1] : null;
+    return window.solPathContext().day;
   }
 
   function loadIdentity() {

@@ -120,10 +120,10 @@ def test_search_spa_index_workspace_and_route_resolution(convey_app, client):
 
 
 def test_unflagged_timeline_workspace_404_and_index_stays_jinja(client):
-    response = client.get("/app/timeline/workspace")
+    response = client.get("/app/home/workspace")
     assert response.status_code == 404
 
-    index_response = client.get("/app/timeline/", follow_redirects=True)
+    index_response = client.get("/app/home/", follow_redirects=True)
     assert index_response.status_code == 200
     assert b'data-solstone-shell="spa"' not in index_response.data
 

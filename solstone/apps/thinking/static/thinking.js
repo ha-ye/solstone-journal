@@ -3,8 +3,8 @@
 
 (() => {
   const state = {
-    providers: window.THINKING?.providers || {},
-    keys: window.THINKING?.keys || {},
+    providers: {},
+    keys: {},
     localModels: [],
     localAvailability: null,
     scout: null,
@@ -12,8 +12,8 @@
     byoMode: 'pick',
     pendingSwitchTarget: '',
   };
-  const copy = window.THINKING_COPY || {};
-  const scoutCopy = copy.scout || {};
+  let copy = {};
+  let scoutCopy = {};
   const scoutTerminalPhases = new Set(['invited', 'requested', 'ended', 'repair_needed']);
   const scoutPollIntervalMs = 1500;
   const scoutPollMaxMs = 15 * 60 * 1000;
@@ -23,12 +23,13 @@
     google: 'GOOGLE_API_KEY',
     openai: 'OPENAI_API_KEY',
   };
-  const providerLabels = copy.provider_labels || {
+  const fallbackProviderLabels = {
     anthropic: 'Claude',
     google: 'Gemini',
     openai: 'GPT',
     local: 'Local',
   };
+  let providerLabels = fallbackProviderLabels;
   const providerTerms = {
     anthropic: 'https://www.anthropic.com/legal/commercial-terms',
     google: 'https://ai.google.dev/gemini-api/terms',
@@ -75,6 +76,60 @@
     if (!button) return;
     button.hidden = !visible;
     button.disabled = !!disabled;
+  }
+
+  function applyCopy(payload) {
+    copy = payload || {};
+    scoutCopy = copy.scout || {};
+    providerLabels = copy.provider_labels || fallbackProviderLabels;
+    setText('thinkingHeading', copy.heading || 'thinking');
+  }
+
+  function renderInitialLoading() {
+    const loading = $('thinking-loading');
+    if (!loading) return;
+    loading.innerHTML = window.SurfaceState.loading({ text: 'loading thinking settings...' });
+    loading.style.display = '';
+    const app = $('thinkingApp');
+    if (app) app.hidden = true;
+  }
+
+  function revealThinkingApp() {
+    const loading = $('thinking-loading');
+    if (loading) loading.style.display = 'none';
+    const app = $('thinkingApp');
+    if (app) app.hidden = false;
+  }
+
+  function renderInitialError(err) {
+    window.logError?.(err, { context: 'thinking-state' });
+    const loading = $('thinking-loading');
+    if (!loading) return;
+    loading.innerHTML = window.SurfaceState.error({
+      heading: "Couldn't load thinking settings",
+      desc: window.CONVEY_COPY.RELOAD_HINT,
+      serverMessage: err?.serverMessage || err?.message || '',
+      detail: err,
+      retry: true,
+    });
+    loading.querySelector('.surface-state-retry')?.addEventListener('click', () => {
+      init();
+    });
+  }
+
+  async function loadInitialState() {
+    renderInitialLoading();
+    try {
+      const payload = await window.apiJson('/app/thinking/api/state');
+      state.providers = payload.providers || {};
+      state.keys = payload.keys || {};
+      applyCopy(payload.copy || {});
+      revealThinkingApp();
+      return true;
+    } catch (err) {
+      renderInitialError(err);
+      return false;
+    }
   }
 
   async function api(path, options = {}) {
@@ -1165,6 +1220,8 @@
   }
 
   async function init() {
+    const loaded = await loadInitialState();
+    if (!loaded) return;
     bind();
     setSelectedByoProvider(defaultByoProvider());
     renderAll();

@@ -9,21 +9,21 @@
   <div class="dashboard-content" id="dashboard" style="display: none;">
     <section class="tokens-glance-band" aria-label="cost at a glance">
       <div class="glance-tile glance-tile-cost">
-        <div class="glance-tile-label">{{ tokens_copy.TOKENS_TILE_COST_LABEL | safe }}</div>
+        <div class="glance-tile-label" data-tokens-copy-key="TOKENS_TILE_COST_LABEL"></div>
         <div class="glance-tile-value" id="glance-cost">—</div>
         <svg class="glance-sparkline" id="glance-cost-sparkline" width="120" height="32" viewBox="0 0 120 32" preserveAspectRatio="none" aria-hidden="true"></svg>
       </div>
       <div class="glance-tile glance-tile-tokens">
-        <div class="glance-tile-label">{{ tokens_copy.TOKENS_TILE_TOKENS_LABEL | safe }}</div>
+        <div class="glance-tile-label" data-tokens-copy-key="TOKENS_TILE_TOKENS_LABEL"></div>
         <div class="glance-tile-value" id="glance-tokens">—</div>
         <svg class="glance-sparkline" id="glance-tokens-sparkline" width="120" height="32" viewBox="0 0 120 32" preserveAspectRatio="none" aria-hidden="true"></svg>
       </div>
       <div class="glance-tile glance-tile-rate">
-        <div class="glance-tile-label">{{ tokens_copy.TOKENS_TILE_RUN_RATE_LABEL | safe }}</div>
+        <div class="glance-tile-label" data-tokens-copy-key="TOKENS_TILE_RUN_RATE_LABEL"></div>
         <div class="glance-tile-value" id="glance-rate">—</div>
       </div>
       <div class="glance-tile glance-tile-driver">
-        <div class="glance-tile-label">{{ tokens_copy.TOKENS_TILE_TOP_DRIVER_LABEL | safe }}</div>
+        <div class="glance-tile-label" data-tokens-copy-key="TOKENS_TILE_TOP_DRIVER_LABEL"></div>
         <div class="glance-tile-value" id="glance-driver">—</div>
       </div>
     </section>
@@ -635,27 +635,31 @@
 </style>
 
 <script>
-  window.TOKENS_COPY = {
-    TOKENS_TILE_COST_LABEL: {{ tokens_copy.TOKENS_TILE_COST_LABEL | tojson }},
-    TOKENS_TILE_COST_VALUE: {{ tokens_copy.TOKENS_TILE_COST_VALUE | tojson }},
-    TOKENS_TILE_TOKENS_LABEL: {{ tokens_copy.TOKENS_TILE_TOKENS_LABEL | tojson }},
-    TOKENS_TILE_TOKENS_VALUE: {{ tokens_copy.TOKENS_TILE_TOKENS_VALUE | tojson }},
-    TOKENS_TILE_RUN_RATE_LABEL: {{ tokens_copy.TOKENS_TILE_RUN_RATE_LABEL | tojson }},
-    TOKENS_TILE_RUN_RATE_VALUE: {{ tokens_copy.TOKENS_TILE_RUN_RATE_VALUE | tojson }},
-    TOKENS_TILE_TOP_DRIVER_LABEL: {{ tokens_copy.TOKENS_TILE_TOP_DRIVER_LABEL | tojson }},
-    TOKENS_TILE_TOP_DRIVER_VALUE: {{ tokens_copy.TOKENS_TILE_TOP_DRIVER_VALUE | tojson }},
-    TOKENS_DISCLOSURE_PROVIDER: {{ tokens_copy.TOKENS_DISCLOSURE_PROVIDER | tojson }},
-    TOKENS_DISCLOSURE_MODEL: {{ tokens_copy.TOKENS_DISCLOSURE_MODEL | tojson }},
-    TOKENS_DISCLOSURE_TOKEN_TYPE: {{ tokens_copy.TOKENS_DISCLOSURE_TOKEN_TYPE | tojson }},
-    TOKENS_DISCLOSURE_CONTEXT: {{ tokens_copy.TOKENS_DISCLOSURE_CONTEXT | tojson }},
-    TOKENS_DISCLOSURE_SEGMENT: {{ tokens_copy.TOKENS_DISCLOSURE_SEGMENT | tojson }}
+  const TOKENS_COPY = {
+    TOKENS_TILE_COST_LABEL: "today's cost",
+    TOKENS_TILE_COST_VALUE: "${cost:.2f}",
+    TOKENS_TILE_TOKENS_LABEL: "today's tokens",
+    TOKENS_TILE_TOKENS_VALUE: "{tokens}",
+    TOKENS_TILE_RUN_RATE_LABEL: "7-day run rate",
+    TOKENS_TILE_RUN_RATE_VALUE: "~${rate:.2f}/day",
+    TOKENS_TILE_TOP_DRIVER_LABEL: "today's biggest cost",
+    TOKENS_TILE_TOP_DRIVER_VALUE: "{provider} · {model} ({pct}% of today)",
+    TOKENS_DISCLOSURE_PROVIDER: "by provider — {n} providers, top: {top_name} {pct}%",
+    TOKENS_DISCLOSURE_MODEL: "by model — {n} models, top: {top_name} {pct}%",
+    TOKENS_DISCLOSURE_TOKEN_TYPE: "by token type — input / output / cached / reasoning",
+    TOKENS_DISCLOSURE_CONTEXT: "by context — {n} contexts, top: {top_name} {pct}%",
+    TOKENS_DISCLOSURE_SEGMENT: "by segment — {n} segments"
   };
+  window.TOKENS_COPY = TOKENS_COPY;
+  document.querySelectorAll('[data-tokens-copy-key]').forEach((el) => {
+    el.textContent = TOKENS_COPY[el.dataset.tokensCopyKey] || '';
+  });
 </script>
 
 <script>
 // Global state
 let currentData = null;
-let currentDay = '{{ day }}';
+let currentDay = window.solPathContext().day;
 const sortState = {};
 
 const tableConfig = {

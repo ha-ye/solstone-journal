@@ -5,6 +5,7 @@
 
 import json
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -18,6 +19,14 @@ SERVE_AUDIO_URL = (
     f"/app/speakers/api/serve_audio/{SERVE_AUDIO_DAY}/"
     f"{SERVE_AUDIO_STREAM}/{SERVE_AUDIO_SEGMENT}/{SERVE_AUDIO_SOURCE}.flac"
 )
+
+
+def _convey_client(journal_root):
+    from solstone.convey import create_app
+
+    app = create_app(str(journal_root))
+    app.config["TESTING"] = True
+    return app.test_client()
 
 
 @pytest.fixture
@@ -1795,40 +1804,107 @@ def test_api_owner_status_confirmed_has_centroid_metadata(speakers_env):
     }
 
 
-def test_index_renders_overview_template_not_redirect(speakers_env, monkeypatch):
-    from solstone.apps.speakers import routes
-    from solstone.apps.speakers.routes import speakers_bp
+def test_index_serves_spa_shell(speakers_env):
+    env = speakers_env()
+    client = _convey_client(env.journal)
 
-    speakers_env()
-    seen = {}
-
-    def fake_render_template(template, **context):
-        seen["template"] = template
-        seen["context"] = context
-        return "overview"
-
-    monkeypatch.setattr(routes, "render_template", fake_render_template)
-
-    app = Flask(__name__)
-    app.register_blueprint(speakers_bp)
-
-    with app.test_client() as client:
-        resp = client.get("/app/speakers/")
+    resp = client.get("/app/speakers/")
 
     assert resp.status_code == 200
-    assert seen["template"] == "speakers/overview.html"
-    assert seen["context"]["day"] is None
-    assert "speaker_copy" in seen["context"]
+    assert b'data-solstone-shell="spa"' in resp.data
+
+
+def test_day_route_serves_spa_shell_and_invalid_day_404(speakers_env):
+    env = speakers_env()
+    client = _convey_client(env.journal)
+
+    day_resp = client.get("/app/speakers/20240101")
+    invalid_resp = client.get("/app/speakers/not-a-day")
+
+    assert day_resp.status_code == 200
+    assert b'data-solstone-shell="spa"' in day_resp.data
+    assert invalid_resp.status_code == 404
 
 
 def test_overview_renders_four_section_markers():
-    template = (
-        __import__("pathlib")
-        .Path("solstone/apps/speakers/overview.html")
-        .read_text(encoding="utf-8")
-    )
+    template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
 
     assert 'data-section="your-voice"' in template
     assert 'data-section="known-voices"' in template
     assert 'data-section="new-voices"' in template
     assert 'data-section="today"' in template
+
+
+def test_speakers_state_endpoint_shape(speakers_env):
+    from solstone.apps.speakers.copy import speaker_copy_payload
+    from solstone.apps.speakers.owner import OWNER_BOOTSTRAP_MIN_STMTS
+
+    env = speakers_env()
+    client = _convey_client(env.journal)
+
+    resp = client.get("/app/speakers/api/state")
+
+    assert resp.status_code == 200
+    payload = resp.get_json()
+    assert set(payload) == {
+        "today",
+        "owner_min_statements",
+        "speaker_copy",
+        "speaker_filter_name",
+    }
+    assert len(payload["today"]) == 8
+    assert payload["today"].isdigit()
+    assert payload["owner_min_statements"] == OWNER_BOOTSTRAP_MIN_STMTS
+    assert payload["speaker_copy"] == speaker_copy_payload()
+    assert payload["speaker_filter_name"] is None
+
+
+def test_speakers_state_path_resolves(speakers_env):
+    env = speakers_env()
+    client = _convey_client(env.journal)
+    adapter = client.application.url_map.bind("localhost")
+
+    endpoint, _args = adapter.match("/app/speakers/api/state", method="GET")
+
+    assert endpoint == "app:speakers.api_state"
+
+
+def test_speakers_state_resolves_known_speaker_filter(speakers_env):
+    env = speakers_env()
+    env.create_entity("Alice Test")
+    client = _convey_client(env.journal)
+
+    resp = client.get("/app/speakers/api/state?speaker=alice_test")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["speaker_filter_name"] == "Alice Test"
+
+
+def test_speakers_state_missing_speaker_filter_is_null(speakers_env):
+    env = speakers_env()
+    client = _convey_client(env.journal)
+
+    resp = client.get("/app/speakers/api/state?speaker=unknown")
+
+    assert resp.status_code == 200
+    assert resp.get_json()["speaker_filter_name"] is None
+
+
+def test_speakers_state_unexpected_failure_returns_envelope(
+    speakers_env,
+    monkeypatch,
+):
+    from solstone.apps.speakers import routes
+
+    env = speakers_env()
+
+    def raise_lookup(_speaker):
+        raise RuntimeError("lookup failed")
+
+    monkeypatch.setattr(routes, "load_journal_entity", raise_lookup)
+    client = _convey_client(env.journal)
+
+    resp = client.get("/app/speakers/api/state?speaker=alice_test")
+
+    assert resp.status_code == 500
+    assert resp.get_json()["reason_code"] == "file_read_failed"

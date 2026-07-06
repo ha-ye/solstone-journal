@@ -6,11 +6,16 @@
 
   function pathContext() {
     const parts = window.location.pathname.split('/');
+    const isAppPath = parts[1] === 'app' && parts[2];
+    const segment = isAppPath && parts[3] ? decodeURIComponent(parts[3]) : null;
     return {
-      appName: parts[1] === 'app' && parts[2] ? decodeURIComponent(parts[2]) : null,
-      day: parts[1] === 'app' && parts[3] && DAY_RE.test(parts[3]) ? parts[3] : null
+      appName: isAppPath ? decodeURIComponent(parts[2]) : null,
+      segment,
+      day: segment && DAY_RE.test(segment) ? segment : null
     };
   }
+
+  window.solPathContext = pathContext;
 
   function findApp(shell, appName) {
     return (shell.apps || []).find((app) => app.name === appName) || null;

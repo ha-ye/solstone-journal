@@ -1,4 +1,5 @@
 {
   "icon": "📥",
-  "label": "import"
+  "label": "import",
+  "spa": true
 }

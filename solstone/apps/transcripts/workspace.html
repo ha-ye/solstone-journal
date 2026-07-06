@@ -1,5 +1,3 @@
-{# Transcript viewer - dual-timeline interface #}
-
 <style>
 /* Transcripts app styles - all classes prefixed with .tr- to avoid conflicts */
 
@@ -1742,7 +1740,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   const DEFAULT_LEN = 60;
   const MIN_LEN = 15;
 
-  const day = '{{ day }}';
+  const { day } = window.solPathContext();
 
   // Elements - main timeline
   const timeline = document.getElementById('trTimeline');

@@ -1571,7 +1571,7 @@ body.presentation-mode .entity-desc { color: #4b5563; }
 </div>
 
 <script>
-const ENT_COPY = {{ entities_copy|default({})|tojson|safe }};
+let ENT_COPY = {};
 let currentFacet = window.selectedFacet;
 let entitiesData = null;
 let detectedPage = 1;
@@ -2784,8 +2784,40 @@ function attachEntityToFacet(entity, description) {
   });
 }
 
+function resetEntitiesLoading() {
+  const loading = document.getElementById('entities-loading');
+  if (!loading) return;
+  loading.innerHTML = window.SurfaceState.loading({ text: 'loading entities...' });
+  loading.style.display = 'flex';
+}
+
+async function loadEntitiesState() {
+  resetEntitiesLoading();
+  try {
+    const state = await window.apiJson('/app/entities/api/state');
+    ENT_COPY = state.entities_copy || {};
+    return true;
+  } catch (err) {
+    window.logError(err, { context: 'entities: state failed' });
+    window.SurfaceState.replaceLoading('entities-loading', window.SurfaceState.error({
+      heading: "Couldn't load entities",
+      desc: window.CONVEY_COPY.RELOAD_HINT,
+      serverMessage: err?.serverMessage,
+      detail: err,
+      retry: true,
+    }));
+    document
+      .querySelector('#entities-loading .surface-state-retry')
+      ?.addEventListener('click', initEntities);
+    return false;
+  }
+}
+
 // Edit form submission
-function initEntities() {
+async function initEntities() {
+  if (!await loadEntitiesState()) {
+    return;
+  }
   loadEntityTypes();  // Load entity types first for UI elements
   loadEntities();
   setupCortexListener();

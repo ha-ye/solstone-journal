@@ -1,4 +1,5 @@
 {
   "icon": "📇",
-  "label": "entities"
+  "label": "entities",
+  "spa": true
 }

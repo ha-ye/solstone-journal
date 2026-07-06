@@ -10,9 +10,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any, Dict
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, current_app, jsonify, redirect, request, url_for
 
-from solstone.apps.tokens import copy as tokens_copy
 from solstone.convey import state
 from solstone.convey.reasons import INVALID_DAY, INVALID_MONTH, INVALID_REQUEST_VALUE
 from solstone.convey.utils import DATE_RE, error_response, respond_collection
@@ -23,11 +22,6 @@ tokens_bp = Blueprint(
     __name__,
     url_prefix="/app/tokens",
 )
-
-
-@tokens_bp.app_context_processor
-def _inject_tokens_copy() -> dict:
-    return {"tokens_copy": tokens_copy}
 
 
 def _aggregate_token_data(day: str) -> Dict[str, Any]:
@@ -322,18 +316,16 @@ def _aggregate_token_data(day: str) -> Dict[str, Any]:
 @tokens_bp.route("/")
 def index():
     """Redirect to today's token usage."""
-    from flask import redirect, url_for
-
     today = date.today().strftime("%Y%m%d")
     return redirect(url_for("app:tokens.day_view", day=today))
 
 
 @tokens_bp.route("/<day>")
-def day_view(day: str):
-    """Token usage dashboard for specific day."""
+def day_view(day: str) -> Any:
+    """Serve the token usage SPA shell for a specific day."""
     if not DATE_RE.fullmatch(day):
         return "", 404
-    return render_template("app.html")
+    return current_app.send_static_file("shell.html")
 
 
 @tokens_bp.route("/api/usage")
