@@ -93,6 +93,7 @@ OURA_RESILIENCE_TYPE = "oura.daily_resilience"
 OURA_STRESS_TYPE = "oura.daily_stress"
 OURA_SPO2_TYPE = "oura.daily_spo2"
 OURA_TEMP_DEV_TYPE = "oura.temperature_deviation"
+OURA_HEARTRATE_TYPE = "oura.heartrate"
 
 
 def _oura_row(
@@ -2451,6 +2452,47 @@ def test_day_api_heart_rate_series_absent_below_threshold(body_env):
     assert 'class="body-curve-band"' not in html
 
 
+def test_day_api_heart_rate_revision_moves_across_month_shards(body_env):
+    env = body_env()
+    dedupe_key = "sha256:oura-heartrate-utc-boundary"
+    source_record_id = "heartrate/2026-07-01T00:02:57.000Z/sleep"
+    old = _oura_row(
+        OURA_HEARTRATE_TYPE,
+        "20260701",
+        value=63,
+        unit="bpm",
+        start="2026-07-01T00:02:57+00:00",
+        kind="sample",
+        metadata={"source": "sleep", "raw_timestamp": source_record_id},
+    )
+    corrected = _oura_row(
+        OURA_HEARTRATE_TYPE,
+        "20260630",
+        value=63,
+        unit="bpm",
+        start="2026-06-30T18:02:57-06:00",
+        kind="sample",
+        metadata={
+            "source": "sleep",
+            "raw_timestamp": "2026-07-01T00:02:57.000Z",
+            "timezone": "America/Denver",
+        },
+    )
+    for row in (old, corrected):
+        row["dedupe_key"] = dedupe_key
+        row["source_record_id"] = source_record_id
+
+    _seed_import(env.journal, "20260701_000000", [old])
+    _seed_import(env.journal, "20260706_000000", [corrected])
+
+    june = env.client.get("/app/body/api/day/20260630").get_json()
+    july = env.client.get("/app/body/api/day/20260701").get_json()
+
+    assert june["heart"]["heart_rate"]["summary"] == "63 bpm · 1 reading"
+    assert june["heart"]["heart_rate"]["count"] == 1
+    assert july["heart"] is None
+
+
 def test_day_api_heart_series_y_axis_labels_match_padded_domain(body_env):
     env = body_env()
     values = [55, 60, 70, 80, 90, 100, 110, 120, 125, 130, 135, 142]
@@ -2698,6 +2740,52 @@ def test_day_api_sleep_without_stage_detail_keeps_single_figure(body_env):
     assert sleep["asleep_duration"] is None
     assert sleep["in_bed_duration"] == "7h 30m"
     assert sleep["duration"] == "7h 30m"
+
+
+def test_day_api_oura_sleep_uses_stage_durations_for_asleep_time(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260901_163000",
+        [
+            _oura_row(
+                OURA_SLEEP_PERIOD_TYPE,
+                "20260705",
+                value=None,
+                unit="s",
+                start="2026-07-04T22:15:00-06:00",
+                end="2026-07-05T08:41:00-06:00",
+                kind="sleep_period",
+                metadata={
+                    "type": "long_sleep",
+                    "deep_sleep_duration": 5400,
+                    "light_sleep_duration": 17400,
+                    "rem_sleep_duration": 6000,
+                    "awake_time": 7560,
+                    "time_in_bed": 37560,
+                },
+            )
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260705").get_json()
+    sleep = payload["sleep"]
+
+    assert sleep["source"] == "Oura (API)"
+    assert sleep["window"] == "10:15 PM – 8:41 AM"
+    assert sleep["has_stage_detail"] is True
+    assert sleep["asleep_duration"] == "8h 00m"
+    assert sleep["in_bed_duration"] == "10h 26m"
+    assert sleep["duration"] == "10h 26m"
+    assert payload["lede"].startswith("Slept 8h 00m (in bed 10h 26m)")
+
+    html = env.client.get("/app/body/20260705").get_data(as_text=True)
+    assert 'asleep <span class="body-num">8h 00m</span>' in html
+    assert 'in bed <span class="body-num">10h 26m</span>' in html
+
+    trends = _trends_after_warm(env.client)
+    asleep = next(s for s in trends["signals"] if s["key"] == "asleep_minutes")
+    assert asleep["daily"] == [["20260705", 480.0]]
 
 
 # --- Day view: workout aggregation ------------------------------------------------

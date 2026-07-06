@@ -362,6 +362,53 @@ def _iter_normalized_rows(
     return rows
 
 
+def _row_import_ids(row: dict[str, Any]) -> list[str]:
+    ids = row.get("import_ids")
+    if isinstance(ids, list):
+        found = [str(item) for item in ids if item]
+    else:
+        found = []
+    import_id = row.get("import_id")
+    if import_id:
+        text = str(import_id)
+        if text not in found:
+            found.append(text)
+    return found
+
+
+def _row_latest_import_id(row: dict[str, Any]) -> str:
+    ids = _row_import_ids(row)
+    return max(ids) if ids else ""
+
+
+def _merge_import_ids(newer: dict[str, Any], older: dict[str, Any]) -> None:
+    ids = sorted(set(_row_import_ids(newer)) | set(_row_import_ids(older)))
+    if ids:
+        newer["import_ids"] = ids
+
+
+def _dedupe_rows_by_key_newest(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge adjacent-shard rows so corrected cross-month revisions win."""
+
+    passthrough: list[dict[str, Any]] = []
+    kept_by_key: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        dedupe_key = row.get("dedupe_key")
+        if not isinstance(dedupe_key, str) or not dedupe_key:
+            passthrough.append(row)
+            continue
+        kept = kept_by_key.get(dedupe_key)
+        if kept is None:
+            kept_by_key[dedupe_key] = row
+            continue
+        if _row_latest_import_id(row) >= _row_latest_import_id(kept):
+            _merge_import_ids(row, kept)
+            kept_by_key[dedupe_key] = row
+        else:
+            _merge_import_ids(kept, row)
+    return passthrough + list(kept_by_key.values())
+
+
 def _month_reader(journal_root: Path) -> Callable[[str], list[dict[str, Any]]]:
     """Month-shard reader that caches each month within one request."""
 
@@ -602,6 +649,58 @@ def _is_sleep_type(record_type: str) -> bool:
     # Oura API sleep periods carry bedtime intervals and join the same
     # session pool as HealthKit sleep-analysis rows.
     return "SleepAnalysis" in record_type or record_type == OURA_SLEEP_PERIOD_TYPE
+
+
+def _sleep_interval_entries(
+    row: dict[str, Any],
+    start: datetime,
+    end: datetime,
+) -> list[tuple[str, datetime, datetime, str | None]]:
+    """Translate one normalized sleep row into canonical staged intervals."""
+
+    source = _source_label(row)
+    record_type = str(row.get("record_type") or "")
+    if record_type != OURA_SLEEP_PERIOD_TYPE:
+        stage = str(row["value"]) if row.get("value") is not None else None
+        return [(source, start, end, stage)]
+
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    time_in_bed = _parse_float(metadata.get("time_in_bed"))
+    if end <= start and time_in_bed is not None and time_in_bed > 0:
+        end = start + timedelta(seconds=time_in_bed)
+
+    intervals = [(source, start, end, None)]
+    asleep_seconds = _oura_asleep_seconds(row)
+    if asleep_seconds is not None and asleep_seconds > 0:
+        asleep_end = start + timedelta(seconds=asleep_seconds)
+        if end > start:
+            asleep_end = min(asleep_end, end)
+        intervals.append((source, start, asleep_end, "asleep"))
+    return intervals
+
+
+def _oura_asleep_seconds(row: dict[str, Any]) -> float | None:
+    value = _parse_float(row.get("value"))
+    if value is not None and value > 0:
+        return value
+
+    metadata = row.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    stage_seconds = [
+        _parse_float(metadata.get(key))
+        for key in (
+            "deep_sleep_duration",
+            "light_sleep_duration",
+            "rem_sleep_duration",
+        )
+    ]
+    present = [seconds for seconds in stage_seconds if seconds is not None]
+    if not present:
+        return None
+    return sum(seconds for seconds in present if seconds > 0)
 
 
 # --- O-5C: same-device supersede (the API pipe wins over the AH mirror) ------
@@ -1366,10 +1465,12 @@ def _sleep_analysis(
         if start is None:
             continue
         end = _parse_record_time(row.get("end_date")) or start
-        stage = str(row["value"]) if row.get("value") is not None else None
-        intervals_by_source.setdefault(_source_label(row), []).append(
-            (start, end, stage)
-        )
+        for source, interval_start, interval_end, stage in _sleep_interval_entries(
+            row, start, end
+        ):
+            intervals_by_source.setdefault(source, []).append(
+                (interval_start, interval_end, stage)
+            )
     if not intervals_by_source:
         return None
 
@@ -2821,9 +2922,11 @@ def _build_health_day(
         # near a month boundary those entries live in the next month's shards.
         months.append(next_month)
     read = reader or _month_reader(journal_root)
-    rows = [row for shard_month in months for row in read(shard_month)]
-    # Audit surfaces list every row from every pipe; aggregation works on
-    # the canonical rows after the O-5C same-device supersede.
+    rows = _dedupe_rows_by_key_newest(
+        [row for shard_month in months for row in read(shard_month)]
+    )
+    # Audit surfaces list the canonical latest row per dedupe key from
+    # every pipe; aggregation then applies the O-5C same-device supersede.
     audit_rows = [row for row in rows if row.get("day") == day]
     day_rows = _resolve_canonical_day_rows(audit_rows)
     prev_day = (target - timedelta(days=1)).strftime("%Y%m%d")
@@ -3660,9 +3763,8 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
                     if start is None:
                         continue
                     end = _parse_record_time(row.get("end_date")) or start
-                    stage = str(row["value"]) if row.get("value") is not None else None
-                    sleep_rows_by_day.setdefault(day, []).append(
-                        (_source_label(row), start, end, stage)
+                    sleep_rows_by_day.setdefault(day, []).extend(
+                        _sleep_interval_entries(row, start, end)
                     )
                 elif row.get("kind") == "workout":
                     # Workout rows summarize on day cards; no ribbon total

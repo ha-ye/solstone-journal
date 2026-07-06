@@ -26,10 +26,11 @@ Scope of this module:
 Timezone rule (load-bearing): Oura documents carry their own ``day``
 field, already attributed by Oura (a night belongs to the day it ended,
 matching the journal's cross-midnight canon). The journal day IS Oura's
-``day`` field verbatim — never recomputed against local time. Timestamps
-are stored as raw ISO strings with their original offsets. The
-``heartrate`` series carries no ``day`` field; its day is the date
-component of Oura's own offset-bearing timestamp, again verbatim.
+``day`` field verbatim — never recomputed against local time. The
+``heartrate`` series is the exception: it carries no ``day`` field and
+Oura returns UTC instants, so samples are converted to the owner's
+journal timezone for ``start_date`` and day/month assignment while the
+raw timestamp stays in ``source_record_id`` for stable dedupe.
 
 Token boundary: access/refresh tokens live outside the journal behind
 ``solstone.think.importers.local_secrets`` (L2 owner, built separately);
@@ -62,6 +63,7 @@ from typing import Any, Callable, Final, Iterable, Mapping
 # network-capable urllib.request import lives only inside
 # _default_transport — see the no-network guard in tests.
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from solstone.think.importers.file_importer import ImportPreview, ImportResult
 from solstone.think.importers.health_dedupe import (
@@ -307,6 +309,62 @@ def parse_oura_day(value: object) -> str | None:
         return None
 
 
+def _owner_timezone_for_journal(journal_root: Path | None = None) -> ZoneInfo:
+    """Resolve the owner timezone for Oura instant-only endpoints.
+
+    Journal config wins when a journal root is available. Pure preview and
+    fixture calls fall back through the existing host/system helper.
+    """
+
+    if journal_root is not None:
+        try:
+            from solstone.think.journal_config import read_journal_config
+
+            config = read_journal_config(journal_root)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            logger.warning(
+                "Could not read journal timezone from %s; falling back to host timezone: %s",
+                journal_root,
+                exc,
+            )
+        else:
+            configured = str(
+                config.get("identity", {}).get("timezone") or ""
+            ).strip()
+            if configured:
+                try:
+                    return ZoneInfo(configured)
+                except ZoneInfoNotFoundError:
+                    logger.warning(
+                        "Invalid identity.timezone %r; falling back to host timezone",
+                        configured,
+                    )
+
+    from solstone.think.utils import get_owner_timezone
+
+    return get_owner_timezone()
+
+
+def _timezone_label(owner_timezone: dt.tzinfo) -> str:
+    key = getattr(owner_timezone, "key", None)
+    if isinstance(key, str) and key:
+        return key
+    return str(owner_timezone)
+
+
+def _parse_oura_instant(value: str) -> dt.datetime:
+    raw = value.strip()
+    normalized = raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+    parsed = dt.datetime.fromisoformat(normalized)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=dt.timezone.utc)
+    return parsed
+
+
+def _owner_local_timestamp(value: str, owner_timezone: dt.tzinfo) -> str:
+    return _parse_oura_instant(value).astimezone(owner_timezone).isoformat()
+
+
 # ---------------------------------------------------------------------------
 # Normalization
 # ---------------------------------------------------------------------------
@@ -317,9 +375,11 @@ def normalize_bundle(
     *,
     import_id: str,
     raw_ref_root: str,
+    owner_timezone: dt.tzinfo | None = None,
 ) -> list[OuraNormalizedItem]:
     """Normalize parsed endpoint items into rows with stable dedupe keys."""
 
+    resolved_timezone = owner_timezone or _owner_timezone_for_journal()
     items: list[OuraNormalizedItem] = []
     for endpoint in sorted(bundle):
         for index, item in enumerate(bundle[endpoint], start=1):
@@ -330,6 +390,7 @@ def normalize_bundle(
                     dict(item),
                     import_id=import_id,
                     raw_ref=raw_ref,
+                    owner_timezone=resolved_timezone,
                 )
             )
     return items
@@ -341,6 +402,7 @@ def _normalize_item(
     *,
     import_id: str,
     raw_ref: str,
+    owner_timezone: dt.tzinfo,
 ) -> list[OuraNormalizedItem]:
     day = parse_oura_day(item.get("day")) or ""
     rows: list[OuraNormalizedItem] = []
@@ -510,21 +572,25 @@ def _normalize_item(
     elif endpoint == "heartrate":
         # AH-mirror overlap series, imported per decision O-5C. Heartrate
         # rows carry no document id and no day field: identity is
-        # synthesized from Oura's own offset-bearing timestamp plus the
-        # sample source, and the day is the date component of that same
-        # timestamp verbatim (no local-time recomputation).
+        # synthesized from Oura's raw timestamp plus the sample source,
+        # while day/month assignment uses the owner's local timezone.
         timestamp = str(item["timestamp"])
+        local_timestamp = _owner_local_timestamp(timestamp, owner_timezone)
         source = str(item.get("source") or "unknown")
         rows.append(
             _build_item(
                 record_type="oura.heartrate",
                 kind="sample",
                 source_record_id=f"heartrate/{timestamp}/{source}",
-                day=parse_oura_day(timestamp[:10]) or "",
-                start_time=timestamp,
+                day=parse_oura_day(local_timestamp[:10]) or "",
+                start_time=local_timestamp,
                 value=item.get("bpm"),
                 unit="bpm",
-                metadata={"source": source},
+                metadata={
+                    "source": source,
+                    "raw_timestamp": timestamp,
+                    "timezone": _timezone_label(owner_timezone),
+                },
                 import_id=import_id,
                 raw_ref=raw_ref,
             )
@@ -565,7 +631,8 @@ def _build_item(
         )
     )
     month = f"{day[:4]}-{day[4:6]}" if day else "undated"
-    # start_date/end_date stay raw ISO strings with Oura's own offsets.
+    # Document endpoints keep Oura's own offsets. The no-day heartrate
+    # endpoint passes owner-local ``start_time`` in from the caller.
     row = {
         "schema": NORMALIZED_SCHEMA,
         "source_family": SOURCE_OURA_API,
@@ -1108,6 +1175,7 @@ class OuraSyncBackend:
         # available "newest day". Windows over-fetch and upserts are
         # idempotent, so exactness is not load-bearing.
         resolved_today = today or dt.date.today()
+        owner_timezone = _owner_timezone_for_journal(journal_root)
 
         api = client or OuraApiClient(journal_root=journal_root)
         bundle: dict[str, list[dict[str, Any]]] = {}
@@ -1128,7 +1196,10 @@ class OuraSyncBackend:
 
         if dry_run:
             items = normalize_bundle(
-                bundle, import_id="catalog", raw_ref_root="catalog"
+                bundle,
+                import_id="catalog",
+                raw_ref_root="catalog",
+                owner_timezone=owner_timezone,
             )
             known = _count_known_rows(journal_root, items)
             return _sync_result(
@@ -1149,7 +1220,12 @@ class OuraSyncBackend:
         # BEFORE allocating an import id or writing anything. Dedupe keys
         # and value hashes are import-id-independent, so a placeholder
         # normalization compares exactly.
-        probe_items = normalize_bundle(bundle, import_id="quiet", raw_ref_root="quiet")
+        probe_items = normalize_bundle(
+            bundle,
+            import_id="quiet",
+            raw_ref_root="quiet",
+            owner_timezone=owner_timezone,
+        )
         new_rows, changed_rows = _ledger_delta(journal_root, probe_items)
         if new_rows == 0 and changed_rows == 0:
             # Nothing new and nothing revised: write NO bundle, NO raw
@@ -1188,6 +1264,7 @@ class OuraSyncBackend:
             bundle,
             import_id=import_id,
             raw_ref_root=f"imports/{import_id}/raw/oura",
+            owner_timezone=owner_timezone,
         )
         saved = _save_sync_bundle(
             journal_root,
@@ -1263,19 +1340,20 @@ def _ledger_delta(
     """(new, changed) dedupe keys vs the dedupe ledger (read-only).
 
     ``new`` counts keys the ledger has never seen; ``changed`` counts
-    known keys whose stored ``value_hash`` differs from this fetch's.
-    Both sides of that comparison come from ``health_value_hash`` — the
+    known keys whose stored value hash or time bounds differ from this
+    fetch's. Value comparisons come from ``health_value_hash`` — the
     fetch side via ``_build_item``, the stored side persisted verbatim by
     ``upsert_health_dedupe_records`` — so the canonicalization cannot
-    drift. Any duplicate of a key within the batch (page overlap) counts
-    as changed if any copy's hash mismatches.
+    drift. Time comparisons catch normalization corrections such as the
+    Oura heartrate UTC→owner-local fix. Any duplicate of a key within the
+    batch (page overlap) counts as changed if any copy mismatches.
     """
 
     if not items:
         return (0, 0)
     keys = sorted({item.dedupe_record.dedupe_key for item in items})
     db_path = journal_root / "imports" / "health-dedupe.sqlite"
-    stored: dict[str, str | None] = {}
+    stored: dict[str, tuple[str | None, str | None, str | None]] = {}
     if db_path.is_file():
         import sqlite3
 
@@ -1284,13 +1362,13 @@ def _ledger_delta(
             for start in range(0, len(keys), 500):
                 chunk = keys[start : start + 500]
                 marks = ",".join("?" for _ in chunk)
-                stored.update(
-                    conn.execute(
-                        "SELECT dedupe_key, value_hash FROM health_dedupe "
-                        f"WHERE dedupe_key IN ({marks})",
-                        chunk,
-                    )
-                )
+                for key, value_hash, start_time, end_time in conn.execute(
+                    "SELECT dedupe_key, value_hash, start_time, end_time "
+                    "FROM health_dedupe "
+                    f"WHERE dedupe_key IN ({marks})",
+                    chunk,
+                ):
+                    stored[str(key)] = (value_hash, start_time, end_time)
         finally:
             conn.close()
     new_keys: set[str] = set()
@@ -1299,7 +1377,13 @@ def _ledger_delta(
         key = item.dedupe_record.dedupe_key
         if key not in stored:
             new_keys.add(key)
-        elif stored[key] != item.dedupe_record.value_hash:
+            continue
+        value_hash, start_time, end_time = stored[key]
+        if (
+            value_hash != item.dedupe_record.value_hash
+            or start_time != item.dedupe_record.start_time
+            or end_time != item.dedupe_record.end_time
+        ):
             changed_keys.add(key)
     return (len(new_keys), len(changed_keys))
 

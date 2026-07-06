@@ -167,6 +167,9 @@ def upsert_health_dedupe_record(
             """
             UPDATE health_dedupe
             SET
+                source_record_id = COALESCE(?, source_record_id),
+                start_time = ?,
+                end_time = ?,
                 last_seen_import_id = ?,
                 value_hash = COALESCE(?, value_hash),
                 normalized_ref = COALESCE(?, normalized_ref),
@@ -175,6 +178,9 @@ def upsert_health_dedupe_record(
             WHERE dedupe_key = ?
             """,
             (
+                record.source_record_id,
+                record.start_time,
+                record.end_time,
                 last_seen_import_id,
                 record.value_hash,
                 record.normalized_ref,
@@ -227,6 +233,12 @@ def upsert_health_dedupe_records(
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(dedupe_key) DO UPDATE SET
+                    source_record_id = COALESCE(
+                        excluded.source_record_id,
+                        health_dedupe.source_record_id
+                    ),
+                    start_time = excluded.start_time,
+                    end_time = excluded.end_time,
                     last_seen_import_id = excluded.last_seen_import_id,
                     value_hash = COALESCE(
                         excluded.value_hash,

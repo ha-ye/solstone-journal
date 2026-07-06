@@ -10,9 +10,11 @@ import datetime as dt
 import json
 import sqlite3
 import sys
+from dataclasses import replace
 from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -66,6 +68,12 @@ _FIXTURE_ROW_COUNT = 17
 def _use_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     journal = tmp_path / "journal"
     journal.mkdir()
+    config_path = journal / "config" / "journal.json"
+    config_path.parent.mkdir()
+    config_path.write_text(
+        json.dumps({"identity": {"timezone": "America/Denver"}}),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     return journal
 
@@ -330,6 +338,7 @@ def _normalized_items() -> list[oura.OuraNormalizedItem]:
         bundle,
         import_id="20260105_000000",
         raw_ref_root="imports/20260105_000000/raw/oura",
+        owner_timezone=ZoneInfo("America/Denver"),
     )
 
 
@@ -406,7 +415,7 @@ def test_normalize_daily_activity_keeps_oura_score_and_totals():
     assert first["metadata"]["contributors"]["meet_daily_targets"] == 92
 
 
-def test_normalize_heartrate_synthesizes_identity_and_day_verbatim():
+def test_normalize_heartrate_synthesizes_identity_and_owner_local_day():
     items = _normalized_items()
     rows = [item.row for item in items if item.row["record_type"] == "oura.heartrate"]
 
@@ -414,14 +423,46 @@ def test_normalize_heartrate_synthesizes_identity_and_day_verbatim():
     first = next(
         row for row in rows if row["start_date"] == "2026-01-02T03:15:00-07:00"
     )
-    # Heartrate rows carry no Oura day field: the journal day is the date
-    # component of Oura's own offset-bearing timestamp, verbatim.
+    # Heartrate rows carry no Oura day field: the journal day is derived
+    # from the timestamp after conversion to the owner's local timezone.
     assert first["day"] == "20260102"
     assert first["kind"] == "sample"
     assert first["value"] == 49
     assert first["unit"] == "bpm"
     assert first["source_record_id"] == "heartrate/2026-01-02T03:15:00-07:00/sleep"
-    assert first["metadata"] == {"source": "sleep"}
+    assert first["metadata"] == {
+        "source": "sleep",
+        "raw_timestamp": "2026-01-02T03:15:00-07:00",
+        "timezone": "America/Denver",
+    }
+
+
+def test_normalize_heartrate_converts_utc_to_owner_local_day_and_hour():
+    [item] = oura.normalize_bundle(
+        {
+            "heartrate": [
+                {
+                    "timestamp": "2026-07-01T00:02:57.000Z",
+                    "bpm": 63,
+                    "source": "sleep",
+                }
+            ]
+        },
+        import_id="20260706_000000",
+        raw_ref_root="imports/20260706_000000/raw/oura",
+        owner_timezone=ZoneInfo("America/Denver"),
+    )
+
+    row = item.row
+    assert row["source_record_id"] == "heartrate/2026-07-01T00:02:57.000Z/sleep"
+    assert row["day"] == "20260630"
+    assert item.month == "2026-06"
+    assert row["start_date"] == "2026-06-30T18:02:57-06:00"
+    assert row["metadata"] == {
+        "source": "sleep",
+        "raw_timestamp": "2026-07-01T00:02:57.000Z",
+        "timezone": "America/Denver",
+    }
 
 
 def test_heartrate_dedupe_key_is_bpm_independent():
@@ -515,6 +556,7 @@ def _normalize_for_import(path: Path, import_id: str) -> list[oura.OuraNormalize
         bundle,
         import_id=import_id,
         raw_ref_root=f"imports/{import_id}/raw/oura",
+        owner_timezone=ZoneInfo("America/Denver"),
     )
 
 
@@ -656,6 +698,60 @@ def test_revision_refreshes_value_hash_in_dedupe_ledger(tmp_path: Path):
     row = get_health_dedupe_record(journal, changed.dedupe_record.dedupe_key)
     assert row is not None
     assert row["value_hash"] == changed.dedupe_record.value_hash
+
+
+def test_heartrate_timezone_revision_updates_same_ledger_key_and_month_ref(
+    tmp_path: Path,
+):
+    journal = tmp_path
+    sample = {
+        "timestamp": "2026-07-01T00:02:57.000Z",
+        "bpm": 63,
+        "source": "sleep",
+    }
+
+    [old] = oura.normalize_bundle(
+        {"heartrate": [sample]},
+        import_id=_IMPORT_A,
+        raw_ref_root=f"imports/{_IMPORT_A}/raw/oura",
+        owner_timezone=ZoneInfo("UTC"),
+    )
+    [corrected] = oura.normalize_bundle(
+        {"heartrate": [sample]},
+        import_id=_IMPORT_B,
+        raw_ref_root=f"imports/{_IMPORT_B}/raw/oura",
+        owner_timezone=ZoneInfo("America/Denver"),
+    )
+
+    assert old.row["day"] == "20260701"
+    assert old.month == "2026-07"
+    assert corrected.row["day"] == "20260630"
+    assert corrected.month == "2026-06"
+    assert corrected.row["source_record_id"] == old.row["source_record_id"]
+    assert corrected.row["dedupe_key"] == old.row["dedupe_key"]
+    assert corrected.dedupe_record.value_hash != old.dedupe_record.value_hash
+
+    first = replace(
+        old.dedupe_record,
+        normalized_ref=f"imports/{_IMPORT_A}/normalized/{old.month}.jsonl#L1",
+    )
+    second = replace(
+        corrected.dedupe_record,
+        normalized_ref=f"imports/{_IMPORT_B}/normalized/{corrected.month}.jsonl#L1",
+    )
+
+    assert upsert_health_dedupe_records(journal, [first]).inserted == 1
+    result = upsert_health_dedupe_records(journal, [second])
+
+    assert result.inserted == 0
+    assert result.updated == 1
+    row = get_health_dedupe_record(journal, corrected.row["dedupe_key"])
+    assert row is not None
+    assert row["first_import_id"] == _IMPORT_A
+    assert row["last_seen_import_id"] == _IMPORT_B
+    assert row["start_time"] == "2026-06-30T18:02:57-06:00"
+    assert row["value_hash"] == corrected.dedupe_record.value_hash
+    assert row["normalized_ref"] == f"imports/{_IMPORT_B}/normalized/2026-06.jsonl#L1"
 
 
 def test_within_bundle_page_overlap_collapses_to_one_row(tmp_path: Path):
@@ -1066,7 +1162,7 @@ def test_fetch_without_tokens_raises_authorization_needed():
 
 def test_client_reads_client_id_from_journal_config(tmp_path: Path):
     journal = tmp_path / "journal"
-    (journal / "config").mkdir(parents=True)
+    (journal / "config").mkdir(parents=True, exist_ok=True)
     (journal / "config" / "journal.json").write_text(
         json.dumps({"oura": {"client_id": "config-client-id"}}), encoding="utf-8"
     )
@@ -1777,7 +1873,7 @@ def test_cli_connect_oura_runs_auth_and_saves_tokens(
     tmp_path: Path, monkeypatch, capsys
 ):
     journal = _use_journal(tmp_path, monkeypatch)
-    (journal / "config").mkdir()
+    (journal / "config").mkdir(exist_ok=True)
     (journal / "config" / "journal.json").write_text(
         json.dumps({"oura": {"client_id": "config-client-id"}}), encoding="utf-8"
     )
