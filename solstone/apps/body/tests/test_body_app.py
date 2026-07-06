@@ -4876,3 +4876,331 @@ def test_trends_readiness_signal_folds_daily_scores(body_env):
         "last_day": "20260602",
         "days": 2,
     }
+
+
+# --- Round-2 Oura display front-end: anatomy, medians, juxtaposition ----------
+#
+# Owned by the round-2 FRONT-END change-set (workspace.html). The server
+# half — recovery.contributors / sleep.score_contributors, per-fact
+# ``typical`` medians, and the heart/sleep ``comparison_line`` keys —
+# lands in the concurrent server change-set, so nothing here requests a
+# route that depends on it. Rendered assertions fabricate the ``body_day``
+# context and render the template directly; JS behavior pins are
+# template-source-level, the repo's JS-invariant idiom.
+#
+# Assumed contracts (also stated in the change-set report; reconciled
+# against the server change-set's in-flight code where it had landed):
+# - recovery.contributors / sleep.score_contributors: [{label, value}]
+#   with owner-facing labels and display-ready values.
+# - fact.typical_label (recovery facts, heart facts) plus
+#   sleep.score_typical_label / sleep.asleep_typical_label: the full
+#   pre-formatted self-baseline copy ("your 90-day median N"); the
+#   template renders it verbatim after a "·" in the muted class. The
+#   raw ``typical`` number rides alongside for machine use; presence is
+#   judged on the label.
+# - heart.comparison_line / sleep.comparison_line: fully pre-formatted
+#   device juxtaposition strings (device names included — the template
+#   may never hardcode a device name), present only when BOTH a genuine
+#   cross-device source and the ring pipe measured that day. The
+#   both-devices gate is server logic; the template renders on presence.
+# - Attributed adjective lines (e.g. "Resilience solid · Oura's label")
+#   arrive pre-formatted inside recovery.facts and render as plain fact
+#   rows — no template special-casing.
+# - Trends: stress_high_minutes travels as minutes with unit label "h";
+#   the client's key branch renders "2h 00m" copy and must sit before
+#   the generic "h" (decimal hours) path.
+
+
+def _render_body_workspace(**context) -> str:
+    """Render workspace.html directly with a fabricated context."""
+    import jinja2  # local: keeps this change-set append-only in this file
+
+    body_root = Path(body_routes.__file__).resolve().parent
+    env = jinja2.Environment(
+        loader=jinja2.FileSystemLoader(str(body_root)), autoescape=True
+    )
+    return env.get_template("workspace.html").render(**context)
+
+
+def _fabricated_day(**overrides) -> dict:
+    day = {
+        "day": "20260715",
+        "date_label": "July 15, 2026",
+        "has_data": True,
+        "lede": "Slept 8h 03m.",
+        "summary_markdown": None,
+        "audit": {"types": {}, "import_ids": []},
+    }
+    day.update(overrides)
+    return day
+
+
+def _fabricated_sleep(**overrides) -> dict:
+    sleep = {
+        "source": "Oura (API)",
+        "other_sources": [],
+        "window": "12:00 AM – 8:10 AM",
+        "duration": "8h 10m",
+        "asleep_duration": "7h 58m",
+        "in_bed_duration": "8h 10m",
+        "has_stage_detail": True,
+        "naps": [],
+        "bar": {"segments": [], "ticks": []},
+        "score_line": None,
+    }
+    sleep.update(overrides)
+    return sleep
+
+
+def _fabricated_heart(**overrides) -> dict:
+    heart = {
+        "heart_rate": {"summary": "51–139 bpm · 1,240 readings"},
+        "series": None,
+        "blood_pressure": None,
+        "rhythm": None,
+        "facts": [],
+    }
+    heart.update(overrides)
+    return heart
+
+
+def test_score_anatomy_macro_collapsed_by_default_with_aria_pins():
+    source = _trends_workspace_source()
+
+    # Shared macro: both cards disclose through the same markup.
+    assert "{% macro score_anatomy(anatomy_id, contributors) %}" in source
+    # Collapsed by default: the button states it and the panel is hidden.
+    assert 'class="body-anatomy-btn" aria-expanded="false" aria-controls=' in source
+    assert 'id="{{ anatomy_id }}" hidden' in source
+    assert "Why this score" in source
+    # The list is attributed to Oura, §13-style.
+    assert "Oura's contributors" in source
+
+    # The toggle keeps aria-expanded and the panel's hidden attribute in
+    # lockstep, both directions.
+    assert 'document.querySelectorAll(".body-anatomy-btn")' in source
+    assert 'var open = button.getAttribute("aria-expanded") === "true";' in source
+    assert 'button.setAttribute("aria-expanded", open ? "false" : "true");' in source
+    assert "if (panel) panel.hidden = open;" in source
+
+
+def test_score_anatomy_renders_collapsed_on_recovery_and_sleep_cards():
+    html = _render_body_workspace(
+        body_day=_fabricated_day(
+            sleep=_fabricated_sleep(
+                score_line="Sleep score 88 · Oura's score",
+                score_contributors=[
+                    {"label": "Deep sleep", "value": 92},
+                    {"label": "Efficiency", "value": 85},
+                ],
+            ),
+            recovery={
+                "facts": [{"label": "Readiness", "detail": "82 · Oura's score"}],
+                "contributors": [
+                    {"label": "HRV balance", "value": 80},
+                    {"label": "Sleep balance", "value": 70},
+                ],
+            },
+        )
+    )
+
+    # One disclosure per card, each collapsed with its panel hidden.
+    assert html.count('class="body-anatomy-btn"') == 2
+    assert html.count('aria-expanded="false"') >= 2
+    assert 'aria-controls="body-recovery-anatomy"' in html
+    assert 'id="body-recovery-anatomy" hidden' in html
+    assert 'aria-controls="body-sleep-anatomy"' in html
+    assert 'id="body-sleep-anatomy" hidden' in html
+    # Compact label/value rows, values verbatim.
+    assert "<li><span>HRV balance</span>" in html
+    assert '<strong class="body-num">80</strong>' in html
+    assert "<li><span>Deep sleep</span>" in html
+    assert '<strong class="body-num">92</strong>' in html
+    # Attributed footer inside each panel.
+    assert html.count('<p class="body-anatomy-foot">Oura\'s contributors</p>') == 2
+
+
+def test_score_anatomy_absent_without_contributors():
+    html = _render_body_workspace(
+        body_day=_fabricated_day(
+            sleep=_fabricated_sleep(score_line="Sleep score 88 · Oura's score"),
+            recovery={"facts": [{"label": "Readiness", "detail": "82 · Oura's score"}]},
+        )
+    )
+
+    # The stylesheet and toggle script always ship, so absence is judged
+    # on rendered markup: no disclosure button, no panel, no button copy.
+    assert 'class="body-anatomy-btn"' not in html
+    assert 'class="body-anatomy"' not in html
+    assert "Why this score" not in html
+
+
+def test_fact_typical_median_rides_muted_never_colorized():
+    html = _render_body_workspace(
+        body_day=_fabricated_day(
+            recovery={
+                "facts": [
+                    {
+                        "label": "Readiness",
+                        "detail": "82 · Oura's score",
+                        "typical": 78.0,
+                        "typical_label": "your 90-day median 78",
+                    }
+                ]
+            },
+            heart=_fabricated_heart(
+                facts=[
+                    {
+                        "label": "Resting heart rate",
+                        "count": 1,
+                        "count_label": "1",
+                        "value": "58 bpm",
+                        "typical": 56.0,
+                        "typical_label": "your 90-day median 56 bpm",
+                    }
+                ]
+            ),
+            sleep=_fabricated_sleep(
+                score_line="Sleep score 88 · Oura's score",
+                score_typical=85.0,
+                score_typical_label="your 90-day median 85",
+                asleep_typical_minutes=460.0,
+                asleep_typical_label="your 90-day median 7h 40m",
+            ),
+        )
+    )
+
+    # The median rides each fact's detail in the muted class, the
+    # server's copy verbatim after a "·".
+    assert (
+        '82 · Oura&#39;s score <span class="body-fact-typical">'
+        "&middot; your 90-day median 78</span>" in html
+    )
+    assert (
+        '58 bpm <span class="body-fact-typical">'
+        "&middot; your 90-day median 56 bpm</span>" in html
+    )
+    # Sleep card: the score line and the asleep headline carry theirs.
+    assert (
+        'Sleep score 88 · Oura&#39;s score <span class="body-fact-typical">'
+        "&middot; your 90-day median 85</span>" in html
+    )
+    assert (
+        '8h 10m</span> <span class="body-fact-typical body-num">'
+        "&middot; your 90-day median 7h 40m</span>" in html
+    )
+
+    # The muted class never colorizes: faint ink only, no orange — the
+    # median is stated, never graded.
+    source = _trends_workspace_source()
+    rule_at = source.index(".body-fact-typical {")
+    rule = source[rule_at : source.index("}", rule_at)]
+    assert "var(--ink-faint-paper)" in rule
+    assert "orange" not in rule
+
+
+def test_fact_typical_absent_without_key():
+    html = _render_body_workspace(
+        body_day=_fabricated_day(
+            recovery={"facts": [{"label": "Readiness", "detail": "82 · Oura's score"}]},
+            sleep=_fabricated_sleep(score_line="Sleep score 88 · Oura's score"),
+        )
+    )
+
+    assert "90-day median" not in html
+    assert 'class="body-fact-typical"' not in html
+
+
+def test_attributed_adjective_line_renders_as_plain_fact_row():
+    # Pre-formatted attributed adjectives are ordinary facts to the
+    # template: the same row markup as every number line, no special case.
+    html = _render_body_workspace(
+        body_day=_fabricated_day(
+            recovery={
+                "facts": [
+                    {"label": "Readiness", "detail": "82 · Oura's score"},
+                    {"label": "Resilience", "detail": "solid · Oura's label"},
+                ]
+            }
+        )
+    )
+
+    assert "<span>Resilience</span>" in html
+    assert '<strong class="body-num">solid · Oura&#39;s label</strong>' in html
+
+
+def test_device_comparison_lines_render_only_when_server_sends_them():
+    context_with = _fabricated_day(
+        sleep=_fabricated_sleep(
+            comparison_line="Apple Watch saw 7h 58m · Oura saw 8h 10m"
+        ),
+        heart=_fabricated_heart(
+            comparison_line="Apple Watch 51–139 bpm · Oura 49–142 bpm"
+        ),
+    )
+    html = _render_body_workspace(body_day=context_with)
+
+    # Pure juxtaposition rows: the server's line verbatim, muted, one per
+    # card — and the canonical headlines stay unchanged beside them.
+    assert html.count('class="body-muted body-num body-device-compare"') == 2
+    assert "Apple Watch 51–139 bpm · Oura 49–142 bpm" in html
+    assert "Apple Watch saw 7h 58m · Oura saw 8h 10m" in html
+    assert 'asleep <span class="body-num">7h 58m</span>' in html
+
+    # Without the server key, no comparison markup renders at all (the
+    # stylesheet always ships, so absence is judged on rendered markup).
+    html_without = _render_body_workspace(
+        body_day=_fabricated_day(sleep=_fabricated_sleep(), heart=_fabricated_heart())
+    )
+    assert 'class="body-muted body-num body-device-compare"' not in html_without
+
+
+def test_trends_new_signal_units_format_score_degrees_and_minutes():
+    source = _trends_workspace_source()
+
+    # temp_deviation: signed °C, two decimals, the day card's convention.
+    assert 'if (signal.key === "temp_deviation")' in source
+    assert "var deg = value.toFixed(2);" in source
+    assert 'if (deg.charAt(0) !== "-") deg = "+" + deg;' in source
+    assert 'return deg + " " + (signal.unit_label || "°C");' in source
+
+    # stress_high_minutes: minute totals as "2h 00m" / "45m". The key
+    # branch must sit before the generic "h" unit path — the server
+    # labels the signal "h", which would otherwise render decimal hours.
+    assert (
+        'if (signal.key === "stress_high_minutes") return formatMinutes(value);'
+        in source
+    )
+    assert source.index('if (signal.key === "stress_high_minutes")') < source.index(
+        'if (signal.unit_label === "h")'
+    )
+    assert "function formatMinutes(minutes)" in source
+    assert 'String(mins).padStart(2, "0") + "m"' in source
+    assert 'return mins + "m";' in source
+
+    # Scores stay bare: sleep_score takes the same empty-unit-label
+    # fallback readiness already uses — no special branch.
+    assert "Scores (readiness, sleep score) carry an empty unit label" in source
+    assert "return Math.round(value) +" in source
+
+    # Pre-data, a signal in the payload with no points draws the calm
+    # placeholder on a disabled ribbon — no canvas to open.
+    assert '"not present yet"' in source
+    assert '(hasData ? "" : " disabled")' in source
+
+
+def test_trends_fine_scale_domain_keeps_temp_deviation_legible():
+    source = _trends_workspace_source()
+
+    # Temperature deviation lives within ~±1 °C; the integer domain
+    # convention would flatten it, so it takes a fractional pad and
+    # one-decimal outward rounding — and, being genuinely signed, it
+    # keeps a negative floor (the zero clamp guards vMin >= 0 only).
+    assert "function fineScale(signal)" in source
+    assert 'return signal.key === "temp_deviation";' in source
+    assert "pad = Math.max((vMax - vMin) * 0.08, 0.1);" in source
+    assert "lo = Math.floor((vMin - pad) * 10) / 10;" in source
+    assert "hi = Math.ceil((vMax + pad) * 10) / 10;" in source
+    # Both call sites pass the signal-aware flag.
+    assert "paddedDomain(points, fineScale(signal))" in source
+    assert "paddedDomain(inWindow, fineScale(signal));" in source

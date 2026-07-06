@@ -30,6 +30,25 @@
   </div>
 </article>
 {% endmacro %}
+{#
+  Score anatomy: Oura's contributor rows behind a collapsed-by-default
+  disclosure. Facts only — each row is Oura's label and Oura's number,
+  and the footer attributes the whole list to Oura. Shared by the sleep
+  and recovery cards so the two disclosures can never drift.
+#}
+{% macro score_anatomy(anatomy_id, contributors) %}
+<button type="button" class="body-anatomy-btn" aria-expanded="false" aria-controls="{{ anatomy_id }}">
+  Why this score<span class="body-anatomy-caret" aria-hidden="true">&#9662;</span>
+</button>
+<div class="body-anatomy" id="{{ anatomy_id }}" hidden>
+  <ul class="body-anatomy-list">
+    {% for item in contributors %}
+      <li><span>{{ item.label }}</span><strong class="body-num">{{ item.value }}</strong></li>
+    {% endfor %}
+  </ul>
+  <p class="body-anatomy-foot">Oura's contributors</p>
+</div>
+{% endmacro %}
 <style>
 .body-header {
   margin-bottom: var(--space-5);
@@ -698,6 +717,81 @@ a.body-jump-day:focus-visible {
   font-size: 13px;
 }
 
+/* Self-baseline medians ride along muted — same ink for every value,
+   never a color that grades a number against its typical. */
+.body-fact-typical {
+  color: var(--ink-faint-paper);
+  font-size: 13px;
+  font-weight: normal;
+}
+
+/* Device juxtaposition lines: two devices' figures side by side, verbatim. */
+.body-device-compare {
+  margin: var(--space-2) 0 0;
+}
+
+.body-anatomy-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-top: var(--space-2);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13px;
+  font-weight: var(--weight-medium);
+  color: var(--orange-ink);
+  cursor: pointer;
+}
+
+.body-anatomy-btn:hover {
+  text-decoration: underline;
+}
+
+.body-anatomy-btn:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.body-anatomy-caret {
+  font-size: 10px;
+  color: var(--ink-faint-paper);
+}
+
+.body-anatomy[hidden] {
+  display: none;
+}
+
+.body-anatomy-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: var(--space-4);
+  list-style: none;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+}
+
+.body-anatomy-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 2px 0;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.body-anatomy-list li span:first-child {
+  color: var(--ink-soft-paper);
+}
+
+.body-anatomy-foot {
+  margin: var(--space-2) 0 0;
+  font-size: 12px;
+  color: var(--ink-faint-paper);
+}
+
 .body-chips {
   display: flex;
   flex-wrap: wrap;
@@ -1232,7 +1326,8 @@ a.body-jump-day:focus-visible {
   .body-main-grid,
   .body-highlights,
   .body-archive-hero,
-  .body-day-brief {
+  .body-day-brief,
+  .body-anatomy-list {
     grid-template-columns: 1fr;
   }
 }
@@ -1352,10 +1447,19 @@ a.body-jump-day:focus-visible {
         return segments;
       }
 
+      // Fine-scale signals live within a couple of units end to end —
+      // temperature deviation stays inside roughly ±1 °C — so the integer
+      // domain convention below would flatten their whole history into a
+      // sliver. They take a fractional pad and one-decimal rounding instead.
+      function fineScale(signal) {
+        return signal.key === "temp_deviation";
+      }
+
       // Same padded y-domain convention as the day curves: 8% of the
       // spread, never less than 2, rounded outward to integers the axis
-      // labels can state.
-      function paddedDomain(points) {
+      // labels can state. Fine-scale signals pad by at least 0.1 and round
+      // outward to one decimal.
+      function paddedDomain(points, fine) {
         var vMin = Infinity;
         var vMax = -Infinity;
         points.forEach(function (point) {
@@ -1363,11 +1467,19 @@ a.body-jump-day:focus-visible {
           if (point.value > vMax) vMax = point.value;
         });
         var pad = Math.max((vMax - vMin) * 0.08, 2.0);
-        // Every trends signal is non-negative; the padded floor must never
-        // print an impossible negative axis label (review finding).
         var lo = Math.floor(vMin - pad);
+        var hi = Math.ceil(vMax + pad);
+        if (fine) {
+          pad = Math.max((vMax - vMin) * 0.08, 0.1);
+          lo = Math.floor((vMin - pad) * 10) / 10;
+          hi = Math.ceil((vMax + pad) * 10) / 10;
+        }
+        // A non-negative series keeps a non-negative floor: the padded
+        // floor must never print an impossible negative axis label
+        // (review finding). Genuinely signed series (temperature
+        // deviation) keep their negative floor.
         if (vMin >= 0 && lo < 0) lo = 0;
-        return { lo: lo, hi: Math.ceil(vMax + pad) };
+        return { lo: lo, hi: hi };
       }
 
       function formatHours(minutes) {
@@ -1375,7 +1487,19 @@ a.body-jump-day:focus-visible {
         return hours.toFixed(1).replace(/\.0$/, "") + "h";
       }
 
+      // Minute totals fold to the app's duration copy: "2h 00m", "45m".
+      function formatMinutes(minutes) {
+        var total = Math.max(Math.round(minutes), 0);
+        var hours = Math.floor(total / 60);
+        var mins = total % 60;
+        if (hours) return hours + "h " + String(mins).padStart(2, "0") + "m";
+        return mins + "m";
+      }
+
       function formatValue(signal, value) {
+        // Stress-high minutes fold to "2h 00m" / "45m" — checked before
+        // the generic "h" unit path, which renders decimal hours.
+        if (signal.key === "stress_high_minutes") return formatMinutes(value);
         if (signal.unit_label === "h") return formatHours(value);
         if (signal.key === "steps") {
           return Math.round(value).toLocaleString("en-US") +
@@ -1385,6 +1509,15 @@ a.body-jump-day:focus-visible {
           return (Math.round(value * 10) / 10) +
             (signal.unit_label ? " " + signal.unit_label : "");
         }
+        if (signal.key === "temp_deviation") {
+          // Signed °C, the day card's explicit-sign convention: a
+          // deviation without its sign would misstate the direction.
+          var deg = value.toFixed(2);
+          if (deg.charAt(0) !== "-") deg = "+" + deg;
+          return deg + " " + (signal.unit_label || "°C");
+        }
+        // Scores (readiness, sleep score) carry an empty unit label and
+        // render as the bare number.
         return Math.round(value) +
           (signal.unit_label ? " " + signal.unit_label : "");
       }
@@ -1438,8 +1571,8 @@ a.body-jump-day:focus-visible {
         var spark = "";
         if (hasData) {
           spark = tickMarkup(domain.w0, domain.w1) + curveMarkup(
-            points, domain.w0, domain.w1, paddedDomain(points), SPARK_H,
-            "body-trends-spark-line", "body-trends-spark-dot", 3
+            points, domain.w0, domain.w1, paddedDomain(points, fineScale(signal)),
+            SPARK_H, "body-trends-spark-line", "body-trends-spark-dot", 3
           );
         }
         return '<section class="body-trends-ribbon" data-signal="' +
@@ -1539,7 +1672,7 @@ a.body-jump-day:focus-visible {
           if (point.value < vMin) vMin = point.value;
           if (point.value > vMax) vMax = point.value;
         });
-        var dom = paddedDomain(inWindow);
+        var dom = paddedDomain(inWindow, fineScale(signal));
         var line = signal.label + " · " + formatValue(signal, vMin) + " – " +
           formatValue(signal, vMax) + " · " + inWindow.length +
           " weeks present · weekly median";
@@ -1784,6 +1917,7 @@ a.body-jump-day:focus-visible {
           <p class="body-primary-line">
             asleep <span class="body-num">{{ body_day.sleep.asleep_duration }}</span>
             &middot; in bed <span class="body-num">{{ body_day.sleep.in_bed_duration }}</span>
+            {%- if body_day.sleep.asleep_typical_label %} <span class="body-fact-typical body-num">&middot; {{ body_day.sleep.asleep_typical_label }}</span>{% endif %}
           </p>
           {% if body_day.sleep.window %}
             <p class="body-muted body-num">{{ body_day.sleep.window }}</p>
@@ -1792,11 +1926,21 @@ a.body-jump-day:focus-visible {
           <p class="body-primary-line">
             <span class="body-num">{{ body_day.sleep.window }}</span>
             &middot; <span class="body-num">{{ body_day.sleep.duration }}</span>
+            {%- if body_day.sleep.asleep_typical_label %} <span class="body-fact-typical body-num">&middot; {{ body_day.sleep.asleep_typical_label }}</span>{% endif %}
           </p>
+        {% endif %}
+        {% if body_day.sleep.comparison_line %}
+          {# Both devices reported the night: the server's pre-formatted
+             juxtaposition, each figure named to its device — no verdict,
+             and the canonical headline above is unchanged. #}
+          <p class="body-muted body-num body-device-compare">{{ body_day.sleep.comparison_line }}</p>
         {% endif %}
         {% if body_day.sleep.score_line %}
           {# Oura's number, attributed to Oura — never our reading of it. #}
-          <p class="body-muted body-num">{{ body_day.sleep.score_line }}</p>
+          <p class="body-muted body-num">{{ body_day.sleep.score_line }}{% if body_day.sleep.score_typical_label %} <span class="body-fact-typical">&middot; {{ body_day.sleep.score_typical_label }}</span>{% endif %}</p>
+        {% endif %}
+        {% if body_day.sleep.score_contributors %}
+          {{ score_anatomy("body-sleep-anatomy", body_day.sleep.score_contributors) }}
         {% endif %}
         <svg class="body-sleep-bar" viewBox="0 0 1440 34" preserveAspectRatio="none" aria-hidden="true">
           <rect class="body-sleep-axis" x="0" y="15" width="1440" height="4" rx="2"></rect>
@@ -1948,13 +2092,18 @@ a.body-jump-day:focus-visible {
             </div>
           {% endif %}
         {% endif %}
+        {% if body_day.heart.comparison_line %}
+          {# Both devices measured the day: the server's pre-formatted
+             juxtaposition, each range named to its device — no verdict. #}
+          <p class="body-muted body-num body-device-compare">{{ body_day.heart.comparison_line }}</p>
+        {% endif %}
         {% if body_day.heart.facts %}
           <ul class="body-facts">
             {% for fact in body_day.heart.facts %}
               <li>
                 <span>{{ fact.label }}</span>
                 {% if fact.value %}
-                  <strong class="body-num">{{ fact.value }}</strong>
+                  <strong class="body-num">{{ fact.value }}{% if fact.typical_label %} <span class="body-fact-typical">&middot; {{ fact.typical_label }}</span>{% endif %}</strong>
                 {% else %}
                   <strong><span class="body-num">{{ fact.count_label }}</span> <span class="body-fact-kind">readings</span></strong>
                 {% endif %}
@@ -2003,16 +2152,22 @@ a.body-jump-day:focus-visible {
     {% if body_day.recovery %}
       <section class="body-card body-card--accent" aria-labelledby="body-recovery-title">
         <h2 id="body-recovery-title" class="body-question-title">How recovered am I?</h2>
-        {# Numbers only, each attributed to Oura (§13): Oura's scores and
-           measurements verbatim — no qualitative labels, no advice. #}
+        {# Facts only, each attributed to Oura (§13): Oura's numbers and —
+           when the server sends them pre-formatted with attribution —
+           Oura's own labels, verbatim. Never our gloss, never advice.
+           A fact's ``typical`` value rides along muted: a median, stated,
+           never a judged delta. #}
         <ul class="body-facts">
           {% for fact in body_day.recovery.facts %}
             <li>
               <span>{{ fact.label }}</span>
-              <strong class="body-num">{{ fact.detail }}</strong>
+              <strong class="body-num">{{ fact.detail }}{% if fact.typical_label %} <span class="body-fact-typical">&middot; {{ fact.typical_label }}</span>{% endif %}</strong>
             </li>
           {% endfor %}
         </ul>
+        {% if body_day.recovery.contributors %}
+          {{ score_anatomy("body-recovery-anatomy", body_day.recovery.contributors) }}
+        {% endif %}
         <p class="body-card-footer">Oura's daily numbers &middot; brought in via the Oura API</p>
       </section>
     {% endif %}
@@ -2126,6 +2281,19 @@ a.body-jump-day:focus-visible {
         });
       </script>
     {% endif %}
+
+    <script>
+      // Score-anatomy disclosures: collapsed by default, the button's
+      // aria-expanded and its panel's hidden attribute always move together.
+      document.querySelectorAll(".body-anatomy-btn").forEach(function (button) {
+        button.addEventListener("click", function () {
+          var open = button.getAttribute("aria-expanded") === "true";
+          var panel = document.getElementById(button.getAttribute("aria-controls"));
+          button.setAttribute("aria-expanded", open ? "false" : "true");
+          if (panel) panel.hidden = open;
+        });
+      });
+    </script>
   {% endif %}
 
   <details class="body-audit">
