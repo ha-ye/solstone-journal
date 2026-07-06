@@ -370,6 +370,19 @@ def _install_ced_assets(*, check: bool, force: bool) -> int:
     return 0
 
 
+def _install_rfdetr_model(*, check: bool, force: bool) -> int:
+    from solstone.think.providers import rfdetr_install
+
+    try:
+        if check:
+            rfdetr_install.check_rfdetr_model()
+        else:
+            rfdetr_install.install_rfdetr(force=force)
+    except rfdetr_install.RfdetrInstallError as exc:
+        return _fail(str(exc))
+    return 0
+
+
 def _install_linux_cpp(*, force: bool = False) -> int:
     from solstone.think.providers import parakeet_install
 
@@ -497,6 +510,10 @@ def main() -> int:
         return result
 
     result = _install_ced_assets(check=args.check, force=args.force)
+    if result != 0:
+        return result
+
+    result = _install_rfdetr_model(check=args.check, force=args.force)
     if result != 0:
         return result
 

@@ -101,6 +101,37 @@ Source:
 
 License notice: Apache License 2.0 (Apache-2.0).
 
+## runtime-downloaded provider artifacts (rf-detr.cpp)
+
+These artifacts are fetched on demand into the journal provider cache for local
+object detection. They are not bundled in this repository.
+
+### rf-detr.cpp engine binary
+
+Attribution: rf-detr.cpp (Ettore Di Giacinto / mudler); binary built and
+released by sol pbc.
+
+Source:
+
+- Release binary: https://github.com/solpbc/rf-detr.cpp/releases/download/bin-65c0ffcc-1/rfdetr-cli-65c0ffcc-linux-cpu-x64.tar.gz
+- Project: https://github.com/mudler/rf-detr.cpp
+- Pinned engine ref: 65c0ffcc
+- Downloaded file: `rfdetr-cli` (extracted from the tarball)
+
+License notice: Apache License 2.0 (Apache-2.0).
+
+### RF-DETR nano GGUF model weights
+
+Attribution: RF-DETR (Roboflow); GGUF conversion mudler/rfdetr-cpp-nano.
+
+Source:
+
+- Model repository: https://huggingface.co/mudler/rfdetr-cpp-nano
+- Pinned revision: c3dc0c037df499f5503545247df6618415fca643
+- Downloaded file: `rfdetr-nano-f16.gguf`
+
+License notice: Apache License 2.0 (Apache-2.0).
+
 ## WeSpeaker ResNet34 / VoxCeleb
 
 Attribution: WeSpeaker project, ResNet34 speaker embedding model trained on

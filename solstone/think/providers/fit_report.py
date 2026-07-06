@@ -20,6 +20,9 @@ from solstone.think.providers.memory import (
 
 FitSeverity = Literal["ok", "warning", "blocked", "unknown"]
 
+# The rf-detr.cpp binary has no pinned size; the 60 MiB GGUF dominates the gate.
+_RFDETR_ENGINE_BINARY_DISK_BYTES = 1024 * 1024
+
 
 @dataclass(frozen=True)
 class FitCheck:
@@ -123,6 +126,29 @@ def build_parakeet_fit_report(
     return FitReport(artifact="parakeet.cpp artifacts", checks=checks)
 
 
+def build_rfdetr_fit_report(
+    journal_path: str | Path | None = None,
+) -> FitReport:
+    from solstone.think.providers import rfdetr_install
+
+    checks = (
+        _rfdetr_platform_check(),
+        _disk_check(
+            "disk",
+            rfdetr_install.cache_root(journal_path),
+            (
+                (
+                    "rf-detr GGUF model",
+                    rfdetr_install.RFDETR_SPEC.model.size_bytes,
+                ),
+                ("rf-detr CLI binary", _RFDETR_ENGINE_BINARY_DISK_BYTES),
+            ),
+            (),
+        ),
+    )
+    return FitReport(artifact="rf-detr.cpp artifacts", checks=checks)
+
+
 def build_coreml_parakeet_fit_report(
     os_name: str,
     arch: str,
@@ -196,6 +222,23 @@ def _parakeet_platform_check() -> FitCheck:
         "platform",
         "ok",
         f"pinned parakeet.cpp artifacts are available for {artifact_key}",
+    )
+
+
+def _rfdetr_platform_check() -> FitCheck:
+    from solstone.think.providers import rfdetr_install
+
+    if rfdetr_install._rfdetr_platform_supported():
+        return FitCheck(
+            "platform",
+            "ok",
+            "pinned rf-detr.cpp artifacts are available for x86_64-linux",
+        )
+    os_name, arch = rfdetr_install._platform_info()
+    return FitCheck(
+        "platform",
+        "blocked",
+        f"rf-detr.cpp requires x86_64 Linux, got {os_name}/{arch}",
     )
 
 
@@ -400,5 +443,6 @@ __all__ = [
     "build_local_fit_report",
     "build_mlx_fit_report",
     "build_parakeet_fit_report",
+    "build_rfdetr_fit_report",
     "render_fit_report",
 ]
