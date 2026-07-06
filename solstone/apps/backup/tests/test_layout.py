@@ -81,7 +81,9 @@ def _root_token_present(html: str, token: str) -> bool:
 
 
 def _rendered_backup_html(backup_env) -> str:
-    return backup_env().client.get("/app/backup/").get_data(as_text=True)
+    response = backup_env().client.get("/app/backup/workspace")
+    assert response.status_code == 200
+    return response.get_data(as_text=True)
 
 
 def test_narrow_rules_bound_to_rendered_surface(backup_env) -> None:
@@ -102,6 +104,7 @@ def test_narrow_rules_bound_to_rendered_surface(backup_env) -> None:
 def test_backup_panels_and_states_render(backup_env) -> None:
     html = _rendered_backup_html(backup_env)
 
+    assert '<link rel="stylesheet" href="/app/backup/static/backup.css">' in html
     assert _class_token_present(html, "backup-shell")
     for name in (
         "intro",
@@ -132,6 +135,16 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         "data-restore-status",
     ):
         assert marker in html
+    for hook in (
+        'data-copy="brand_lock"',
+        'data-copy="intro.title"',
+        'data-copy-list="intro.bullets"',
+        'data-copy="destination.modes.hosted.cta"',
+        'data-copy-href="hosted.manage_url"',
+        'data-copy-aria-label="management.status_labels.destination"',
+        "data-retention-grid",
+    ):
+        assert hook in html
 
     css = _backup_css()
     narrow_css = "\n".join(_narrow_media_blocks(css))

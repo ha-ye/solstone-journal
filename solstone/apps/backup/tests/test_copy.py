@@ -12,6 +12,19 @@ from pathlib import Path
 from solstone.apps.backup.copy import backup_copy_payload, backup_copy_values
 
 
+def _backup_js_text() -> str:
+    return Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
+
+
+def _backup_copy_literal() -> dict:
+    text = _backup_js_text()
+    prefix = "  const BACKUP_COPY = "
+    start = text.index(prefix) + len(prefix)
+    payload, end = json.JSONDecoder().raw_decode(text[start:])
+    assert text[start + end :].lstrip().startswith(";")
+    return payload
+
+
 def test_backup_copy_verbatim_strings() -> None:
     payload = backup_copy_payload()
 
@@ -87,7 +100,7 @@ def test_operated_lane_copy_neutralizes_hosting_terms() -> None:
     assert offenders == []
 
 
-def test_no_literal_copy_in_templates_or_static() -> None:
+def test_no_literal_copy_in_workspace_template() -> None:
     root = Path("solstone/apps/backup")
     structural_values = {
         "B2",
@@ -108,31 +121,23 @@ def test_no_literal_copy_in_templates_or_static() -> None:
         "restore",
     }
     hits: list[tuple[Path, str]] = []
-    for path in [root / "workspace.html", root / "static" / "backup.js"]:
-        text = path.read_text(encoding="utf-8")
-        for value in backup_copy_values():
-            if not value or value in structural_values:
-                continue
-            literal_patterns = (
-                re.compile(rf">\s*{re.escape(value)}\s*<"),
-                re.compile(rf"(?<!=)['\"`]{re.escape(value)}['\"`]"),
-            )
-            if any(pattern.search(text) for pattern in literal_patterns):
-                hits.append((path, value))
+    path = root / "workspace.html"
+    text = path.read_text(encoding="utf-8")
+    for value in backup_copy_values():
+        if not value or value in structural_values:
+            continue
+        literal_patterns = (
+            re.compile(rf">\s*{re.escape(value)}\s*<"),
+            re.compile(rf"(?<!=)['\"`]{re.escape(value)}['\"`]"),
+        )
+        if any(pattern.search(text) for pattern in literal_patterns):
+            hits.append((path, value))
 
     assert hits == []
 
 
-def test_backup_copy_json_round_trips_from_rendered_page(backup_env) -> None:
-    env = backup_env()
-
-    response = env.client.get("/app/backup/")
-
-    assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    match = re.search(r"const BACKUP_COPY = (\{.*\});", html)
-    assert match, "BACKUP_COPY assignment not found"
-    assert json.loads(match.group(1)) == backup_copy_payload()
+def test_backup_copy_json_round_trips_from_static_js() -> None:
+    assert _backup_copy_literal() == backup_copy_payload()
 
 
 def test_all_copy_constants_referenced_by_render_surface() -> None:

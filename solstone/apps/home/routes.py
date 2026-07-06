@@ -15,7 +15,7 @@ from urllib.parse import quote
 logger = logging.getLogger(__name__)
 
 import frontmatter
-from flask import Blueprint, jsonify, render_template
+from flask import Blueprint, current_app, jsonify
 
 from solstone.apps.home.health_glance import build_health_glance
 from solstone.apps.home.needs_you import classify_needs_you
@@ -50,6 +50,8 @@ home_bp = Blueprint(
     "app:home",
     __name__,
     url_prefix="/app/home",
+    static_folder="static",
+    static_url_path="/static",
 )
 
 _FIRST_WEEK_FRAMING = "Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
@@ -1018,8 +1020,7 @@ def _build_pulse_context() -> dict[str, Any]:
 
 @home_bp.route("/")
 def index():
-    ctx = _build_pulse_context()
-    return render_template("app.html", **ctx)
+    return current_app.send_static_file("shell.html")
 
 
 @home_bp.route("/api/pulse")

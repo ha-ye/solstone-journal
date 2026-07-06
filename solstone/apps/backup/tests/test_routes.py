@@ -124,12 +124,64 @@ def test_backup_app_discovered_and_auto_appended_for_saved_order(backup_env) -> 
         encoding="utf-8",
     )
 
-    response = env.client.get("/app/backup/")
+    response = env.client.get("/api/shell")
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert 'data-app-name="backup"' in html
+    apps = response.get_json()["apps"]
+    names = [app["name"] for app in apps]
+    backup = next(app for app in apps if app["name"] == "backup")
+    assert "backup" in names
+    assert backup["spa"] is True
+    assert backup["workspace_url"] == "/app/backup/workspace"
     assert "backup" not in DEFAULT_APP_ORDER
+
+
+def test_backup_spa_shell_workspace_and_route_resolution(backup_env) -> None:
+    env = backup_env()
+    workspace_path = Path("solstone/apps/backup/workspace.html")
+    routes_source = Path("solstone/apps/backup/routes.py").read_text(encoding="utf-8")
+    workspace = workspace_path.read_text(encoding="utf-8")
+    js = Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
+    app_json = json.loads(
+        Path("solstone/apps/backup/app.json").read_text(encoding="utf-8")
+    )
+
+    index_response = env.client.get("/app/backup/")
+    workspace_response = env.client.get("/app/backup/workspace")
+
+    assert app_json["spa"] is True
+    assert index_response.status_code == 200
+    assert b'data-solstone-shell="spa"' in index_response.data
+    assert workspace_response.status_code == 200
+    assert workspace_response.data == workspace_path.read_bytes()
+    assert "render_template" not in routes_source
+    assert "window.BACKUP_COPY" not in workspace
+    assert "window.BACKUP_INITIAL" not in workspace
+    assert 'href="/app/backup/static/backup.css"' in workspace
+    assert '<script defer src="/app/backup/static/backup.js"></script>' in workspace
+    assert "await refreshStatus();" in js
+    assert "window.BACKUP_INITIAL" not in js
+
+    adapter = env.app.url_map.bind("localhost")
+    for path, method in (
+        ("/app/backup/static/backup.css", "GET"),
+        ("/app/backup/static/backup.js", "GET"),
+        ("/app/backup/status", "GET"),
+        ("/app/backup/keys/generate", "POST"),
+        ("/app/backup/recovery-key/reveal", "POST"),
+        ("/app/backup/confirm", "POST"),
+        ("/app/backup/enable", "POST"),
+        ("/app/backup/enable-hosted", "POST"),
+        ("/app/backup/destination", "POST"),
+        ("/app/backup/backup-now", "POST"),
+        ("/app/backup/recovery-key/rotate", "POST"),
+        ("/app/backup/retention", "POST"),
+        ("/app/backup/teardown", "POST"),
+        ("/app/backup/restore", "POST"),
+        ("/app/backup/restore-hosted", "POST"),
+    ):
+        endpoint, _args = adapter.match(path, method=method)
+        assert endpoint
 
 
 def test_destination_route_sets_destination_and_returns_sanitized_probe(
@@ -579,31 +631,15 @@ def test_hosted_operation_uses_single_busy_slot(
 def test_forbidden_terms_absent_from_backup_surfaces(backup_env, monkeypatch) -> None:
     env = backup_env()
     monkeypatch.setattr(backup_routes, "request_backup_now", Mock(return_value=False))
-    html = env.client.get("/app/backup/").get_data(as_text=True)
-    match = re.search(
-        r'(<section class="backup-shell".*?</section>\s*<script>.*?window\.BACKUP_INITIAL = BACKUP_INITIAL;\s*</script>)',
-        html,
-        re.DOTALL,
-    )
-    assert match, "backup render surface not found"
-    backup_html = match.group(1)
+    workspace = Path("solstone/apps/backup/workspace.html").read_text(encoding="utf-8")
     js = Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
-    routes_source = Path("solstone/apps/backup/routes.py").read_text(encoding="utf-8")
-    payloads = [
-        env.client.post("/app/backup/backup-now").get_json(),
-        env.client.post("/app/backup/enable").get_json(),
-        env.client.post(
-            "/app/backup/destination",
-            json={"repository": "repo", "backend": "bad"},
-        ).get_json(),
-    ]
+    status = env.client.get("/app/backup/status").get_json()
     haystack = "\n".join(
         [
-            backup_html,
+            workspace,
             js,
-            routes_source,
             "\n".join(backup_copy_values()),
-            json.dumps(payloads, sort_keys=True),
+            json.dumps(status, sort_keys=True),
         ]
     ).lower()
     forbidden = [

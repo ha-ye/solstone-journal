@@ -8,9 +8,8 @@ import re
 import socket
 from pathlib import Path
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
-from solstone.apps.health import copy as health_copy
 from solstone.convey import backlog_copy, state
 from solstone.convey.backlog_view import stuck_rows, verdict
 from solstone.convey.readiness_snapshot import (
@@ -42,17 +41,13 @@ from solstone.think.talent_runs import AgentFailureScan, read_unresolved_agent_f
 
 logger = logging.getLogger(__name__)
 
-health_bp = Blueprint("app:health", __name__, url_prefix="/app/health")
-
-
-@health_bp.app_context_processor
-def _inject_health_copy() -> dict:
-    return {"health_copy": health_copy}
-
-
-@health_bp.app_context_processor
-def _inject_backlog_copy() -> dict:
-    return {"backlog_copy": backlog_copy}
+health_bp = Blueprint(
+    "app:health",
+    __name__,
+    url_prefix="/app/health",
+    static_folder="static",
+    static_url_path="/static",
+)
 
 
 # Supervisor currently registers one observer-facing processing service: "sense".
@@ -105,22 +100,40 @@ def _errors_today_label(count: int | None) -> str:
 
 
 @health_bp.route("/")
-def index():
+def index() -> Response:
+    return current_app.send_static_file("shell.html")
+
+
+@health_bp.get("/api/state")
+def api_state() -> Response:
     backlog = _load_backlog()
     agent_failure_scan = read_unresolved_agent_failures()
     agent_error_seed = _build_agent_error_seed(agent_failure_scan)
     agent_error_count = len(agent_error_seed)
-    return render_template(
-        "app.html",
-        health_backlog_verdict=verdict(backlog),
-        health_stuck_rows=stuck_rows(backlog),
-        health_readiness=_safe_readiness_snapshot(),
-        health_agent_errors=agent_error_seed,
-        health_agent_errors_ok=agent_failure_scan.ok,
-        health_agent_errors_count=agent_error_count,
-        health_agent_errors_label=_errors_today_label(
-            agent_error_count if agent_failure_scan.ok else None
-        ),
+    return jsonify(
+        {
+            "backlog": {
+                "verdict": verdict(backlog),
+                "stuck_rows": stuck_rows(backlog),
+                "copy": {
+                    "bucket_heading": backlog_copy.BACKLOG_BUCKET_HEADING,
+                    "bucket_description": backlog_copy.BACKLOG_BUCKET_DESCRIPTION,
+                    "day_badge": backlog_copy.BACKLOG_DAY_BADGE,
+                    "action_process_now": backlog_copy.BACKLOG_ACTION_PROCESS_NOW,
+                    "action_redo_scratch": backlog_copy.BACKLOG_ACTION_REDO_SCRATCH,
+                    "confirm_redo_scratch": backlog_copy.BACKLOG_CONFIRM_REDO_SCRATCH,
+                    "queued_feedback": backlog_copy.BACKLOG_QUEUED_FEEDBACK,
+                },
+            },
+            "agent_errors": {
+                "items": agent_error_seed,
+                "ok": agent_failure_scan.ok,
+                "count": agent_error_count,
+                "label": _errors_today_label(
+                    agent_error_count if agent_failure_scan.ok else None
+                ),
+            },
+        }
     )
 
 

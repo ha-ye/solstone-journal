@@ -1,268 +1,251 @@
-<link rel="stylesheet" href="{{ url_for('app:backup.static', filename='backup.css') }}">
+<link rel="stylesheet" href="/app/backup/static/backup.css">
 
 <section class="backup-shell" data-backup-root data-state="empty">
   <header class="backup-header">
-    <p class="backup-lock"><span class="backup-dot" aria-hidden="true"></span>{{ backup_copy.brand_lock }}</p>
-    <h1>{{ backup_copy.intro.title }}</h1>
+    <p class="backup-lock"><span class="backup-dot" aria-hidden="true"></span><span data-copy="brand_lock"></span></p>
+    <h1 data-copy="intro.title"></h1>
   </header>
 
   <div class="backup-operation" data-operation-banner hidden>
     <span class="backup-spinner" aria-hidden="true"></span>
-    <span data-operation-phase>{{ backup_copy.phase_labels.loading }}</span>
+    <span data-operation-phase data-copy="phase_labels.loading"></span>
     <span class="backup-op-error" data-operation-error></span>
   </div>
 
   <div class="backup-panels">
     <article class="backup-panel" data-backup-panel="intro">
       <div class="backup-panel-main">
-        <p class="backup-lead">{{ backup_copy.intro.subtitle }}</p>
-        <ul class="backup-bullets">
-          {% for bullet in backup_copy.intro.bullets %}
-            <li>{{ bullet }}</li>
-          {% endfor %}
-        </ul>
-        <p class="backup-note">{{ backup_copy.intro.steps }}</p>
-        <p class="backup-note">{{ backup_copy.intro.optional }}</p>
+        <p class="backup-lead" data-copy="intro.subtitle"></p>
+        <ul class="backup-bullets" data-copy-list="intro.bullets"></ul>
+        <p class="backup-note" data-copy="intro.steps"></p>
+        <p class="backup-note" data-copy="intro.optional"></p>
       </div>
       <div class="backup-panel-actions">
-        <button type="button" class="primary" data-action="start">{{ backup_copy.action_labels.start }}</button>
-        <button type="button" data-action="show-restore">{{ backup_copy.action_labels.restore }}</button>
+        <button type="button" class="primary" data-action="start" data-copy="action_labels.start"></button>
+        <button type="button" data-action="show-restore" data-copy="action_labels.restore"></button>
       </div>
     </article>
 
     <article class="backup-panel" data-backup-panel="educate" hidden>
       <div class="backup-panel-main">
-        <h2>{{ backup_copy.management.status_labels.setup }}</h2>
-        <p class="backup-warning">{{ backup_copy.educate.stakes }}</p>
+        <h2 data-copy="management.status_labels.setup"></h2>
+        <p class="backup-warning" data-copy="educate.stakes"></p>
       </div>
       <div class="backup-panel-actions">
-        <button type="button" class="primary" data-action="understand">{{ backup_copy.action_labels.understand }}</button>
+        <button type="button" class="primary" data-action="understand" data-copy="action_labels.understand"></button>
       </div>
     </article>
 
     <article class="backup-panel" data-backup-panel="display" hidden>
       <div class="backup-panel-main">
-        <p class="backup-warning">{{ backup_copy.key.theft_honesty }}</p>
+        <p class="backup-warning" data-copy="key.theft_honesty"></p>
         <div class="backup-recovery-grid" data-recovery-grid aria-live="polite"></div>
-        <p class="backup-note">{{ backup_copy.key.pm_caution }}</p>
-        <p class="backup-note">{{ backup_copy.key.clipboard_caveat }}</p>
+        <p class="backup-note" data-copy="key.pm_caution"></p>
+        <p class="backup-note" data-copy="key.clipboard_caveat"></p>
       </div>
       <div class="backup-panel-actions">
-        <button type="button" data-action="save-password-manager">{{ backup_copy.key.save_password_manager }}</button>
-        <button type="button" data-action="copy-key">{{ backup_copy.key.copy_label }}</button>
-        <button type="button" class="primary" data-action="continue-confirm">{{ backup_copy.key.continue }}</button>
+        <button type="button" data-action="save-password-manager" data-copy="key.save_password_manager"></button>
+        <button type="button" data-action="copy-key" data-copy="key.copy_label"></button>
+        <button type="button" class="primary" data-action="continue-confirm" data-copy="key.continue"></button>
       </div>
     </article>
 
     <article class="backup-panel" data-backup-panel="confirm" hidden>
       <form data-confirm-form>
         <label>
-          <span>{{ backup_copy.confirm.prompt }}</span>
+          <span data-copy="confirm.prompt"></span>
           <textarea data-confirm-input name="recovery_key" autocomplete="off" spellcheck="false"></textarea>
         </label>
         <p class="backup-error" data-confirm-error hidden></p>
         <div class="backup-panel-actions">
-          <button type="submit" class="primary">{{ backup_copy.action_labels.enable }}</button>
-          <button type="button" data-action="see-key-again">{{ backup_copy.confirm.escape }}</button>
+          <button type="submit" class="primary" data-copy="action_labels.enable"></button>
+          <button type="button" data-action="see-key-again" data-copy="confirm.escape"></button>
         </div>
       </form>
     </article>
 
     <article class="backup-panel" data-backup-panel="destination" hidden>
-      <h2>{{ backup_copy.management.status_labels.destination }}</h2>
+      <h2 data-copy="management.status_labels.destination"></h2>
 
-      <div class="backup-modes" role="radiogroup" aria-label="{{ backup_copy.management.status_labels.destination }}">
+      <div class="backup-modes" role="radiogroup" data-copy-aria-label="management.status_labels.destination">
         <button type="button" class="backup-mode is-selected" data-mode="byo" role="radio" aria-checked="true">
           <span class="backup-mode-head">
             <span class="backup-mode-radio" aria-hidden="true"></span>
-            <span class="backup-mode-title">{{ backup_copy.destination.modes.byo.title }}</span>
+            <span class="backup-mode-title" data-copy="destination.modes.byo.title"></span>
           </span>
-          <span class="backup-mode-desc">{{ backup_copy.destination.modes.byo.desc }}</span>
-          <span class="backup-mode-note"><span class="backup-dot" aria-hidden="true"></span>{{ backup_copy.destination.modes.byo.note }}</span>
+          <span class="backup-mode-desc" data-copy="destination.modes.byo.desc"></span>
+          <span class="backup-mode-note"><span class="backup-dot" aria-hidden="true"></span><span data-copy="destination.modes.byo.note"></span></span>
         </button>
         <button type="button" class="backup-mode" data-mode="hosted" role="radio" aria-checked="false">
           <span class="backup-mode-head">
             <span class="backup-mode-radio" aria-hidden="true"></span>
-            <span class="backup-mode-title">{{ backup_copy.destination.modes.hosted.title }}</span>
+            <span class="backup-mode-title" data-copy="destination.modes.hosted.title"></span>
           </span>
-          <span class="backup-mode-desc">{{ backup_copy.destination.modes.hosted.desc }}</span>
-          <span class="backup-mode-note"><span class="backup-dot" aria-hidden="true"></span>{{ backup_copy.destination.modes.hosted.note }}</span>
+          <span class="backup-mode-desc" data-copy="destination.modes.hosted.desc"></span>
+          <span class="backup-mode-note"><span class="backup-dot" aria-hidden="true"></span><span data-copy="destination.modes.hosted.note"></span></span>
         </button>
       </div>
 
       <div data-mode-panel="byo">
         <form data-destination-form>
           <label>
-            <span>{{ backup_copy.destination.field_labels.repository }}</span>
+            <span data-copy="destination.field_labels.repository"></span>
             <input name="repository" data-field="repository" autocomplete="off">
-            <small class="backup-hint">{{ backup_copy.destination.repository_hint }}</small>
+            <small class="backup-hint" data-copy="destination.repository_hint"></small>
           </label>
           <label>
-            <span>{{ backup_copy.destination.field_labels.backend }}</span>
+            <span data-copy="destination.field_labels.backend"></span>
             <select name="backend" data-field="backend">
-              <option value="s3">{{ backup_copy.destination.field_labels.s3 }}</option>
-              <option value="b2">{{ backup_copy.destination.field_labels.b2 }}</option>
+              <option value="s3" data-copy="destination.field_labels.s3"></option>
+              <option value="b2" data-copy="destination.field_labels.b2"></option>
             </select>
           </label>
           <div data-backend-fields="s3">
             <label>
-              <span>{{ backup_copy.destination.field_labels.access_key_id }}</span>
+              <span data-copy="destination.field_labels.access_key_id"></span>
               <input name="access_key_id" data-field="access_key_id" autocomplete="off">
             </label>
             <label>
-              <span>{{ backup_copy.destination.field_labels.secret_access_key }}</span>
+              <span data-copy="destination.field_labels.secret_access_key"></span>
               <input name="secret_access_key" data-field="secret_access_key" type="password" autocomplete="off">
             </label>
           </div>
           <div data-backend-fields="b2" hidden>
             <label>
-              <span>{{ backup_copy.destination.field_labels.b2_key_id }}</span>
+              <span data-copy="destination.field_labels.b2_key_id"></span>
               <input name="account_id" data-field="account_id" autocomplete="off">
             </label>
             <label>
-              <span>{{ backup_copy.destination.field_labels.b2_application_key }}</span>
+              <span data-copy="destination.field_labels.b2_application_key"></span>
               <input name="account_key" data-field="account_key" type="password" autocomplete="off">
             </label>
           </div>
           <details class="backup-disclose">
-            <summary>{{ backup_copy.destination.object_lock_summary }}</summary>
-            <p class="backup-note">{{ backup_copy.destination.object_lock_warning }}</p>
+            <summary data-copy="destination.object_lock_summary"></summary>
+            <p class="backup-note" data-copy="destination.object_lock_warning"></p>
           </details>
           <p class="backup-status-message" data-destination-status></p>
           <div class="backup-panel-actions">
-            <button type="button" class="primary" data-action="enable-backup">{{ backup_copy.action_labels.enable }}</button>
-            <button type="submit">{{ backup_copy.action_labels.save_destination }}</button>
+            <button type="button" class="primary" data-action="enable-backup" data-copy="action_labels.enable"></button>
+            <button type="submit" data-copy="action_labels.save_destination"></button>
           </div>
         </form>
       </div>
 
       <div data-mode-panel="hosted" hidden>
-        <p class="backup-note">{{ backup_copy.hosted.setup_hint }}</p>
+        <p class="backup-note" data-copy="hosted.setup_hint"></p>
         <div class="backup-panel-actions">
-          <button type="button" class="primary" data-action="enable-hosted">{{ backup_copy.destination.modes.hosted.cta }}</button>
+          <button type="button" class="primary" data-action="enable-hosted" data-copy="destination.modes.hosted.cta"></button>
         </div>
       </div>
     </article>
 
     <article class="backup-panel" data-backup-panel="management" hidden>
       <section data-hosted-location-section hidden>
-        <h2>{{ backup_copy.management.status_labels.destination }}</h2>
+        <h2 data-copy="management.status_labels.destination"></h2>
         <p data-hosted-location></p>
-        <a href="{{ backup_copy.hosted.manage_url }}" target="_blank" rel="noopener">{{ backup_copy.hosted.manage_label }}</a>
+        <a href="" target="_blank" rel="noopener" data-copy-href="hosted.manage_url" data-copy="hosted.manage_label"></a>
       </section>
 
       <div class="backup-management-grid">
         <section>
-          <h2>{{ backup_copy.management.status_labels.last_backup }}</h2>
-          <p data-last-backup>{{ backup_copy.management.status_labels.not_yet }}</p>
+          <h2 data-copy="management.status_labels.last_backup"></h2>
+          <p data-last-backup data-copy="management.status_labels.not_yet"></p>
         </section>
         <section>
-          <h2>{{ backup_copy.management.status_labels.last_prune }}</h2>
-          <p data-last-prune>{{ backup_copy.management.status_labels.not_yet }}</p>
+          <h2 data-copy="management.status_labels.last_prune"></h2>
+          <p data-last-prune data-copy="management.status_labels.not_yet"></p>
         </section>
         <section>
-          <h2>{{ backup_copy.management.status_labels.storage_used }}</h2>
-          <p data-storage-placeholder>{{ backup_copy.management.status_labels.not_available }}</p>
+          <h2 data-copy="management.status_labels.storage_used"></h2>
+          <p data-storage-placeholder data-copy="management.status_labels.not_available"></p>
         </section>
         <section>
-          <h2>{{ backup_copy.management.status_labels.snapshot_history }}</h2>
-          <p data-snapshot-placeholder>{{ backup_copy.management.status_labels.not_available }}</p>
+          <h2 data-copy="management.status_labels.snapshot_history"></h2>
+          <p data-snapshot-placeholder data-copy="management.status_labels.not_available"></p>
         </section>
       </div>
 
       <div class="backup-panel-actions">
-        <button type="button" class="primary" data-action="backup-now">{{ backup_copy.action_labels.backup_now }}</button>
-        <button type="button" data-action="view-key">{{ backup_copy.action_labels.view_key }}</button>
-        <button type="button" data-action="rotate-key">{{ backup_copy.action_labels.rotate_key }}</button>
+        <button type="button" class="primary" data-action="backup-now" data-copy="action_labels.backup_now"></button>
+        <button type="button" data-action="view-key" data-copy="action_labels.view_key"></button>
+        <button type="button" data-action="rotate-key" data-copy="action_labels.rotate_key"></button>
       </div>
 
       <form data-retention-form class="backup-retention">
-        <h2>{{ backup_copy.management.status_labels.retention }}</h2>
-        <p class="backup-hint">{{ backup_copy.management.retention_hint }}</p>
-        <div class="backup-retention-grid">
-          {% for key, label in backup_copy.management.retention_labels.items() %}
-            <label>
-              <span>{{ label }}</span>
-              <input name="{{ key }}" data-retention-field="{{ key }}" type="number" min="0" step="1">
-            </label>
-          {% endfor %}
-        </div>
+        <h2 data-copy="management.status_labels.retention"></h2>
+        <p class="backup-hint" data-copy="management.retention_hint"></p>
+        <div class="backup-retention-grid" data-retention-grid></div>
         <p class="backup-status-message" data-retention-status></p>
-        <button type="submit">{{ backup_copy.action_labels.save_retention }}</button>
+        <button type="submit" data-copy="action_labels.save_retention"></button>
       </form>
     </article>
 
     <article class="backup-panel" data-backup-panel="restore" hidden>
       <div class="backup-hosted-restore">
-        <p class="backup-note">{{ backup_copy.hosted.restore_hint }}</p>
+        <p class="backup-note" data-copy="hosted.restore_hint"></p>
         <label>
-          <span>{{ backup_copy.confirm.prompt }}</span>
+          <span data-copy="confirm.prompt"></span>
           <textarea data-restore-hosted-input name="recovery_key" autocomplete="off" spellcheck="false"></textarea>
         </label>
         <div class="backup-panel-actions">
-          <button type="button" class="primary" data-action="restore-hosted">{{ backup_copy.destination.modes.hosted.cta }}</button>
+          <button type="button" class="primary" data-action="restore-hosted" data-copy="destination.modes.hosted.cta"></button>
         </div>
       </div>
 
       <form data-restore-form>
-        <h2>{{ backup_copy.action_labels.restore }}</h2>
-        <p class="backup-note">{{ backup_copy.restore.expectation }}</p>
+        <h2 data-copy="action_labels.restore"></h2>
+        <p class="backup-note" data-copy="restore.expectation"></p>
         <label>
-          <span>{{ backup_copy.destination.field_labels.repository }}</span>
+          <span data-copy="destination.field_labels.repository"></span>
           <input name="repository" data-field="restore_repository" autocomplete="off">
         </label>
         <label>
-          <span>{{ backup_copy.destination.field_labels.backend }}</span>
+          <span data-copy="destination.field_labels.backend"></span>
           <select name="backend" data-field="restore_backend">
-            <option value="s3">{{ backup_copy.destination.field_labels.s3 }}</option>
-            <option value="b2">{{ backup_copy.destination.field_labels.b2 }}</option>
+            <option value="s3" data-copy="destination.field_labels.s3"></option>
+            <option value="b2" data-copy="destination.field_labels.b2"></option>
           </select>
         </label>
         <div data-restore-backend-fields="s3">
           <label>
-            <span>{{ backup_copy.destination.field_labels.access_key_id }}</span>
+            <span data-copy="destination.field_labels.access_key_id"></span>
             <input name="access_key_id" data-field="restore_access_key_id" autocomplete="off">
           </label>
           <label>
-            <span>{{ backup_copy.destination.field_labels.secret_access_key }}</span>
+            <span data-copy="destination.field_labels.secret_access_key"></span>
             <input name="secret_access_key" data-field="restore_secret_access_key" type="password" autocomplete="off">
           </label>
         </div>
         <div data-restore-backend-fields="b2" hidden>
           <label>
-            <span>{{ backup_copy.destination.field_labels.b2_key_id }}</span>
+            <span data-copy="destination.field_labels.b2_key_id"></span>
             <input name="account_id" data-field="restore_account_id" autocomplete="off">
           </label>
           <label>
-            <span>{{ backup_copy.destination.field_labels.b2_application_key }}</span>
+            <span data-copy="destination.field_labels.b2_application_key"></span>
             <input name="account_key" data-field="restore_account_key" type="password" autocomplete="off">
           </label>
         </div>
         <label>
-          <span>{{ backup_copy.confirm.prompt }}</span>
+          <span data-copy="confirm.prompt"></span>
           <textarea name="recovery_key" data-restore-key-input autocomplete="off" spellcheck="false"></textarea>
         </label>
         <p class="backup-status-message" data-restore-status></p>
         <div class="backup-panel-actions">
-          <button type="submit" class="primary">{{ backup_copy.action_labels.restore }}</button>
-          <button type="button" data-action="cancel-restore">{{ backup_copy.action_labels.cancel }}</button>
+          <button type="submit" class="primary" data-copy="action_labels.restore"></button>
+          <button type="button" data-action="cancel-restore" data-copy="action_labels.cancel"></button>
         </div>
       </form>
     </article>
   </div>
 
   <div class="backup-state-markers" aria-hidden="true">
-    <span data-empty-state>{{ backup_copy.phase_labels.empty }}</span>
-    <span data-loading-state>{{ backup_copy.phase_labels.loading }}</span>
-    <span data-enabling-state>{{ backup_copy.phase_labels.setting_up }}</span>
-    <span data-error-state>{{ backup_copy.error_intro }}</span>
+    <span data-empty-state data-copy="phase_labels.empty"></span>
+    <span data-loading-state data-copy="phase_labels.loading"></span>
+    <span data-enabling-state data-copy="phase_labels.setting_up"></span>
+    <span data-error-state data-copy="error_intro"></span>
   </div>
 </section>
 
-<script>
-  const BACKUP_COPY = {{ backup_copy|default({})|tojson|safe }};
-  const BACKUP_INITIAL = {{ backup_initial|default({})|tojson|safe }};
-  window.BACKUP_COPY = BACKUP_COPY;
-  window.BACKUP_INITIAL = BACKUP_INITIAL;
-</script>
-<script defer src="{{ url_for('app:backup.static', filename='backup.js') }}"></script>
+<script defer src="/app/backup/static/backup.js"></script>

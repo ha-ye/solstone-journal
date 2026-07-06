@@ -3,51 +3,63 @@
 
 from __future__ import annotations
 
-import html
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
-from solstone.apps.health import copy as health_copy
 from solstone.convey import backlog_copy
 
-WORKSPACE_PATH = Path(__file__).resolve().parents[1] / "workspace.html"
-LOGS_COPY_KEYS = [
-    "LOGS_SERVICE_FILTER_LABEL",
-    "LOGS_STREAM_FILTER_LABEL",
-    "LOGS_LEVEL_FILTER_LABEL",
-    "LOGS_LEVEL_OPTION_ALL",
-    "LOGS_LEVEL_OPTION_ERROR",
-    "LOGS_LEVEL_OPTION_WARNING",
-    "LOGS_LEVEL_OPTION_INFO",
-    "LOGS_SERVICE_COLLAPSED",
-]
-HEALTH_GLANCE_COPY_KEYS = [
-    "HEALTH_GLANCE_OK",
-    "HEALTH_GLANCE_SERVICES_ATTENTION",
-    "HEALTH_GLANCE_CATCHING_UP",
-    "HEALTH_GLANCE_OBSERVER_SILENT",
-    "HEALTH_GLANCE_SERVICES_UNREACHABLE",
-    "HEALTH_GLANCE_READINESS_BLOCKED",
-    "HEALTH_GLANCE_READINESS_UNKNOWN",
-]
-HEALTH_GLANCE_LITERALS = {
-    "HEALTH_GLANCE_OK": "everything's working — last observation {age} ago.",
-    "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention — {service_names}.",
-    "HEALTH_GLANCE_CATCHING_UP": (
-        "I'm catching up on {n} task(s) in the background — last update {age} ago."
-    ),
-    "HEALTH_GLANCE_OBSERVER_SILENT": (
-        "I haven't heard from your observer in {age} — it may have stopped."
-    ),
-    "HEALTH_GLANCE_SERVICES_UNREACHABLE": (
-        "I couldn't reach my own services — check that your journal is running."
-    ),
-    "HEALTH_GLANCE_READINESS_BLOCKED": "{summary}",
-    "HEALTH_GLANCE_READINESS_UNKNOWN": (
-        "still checking AI readiness — provider setup will be confirmed shortly."
-    ),
+APP_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_PATH = APP_ROOT / "workspace.html"
+HEALTH_JS_PATH = APP_ROOT / "static" / "health.js"
+
+LOGS_COPY = {
+    "LOGS_LEVEL_FILTER_LABEL": "level",
+    "LOGS_LEVEL_OPTION_ALL": "all levels",
+    "LOGS_LEVEL_OPTION_ERROR": "errors only",
+    "LOGS_LEVEL_OPTION_INFO": "info & above",
+    "LOGS_LEVEL_OPTION_WARNING": "warnings & errors",
+    "LOGS_SERVICE_COLLAPSED": "── {service} ── ({n} lines, ★ {errors} errors)",
+    "LOGS_SERVICE_FILTER_LABEL": "service",
+    "LOGS_STREAM_FILTER_LABEL": "stream",
 }
+HEALTH_GLANCE_COPY = {
+    "HEALTH_GLANCE_CATCHING_UP": "I'm catching up on {n} task(s) in the background — last update {age} ago.",
+    "HEALTH_GLANCE_OBSERVER_SILENT": "I haven't heard from your observer in {age} — it may have stopped.",
+    "HEALTH_GLANCE_OK": "everything's working — last observation {age} ago.",
+    "HEALTH_GLANCE_READINESS_BLOCKED": "{summary}",
+    "HEALTH_GLANCE_READINESS_UNKNOWN": "still checking AI readiness — provider setup will be confirmed shortly.",
+    "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention — {service_names}.",
+    "HEALTH_GLANCE_SERVICES_UNREACHABLE": "I couldn't reach my own services — check that your journal is running.",
+}
+BACKLOG_COPY_SUBSET = {
+    "bucket_heading": backlog_copy.BACKLOG_BUCKET_HEADING,
+    "bucket_description": backlog_copy.BACKLOG_BUCKET_DESCRIPTION,
+    "day_badge": backlog_copy.BACKLOG_DAY_BADGE,
+    "action_process_now": backlog_copy.BACKLOG_ACTION_PROCESS_NOW,
+    "action_redo_scratch": backlog_copy.BACKLOG_ACTION_REDO_SCRATCH,
+    "confirm_redo_scratch": backlog_copy.BACKLOG_CONFIRM_REDO_SCRATCH,
+    "queued_feedback": backlog_copy.BACKLOG_QUEUED_FEEDBACK,
+}
+
+
+def _workspace() -> str:
+    return WORKSPACE_PATH.read_text(encoding="utf-8")
+
+
+def _health_js() -> str:
+    return HEALTH_JS_PATH.read_text(encoding="utf-8")
+
+
+def _js_const_payload(name: str) -> dict:
+    source = _health_js()
+    prefix = f"  const {name} = "
+    start = source.index(prefix) + len(prefix)
+    payload, end = json.JSONDecoder().raw_decode(source[start:])
+    assert source[start + end :].lstrip().startswith(";")
+    return payload
 
 
 def _backlog(
@@ -67,22 +79,15 @@ def _backlog(
     }
 
 
-def _render_health_workspace(health_env) -> str:
-    env = health_env()
-    response = env.client.get("/app/health/")
-    assert response.status_code == 200
-    return response.get_data(as_text=True)
-
-
-def _render_health_workspace_with_stats(health_env, stats_payload: dict) -> str:
+def _state_with_stats(health_env, stats_payload: dict) -> dict:
     env = health_env()
     (env.journal / "stats.json").write_text(
         json.dumps(stats_payload),
         encoding="utf-8",
     )
-    response = env.client.get("/app/health/")
+    response = env.client.get("/app/health/api/state")
     assert response.status_code == 200
-    return html.unescape(response.get_data(as_text=True))
+    return response.get_json()
 
 
 def _copy(key: str, *, pending=None, stuck=None) -> str:
@@ -93,165 +98,82 @@ def _copy(key: str, *, pending=None, stuck=None) -> str:
     )
 
 
-def _section_by_id(rendered: str, section_id: str) -> str:
-    id_pos = rendered.index(f'id="{section_id}"')
-    start = rendered.rfind("<section", 0, id_pos)
-    end = rendered.index("</section>", id_pos) + len("</section>")
-    return rendered[start:end]
+def test_health_spa_shell_workspace_and_route_resolution(health_env):
+    env = health_env()
+    app_json = json.loads((APP_ROOT / "app.json").read_text(encoding="utf-8"))
+    routes_source = (APP_ROOT / "routes.py").read_text(encoding="utf-8")
+    workspace = _workspace()
 
+    index_response = env.client.get("/app/health/")
+    workspace_response = env.client.get("/app/health/workspace")
 
-def _optional_section_by_id(rendered: str, section_id: str) -> str:
-    marker = f'id="{section_id}"'
-    if marker not in rendered:
-        return ""
-    return _section_by_id(rendered, section_id)
+    assert app_json["spa"] is True
+    assert index_response.status_code == 200
+    assert b'data-solstone-shell="spa"' in index_response.data
+    assert workspace_response.status_code == 200
+    assert workspace_response.data == WORKSPACE_PATH.read_bytes()
+    assert '<script src="/app/health/static/health.js"></script>' in workspace
+    assert "render_template" not in routes_source
+    assert "_inject_" + "health" + "_copy" not in routes_source
+    assert "_inject_backlog_copy" not in routes_source
+    assert "window.HEALTH_READINESS" not in workspace
+    assert "window.HEALTH_AGENT_ERRORS" not in workspace
+    assert all(token not in workspace for token in ("{{", "{%", "{#"))
 
-
-def _verdict_text(rendered: str) -> str:
-    section = _section_by_id(rendered, "backlogVerdict")
-    match = re.search(r'<p class="backlog-verdict-line">(?P<text>.*?)</p>', section)
-    assert match is not None
-    return match.group("text")
-
-
-def test_logs_copy_and_controls_render(health_env):
-    rendered = _render_health_workspace(health_env)
-    decoded = html.unescape(rendered)
-
-    for value in (
-        health_copy.LOGS_SERVICE_FILTER_LABEL,
-        health_copy.LOGS_STREAM_FILTER_LABEL,
-        health_copy.LOGS_LEVEL_FILTER_LABEL,
-        health_copy.LOGS_LEVEL_OPTION_ALL,
-        health_copy.LOGS_LEVEL_OPTION_ERROR,
-        health_copy.LOGS_LEVEL_OPTION_WARNING,
-        health_copy.LOGS_LEVEL_OPTION_INFO,
+    adapter = env.app.url_map.bind("localhost")
+    for path in (
+        "/app/health/static/health.js",
+        "/app/health/api/state",
+        "/app/health/api/info",
+        "/app/health/api/log",
     ):
-        assert value in decoded
+        endpoint, _args = adapter.match(path, method="GET")
+        assert endpoint
+
+
+def test_health_static_js_syntax_check():
+    node = shutil.which("node")
+    if node is None:
+        return
+
+    subprocess.run([node, "--check", str(HEALTH_JS_PATH)], check=True, text=True)
+
+
+def test_logs_copy_and_controls_render_from_static_js(health_env):
+    rendered = health_env().client.get("/app/health/workspace").get_data(as_text=True)
+
+    assert _js_const_payload("HEALTH_LOGS_COPY") == LOGS_COPY
+    for key in (
+        "LOGS_SERVICE_FILTER_LABEL",
+        "LOGS_STREAM_FILTER_LABEL",
+        "LOGS_LEVEL_FILTER_LABEL",
+        "LOGS_LEVEL_OPTION_ALL",
+        "LOGS_LEVEL_OPTION_ERROR",
+        "LOGS_LEVEL_OPTION_WARNING",
+        "LOGS_LEVEL_OPTION_INFO",
+    ):
+        assert f'data-health-copy="{key}"' in rendered
 
     assert 'label for="logServiceFilter"' in rendered
     assert 'label for="logLevelFilter"' in rendered
     assert 'label for="logStreamFilter"' in rendered
     assert '<select id="logLevelFilter">' in rendered
-    assert decoded.count("<option value=") >= 8
+    assert rendered.count("<option value=") >= 8
     assert 'id="logsAnnouncer"' in rendered
     assert 'class="logs-announcer"' in rendered
     assert 'role="status"' in rendered
     assert 'aria-live="polite"' in rendered
+    assert "function applyHealthCopy()" in _health_js()
 
 
-def test_health_logs_copy_script_carries_all_keys(health_env):
-    rendered = _render_health_workspace(health_env)
+def test_health_glance_copy_literal_and_precedence():
+    source = _health_js()
 
-    assert "window.HEALTH_LOGS_COPY" in rendered
-    for key in LOGS_COPY_KEYS:
-        assert f"{key}:" in rendered
-
-    script_values = {}
-    for key in LOGS_COPY_KEYS:
-        match = re.search(rf"{key}:\s*(?P<value>\"(?:\\.|[^\"])*\")", rendered)
-        assert match is not None, key
-        script_values[key] = json.loads(match.group("value"))
-
-    assert script_values == {key: getattr(health_copy, key) for key in LOGS_COPY_KEYS}
-
-
-def test_health_glance_copy_constants_are_literal():
-    for key, value in HEALTH_GLANCE_LITERALS.items():
-        assert getattr(health_copy, key) == value
-
-
-def test_health_glance_copy_script_carries_all_keys(health_env):
-    rendered = _render_health_workspace(health_env)
-
-    assert "window.HEALTH_GLANCE_COPY" in rendered
-    for key in HEALTH_GLANCE_COPY_KEYS:
-        assert f"{key}:" in rendered
-
-    script_values = {}
-    for key in HEALTH_GLANCE_COPY_KEYS:
-        match = re.search(rf"{key}:\s*(?P<value>\"(?:\\.|[^\"])*\")", rendered)
-        assert match is not None, key
-        script_values[key] = json.loads(match.group("value"))
-
-    assert script_values == {
-        key: getattr(health_copy, key) for key in HEALTH_GLANCE_COPY_KEYS
-    }
-
-
-def test_agent_error_seed_bootstrap_and_dedupe_are_wired(health_env):
-    rendered = _render_health_workspace(health_env)
-
-    assert "window.HEALTH_AGENT_ERRORS" in rendered
-    assert "window.HEALTH_AGENT_ERRORS_OK" in rendered
-    assert "agentErrorsOk: window.HEALTH_AGENT_ERRORS_OK !== false" in rendered
-    assert "function seedAgentErrors()" in rendered
-    assert "seed.forEach(entry => appendRecentError(entry));" in rendered
-    assert (
-        "existing?.id === entry.id && (existing.type || '') === (entry.type || '')"
-        in rendered
-    )
-
-
-def test_agent_error_degraded_copy_is_wired(health_env):
-    rendered = _render_health_workspace(health_env)
-
-    assert "couldn't check talent errors today." in rendered
-    assert "elements.glanceErrorsValue.textContent = '—';" in rendered
-    assert (
-        "state.recentErrors.length === 0 && !state.recentErrorsFilter && "
-        "state.agentErrorsOk"
-    ) in rendered
-
-
-def test_agent_error_seed_live_metric_and_grouping_share_recent_errors(health_env):
-    rendered = _render_health_workspace(health_env)
-
-    assert "seed.forEach(entry => appendRecentError(entry));" in rendered
-    assert "state.recentErrors.push(entry);" in rendered
-    assert "const key = recentErrorGroupKey(entry);" in rendered
-    assert "existing.count += 1;" in rendered
-    assert "countSpan.textContent = `×${count} `;" in rendered
-    assert (
-        "const errorsToday = state.recentErrors.filter(error => "
-        "dayKeyFromTimestamp(error.ts) === today).length;"
-    ) in rendered
-
-
-def test_recent_errors_glance_click_focus_is_wired(health_env):
-    rendered = _render_health_workspace(health_env)
-
-    assert "function runRecentErrorsFocus(day, talent)" in rendered
-    assert "getElementById('glanceErrors')?.addEventListener('click'" in rendered
-    assert "runRecentErrorsFocus('today', '')" in rendered
-    assert "window.addEventListener('hashchange', focusRecentErrors)" in rendered
-
-
-def test_recent_error_rows_expand_with_button_panel(health_env):
-    rendered = _render_health_workspace(health_env)
-    workspace = WORKSPACE_PATH.read_text(encoding="utf-8")
-
-    assert "setAttribute('data-action', 'toggle-error')" in rendered
-    assert "setAttribute('aria-expanded', 'false')" in rendered
-    assert "setAttribute('aria-controls', panelId)" in rendered
-    assert "if (action === 'toggle-error')" in rendered
-    assert "onclick" not in workspace
-    assert "panel.id = panelId;" in rendered
-    assert "let recentErrorPanelSeq = 0;" in rendered
-
-
-def test_select_glance_sentence_exists(health_env):
-    rendered = _render_health_workspace(health_env)
-
-    assert "function selectGlanceSentence(state, now)" in rendered
-
-
-def test_glance_precedence_order(health_env):
-    rendered = _render_health_workspace(health_env)
-    start = rendered.index("function selectGlanceSentence(state, now)")
-    end = rendered.index("function formatGlanceSentence", start)
-    selector = rendered[start:end]
-
+    assert _js_const_payload("HEALTH_GLANCE_COPY") == HEALTH_GLANCE_COPY
+    assert "function selectGlanceSentence(state, now)" in source
+    start = source.index("function selectGlanceSentence(state, now)")
+    end = source.index("function formatGlanceSentence", start)
+    selector = source[start:end]
     witnesses = [
         "HEALTH_GLANCE_SERVICES_UNREACHABLE",
         "HEALTH_GLANCE_SERVICES_ATTENTION",
@@ -265,8 +187,80 @@ def test_glance_precedence_order(health_env):
     assert positions == sorted(positions)
 
 
-def test_error_summary_dom_order(health_env):
-    rendered = _render_health_workspace(health_env)
+def test_agent_error_state_seed_and_dedupe_are_wired():
+    source = _health_js()
+
+    assert "window.HEALTH_AGENT_ERRORS" not in source
+    assert "window.HEALTH_AGENT_ERRORS_OK" not in source
+    assert "function renderAgentErrorsState(agentErrors)" in source
+    assert "seedAgentErrors(Array.isArray(data.items) ? data.items : []);" in source
+    assert "function seedAgentErrors(seed)" in source
+    assert (
+        "existing?.id === entry.id && (existing.type || '') === (entry.type || '')"
+        in source
+    )
+    assert "state.recentErrors.push(entry);" in source
+    assert "const key = recentErrorGroupKey(entry);" in source
+    assert "existing.count += 1;" in source
+    assert "countSpan.textContent = `×${count} `;" in source
+
+
+def test_agent_error_degraded_copy_is_wired():
+    source = _health_js()
+
+    assert "couldn't check talent errors today." in source
+    assert "elements.glanceErrorsValue.textContent = '—';" in source
+    assert (
+        "state.recentErrors.length === 0 && !state.recentErrorsFilter && "
+        "state.agentErrorsOk"
+    ) in source
+
+
+def test_health_state_fetch_error_renders_retry_surface():
+    source = _health_js()
+    workspace = _workspace()
+
+    assert "data-health-state-error" in workspace
+    assert "function renderHealthStateError(error)" in source
+    assert "window.SurfaceState.error({" in source
+    assert "retry: true" in source
+    assert "loadHealthState();" in source
+
+
+def test_init_uses_workspace_mount_and_complete_document():
+    source = _health_js()
+
+    assert "DOMContentLoaded" not in source
+    assert "document.addEventListener('workspace:mounted'" in source
+    assert "document.readyState === 'complete'" in source
+    assert "let healthInitialized = false;" in source
+    assert "loadHealthState();" in source
+
+
+def test_recent_errors_glance_click_focus_is_wired():
+    source = _health_js()
+
+    assert "function runRecentErrorsFocus(day, talent)" in source
+    assert "getElementById('glanceErrors')?.addEventListener('click'" in source
+    assert "runRecentErrorsFocus('today', '')" in source
+    assert "window.addEventListener('hashchange', focusRecentErrors)" in source
+
+
+def test_recent_error_rows_expand_with_button_panel():
+    source = _health_js()
+    workspace = _workspace()
+
+    assert "setAttribute('data-action', 'toggle-error')" in source
+    assert "setAttribute('aria-expanded', 'false')" in source
+    assert "setAttribute('aria-controls', panelId)" in source
+    assert "if (action === 'toggle-error')" in source
+    assert "onclick" not in workspace
+    assert "panel.id = panelId;" in source
+    assert "let recentErrorPanelSeq = 0;" in source
+
+
+def test_error_summary_dom_order():
+    rendered = _workspace()
 
     assert rendered.index('id="healthGlance"') < rendered.index('id="backlogVerdict"')
     assert rendered.index('id="backlogVerdict"') < rendered.index('class="vitals-bar"')
@@ -277,101 +271,73 @@ def test_error_summary_dom_order(health_env):
 
 
 def test_backlog_verdict_caught_up(health_env):
-    rendered = _render_health_workspace_with_stats(
-        health_env,
-        {"backlog": _backlog()},
-    )
+    state = _state_with_stats(health_env, {"backlog": _backlog()})
 
-    assert _verdict_text(rendered) == backlog_copy.BACKLOG_VERDICT_CAUGHT_UP
+    assert state["backlog"]["verdict"] == backlog_copy.BACKLOG_VERDICT_CAUGHT_UP
 
 
 def test_backlog_verdict_pending_only_singular_and_plural(health_env):
-    rendered = _render_health_workspace_with_stats(
-        health_env,
-        {"backlog": _backlog(pending_days=1)},
+    state = _state_with_stats(health_env, {"backlog": _backlog(pending_days=1)})
+
+    assert (
+        state["backlog"]["verdict"]
+        == backlog_copy.BACKLOG_VERDICT_PENDING_ONLY_SINGULAR
     )
+    assert "1 day(s)" not in state["backlog"]["verdict"]
+    assert "caught up" not in state["backlog"]["verdict"]
 
-    assert _verdict_text(rendered) == backlog_copy.BACKLOG_VERDICT_PENDING_ONLY_SINGULAR
-    assert "1 day(s)" not in _section_by_id(rendered, "backlogVerdict")
-    assert "caught up" not in _verdict_text(rendered)
+    state = _state_with_stats(health_env, {"backlog": _backlog(pending_days=4)})
 
-    rendered = _render_health_workspace_with_stats(
-        health_env,
-        {"backlog": _backlog(pending_days=4)},
-    )
-
-    assert _verdict_text(rendered) == _copy(
+    assert state["backlog"]["verdict"] == _copy(
         "BACKLOG_VERDICT_PENDING_ONLY_PLURAL",
         pending=4,
     )
-    assert "caught up" not in _verdict_text(rendered)
+    assert "caught up" not in state["backlog"]["verdict"]
 
 
 def test_backlog_verdict_stuck_only_singular_and_plural(health_env):
-    rendered = _render_health_workspace_with_stats(
-        health_env,
-        {"backlog": _backlog(stuck_days=1)},
+    state = _state_with_stats(health_env, {"backlog": _backlog(stuck_days=1)})
+
+    assert (
+        state["backlog"]["verdict"] == backlog_copy.BACKLOG_VERDICT_STUCK_ONLY_SINGULAR
     )
 
-    assert _verdict_text(rendered) == backlog_copy.BACKLOG_VERDICT_STUCK_ONLY_SINGULAR
+    state = _state_with_stats(health_env, {"backlog": _backlog(stuck_days=3)})
 
-    rendered = _render_health_workspace_with_stats(
-        health_env,
-        {"backlog": _backlog(stuck_days=3)},
-    )
-
-    assert _verdict_text(rendered) == _copy(
+    assert state["backlog"]["verdict"] == _copy(
         "BACKLOG_VERDICT_STUCK_ONLY_PLURAL",
         stuck=3,
     )
 
 
 def test_backlog_verdict_mixed_uses_independent_arms(health_env):
-    rendered = _render_health_workspace_with_stats(
+    state = _state_with_stats(
         health_env,
         {"backlog": _backlog(pending_days=3, stuck_days=2)},
     )
 
-    verdict_region = _section_by_id(rendered, "backlogVerdict")
-    backlog_region = verdict_region + _optional_section_by_id(
-        rendered, "backlogNeedsHand"
-    )
     assert (
-        _verdict_text(rendered)
+        state["backlog"]["verdict"]
         == "2 days need a hand — 3 more days are still catching up."
     )
-    assert "caught up" not in _verdict_text(rendered)
-    assert "2" in verdict_region
-    assert "3" in verdict_region
-    assert "5" not in backlog_region
+    assert "caught up" not in state["backlog"]["verdict"]
+    assert "5" not in state["backlog"]["verdict"]
 
 
-def test_backlog_missing_key_renders_cant_tell(health_env):
-    rendered = _render_health_workspace_with_stats(health_env, {})
+def test_backlog_missing_or_degraded_renders_cant_tell(health_env):
+    state = _state_with_stats(health_env, {})
 
-    assert _verdict_text(rendered) == backlog_copy.BACKLOG_VERDICT_CANT_TELL
-    assert backlog_copy.BACKLOG_VERDICT_CAUGHT_UP not in _section_by_id(
-        rendered,
-        "backlogVerdict",
-    )
+    assert state["backlog"]["verdict"] == backlog_copy.BACKLOG_VERDICT_CANT_TELL
+    assert state["backlog"]["stuck_rows"] == []
 
+    state = _state_with_stats(health_env, {"backlog": _backlog(degraded=True)})
 
-def test_backlog_degraded_renders_cant_tell_without_bucket(health_env):
-    rendered = _render_health_workspace_with_stats(
-        health_env,
-        {"backlog": _backlog(degraded=True)},
-    )
-
-    assert _verdict_text(rendered) == backlog_copy.BACKLOG_VERDICT_CANT_TELL
-    assert backlog_copy.BACKLOG_VERDICT_CAUGHT_UP not in _section_by_id(
-        rendered,
-        "backlogVerdict",
-    )
-    assert 'id="backlogNeedsHand"' not in rendered
+    assert state["backlog"]["verdict"] == backlog_copy.BACKLOG_VERDICT_CANT_TELL
+    assert state["backlog"]["stuck_rows"] == []
 
 
-def test_backlog_segment_repair_stuck_day_renders_needs_hand(health_env):
-    rendered = _render_health_workspace_with_stats(
+def test_backlog_segment_repair_stuck_day_returns_needs_hand_row(health_env):
+    state = _state_with_stats(
         health_env,
         {
             "backlog": _backlog(
@@ -398,14 +364,19 @@ def test_backlog_segment_repair_stuck_day_renders_needs_hand(health_env):
         },
     )
 
-    assert _verdict_text(rendered) != backlog_copy.BACKLOG_VERDICT_CAUGHT_UP
-    section = _section_by_id(rendered, "backlogNeedsHand")
-    assert "20260323" in section
-    assert "reason_code=segment_repair_stuck" in section
+    assert state["backlog"]["verdict"] != backlog_copy.BACKLOG_VERDICT_CAUGHT_UP
+    assert state["backlog"]["stuck_rows"] == [
+        {
+            "day": "20260323",
+            "reason": backlog_copy.BACKLOG_REASON_FAILING_STEP,
+            "depth": None,
+            "reason_code": "segment_repair_stuck",
+        }
+    ]
 
 
-def test_backlog_needs_hand_bucket_rows(health_env):
-    rendered = _render_health_workspace_with_stats(
+def test_backlog_needs_hand_rows_and_copy_subset(health_env):
+    state = _state_with_stats(
         health_env,
         {
             "backlog": _backlog(
@@ -444,115 +415,35 @@ def test_backlog_needs_hand_bucket_rows(health_env):
         },
     )
 
-    section = _section_by_id(rendered, "backlogNeedsHand")
-    assert backlog_copy.BACKLOG_BUCKET_HEADING in section
-    assert backlog_copy.BACKLOG_BUCKET_DESCRIPTION in section
-    assert backlog_copy.BACKLOG_DAY_BADGE in section
-    assert "20260320" in section
-    assert "20260321" in section
-    assert "20260322" not in section
-    assert backlog_copy.BACKLOG_REASON_CORRUPT_RAW in section
-    assert backlog_copy.BACKLOG_REASON_FAILING_STEP in section
-    assert '<span class="backlog-depth">3</span>' in section
-    assert '<span class="backlog-depth">4</span>' in section
-    assert "<details" not in section
+    assert state["backlog"]["copy"] == BACKLOG_COPY_SUBSET
+    rows = state["backlog"]["stuck_rows"]
+    assert [row["day"] for row in rows] == ["20260320", "20260321"]
+    assert rows[0]["reason"] == backlog_copy.BACKLOG_REASON_CORRUPT_RAW
+    assert rows[1]["reason"] == backlog_copy.BACKLOG_REASON_FAILING_STEP
+    assert rows[0]["depth"] == 3
+    assert rows[1]["depth"] == 4
 
 
-def test_backlog_reprocess_buttons_render(health_env):
-    day = "20260320"
-    rendered = _render_health_workspace_with_stats(
-        health_env,
-        {
-            "backlog": _backlog(
-                stuck_days=1,
-                days=[
-                    {
-                        "day": day,
-                        "state": "stuck",
-                        "segments": 2,
-                        "units": 1,
-                        "reason": "corrupt_raw",
-                    },
-                ],
-            )
-        },
-    )
+def test_backlog_renderer_builds_rows_and_reprocess_buttons():
+    source = _health_js()
 
-    section = _section_by_id(rendered, "backlogNeedsHand")
-    assert f'data-day="{day}"' in section
-    assert 'data-flavor="process-now"' in section
-    assert 'data-flavor="from-scratch"' in section
-    assert backlog_copy.BACKLOG_ACTION_PROCESS_NOW in section
-    assert backlog_copy.BACKLOG_ACTION_REDO_SCRATCH in section
-    assert backlog_copy.BACKLOG_CONFIRM_REDO_SCRATCH in section
+    assert "function renderBacklogState(backlogState)" in source
+    assert "document.querySelector('[data-backlog-stuck-rows]')" in source
+    assert "process.dataset.flavor = 'process-now';" in source
+    assert "redo.dataset.flavor = 'from-scratch';" in source
+    assert "redo.dataset.confirm = backlogCopy.confirm_redo_scratch || '';" in source
+    assert "wireBacklogReprocessActions();" in source
 
 
-def test_backlog_copy_constants_render_from_shared_source(health_env):
-    rendered = _render_health_workspace_with_stats(
-        health_env,
-        {
-            "backlog": _backlog(
-                pending_days=3,
-                stuck_days=2,
-                days=[
-                    {
-                        "day": "20260320",
-                        "state": "stuck",
-                        "segments": 1,
-                        "units": 0,
-                        "reason": "corrupt_raw",
-                    },
-                    {
-                        "day": "20260321",
-                        "state": "pending",
-                        "segments": 0,
-                        "units": 1,
-                        "reason": "failing_step",
-                    },
-                ],
-                errors=[
-                    {
-                        "day": "20260321",
-                        "stage": "segment_completion",
-                        "message": "boom",
-                    }
-                ],
-            )
-        },
-    )
-
-    assert (
-        _verdict_text(rendered)
-        == "2 days need a hand — 3 more days are still catching up."
-    )
-    section = _section_by_id(rendered, "backlogNeedsHand")
-    assert re.search(r"<h2>(?P<text>.*?)</h2>", section).group("text") == getattr(
-        backlog_copy, "BACKLOG_BUCKET_HEADING"
-    )
-    assert re.search(
-        r'<p class="backlog-needs-hand-desc">(?P<text>.*?)</p>',
-        section,
-    ).group("text") == getattr(backlog_copy, "BACKLOG_BUCKET_DESCRIPTION")
-    reasons = re.findall(
-        r'<span class="backlog-row-reason">(?P<text>.*?)</span>',
-        section,
-    )
-    assert reasons == [
-        getattr(backlog_copy, "BACKLOG_REASON_CORRUPT_RAW"),
-        getattr(backlog_copy, "BACKLOG_REASON_FAILING_STEP"),
-    ]
-
-
-def test_status_summary_text_removed(health_env):
-    source = WORKSPACE_PATH.read_text(encoding="utf-8")
-    rendered = _render_health_workspace(health_env)
+def test_status_summary_text_removed():
+    source = _workspace()
 
     assert "statusSummaryText" not in source
-    assert 'id="statusSummaryText"' not in rendered
+    assert 'id="statusSummaryText"' not in source
 
 
-def test_vitals_sections_have_role_group(health_env):
-    rendered = _render_health_workspace(health_env)
+def test_vitals_sections_have_role_group():
+    rendered = _workspace()
 
     sections = re.findall(r'<div class="vitals-section"[^>]*role="group"', rendered)
     assert len(sections) == 6
@@ -562,7 +453,7 @@ def test_vitals_sections_have_role_group(health_env):
 
 
 def test_cost_fetch_uses_em_dash_on_failure():
-    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    source = _health_js()
     start = source.index("fetch('/app/tokens/api/usage?day='")
     end = source.index("// State management", start)
     cost_fetch = source[start:end]
@@ -572,7 +463,7 @@ def test_cost_fetch_uses_em_dash_on_failure():
 
 
 def test_relative_time_helper_is_locally_defined():
-    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    source = _health_js()
 
     references = re.findall(r"\brelativeTime\s*\(", source)
     definitions = re.findall(r"\bfunction\s+relativeTime\s*\(", source)
@@ -589,7 +480,7 @@ def _health_info_catch_block(source: str) -> str:
 
 
 def test_connection_catch_has_no_dom_writes():
-    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    source = _health_js()
     catch_block = _health_info_catch_block(source)
 
     assert "document.createElement" not in catch_block
@@ -599,7 +490,7 @@ def test_connection_catch_has_no_dom_writes():
 
 
 def test_connect_error_indicator_handled_in_renderer():
-    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    source = _health_js()
     catch_block = _health_info_catch_block(source)
     update_start = source.index("function updateVitals()")
     branch_end = source.index(
@@ -612,17 +503,17 @@ def test_connect_error_indicator_handled_in_renderer():
     assert "indicator.className = 'status-indicator crashed';" in update_vitals_branch
 
 
-def test_no_legacy_stream_classes_in_render_paths(health_env):
-    rendered = _render_health_workspace(health_env)
+def test_no_legacy_stream_classes_in_render_paths():
+    source = _workspace() + "\n" + _health_js()
 
-    assert 'class="logs-line stderr"' not in rendered
-    assert 'class="logs-line log"' not in rendered
-    assert re.search(r"\.logs-line\.stderr\s*\{", rendered) is None
-    assert re.search(r"\.logs-line\.log\s*\{", rendered) is None
+    assert 'class="logs-line stderr"' not in source
+    assert 'class="logs-line log"' not in source
+    assert re.search(r"\.logs-line\.stderr\s*\{", source) is None
+    assert re.search(r"\.logs-line\.log\s*\{", source) is None
 
 
 def test_deep_link_branch_uses_classifier():
-    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    source = _health_js()
     start = source.index(
         "// Deep-link: display log file content if ?log= param is present"
     )

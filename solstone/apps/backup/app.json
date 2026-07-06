@@ -1,5 +1,6 @@
 {
   "icon": "🛡️",
   "label": "backup",
-  "facets": {"disabled": true}
+  "facets": {"disabled": true},
+  "spa": true
 }

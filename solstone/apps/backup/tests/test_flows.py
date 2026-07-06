@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -182,12 +181,8 @@ def test_status_management_errors_and_initial_seed_scrub_secrets(
             },
         },
     ).get_json()
-    html = env.client.get("/app/backup/").get_data(as_text=True)
-    match = re.search(r"const BACKUP_INITIAL = (\{.*\});", html)
-    assert match, "BACKUP_INITIAL assignment not found"
-    initial = json.loads(match.group(1))
 
-    browser_payloads = [status, backup_now, destination, initial]
+    browser_payloads = [status, backup_now, destination]
     serialized = json.dumps(browser_payloads)
     for secret in (
         "daily-secret",
@@ -207,21 +202,30 @@ def test_hosted_lane_renders_live_controls_and_copy(backup_env) -> None:
     env = backup_env()
     payload = backup_copy_payload()
 
-    html = env.client.get("/app/backup/").get_data(as_text=True)
+    workspace = env.client.get("/app/backup/workspace").get_data(as_text=True)
+    static = Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
 
-    assert payload["destination"]["modes"]["hosted"]["cta"] in html
-    assert payload["hosted"]["setup_hint"] in html
-    assert payload["hosted"]["restore_hint"] in html
-    assert payload["hosted"]["manage_label"] in html
-    assert payload["hosted"]["manage_url"] in html
-    assert 'data-action="enable-hosted"' in html
-    assert 'data-action="restore-hosted"' in html
-    assert "data-restore-hosted-input" in html
-    assert "data-hosted-location-section" in html
-    assert "data-hosted-location" in html
-    assert ("coming" + " later") not in html
-    assert ("is" + "-soon") not in html
-    assert ("backup-mode" + "-tag") not in html
+    assert 'data-copy="destination.modes.hosted.cta"' in workspace
+    assert 'data-copy="hosted.setup_hint"' in workspace
+    assert 'data-copy="hosted.restore_hint"' in workspace
+    assert 'data-copy="hosted.manage_label"' in workspace
+    assert 'data-copy-href="hosted.manage_url"' in workspace
+    for value in (
+        payload["destination"]["modes"]["hosted"]["cta"],
+        payload["hosted"]["setup_hint"],
+        payload["hosted"]["restore_hint"],
+        payload["hosted"]["manage_label"],
+        payload["hosted"]["manage_url"],
+    ):
+        assert json.dumps(value, ensure_ascii=False) in static
+    assert 'data-action="enable-hosted"' in workspace
+    assert 'data-action="restore-hosted"' in workspace
+    assert "data-restore-hosted-input" in workspace
+    assert "data-hosted-location-section" in workspace
+    assert "data-hosted-location" in workspace
+    assert ("coming" + " later") not in workspace
+    assert ("is" + "-soon") not in workspace
+    assert ("backup-mode" + "-tag") not in workspace
 
 
 def test_operated_status_seed_exposes_hosted_location_without_secrets(
@@ -241,10 +245,6 @@ def test_operated_status_seed_exposes_hosted_location_without_secrets(
     )
 
     status = env.client.get("/app/backup/status").get_json()
-    html = env.client.get("/app/backup/").get_data(as_text=True)
-    match = re.search(r"const BACKUP_INITIAL = (\{.*\});", html)
-    assert match, "BACKUP_INITIAL assignment not found"
-    initial = json.loads(match.group(1))
 
     assert status["mode"] == "operated"
     assert status["hosted"] == {
@@ -252,8 +252,7 @@ def test_operated_status_seed_exposes_hosted_location_without_secrets(
         "bucket": "hosted-bucket",
         "prefix": "hosted-prefix/",
     }
-    assert initial["hosted"] == status["hosted"]
-    serialized = json.dumps([status, initial])
+    serialized = json.dumps([status])
     for secret in (
         "BTOKEN-SECRET",
         "https://broker-secret.test",

@@ -31,14 +31,14 @@ class TestFacetCookieValidation:
     def test_valid_cookie_returned(self, client):
         """Valid cookie for active facet -> returned as-is, no cookie cleared."""
         client.set_cookie("selectedFacet", "montague")
-        response = client.get("/app/home/")
+        response = client.get("/api/shell")
         assert response.status_code == 200
         assert not _cookie_deleted(response)
 
     def test_stale_cookie_cleared(self, client, journal_copy):
         """Stale cookie (nonexistent facet) -> cookie expired, config cleared."""
         client.set_cookie("selectedFacet", "nonexistent-facet")
-        response = client.get("/app/home/")
+        response = client.get("/api/shell")
         assert response.status_code == 200
         assert _cookie_deleted(response)
 
@@ -52,7 +52,7 @@ class TestFacetCookieValidation:
         config["facets"]["selected"] = "montague"
         config_path.write_text(json.dumps(config, indent=2))
 
-        response = client.get("/app/home/")
+        response = client.get("/api/shell")
         assert response.status_code == 200
         assert not _cookie_deleted(response)
 
@@ -60,7 +60,7 @@ class TestFacetCookieValidation:
         """Muted facet in cookie -> treated as stale, cookie expired."""
         # muted-test fixture already exists in journal_copy (copied from fixtures)
         client.set_cookie("selectedFacet", "muted-test")
-        response = client.get("/app/home/")
+        response = client.get("/api/shell")
         assert response.status_code == 200
         assert _cookie_deleted(response)
 
@@ -70,7 +70,7 @@ class TestFacetCookieValidation:
     def test_empty_cookie_cleared(self, client, journal_copy):
         """Empty string cookie -> treated as stale, cookie expired, config cleared."""
         client.set_cookie("selectedFacet", "")
-        response = client.get("/app/home/")
+        response = client.get("/api/shell")
         assert response.status_code == 200
         assert _cookie_deleted(response)
 
@@ -84,7 +84,7 @@ class TestFacetCookieValidation:
         config["facets"]["selected"] = "nonexistent-facet"
         config_path.write_text(json.dumps(config, indent=2))
 
-        response = client.get("/app/home/")
+        response = client.get("/api/shell")
         assert response.status_code == 200
 
         config = json.loads(config_path.read_text())

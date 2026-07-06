@@ -1,5 +1,6 @@
 {
   "icon": "🏠",
   "label": "home",
-  "facets": {"disabled": true}
+  "facets": {"disabled": true},
+  "spa": true
 }

@@ -12,7 +12,7 @@ import pytest
 
 from solstone.convey.provider_readiness import semantic_key_for
 
-WORKSPACE = Path("solstone/apps/health/workspace.html")
+HEALTH_JS = Path("solstone/apps/health/static/health.js")
 
 
 def _extract_function(source: str, name: str) -> str:
@@ -54,7 +54,7 @@ def test_health_readiness_js_semantic_key_glance_and_grouping():
     if node is None:
         pytest.skip("node is not available")
 
-    source = WORKSPACE.read_text(encoding="utf-8")
+    source = HEALTH_JS.read_text(encoding="utf-8")
     functions = "\n".join(
         _extract_function(source, name)
         for name in (

@@ -12,9 +12,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from flask import Blueprint, Response, jsonify, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, request
 
-from solstone.apps.backup.copy import backup_copy_payload
 from solstone.convey.reasons import (
     BACKUP_BUSY,
     BACKUP_NOT_CONFIRMED,
@@ -403,12 +402,8 @@ def _restore_hosted_thunk(
 
 
 @backup_bp.route("/")
-def index() -> str:
-    return render_template(
-        "app.html",
-        backup_copy=backup_copy_payload(),
-        backup_initial=_status_snapshot(),
-    )
+def index() -> Response:
+    return current_app.send_static_file("shell.html")
 
 
 @backup_bp.route("/status")

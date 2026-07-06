@@ -2,13 +2,248 @@
 // Copyright (c) 2026 sol pbc
 
 (function () {
-  const copy = window.BACKUP_COPY || {};
-  let state = Object.assign({}, window.BACKUP_INITIAL || {});
+  const BACKUP_COPY = {
+    "service_name": "encrypted backup",
+    "brand_lock": "your journal is always private, only yours.",
+    "intro": {
+      "title": "encrypted backup",
+      "subtitle": "make an encrypted copy of your journal somewhere safe — only you can read it.",
+      "bullets": [
+        "end-to-end encrypted",
+        "optional, always",
+        "delete anytime"
+      ],
+      "optional": "your journal lives on your device; backup is optional.",
+      "steps": "you'll save a recovery key, then choose where your backup lives."
+    },
+    "educate": {
+      "stakes": "if you lose your recovery key, no one can recover your journal — not even sol pbc."
+    },
+    "key": {
+      "theft_honesty": "anyone with your recovery key can read everything in your backup — store it like a master password.",
+      "pm_caution": "only store your recovery key in a password manager you trust. sol pbc doesn't recommend a specific one.",
+      "save_password_manager": "save to my password manager",
+      "copy_label": "copy",
+      "continue": "continue",
+      "clipboard_caveat": "copying puts your recovery key on the clipboard — clear it after you save it."
+    },
+    "confirm": {
+      "prompt": "enter the recovery key you just recorded.",
+      "escape": "see key again"
+    },
+    "destination": {
+      "repository_hint": "the restic repository for your bucket — e.g. s3:s3.amazonaws.com/your-bucket",
+      "object_lock_warning": "don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. if you need immutability, use Governance mode.",
+      "object_lock_summary": "bucket setup notes",
+      "field_labels": {
+        "repository": "repository",
+        "backend": "backend",
+        "s3": "S3",
+        "b2": "B2",
+        "access_key_id": "access key id",
+        "secret_access_key": "secret access key",
+        "b2_key_id": "key id",
+        "b2_application_key": "application key"
+      },
+      "reason_labels": {
+        "repo_exists": "destination is reachable and already set up.",
+        "repo_missing": "destination is reachable and needs setup.",
+        "auth_failed": "the destination rejected the key or credentials. check the recovery key and destination details.",
+        "locked": "the destination is busy. try again shortly.",
+        "timeout": "the destination took too long to respond. try again shortly.",
+        "unreachable": "i couldn't reach the destination. check the repository path and try again."
+      },
+      "modes": {
+        "byo": {
+          "title": "your own",
+          "desc": "your bucket, your credentials. the default.",
+          "note": "sol pbc is never in the path."
+        },
+        "hosted": {
+          "title": "operated by sol pbc",
+          "desc": "sol pbc runs the off-device part for you.",
+          "note": "sol pbc only ever holds an encrypted copy it can't read.",
+          "cta": "set up backup →"
+        }
+      }
+    },
+    "hosted": {
+      "setup_hint": "turning this on sets up encrypted backup, operated by sol pbc — you turn it on on the services page that opens, then come back here. your journal stays on your device; only the encrypted copy goes to storage sol pbc operates, and sol pbc can never read it.",
+      "restore_hint": "restore the encrypted copy sol pbc keeps for you — enter your recovery key, then turn it on on the services page.",
+      "location_label": "operated by sol pbc",
+      "manage_label": "manage in your services →",
+      "manage_url": "https://services.solstone.app/services/backup"
+    },
+    "management": {
+      "destructive_action": "turn off & delete backup",
+      "destructive_caption": "this deletes all your backup data. no new backups will be created.",
+      "retention_hint": "how many recent copies to keep at each interval.",
+      "status_labels": {
+        "last_backup": "last backup",
+        "last_prune": "last prune",
+        "storage_used": "storage used",
+        "snapshot_history": "snapshot history",
+        "not_available": "not yet available",
+        "not_yet": "not yet",
+        "enabled": "on",
+        "disabled": "off",
+        "destination": "where your backup lives",
+        "retention": "retention",
+        "setup": "set up your recovery key"
+      },
+      "retention_labels": {
+        "hourly": "hourly",
+        "daily": "daily",
+        "weekly": "weekly",
+        "monthly": "monthly"
+      }
+    },
+    "restore": {
+      "expectation": "a large restore can take a while. you can leave this page open while it runs."
+    },
+    "phase_labels": {
+      "setting_up": "setting up your backup…",
+      "restoring": "restoring your journal…",
+      "rotating": "making a new recovery key…",
+      "tearing_down": "turning off…",
+      "done": "done",
+      "degraded": "restored, but not verified",
+      "error": "couldn't finish",
+      "loading": "loading…",
+      "empty": "not set up yet"
+    },
+    "operation_reason_labels": {
+      "backup_busy": "another backup task is already running. try again in a moment.",
+      "backup_not_confirmed": "confirm your recovery key before turning on backup.",
+      "backup_operation_failed": "i couldn't finish that backup action. check the recovery key and destination, then try again.",
+      "backup_unavailable": "i couldn't ask the background service to start a backup. start it, then try again.",
+      "invalid_key": "that recovery key didn't unlock the backup. re-enter the key from your saved copy.",
+      "invalid_config_value": "use non-negative whole numbers, then save again.",
+      "invalid_operation_for_state": "finish the current backup setup step, then try again.",
+      "invalid_request_value": "check the destination details and try again.",
+      "restic_unavailable": "i couldn't prepare the backup tool. try again after setup finishes.",
+      "repo_missing": "i couldn't find a backup repository at that destination.",
+      "auth_failed": "that recovery key didn't unlock the backup. check the key first, then the destination details.",
+      "locked": "the destination is busy. try again shortly.",
+      "timeout": "the destination took too long to respond. try again shortly.",
+      "failed": "i couldn't finish the backup action. check the recovery key and destination, then try again.",
+      "incomplete": "the backup action didn't finish. you can try again.",
+      "integrity_failed": "your journal was restored to this device, but the backup copy failed its integrity check and may be damaged.",
+      "integrity_unverified": "your journal was restored to this device, but the integrity check couldn't run (the backup was busy or timed out), so the backup copy is unverified.",
+      "missing_required_field": "fill in the required fields, then try again.",
+      "recovery_key_mismatch": "that didn't match your recovery key. re-enter the key from your saved copy.",
+      "expired": "the approval took too long. try again.",
+      "malformed": "the response couldn't be read. update your journal, then try again.",
+      "network_error": "the services page couldn't be reached. check your connection, then try again.",
+      "broker_unreachable": "encrypted backup couldn't be reached. check your connection, then try again.",
+      "broker_error": "encrypted backup didn't return usable settings. try again shortly.",
+      "hosted_entitlement_inactive": "set up backup on the services page that opens, then try again."
+    },
+    "action_labels": {
+      "start": "get started",
+      "understand": "i understand",
+      "save_destination": "save destination",
+      "enable": "turn on backup",
+      "backup_now": "back up now",
+      "view_key": "view recovery key",
+      "rotate_key": "regenerate recovery key",
+      "teardown": "turn off & delete backup",
+      "save_retention": "save retention",
+      "restore": "restore",
+      "try_again": "try again",
+      "cancel": "cancel"
+    },
+    "error_intro": "start with the recovery key. if it still fails, check the destination details."
+  };
+  const copy = BACKUP_COPY;
+  let state = {};
   let currentRecoveryDisplay = '';
   let pollTimer = null;
 
   const root = document.querySelector('[data-backup-root]');
   if (!root) return;
+
+  function logMissingCopy(path) {
+    const error = new Error(`missing backup copy path: ${path}`);
+    if (window.logError) {
+      window.logError(error, { context: 'backup copy render', path });
+    } else if (window.console && window.console.error) {
+      window.console.error(error);
+    }
+  }
+
+  function copyValue(source, path) {
+    let cursor = source;
+    for (const part of path.split('.')) {
+      if (cursor == null || typeof cursor !== 'object' || !(part in cursor)) {
+        logMissingCopy(path);
+        return undefined;
+      }
+      cursor = cursor[part];
+    }
+    if (cursor === undefined) logMissingCopy(path);
+    return cursor;
+  }
+
+  function applyTextCopy(target, selector, attr, setter, source) {
+    for (const element of target.querySelectorAll(selector)) {
+      const path = element.getAttribute(attr);
+      const value = path ? copyValue(source, path) : undefined;
+      if (value !== undefined) setter(element, String(value));
+    }
+  }
+
+  function applyCopy(target, source) {
+    applyTextCopy(target, '[data-copy]', 'data-copy', (element, value) => {
+      element.textContent = value;
+    }, source);
+    applyTextCopy(target, '[data-copy-href]', 'data-copy-href', (element, value) => {
+      element.setAttribute('href', value);
+    }, source);
+    applyTextCopy(target, '[data-copy-aria-label]', 'data-copy-aria-label', (element, value) => {
+      element.setAttribute('aria-label', value);
+    }, source);
+  }
+
+  function renderIntroBullets(target, source) {
+    const list = target.querySelector('[data-copy-list="intro.bullets"]');
+    if (!list) return;
+    const bullets = copyValue(source, 'intro.bullets');
+    list.replaceChildren();
+    if (!Array.isArray(bullets)) {
+      logMissingCopy('intro.bullets');
+      return;
+    }
+    for (const bullet of bullets) {
+      const item = document.createElement('li');
+      item.textContent = String(bullet);
+      list.append(item);
+    }
+  }
+
+  function renderRetentionGrid(target, source) {
+    const grid = target.querySelector('[data-retention-grid]');
+    if (!grid) return;
+    const labels = copyValue(source, 'management.retention_labels');
+    grid.replaceChildren();
+    if (!labels || typeof labels !== 'object' || Array.isArray(labels)) {
+      logMissingCopy('management.retention_labels');
+      return;
+    }
+    for (const [key, labelText] of Object.entries(labels)) {
+      const label = document.createElement('label');
+      const text = document.createElement('span');
+      text.textContent = String(labelText);
+      const input = document.createElement('input');
+      input.setAttribute('name', key);
+      input.setAttribute('data-retention-field', key);
+      input.setAttribute('type', 'number');
+      input.setAttribute('min', '0');
+      input.setAttribute('step', '1');
+      label.append(text, input);
+      grid.append(label);
+    }
+  }
 
   const phaseLabels = copy.phase_labels || {};
   const actionLabels = copy.action_labels || {};
@@ -425,12 +660,22 @@
     return 'intro';
   }
 
-  function bind() {
+  async function bind() {
+    applyCopy(root, copy);
+    renderIntroBullets(root, copy);
+    renderRetentionGrid(root, copy);
     bindIntro();
     bindForms();
     bindBackendSwitching();
     bindModeSwitching();
-    renderStatus();
+    try {
+      await refreshStatus();
+    } catch (err) {
+      if (window.logError) {
+        window.logError(err, { context: 'backup initial status failed' });
+      }
+      renderStatus();
+    }
     showPanel(initialPanel());
   }
 

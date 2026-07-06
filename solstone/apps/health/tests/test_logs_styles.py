@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 WORKSPACE_PATH = Path(__file__).resolve().parents[1] / "workspace.html"
+HEALTH_JS_PATH = Path(__file__).resolve().parents[1] / "static" / "health.js"
 VIEWPORT_BACKGROUND = "#1e1e1e"
 LEVEL_FOREGROUNDS = {
     "error": "#fca5a5",
@@ -57,6 +58,14 @@ EXPECTED_STATE_KEYS = [
 
 def _workspace_source() -> str:
     return WORKSPACE_PATH.read_text(encoding="utf-8")
+
+
+def _health_js_source() -> str:
+    return HEALTH_JS_PATH.read_text(encoding="utf-8")
+
+
+def _health_surface_source() -> str:
+    return _workspace_source() + "\n" + _health_js_source()
 
 
 def _css_rule(source: str, selector: str) -> str:
@@ -127,17 +136,18 @@ def test_logs_spacing_css_migrated():
 
 def test_timestamp_gutter_uses_pseudo_element():
     source = _workspace_source()
+    js_source = _health_js_source()
     gutter = _css_rule(source, ".logs-line[data-hhmmss]::before")
 
     assert re.search(r"content:\s*attr\(data-hhmmss\)\s+\" \"\s*;", gutter)
     assert re.search(r"color:\s*#6b7280\s*;", gutter)
     assert re.search(r"font-family:\s*inherit\s*;", gutter)
-    assert "logs-ts-gutter" not in source
-    assert "line.dataset.hhmmss = formatLogTime(record.ts);" in source
+    assert "logs-ts-gutter" not in _health_surface_source()
+    assert "line.dataset.hhmmss = formatLogTime(record.ts);" in js_source
 
 
 def test_state_only_adds_today_cost_usd():
-    source = _workspace_source()
+    source = _health_js_source()
     match = re.search(r"const state = \{(?P<body>.*?)\n\s*\};", source, re.DOTALL)
     assert match is not None
 
@@ -150,7 +160,7 @@ def test_state_only_adds_today_cost_usd():
 
 
 def test_filter_handlers_preserve_collapsed_services():
-    source = _workspace_source()
+    source = _health_js_source()
 
     for marker in (
         "elements.logServiceFilter.addEventListener('change'",
@@ -164,7 +174,7 @@ def test_filter_handlers_preserve_collapsed_services():
 
 
 def test_level_filter_is_nested_severity_ladder():
-    source = _workspace_source()
+    source = _health_js_source()
 
     assert "if (state.logLevelFilter === 'error') return level === 'error';" in source
     assert (
@@ -178,7 +188,7 @@ def test_level_filter_is_nested_severity_ladder():
 
 
 def test_observe_best_available_fallback_is_labeled_and_finite():
-    source = _workspace_source()
+    source = _health_surface_source()
     start = source.index("function updateObserve()")
     end = source.index("  // Update observers", start)
     body = source[start:end]
@@ -197,7 +207,7 @@ def test_observe_best_available_fallback_is_labeled_and_finite():
 
 
 def test_log_follow_scroll_pause_and_gated_autoscroll_are_wired():
-    source = _workspace_source()
+    source = _health_js_source()
     start = source.index("function renderLogs(newService, newRecord)")
     end = source.index("  // Event handlers by tract", start)
     render_logs = source[start:end]
@@ -217,7 +227,7 @@ def test_log_follow_scroll_pause_and_gated_autoscroll_are_wired():
 
 
 def test_log_stream_delay_notice_is_visible_near_logs():
-    source = _workspace_source()
+    source = _health_surface_source()
 
     assert 'id="logsConnectionNote"' in source
     assert "log updates may be delayed" in source

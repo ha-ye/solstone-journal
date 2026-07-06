@@ -5,11 +5,11 @@
 
 import json
 import os
-import re
 import time
 from datetime import date
 
 from solstone.apps.health import routes as health_routes
+from solstone.convey import backlog_copy
 from solstone.convey.reasons import REPROCESS_ALREADY_COMPLETE
 from solstone.think.talent_runs import AgentFailure, AgentFailureScan
 
@@ -188,7 +188,9 @@ class TestInfoRoute:
         assert readiness["unavailable"] is True
         assert readiness["summary"]["severity"] == "neutral"
 
-    def test_index_injects_readiness_bootstrap(self, health_env, monkeypatch):
+    def test_index_serves_shell_and_info_returns_readiness(
+        self, health_env, monkeypatch
+    ):
         snapshot = _readiness_snapshot("blocker")
         monkeypatch.setattr(
             "solstone.apps.health.routes.build_readiness_snapshot",
@@ -196,14 +198,15 @@ class TestInfoRoute:
         )
         env = health_env()
 
-        response = env.client.get("/app/health/")
+        index_response = env.client.get("/app/health/")
+        info_response = env.client.get("/app/health/api/info")
 
-        assert response.status_code == 200
-        html = response.get_data(as_text=True)
-        assert "window.HEALTH_READINESS" in html
-        assert "provider_key_missing:anthropic:" in html
+        assert index_response.status_code == 200
+        assert b'data-solstone-shell="spa"' in index_response.data
+        assert info_response.status_code == 200
+        assert info_response.get_json()["readiness"] == snapshot
 
-    def test_index_injects_agent_error_bootstrap(self, health_env):
+    def test_state_returns_agent_error_seed(self, health_env):
         env = health_env()
         today = date.today().strftime("%Y%m%d")
         now_ms = int(time.time() * 1000)
@@ -226,43 +229,59 @@ class TestInfoRoute:
             encoding="utf-8",
         )
 
-        response = env.client.get("/app/health/")
+        response = env.client.get("/app/health/api/state")
 
         assert response.status_code == 200
-        html = response.get_data(as_text=True)
-        assert "window.HEALTH_AGENT_ERRORS" in html
-        assert "window.HEALTH_AGENT_ERRORS_OK = true" in html
-        assert '"id": "agent-1"' in html
-        assert '"name": "flow"' in html
-        assert '"service": "cortex"' in html
-        assert '"error": "talent error"' in html
-        assert '"reason_code": "provider_key_missing"' in html
-        assert re.search(r'id="glanceErrorsValue">1</span>', html)
+        data = response.get_json()
+        assert set(data) == {"backlog", "agent_errors"}
+        assert "readiness" not in data
+        assert data["agent_errors"] == {
+            "items": [
+                {
+                    "type": "agent",
+                    "id": "agent-1",
+                    "name": "flow",
+                    "ts": now_ms,
+                    "service": "cortex",
+                    "error": "talent error",
+                    "reason_code": "provider_key_missing",
+                    "provider": "anthropic",
+                    "model": "claude-test",
+                }
+            ],
+            "ok": True,
+            "count": 1,
+            "label": "error today",
+        }
+        assert data["backlog"]["copy"] == {
+            "bucket_heading": backlog_copy.BACKLOG_BUCKET_HEADING,
+            "bucket_description": backlog_copy.BACKLOG_BUCKET_DESCRIPTION,
+            "day_badge": backlog_copy.BACKLOG_DAY_BADGE,
+            "action_process_now": backlog_copy.BACKLOG_ACTION_PROCESS_NOW,
+            "action_redo_scratch": backlog_copy.BACKLOG_ACTION_REDO_SCRATCH,
+            "confirm_redo_scratch": backlog_copy.BACKLOG_CONFIRM_REDO_SCRATCH,
+            "queued_feedback": backlog_copy.BACKLOG_QUEUED_FEEDBACK,
+        }
 
-    def test_index_agent_error_scan_degraded_bootstrap(self, health_env, monkeypatch):
+    def test_state_agent_error_scan_degraded(self, health_env, monkeypatch):
         monkeypatch.setattr(
             "solstone.apps.health.routes.read_unresolved_agent_failures",
             lambda: AgentFailureScan([], ok=False),
         )
         env = health_env()
 
-        response = env.client.get("/app/health/")
+        response = env.client.get("/app/health/api/state")
 
         assert response.status_code == 200
-        html = response.get_data(as_text=True)
-        assert "window.HEALTH_AGENT_ERRORS = []" in html
-        assert "window.HEALTH_AGENT_ERRORS_OK = false" in html
-        assert re.search(r'id="glanceErrorsValue">—</span>', html)
-        assert "couldn't check talent errors today." in html
-        assert not re.search(r'id="glanceErrorsValue">0</span>', html)
-        assert (
-            "empty.textContent = !state.agentErrorsOk\n"
-            '        ? "couldn\'t check talent errors today."\n'
-            "        : (state.recentErrorsFilter ? 'no matching recent errors yet.' : "
-            "'no recent errors.');"
-        ) in html
+        data = response.get_json()["agent_errors"]
+        assert data == {
+            "items": [],
+            "ok": False,
+            "count": 0,
+            "label": "errors today",
+        }
 
-    def test_index_readiness_degrades_when_snapshot_raises(
+    def test_index_stays_shell_when_readiness_snapshot_raises(
         self, health_env, monkeypatch
     ):
         monkeypatch.setattr(
@@ -271,12 +290,14 @@ class TestInfoRoute:
         )
         env = health_env()
 
-        response = env.client.get("/app/health/")
+        index_response = env.client.get("/app/health/")
+        info_response = env.client.get("/app/health/api/info")
 
-        assert response.status_code == 200
-        html = response.get_data(as_text=True)
-        assert '"unavailable": true' in html
-        assert '"severity": "neutral"' in html
+        assert index_response.status_code == 200
+        assert b'data-solstone-shell="spa"' in index_response.data
+        readiness = info_response.get_json()["readiness"]
+        assert readiness["unavailable"] is True
+        assert readiness["summary"]["severity"] == "neutral"
 
 
 class TestRestartObserverRoute:

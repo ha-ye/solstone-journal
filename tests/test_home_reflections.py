@@ -76,12 +76,11 @@ def test_home_shows_latest_weekly_reflection_link(monkeypatch, journal_copy):
         ),
     )
 
-    response = client.get("/app/home/")
-    html = response.get_data(as_text=True)
+    response = client.get("/app/home/api/pulse")
+    payload = response.get_json()
 
     assert response.status_code == 200
-    assert "weekly reflection" in html
-    assert 'href="/app/reflections/20260308"' in html
+    assert payload["latest_weekly_reflection"]["url"] == "/app/reflections/20260308"
 
 
 def test_home_omits_weekly_reflection_card_when_missing(monkeypatch, journal_copy):
@@ -91,8 +90,8 @@ def test_home_omits_weekly_reflection_card_when_missing(monkeypatch, journal_cop
         lambda: _minimal_pulse_context(None),
     )
 
-    response = client.get("/app/home/")
-    html = response.get_data(as_text=True)
+    response = client.get("/app/home/api/pulse")
+    payload = response.get_json()
 
     assert response.status_code == 200
-    assert 'href="/app/reflections/' not in html
+    assert payload["latest_weekly_reflection"] is None

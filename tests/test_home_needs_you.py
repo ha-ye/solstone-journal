@@ -223,42 +223,47 @@ def test_classify_needs_you_folds_confirm_to_chat():
     ]
 
 
-def test_unknown_kind_renders_inert():
-    workspace = (
+def _home_render_js() -> str:
+    return (
         Path(__file__).resolve().parents[1]
         / "solstone"
         / "apps"
         / "home"
-        / "workspace.html"
+        / "static"
+        / "home.js"
     ).read_text(encoding="utf-8")
 
-    dispatch_start = workspace.index("function dispatchNeedsYouItem(item)")
-    init_start = workspace.index("function initHome()", dispatch_start)
-    dispatch_body = workspace[dispatch_start:init_start]
+
+def test_unknown_kind_renders_inert():
+    render_js = _home_render_js()
+
+    dispatch_start = render_js.index("function dispatchNeedsYouItem(item)")
+    # The dispatch body runs until the next top-level function in the module.
+    next_fn = render_js.index("\n  function ", dispatch_start + 1)
+    dispatch_body = render_js[dispatch_start:next_fn]
 
     assert "if (item.kind === 'chat')" in dispatch_body
     assert "if (item.kind === 'route')" in dispatch_body
     assert "if (item.kind === 'confirm')" in dispatch_body
     assert "unsupported confirm needs-you item" in dispatch_body
+    # No catch-all else — an unknown kind falls through inert.
     assert "else" not in dispatch_body
 
 
 def test_disabled_items_render_noninteractive():
-    workspace = (
-        Path(__file__).resolve().parents[1]
-        / "solstone"
-        / "apps"
-        / "home"
-        / "workspace.html"
-    ).read_text(encoding="utf-8")
+    render_js = _home_render_js()
 
-    assert "{% if item.disabled %}" in workspace
-    assert "pulse-needs-item-disabled" in workspace
-    assert "pulse-needs-reason" in workspace
-    disabled_branch_start = workspace.index("{% if item.disabled %}")
-    disabled_branch_end = workspace.index("{% else %}", disabled_branch_start)
-    disabled_branch = workspace[disabled_branch_start:disabled_branch_end]
+    # The disabled needs-you item renders client-side with the reason and no
+    # interactive affordances; the interactive path carries them.
+    assert "pulse-needs-item-disabled" in render_js
+    assert "pulse-needs-reason" in render_js
+    disabled_start = render_js.index("if (item && item.disabled)")
+    disabled_end = render_js.index(
+        "return", render_js.index("return", disabled_start) + 1
+    )
+    disabled_branch = render_js[disabled_start:disabled_end]
     assert 'role="button"' not in disabled_branch
     assert "tabindex" not in disabled_branch
     assert "data-needs-you-item" not in disabled_branch
-    assert "if (item.disabled) return;" in workspace
+    # Dispatch is a no-op for a disabled item.
+    assert "if (item.disabled) return;" in render_js

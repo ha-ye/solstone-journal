@@ -120,16 +120,19 @@ def test_home_needs_you_strings_use_allowed_terms(journal_copy, monkeypatch):
 
     monkeypatch.setattr(home_routes, "_build_pulse_context", _minimal_home_context)
     client = create_app(str(journal_copy)).test_client()
-    response = client.get("/app/home/")
+    response = client.get("/app/home/api/pulse")
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    start = html.index('<div class="pulse-needs"')
-    end = html.index("<script>", start)
-    _assert_clean(html[start:end])
-    v_start = html.index('<div class="pulse-vitals"')
-    v_end = html.index("</div>", html.index("pulse-vitals-health-link", v_start))
-    _assert_clean(html[v_start:v_end])
+    payload = response.get_json()
+    _assert_clean(
+        json.dumps(
+            {
+                "needs_you_items": payload["needs_you_items"],
+                "health_glance": payload["health_glance"],
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 def test_home_vitals_strip_green_is_contrast_passing():
@@ -153,7 +156,19 @@ def test_dashboard_truthfulness_strings_use_allowed_terms():
         / "health"
         / "workspace.html"
     )
-    health_source = health_workspace.read_text(encoding="utf-8")
+    health_js = (
+        Path(__file__).resolve().parents[1]
+        / "solstone"
+        / "apps"
+        / "health"
+        / "static"
+        / "health.js"
+    )
+    health_source = (
+        health_workspace.read_text(encoding="utf-8")
+        + "\n"
+        + health_js.read_text(encoding="utf-8")
+    )
     health_strings = [
         "couldn't check talent errors today.",
         "this host's stream isn't reporting yet — showing",
