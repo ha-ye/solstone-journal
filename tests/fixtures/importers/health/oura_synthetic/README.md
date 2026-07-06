@@ -9,7 +9,10 @@ data, and never may.
 
 Files: one `<endpoint>.json` per supported endpoint — `daily_sleep`,
 `daily_readiness`, `daily_resilience`, `daily_stress`, `daily_spo2`,
-`sleep`.
+`sleep`, plus the AH-mirror overlap endpoints imported per decision
+O-5C: `daily_activity` (document-shaped) and `heartrate` (a time-series
+page whose rows carry `timestamp`/`bpm`/`source` and no document `id` or
+`day` — day attribution comes verbatim from the timestamp's date part).
 
 ## revisions/
 

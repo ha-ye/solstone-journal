@@ -225,6 +225,51 @@ def _run_muesli_sync() -> bool:
         return False
 
 
+def _run_connect(backend_name: str) -> None:
+    """Owner-present connect flow for API-backed importers (oura only)."""
+    if backend_name != "oura":
+        raise SystemExit(
+            f"Unknown connect backend: {backend_name}\nConnectable backends: oura"
+        )
+    try:
+        from solstone.think.importers import local_secrets, oura_auth
+    except ImportError:
+        raise SystemExit(
+            "Oura auth layer not yet installed — "
+            "solstone.think.importers.oura_auth is missing. The "
+            "owner-present OAuth step (phase O2) installs it; nothing to "
+            "connect until then."
+        ) from None
+
+    from solstone.think.importers.oura import OAUTH_CONFIG_KEY
+    from solstone.think.journal_config import read_journal_config
+
+    # client_id is a PKCE public-client identifier — not a secret; it is
+    # read (read-only) from journal config. Tokens land in the local
+    # secret store outside the journal; nothing token-shaped is printed.
+    config = read_journal_config()
+    section = config.get(OAUTH_CONFIG_KEY)
+    client_id = section.get("client_id") if isinstance(section, dict) else None
+    if not isinstance(client_id, str) or not client_id:
+        raise SystemExit(
+            "Oura client_id missing from journal config "
+            '(config/journal.json -> {"oura": {"client_id": ...}}). '
+            "Register the Oura dev app and record its public client id "
+            "before connecting."
+        )
+
+    print("Opening the Oura authorization page — owner-present step.")
+    try:
+        tokens = oura_auth.run_owner_present_auth(client_id=client_id)
+    except oura_auth.OuraAuthError as exc:
+        raise SystemExit(f"Oura authorization did not complete: {exc}") from None
+    local_secrets.save_oura_tokens(tokens)
+    print("Oura authorization saved to the local secret store.")
+    print("Next:")
+    print("  sol import --sync oura                 (catalog; writes nothing)")
+    print("  sol import --sync oura --save --confirm-health-save")
+
+
 def _run_sync(
     backend_name: str,
     *,
@@ -236,6 +281,7 @@ def _run_sync(
     import inspect
 
     from solstone.think.importers.plaud import format_size
+    from solstone.think.importers.pre_save_gate import PreSaveGateError
     from solstone.think.importers.sync import get_syncable_backends, load_sync_state
 
     journal_root = Path(get_journal())
@@ -271,6 +317,11 @@ def _run_sync(
 
     try:
         result = backend.sync(journal_root, **sync_kwargs)
+    except PreSaveGateError as e:
+        # Health-gated sync backends (oura) fail closed with a
+        # traceback-free, owner-facing explanation.
+        print(e.format_text())
+        raise SystemExit(e.exit_code)
     except ValueError as e:
         raise SystemExit(str(e))
     except RuntimeError as e:
@@ -360,6 +411,15 @@ def _run_sync(
     if not dry_run and available == 0 and downloaded == 0 and not errors:
         print()
         print("Everything is up to date.")
+
+    # Oura wiring: when the sync artifact records scheduled-sync consent,
+    # the backend returns the exact crontab line as guidance. Never
+    # installed here — the owner adds it deliberately.
+    cron_hint = result.get("cron_hint")
+    if cron_hint:
+        print()
+        print("Scheduled-sync consent is recorded. Crontab line (not installed):")
+        print(f"  {cron_hint}")
 
 
 def import_one(
@@ -1482,6 +1542,26 @@ def main() -> None:
         help="With --sync: override the default source directory path",
     )
     parser.add_argument(
+        "--window-days",
+        type=int,
+        default=None,
+        help="With --sync oura: fetch a trailing window of this many days",
+    )
+    parser.add_argument(
+        "--scheduled",
+        action="store_true",
+        help=(
+            "With --sync oura --save: this is an unattended scheduled run; "
+            "requires the artifact's standing scheduled_sync consent"
+        ),
+    )
+    parser.add_argument(
+        "--connect",
+        type=str,
+        metavar="BACKEND",
+        help="Owner-present connect/authorization flow (e.g., oura)",
+    )
+    parser.add_argument(
         "--list-importers",
         action="store_true",
         help="List available file importers",
@@ -1554,6 +1634,10 @@ def main() -> None:
             print("No file importers available")
         return
 
+    if args.connect:
+        _run_connect(args.connect)
+        return
+
     if args.sync:
         extra: dict[str, Any] = {}
         if args.path:
@@ -1561,6 +1645,11 @@ def main() -> None:
         if args.force:
             extra["force"] = True
         extra["auto"] = args.auto
+        # Oura wiring: forwarded only to backends whose sync() signature
+        # accepts them (see the signature filter in _run_sync).
+        extra["window_days"] = args.window_days
+        extra["scheduled"] = args.scheduled or None
+        extra["confirm_health_save"] = args.confirm_health_save or None
         _run_sync(
             args.sync,
             dry_run=args.dry_run or not args.save,
