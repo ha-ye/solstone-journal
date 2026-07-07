@@ -158,13 +158,17 @@ def search_journal_api() -> Any:
     try:
         # Get aggregation counts efficiently (lightweight query, no content)
         # First get unfiltered counts for sidebar display
-        base_counts = search_counts(query, stream=stream_filter)
+        base_counts = search_counts(query, stream=stream_filter, relax=True)
         facet_counts = dict(base_counts["facets"])
         agent_counts = dict(base_counts["agents"])
 
         # Get filtered counts for results
         filtered_counts = search_counts(
-            query, facet=facet_filter, agent=agent_filter, stream=stream_filter
+            query,
+            facet=facet_filter,
+            agent=agent_filter,
+            stream=stream_filter,
+            relax=True,
         )
         day_counts = dict(filtered_counts["days"])
 
@@ -185,6 +189,7 @@ def search_journal_api() -> Any:
                 facet=facet_filter,
                 agent=agent_filter,
                 stream=stream_filter,
+                relax=True,
             )
             total_in_day = day_counts.get(day, 0)
 
@@ -239,6 +244,7 @@ def search_journal_api() -> Any:
             "total": filtered_counts["total"],
             "total_days": len(sorted_days),
             "showing_days": len(days_response),
+            "relaxed": filtered_counts["relaxed"],
             "days": days_response,
             "facets": facets_list,
             "talents": agents_list,
@@ -280,6 +286,7 @@ def day_results_api() -> Any:
             facet=facet_filter,
             agent=agent_filter,
             stream=stream_filter,
+            relax=True,
         )
         total_in_day = counts["total"]
 
@@ -292,6 +299,7 @@ def day_results_api() -> Any:
             facet=facet_filter,
             agent=agent_filter,
             stream=stream_filter,
+            relax=True,
         )
 
         formatted = [_format_result(r, query, facets_map) for r in rows]

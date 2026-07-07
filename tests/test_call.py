@@ -64,6 +64,9 @@ def search_index_journal(tmp_path, monkeypatch):
     day.mkdir(parents=True)
     (day / "flow.md").write_text("# Flow\n\nWorked on project alpha.\n")
     (day / "screen.md").write_text("# Screen\n\nViewed documentation.\n")
+    segment = journal / "chronicle" / "20240101" / "default" / "080000_300" / "talents"
+    segment.mkdir(parents=True)
+    (segment / "flow.md").write_text("# Morning Segment\n\nmorningbucket detail.\n")
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     import solstone.think.utils as think_utils
@@ -197,6 +200,57 @@ class TestJournal:
         assert result.exit_code != 0
         assert "unknown agent 'bogus'" in result.stderr
         assert "flow" in result.stderr  # the known set is listed
+
+    def test_journal_search_honest_zero_without_auto_relax(self, search_index_journal):
+        """Agent-facing CLI search reports tier-0 zero instead of broadening."""
+        result = runner.invoke(
+            call_app, ["journal", "search", "what was the project alpha"]
+        )
+        assert result.exit_code == 0
+        assert "0 results" in result.output
+
+    def test_journal_search_json_includes_counts_results_and_ids(
+        self, search_index_journal
+    ):
+        result = runner.invoke(call_app, ["journal", "search", "project", "--json"])
+        assert result.exit_code == 0
+
+        payload = json.loads(result.output)
+        assert "counts" in payload
+        assert payload["results"]
+        item = payload["results"][0]
+        assert item["id"] == f"{item['path']}:{item['idx']}"
+
+    def test_journal_search_text_output_for_hits_is_unchanged(
+        self, search_index_journal
+    ):
+        result = runner.invoke(call_app, ["journal", "search", "project"])
+        assert result.exit_code == 0
+        assert result.output == (
+            "1 results\n"
+            "Agents: flow:1\n"
+            "Top days: 20240101:1\n"
+            "\n"
+            "--- 20240101 |  | flow | 20240101/talents/flow.md:0 ---\n"
+            "# Flow\n"
+            "\n"
+            "Worked on project alpha.\n"
+        )
+
+    def test_journal_search_time_bucket_filters(self, search_index_journal):
+        morning = runner.invoke(
+            call_app,
+            ["journal", "search", "morningbucket", "--time-bucket", "morning"],
+        )
+        assert morning.exit_code == 0
+        assert "1 results" in morning.output
+
+        evening = runner.invoke(
+            call_app,
+            ["journal", "search", "morningbucket", "--time-bucket", "evening"],
+        )
+        assert evening.exit_code == 0
+        assert "0 results" in evening.output
 
     def test_journal_search_valid_agent_ok(self, search_index_journal):
         """A valid agent runs normally with no error."""
@@ -341,6 +395,34 @@ class TestJournal:
         )
         assert result.exit_code == 1
         assert "not found" in result.output.lower()
+
+    def test_journal_read_path_reads_journal_relative_file(self, search_index_journal):
+        result = runner.invoke(
+            call_app, ["journal", "read", "--path", "20240101/talents/flow.md"]
+        )
+        assert result.exit_code == 0
+        assert "Worked on project alpha." in result.output
+
+    def test_journal_read_path_rejects_idx_suffix(self, search_index_journal):
+        result = runner.invoke(
+            call_app, ["journal", "read", "--path", "20240101/talents/flow.md:0"]
+        )
+        assert result.exit_code == 1
+        assert "strip the ':idx' suffix" in (result.stderr or result.output)
+
+    def test_journal_read_path_rejects_entity_search_rows(self, search_index_journal):
+        result = runner.invoke(
+            call_app, ["journal", "read", "--path", "entity_search:alice:0"]
+        )
+        assert result.exit_code == 1
+        assert "entity results have no file to read" in (result.stderr or result.output)
+
+    def test_journal_read_path_missing_file_errors(self, search_index_journal):
+        result = runner.invoke(
+            call_app, ["journal", "read", "--path", "20240101/talents/missing.md"]
+        )
+        assert result.exit_code == 1
+        assert "no file at journal-relative path" in (result.stderr or result.output)
 
     def test_journal_news_write(self, tmp_path, monkeypatch):
         """News --write saves content from stdin."""

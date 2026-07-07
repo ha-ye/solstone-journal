@@ -48,6 +48,7 @@ from solstone.think.utils import (
     is_solstone_up,
     iter_segments,
     require_solstone,
+    resolve_journal_path,
     resolve_sol_day,
     resolve_sol_facet,
     resolve_sol_segment,
@@ -102,11 +103,25 @@ def search(
     stream: str | None = typer.Option(
         None, "--stream", help="Filter by stream (e.g. import.ics, archon)."
     ),
+    time_bucket: str | None = typer.Option(
+        None,
+        "--time-bucket",
+        help="Filter to a time-of-day bucket: morning/afternoon/evening/night.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Return structured JSON output for agent workflows."
+    ),
 ) -> None:
-    """Search the journal index."""
-    from solstone.think.indexer.journal import known_agents
-    from solstone.think.indexer.journal import search_counts as search_counts_impl
-    from solstone.think.indexer.journal import search_journal as search_journal_impl
+    """Search the journal index.
+
+    Use 2-4 content terms instead of natural-language questions; question words
+    like what/how/did/when add noise in this keyword/BM25 index. Syntax: OR for
+    any term, quoted phrases for exact text, and * for prefix matches. Zero
+    results means zero: broaden by dropping terms, using OR, then adding *.
+    Counts help drill down with --facet, --agent, --day, and --time-bucket.
+    Result ids are path:idx; read a hit with `sol call journal read --path
+    <path>` after stripping the :idx suffix.
+    """
 
     query = query or query_opt or ""
     kwargs = {}
@@ -119,6 +134,24 @@ def search(
     if facet is not None:
         kwargs["facet"] = facet
     if agent is not None:
+        kwargs["agent"] = agent
+    if stream is not None:
+        kwargs["stream"] = stream
+    if time_bucket is not None:
+        kwargs["time_bucket"] = time_bucket
+
+    if json_output:
+        from solstone.think.tools.search import search_journal as readtalent_search
+
+        result = readtalent_search(query, limit, offset, **kwargs)
+        typer.echo(json.dumps(result, indent=2))
+        return
+
+    from solstone.think.indexer.journal import known_agents
+    from solstone.think.indexer.journal import search_counts as search_counts_impl
+    from solstone.think.indexer.journal import search_journal as search_journal_impl
+
+    if agent is not None:
         known = known_agents()
         if known and agent.lower() not in known:
             typer.echo(
@@ -126,16 +159,11 @@ def search(
                 err=True,
             )
             raise typer.Exit(1)
-        kwargs["agent"] = agent
-    if stream is not None:
-        kwargs["stream"] = stream
 
-    total, results = search_journal_impl(
-        query, limit, offset, relax=True, rerank=True, **kwargs
-    )
+    total, results = search_journal_impl(query, limit, offset, rerank=True, **kwargs)
 
     # Counts summary
-    counts = search_counts_impl(query, relax=True, **kwargs)
+    counts = search_counts_impl(query, **kwargs)
     typer.echo(f"{total} results")
 
     facet_counts = counts.get("facets", {})
@@ -632,7 +660,9 @@ def _list_outputs(directory: Path, label: str) -> None:
 
 @app.command()
 def read(
-    agent: str = typer.Argument(help="Agent name (e.g., flow, meetings, activity)."),
+    agent: str | None = typer.Argument(
+        None, help="Agent name (e.g., flow, meetings, activity)."
+    ),
     day: str | None = typer.Option(
         None, "--day", "-d", help="Day YYYYMMDD (default: SOL_DAY env)."
     ),
@@ -645,8 +675,53 @@ def read(
     max_bytes: int = typer.Option(
         16384, "--max", help="Max output bytes (0 = unlimited)."
     ),
+    path: str | None = typer.Option(
+        None,
+        "--path",
+        help="Read a journal-relative file path (e.g. a search-result path, minus the :idx suffix).",
+    ),
 ) -> None:
     """Read full content of an agent output."""
+    if path is not None:
+        if agent is not None or day is not None or segment is not None:
+            typer.echo(
+                "error: --path cannot be combined with agent/--day/--segment",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if path.startswith("entity_search:"):
+            typer.echo(
+                "error: entity results have no file to read (entity_search: is an index row, not a file)",
+                err=True,
+            )
+            raise typer.Exit(1)
+        if re.search(r":\d+$", path):
+            typer.echo(
+                "error: that looks like a search-result id; strip the ':idx' suffix and pass just the path",
+                err=True,
+            )
+            raise typer.Exit(1)
+        try:
+            candidate = resolve_journal_path(get_journal(), path)
+        except ValueError as exc:
+            typer.echo(f"error: invalid path: {exc}", err=True)
+            raise typer.Exit(1)
+        if not candidate.is_file():
+            typer.echo(
+                f"error: no file at journal-relative path: {path}",
+                err=True,
+            )
+            raise typer.Exit(1)
+        truncated_echo(candidate.read_text("utf-8"), max_bytes)
+        return
+
+    if agent is None:
+        typer.echo(
+            "error: missing agent (or use --path <journal-relative-path>)",
+            err=True,
+        )
+        raise typer.Exit(1)
+
     day = resolve_sol_day(day)
     segment = resolve_sol_segment(segment)
     day_dir = day_path(day, create=False)

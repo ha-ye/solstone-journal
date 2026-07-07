@@ -1157,7 +1157,7 @@ def test_rerank_equal_scores_keep_bm25_order(monkeypatch, relax_fixture):
     assert all(result["rerank_score"] == 1.0 for result in results)
 
 
-def test_search_tool_flips_relax_and_rerank(monkeypatch):
+def test_search_tool_keeps_rerank_without_relax(monkeypatch):
     from collections import Counter
 
     from solstone.think.tools import search as search_tool
@@ -1183,14 +1183,14 @@ def test_search_tool_flips_relax_and_rerank(monkeypatch):
 
     search_tool.search_journal("needle", facet="work")
 
-    assert calls["search"][3]["relax"] is True
+    assert "relax" not in calls["search"][3]
     assert calls["search"][3]["rerank"] is True
     assert calls["search"][3]["facet"] == "work"
-    assert calls["counts"][1]["relax"] is True
+    assert "relax" not in calls["counts"][1]
     assert "rerank" not in calls["counts"][1]
 
 
-def test_call_tool_flips_relax_and_rerank(monkeypatch):
+def test_call_tool_keeps_rerank_without_relax(monkeypatch):
     from collections import Counter
 
     from solstone.think.indexer import journal as journal_index
@@ -1226,11 +1226,13 @@ def test_call_tool_flips_relax_and_rerank(monkeypatch):
         facet=None,
         agent=None,
         stream=None,
+        time_bucket=None,
+        json_output=False,
     )
 
-    assert calls["search"][3]["relax"] is True
+    assert "relax" not in calls["search"][3]
     assert calls["search"][3]["rerank"] is True
-    assert calls["counts"][1]["relax"] is True
+    assert "relax" not in calls["counts"][1]
     assert "rerank" not in calls["counts"][1]
 
 
@@ -1304,6 +1306,7 @@ def test_search_journal_results_include_path(monkeypatch):
         item = result["results"][0]
         assert "path" in item
         assert "idx" in item
+        assert item["id"] == f"{item['path']}:{item['idx']}"
 
 
 def test_search_journal_truncates_large_results(monkeypatch):

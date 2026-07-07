@@ -86,11 +86,18 @@ def search_journal(
     stream: str | None = None,
     time_bucket: str | None = None,
 ) -> dict[str, Any]:
-    """Search across all journal content using semantic full-text search.
+    """Search across all journal content using keyword full-text search.
 
-    This tool searches through all indexed journal content including insights,
-    transcripts, events, and entities. Use filters to narrow results
-    to specific content types or contexts.
+    Search works best with 2-4 content terms, not natural-language questions.
+    Question words such as what/how/did/when are usually dead weight because
+    the index is keyword/BM25 based. Use OR for alternatives, quoted phrases
+    for exact text, and * for prefix matches. Zero results means zero: this
+    tool does not auto-broaden, so broaden by dropping terms, changing to
+    term1 OR term2, then adding *.
+
+    Counts help drill down with facet, agent, day, and time_bucket filters.
+    Result ids are path:idx; read the underlying file with
+    `sol call journal read --path <path>` after stripping the :idx suffix.
 
     Args:
         query: Search query. Words are AND'd by default; use OR to match any
@@ -114,7 +121,7 @@ def search_journal(
         - offset: Current offset value
         - query: Echo of query text and applied filters
         - counts: Aggregation metadata with facets, agents, and bucketed days
-        - results: List of matches with day, facet, agent, stream, text, path, and idx
+        - results: List of matches with id, day, facet, agent, stream, text, path, and idx
 
     Examples:
         - search_journal("machine learning")
@@ -153,11 +160,11 @@ def search_journal(
 
         # Get search results
         total, results = search_journal_impl(
-            query, limit, offset, relax=True, rerank=True, **kwargs
+            query, limit, offset, rerank=True, **kwargs
         )
 
         # Get aggregation counts
-        counts_data = search_counts_impl(query, relax=True, **kwargs)
+        counts_data = search_counts_impl(query, **kwargs)
 
         # Build result items with full metadata
         items = []
@@ -169,6 +176,7 @@ def search_journal(
                     f"\n\n[... truncated from {len(text):,} chars]"
                 )
             item = {
+                "id": f"{meta.get('path', '')}:{meta.get('idx', 0)}",
                 "day": meta.get("day", ""),
                 "facet": meta.get("facet", ""),
                 "agent": meta.get("agent", ""),

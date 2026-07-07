@@ -41,7 +41,7 @@ def _stub_search(monkeypatch, counts: dict[str, Any]) -> dict[str, int | None]:
         return 0, []
 
     def fake_counts(*_args, **_kwargs):
-        return counts
+        return {"relaxed": False, **counts}
 
     monkeypatch.setattr(routes, "search_journal", fake_search_journal)
     monkeypatch.setattr(routes, "search_counts", fake_counts)
@@ -96,3 +96,22 @@ def test_search_non_numeric_limit_is_200(search_client, monkeypatch):
 
     assert response.status_code == 200
     assert recorded["limit"] == 5
+
+
+@pytest.mark.parametrize("relaxed", [True, False])
+def test_search_api_returns_relaxed_flag(search_client, monkeypatch, relaxed):
+    _stub_search(
+        monkeypatch,
+        {
+            "facets": {},
+            "agents": {},
+            "days": {"20260304": 1},
+            "total": 1,
+            "relaxed": relaxed,
+        },
+    )
+
+    response = search_client.get("/app/search/api/search?q=test")
+
+    assert response.status_code == 200
+    assert response.get_json()["relaxed"] is relaxed
