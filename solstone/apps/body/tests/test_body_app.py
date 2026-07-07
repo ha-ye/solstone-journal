@@ -4446,6 +4446,8 @@ def test_trends_range_chips_annotations_and_collapse_controls():
     assert "data-collapse" in source
     assert ">Close<" in source
     assert 'if (event.key === "Escape") collapseOpen(true);' in source
+    assert 'event.key !== "Enter" && event.key !== " "' in source
+    assert 'toggleSignal(btn.dataset.signal);' in source
 
     # One canvas at a time; resting heart rate opens first when present.
     assert "function expandSignal(key)" in source

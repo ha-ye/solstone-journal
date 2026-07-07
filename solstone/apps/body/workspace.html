@@ -1782,6 +1782,11 @@ a.body-jump-day:focus-visible {
 
       document.addEventListener("keydown", function (event) {
         if (event.key === "Escape") collapseOpen(true);
+        if (event.key !== "Enter" && event.key !== " ") return;
+        var btn = event.target.closest(".body-trends-ribbon-btn");
+        if (!btn || btn.disabled || !stack.contains(btn)) return;
+        event.preventDefault();
+        toggleSignal(btn.dataset.signal);
       });
 
       function showStatus(text) {
