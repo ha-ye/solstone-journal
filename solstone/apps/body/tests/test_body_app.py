@@ -93,6 +93,11 @@ OURA_RESILIENCE_TYPE = "oura.daily_resilience"
 OURA_STRESS_TYPE = "oura.daily_stress"
 OURA_SPO2_TYPE = "oura.daily_spo2"
 OURA_TEMP_DEV_TYPE = "oura.temperature_deviation"
+OURA_CARDIOVASCULAR_AGE_TYPE = "oura.daily_cardiovascular_age"
+OURA_VO2_MAX_TYPE = "oura.vo2_max"
+OURA_WORKOUT_TYPE = "oura.workout"
+OURA_SESSION_TYPE = "oura.session"
+OURA_TAG_TYPE = "oura.enhanced_tag"
 OURA_HEARTRATE_TYPE = "oura.heartrate"
 
 
@@ -5265,6 +5270,136 @@ def test_day_api_catch_all_relinquishes_oura_overlap_types(body_env):
     assert payload["activity"]["steps"]["source"] == "Oura (API)"
 
 
+def test_day_api_oura_workout_supersedes_mirror_but_keeps_watch_workout(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_145000",
+        [
+            _row(
+                "HKWorkoutActivityTypeCycling",
+                "2026-07-27T08:00:00-06:00",
+                "2026-07-27T08:30:00-06:00",
+                source="Synthetic Watch",
+                kind="workout",
+                metadata={
+                    "totalDistance": 3.2,
+                    "totalDistanceUnit": "mi",
+                    "totalEnergyBurned": 210,
+                    "totalEnergyBurnedUnit": "Cal",
+                },
+            ),
+            # The same ring workout mirrored through Apple Health.
+            _row(
+                "HKWorkoutActivityTypeWalking",
+                "2026-07-27T10:00:00-06:00",
+                "2026-07-27T10:25:00-06:00",
+                source="Oura",
+                kind="workout",
+                metadata={
+                    "totalDistance": 1100,
+                    "totalDistanceUnit": "m",
+                    "totalEnergyBurned": 70,
+                    "totalEnergyBurnedUnit": "Cal",
+                },
+            ),
+            # The canonical API pipe for the ring workout.
+            _oura_row(
+                OURA_WORKOUT_TYPE,
+                "20260727",
+                kind="workout",
+                start="2026-07-27T10:00:00-06:00",
+                end="2026-07-27T10:25:00-06:00",
+                metadata={"activity": "walking", "distance": 1200, "calories": 80},
+            ),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260727").get_json()
+
+    workouts = payload["activity"]["workouts"]
+    assert [item["name"] for item in workouts] == ["Cycling", "Walking"]
+    assert [item["source"] for item in workouts] == ["Synthetic Watch", "Oura (API)"]
+    assert workouts[1]["metrics_label"] == "1,200.0 m · 80 Cal"
+    assert payload["activity"]["workout_summary"] == "Cycling · Walking"
+    assert payload["sources"]["names"] == ["Oura (API)", "Synthetic Watch"]
+    # The audit drawer names the mirrored Oura workout, but aggregation
+    # and source chips use one canonical ring pipe.
+    assert payload["audit"]["types"] == {
+        "HKWorkoutActivityTypeCycling": 1,
+        "HKWorkoutActivityTypeWalking": 1,
+        "oura.workout": 1,
+    }
+
+    html = env.client.get("/app/body/20260727").get_data(as_text=True)
+    assert "Walking" in html
+    assert "Oura (API)" in html
+    assert "1,200.0 m · 80 Cal" in html
+
+    window = env.client.get(
+        "/app/body/api/window"
+        "?from=2026-07-27T07:00:00-06:00&to=2026-07-27T11:00:00-06:00"
+    ).get_json()
+    assert [item["name"] for item in window["workouts"]] == ["Cycling", "Walking"]
+    assert [item["source"] for item in window["workouts"]] == [
+        "Synthetic Watch",
+        "Oura (API)",
+    ]
+
+
+def test_day_api_oura_cardio_vo2_and_audit_only_details(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_145500",
+        [
+            _oura_row(
+                OURA_CARDIOVASCULAR_AGE_TYPE,
+                "20260728",
+                value=34,
+                unit="years",
+                metadata={"pulse_wave_velocity": 7.8},
+            ),
+            _oura_row(OURA_VO2_MAX_TYPE, "20260728", value=42, unit="mL/kg/min"),
+            _oura_row(
+                OURA_SESSION_TYPE,
+                "20260728",
+                kind="session",
+                start="2026-07-28T07:30:00-06:00",
+                end="2026-07-28T07:45:00-06:00",
+                metadata={"type": "meditation", "mood": "good"},
+            ),
+            _oura_row(
+                OURA_TAG_TYPE,
+                "20260728",
+                kind="tag",
+                start="2026-07-28T09:15:00-06:00",
+                metadata={"custom_name": "caffeine", "comment": "owner note"},
+            ),
+        ],
+    )
+
+    payload = env.client.get("/app/body/api/day/20260728").get_json()
+
+    facts = {fact["label"]: fact["value"] for fact in payload["heart"]["facts"]}
+    assert facts["Vascular age"] == "34 · Oura's estimate"
+    assert facts["VO2 max"] == "42 mL/kg/min · Oura's estimate"
+    # Sessions/tags are deliberately audit-only, and the new heart seats
+    # keep their raw Oura identifiers out of Other signals.
+    assert payload["other_signals"] is None
+    assert payload["audit"]["oura_appendix"] == [
+        {"label": "Pulse-wave velocity", "detail": "7.8 m/s · Oura's measurement"},
+        {"label": "Meditation", "detail": "7:30 AM – 7:45 AM · Oura (API) · mood Good"},
+        {"label": "Caffeine", "detail": "9:15 AM · Oura (API) · note present"},
+    ]
+
+    html = env.client.get("/app/body/20260728").get_data(as_text=True)
+    assert '<span>Vascular age</span>' in html
+    assert "34 · Oura&#39;s estimate" in html
+    assert "Pulse-wave velocity" in html
+    assert "Sessions and tags stay here until a day-card use is clear." in html
+
+
 def test_day_api_sleep_score_contributors_join_sleep_card(body_env):
     env = body_env()
     _seed_import(
@@ -5606,6 +5741,40 @@ def test_trends_steps_use_ring_api_total_over_mirror(body_env):
 
     steps = next(s for s in payload["signals"] if s["key"] == "steps")
     assert steps["daily"] == [["20260603", 4000], ["20260605", 9500]]
+
+
+def test_trends_vascular_age_ribbon_is_bare_age_without_typical(body_env):
+    env = body_env()
+    rows = [
+        _oura_row(
+            OURA_CARDIOVASCULAR_AGE_TYPE,
+            f"202606{day:02d}",
+            value=34 + (day % 2),
+            unit="years",
+        )
+        for day in range(1, 17)
+    ]
+    _seed_import(env.journal, "20260906_220000", rows)
+
+    payload = _trends_after_warm(env.client)
+
+    assert [signal["key"] for signal in payload["signals"]] == ["vascular_age"]
+    vascular = payload["signals"][0]
+    assert vascular["label"] == "Vascular age"
+    # The ribbon is years, but the unit label stays empty so the client
+    # renders a bare number instead of "34 years".
+    assert vascular["unit_label"] == ""
+    assert vascular["daily"][0] == ["20260601", 35.0]
+    assert vascular["daily"][-1] == ["20260616", 34.0]
+
+    day_payload = env.client.get("/app/body/api/day/20260616").get_json()
+    fact = day_payload["heart"]["facts"][0]
+    assert fact == {
+        "label": "Vascular age",
+        "count": 1,
+        "count_label": "1",
+        "value": "34 · Oura's estimate",
+    }
 
 
 # --- Round-2 Oura display front-end: anatomy, medians, juxtaposition ----------

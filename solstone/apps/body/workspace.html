@@ -2026,6 +2026,7 @@ a.body-jump-day:focus-visible {
                   {% if workout.start %}{{ workout.start }}{% endif %}
                   {% if workout.duration %}&middot; {{ workout.duration }}{% endif %}
                   {% if workout.metrics_label %}&middot; {{ workout.metrics_label }}{% endif %}
+                  {% if workout.source %}&middot; {{ workout.source }}{% endif %}
                 </span>
               </li>
             {% endfor %}
@@ -2345,6 +2346,17 @@ a.body-jump-day:focus-visible {
           </ul>
           <p class="body-card-footer">Entries are shown once per dedupe key across overlapping bundles.</p>
         </article>
+        {% if body_day.audit.oura_appendix %}
+          <article class="body-card">
+            <h3 class="body-card-label">Oura details</h3>
+            <ul class="body-list">
+              {% for item in body_day.audit.oura_appendix %}
+                <li><span>{{ item.label }}</span><strong class="body-num">{{ item.detail }}</strong></li>
+              {% endfor %}
+            </ul>
+            <p class="body-card-footer">Sessions and tags stay here until a day-card use is clear.</p>
+          </article>
+        {% endif %}
       </div>
       <section class="body-section" aria-labelledby="body-day-summary-title">
         <h3 id="body-day-summary-title" class="body-card-label">Day summary</h3>

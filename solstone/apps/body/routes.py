@@ -111,10 +111,16 @@ OURA_RESILIENCE_TYPE = "oura.daily_resilience"
 OURA_STRESS_TYPE = "oura.daily_stress"
 OURA_SPO2_TYPE = "oura.daily_spo2"
 OURA_TEMPERATURE_DEVIATION_TYPE = "oura.temperature_deviation"
+OURA_CARDIOVASCULAR_AGE_TYPE = "oura.daily_cardiovascular_age"
+OURA_VO2_MAX_TYPE = "oura.vo2_max"
+OURA_WORKOUT_TYPE = "oura.workout"
+OURA_SESSION_TYPE = "oura.session"
+OURA_TAG_TYPE = "oura.enhanced_tag"
 # AH-mirror overlap endpoints (O-5C): the API pipe's raw beat series and
 # the ring's daily activity document.
 OURA_HEARTRATE_TYPE = "oura.heartrate"
 OURA_DAILY_ACTIVITY_TYPE = "oura.daily_activity"
+_AUDIT_ONLY_OURA_TYPES = frozenset({OURA_SESSION_TYPE, OURA_TAG_TYPE})
 
 # Raw heart-rate sample rows, either pipe: HealthKit samples and the Oura
 # API beat series join one range/curve computation — it was always
@@ -190,6 +196,8 @@ _FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "Electrocardiogram",
             OURA_SPO2_TYPE,
             OURA_HEARTRATE_TYPE,
+            OURA_CARDIOVASCULAR_AGE_TYPE,
+            OURA_VO2_MAX_TYPE,
         ),
     ),
     (
@@ -238,6 +246,7 @@ _FAMILY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
             "TimeInDaylight",
             "UVExposure",
             OURA_DAILY_ACTIVITY_TYPE,
+            OURA_WORKOUT_TYPE,
         ),
     ),
 )
@@ -630,7 +639,19 @@ def _rows_for_window(
                 continue
             if _interval_overlaps(interval[0], interval[1], window_start, window_end):
                 rows.append(row)
-    return rows
+    rows_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    undated: list[dict[str, Any]] = []
+    for row in rows:
+        day = str(row.get("day") or "")
+        if DAY_RE.fullmatch(day):
+            rows_by_day[day].append(row)
+        else:
+            undated.append(row)
+    return undated + [
+        row
+        for day in sorted(rows_by_day)
+        for row in _resolve_canonical_day_rows(rows_by_day[day])
+    ]
 
 
 def _family_for_type(record_type: str) -> str:
@@ -739,6 +760,11 @@ _MIRROR_SUPERSEDED_FRAGMENTS: dict[str, tuple[str, ...]] = {
         "BasalEnergyBurned",
         "DistanceWalkingRunning",
     ),
+    # Oura API workout rows supersede workout rows mirrored from the Oura
+    # app into Apple Health. The bare fragment intentionally matches all
+    # HKWorkoutActivityType* rows; ``_is_oura_named_mirror_row`` keeps
+    # genuine Watch/iPhone workouts visible.
+    OURA_WORKOUT_TYPE: ("WorkoutActivityType",),
 }
 
 
@@ -1583,6 +1609,7 @@ def _workout_metric(
     unit_key: str,
     type_key: str,
     fallback_type: str,
+    fallback_unit: str | None = None,
 ) -> dict[str, Any] | None:
     metadata = row.get("metadata")
     if not isinstance(metadata, dict):
@@ -1590,7 +1617,7 @@ def _workout_metric(
     value = _parse_float(metadata.get(value_key))
     if value is None:
         return None
-    unit = str(metadata.get(unit_key) or "").strip() or None
+    unit = str(metadata.get(unit_key) or "").strip() or fallback_unit
     record_type = str(metadata.get(type_key) or fallback_type)
     return {
         "value": value,
@@ -1600,21 +1627,51 @@ def _workout_metric(
     }
 
 
+def _workout_name(row: dict[str, Any]) -> str:
+    record_type = str(row.get("record_type") or "")
+    if record_type != OURA_WORKOUT_TYPE:
+        return friendly_type_name(record_type or "Workout")
+    metadata = row.get("metadata")
+    if isinstance(metadata, dict):
+        activity = str(metadata.get("activity") or "").strip()
+        if activity:
+            return activity.replace("_", " ").title()
+    return friendly_type_name(OURA_WORKOUT_TYPE)
+
+
 def _workout_metrics(row: dict[str, Any]) -> dict[str, Any]:
-    distance = _workout_metric(
-        row,
-        value_key="totalDistance",
-        unit_key="totalDistanceUnit",
-        type_key="totalDistanceType",
-        fallback_type="HKQuantityTypeIdentifierDistanceWalkingRunning",
-    )
-    energy = _workout_metric(
-        row,
-        value_key="totalEnergyBurned",
-        unit_key="totalEnergyBurnedUnit",
-        type_key="totalEnergyBurnedType",
-        fallback_type="HKQuantityTypeIdentifierActiveEnergyBurned",
-    )
+    if str(row.get("record_type") or "") == OURA_WORKOUT_TYPE:
+        distance = _workout_metric(
+            row,
+            value_key="distance",
+            unit_key="distance_unit",
+            type_key="distance_type",
+            fallback_type="HKQuantityTypeIdentifierDistanceWalkingRunning",
+            fallback_unit="m",
+        )
+        energy = _workout_metric(
+            row,
+            value_key="calories",
+            unit_key="calories_unit",
+            type_key="calories_type",
+            fallback_type="HKQuantityTypeIdentifierActiveEnergyBurned",
+            fallback_unit="kcal",
+        )
+    else:
+        distance = _workout_metric(
+            row,
+            value_key="totalDistance",
+            unit_key="totalDistanceUnit",
+            type_key="totalDistanceType",
+            fallback_type="HKQuantityTypeIdentifierDistanceWalkingRunning",
+        )
+        energy = _workout_metric(
+            row,
+            value_key="totalEnergyBurned",
+            unit_key="totalEnergyBurnedUnit",
+            type_key="totalEnergyBurnedType",
+            fallback_type="HKQuantityTypeIdentifierActiveEnergyBurned",
+        )
     # A recovered total that rounds to zero carries no display label —
     # it stays out of the joined metrics line rather than reading '0 Cal'.
     labels = [
@@ -1946,7 +2003,8 @@ def _activity_analysis(day_rows: list[dict[str, Any]]) -> dict[str, Any] | None:
         metrics = _workout_metrics(row)
         workout_items.append(
             {
-                "name": friendly_type_name(str(row.get("record_type") or "Workout")),
+                "name": _workout_name(row),
+                "source": _source_label(row),
                 "start": _format_clock(start) if start else None,
                 "duration": _workout_duration_label(minutes),
                 **metrics,
@@ -2512,6 +2570,42 @@ def _ring_resting_hr(day_rows: list[dict[str, Any]]) -> float | None:
     return min(values) if values else None
 
 
+def _latest_row_of_type(
+    rows: list[dict[str, Any]], record_type: str
+) -> dict[str, Any] | None:
+    matches = [row for row in rows if str(row.get("record_type") or "") == record_type]
+    if not matches:
+        return None
+    return max(matches, key=lambda row: _time_sort_key(_row_time(row) or ""))
+
+
+def _oura_cardiovascular_age_fact(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    value = _parse_float(row.get("value") if row else None)
+    if value is None:
+        return None
+    # Vascular age is itself an age in years. The fact stays a bare number
+    # by product decision: an age should not get "vs typical" math.
+    return {
+        "label": "Vascular age",
+        "count": 1,
+        "count_label": "1",
+        "value": f"{_format_number(value)} · Oura's estimate",
+    }
+
+
+def _oura_vo2_fact(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    value = _parse_float(row.get("value") if row else None)
+    if value is None:
+        return None
+    unit = str(row.get("unit") or "").strip() or None
+    return {
+        "label": friendly_type_name(OURA_VO2_MAX_TYPE),
+        "count": 1,
+        "count_label": "1",
+        "value": f"{display_value(OURA_VO2_MAX_TYPE, value, unit)} · Oura's estimate",
+    }
+
+
 def _heart_analysis(
     rows: list[dict[str, Any]],
     typical: dict[str, float] | None = None,
@@ -2567,9 +2661,21 @@ def _heart_analysis(
             # Rhythm rows render only through their dedicated factual
             # lines, never a second time as generic count facts.
             continue
+        if record_type in {OURA_CARDIOVASCULAR_AGE_TYPE, OURA_VO2_MAX_TYPE}:
+            # Oura's cardiovascular-age and VO2 rows have copy contracts
+            # that differ from generic measured facts.
+            continue
         fact_rows.append(row)
 
     facts: list[dict[str, Any]] = []
+    for fact in (
+        _oura_cardiovascular_age_fact(
+            _latest_row_of_type(rows, OURA_CARDIOVASCULAR_AGE_TYPE)
+        ),
+        _oura_vo2_fact(_latest_row_of_type(rows, OURA_VO2_MAX_TYPE)),
+    ):
+        if fact is not None:
+            facts.append(fact)
     resting_fact: dict[str, Any] | None = None
     resting_source: str | None = None
     grouped = _group_by_type(fact_rows)
@@ -2896,6 +3002,74 @@ def _day_prompts(
     return prompts[:3]
 
 
+def _clock_span_for_row(row: dict[str, Any]) -> str | None:
+    start = _parse_record_time(row.get("start_date") or row.get("start_time"))
+    end = _parse_record_time(row.get("end_date"))
+    if start is None:
+        return None
+    if end is None or end == start:
+        return _format_clock(start)
+    return f"{_format_clock(start)} – {_format_clock(end)}"
+
+
+def _title_from_metadata(value: object) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return text.replace("_", " ").title()
+
+
+def _oura_audit_appendix(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Minimal Oura-only audit appendix for details that are not day cards."""
+
+    items: list[dict[str, str]] = []
+    for row in sorted(rows, key=lambda item: _time_sort_key(_row_time(item) or "")):
+        record_type = str(row.get("record_type") or "")
+        metadata = row.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        if record_type == OURA_CARDIOVASCULAR_AGE_TYPE:
+            pulse_wave_velocity = _parse_float(metadata.get("pulse_wave_velocity"))
+            if pulse_wave_velocity is not None:
+                items.append(
+                    {
+                        "label": "Pulse-wave velocity",
+                        "detail": (
+                            f"{_format_number(pulse_wave_velocity)} m/s"
+                            " · Oura's measurement"
+                        ),
+                    }
+                )
+        elif record_type == OURA_SESSION_TYPE:
+            label = _title_from_metadata(metadata.get("type")) or "Session"
+            details = [_clock_span_for_row(row), "Oura (API)"]
+            mood = _title_from_metadata(metadata.get("mood"))
+            if mood:
+                details.append(f"mood {mood}")
+            items.append(
+                {
+                    "label": label,
+                    "detail": " · ".join(detail for detail in details if detail),
+                }
+            )
+        elif record_type == OURA_TAG_TYPE:
+            label = (
+                _title_from_metadata(metadata.get("custom_name"))
+                or _title_from_metadata(metadata.get("tag_type_code"))
+                or "Tag"
+            )
+            details = [_clock_span_for_row(row), "Oura (API)"]
+            if metadata.get("comment"):
+                details.append("note present")
+            items.append(
+                {
+                    "label": label,
+                    "detail": " · ".join(detail for detail in details if detail),
+                }
+            )
+    return items
+
+
 def _build_health_day(
     journal_root: Path,
     day: str,
@@ -2997,6 +3171,11 @@ def _build_health_day(
         if not _is_sleep_type(str(row.get("record_type") or ""))
         and str(row.get("record_type") or "") != OURA_SLEEP_SCORE_TYPE
     ]
+    leftover_rows = [
+        row
+        for row in leftover_rows
+        if str(row.get("record_type") or "") not in _AUDIT_ONLY_OURA_TYPES
+    ]
     other_facts = _fact_items(leftover_rows)
 
     source_counts: Counter[str] = Counter(_source_label(row) for row in day_rows)
@@ -3090,6 +3269,7 @@ def _build_health_day(
                     )
                 }
             ),
+            "oura_appendix": _oura_audit_appendix(audit_rows),
         },
         "nearest": _nearest_days_with_data(by_day, day),
     }
@@ -3109,6 +3289,8 @@ def _time_label(moment: datetime) -> str:
 def _window_family_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     counts: Counter[str] = Counter()
     for row in rows:
+        if str(row.get("record_type") or "") in _AUDIT_ONLY_OURA_TYPES:
+            continue
         counts[_family_for_type(str(row.get("record_type") or ""))] += 1
     return [
         {
@@ -3124,6 +3306,7 @@ def _window_family_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _window_signal_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     counts: Counter[str] = Counter(
         friendly_type_name(str(row.get("record_type") or "")) for row in rows
+        if str(row.get("record_type") or "") not in _AUDIT_ONLY_OURA_TYPES
     )
     return [
         {"label": label, "count": count, "count_label": f"{count:,}"}
@@ -3279,7 +3462,7 @@ def _workout_window_items(
         metrics = _workout_metrics(row)
         items.append(
             {
-                "name": friendly_type_name(str(row.get("record_type") or "Workout")),
+                "name": _workout_name(row),
                 "start": _iso(start),
                 "end": _iso(end),
                 "start_label": _time_label(start),
@@ -3554,9 +3737,12 @@ TREND_ANNOTATION_LIMIT = 6
 # stress-high values travel as minutes; the client formats them against
 # the "h" unit label. Readiness and the sleep score are Oura's unitless
 # daily scores — their empty unit labels render plain numbers. The
-# temperature deviation is signed °C.
+# temperature deviation is signed °C. Vascular age is Oura's age estimate
+# in years; it intentionally renders as a bare number and never feeds a
+# "vs typical" day-card comparison.
 _TREND_SIGNALS: tuple[tuple[str, str, str], ...] = (
     ("resting_hr", "Resting heart rate", "bpm"),
+    ("vascular_age", "Vascular age", ""),
     ("asleep_minutes", "Asleep", "h"),
     ("sleep_score", "Sleep score", ""),
     ("readiness", "Readiness", ""),
@@ -3696,6 +3882,8 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
       physiological quantity measured by whichever device was present
       (O-5C: the genuine measurement wins, a day never folds both).
       Never fabricated from raw heart-rate rows.
+    - vascular_age — Oura's daily cardiovascular-age estimate, bare
+      years. Ages deliberately do not feed "vs typical" day-card copy.
     - asleep_minutes — canonical ``pick_day_sleep`` minutes (stage-aware,
       merged-span fallback), attributed to the morning the night ended.
     - sleep_score — the day's Oura sleep score, Oura's number verbatim.
@@ -3719,6 +3907,7 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
     """
     resting_hr: dict[str, tuple[Any, float]] = {}
     ring_resting: dict[str, float] = {}
+    vascular_age: dict[str, tuple[Any, float]] = {}
     readiness: dict[str, tuple[Any, float]] = {}
     sleep_score: dict[str, tuple[Any, float]] = {}
     temp_deviation: dict[str, tuple[Any, float]] = {}
@@ -3783,6 +3972,8 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
                         first_glucose_day = day
                 elif _RESTING_HR_FRAGMENT in record_type:
                     _fold_latest_reading(resting_hr, day, row)
+                elif record_type == OURA_CARDIOVASCULAR_AGE_TYPE:
+                    _fold_latest_reading(vascular_age, day, row)
                 elif record_type == OURA_READINESS_TYPE:
                     _fold_latest_reading(readiness, day, row)
                 elif record_type == OURA_SLEEP_SCORE_TYPE:
@@ -3828,6 +4019,7 @@ def _build_trends_payload(journal_root: Path) -> dict[str, Any]:
 
     daily_by_key: dict[str, dict[str, float | int]] = {
         "resting_hr": resting_hr_daily,
+        "vascular_age": {day: value for day, (_, value) in vascular_age.items()},
         "asleep_minutes": _trend_asleep_by_day(sleep_rows_by_day),
         "sleep_score": {day: value for day, (_, value) in sleep_score.items()},
         "readiness": {day: value for day, (_, value) in readiness.items()},
