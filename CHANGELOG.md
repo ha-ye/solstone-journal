@@ -4,6 +4,24 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.8.0] - 2026-07-07
+
+### Added
+
+- journal search now starts with exact matches for agent calls and returns an honest zero when nothing matches, so agents can broaden their own query instead of getting silent near-misses.
+- sol can now add local media, social, and ambient-sound hints to material already kept in your journal, using local model installs that stay on your machine.
+- the journal can prepare and verify local vision and audio helper models from settings, including host-fit checks before a download starts.
+
+### Changed
+
+- journal screens now stay in one app frame, so moving between home, health, settings, search, transcripts, and the other screens is faster and steadier.
+- media and social classification now use one shared prompt, so the same moment is described more consistently across install paths.
+
+### Fixed
+
+- search totals and segment details are now de-duplicated, so agent and journal search results no longer over-count the same stretch of the day.
+- settings pages no longer flash or blank when switching views in the new app frame.
+
 ## [0.7.0] - 2026-07-05
 
 ### Added
