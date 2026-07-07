@@ -150,3 +150,20 @@ def test_settings_facets_api_returns_icon_override_svg(settings_env):
     facet = response.get_json()["facets"][0]
     assert facet["icon"] == "brain"
     assert facet["icon_svg"] == lucide_svg("brain")
+
+
+def test_settings_index_has_hidden_guard():
+    """The SPA swaps views by toggling the `hidden` attribute on
+    #settings-index-view. `.settings-wrap` sets display:flex, which ties the UA
+    [hidden] rule on specificity and wins by source order — so without an
+    explicit `.settings-wrap[hidden]{display:none}` guard the index stays visible
+    above the facet detail (the 2026-07-06 facet-detail-below-fold regression).
+    Guard against its removal.
+    """
+    workspace = (
+        Path(__file__).resolve().parents[1] / "workspace.html"
+    ).read_text(encoding="utf-8")
+    assert ".settings-wrap[hidden]" in workspace
+    guard = workspace[workspace.index(".settings-wrap[hidden]"):]
+    guard = guard[: guard.index("}")]
+    assert "display: none" in guard
