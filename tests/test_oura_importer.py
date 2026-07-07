@@ -153,7 +153,14 @@ def _imports_contents(journal: Path) -> list[str]:
     imports_dir = journal / "imports"
     if not imports_dir.exists():
         return []
-    return sorted(p.relative_to(journal).as_posix() for p in imports_dir.rglob("*"))
+    return sorted(
+        p.relative_to(journal).as_posix()
+        for p in imports_dir.rglob("*")
+        # sqlite WAL sidecars appear whenever a connection opens the dedupe
+        # ledger (even read-only) and vanish on checkpoint — connection
+        # artifacts, not import writes.
+        if not p.name.endswith(("-shm", "-wal"))
+    )
 
 
 # ---------------------------------------------------------------------------
