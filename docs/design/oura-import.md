@@ -295,6 +295,95 @@ endpoints backfill from the horizon automatically).
 
 ---
 
+## 9a. Amendments — 2026-07-07 (granted-scope endpoints + blood_glucose partner-gating)
+
+The owner reauthorized with the full printed scope set and directed that
+every newly granted endpoint "make it into solstone". All shapes below
+were verified two ways on 2026-07-07: against openapi-1.35 (fetched from
+Oura's docs) and by read-only live GET probes with the freshly granted
+token (no `--save` run, no journal writes).
+
+### Four endpoints join `SYNC_ENDPOINTS`
+
+| Endpoint | Live rows (probe) | Shape (openapi-1.35, live-confirmed) | Normalization |
+|---|---|---|---|
+| `workout` | 93 since Jun 1; 390 since 2024-01-01 | required `id, activity, day, start_datetime, end_datetime, intensity (easy/moderate/hard), source (manual/autodetected/confirmed/workout_heart_rate)`; nullable `calories` (kcal), `distance` (m), `label` | `oura.workout`, kind=`workout` (mirrors the AH workout event shape); no scalar value; activity/intensity/source/label/calories/distance in metadata |
+| `session` | 1 row | required `id, day, start_datetime, end_datetime, type (breathing/meditation/nap/relaxation/rest/body_status)`; nullable `mood (bad/worse/same/good/great)` and `heart_rate`/`heart_rate_variability`/`motion_count` sample blocks `{interval, items[], timestamp}` | `oura.session`, kind=`session`; no scalar value; metadata carries `type`/`mood` only — sample blocks stay in the raw page (raw_ref), never in normalized rows |
+| `enhanced_tag` | 2 rows | required `id, start_time, start_day` — **the one document endpoint with no `day` field**; nullable `tag_type_code, end_time, end_day, comment, custom_name` | `oura.enhanced_tag`, kind=`tag`; journal day = `start_day` verbatim (`_DOCUMENT_DAY_FIELDS`); tag text fields are metadata, never a value |
+| `vO2_max` | 0 rows (endpoint valid: 200 empty page; lowercase `vo2_max` 404s — the route casing is exact) | required `id, day, timestamp, vo2_max (integer)` (PublicVO2Max) | `oura.vo2_max`, kind=`daily_summary`, value=`vo2_max`, unit `mL/kg/min` (by definition; the spec carries no unit field); friendly name "VO2 max" |
+
+**Timestamp finding (load-bearing).** Workout/session datetimes and tag
+times are wearer-local offset instants (`LocalizedDateTime` /
+`LocalDateTime`; live workout rows carry `-04:00`…`-07:00` across
+travel/DST), **not** UTC-Z — so unlike heartrate there is no
+UTC→owner-local conversion: datetimes pass through verbatim and the
+journal day is Oura's day field verbatim (a 23:12 local workout whose
+UTC instant crosses midnight stays on its local day; timezone-pinned in
+tests).
+
+**Window limits.** All four are day-paged (`start_date`/`end_date`).
+Live probes accepted a 2.5-year window on each (200), so the default
+364-day chunking is comfortably safe; no per-endpoint cap entries were
+added. Horizon backfill from 2015-01-01 is ~12 chunks per endpoint.
+
+**Cursor upgrade.** Exactly the §9 semantics: the four endpoints are
+missing from existing cursors, so the first post-upgrade save walks each
+from `BACKFILL_HORIZON_DAY`; endpoints that come back empty (vO2_max,
+likely) are marked `backfill_complete` and poll a 30-day trailing window
+thereafter.
+
+### blood_glucose is partner-gated — demoted from the poll set
+
+Portal finding (owner, 2026-07): the developer portal shows **all**
+grantable scopes already enabled and **no `metabolic` option** —
+blood_glucose is available only to Oura partner integrations
+(Tidepool-class). Every poll would 401 forever, and the hourly lane was
+reporting that error each cycle. Resolution:
+
+- `_PARTNER_GATED_ENDPOINTS = ("blood_glucose",)` in `oura.py`;
+  `SYNC_ENDPOINTS` no longer contains it, so syncs make zero
+  blood_glucose requests and report zero errors (test-pinned).
+- The parse/normalize/dedupe machinery, fixture, and §9 pinned
+  assumptions all stay wired for a future partner grant or file import.
+- The cursor never carries the endpoint (stale entries from the 2026-07
+  cursor generation are dropped on the next save rewrite), so it is
+  never marked `backfill_complete` — re-enabling is one line (move the
+  name back into `SYNC_ENDPOINTS`) and still backfills from the horizon.
+
+### Display-pass notes (body app — NOT changed by this lane)
+
+The same ring's workouts arrive through both pipes: `oura.workout` rows
+(this lane) and AH-mirror `HKWorkoutActivityType*` rows sourced "Oura".
+Day-level aggregation must keep one canonical pipe (O-5C). The exact
+one-line seam for `_MIRROR_SUPERSEDED_FRAGMENTS` in
+`solstone/apps/body/routes.py`:
+
+```python
+OURA_WORKOUT_TYPE: ("WorkoutActivityType",),   # OURA_WORKOUT_TYPE = "oura.workout"
+```
+
+(The fragment must NOT be spelled with the `HK` prefix: `HK`-prefixed
+fragments match exactly one identifier, while the bare fragment
+substring-matches every `HKWorkoutActivityType*` activity. The
+`_is_oura_named_mirror_row` guard already restricts the drop to
+Oura-sourced mirror rows, so Watch/iPhone workouts are untouched.)
+
+Also for the display pass: `oura.workout` rows carry Oura's field names
+in metadata (`calories` kcal, `distance` m, `activity`), not the AH
+`totalEnergyBurned`/`totalDistance` keys `_workout_metrics` reads — the
+day-card metrics line needs a small mapping (or the generic fallback)
+if Oura workout calories/distance should render; duration already works
+(computed from `start_date`/`end_date`). The card name currently
+renders the friendly type ("Workout"); `metadata["activity"]` has the
+specific activity if wanted.
+
+Operator step after this lands (owner-side backfill):
+`journal importer --sync oura --save --confirm-health-save` — the four
+new endpoints backfill from the horizon automatically; no
+reauthorization needed (the scopes were granted 2026-07-07).
+
+---
+
 ## 10. What landed with this doc (phase O0 inventory)
 
 - `solstone/think/importers/oura.py` — parse layer (`parse_oura_bundle`, `parse_endpoint_document`, `parse_oura_day`), normalizer (`normalize_bundle` → rows + `HealthDedupeRecord`s via `health_schema`), §13 copy reference (`render_day_summary`), `OuraImporter` (detect/preview/dry-run live; save gated then seamed), `OuraSyncBackend` + OAuth seams (all raise, pointing here). Zero network imports, test-enforced.

@@ -25,13 +25,21 @@ Scope of this module:
 
 Timezone rule (load-bearing): Oura documents carry their own ``day``
 field, already attributed by Oura (a night belongs to the day it ended,
-matching the journal's cross-midnight canon). The journal day IS Oura's
-``day`` field verbatim — never recomputed against local time. The
-instant-only series (``heartrate``, and ``blood_glucose`` by pinned
-assumption — see ``_normalize_item``) are the exception: they carry no
-``day`` field and Oura returns UTC instants, so samples are converted to
-the owner's journal timezone for ``start_date`` and day/month assignment
-while the raw timestamp stays in ``source_record_id`` for stable dedupe.
+matching the journal's cross-midnight canon; ``enhanced_tag`` spells its
+day ``start_day`` — see ``_DOCUMENT_DAY_FIELDS``). The journal day IS
+Oura's day field verbatim — never recomputed against local time, and
+document datetimes (sleep bedtimes, workout/session intervals, tag
+times) are wearer-local offset instants kept verbatim. The instant-only
+series (``heartrate``, and ``blood_glucose`` by pinned assumption — see
+``_normalize_item``) are the exception: they carry no ``day`` field and
+Oura returns UTC instants, so samples are converted to the owner's
+journal timezone for ``start_date`` and day/month assignment while the
+raw timestamp stays in ``source_record_id`` for stable dedupe.
+
+Endpoint roster: ``SYNC_ENDPOINTS`` is what the engine polls;
+``_PARTNER_GATED_ENDPOINTS`` (blood_glucose) stay fully wired for parse/
+normalize/dedupe but are never fetched — Oura grants their scope only to
+partner integrations (2026-07 portal finding).
 
 Token boundary: OAuth tokens and the confidential-client secret live in
 the journal — the one trusted store (owner ruling, 2026-07-07; no
@@ -155,6 +163,16 @@ ENDPOINT_RECORD_TYPES: Final[Mapping[str, tuple[str, ...]]] = {
     "heartrate": ("oura.heartrate",),
     "daily_cardiovascular_age": ("oura.daily_cardiovascular_age",),
     "blood_glucose": ("oura.blood_glucose",),
+    # 2026-07-07 granted-scope expansion, shapes verified against
+    # openapi-1.35 AND live probes (workout/session/enhanced_tag returned
+    # real rows; vO2_max is documented but empty for this account). The
+    # ``vO2_max`` key doubles as the route segment — that casing is
+    # exact (lowercase ``vo2_max`` 404s live); the record type uses the
+    # clean lowercase spelling.
+    "workout": ("oura.workout",),
+    "session": ("oura.session",),
+    "enhanced_tag": ("oura.enhanced_tag",),
+    "vO2_max": ("oura.vo2_max",),
 }
 
 # Endpoints the sync engine polls, in a fixed fetch order.
@@ -168,13 +186,36 @@ SYNC_ENDPOINTS: Final[tuple[str, ...]] = (
     "daily_activity",
     "heartrate",
     "daily_cardiovascular_age",
-    "blood_glucose",
+    "workout",
+    "session",
+    "enhanced_tag",
+    "vO2_max",
 )
+
+# Endpoints whose scope Oura grants only to partner integrations. The
+# owner's developer portal (checked 2026-07) shows every grantable scope
+# already enabled and NO ``metabolic`` option — blood_glucose is
+# partner-gated (Tidepool-class integrations only), so polling it 401s
+# on every run forever. It stays out of SYNC_ENDPOINTS so hourly runs
+# stop reporting the unauthorized error each cycle, while the full
+# normalization/fetch machinery (parse, dedupe, fixtures, tests) stays
+# wired for a future partner grant or file import. Re-enabling is one
+# line: move the name back into SYNC_ENDPOINTS. The cursor never carries
+# a partner-gated endpoint (and so never marks it backfill_complete), so
+# a future re-enable still backfills from BACKFILL_HORIZON_DAY.
+_PARTNER_GATED_ENDPOINTS: Final[tuple[str, ...]] = ("blood_glucose",)
 
 # Series endpoints that paginate by datetime (start_datetime/end_datetime),
 # not by day; their rows carry no document id or day field. blood_glucose
 # membership is a pinned assumption (see _SERIES_REQUIRED_FIELDS).
 _DATETIME_PAGED_ENDPOINTS: Final = frozenset({"heartrate", "blood_glucose"})
+
+# Document endpoints whose day attribution field is not literally
+# ``day``. enhanced_tag is the one exception (openapi-1.35
+# EnhancedTagModel, live-confirmed 2026-07-07): rows carry required
+# ``start_day`` (plus nullable ``end_day``) instead — the journal day is
+# Oura's ``start_day`` verbatim, matching the day-verbatim rule.
+_DOCUMENT_DAY_FIELDS: Final[Mapping[str, str]] = {"enhanced_tag": "start_day"}
 
 # Required row fields per instant-series endpoint: (timestamp field,
 # value field). heartrate is documented (openapi-1.35 PublicHeartRateRow:
@@ -184,9 +225,10 @@ _DATETIME_PAGED_ENDPOINTS: Final = frozenset({"heartrate", "blood_glucose"})
 # routes); its shape here is pinned to Oura's series-row convention of a
 # UTC ``timestamp`` plus a domain-named value field (heartrate -> bpm,
 # ring_battery_level -> level, hence blood_glucose -> glucose, mg/dL per
-# Oura's Stelo integration). The first post-reauthorization fetch
-# confirms or falsifies this pin — a mismatch fails loudly in
-# parse_endpoint_document, naming the missing fields.
+# Oura's Stelo integration). blood_glucose is partner-gated (see
+# _PARTNER_GATED_ENDPOINTS) so no fetch can currently falsify the pin —
+# it holds for a future partner grant or file import, and a mismatch
+# fails loudly in parse_endpoint_document, naming the missing fields.
 _SERIES_REQUIRED_FIELDS: Final[Mapping[str, tuple[str, str]]] = {
     "heartrate": ("timestamp", "bpm"),
     "blood_glucose": ("timestamp", "glucose"),
@@ -255,10 +297,12 @@ def parse_endpoint_document(
     """Validate one API-page-shaped document and return its data items.
 
     The Oura API v2 returns ``{"data": [...], "next_token": ...}`` pages.
-    Document-shaped endpoints require ``id`` and ``day`` on every item;
-    instant-series endpoints (``_SERIES_REQUIRED_FIELDS``) instead require
-    a timestamp plus their value field (their rows carry no document id —
-    see ``_normalize_item``).
+    Document-shaped endpoints require ``id`` and their day field
+    (``day``, except ``_DOCUMENT_DAY_FIELDS`` overrides — enhanced_tag
+    carries ``start_day``) on every item; instant-series endpoints
+    (``_SERIES_REQUIRED_FIELDS``) instead require a timestamp plus their
+    value field (their rows carry no document id — see
+    ``_normalize_item``).
     """
 
     if endpoint not in ENDPOINT_RECORD_TYPES:
@@ -273,6 +317,7 @@ def parse_endpoint_document(
             f"got {type(data).__name__}"
         )
     series_fields = _SERIES_REQUIRED_FIELDS.get(endpoint)
+    day_field = _DOCUMENT_DAY_FIELDS.get(endpoint, "day")
     items: list[dict[str, Any]] = []
     for index, item in enumerate(data):
         if not isinstance(item, dict):
@@ -287,9 +332,9 @@ def parse_endpoint_document(
                     f"Oura {endpoint} data[{index}] is missing "
                     f"{timestamp_field!r} or {value_field!r}"
                 )
-        elif not item.get("id") or not item.get("day"):
+        elif not item.get("id") or not item.get(day_field):
             raise OuraDocumentError(
-                f"Oura {endpoint} data[{index}] is missing 'id' or 'day'"
+                f"Oura {endpoint} data[{index}] is missing 'id' or {day_field!r}"
             )
         items.append(item)
     return items
@@ -444,7 +489,7 @@ def _normalize_item(
     raw_ref: str,
     owner_timezone: dt.tzinfo,
 ) -> list[OuraNormalizedItem]:
-    day = parse_oura_day(item.get("day")) or ""
+    day = parse_oura_day(item.get(_DOCUMENT_DAY_FIELDS.get(endpoint, "day"))) or ""
     rows: list[OuraNormalizedItem] = []
     if endpoint == "daily_sleep":
         rows.append(
@@ -691,6 +736,119 @@ def _normalize_item(
                 raw_ref=raw_ref,
             )
         )
+    elif endpoint == "workout":
+        # PublicWorkout (openapi-1.35; live-confirmed 2026-07-07):
+        # required id/activity/day/start_datetime/end_datetime/intensity/
+        # source; calories (kcal), distance (m), and label nullable.
+        # Datetimes are LocalizedDateTime — wearer-local offsets (live
+        # rows carry -04:00..-07:00, never UTC-Z) — so they pass through
+        # verbatim like sleep periods, and the journal day is Oura's
+        # ``day`` verbatim (a 23:12 workout stays on its local day even
+        # though its UTC instant crosses midnight). An event row, like
+        # Apple Health workouts: no scalar value — calories/distance are
+        # metadata facts and duration derives from the interval at render
+        # time. Same-ring-two-pipes precedence against the AH mirror's
+        # HKWorkoutActivityType* rows is presentation-side (O-5C).
+        rows.append(
+            _build_item(
+                record_type="oura.workout",
+                kind="workout",
+                source_record_id=str(item["id"]),
+                day=day,
+                start_time=str(item.get("start_datetime") or item["day"]),
+                end_time=(
+                    str(item["end_datetime"]) if item.get("end_datetime") else None
+                ),
+                value=None,
+                unit=None,
+                metadata=_pick(
+                    item,
+                    (
+                        "activity",
+                        "intensity",
+                        "source",
+                        "label",
+                        "calories",
+                        "distance",
+                    ),
+                ),
+                import_id=import_id,
+                raw_ref=raw_ref,
+            )
+        )
+    elif endpoint == "session":
+        # PublicSession (openapi-1.35; live-confirmed): required id/day/
+        # start_datetime/end_datetime/type (breathing|meditation|nap|
+        # relaxation|rest|body_status); mood and the heart_rate/
+        # heart_rate_variability/motion_count sample blocks nullable.
+        # Datetimes are wearer-local offsets, verbatim. The sample blocks
+        # ({interval, items[], timestamp}) stay in the raw page — reached
+        # through raw_ref — never in normalized metadata: this is an
+        # event row, not a series carrier.
+        rows.append(
+            _build_item(
+                record_type="oura.session",
+                kind="session",
+                source_record_id=str(item["id"]),
+                day=day,
+                start_time=str(item.get("start_datetime") or item["day"]),
+                end_time=(
+                    str(item["end_datetime"]) if item.get("end_datetime") else None
+                ),
+                value=None,
+                unit=None,
+                metadata=_pick(item, ("type", "mood")),
+                import_id=import_id,
+                raw_ref=raw_ref,
+            )
+        )
+    elif endpoint == "enhanced_tag":
+        # EnhancedTagModel (openapi-1.35; live-confirmed): required id/
+        # start_time/start_day — the one document endpoint with no
+        # ``day`` field (see _DOCUMENT_DAY_FIELDS). The journal day is
+        # Oura's ``start_day`` verbatim; start/end times are wearer-local
+        # offsets, verbatim. tag_type_code/comment/custom_name are the
+        # owner's own note content — metadata facts, never a value.
+        rows.append(
+            _build_item(
+                record_type="oura.enhanced_tag",
+                kind="tag",
+                source_record_id=str(item["id"]),
+                day=day,
+                start_time=str(item.get("start_time") or item["start_day"]),
+                end_time=str(item["end_time"]) if item.get("end_time") else None,
+                value=None,
+                unit=None,
+                metadata=_pick(
+                    item,
+                    ("tag_type_code", "comment", "custom_name", "end_day"),
+                ),
+                import_id=import_id,
+                raw_ref=raw_ref,
+            )
+        )
+    elif endpoint == "vO2_max":
+        # PublicVO2Max (openapi-1.35): required id/day/timestamp/vo2_max
+        # (integer). Zero rows on this account today, so the shape is
+        # documented-only until data appears; the route casing is exactly
+        # ``vO2_max`` (lowercase 404s live — verified 2026-07-07). Day is
+        # Oura's verbatim; ``timestamp`` is a wearer-local offset
+        # instant, verbatim. VO2 max is mL/kg/min by definition (the spec
+        # carries no unit field).
+        rows.append(
+            _build_item(
+                record_type="oura.vo2_max",
+                kind="daily_summary",
+                source_record_id=str(item["id"]),
+                day=day,
+                start_time=str(item.get("timestamp") or item["day"]),
+                value=item.get("vo2_max"),
+                unit="mL/kg/min",
+                metadata={},
+                import_id=import_id,
+                raw_ref=raw_ref,
+            )
+        )
     else:  # pragma: no cover - parse_endpoint_document rejects these first
         raise OuraDocumentError(f"Unsupported Oura endpoint {endpoint!r}")
     return rows
@@ -814,6 +972,8 @@ def _fact_line(row: Mapping[str, Any]) -> str | None:
         return f"Activity score {value} · Oura's score"
     if record_type == "oura.daily_cardiovascular_age":
         return f"Cardiovascular age {value} · Oura's estimate"
+    if record_type == "oura.vo2_max":
+        return f"VO2 max {value} · Oura's estimate"
     if record_type == "oura.temperature_deviation":
         return f"Temperature deviation {value:+.2f} °C · Oura's measurement"
     if record_type == "oura.sleep":
@@ -825,7 +985,9 @@ def _fact_line(row: Mapping[str, Any]) -> str | None:
         return line
     # Heartrate and blood-glucose samples are series, not day facts —
     # never summarized into prose here (no derived aggregates presented
-    # as ours).
+    # as ours). Workouts, sessions, and tags are value-less event rows —
+    # they exit at the value-is-None check above; day surfaces render
+    # them from their kind, never from prose here.
     return None
 
 
@@ -1712,7 +1874,7 @@ def _item_day_iso(endpoint: str, item: Mapping[str, Any]) -> str | None:
     if endpoint in _DATETIME_PAGED_ENDPOINTS:
         raw = str(item.get("timestamp") or "")[:10]
     else:
-        raw = str(item.get("day") or "")
+        raw = str(item.get(_DOCUMENT_DAY_FIELDS.get(endpoint, "day")) or "")
     return raw if parse_oura_day(raw) else None
 
 

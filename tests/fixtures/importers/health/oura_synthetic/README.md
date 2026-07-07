@@ -16,9 +16,33 @@ page whose rows carry `timestamp`/`bpm`/`source` and no document `id` or
 plus the 2026-07-07 additions: `daily_cardiovascular_age`
 (document-shaped, per openapi-1.35) and `blood_glucose` (a time-series
 page whose PINNED-ASSUMPTION rows carry `timestamp`/`glucose` in UTC —
-the endpoint is absent from the published spec; if the first
-post-reauthorization fetch shows a different shape, fix this fixture and
-its tests together).
+the endpoint is absent from the published spec **and is partner-gated**:
+Oura's developer portal exposes no `metabolic` scope to standard apps,
+so `blood_glucose` sits in `_PARTNER_GATED_ENDPOINTS` and the sync
+engine never polls it; the fixture keeps the normalization machinery
+tested for a future partner grant or file import).
+
+The 2026-07-07 granted-scope expansion adds four more endpoint files,
+all shapes verified against openapi-1.35 **and** live probes (workout /
+session / enhanced_tag returned real rows; vO2_max returned an empty
+page, so its rows here follow the documented `PublicVO2Max` shape):
+
+- `workout.json` — document-shaped `{id, activity, day, start_datetime,
+  end_datetime, intensity, source}` + nullable `calories` (kcal),
+  `distance` (m), `label`. Datetimes are wearer-local offsets (never
+  UTC-Z); the second row starts at 23:12 local so its UTC instant
+  crosses midnight — the journal day must stay Oura's `day` verbatim.
+- `session.json` — `{id, day, start_datetime, end_datetime, type}` +
+  nullable `mood` and `heart_rate`/`heart_rate_variability`/
+  `motion_count` sample blocks (`{interval, items, timestamp}`). The
+  sample blocks stay in raw pages only — normalized metadata carries
+  just `type`/`mood`.
+- `enhanced_tag.json` — the ONLY document endpoint with no `day` field:
+  `{id, start_time, start_day}` required + nullable `tag_type_code`,
+  `end_time`, `end_day`, `comment`, `custom_name`. Journal day is
+  `start_day` verbatim; the second row spans into the next day.
+- `vO2_max.json` — `{id, day, timestamp, vo2_max}` (route casing is
+  exactly `vO2_max`; lowercase 404s live).
 
 ## revisions/
 

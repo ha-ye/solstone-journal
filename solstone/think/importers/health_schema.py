@@ -96,6 +96,14 @@ FRIENDLY_TYPE_NAMES: Final[Mapping[str, str]] = {
     "oura.heartrate": "Heart rate",
     "oura.daily_cardiovascular_age": "Cardiovascular age",
     "oura.blood_glucose": "Blood glucose",
+    # 2026-07-07 granted-scope expansion. Workouts/sessions/tags are
+    # event rows (no scalar value); the generic name labels the kind and
+    # detail (activity, session type, tag text) lives in row metadata for
+    # the display side to surface.
+    "oura.workout": "Workout",
+    "oura.session": "Session",
+    "oura.enhanced_tag": "Tag",
+    "oura.vo2_max": "VO2 max",
 }
 
 # Owner-facing names for Oura score-contributor keys — the anatomies of
