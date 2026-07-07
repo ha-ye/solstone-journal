@@ -8,6 +8,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from solstone.convey.chat_sources import parse_sol_sources
 from solstone.convey.utils import format_month_day
 
 logger = logging.getLogger(__name__)
@@ -52,6 +53,55 @@ def classify_needs_you(
             items.append(item)
 
     return items
+
+
+def _normalize_item(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _need_display_text(item: Any) -> str:
+    if isinstance(item, dict):
+        return str(item.get("text") or item.get("placeholder_text") or "")
+    placeholder = getattr(item, "placeholder_text", None)
+    if isinstance(placeholder, str):
+        return placeholder
+    return str(item)
+
+
+def _need_source_identity(item: Any) -> str | None:
+    if isinstance(item, dict):
+        source_id = item.get("source_id")
+        payload = item.get("payload")
+        href = payload.get("href") if isinstance(payload, dict) else None
+    else:
+        source_id = getattr(item, "source_id", None)
+        href = None
+
+    if isinstance(source_id, str) and source_id.strip():
+        return source_id.strip()
+
+    refs = parse_sol_sources(_need_display_text(item))
+    if refs:
+        ref = refs[0].get("ref")
+        if isinstance(ref, str) and ref:
+            return ref
+
+    if isinstance(href, str) and href.strip():
+        return href.strip()
+    return None
+
+
+def needs_dedup_key(item: Any) -> str:
+    """Stable dedup key for a need item: source identity if present, else normalized text.
+
+    Identity-bearing items dedup only by identity; legacy plain-string items dedup by
+    normalized text. The text fallback is namespaced so it can never collide with a
+    bare identity string.
+    """
+    source = _need_source_identity(item)
+    if source:
+        return source
+    return "text:" + _normalize_item(_need_display_text(item))
 
 
 def _finite_number(value: Any) -> bool:

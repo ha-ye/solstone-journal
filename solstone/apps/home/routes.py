@@ -18,7 +18,7 @@ import frontmatter
 from flask import Blueprint, current_app, jsonify
 
 from solstone.apps.home.health_glance import build_health_glance
-from solstone.apps.home.needs_you import classify_needs_you
+from solstone.apps.home.needs_you import classify_needs_you, needs_dedup_key
 from solstone.apps.home.thinking_readiness import _thinking_blocked
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.shell_data import _resolve_attention
@@ -231,10 +231,6 @@ def _briefing_lateness_state(now: datetime, phase: str) -> dict[str, Any]:
         and now.hour > BRIEFING_MORNING_END_HOUR + BRIEFING_LATENESS_THRESHOLD_HOURS
     )
     return {"late": is_late, "late_hours": late_hours if is_late else 0}
-
-
-def _normalize_item(text: str) -> str:
-    return " ".join(text.lower().split())
 
 
 def _briefing_summary(sections: dict[str, str], needs_count: int) -> str:
@@ -928,7 +924,22 @@ def _build_pulse_context() -> dict[str, Any]:
         today_summary_parts.append(f"{n} {'activities' if n != 1 else 'activity'}")
     today_summary = ", ".join(today_summary_parts)
 
-    needs_you_items = classify_needs_you(attention, pulse_needs)
+    # Dedup needs by stable source identity (normalized-text fallback for legacy
+    # plain-string items) so one underlying source renders once across the pulse
+    # "needs you" (attention + pulse needs) and briefing "needs attention" surfaces.
+    attention_key = needs_dedup_key(attention) if attention else None
+    needs_you_keys: set[str] = set()
+    if attention_key is not None:
+        needs_you_keys.add(attention_key)
+    deduped_pulse_needs: list[Any] = []
+    for need in pulse_needs:
+        key = needs_dedup_key(need)
+        if key in needs_you_keys:
+            continue
+        needs_you_keys.add(key)
+        deduped_pulse_needs.append(need)
+
+    needs_you_items = classify_needs_you(attention, deduped_pulse_needs)
     needs_count = len(needs_you_items)
     needs_summary = ""
     if needs_count:
@@ -937,14 +948,18 @@ def _build_pulse_context() -> dict[str, Any]:
             f"need{'s' if needs_count == 1 else ''} attention"
         )
 
-    pulse_needs_normalized = {_normalize_item(item) for item in pulse_needs}
     briefing_needs_deduped = []
     briefing_needs_shared_count = 0
+    seen_keys = set(needs_you_keys)
     for item in briefing_needs:
-        if _normalize_item(item) in pulse_needs_normalized:
+        key = needs_dedup_key(item)
+        if key in needs_you_keys:
             briefing_needs_shared_count += 1
-        else:
-            briefing_needs_deduped.append(item)
+            continue
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        briefing_needs_deduped.append(item)
 
     briefing_needs_badge = None
     if briefing_needs_shared_count > 0:

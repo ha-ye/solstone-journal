@@ -4,11 +4,77 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 import pytest
 
 from solstone.convey import create_app
 from solstone.think.day_accumulator import append_record
+
+
+def _patch_minimal_pulse_context(
+    monkeypatch,
+    *,
+    pulse_needs: list[Any],
+    briefing_needs: list[str],
+    attention: Any = None,
+):
+    import solstone.apps.home.routes as home_routes
+
+    briefing_sections = (
+        {"needs_attention": "\n".join(f"- {item}" for item in briefing_needs)}
+        if briefing_needs
+        else {}
+    )
+    monkeypatch.setattr(
+        home_routes,
+        "get_capture_health",
+        lambda: {"status": "active", "observers": []},
+    )
+    monkeypatch.setattr(home_routes, "get_cached_state", lambda: {})
+    monkeypatch.setattr(home_routes, "get_current", lambda: None)
+    monkeypatch.setattr(home_routes, "_resolve_attention", lambda awareness: attention)
+    monkeypatch.setattr(home_routes, "_today", lambda: "20260416")
+    monkeypatch.setattr(home_routes, "_yesterday", lambda: "20260415")
+    monkeypatch.setattr(home_routes, "_count_journal_age_days", lambda today: 8)
+    monkeypatch.setattr(home_routes, "_load_stats", lambda today: {})
+    monkeypatch.setattr(home_routes, "_load_flow_md", lambda today: (None, None))
+    monkeypatch.setattr(
+        home_routes,
+        "_load_pulse_narrative",
+        lambda today: ("content", "09:00", pulse_needs),
+    )
+    monkeypatch.setattr(
+        home_routes,
+        "_load_briefing_md",
+        lambda today: (
+            briefing_sections,
+            {"generated": "2026-04-16T09:00:00"},
+            briefing_needs,
+        ),
+    )
+    monkeypatch.setattr(
+        home_routes, "_collect_anticipated_activities", lambda today: []
+    )
+    monkeypatch.setattr(home_routes, "_collect_activities", lambda today: [])
+    monkeypatch.setattr(home_routes, "_load_latest_weekly_reflection", lambda: None)
+    monkeypatch.setattr(home_routes, "read_steward_health", lambda: None)
+    monkeypatch.setattr(home_routes, "read_steward_summary", lambda *a, **k: None)
+    monkeypatch.setattr(home_routes, "_thinking_blocked", lambda: False)
+    monkeypatch.setattr(
+        home_routes,
+        "_summarize_yesterday_processing",
+        lambda yesterday, journal_age_days: {
+            "title": "Yesterday's processing",
+            "mode": "healthy",
+            "default_collapsed": True,
+            "summary_line": "I wrote 2 newsletters.",
+            "details": [],
+            "sparse_lines": None,
+            "first_week_framing": None,
+        },
+    )
+    return home_routes
 
 
 def test_api_pulse_includes_needs_you_items_json_shape(journal_copy, monkeypatch):
@@ -139,3 +205,77 @@ def test_load_pulse_narrative_reads_today_record_strictly(monkeypatch, tmp_path)
         datetime.fromtimestamp(ts / 1000).strftime("%H:%M"),
         ["Review the launch checklist.", "42"],
     )
+
+
+def test_pulse_and_briefing_needs_dedup_by_shared_source(monkeypatch):
+    source = "sol://20260313/archon/091500_300"
+    home_routes = _patch_minimal_pulse_context(
+        monkeypatch,
+        pulse_needs=[
+            {
+                "text": "Q3 report needs your review",
+                "kind": "chat",
+                "payload": {"prompt": "dig into Q3"},
+                "source_id": source,
+            }
+        ],
+        briefing_needs=[f"Look at the Q3 numbers {source}"],
+    )
+
+    ctx = home_routes._build_pulse_context()
+
+    assert len(ctx["needs_you_items"]) == 1
+    assert ctx["briefing_needs_shared_count"] == 1
+    assert ctx["briefing_needs_deduped"] == []
+
+
+def test_briefing_repeated_source_identity_renders_once(monkeypatch):
+    source = "sol://20260313/archon/091500_300"
+    home_routes = _patch_minimal_pulse_context(
+        monkeypatch,
+        pulse_needs=[],
+        briefing_needs=[
+            f"Review the Q3 report {source}",
+            f"Look at the Q3 numbers {source}",
+        ],
+    )
+
+    ctx = home_routes._build_pulse_context()
+
+    assert ctx["briefing_needs_shared_count"] == 0
+    assert ctx["briefing_needs_deduped"] == [f"Review the Q3 report {source}"]
+
+
+def test_briefing_different_source_identities_stay_distinct(monkeypatch):
+    source_a = "sol://20260313/archon/091500_300"
+    source_b = "sol://facets/work/news/20260326"
+    home_routes = _patch_minimal_pulse_context(
+        monkeypatch,
+        pulse_needs=[],
+        briefing_needs=[
+            f"Review the report {source_a}",
+            f"Review the report {source_b}",
+        ],
+    )
+
+    ctx = home_routes._build_pulse_context()
+
+    assert ctx["briefing_needs_shared_count"] == 0
+    assert ctx["briefing_needs_deduped"] == [
+        f"Review the report {source_a}",
+        f"Review the report {source_b}",
+    ]
+
+
+def test_legacy_plain_string_needs_still_dedup_by_normalized_text(monkeypatch):
+    home_routes = _patch_minimal_pulse_context(
+        monkeypatch,
+        pulse_needs=["Follow up with Acme"],
+        briefing_needs=["follow   up with acme"],
+    )
+
+    ctx = home_routes._build_pulse_context()
+
+    assert len(ctx["needs_you_items"]) == 1
+    assert ctx["briefing_needs_shared_count"] == 1
+    assert ctx["briefing_needs_deduped"] == []

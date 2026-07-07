@@ -15,6 +15,7 @@ from solstone.apps.home.needs_you import (
     _normalize_route_payload,
     classify_needs_you,
     format_degraded_capture_line,
+    needs_dedup_key,
 )
 
 
@@ -69,6 +70,36 @@ def test_classify_needs_you_locked_shape_and_order():
         assert data["kind"] in ["chat", "confirm", "route"]
         assert data["disabled"] is False
         assert data["reason"] == ""
+
+
+def test_needs_dedup_key_same_source_identity_matches_across_text():
+    source = "sol://20260313/archon/091500_300"
+
+    assert needs_dedup_key(
+        {"text": "Q3 report needs your review", "source_id": source}
+    ) == needs_dedup_key({"text": "Look at the Q3 numbers", "source_id": source})
+
+
+def test_needs_dedup_key_identity_beats_identical_text():
+    source_a = "sol://20260313/archon/091500_300"
+    source_b = "sol://facets/work/news/20260326"
+
+    assert needs_dedup_key(
+        {"text": "Review the report", "source_id": source_a}
+    ) != needs_dedup_key({"text": "Review the report", "source_id": source_b})
+
+
+def test_needs_dedup_key_source_id_matches_inline_sol_ref():
+    source = "sol://20260313/archon/091500_300"
+
+    assert needs_dedup_key({"text": "whatever", "source_id": source}) == source
+    assert needs_dedup_key(f"Look at the numbers {source}") == source
+
+
+def test_needs_dedup_key_legacy_strings_normalize_text():
+    assert needs_dedup_key("Follow up  with Acme") == needs_dedup_key(
+        "follow up with acme"
+    )
 
 
 def test_format_degraded_capture_line_single_named_full():
