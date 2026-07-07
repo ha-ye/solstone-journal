@@ -387,6 +387,19 @@ def relax_fixture(tmp_path, monkeypatch):
     )
     write_segment_stream(str(segment), "default", None, None, 1)
 
+    segment2 = day / "default" / "110000_300"
+    talents2 = segment2 / "talents"
+    talents2.mkdir(parents=True)
+    (talents2 / "a_first.md").write_text(
+        "# Zephyr\n\nMongoose census complete.\n",
+        encoding="utf-8",
+    )
+    (talents2 / "b_second.md").write_text(
+        "Quokka sightings logged.\n",
+        encoding="utf-8",
+    )
+    write_segment_stream(str(segment2), "default", None, None, 1)
+
     day_talents = day / "talents"
     day_talents.mkdir()
     (day_talents / "apostrophe.md").write_text(
@@ -918,6 +931,74 @@ def _joined_text(results):
 
 def _ids(results):
     return [result["id"] for result in results]
+
+
+def test_collapse_drops_aggregate_when_child_matches(relax_fixture):
+    total, results = search_journal("Acme", relax=False)
+
+    assert total == 1
+    assert all(result["metadata"]["agent"] != "segment" for result in results)
+    assert _ids(results) == ["20240101/default/100000_300/talents/activity.md:0"]
+
+
+def test_collapse_keeps_aggregate_when_no_child_matches(relax_fixture):
+    total, results = search_journal("Zephyr Quokka", relax=False)
+
+    assert total == 1
+    assert len(results) == 1
+    result = results[0]
+    assert result["metadata"]["agent"] == "segment"
+    assert result["metadata"]["path"] == "20240101/default/110000_300"
+    assert result["metadata"]["idx"] == 1
+
+
+def test_collapse_total_parity_and_reduction(relax_fixture):
+    q = "Acme"
+
+    total, _ = search_journal(q)
+    counts = search_counts(q)
+
+    assert total == counts["total"] == 1
+
+    conn, _ = get_journal_index()
+    raw = conn.execute(
+        "SELECT count(*) FROM chunks WHERE chunks MATCH ?", ["Acme"]
+    ).fetchone()[0]
+    conn.close()
+
+    assert raw == 2
+    assert search_journal(q)[0] < raw
+
+
+def test_collapse_pagination_no_duplicate_aggregate(relax_fixture):
+    q = "Acme OR documentation"
+
+    assert search_journal(q)[0] == 2
+
+    page0_total, page0 = search_journal(q, limit=1, offset=0)
+    page1_total, page1 = search_journal(q, limit=1, offset=1)
+    page2_total, page2 = search_journal(q, limit=1, offset=2)
+
+    assert page0_total == page1_total == page2_total == 2
+    assert page2 == []
+
+    pages = page0 + page1 + page2
+    ids = _ids(pages)
+    assert set(ids) == {
+        "20240101/default/100000_300/talents/activity.md:0",
+        "20240101/default/100000_300/talents/screen.md:0",
+    }
+    assert len(ids) == len(set(ids))
+    assert all(result["metadata"]["agent"] != "segment" for result in pages)
+
+
+def test_search_counts_relaxed_flag(relax_fixture):
+    relaxed = search_counts("what was the Acme deal", relax=True)
+
+    assert relaxed["relaxed"] is True
+    assert search_counts("what was the Acme deal", relax=False)["relaxed"] is False
+    assert search_counts("Acme", relax=True)["relaxed"] is False
+    assert relaxed["total"] == search_journal("what was the Acme deal", relax=True)[0]
 
 
 def test_relax_all_stopwords_without_filter_never_browses(relax_fixture):
@@ -1863,22 +1944,22 @@ class TestSegmentChunks:
         assert "Scott Ward" in all_content
 
     def test_segment_chunk_searchable(self, journal_fixture):
-        """Segment chunks are searchable via search_journal."""
+        """Segment chunks are searchable via an explicit segment filter."""
         from solstone.think.indexer.journal import scan_journal, search_journal
 
         scan_journal(str(journal_fixture), verbose=True, full=True)
-        total, results = search_journal("Scott Ward")
+        total, results = search_journal("Scott Ward", agent="segment")
         assert total >= 1
         segment_results = [r for r in results if r["metadata"]["agent"] == "segment"]
         assert len(segment_results) >= 1
 
     def test_segment_chunk_cross_file_search(self, journal_fixture):
-        """Search spanning multiple agent files matches segment chunk."""
+        """Segment-filtered search finds segment chunks for child terms."""
         from solstone.think.indexer.journal import scan_journal, search_journal
 
         scan_journal(str(journal_fixture), verbose=True, full=True)
-        total1, results1 = search_journal("documentation")
-        total2, results2 = search_journal("Acme deal")
+        total1, results1 = search_journal("documentation", agent="segment")
+        total2, results2 = search_journal("Acme deal", agent="segment")
         assert total1 >= 1
         assert total2 >= 1
         seg1 = [r for r in results1 if r["metadata"]["agent"] == "segment"]

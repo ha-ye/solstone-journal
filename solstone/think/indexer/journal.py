@@ -1169,6 +1169,59 @@ def known_agents() -> set[str]:
     return {row[0] for row in rows}
 
 
+def _collapse_redundant_segments(
+    conn: sqlite3.Connection,
+    where_clause: str,
+    params: list[Any],
+) -> tuple[str, list[Any], bool]:
+    """Drop segment-aggregate chunks that duplicate a matched child, at query time.
+
+    A segment aggregate (``agent='segment'``, ``path="{day}/{stream}/{seg}"``)
+    intentionally duplicates its talent children in the index for cross-agent
+    precision. When a match set contains both an aggregate and >=1 child from the
+    same segment directory, the aggregate is redundant: this returns the WHERE
+    augmented with ``AND path NOT IN (...)`` for those aggregate paths.
+
+    Read-only: two ``SELECT DISTINCT`` probes on the already-resolved WHERE (run
+    AFTER any relax ladder). When there is no aggregate/child overlap it returns
+    the inputs unchanged with ``collapsed=False`` so the caller stays byte-identical
+    to pre-collapse behavior (no extra clause, no re-count).
+
+    Returns:
+        (where_clause, params, collapsed) where ``collapsed`` is True iff at least
+        one aggregate path was suppressed.
+    """
+    agg_paths = {
+        row[0]
+        for row in conn.execute(
+            f"SELECT DISTINCT path FROM chunks WHERE {where_clause} AND agent='segment'",
+            params,
+        )
+    }
+    if not agg_paths:
+        return where_clause, params, False
+
+    child_parents: set[str] = set()
+    for (path,) in conn.execute(
+        f"SELECT DISTINCT path FROM chunks WHERE {where_clause} AND agent!='segment'",
+        params,
+    ):
+        parts = path.replace("\\", "/").split("/")
+        if len(parts) >= 4 and segment_key(parts[2]):
+            child_parents.add("/".join(parts[:3]))
+
+    redundant = sorted(agg_paths & child_parents)
+    if not redundant:
+        return where_clause, params, False
+
+    placeholders = ", ".join("?" * len(redundant))
+    return (
+        f"{where_clause} AND path NOT IN ({placeholders})",
+        params + redundant,
+        True,
+    )
+
+
 def search_journal(
     query: str,
     limit: int = 10,
@@ -1236,6 +1289,14 @@ def search_journal(
         if relaxed is not None:
             where_clause, params, total = relaxed
 
+    where_clause, params, collapsed = _collapse_redundant_segments(
+        conn, where_clause, params
+    )
+    if collapsed:
+        total = conn.execute(
+            f"SELECT count(*) FROM chunks WHERE {where_clause}", params
+        ).fetchone()[0]
+
     do_rerank = (
         rerank
         and where_clause.startswith(_FTS_MATCH_PREFIX)
@@ -1288,6 +1349,9 @@ def search_counts(
             - agents: Counter of agent_name -> count
             - days: Counter of day -> count
             - streams: Counter of stream_name -> count
+            - relaxed: True iff tier-0 FTS returned no matches and the relaxation
+              ladder rescued the query (only possible with relax=True); False
+              otherwise.
     """
     from collections import Counter
 
@@ -1300,6 +1364,7 @@ def search_counts(
         f"SELECT facet, agent, day, stream FROM chunks WHERE {where_clause}", params
     ).fetchall()
 
+    did_relax = False
     if relax and not rows:
         relaxed = _relax_where(
             conn,
@@ -1313,11 +1378,21 @@ def search_counts(
             time_bucket,
         )
         if relaxed is not None:
+            did_relax = True
             where_clause, params, _ = relaxed
             rows = conn.execute(
                 f"SELECT facet, agent, day, stream FROM chunks WHERE {where_clause}",
                 params,
             ).fetchall()
+
+    where_clause, params, collapsed = _collapse_redundant_segments(
+        conn, where_clause, params
+    )
+    if collapsed:
+        rows = conn.execute(
+            f"SELECT facet, agent, day, stream FROM chunks WHERE {where_clause}",
+            params,
+        ).fetchall()
 
     conn.close()
 
@@ -1327,6 +1402,7 @@ def search_counts(
         "agents": Counter(r[1] for r in rows if r[1]),
         "days": Counter(r[2] for r in rows if r[2]),
         "streams": Counter(r[3] for r in rows if r[3]),
+        "relaxed": did_relax,
     }
 
 
