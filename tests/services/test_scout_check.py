@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.importers import local_secrets
 from solstone.think.journal_config import write_journal_config
 from solstone.think.services import portal_client, scout
 
@@ -37,7 +36,6 @@ def _clear_scout(journal: Path) -> None:
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.setdefault("services", {}).pop("scout", None)
     _write_config(config)
-    local_secrets.delete_env_secret("GOOGLE_API_KEY", journal_path=journal)
 
 
 def _set_scout_block(journal: Path, block: dict) -> None:
@@ -92,11 +90,9 @@ def test_update_scout_check_manual_key_short_circuits_without_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _clear_scout(journal_copy)
-    local_secrets.save_env_secret(
-        "GOOGLE_API_KEY",
-        "manual-key",
-        journal_path=journal_copy,
-    )
+    config = _read_config(journal_copy)
+    config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual-key"
+    _write_config(config)
     monkeypatch.setattr(
         scout.portal_client,
         "check_scout_status",

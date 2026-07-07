@@ -15,7 +15,6 @@ from typer.testing import CliRunner
 import solstone.apps.settings.call as settings_call
 import solstone.apps.settings.routes as settings_routes
 from solstone.think.convey_client import ConveyClient
-from solstone.think.importers import local_secrets
 from tests._baseline_harness import make_test_client
 
 runner = CliRunner()
@@ -205,30 +204,13 @@ def test_keys_set_clear_validate_and_invalid_env(
         },
     }
     assert _read_config(journal_copy)["providers"]["key_validation"]["revai"]["valid"]
-    assert "REVAI_ACCESS_TOKEN" not in _read_config(journal_copy).get("env", {})
-    assert (
-        local_secrets.load_env_secret(
-            "REVAI_ACCESS_TOKEN",
-            journal_path=journal_copy,
-            include_process=False,
-        )
-        == "revai-token"
-    )
     keys_shown = runner.invoke(settings_call.app, ["keys", "show"])
     assert keys_shown.exit_code == 0
     assert "revai-token" not in keys_shown.stdout
 
     cleared = runner.invoke(settings_call.app, ["keys", "clear", "REVAI_ACCESS_TOKEN"])
     _assert_json(cleared, {"env_var": "REVAI_ACCESS_TOKEN", "cleared": True})
-    assert "REVAI_ACCESS_TOKEN" not in _read_config(journal_copy).get("env", {})
-    assert (
-        local_secrets.load_env_secret(
-            "REVAI_ACCESS_TOKEN",
-            journal_path=journal_copy,
-            include_process=False,
-        )
-        is None
-    )
+    assert _read_config(journal_copy)["env"]["REVAI_ACCESS_TOKEN"] == ""
 
     before = (journal_copy / "config" / "journal.json").read_text(encoding="utf-8")
     validate = runner.invoke(settings_call.app, ["keys", "validate"])

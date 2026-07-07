@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Local machine secret storage for Solstone credentials.
+"""Local machine secret storage for importer OAuth tokens.
 
 This module owns local-only secret files under Application Support. It must not
 write into journal content, import bundles, or any replicated journal path.
@@ -12,29 +12,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
-from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from solstone.think.utils import get_journal
 
-OURA_TOKEN_SCHEMA = "solstone.local_secret.oura_oauth.v1"
-SECRET_SCHEMA = OURA_TOKEN_SCHEMA
+SECRET_SCHEMA = "solstone.local_secret.oura_oauth.v1"
 SECRET_PROVIDER = "oura"
-LOCAL_SECRET_SCHEMA = "solstone.local_secret.v1"
-_APP_SUPPORT_RELATIVE = Path("Library", "Application Support", "Solstone", "secrets")
-_OURA_RELATIVE = _APP_SUPPORT_RELATIVE / "oura"
-_SAFE_INTEGRATION_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
-
-ENV_SECRET_INTEGRATIONS: Mapping[str, str] = {
-    "GOOGLE_API_KEY": "google",
-    "OPENAI_API_KEY": "openai",
-    "ANTHROPIC_API_KEY": "anthropic",
-    "REVAI_ACCESS_TOKEN": "revai",
-    "PLAUD_ACCESS_TOKEN": "plaud",
-}
+_APP_SUPPORT_RELATIVE = Path(
+    "Library", "Application Support", "Solstone", "secrets", "oura"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -60,9 +48,10 @@ def load_oura_tokens() -> OuraTokens | None:
 def save_oura_tokens(tokens: OuraTokens) -> None:
     """Save Oura OAuth tokens in the local machine secret store."""
     path = _oura_token_path()
-    _ensure_private_dir(path.parent)
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+    path.parent.chmod(0o700)
     payload = {
-        "schema": OURA_TOKEN_SCHEMA,
+        "schema": SECRET_SCHEMA,
         "provider": SECRET_PROVIDER,
         "journal_fingerprint": _journal_fingerprint(),
         "access_token": tokens.access_token,
@@ -84,7 +73,7 @@ def delete_oura_tokens() -> None:
 def _tokens_from_payload(payload: Any) -> OuraTokens | None:
     if not isinstance(payload, dict):
         return None
-    if payload.get("schema") != OURA_TOKEN_SCHEMA or payload.get("provider") != "oura":
+    if payload.get("schema") != SECRET_SCHEMA or payload.get("provider") != "oura":
         return None
     access_token = payload.get("access_token")
     refresh_token = payload.get("refresh_token")
@@ -107,263 +96,12 @@ def _tokens_from_payload(payload: Any) -> OuraTokens | None:
 
 
 def _oura_token_path() -> Path:
-    return _secret_root() / "oura" / f"{_journal_fingerprint()}.json"
+    return Path.home() / _APP_SUPPORT_RELATIVE / f"{_journal_fingerprint()}.json"
 
 
-def secret_path_for(
-    integration: str,
-    *,
-    journal_path: str | Path | None = None,
-) -> Path:
-    """Return the local-only secret file for an integration and journal.
-
-    The journal path is represented only by a short fingerprint, so files stay
-    outside replicated journal content while remaining scoped to the journal
-    they unlock.
-    """
-
-    return (
-        _secret_root()
-        / _safe_integration(integration)
-        / f"{_journal_fingerprint(journal_path)}.json"
-    )
-
-
-def load_secret(
-    integration: str,
-    name: str,
-    *,
-    journal_path: str | Path | None = None,
-) -> str | None:
-    """Load one local-only secret value."""
-
-    payload = _load_secret_payload(integration, journal_path=journal_path)
-    secrets = payload.get("secrets")
-    if not isinstance(secrets, dict):
-        return None
-    value = secrets.get(name)
-    return value if isinstance(value, str) and value else None
-
-
-def save_secret(
-    integration: str,
-    name: str,
-    value: str,
-    *,
-    journal_path: str | Path | None = None,
-) -> None:
-    """Save one local-only secret value for the selected journal."""
-
-    save_secrets(integration, {name: value}, journal_path=journal_path)
-
-
-def save_secrets(
-    integration: str,
-    values: Mapping[str, str],
-    *,
-    journal_path: str | Path | None = None,
-) -> None:
-    """Merge local-only secret values into an integration store."""
-
-    clean_values = {
-        key: value for key, value in values.items() if isinstance(value, str) and value
-    }
-    if not clean_values:
-        return
-
-    payload = _load_secret_payload(integration, journal_path=journal_path)
-    secrets = payload.setdefault("secrets", {})
-    if not isinstance(secrets, dict):
-        secrets = {}
-        payload["secrets"] = secrets
-    secrets.update(clean_values)
-    payload["schema"] = LOCAL_SECRET_SCHEMA
-    payload["integration"] = _safe_integration(integration)
-    payload["journal_fingerprint"] = _journal_fingerprint(journal_path)
-
-    path = secret_path_for(integration, journal_path=journal_path)
-    _ensure_private_dir(path.parent)
-    _write_private_json(path, payload)
-
-
-def delete_secret(
-    integration: str,
-    name: str,
-    *,
-    journal_path: str | Path | None = None,
-) -> None:
-    """Delete one local-only secret value, preserving sibling values."""
-
-    payload = _load_secret_payload(integration, journal_path=journal_path)
-    secrets = payload.get("secrets")
-    if not isinstance(secrets, dict) or name not in secrets:
-        return
-    secrets.pop(name, None)
-    path = secret_path_for(integration, journal_path=journal_path)
-    if secrets:
-        _ensure_private_dir(path.parent)
-        _write_private_json(path, payload)
-        return
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
-
-
-def load_env_secret(
-    env_var: str,
-    *,
-    journal_path: str | Path | None = None,
-    include_process: bool = True,
-) -> str | None:
-    """Resolve a managed env-style secret from local storage, then the process."""
-
-    integration = ENV_SECRET_INTEGRATIONS.get(env_var)
-    value = (
-        load_secret(integration, env_var, journal_path=journal_path)
-        if integration
-        else None
-    )
-    if value:
-        return value
-    if include_process:
-        process_value = os.getenv(env_var)
-        return process_value if process_value else None
-    return None
-
-
-def save_env_secret(
-    env_var: str,
-    value: str,
-    *,
-    journal_path: str | Path | None = None,
-) -> None:
-    """Save a managed env-style secret to the local boundary."""
-
-    integration = ENV_SECRET_INTEGRATIONS.get(env_var)
-    if integration is None:
-        raise ValueError(f"unsupported local env secret: {env_var}")
-    save_secret(integration, env_var, value, journal_path=journal_path)
-
-
-def delete_env_secret(
-    env_var: str,
-    *,
-    journal_path: str | Path | None = None,
-) -> None:
-    """Delete a managed env-style secret from the local boundary."""
-
-    integration = ENV_SECRET_INTEGRATIONS.get(env_var)
-    if integration is None:
-        raise ValueError(f"unsupported local env secret: {env_var}")
-    delete_secret(integration, env_var, journal_path=journal_path)
-
-
-def load_env_secrets(
-    env_vars: Mapping[str, str] | list[str] | tuple[str, ...] | set[str] | None = None,
-    *,
-    journal_path: str | Path | None = None,
-    include_process: bool = False,
-) -> dict[str, str]:
-    """Return configured managed env-style secrets without exposing values in config."""
-
-    keys = ENV_SECRET_INTEGRATIONS if env_vars is None else env_vars
-    return {
-        key: value
-        for key in keys
-        if (
-            value := load_env_secret(
-                key,
-                journal_path=journal_path,
-                include_process=include_process,
-            )
-        )
-    }
-
-
-def is_env_secret_configured(
-    env_var: str,
-    *,
-    journal_path: str | Path | None = None,
-    include_process: bool = True,
-) -> bool:
-    """Return whether an env-style secret is present locally or in process env."""
-
-    return bool(
-        load_env_secret(
-            env_var,
-            journal_path=journal_path,
-            include_process=include_process,
-        )
-    )
-
-
-def _load_secret_payload(
-    integration: str,
-    *,
-    journal_path: str | Path | None = None,
-) -> dict[str, Any]:
-    path = secret_path_for(integration, journal_path=journal_path)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return {
-            "schema": LOCAL_SECRET_SCHEMA,
-            "integration": _safe_integration(integration),
-            "journal_fingerprint": _journal_fingerprint(journal_path),
-            "secrets": {},
-        }
-    if not isinstance(payload, dict):
-        return {
-            "schema": LOCAL_SECRET_SCHEMA,
-            "integration": _safe_integration(integration),
-            "journal_fingerprint": _journal_fingerprint(journal_path),
-            "secrets": {},
-        }
-    if payload.get("schema") != LOCAL_SECRET_SCHEMA:
-        return {
-            "schema": LOCAL_SECRET_SCHEMA,
-            "integration": _safe_integration(integration),
-            "journal_fingerprint": _journal_fingerprint(journal_path),
-            "secrets": {},
-        }
-    if payload.get("integration") != _safe_integration(integration):
-        return {
-            "schema": LOCAL_SECRET_SCHEMA,
-            "integration": _safe_integration(integration),
-            "journal_fingerprint": _journal_fingerprint(journal_path),
-            "secrets": {},
-        }
-    return payload
-
-
-def _secret_root() -> Path:
-    return Path.home() / _APP_SUPPORT_RELATIVE
-
-
-def _journal_fingerprint(journal_path: str | Path | None = None) -> str:
-    journal = Path(journal_path or get_journal()).resolve()
+def _journal_fingerprint() -> str:
+    journal = Path(get_journal()).resolve()
     return hashlib.sha256(str(journal).encode("utf-8")).hexdigest()[:16]
-
-
-def _safe_integration(integration: str) -> str:
-    if not _SAFE_INTEGRATION_RE.fullmatch(integration):
-        raise ValueError(f"invalid local secret integration: {integration!r}")
-    return integration
-
-
-def _ensure_private_dir(path: Path) -> None:
-    path.mkdir(parents=True, mode=0o700, exist_ok=True)
-    current = path
-    root = _secret_root()
-    while True:
-        try:
-            current.chmod(0o700)
-        except FileNotFoundError:
-            pass
-        if current == root or current.parent == current:
-            break
-        current = current.parent
 
 
 def _write_private_json(path: Path, payload: dict[str, Any]) -> None:
@@ -398,7 +136,7 @@ def load_oura_client_secret() -> str | None:
     and refresh. It lives beside the token files, never in the journal or
     chat transcripts; absent file means a public (PKCE-only) client.
     """
-    path = Path.home() / _OURA_RELATIVE / "client_secret"
+    path = Path.home() / _APP_SUPPORT_RELATIVE / "client_secret"
     try:
         secret = path.read_text(encoding="utf-8").strip()
     except OSError:

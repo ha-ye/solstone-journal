@@ -11,7 +11,6 @@ import pytest
 from solstone.apps.thinking import routes
 from solstone.apps.thinking.local_bootstrap import LOCAL_MODEL_SPECS
 from solstone.convey import create_app
-from solstone.think.importers import local_secrets
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers.install_state import InstallState
 from solstone.think.providers.state import ProviderState
@@ -246,11 +245,7 @@ def test_scout_lane_is_derived_from_google_provider_and_provenance(
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    local_secrets.save_env_secret(
-        "GOOGLE_API_KEY",
-        "scout-key",
-        journal_path=journal_path,
-    )
+    config.setdefault("env", {})["GOOGLE_API_KEY"] = "scout-key"
     config.setdefault("services", {})["scout"] = {
         "enabled_at": "2026-05-23T00:00:00Z",
         "key_fingerprint_sha256": "fingerprint",
@@ -273,11 +268,7 @@ def test_byo_gemini_key_write_is_rejected_when_scout_enabled(
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    local_secrets.save_env_secret(
-        "GOOGLE_API_KEY",
-        "scout-key",
-        journal_path=journal_path,
-    )
+    config.setdefault("env", {})["GOOGLE_API_KEY"] = "scout-key"
     config.setdefault("services", {})["scout"] = {
         "enabled_at": "2026-05-23T00:00:00Z",
         "key_fingerprint_sha256": "fingerprint",
@@ -293,15 +284,7 @@ def test_byo_gemini_key_write_is_rejected_when_scout_enabled(
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
     config = json.loads(config_path.read_text())
-    assert "GOOGLE_API_KEY" not in config.get("env", {})
-    assert (
-        local_secrets.load_env_secret(
-            "GOOGLE_API_KEY",
-            journal_path=journal_path,
-            include_process=False,
-        )
-        == "scout-key"
-    )
+    assert config["env"]["GOOGLE_API_KEY"] == "scout-key"
 
 
 def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
@@ -319,20 +302,12 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "fingerprint-secret",
         "2026-05-23T00:00:00Z",
     }
-    local_secrets.save_env_secret(
-        "GOOGLE_API_KEY",
-        "google-secret-key",
-        journal_path=journal_path,
-    )
-    local_secrets.save_env_secret(
-        "OPENAI_API_KEY",
-        "openai-secret-key",
-        journal_path=journal_path,
-    )
-    local_secrets.save_env_secret(
-        "ANTHROPIC_API_KEY",
-        "anthropic-secret-key",
-        journal_path=journal_path,
+    config.setdefault("env", {}).update(
+        {
+            "GOOGLE_API_KEY": "google-secret-key",
+            "OPENAI_API_KEY": "openai-secret-key",
+            "ANTHROPIC_API_KEY": "anthropic-secret-key",
+        }
     )
     config.setdefault("services", {})["scout"] = {
         "enabled_at": "2026-05-23T00:00:00Z",

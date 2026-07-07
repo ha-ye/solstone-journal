@@ -20,15 +20,13 @@ Each provider module must also define `__all__` exporting these three functions.
 
 ## API Key Handling
 
-API keys are stored in the machine-local Solstone secret boundary under `~/Library/Application Support/Solstone/secrets/`, keyed by the active journal fingerprint. At process startup, `setup_cli()` loads configured local secrets into `os.environ` for provider SDK compatibility and strips shell-only managed provider keys. Raw keys must not be written to `journal/config/journal.json`, import bundles, transcripts, or replicated backups.
+API keys are configured in the ``env`` section of ``journal/config/journal.json``. At process startup, ``setup_cli()`` loads these into ``os.environ``. Providers read keys from ``os.environ`` — no ``.env`` files or ``dotenv`` are involved.
 
 **Naming convention:** `{PROVIDER}_API_KEY` (e.g., `GOOGLE_API_KEY`, `OPENAI_API_KEY`)
 
 **Implementation pattern:**
 ```python
-from solstone.think.importers.local_secrets import load_env_secret
-
-api_key = load_env_secret("MYPROVIDER_API_KEY")
+api_key = os.getenv("MYPROVIDER_API_KEY")
 if not api_key:
     raise ValueError("MYPROVIDER_API_KEY not found in environment")
 ```

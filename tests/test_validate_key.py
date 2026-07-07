@@ -12,7 +12,6 @@ from unittest.mock import Mock, patch
 import pytest
 
 from solstone.convey import create_app
-from solstone.think.importers import local_secrets
 from solstone.think.providers import anthropic, google, openai, validate_key
 
 
@@ -296,15 +295,6 @@ def test_thinking_keys_saves_key_validation(settings_client):
 
     config = json.loads((journal / "config" / "journal.json").read_text())
     assert config["providers"]["key_validation"]["google"]["valid"] is False
-    assert "GOOGLE_API_KEY" not in config.get("env", {})
-    assert (
-        local_secrets.load_env_secret(
-            "GOOGLE_API_KEY",
-            journal_path=journal,
-            include_process=False,
-        )
-        == "bad-key"
-    )
 
 
 @pytest.mark.parametrize(
@@ -343,11 +333,6 @@ def test_thinking_keys_clears_key_validation(settings_client):
     config_path = journal / "config" / "journal.json"
     config = json.loads(config_path.read_text())
     config.setdefault("env", {})["GOOGLE_API_KEY"] = "existing-key"
-    local_secrets.save_env_secret(
-        "GOOGLE_API_KEY",
-        "existing-key",
-        journal_path=journal,
-    )
     config["providers"]["key_validation"] = {
         "google": {"valid": True, "timestamp": "2026-01-01T00:00:00+00:00"}
     }
@@ -365,14 +350,6 @@ def test_thinking_keys_clears_key_validation(settings_client):
 
     saved = json.loads(config_path.read_text())
     assert "GOOGLE_API_KEY" not in saved["env"]
-    assert (
-        local_secrets.load_env_secret(
-            "GOOGLE_API_KEY",
-            journal_path=journal,
-            include_process=False,
-        )
-        is None
-    )
     assert "google" not in saved["providers"]["key_validation"]
 
 
@@ -424,9 +401,9 @@ def test_validate_all_keys_endpoint(settings_client):
     client, journal = settings_client
     config_path = journal / "config" / "journal.json"
     config = json.loads(config_path.read_text())
+    config.setdefault("env", {})["GOOGLE_API_KEY"] = "google-key"
+    config["env"]["OPENAI_API_KEY"] = "openai-key"
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-    local_secrets.save_env_secret("GOOGLE_API_KEY", "google-key", journal_path=journal)
-    local_secrets.save_env_secret("OPENAI_API_KEY", "openai-key", journal_path=journal)
 
     def fake_validate(provider: str, api_key: str) -> dict:
         return {

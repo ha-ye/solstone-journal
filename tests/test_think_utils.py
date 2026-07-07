@@ -15,7 +15,6 @@ from pathlib import Path
 import pytest
 
 from solstone.think.entities import load_entity_names
-from solstone.think.importers import local_secrets
 from solstone.think.providers import PROVIDER_METADATA, managed_provider_env_keys
 from solstone.think.utils import (
     DEFAULT_STREAM,
@@ -687,9 +686,6 @@ class TestSetupCliConfigEnv:
 
         Returns a helper function to write config and run setup_cli.
         """
-        home = tmp_path / "home"
-        home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
         for env_key in managed_provider_env_keys():
             monkeypatch.delenv(env_key, raising=False)
@@ -770,19 +766,18 @@ class TestSetupCliConfigEnv:
 
         assert env_key not in os.environ
 
-    def test_managed_key_present_locally_wins_over_shell(self, monkeypatch, cli_env):
-        """Test that local secret storage is authoritative over shell values."""
+    def test_managed_key_present_in_config_wins_over_shell(self, monkeypatch, cli_env):
+        """Test that journal config remains authoritative over shell values."""
         monkeypatch.setenv("GOOGLE_API_KEY", "from_shell")
-        local_secrets.save_env_secret("GOOGLE_API_KEY", "from_local")
 
         cli_env(
             {
                 "identity": {"name": "Test"},
-                "env": {"GOOGLE_API_KEY": "stale_replicated_config_value"},
+                "env": {"GOOGLE_API_KEY": "from_config"},
             }
         )
 
-        assert os.environ["GOOGLE_API_KEY"] == "from_local"
+        assert os.environ["GOOGLE_API_KEY"] == "from_config"
 
     def test_non_managed_shell_only_key_is_not_stripped(self, monkeypatch, cli_env):
         """Test that managed-key stripping does not affect non-managed vars."""

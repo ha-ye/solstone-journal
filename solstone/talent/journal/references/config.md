@@ -99,20 +99,23 @@ Purged segments remain fully navigable in convey. Transcripts, entities, speaker
 
 ## Environment variables
 
-The `env` block stores non-secret configuration as environment variables that solstone loads into the process environment at CLI startup:
+The `env` block stores configuration as environment variables that solstone loads into the process environment at CLI startup. This is where managed provider API keys live:
 
 ```json
 {
   "env": {
-    "SOL_DAY": "20260308",
-    "SOL_FACET": "work"
+    "GOOGLE_API_KEY": "your-google-api-key",
+    "ANTHROPIC_API_KEY": "your-anthropic-api-key",
+    "OPENAI_API_KEY": "your-openai-api-key",
+    "REVAI_ACCESS_TOKEN": "your-revai-token",
+    "PLAUD_ACCESS_TOKEN": "your-plaud-token"
   }
 }
 ```
 
-**Managed provider keys are local-secret-exclusive.** Managed provider keys and service tokens — `GOOGLE_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `REVAI_ACCESS_TOKEN`, and `PLAUD_ACCESS_TOKEN` — live under the machine-local Solstone secret boundary (`~/Library/Application Support/Solstone/secrets/`) keyed by the active journal fingerprint. At CLI startup, solstone loads configured local secrets into the environment for SDK compatibility and strips shell-only managed provider keys. Raw keys must not be written to `journal/config/journal.json`, import bundles, transcripts, or replicated backups.
+**Managed provider keys are journal-config-exclusive.** For the managed provider API keys — `GOOGLE_API_KEY`, `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY` — the journal config `env` section is the authoritative and exclusive source. At CLI startup, solstone loads the `env` block into the environment and then strips any of these managed keys that is *not* set in journal config, so a value set only in the shell is never used. This keeps the journal config the single, predictable place that decides which provider keys are in effect (useful when the journal is synced across machines). Google Vertex/ADC auth variables are not managed keys and are never stripped.
 
-Google Vertex/ADC auth variables are not managed keys and are never stripped.
+Other variables declared in the `env` block (for example `REVAI_ACCESS_TOKEN`, `PLAUD_ACCESS_TOKEN`) are loaded into the environment at startup as well.
 
 ### Template usage examples
 

@@ -158,9 +158,7 @@ def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -
     available_bytes = read_available_bytes()
     floor_bytes = stt_local_floor_bytes()
     local_backend = local_stt_backend()
-    from solstone.think.importers.local_secrets import is_env_secret_configured
-
-    google_key_present = is_env_secret_configured("GOOGLE_API_KEY")
+    google_key_present = bool(os.getenv("GOOGLE_API_KEY"))
     configured_backend = transcribe_config.get("backend")
     explicit_backend = args.backend or configured_backend
     if explicit_backend:

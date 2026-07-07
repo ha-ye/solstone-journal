@@ -54,7 +54,6 @@ from solstone.convey.sol_initiated.settings import (
 )
 from solstone.convey.utils import error_response, respond_collection
 from solstone.think import facets
-from solstone.think.importers import local_secrets
 from solstone.think.journal_config import (
     hold_config_lock,
     write_journal_config,
@@ -203,14 +202,8 @@ def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     service_validation = _service_key_validation(config)
     if service_validation:
         projected["key_validation"] = service_validation
-    env_status = {
-        k: bool(v)
-        for k, v in projected.get("env", {}).items()
-        if k not in local_secrets.ENV_SECRET_INTEGRATIONS
-    }
-    for key in API_KEY_ENV_VARS:
-        env_status[key] = local_secrets.is_env_secret_configured(key)
-    projected["env"] = env_status
+    if "env" in projected:
+        projected["env"] = {k: bool(v) for k, v in projected["env"].items()}
     projected.pop("providers", None)
     convey_config = projected.setdefault("convey", {})
     convey_config.pop("secret", None)
@@ -218,10 +211,7 @@ def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     convey_config.pop("password", None)
     if "transcribe" in projected:
         projected["transcribe"] = _project_transcribe_config(projected["transcribe"])
-    projected["runtime_env"] = {
-        k: local_secrets.is_env_secret_configured(k) or bool(os.getenv(k))
-        for k in API_KEY_ENV_VARS
-    }
+    projected["runtime_env"] = {k: bool(os.getenv(k)) for k in API_KEY_ENV_VARS}
     return projected
 
 
@@ -365,29 +355,15 @@ def update_config() -> Any:
             for key in allowed_sections[section]:
                 if key in data:
                     new_value = data[key]
-                    if section == "env":
-                        old_value = local_secrets.load_env_secret(
-                            key,
-                            include_process=False,
-                        )
-                        new_secret = str(new_value or "").strip()
-                        if (old_value or "") != new_secret:
-                            changed_fields[key] = {
-                                "old": old_value,
-                                "new": new_secret,
-                            }
-                        if new_secret:
-                            local_secrets.save_env_secret(key, new_secret)
-                            os.environ[key] = new_secret
-                        else:
-                            local_secrets.delete_env_secret(key)
-                            os.environ.pop(key, None)
-                        config[section].pop(key, None)
-                        continue
                     old_value = old_section.get(key)
                     if old_value != new_value:
                         changed_fields[key] = {"old": old_value, "new": new_value}
                     config[section][key] = new_value
+                    if section == "env":
+                        if new_value:
+                            os.environ[key] = new_value
+                        else:
+                            os.environ.pop(key, None)
 
             if section == "processing":
                 try:
@@ -602,9 +578,7 @@ def get_transcribe() -> Any:
         for backend in backends:
             env_key = backend.get("env_key")
             if env_key:
-                api_keys[backend["name"]] = local_secrets.is_env_secret_configured(
-                    env_key
-                )
+                api_keys[backend["name"]] = bool(os.getenv(env_key))
             else:
                 api_keys[backend["name"]] = True  # Local backends always available
         google_key_present = bool(api_keys.get("gemini"))
@@ -811,13 +785,14 @@ def _sol_voice_response(settings: SolVoiceSettings) -> dict[str, Any]:
 def _compute_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     """Validate configured Rev.ai and Plaud tokens without mutating config."""
 
+    env_config = config.get("env", {})
     key_validation: dict[str, Any] = {}
     service_token_validators = {
         "REVAI_ACCESS_TOKEN": ("revai", "solstone.observe.transcribe.revai"),
         "PLAUD_ACCESS_TOKEN": ("plaud", "solstone.think.importers.plaud"),
     }
     for env_var, (val_key, module_path) in service_token_validators.items():
-        api_key = local_secrets.load_env_secret(env_var)
+        api_key = env_config.get(env_var, "")
         if api_key:
             import importlib
 
@@ -1714,8 +1689,12 @@ def get_sync() -> Any:
         granola_entry = schedules.get("sync:granola", {})
         obsidian_entry = schedules.get("sync:obsidian", {})
 
-        # Check token availability without reading replicated journal config.
-        has_token = local_secrets.is_env_secret_configured("PLAUD_ACCESS_TOKEN")
+        # Check token availability from journal config / runtime env
+        config = get_journal_config()
+        env_keys = config.get("env", {})
+        has_token = bool(env_keys.get("PLAUD_ACCESS_TOKEN")) or bool(
+            os.getenv("PLAUD_ACCESS_TOKEN")
+        )
 
         return jsonify(
             {

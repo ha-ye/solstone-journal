@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import math
+import os
 import shutil
 import sys
 import traceback
@@ -167,11 +168,9 @@ def _build_llm(provider: str, model: str) -> Any:
     if provider not in _MODEL_PREFIXES:
         raise ValueError(f"Unsupported OpenHands provider: {provider}")
 
-    from solstone.think.importers.local_secrets import load_env_secret
-
     llm_kwargs: dict[str, Any] = {
         "model": _prefixed_model(provider, model),
-        "api_key": load_env_secret(_API_KEY_ENV[provider]),
+        "api_key": os.getenv(_API_KEY_ENV[provider]),
         "native_tool_calling": True,
         "timeout": LLM_TIMEOUT_S,
         "num_retries": LLM_NUM_RETRIES,

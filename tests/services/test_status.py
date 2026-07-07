@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.importers import local_secrets
 from solstone.think.journal_config import write_journal_config
 from solstone.think.link.paths import (
     save_service_token,
@@ -34,7 +33,6 @@ def _clear_scout(journal_copy: Path) -> None:
     config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
     config.pop("services", None)
     _write_config(journal_copy, config)
-    local_secrets.delete_env_secret("GOOGLE_API_KEY", journal_path=journal_copy)
 
 
 def _set_posture(journal_copy: Path, posture: str) -> None:
@@ -62,11 +60,9 @@ def test_scout_status_disabled(journal_copy: Path) -> None:
 
 def test_scout_status_manual_key(journal_copy: Path) -> None:
     _clear_scout(journal_copy)
-    local_secrets.save_env_secret(
-        "GOOGLE_API_KEY",
-        "manual-secret",
-        journal_path=journal_copy,
-    )
+    config = _read_config(journal_copy)
+    config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual-secret"
+    _write_config(journal_copy, config)
 
     result = status.scout_status()
 

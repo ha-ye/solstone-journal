@@ -372,10 +372,7 @@ def init_finalize() -> Any:
     )
     gemini_key = data.get("gemini_key")
     if gemini_key:
-        from solstone.think.importers.local_secrets import save_env_secret
-
-        save_env_secret("GOOGLE_API_KEY", str(gemini_key).strip())
-        config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+        config.setdefault("env", {})["GOOGLE_API_KEY"] = gemini_key
     config.setdefault("setup", {})["completed_at"] = now_ms()
     retention_mode = data.get("retention_mode", "keep")
     retention_days = data.get("retention_days")

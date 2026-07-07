@@ -15,7 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from solstone.think.importers import local_secrets
 from solstone.think.journal_config import (
     get_journal_config_path,
     read_journal_config,
@@ -160,8 +159,7 @@ def provision_scout_handoff(payload: dict[str, Any]) -> None:
         try:
             _require_journal_config()
             config = read_journal_config()
-            local_secrets.save_env_secret("GOOGLE_API_KEY", values["google_api_key"])
-            config.setdefault("env", {}).pop("GOOGLE_API_KEY", None)
+            config.setdefault("env", {})["GOOGLE_API_KEY"] = values["google_api_key"]
             config.setdefault("services", {})["scout"] = {
                 "enabled_at": datetime.now(timezone.utc).isoformat(),
                 "account_id": values["account_id"],
@@ -224,11 +222,7 @@ def disable_scout() -> DisableOutcome:
 
             services.pop("scout", None)
             env = config.setdefault("env", {})
-            env.pop("GOOGLE_API_KEY", None)
-            current_key = local_secrets.load_env_secret(
-                "GOOGLE_API_KEY",
-                include_process=False,
-            )
+            current_key = env.get("GOOGLE_API_KEY")
             stored_fingerprint = scout_block.get(KEY_FINGERPRINT_FIELD)
             env_key_preserved = True
             if (
@@ -236,7 +230,7 @@ def disable_scout() -> DisableOutcome:
                 and isinstance(stored_fingerprint, str)
                 and _fingerprint_key(current_key) == stored_fingerprint
             ):
-                local_secrets.delete_env_secret("GOOGLE_API_KEY")
+                env.pop("GOOGLE_API_KEY", None)
                 env_key_preserved = False
 
             write_journal_config(config)
@@ -314,7 +308,7 @@ def is_scout_enabled() -> bool:
     config = read_journal_config()
     block = config.get("services", {}).get("scout")
     return _is_approved_provision(block) and bool(
-        local_secrets.load_env_secret("GOOGLE_API_KEY", include_process=False)
+        config.get("env", {}).get("GOOGLE_API_KEY")
     )
 
 
@@ -323,9 +317,9 @@ def is_manual_key_present() -> bool:
 
     config = read_journal_config()
     block = config.get("services", {}).get("scout")
-    return bool(
-        local_secrets.load_env_secret("GOOGLE_API_KEY", include_process=False)
-    ) and not (_is_approved_provision(block))
+    return bool(config.get("env", {}).get("GOOGLE_API_KEY")) and not (
+        _is_approved_provision(block)
+    )
 
 
 def scout_provenance() -> dict[str, Any] | None:

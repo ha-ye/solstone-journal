@@ -9,7 +9,6 @@ import json
 
 import pytest
 
-from solstone.think.importers import local_secrets
 from solstone.think.services import operations
 
 
@@ -31,10 +30,6 @@ def settings_env(tmp_path, monkeypatch):
     """Create a temporary journal with provider config."""
 
     def _create(config: dict | None = None):
-        home = tmp_path / "home"
-        home.mkdir(exist_ok=True)
-        monkeypatch.setenv("HOME", str(home))
-        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
         config_dir = tmp_path / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / "journal.json"
@@ -101,17 +96,8 @@ def settings_env(tmp_path, monkeypatch):
                 },
                 "observe": {"tmux": {"enabled": True, "capture_interval": 5}},
             }
-        env = config.get("env")
-        if isinstance(env, dict):
-            for key in list(env):
-                if key in local_secrets.ENV_SECRET_INTEGRATIONS and env.get(key):
-                    local_secrets.save_env_secret(
-                        key,
-                        str(env[key]),
-                        journal_path=tmp_path,
-                    )
-                    env.pop(key, None)
         config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
         return tmp_path, config
 
     return _create

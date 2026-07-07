@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from solstone.think.utils import get_config
@@ -27,12 +28,10 @@ def _clean_str(value: Any) -> str | None:
 
 
 def get_openai_api_key() -> str | None:
-    from solstone.think.importers.local_secrets import load_env_secret, load_secret
-
-    configured = _clean_str(load_secret("voice", "openai_api_key"))
+    configured = _clean_str(_voice_config().get("openai_api_key"))
     if configured:
         return configured
-    return _clean_str(load_env_secret("OPENAI_API_KEY"))
+    return _clean_str(os.environ.get("OPENAI_API_KEY"))
 
 
 def get_voice_model() -> str:

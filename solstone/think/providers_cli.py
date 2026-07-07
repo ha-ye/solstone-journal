@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -48,9 +49,7 @@ def _check_generate(
     from solstone.think.providers import PROVIDER_METADATA, get_provider_module
 
     env_key = PROVIDER_METADATA[provider_name]["env_key"]
-    from solstone.think.importers.local_secrets import is_env_secret_configured
-
-    if env_key and not is_env_secret_configured(env_key):
+    if env_key and not os.getenv(env_key):
         label = PROVIDER_METADATA[provider_name]["label"]
         return "skip", f"{label} not configured (no {env_key})", "provider_key_missing"
 
@@ -113,7 +112,6 @@ async def _check_cogitate(
     provider_name: str, tier: int, timeout: int
 ) -> tuple[str, str, str | None]:
     """Check cogitate interface for a provider by running a real prompt."""
-    from solstone.think.importers.local_secrets import is_env_secret_configured
     from solstone.think.models import PROVIDER_DEFAULTS
     from solstone.think.providers import PROVIDER_METADATA, get_provider_module
 
@@ -144,13 +142,13 @@ async def _check_cogitate(
                 )
             return "skip", _local_readiness_message(status), reason_code
     elif provider_name in {"anthropic", "openai", "google"}:
-        if env_key and not is_env_secret_configured(env_key):
+        if env_key and not os.getenv(env_key):
             return (
                 "skip",
                 f"{label} not configured (no {env_key})",
                 "provider_key_missing",
             )
-    elif env_key and not is_env_secret_configured(env_key):
+    elif env_key and not os.getenv(env_key):
         return "skip", f"{label} not configured (no {env_key})", "provider_key_missing"
 
     if not env_key:

@@ -56,9 +56,7 @@ def _get_token() -> str:
     Raises:
         ValueError: If token not found in environment
     """
-    from solstone.think.importers.local_secrets import load_env_secret
-
-    token = load_env_secret("REVAI_ACCESS_TOKEN") or os.getenv("REV_ACCESS_TOKEN")
+    token = os.getenv("REVAI_ACCESS_TOKEN") or os.getenv("REV_ACCESS_TOKEN")
     if not token:
         raise ValueError("Missing REVAI_ACCESS_TOKEN in environment")
     return token

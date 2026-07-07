@@ -45,21 +45,6 @@ def _expected_secret_path(home: Path, journal: Path) -> Path:
     )
 
 
-def _expected_integration_path(home: Path, journal: Path, integration: str) -> Path:
-    fingerprint = hashlib.sha256(str(journal.resolve()).encode("utf-8")).hexdigest()[
-        :16
-    ]
-    return (
-        home
-        / "Library"
-        / "Application Support"
-        / "Solstone"
-        / "secrets"
-        / integration
-        / f"{fingerprint}.json"
-    )
-
-
 def test_save_load_delete_oura_tokens_stays_outside_journal_with_private_modes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
@@ -148,63 +133,3 @@ def test_different_journals_use_different_oura_secret_files(
 
     assert json.loads(path_a.read_text(encoding="utf-8"))["access_token"] == "access-a"
     assert json.loads(path_b.read_text(encoding="utf-8"))["access_token"] == "access-b"
-
-
-def test_save_load_delete_general_secret_is_journal_fingerprinted_and_private(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    journal = _use_home_and_journal(tmp_path, monkeypatch)
-    home = tmp_path / "home"
-    secret_path = _expected_integration_path(home, journal, "google")
-
-    local_secrets.save_secret("google", "GOOGLE_API_KEY", "google-sensitive")
-
-    assert local_secrets.load_secret("google", "GOOGLE_API_KEY") == "google-sensitive"
-    assert secret_path.exists()
-    assert not list(journal.rglob("*"))
-    assert stat.S_IMODE(secret_path.parent.stat().st_mode) == 0o700
-    assert stat.S_IMODE(secret_path.stat().st_mode) == 0o600
-
-    payload = json.loads(secret_path.read_text(encoding="utf-8"))
-    assert payload["schema"] == "solstone.local_secret.v1"
-    assert payload["integration"] == "google"
-    assert payload["secrets"]["GOOGLE_API_KEY"] == "google-sensitive"
-
-    local_secrets.delete_secret("google", "GOOGLE_API_KEY")
-
-    assert local_secrets.load_secret("google", "GOOGLE_API_KEY") is None
-    assert not secret_path.exists()
-
-
-def test_env_secret_helpers_prefer_local_boundary_over_process_env(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    _use_home_and_journal(tmp_path, monkeypatch)
-    monkeypatch.setenv("GOOGLE_API_KEY", "process-key")
-
-    assert local_secrets.load_env_secret("GOOGLE_API_KEY") == "process-key"
-
-    local_secrets.save_env_secret("GOOGLE_API_KEY", "local-key")
-
-    assert local_secrets.load_env_secret("GOOGLE_API_KEY") == "local-key"
-    assert (
-        local_secrets.load_env_secret("GOOGLE_API_KEY", include_process=False)
-        == "local-key"
-    )
-    assert local_secrets.is_env_secret_configured("GOOGLE_API_KEY") is True
-
-    local_secrets.delete_env_secret("GOOGLE_API_KEY")
-
-    assert local_secrets.load_env_secret("GOOGLE_API_KEY") == "process-key"
-    assert (
-        local_secrets.load_env_secret("GOOGLE_API_KEY", include_process=False) is None
-    )
-
-
-def test_invalid_integration_name_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    _use_home_and_journal(tmp_path, monkeypatch)
-
-    with pytest.raises(ValueError, match="invalid local secret integration"):
-        local_secrets.save_secret("../journal", "TOKEN", "sensitive")

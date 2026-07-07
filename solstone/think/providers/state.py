@@ -259,9 +259,9 @@ def cloud_key_configured(env_key: str) -> bool:
     if os.getenv(env_key):
         return True
     try:
-        from solstone.think.importers.local_secrets import is_env_secret_configured
+        from solstone.think.journal_config import read_journal_config
 
-        return is_env_secret_configured(env_key, include_process=False)
+        return bool(read_journal_config().get("env", {}).get(env_key))
     except Exception:
         # Intended fail-closed-on-unreadable-config: report no cloud key.
         return False

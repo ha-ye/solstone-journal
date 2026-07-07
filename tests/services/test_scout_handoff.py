@@ -8,7 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.importers import local_secrets
 from solstone.think.services import scout_handoff
 from solstone.think.services.portal_client import PollOutcome
 
@@ -53,15 +52,7 @@ def test_run_scout_handoff_maps_approved_to_enabled(journal_copy: Path) -> None:
     assert result.phase == "enabled"
     assert result.retryable is False
     saved = _config(journal_copy)
-    assert "GOOGLE_API_KEY" not in saved.get("env", {})
-    assert (
-        local_secrets.load_env_secret(
-            "GOOGLE_API_KEY",
-            journal_path=journal_copy,
-            include_process=False,
-        )
-        == "google-one"
-    )
+    assert saved["env"]["GOOGLE_API_KEY"] == "google-one"
     assert saved["services"]["scout"]["account_id"] == "acct-one"
 
 
