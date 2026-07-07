@@ -1,7 +1,6 @@
 {
   "icon": "💰",
   "label": "tokens",
-  "spa": true,
   "date_nav": true,
   "facets": {"disabled": true}
 }

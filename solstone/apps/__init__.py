@@ -30,7 +30,6 @@ app.json fields (all optional):
       "date_nav": true,        # Show date navigation bar (default: false)
       "app_bar": false,        # Hide the universal chat bar on this app (default: true)
       "allow_future_dates": true, # Allow future dates in month picker (default: false)
-      "spa": true              # Serve static shell + workspace fragment (default: false)
     }
 
     See the App dataclass below for the complete field list with types and defaults.
@@ -82,9 +81,6 @@ class App:
     # Allow apps to opt into clicking future dates in the month picker.
     allow_future_dates: bool = False
 
-    # Serve this app through the static SPA shell.
-    spa: bool = False
-
     def facets_enabled(self) -> bool:
         """Check if facets are enabled for this app."""
         return not self.facets_config.get("disabled", False)
@@ -96,10 +92,6 @@ class App:
     def get_blueprint(self) -> Optional[Blueprint]:
         """Return Flask Blueprint with app routes, or None if app has no custom routes."""
         return self.blueprint
-
-    def get_workspace_template(self) -> str:
-        """Return path to workspace template."""
-        return self.workspace_template
 
     def get_background_template(self) -> Optional[str]:
         """Return path to background service template, or None."""
@@ -240,9 +232,6 @@ class AppRegistry:
         # Allow future dates in month picker
         allow_future_dates = metadata.get("allow_future_dates", False)
 
-        # Static shell opt-in
-        spa = bool(metadata.get("spa", False))
-
         # Import routes module and get blueprint (optional)
         blueprint = None
         routes_module = None
@@ -279,7 +268,6 @@ class AppRegistry:
             date_nav=date_nav,
             app_bar=app_bar,
             allow_future_dates=allow_future_dates,
-            spa=spa,
         )
 
     def _load_metadata(self, app_path: Path) -> dict[str, Any]:
@@ -324,7 +312,7 @@ class AppRegistry:
         """Inject default index route if app doesn't define one.
 
         Checks if routes module has an 'index' function. If not, adds a
-        default index route that renders app.html using blueprint.record()
+        default index route that serves the static SPA shell using blueprint.record()
         to support multiple app registrations.
 
         Args:
@@ -351,15 +339,11 @@ class AppRegistry:
             if not blueprint._got_registered_once and not getattr(
                 blueprint, "_solstone_default_index_injected", False
             ):
-                registry = self
 
-                def index(app_name=app_name, registry=registry):
-                    from flask import current_app, render_template
+                def index():
+                    from flask import current_app
 
-                    if registry.apps[app_name].spa:
-                        return current_app.send_static_file("shell.html")
-
-                    return render_template("app.html")
+                    return current_app.send_static_file("shell.html")
 
                 def setup_index(state):
                     """Deferred setup function called when blueprint is registered."""
@@ -384,11 +368,9 @@ class AppRegistry:
 
         registry = self
 
-        def workspace_fragment(app_name=app_name, registry=registry, app_path=app_path):
-            from flask import abort, send_from_directory
+        def workspace_fragment(app_path=app_path):
+            from flask import send_from_directory
 
-            if not registry.apps[app_name].spa:
-                abort(404)
             return send_from_directory(app_path, "workspace.html")
 
         def background_fragment(

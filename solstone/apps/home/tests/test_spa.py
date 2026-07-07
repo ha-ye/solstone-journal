@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import subprocess
 from datetime import datetime
@@ -24,14 +23,12 @@ def _home_js() -> str:
 
 def test_home_spa_shell_workspace_and_route_resolution(home_env):
     env = home_env()
-    app_json = json.loads((APP_ROOT / "app.json").read_text(encoding="utf-8"))
     routes_source = (APP_ROOT / "routes.py").read_text(encoding="utf-8")
     workspace = _workspace()
 
     index_response = env.client.get("/app/home/")
     workspace_response = env.client.get("/app/home/workspace")
 
-    assert app_json["spa"] is True
     assert index_response.status_code == 200
     assert b'data-solstone-shell="spa"' in index_response.data
     assert workspace_response.status_code == 200

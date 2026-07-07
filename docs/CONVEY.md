@@ -28,10 +28,7 @@ convey/
   utils.py           - shared helpers (format_date, spawn_agent, etc.)
   root.py            - access gate, setup routes, and root redirect
   templates/
-      app.html       - main app container template
-      menu_bar.html  - dynamic left sidebar menu
-      status_pane.html - WebSocket status indicator
-      macros.html    - Jinja macros
+      init.html      - static setup/onboarding page (pre-journal)
   static/            - shared CSS and JavaScript
       app.css        - app system styles
       app.js         - facet pills, services, notification center

@@ -11,11 +11,9 @@ server.
 
 ## Architecture: static shell + per-app workspaces
 
-- **One static shell** (`convey/static/shell.html`) is served for every
-  `/app/{name}` route. The client derives the current app from
-  `location.pathname` and boots from `GET /api/shell`. During the transitional
-  conversion, apps opt into this path with `"spa": true` in `app.json`;
-  unflagged apps continue through the legacy Jinja shell.
+- **One static shell** (`convey/static/shell.html`) is served unconditionally for
+  every `/app/{name}` route. The client derives the current app from
+  `location.pathname` and boots from `GET /api/shell`.
 - **Per-app workspace fragments** stay one file per app
   (`apps/{name}/workspace.html`): markup + `<style>` + `<script>`, served
   verbatim as a static asset — zero server-side template processing. The shell
@@ -62,8 +60,7 @@ them in HTML.
       "date_nav": false,
       "app_bar": true,
       "allow_future_dates": false,
-      "spa": false,
-      "workspace_url": null,
+      "workspace_url": "/app/home/workspace",
       "background_url": null
     }
   ],
@@ -83,9 +80,9 @@ Notes:
 - `apps` is **ordered** (owner's configured order, starred handling applied
   server-side, agent-chosen `sol` label already resolved). The menu renders
   the list as given.
-- `workspace_url`/`background_url` point at the static fragment routes. During
-  transitional opt-in, `workspace_url` is `null` for non-`spa` apps, and a
-  `null` `background_url` means the app registers no background service.
+- `workspace_url` always points at the static workspace fragment route.
+  `background_url` points at the static background fragment route when present;
+  a `null` `background_url` means the app registers no background service.
 - The shell endpoint carries **state the chrome needs on every page**, nothing
   app-specific. App state never rides on `/api/shell`.
 
@@ -138,5 +135,5 @@ Every workspace must be honest about what it knows:
   `convey/static/tests/` — keep them green, add pages for new shared helpers
   (the mount helper, render helpers).
 - Route-level behavior is unit-tested per app (`apps/{name}/tests/`).
-- A CI guard enforces the architecture: no Jinja constructs in served HTML,
-  no `render_template` outside the PDF modules.
+- A CI guard enforces the architecture: no Jinja constructs in served templates,
+  and no flask `render_template` outside the PDF modules.

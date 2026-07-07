@@ -1,6 +1,5 @@
 {
   "icon": "🔗",
   "label": "network",
-  "spa": true,
   "facets": {"disabled": true}
 }

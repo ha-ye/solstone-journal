@@ -202,7 +202,6 @@ def test_reflections_app_json_icon_is_moon():
     data = json.loads(Path("solstone/apps/reflections/app.json").read_text())
 
     assert data["icon"] == "🌙"
-    assert data["spa"] is True
 
 
 def test_reflections_detail_canonicalizes_to_sunday_in_api(journal_copy):

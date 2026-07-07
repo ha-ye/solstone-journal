@@ -1,6 +1,5 @@
 {
   "icon": "🩺",
   "label": "health",
-  "facets": {"disabled": true},
-  "spa": true
+  "facets": {"disabled": true}
 }

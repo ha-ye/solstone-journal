@@ -227,11 +227,5 @@ def test_stats_routes_resolve(stats_env):
         assert matched == endpoint
 
 
-def test_stats_app_metadata_is_spa():
-    metadata = json.loads((APP_ROOT / "app.json").read_text(encoding="utf-8"))
-
-    assert metadata["spa"] is True
-
-
 def test_stats_routes_do_not_use_render_template():
     assert "render_template" not in (APP_ROOT / "routes.py").read_text(encoding="utf-8")

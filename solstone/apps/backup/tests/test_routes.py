@@ -131,7 +131,6 @@ def test_backup_app_discovered_and_auto_appended_for_saved_order(backup_env) -> 
     names = [app["name"] for app in apps]
     backup = next(app for app in apps if app["name"] == "backup")
     assert "backup" in names
-    assert backup["spa"] is True
     assert backup["workspace_url"] == "/app/backup/workspace"
     assert "backup" not in DEFAULT_APP_ORDER
 
@@ -142,14 +141,10 @@ def test_backup_spa_shell_workspace_and_route_resolution(backup_env) -> None:
     routes_source = Path("solstone/apps/backup/routes.py").read_text(encoding="utf-8")
     workspace = workspace_path.read_text(encoding="utf-8")
     js = Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
-    app_json = json.loads(
-        Path("solstone/apps/backup/app.json").read_text(encoding="utf-8")
-    )
 
     index_response = env.client.get("/app/backup/")
     workspace_response = env.client.get("/app/backup/workspace")
 
-    assert app_json["spa"] is True
     assert index_response.status_code == 200
     assert b'data-solstone-shell="spa"' in index_response.data
     assert workspace_response.status_code == 200

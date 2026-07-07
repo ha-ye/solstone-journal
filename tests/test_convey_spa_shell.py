@@ -66,9 +66,7 @@ def test_api_shell_shape_ordering_label_and_backgrounds(client, journal_copy):
         "search",
     ]
     assert by_name["sol"]["label"] == "Ada"
-    assert by_name["search"]["spa"] is True
     assert by_name["search"]["workspace_url"] == "/app/search/workspace"
-    assert by_name["network"]["spa"] is True
     assert by_name["network"]["workspace_url"] == "/app/network/workspace"
     assert by_name["timeline"]["background_url"] == "/app/timeline/background"
     assert by_name["support"]["background_url"] == "/app/support/background"
@@ -143,12 +141,26 @@ def test_construct_free_spa_workspaces_backgrounds_and_shell_boot_path():
     registry = AppRegistry()
     registry.discover()
     for app in registry.apps.values():
-        if app.spa:
-            _assert_construct_free(APPS_ROOT / app.name / "workspace.html")
+        _assert_construct_free(APPS_ROOT / app.name / "workspace.html")
     for path in APPS_ROOT.glob("*/background.html"):
         _assert_construct_free(path)
     for path in BOOT_PATH_FILES:
         _assert_construct_free(path)
+
+
+def test_convey_templates_dir_is_construct_free():
+    templates_dir = REPO_ROOT / "solstone" / "convey" / "templates"
+    files = sorted(p for p in templates_dir.iterdir() if p.is_file())
+    assert files, "convey/templates/ should not be empty"
+    for path in files:
+        _assert_construct_free(path)
+
+
+def test_assert_construct_free_flags_jinja(tmp_path):
+    bad = tmp_path / "bad.html"
+    bad.write_text("<div>{{ x }}</div>", encoding="utf-8")
+    with pytest.raises(AssertionError):
+        _assert_construct_free(bad)
 
 
 def test_init_template_construct_free_and_state_matches(client, journal_copy):

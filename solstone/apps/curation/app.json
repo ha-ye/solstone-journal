@@ -1,7 +1,6 @@
 {
   "icon": "✨",
   "label": "curation",
-  "spa": true,
   "facets": {
     "disabled": true
   }

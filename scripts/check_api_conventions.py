@@ -18,6 +18,9 @@ escape hatches the conventions forbid:
     sanctioned ``error_response`` / ``error_response_with_reason`` helpers.
   - ``bare-array``   — returning a bare top-level list
     (``jsonify([...])`` / ``jsonify(<list-var>)`` / ``return [...]``).
+  - ``render-template`` — a Flask ``render_template(...)`` call anywhere under
+    the scanned source scopes, excluding tests. The only allowed instances are
+    the PDF helpers in the ``news`` and ``reflections`` apps.
 
 A handler is **JSON-governed** when any of its return paths produces a JSON
 body: it calls ``jsonify(...)``, returns one of the response helpers
@@ -80,6 +83,8 @@ ROUTE_DECORATORS: frozenset[str] = frozenset(
 # count as occurrences are fixed; never raise one to admit a new violation.
 ALLOWLIST: dict[tuple[str, str], int] = {
     ("solstone/apps/network/routes.py", "abort"): 1,
+    ("solstone/apps/news/routes.py", "render-template"): 1,
+    ("solstone/apps/reflections/routes.py", "render-template"): 1,
 }
 
 
@@ -261,6 +266,65 @@ def discover_modules(root: Path) -> list[Path]:
     return found
 
 
+def _flask_render_template_names(tree: ast.AST) -> tuple[set[str], set[str]]:
+    """Local names bound to flask.render_template.
+
+    Returns (direct, modules): ``direct`` are names from
+    ``from flask import render_template [as X]`` (module- OR function-scoped);
+    ``modules`` are names bound to the flask module via ``import flask [as X]``,
+    whose ``.render_template`` attribute is the same callable.
+    """
+    direct: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "flask":
+            for alias in node.names:
+                if alias.name == "render_template":
+                    direct.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "flask":
+                    modules.add(alias.asname or "flask")
+    return direct, modules
+
+
+def scan_render_templates(source: str, filename: str = "<source>") -> list[int]:
+    """Line numbers of flask ``render_template(...)`` calls in a module source."""
+    tree = ast.parse(source, filename=filename)
+    direct, modules = _flask_render_template_names(tree)
+    if not direct and not modules:
+        return []
+    linenos: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name) and func.id in direct:
+            linenos.append(node.lineno)
+        elif (
+            isinstance(func, ast.Attribute)
+            and func.attr == "render_template"
+            and isinstance(func.value, ast.Name)
+            and func.value.id in modules
+        ):
+            linenos.append(node.lineno)
+    return sorted(linenos)
+
+
+def discover_all_modules(root: Path) -> list[Path]:
+    """Posix-relative paths of ALL non-test ``*.py`` modules under the scopes."""
+    found: list[Path] = []
+    for scope in SCAN_SCOPES:
+        scope_dir = root / scope
+        if not scope_dir.is_dir():
+            continue
+        for path in sorted(scope_dir.rglob("*.py")):
+            if "__pycache__" in path.parts or "tests" in path.parts:
+                continue
+            found.append(path.relative_to(root))
+    return found
+
+
 def scan_source(source: str, filename: str = "<source>") -> list[tuple[int, str, str]]:
     """Return ``(lineno, kind, function_name)`` violations for a module source."""
     tree = ast.parse(source, filename=filename)
@@ -286,7 +350,31 @@ def count_violations(root: Path) -> dict[tuple[str, str], int]:
     for rel in discover_modules(root):
         for _lineno, kind, _func in scan_file(root / rel):
             counts[(rel.as_posix(), kind)] = counts.get((rel.as_posix(), kind), 0) + 1
+    for rel in discover_all_modules(root):
+        linenos = scan_render_templates(
+            (root / rel).read_text(encoding="utf-8"), str(rel)
+        )
+        if linenos:
+            key = (rel.as_posix(), "render-template")
+            counts[key] = counts.get(key, 0) + len(linenos)
     return counts
+
+
+def _account(
+    new: list[str],
+    tracked: list[str],
+    rel_str: str,
+    kind: str,
+    linenos: list[int],
+    allowlist: dict[tuple[str, str], int],
+) -> None:
+    count = len(linenos)
+    allowed = allowlist.get((rel_str, kind), 0)
+    if count > allowed:
+        lines = ", ".join(str(n) for n in sorted(linenos))
+        new.append(f"{rel_str}: {count} {kind} (allowed {allowed}) at line(s) {lines}")
+    elif allowed:
+        tracked.append(f"{rel_str}: {count}/{allowed} {kind} (allowlisted)")
 
 
 def evaluate(
@@ -303,15 +391,14 @@ def evaluate(
         for lineno, kind, _func in findings:
             by_kind.setdefault(kind, []).append(lineno)
         for kind, linenos in sorted(by_kind.items()):
-            count = len(linenos)
-            allowed = allowlist.get((rel_str, kind), 0)
-            if count > allowed:
-                lines = ", ".join(str(n) for n in sorted(linenos))
-                new.append(
-                    f"{rel_str}: {count} {kind} (allowed {allowed}) at line(s) {lines}"
-                )
-            elif allowed:
-                tracked.append(f"{rel_str}: {count}/{allowed} {kind} (allowlisted)")
+            _account(new, tracked, rel_str, kind, linenos, allowlist)
+    for rel in discover_all_modules(root):
+        rel_str = rel.as_posix()
+        linenos = scan_render_templates(
+            (root / rel).read_text(encoding="utf-8"), str(rel)
+        )
+        if linenos:
+            _account(new, tracked, rel_str, "render-template", linenos, allowlist)
     return new, tracked
 
 

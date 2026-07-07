@@ -497,7 +497,6 @@ def test_app_metadata_exists():
 
     assert metadata["label"] == "curation"
     assert metadata["facets"]["disabled"] is True
-    assert metadata["spa"] is True
 
 
 def test_curation_index_serves_spa_shell(curation_env):

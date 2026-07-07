@@ -37,11 +37,11 @@ cac = _load_checker()
 
 
 # A clean route module: collections through respond_collection, creates through
-# created, errors through error_response, pages through render_template/redirect.
+# created, errors through error_response, pages through plain HTML/redirect.
 GOOD_ROUTES = """\
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
-from flask import Blueprint, render_template, redirect
+from flask import Blueprint, redirect
 from solstone.convey.utils import respond_collection, created, error_response
 from solstone.convey.reasons import INVALID_DAY
 
@@ -69,7 +69,7 @@ def get_item(item_id):
 def page(day):
     if not day:
         return "", 404
-    return render_template("app.html")
+    return "<html></html>"
 
 
 @good_bp.route("/old")
@@ -117,7 +117,7 @@ def page(day):
     # Page route: render_template + bare "", 404 -> must NOT be flagged.
     if not day:
         return "", 404
-    return render_template("app.html")
+    return render_template("page.html")
 
 
 @bad_bp.route("/api/thing/<thing_id>")
@@ -190,6 +190,45 @@ def test_classifier_flags_non_api_json_array(bad_root):
     assert "page" not in kinds_by_func
     # The JSON RPC handler's every escape hatch is flagged.
     assert kinds_by_func["get_thing"] == {"abort", "bare-return", "inline-error"}
+
+
+def test_render_template_scan_flags_flask_binding_forms():
+    sources = [
+        "from flask import render_template\n\n"
+        "def v():\n"
+        "    return render_template('x.html')\n",
+        "from flask import render_template as rt\n\n"
+        "def v():\n"
+        "    return rt('x.html')\n",
+        "import flask\n\ndef v():\n    return flask.render_template('x.html')\n",
+    ]
+
+    for source in sources:
+        assert cac.scan_render_templates(source)
+
+
+def test_render_template_scan_ignores_local_helper():
+    source = """
+def _render_template(template, provider):
+    return template.replace("{provider}", provider)
+
+
+def v():
+    return _render_template("a", "b")
+"""
+
+    assert cac.scan_render_templates(source) == []
+
+
+def test_render_template_allowlist_wires_real_tree():
+    new, tracked = cac.evaluate(cac.ROOT, cac.ALLOWLIST)
+
+    assert new == []
+    assert "solstone/apps/news/routes.py: 1/1 render-template (allowlisted)" in tracked
+    assert (
+        "solstone/apps/reflections/routes.py: 1/1 render-template (allowlisted)"
+        in tracked
+    )
 
 
 def test_ratchet_by_file_kind_count(bad_root):

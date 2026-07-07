@@ -100,14 +100,12 @@ def _copy(key: str, *, pending=None, stuck=None) -> str:
 
 def test_health_spa_shell_workspace_and_route_resolution(health_env):
     env = health_env()
-    app_json = json.loads((APP_ROOT / "app.json").read_text(encoding="utf-8"))
     routes_source = (APP_ROOT / "routes.py").read_text(encoding="utf-8")
     workspace = _workspace()
 
     index_response = env.client.get("/app/health/")
     workspace_response = env.client.get("/app/health/workspace")
 
-    assert app_json["spa"] is True
     assert index_response.status_code == 200
     assert b'data-solstone-shell="spa"' in index_response.data
     assert workspace_response.status_code == 200

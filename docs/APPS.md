@@ -88,7 +88,8 @@ See `solstone/apps/__init__.py` for discovery logic and route injection.
 
 ### 1. `workspace.html` - Main Content
 
-The workspace template is included inside the app container (`app.html`).
+The workspace fragment is served verbatim and mounted into the static shell
+(`convey/static/shell.html`) at `/app/{name}/`.
 
 **Available Template Context:**
 - `app` - Current app name (auto-injected from URL)
@@ -148,14 +149,12 @@ Override default icon, label, and other app settings.
 - `date_nav` - Show date navigation bar (default: false)
 - `app_bar` - Show the universal chat bar (default: true)
 - `allow_future_dates` - Allow clicking future dates in month picker (default: false)
-- `spa` - Transitional opt-in for the static shell and `/workspace` fragment route (default: false)
 
 **When to disable facets:** Set `"facets": false` for apps that don't use facet-based organization (e.g., system settings, dev tools).
 
-**Static shell default:** New apps should use `"spa": true` with a
-construct-free `workspace.html`: no `{{`, `{%`, or `{#` Jinja constructs.
-SPA apps serve `convey/static/shell.html` at `/app/{name}/` and their workspace
-bytes at `/app/{name}/workspace`.
+**Static shell:** Every app serves `convey/static/shell.html` at `/app/{name}/`
+and its `workspace.html` bytes at `/app/{name}/workspace`. Keep
+`workspace.html` construct-free — no `{{`, `{%`, or `{#`.
 
 **Examples:** Browse `solstone/apps/*/app.json` for reference configurations.
 
@@ -634,7 +633,7 @@ See [talent/journal/SKILL.md](../talent/journal/SKILL.md), [CORTEX.md](CORTEX.md
 
 ### Global Variables
 
-Defined in `solstone/convey/templates/app.html`:
+Set up by the shell runtime (`solstone/convey/static/app.js`):
 - `window.facetsData` - Array of facet objects `[{name, title, color, emoji}, ...]`
 - `window.selectedFacet` - Current facet name or null (see Facet Selection below)
 - `window.appFacetCounts` - Badge counts for current app `{"work": 5, "personal": 3}` (set via route's `facet_counts`)
@@ -766,12 +765,10 @@ See `solstone/apps/entities/routes.py` POST handlers - Shows request parsing, va
 See `solstone/apps/entities/routes.py` - Loads data per-facet when selected, or all facets when null.
 
 ### Facet Pill Badges
-Pass `facet_counts` dict to `render_template()` to show initial badge counts on facet pills:
-```python
-facet_counts = {"work": 5, "personal": 3}
-return render_template("app.html", facet_counts=facet_counts)
+Use the shell runtime to show or update facet pill counts:
+```javascript
+AppServices.badges.facet.set(facetName, count);
 ```
-For client-side updates, use `AppServices.badges.facet.set(facetName, count)`.
 
 Apps with per-facet counts should compute them from already-loaded data before rendering, or update them client-side as data changes.
 
@@ -836,7 +833,7 @@ Browse `solstone/apps/*/` directories for reference implementations. Apps range 
 
 - **`solstone/apps/__init__.py`** - App discovery and registry implementation
 - **`solstone/convey/apps.py`** - Context processors and vendor library helper
-- **`solstone/convey/templates/app.html`** - Main app container template
+- **`solstone/convey/static/shell.html`** - Static SPA shell served for every app
 - **`solstone/convey/static/app.js`** - AppServices framework
 - **`solstone/convey/static/websocket.js`** - WebSocket event system
 - [../AGENTS.md](../AGENTS.md) - Project development guidelines and standards

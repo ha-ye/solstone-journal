@@ -261,10 +261,7 @@ def _build_apps(registry: AppRegistry, config: dict[str, Any]) -> list[dict[str,
             "date_nav": app_instance.date_nav_enabled(),
             "app_bar": app_instance.app_bar,
             "allow_future_dates": app_instance.allow_future_dates,
-            "spa": app_instance.spa,
-            "workspace_url": (
-                f"/app/{app_instance.name}/workspace" if app_instance.spa else None
-            ),
+            "workspace_url": f"/app/{app_instance.name}/workspace",
             "background_url": (
                 f"/app/{app_instance.name}/background"
                 if app_instance.get_background_template()

@@ -46,7 +46,6 @@ def test_news_app_json_icon_and_label():
     data = json.loads(Path("solstone/apps/news/app.json").read_text())
     assert data["icon"] == "📰"
     assert data["label"] == "newsletters"
-    assert data["spa"] is True
 
 
 def test_news_sidebar_adjacent_to_reflections(journal_copy):
