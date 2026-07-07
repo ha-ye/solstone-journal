@@ -1,6 +1,6 @@
 {
 
-  "description": "Video players/streams, YouTube, image/video galleries",
+  "description": "Photos, video players, image galleries, or visual media dominating the view, even when displayed inside a browser tab",
   "output": "markdown",
   "extraction": "Extract 1 frame only - video playback content does not benefit from text extraction",
   "importance": "low"
