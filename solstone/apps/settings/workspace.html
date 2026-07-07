@@ -10,6 +10,14 @@
   gap: 2em;
 }
 
+/* The SPA swaps the index out (hidden) to show a facet detail; the display:flex
+   above ties the UA [hidden] rule on specificity and would otherwise win by
+   source order, leaving the index visible above the detail. This guard restores
+   the hide. Mirrors .facet-detail-page[hidden] below. */
+.settings-wrap[hidden] {
+  display: none;
+}
+
 /* Left navigation */
 .settings-nav {
   width: 180px;
