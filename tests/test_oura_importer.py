@@ -1760,6 +1760,11 @@ def _imports_stat_snapshot(
         rel = path.relative_to(journal).as_posix()
         if rel in exclude:
             continue
+        # sqlite connection artifacts (see _imports_contents): the ledger's
+        # sidecars and its own header mtime move whenever any connection
+        # opens it — not import writes.
+        if path.name.endswith(("-shm", "-wal")) or path.name == "health-dedupe.sqlite":
+            continue
         stat = path.stat()
         snapshot[rel] = (stat.st_mtime_ns, stat.st_size if path.is_file() else None)
     return snapshot
