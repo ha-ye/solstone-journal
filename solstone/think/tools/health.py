@@ -34,9 +34,28 @@ def _dash(value: object) -> object:
     return "—" if value is None else value
 
 
-def _render_summary(report: dict) -> None:
-    from solstone.convey.readiness_snapshot import highest_severity_group
+_READINESS_SEVERITY_RANK = {
+    "ok": 0,
+    "neutral": 1,
+    "attention": 2,
+    "blocker": 3,
+}
 
+
+def _highest_severity_group(snapshot: dict) -> dict | None:
+    groups = snapshot.get("groups") or []
+    if not groups:
+        return None
+    return max(
+        groups,
+        key=lambda group: (
+            _READINESS_SEVERITY_RANK.get(group.get("severity", ""), -1),
+            group.get("semantic_key", ""),
+        ),
+    )
+
+
+def _render_summary(report: dict) -> None:
     capture = report["capture_health"]
     synthesis = report["synthesis_health"]
     consumer_signal = report["consumer_signal"]
@@ -110,7 +129,7 @@ def _render_summary(report: dict) -> None:
         summary = snap.get("summary", {})
         active = summary.get("active_groups", 0)
         group_word = "provider group" if active == 1 else "provider groups"
-        top = highest_severity_group(snap)
+        top = _highest_severity_group(snap)
         if top is not None:
             typer.echo(f"  [{top.get('severity')}] {top.get('summary')}")
         typer.echo(f"  {active} {group_word} need attention")

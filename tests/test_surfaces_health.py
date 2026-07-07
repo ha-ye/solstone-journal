@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import builtins
 import json
 import os
 import re
@@ -1611,6 +1612,37 @@ def test_human_block_blocked(tmp_path, monkeypatch):
     assert "Fix provider settings: /app/settings/providers" in result.stdout
     assert "operator-only diagnostic detail" not in result.stdout
     assert "blocked_reason_code" not in result.stdout
+
+
+def test_human_block_renderer_stays_thin(tmp_path, monkeypatch):
+    _configure_env(tmp_path, monkeypatch)
+    _set_now(monkeypatch, _utc_dt("20260410"))
+    _minimal_facet_tree(tmp_path)
+    monkeypatch.setattr(
+        health_surface, "read_segment_backlog", lambda: _segment_backlog({})
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "build_readiness_snapshot",
+        _blocked_readiness_snapshot,
+    )
+    _patch_health_cli_client(tmp_path, monkeypatch)
+
+    from solstone.think.call import call_app
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "solstone.convey.readiness_snapshot":
+            raise AssertionError("health renderer imported journal readiness builder")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    result = _RUNNER.invoke(call_app, ["health", "summary"])
+
+    assert result.exit_code == 0
+    assert "Distinctive provider blocker summary" in result.stdout
 
 
 def test_human_block_unavailable(tmp_path, monkeypatch):

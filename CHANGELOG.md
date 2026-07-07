@@ -4,6 +4,12 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.8.1] - 2026-07-07
+
+### Fixed
+
+- sol-only installs now render provider readiness in `sol call health summary` without importing journal-only model setup code.
+
 ## [0.8.0] - 2026-07-07
 
 ### Added
