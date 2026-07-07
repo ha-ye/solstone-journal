@@ -12,7 +12,13 @@ Files: one `<endpoint>.json` per supported endpoint — `daily_sleep`,
 `sleep`, plus the AH-mirror overlap endpoints imported per decision
 O-5C: `daily_activity` (document-shaped) and `heartrate` (a time-series
 page whose rows carry `timestamp`/`bpm`/`source` and no document `id` or
-`day` — day attribution comes verbatim from the timestamp's date part).
+`day` — day attribution comes verbatim from the timestamp's date part),
+plus the 2026-07-07 additions: `daily_cardiovascular_age`
+(document-shaped, per openapi-1.35) and `blood_glucose` (a time-series
+page whose PINNED-ASSUMPTION rows carry `timestamp`/`glucose` in UTC —
+the endpoint is absent from the published spec; if the first
+post-reauthorization fetch shows a different shape, fix this fixture and
+its tests together).
 
 ## revisions/
 

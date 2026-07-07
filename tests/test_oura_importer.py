@@ -9,7 +9,6 @@ import ast
 import datetime as dt
 import json
 import sqlite3
-import sys
 from dataclasses import replace
 from importlib import import_module
 from pathlib import Path
@@ -60,9 +59,9 @@ APPLE_FIXTURE_ROOT = (
     / "apple_health_synthetic"
 )
 
-# Fixture bundle shape: 15 documents across 8 endpoints; each readiness
-# document also splits out a temperature-deviation row -> 17 rows.
-_FIXTURE_ROW_COUNT = 17
+# Fixture bundle shape: 21 documents across 10 endpoints; each readiness
+# document also splits out a temperature-deviation row -> 23 rows.
+_FIXTURE_ROW_COUNT = 23
 
 
 def _use_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -214,7 +213,7 @@ def _fixture_transport() -> ScriptedTransport:
 
 
 def _fake_tokens(access: str = "synthetic-access") -> SimpleNamespace:
-    # Mocks the OuraTokens contract from local_secrets (built separately).
+    # Mocks the OuraTokens contract from oura_auth.
     return SimpleNamespace(
         access_token=access,
         refresh_token="synthetic-refresh",
@@ -280,12 +279,16 @@ def test_parse_bundle_reads_all_supported_endpoint_files():
         "sleep",
         "daily_activity",
         "heartrate",
+        "daily_cardiovascular_age",
+        "blood_glucose",
     }
     assert len(bundle["daily_sleep"]) == 2
     assert len(bundle["sleep"]) == 2
     assert len(bundle["daily_stress"]) == 1
     assert len(bundle["daily_activity"]) == 2
     assert len(bundle["heartrate"]) == 4
+    assert len(bundle["daily_cardiovascular_age"]) == 2
+    assert len(bundle["blood_glucose"]) == 4
 
 
 def test_parse_single_endpoint_file():
@@ -318,6 +321,22 @@ def test_parse_heartrate_requires_timestamp_and_bpm():
     with pytest.raises(oura.OuraDocumentError, match="missing 'timestamp' or 'bpm'"):
         oura.parse_endpoint_document(
             "heartrate", {"data": [{"timestamp": "2026-01-02T03:15:00-07:00"}]}
+        )
+
+
+def test_parse_blood_glucose_requires_timestamp_and_glucose():
+    # Pins the assumed row shape for the undocumented blood_glucose series
+    # (see _SERIES_REQUIRED_FIELDS): if the live API names its value field
+    # differently, the first post-reauthorization fetch fails loudly here.
+    with pytest.raises(
+        oura.OuraDocumentError, match="missing 'timestamp' or 'glucose'"
+    ):
+        oura.parse_endpoint_document("blood_glucose", {"data": [{"glucose": 92}]})
+    with pytest.raises(
+        oura.OuraDocumentError, match="missing 'timestamp' or 'glucose'"
+    ):
+        oura.parse_endpoint_document(
+            "blood_glucose", {"data": [{"timestamp": "2026-01-02T15:05:00Z"}]}
         )
 
 
@@ -371,6 +390,8 @@ def test_normalize_bundle_emits_expected_record_types():
         "oura.sleep",
         "oura.daily_activity",
         "oura.heartrate",
+        "oura.daily_cardiovascular_age",
+        "oura.blood_glucose",
     }
     # Temperature deviation splits out of each readiness document.
     assert len(by_type["oura.temperature_deviation"]) == 2
@@ -463,6 +484,83 @@ def test_normalize_heartrate_converts_utc_to_owner_local_day_and_hour():
         "raw_timestamp": "2026-07-01T00:02:57.000Z",
         "timezone": "America/Denver",
     }
+
+
+def test_normalize_daily_cardiovascular_age_uses_oura_day_verbatim():
+    # Documented endpoint (openapi-1.35 PublicDailyCardiovascularAge):
+    # day-granularity documents with id + day required. The journal day is
+    # Oura's day field verbatim — no local-time recomputation.
+    items = _normalized_items()
+    rows = [
+        item.row
+        for item in items
+        if item.row["record_type"] == "oura.daily_cardiovascular_age"
+    ]
+
+    assert len(rows) == 2
+    first = next(row for row in rows if row["day"] == "20260102")
+    assert first["kind"] == "daily_summary"
+    assert first["value"] == 34
+    assert first["unit"] == "years"
+    assert first["source_record_id"] == "synthetic-cardio-age-2026-01-02"
+    assert first["metadata"] == {"pulse_wave_velocity": 7.1}
+    # The second document carries a null pulse_wave_velocity — it must
+    # not appear in metadata (nulls are dropped, like every other field).
+    second = next(row for row in rows if row["day"] == "20260103")
+    assert second["value"] == 35
+    assert second["metadata"] == {}
+
+
+def test_normalize_blood_glucose_converts_utc_and_synthesizes_identity():
+    # PINNED ASSUMPTIONS for the undocumented blood_glucose series (see
+    # _normalize_item): heartrate-shaped rows, UTC instants, mg/dL. The
+    # first post-reauthorization sync confirms or falsifies these; if the
+    # live shape differs, fix the fixture AND this test together.
+    items = _normalized_items()
+    rows = [
+        item.row for item in items if item.row["record_type"] == "oura.blood_glucose"
+    ]
+
+    assert len(rows) == 4
+    first = next(
+        row
+        for row in rows
+        if row["metadata"]["raw_timestamp"].startswith("2026-01-02T15")
+    )
+    assert first["kind"] == "sample"
+    assert first["value"] == 92
+    assert first["unit"] == "mg/dL"
+    assert first["source_record_id"] == "blood_glucose/2026-01-02T15:05:00Z"
+    assert first["day"] == "20260102"
+    assert first["start_date"] == "2026-01-02T08:05:00-07:00"
+    assert first["metadata"] == {
+        "raw_timestamp": "2026-01-02T15:05:00Z",
+        "timezone": "America/Denver",
+    }
+    # The UTC->owner-local conversion is load-bearing: a 04:20Z sample
+    # belongs to the PREVIOUS Denver day.
+    cross_midnight = next(
+        row
+        for row in rows
+        if row["metadata"]["raw_timestamp"] == "2026-01-03T04:20:00Z"
+    )
+    assert cross_midnight["day"] == "20260102"
+    assert cross_midnight["start_date"] == "2026-01-02T21:20:00-07:00"
+
+
+def test_blood_glucose_dedupe_key_is_value_independent():
+    # A re-fetched sample at the same timestamp with a corrected reading
+    # must update in place, exactly like heartrate revisions.
+    sample = {"timestamp": "2026-01-02T15:05:00Z", "glucose": 92}
+    revised = dict(sample, glucose=95)
+
+    def key(item: dict) -> str:
+        normalized = oura.normalize_bundle(
+            {"blood_glucose": [item]}, import_id="x", raw_ref_root="x"
+        )
+        return normalized[0].row["dedupe_key"]
+
+    assert key(sample) == key(revised)
 
 
 def test_heartrate_dedupe_key_is_bpm_independent():
@@ -883,6 +981,8 @@ def test_preview_counts_documents_and_days():
     assert "sleep=2" in preview.summary
     assert "daily_activity=2" in preview.summary
     assert "heartrate=4" in preview.summary
+    assert "daily_cardiovascular_age=2" in preview.summary
+    assert "blood_glucose=4" in preview.summary
     assert f"source_family={SOURCE_OURA_API}" in preview.summary
 
 
@@ -1016,10 +1116,13 @@ def test_render_day_summary_attributes_every_score_to_oura():
     assert "Nightly blood oxygen 97.4% · Oura's average" in summary
     assert "Temperature deviation -0.21 °C · Oura's measurement" in summary
     assert "Activity score 85 · Oura's score" in summary
+    assert "Cardiovascular age 34 · Oura's estimate" in summary
     assert "Sleep 7h 19m · Oura's staging" in summary
     assert "deep 1h 31m" in summary
-    # Heartrate samples are a series, never summarized into day prose.
+    # Heartrate and blood-glucose samples are series, never summarized
+    # into day prose.
     assert "bpm" not in summary
+    assert "glucose" not in summary.lower()
     assert "brought in via the Oura API · import 20260105_000000" in summary
 
 
@@ -1140,9 +1243,42 @@ def test_fetch_second_401_after_refresh_fails_loud():
     transport.script("daily_sleep", _status(401), _status(401))
     client = _canned_client(transport, refresh_tokens=refresh)
 
-    with pytest.raises(oura.OuraApiError, match="after one token refresh"):
+    with pytest.raises(
+        oura.OuraEndpointUnauthorized, match="missing this endpoint's scope"
+    ):
         client.fetch_endpoint(
             "daily_sleep", start_day="2026-01-01", end_day="2026-01-10"
+        )
+
+    assert refresh_calls == ["synthetic-client-id"]
+
+
+def test_client_refreshes_at_most_once_per_instance():
+    # A second endpoint that 401s after an earlier successful refresh is a
+    # scope gap: no second refresh grant is spent (refresh tokens rotate),
+    # and the failure is the endpoint-scoped exception the sync engine
+    # degrades on.
+    refresh_calls: list[str] = []
+
+    def refresh(tokens, *, client_id):
+        refresh_calls.append(client_id)
+        return _fake_tokens("refreshed-access")
+
+    transport = ScriptedTransport()
+    transport.script(
+        "daily_sleep", _status(401), _ok_page(_fixture_items("daily_sleep"))
+    )
+    transport.script("blood_glucose", _status(401))
+    client = _canned_client(transport, refresh_tokens=refresh)
+
+    fetched = client.fetch_endpoint(
+        "daily_sleep", start_day="2026-01-01", end_day="2026-01-10"
+    )
+    assert len(fetched.items) == 2
+
+    with pytest.raises(oura.OuraEndpointUnauthorized):
+        client.fetch_endpoint(
+            "blood_glucose", start_day="2026-01-04", end_day="2026-01-10"
         )
 
     assert refresh_calls == ["synthetic-client-id"]
@@ -1191,6 +1327,21 @@ def test_heartrate_fetch_uses_datetime_window_params():
     client = _canned_client(transport)
 
     client.fetch_endpoint("heartrate", start_day="2026-01-01", end_day="2026-01-10")
+
+    url = transport.calls[0][0]
+    assert "start_datetime=2026-01-01T00%3A00%3A00%2B00%3A00" in url
+    assert "end_datetime=2026-01-10T23%3A59%3A59%2B00%3A00" in url
+    assert "start_date=" not in url
+
+
+def test_blood_glucose_fetch_uses_datetime_window_params():
+    # Pinned assumption: blood_glucose paginates by datetime like the
+    # heartrate series (the endpoint is absent from openapi-1.35).
+    transport = ScriptedTransport()
+    transport.script("blood_glucose", _ok_page(_fixture_items("blood_glucose")))
+    client = _canned_client(transport)
+
+    client.fetch_endpoint("blood_glucose", start_day="2026-01-01", end_day="2026-01-10")
 
     url = transport.calls[0][0]
     assert "start_datetime=2026-01-01T00%3A00%3A00%2B00%3A00" in url
@@ -1251,6 +1402,18 @@ def test_first_sync_save_writes_bundle_dedupe_and_cursor(tmp_path: Path, monkeyp
     assert state["trailing_refetch_days"] == oura.TRAILING_REFETCH_DAYS
     assert state["endpoints"]["daily_readiness"]["high_water_day"] == "2026-01-03"
     assert state["endpoints"]["heartrate"]["high_water_day"] == "2026-01-03"
+    # Datetime-paged watermarks come from the raw (UTC) day of the newest
+    # sample; the >=7-day trailing refetch absorbs the local-day skew.
+    assert state["endpoints"]["blood_glucose"]["high_water_day"] == "2026-01-03"
+    assert (
+        state["endpoints"]["daily_cardiovascular_age"]["high_water_day"] == "2026-01-03"
+    )
+    # Every fetched endpoint is marked covered so empty endpoints never
+    # re-walk the backfill horizon on later runs.
+    assert all(
+        state["endpoints"][endpoint]["backfill_complete"] is True
+        for endpoint in oura.SYNC_ENDPOINTS
+    )
     assert state["last_result"]["import_id"] == import_id
     assert state["last_result"]["inserted"] == _FIXTURE_ROW_COUNT
 
@@ -1269,11 +1432,15 @@ def test_first_sync_save_writes_bundle_dedupe_and_cursor(tmp_path: Path, monkeyp
 def test_window_days_overrides_first_sync_window(tmp_path: Path, monkeypatch):
     journal = _use_journal(tmp_path, monkeypatch)
     transport = _fixture_transport()
-    # A 91-inclusive-day window chunks heartrate into three <=31-day
-    # requests (Oura 400s over-wide heartrate ranges — found live during
-    # the 2026-07-06 full-history backfill).
+    # A 91-inclusive-day window chunks the datetime-paged series into
+    # three <=31-day requests each (Oura 400s over-wide heartrate ranges —
+    # found live during the 2026-07-06 full-history backfill;
+    # blood_glucose is capped identically by pinned assumption).
     transport.script(
         "heartrate", _fixture_page("heartrate"), _fixture_page("heartrate")
+    )
+    transport.script(
+        "blood_glucose", _fixture_page("blood_glucose"), _fixture_page("blood_glucose")
     )
     client = _canned_client(transport)
 
@@ -1293,6 +1460,8 @@ def test_window_days_overrides_first_sync_window(tmp_path: Path, monkeypatch):
     assert "start_datetime=2025-11-12" in heartrate_urls[1]
     assert "start_datetime=2025-12-13" in heartrate_urls[2]
     assert "end_datetime=2026-01-10" in heartrate_urls[2]
+    glucose_urls = [u for u, _ in transport.calls if "blood_glucose" in u]
+    assert len(glucose_urls) == 3
 
 
 def test_window_chunks_split_per_endpoint_limits():
@@ -1302,6 +1471,8 @@ def test_window_chunks_split_per_endpoint_limits():
         ("2025-11-12", "2025-12-12"),
         ("2025-12-13", "2026-01-10"),
     ]
+    # blood_glucose shares the 31-day series cap (pinned assumption).
+    assert oura._window_chunks("blood_glucose", "2025-10-12", "2026-01-10") == chunks
     assert oura._window_chunks("daily_readiness", "2025-10-12", "2026-01-10") == [
         ("2025-10-12", "2026-01-10")
     ]
@@ -1514,7 +1685,7 @@ def test_scheduled_sync_with_consent_passes_and_emits_cron_hint(
 
     assert result["downloaded"] == _FIXTURE_ROW_COUNT
     assert result["cron_hint"].startswith("0 */6 * * * ")
-    assert result["cron_hint"].endswith("import --sync oura --save --scheduled")
+    assert result["cron_hint"].endswith("importer --sync oura --save --scheduled")
 
 
 def test_sync_fails_loud_on_corrupt_cursor(tmp_path: Path, monkeypatch):
@@ -1813,11 +1984,14 @@ def test_quiet_backfill_with_window_days_writes_nothing(tmp_path: Path, monkeypa
     listing_before = _imports_contents(journal)
 
     # An explicit 90-day backfill window re-fetches only known rows (the
-    # heartrate lane chunks into three requests). Quiet backfills are rare
-    # but must also write nothing.
+    # datetime-paged series chunk into three requests each). Quiet
+    # backfills are rare but must also write nothing.
     transport = _fixture_transport()
     transport.script(
         "heartrate", _fixture_page("heartrate"), _fixture_page("heartrate")
+    )
+    transport.script(
+        "blood_glucose", _fixture_page("blood_glucose"), _fixture_page("blood_glucose")
     )
     second = oura.backend.sync(
         journal,
@@ -1832,6 +2006,7 @@ def test_quiet_backfill_with_window_days_writes_nothing(tmp_path: Path, monkeypa
     readiness_url = next(u for u, _ in transport.calls if "daily_readiness" in u)
     assert "start_date=2025-10-12" in readiness_url
     assert len([u for u, _ in transport.calls if "heartrate" in u]) == 3
+    assert len([u for u, _ in transport.calls if "blood_glucose" in u]) == 3
 
     assert second["quiet_run"] is True
     assert second["total"] > _FIXTURE_ROW_COUNT  # chunk overlap re-reads
@@ -1840,23 +2015,374 @@ def test_quiet_backfill_with_window_days_writes_nothing(tmp_path: Path, monkeypa
 
 
 # ---------------------------------------------------------------------------
-# CLI wiring — connect stub, gate output, cron-hint guidance
+# Cursor upgrade — endpoints added to SYNC_ENDPOINTS after a journal
+# already carries a cursor backfill from the horizon, not the trailing
+# window; endpoints that fetched empty never re-walk the horizon.
+# ---------------------------------------------------------------------------
+
+# The endpoint set a pre-upgrade cursor knows about (live cursors written
+# before daily_cardiovascular_age and blood_glucose joined SYNC_ENDPOINTS,
+# and before backfill_complete existed).
+_PRE_UPGRADE_ENDPOINTS = (
+    "daily_readiness",
+    "daily_sleep",
+    "daily_stress",
+    "daily_resilience",
+    "daily_spo2",
+    "sleep",
+    "daily_activity",
+    "heartrate",
+)
+
+
+def _write_pre_upgrade_cursor(journal: Path, high_water: str = "2026-01-03") -> None:
+    state = {
+        "schema": oura.SYNC_STATE_SCHEMA,
+        "last_sync": "2026-01-04T00:00:00+00:00",
+        "trailing_refetch_days": oura.TRAILING_REFETCH_DAYS,
+        "endpoints": {
+            endpoint: {"high_water_day": high_water, "next_token": None}
+            for endpoint in _PRE_UPGRADE_ENDPOINTS
+        },
+        "last_result": {
+            "import_id": "20260104_000000",
+            "quiet_run": False,
+            "rows": 17,
+            "inserted": 17,
+            "updated": 0,
+            "pages": 8,
+        },
+    }
+    cursor = journal / "imports" / "oura.json"
+    cursor.parent.mkdir(parents=True, exist_ok=True)
+    cursor.write_text(json.dumps(state), encoding="utf-8")
+
+
+def _script_horizon_pages(
+    transport: ScriptedTransport,
+    endpoint: str,
+    today: dt.date,
+    *,
+    data_on_last_chunk: bool = False,
+) -> int:
+    """Script one empty page per horizon chunk; optionally data on the last."""
+
+    chunks = oura._window_chunks(endpoint, oura.BACKFILL_HORIZON_DAY, today.isoformat())
+    for index in range(len(chunks)):
+        if data_on_last_chunk and index == len(chunks) - 1:
+            transport.script(endpoint, _fixture_page(endpoint))
+        else:
+            transport.script(endpoint, _ok_page([]))
+    return len(chunks)
+
+
+def test_cursor_upgrade_fetches_new_endpoints_from_backfill_horizon(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_pre_upgrade_cursor(journal)
+    today = dt.date(2026, 1, 10)
+
+    transport = ScriptedTransport()
+    for endpoint in _PRE_UPGRADE_ENDPOINTS:
+        transport.script(endpoint, _fixture_page(endpoint))
+    glucose_chunks = _script_horizon_pages(transport, "blood_glucose", today)
+    cardio_chunks = _script_horizon_pages(transport, "daily_cardiovascular_age", today)
+
+    result = oura.backend.sync(
+        journal, dry_run=True, client=_canned_client(transport), today=today
+    )
+
+    # Known endpoints resume from their watermark/trailing window …
+    readiness_url = next(u for u, _ in transport.calls if "daily_readiness" in u)
+    assert "start_date=2026-01-03" in readiness_url
+    # … the endpoints the cursor has never seen walk their FULL history
+    # from the backfill horizon, chunked per endpoint limits — not just
+    # the trailing window.
+    glucose_urls = [u for u, _ in transport.calls if "blood_glucose" in u]
+    assert len(glucose_urls) == glucose_chunks > 100  # 31-day chunks since 2015
+    assert "start_datetime=2015-01-01" in glucose_urls[0]
+    cardio_urls = [u for u, _ in transport.calls if "daily_cardiovascular_age" in u]
+    assert len(cardio_urls) == cardio_chunks
+    assert "start_date=2015-01-01" in cardio_urls[0]
+    assert result["windows"]["blood_glucose"][0] == "2015-01-01"
+    assert result["windows"]["daily_cardiovascular_age"][0] == "2015-01-01"
+    # Catalog runs never advance the cursor, so the pre-upgrade cursor is
+    # byte-identical afterwards.
+    assert json.loads((journal / "imports" / "oura.json").read_text())[
+        "endpoints"
+    ].keys() == set(_PRE_UPGRADE_ENDPOINTS)
+
+
+def test_cursor_upgrade_save_adopts_new_endpoints_and_marks_backfill(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    _write_pre_upgrade_cursor(journal)
+    today = dt.date(2026, 1, 10)
+
+    transport = ScriptedTransport()
+    for endpoint in _PRE_UPGRADE_ENDPOINTS:
+        transport.script(endpoint, _fixture_page(endpoint))
+    _script_horizon_pages(transport, "blood_glucose", today, data_on_last_chunk=True)
+    _script_horizon_pages(
+        transport, "daily_cardiovascular_age", today, data_on_last_chunk=True
+    )
+
+    result = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(transport),
+        today=today,
+    )
+
+    assert result["downloaded"] == _FIXTURE_ROW_COUNT  # fresh journal: all new
+    state = json.loads((journal / "imports" / "oura.json").read_text())
+    # The upgraded cursor now carries every endpoint: watermarks preserved
+    # or established, and the new endpoints marked backfilled.
+    assert set(state["endpoints"]) == set(oura.SYNC_ENDPOINTS)
+    assert state["endpoints"]["daily_readiness"]["high_water_day"] == "2026-01-03"
+    assert state["endpoints"]["blood_glucose"]["high_water_day"] == "2026-01-03"
+    assert state["endpoints"]["blood_glucose"]["backfill_complete"] is True
+    assert state["endpoints"]["daily_cardiovascular_age"]["backfill_complete"] is True
+
+
+def test_empty_backfilled_endpoint_polls_trailing_window_not_horizon(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    _write_pre_upgrade_cursor(journal)
+    today = dt.date(2026, 1, 10)
+
+    # First post-upgrade save: the new endpoints' full-horizon walks come
+    # back EMPTY (no CGM on the account, say).
+    transport = ScriptedTransport()
+    for endpoint in _PRE_UPGRADE_ENDPOINTS:
+        transport.script(endpoint, _fixture_page(endpoint))
+    _script_horizon_pages(transport, "blood_glucose", today)
+    _script_horizon_pages(transport, "daily_cardiovascular_age", today)
+    oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(transport),
+        today=today,
+    )
+
+    state = json.loads((journal / "imports" / "oura.json").read_text())
+    assert state["endpoints"]["blood_glucose"]["high_water_day"] is None
+    assert state["endpoints"]["blood_glucose"]["backfill_complete"] is True
+
+    # Next run: the empty-but-backfilled endpoint polls a modest trailing
+    # window — one request, never the ~130-chunk horizon walk again.
+    second_transport = ScriptedTransport()
+    for endpoint in oura.SYNC_ENDPOINTS:
+        second_transport.script(endpoint, _ok_page([]))
+    oura.backend.sync(
+        journal,
+        dry_run=True,
+        client=_canned_client(second_transport),
+        today=dt.date(2026, 1, 11),
+    )
+
+    glucose_urls = [u for u, _ in second_transport.calls if "blood_glucose" in u]
+    assert len(glucose_urls) == 1
+    assert "start_datetime=2015-01-01" not in glucose_urls[0]
+    assert "start_datetime=2025-12-12" in glucose_urls[0]  # today - 30d
+
+
+# ---------------------------------------------------------------------------
+# Scope degradation — an endpoint the authorization cannot read (401 after
+# a good refresh) is skipped, reported, and backfilled after reauth; the
+# rest of the run proceeds.
 # ---------------------------------------------------------------------------
 
 
-def test_cli_connect_oura_without_auth_layer_errors_clearly(monkeypatch):
-    cli = import_module("solstone.think.importers.cli")
-    # Force the import failure so this pins the missing-auth-layer message
-    # even on checkouts where the O2 auth layer has landed.
-    monkeypatch.setitem(sys.modules, "solstone.think.importers.oura_auth", None)
-    monkeypatch.delattr(
-        import_module("solstone.think.importers"), "oura_auth", raising=False
+def test_sync_skips_endpoint_missing_scope_and_keeps_run_alive(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    refresh_calls: list[str] = []
+
+    def refresh(tokens, *, client_id):
+        refresh_calls.append(client_id)
+        return _fake_tokens("refreshed-access")
+
+    transport = ScriptedTransport()
+    for endpoint in oura.SYNC_ENDPOINTS:
+        if endpoint == "blood_glucose":
+            # Pre-reauthorization reality: the token lacks the metabolic
+            # scope, so the endpoint 401s, once before the refresh and
+            # once after it.
+            transport.script(endpoint, _status(401), _status(401))
+        else:
+            transport.script(endpoint, _fixture_page(endpoint))
+
+    result = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(transport, refresh_tokens=refresh),
+        today=dt.date(2026, 1, 10),
     )
 
-    with pytest.raises(SystemExit) as exc_info:
-        cli._run_connect("oura")
+    # One refresh attempt total, then the endpoint-scoped skip.
+    assert refresh_calls == ["synthetic-client-id"]
+    # Every other endpoint landed: full bundle minus the 4 glucose rows.
+    assert result["downloaded"] == _FIXTURE_ROW_COUNT - 4
+    assert _dedupe_row_count(journal) == _FIXTURE_ROW_COUNT - 4
+    assert result["endpoints"]["blood_glucose"] == 0
+    # The gap is reported factually, with the reauthorization command.
+    assert len(result["errors"]) == 1
+    assert "blood_glucose" in result["errors"][0]
+    assert "journal importer --connect oura" in result["errors"][0]
+    # The skipped endpoint is not marked backfilled, so the first sync
+    # after reauthorization walks it from the horizon.
+    state = json.loads((journal / "imports" / "oura.json").read_text())
+    assert state["endpoints"]["blood_glucose"]["backfill_complete"] is False
+    assert state["endpoints"]["blood_glucose"]["high_water_day"] is None
+    assert state["endpoints"]["daily_readiness"]["backfill_complete"] is True
 
-    assert "auth layer not yet installed" in str(exc_info.value)
+    # Post-reauthorization: the next save backfills blood_glucose from the
+    # horizon and clears the gap.
+    today = dt.date(2026, 1, 11)
+    second_transport = ScriptedTransport()
+    for endpoint in oura.SYNC_ENDPOINTS:
+        if endpoint != "blood_glucose":
+            second_transport.script(endpoint, _ok_page([]))
+    _script_horizon_pages(
+        second_transport, "blood_glucose", today, data_on_last_chunk=True
+    )
+    second = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(second_transport),
+        today=today,
+    )
+
+    glucose_urls = [u for u, _ in second_transport.calls if "blood_glucose" in u]
+    assert "start_datetime=2015-01-01" in glucose_urls[0]
+    assert second["errors"] == []
+    assert second["downloaded"] == 4
+    state = json.loads((journal / "imports" / "oura.json").read_text())
+    assert state["endpoints"]["blood_glucose"]["backfill_complete"] is True
+    assert state["endpoints"]["blood_glucose"]["high_water_day"] == "2026-01-03"
+
+
+def test_token_death_still_fails_the_whole_run(tmp_path: Path, monkeypatch):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+
+    def dead_refresh(tokens, *, client_id):
+        raise oura.OuraApiError("refresh grant rejected")
+
+    transport = ScriptedTransport()
+    transport.script("daily_readiness", _status(401))
+
+    with pytest.raises(oura.OuraApiError, match="refresh grant rejected"):
+        oura.backend.sync(
+            journal,
+            dry_run=False,
+            confirm_health_save=True,
+            client=_canned_client(transport, refresh_tokens=dead_refresh),
+            today=dt.date(2026, 1, 10),
+        )
+
+    # The failed run leaves no cursor: the next run re-fetches the same
+    # windows and converges.
+    assert not (journal / "imports" / "oura.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Default auth wiring — tokens flow to and from journal config through the
+# config owner (the journal is the one trusted store)
+# ---------------------------------------------------------------------------
+
+
+def test_client_default_loaders_round_trip_tokens_through_journal_config(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    config_path = journal / "config" / "journal.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "identity": {"timezone": "America/Denver"},
+                "oura": {
+                    "client_id": "config-client-id",
+                    "client_secret": "config-secret-sensitive",
+                    "tokens": {
+                        "access_token": "config-access",
+                        "refresh_token": "config-refresh",
+                        "expires_at": 4102444800.0,
+                        "token_type": "bearer",
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def refresh(tokens, *, client_id):
+        # The default loader handed the config-held tokens to the refresh.
+        assert tokens.access_token == "config-access"
+        assert tokens.refresh_token == "config-refresh"
+        assert client_id == "config-client-id"
+        return _fake_tokens("refreshed-access")
+
+    transport = ScriptedTransport()
+    transport.script(
+        "daily_sleep", _status(401), _ok_page(_fixture_items("daily_sleep"))
+    )
+    client = oura.OuraApiClient(
+        transport,
+        journal_root=journal,
+        refresh_tokens=refresh,
+        sleep=_unexpected_sleep,
+    )
+
+    fetched = client.fetch_endpoint(
+        "daily_sleep", start_day="2026-01-01", end_day="2026-01-10"
+    )
+
+    assert len(fetched.items) == 2
+    assert transport.calls[0][1]["Authorization"] == "Bearer config-access"
+    assert transport.calls[1][1]["Authorization"] == "Bearer refreshed-access"
+    # The refreshed tokens persisted back into journal config through the
+    # config owner, preserving every other key in the file.
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config["oura"]["tokens"]["access_token"] == "refreshed-access"
+    assert config["oura"]["tokens"]["refresh_token"] == "synthetic-refresh"
+    assert config["oura"]["client_id"] == "config-client-id"
+    assert config["oura"]["client_secret"] == "config-secret-sensitive"
+    assert config["identity"]["timezone"] == "America/Denver"
+
+
+def test_client_without_config_tokens_raises_authorization_needed(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)  # config has no oura section
+    transport = ScriptedTransport()
+    client = oura.OuraApiClient(
+        transport, journal_root=journal, sleep=_unexpected_sleep
+    )
+
+    with pytest.raises(oura.OuraAuthorizationNeeded, match="--connect oura"):
+        client.fetch_endpoint(
+            "daily_sleep", start_day="2026-01-01", end_day="2026-01-10"
+        )
+
+    assert transport.calls == []
+
+
+# ---------------------------------------------------------------------------
+# CLI wiring — connect stub, gate output, cron-hint guidance
+# ---------------------------------------------------------------------------
 
 
 def test_cli_connect_oura_without_client_id_errors_clearly(tmp_path: Path, monkeypatch):
@@ -1869,37 +2395,49 @@ def test_cli_connect_oura_without_client_id_errors_clearly(tmp_path: Path, monke
     assert "client_id missing from journal config" in str(exc_info.value)
 
 
-def test_cli_connect_oura_runs_auth_and_saves_tokens(
+def test_cli_connect_oura_prints_scopes_and_saves_tokens_to_config(
     tmp_path: Path, monkeypatch, capsys
 ):
     journal = _use_journal(tmp_path, monkeypatch)
-    (journal / "config").mkdir(exist_ok=True)
     (journal / "config" / "journal.json").write_text(
         json.dumps({"oura": {"client_id": "config-client-id"}}), encoding="utf-8"
     )
     cli = import_module("solstone.think.importers.cli")
-    local_secrets = import_module("solstone.think.importers.local_secrets")
     oura_auth = import_module("solstone.think.importers.oura_auth")
 
     auth_calls: list[str] = []
-    saved: list = []
-    tokens = _fake_tokens("connected-access")
+    tokens = oura_auth.OuraTokens(
+        access_token="connected-access",
+        refresh_token="connected-refresh",
+        expires_at=4102444800.0,
+    )
 
     def fake_auth(*, client_id):
         auth_calls.append(client_id)
         return tokens
 
     monkeypatch.setattr(oura_auth, "run_owner_present_auth", fake_auth)
-    monkeypatch.setattr(local_secrets, "save_oura_tokens", saved.append)
 
     cli._run_connect("oura")
 
     assert auth_calls == ["config-client-id"]
-    assert saved == [tokens]
+    # Tokens landed in journal config — the one trusted store — with the
+    # client_id preserved beside them.
+    config = json.loads(
+        (journal / "config" / "journal.json").read_text(encoding="utf-8")
+    )
+    assert config["oura"]["client_id"] == "config-client-id"
+    assert config["oura"]["tokens"]["access_token"] == "connected-access"
+    assert config["oura"]["tokens"]["refresh_token"] == "connected-refresh"
     out = capsys.readouterr().out
-    assert "saved to the local secret store" in out
+    # The owner sees exactly which scopes are being requested — including
+    # the blood-glucose (metabolic) scope this reauthorization adds.
+    assert "Requesting scopes: " + " ".join(oura_auth.OAUTH_SCOPES) in out
+    assert "metabolic" in out
+    assert "saved to journal config" in out
     # No token material in owner-facing output.
     assert "connected-access" not in out
+    assert "connected-refresh" not in out
 
 
 def test_cli_connect_rejects_unknown_backend():
@@ -1950,7 +2488,7 @@ def test_cli_sync_prints_cron_hint_when_scheduled_consent_exists(
 
     out = capsys.readouterr().out
     assert "Crontab line (not installed):" in out
-    assert "import --sync oura --save --scheduled" in out
+    assert "importer --sync oura --save --scheduled" in out
 
 
 # ---------------------------------------------------------------------------

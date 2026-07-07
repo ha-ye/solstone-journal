@@ -231,22 +231,14 @@ def _run_connect(backend_name: str) -> None:
         raise SystemExit(
             f"Unknown connect backend: {backend_name}\nConnectable backends: oura"
         )
-    try:
-        from solstone.think.importers import local_secrets, oura_auth
-    except ImportError:
-        raise SystemExit(
-            "Oura auth layer not yet installed — "
-            "solstone.think.importers.oura_auth is missing. The "
-            "owner-present OAuth step (phase O2) installs it; nothing to "
-            "connect until then."
-        ) from None
-
+    from solstone.think.importers import oura_auth
     from solstone.think.importers.oura import OAUTH_CONFIG_KEY
     from solstone.think.journal_config import read_journal_config
 
-    # client_id is a PKCE public-client identifier — not a secret; it is
-    # read (read-only) from journal config. Tokens land in the local
-    # secret store outside the journal; nothing token-shaped is printed.
+    # client_id is a public-client identifier — not a secret; it is read
+    # (read-only) from journal config. Exchanged tokens land in journal
+    # config too, through oura_auth -> journal_config (the journal is the
+    # one trusted store); nothing token-shaped is printed.
     config = read_journal_config()
     section = config.get(OAUTH_CONFIG_KEY)
     client_id = section.get("client_id") if isinstance(section, dict) else None
@@ -259,15 +251,16 @@ def _run_connect(backend_name: str) -> None:
         )
 
     print("Opening the Oura authorization page — owner-present step.")
+    print("Requesting scopes: " + " ".join(oura_auth.OAUTH_SCOPES))
     try:
         tokens = oura_auth.run_owner_present_auth(client_id=client_id)
     except oura_auth.OuraAuthError as exc:
         raise SystemExit(f"Oura authorization did not complete: {exc}") from None
-    local_secrets.save_oura_tokens(tokens)
-    print("Oura authorization saved to the local secret store.")
+    oura_auth.save_oura_tokens(tokens)
+    print("Oura authorization saved to journal config (config/journal.json).")
     print("Next:")
-    print("  sol import --sync oura                 (catalog; writes nothing)")
-    print("  sol import --sync oura --save --confirm-health-save")
+    print("  journal importer --sync oura                 (catalog; writes nothing)")
+    print("  journal importer --sync oura --save --confirm-health-save")
 
 
 def _run_sync(

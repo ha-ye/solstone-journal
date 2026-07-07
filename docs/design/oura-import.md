@@ -180,7 +180,7 @@ chronicle/<day>/import.oura/000000_300/day_summary_transcript.md   # optional, s
 
 Never tokens, never client credentials, never raw values in the cursor. Catalog (dry-run) sync writes **nothing**, including the cursor; the cursor advances only on gated save runs.
 
-**Poll cadence.** The ring reaches Oura's cloud only when the phone app syncs, so aggressive polling buys nothing. Default: every 6 hours via the existing scheduler, plus manual `sol import --sync oura` (catalog by default, `--save` for the gated write path). Each save run re-fetches a trailing 7-day window to pick up Oura's document revisions — idempotent by document-id keys.
+**Poll cadence.** The ring reaches Oura's cloud only when the phone app syncs, so aggressive polling buys nothing. Default: every 6 hours via the existing scheduler, plus manual `journal importer --sync oura` (catalog by default, `--save` for the gated write path). Each save run re-fetches a trailing 7-day window to pick up Oura's document revisions — idempotent by document-id keys.
 
 **Backfill.** The API serves full history: page each endpoint in 30-day `start_date`/`end_date` chunks, following `next_token`, walking back from today until pages come back empty (or from the `personal_info` registration date if exposed). Resumable via `backfill.oldest_fetched_day`; runs inside the same gate + rate-limit budget (limit figure ⚠ verify at O2). Backfill is just repeated save-mode sync — no special write path.
 
@@ -230,7 +230,72 @@ Phase O3 extends the same gate to sync: any save-mode `sync()` calls `enforce_pr
 
 ---
 
-## 9. What landed with this doc (phase O0 inventory)
+## 9. Amendments — 2026-07-07 (token relocation + glucose/cardio lane)
+
+Upstream ruling (Jer, project owner, 2026-07-07): *"the journal is the one
+trusted store, so device OAuth tokens live there alongside everything else
+rather than machine-local. no carve-out for device tokens."* This restores
+§5's original token boundary and lands with the following changes, in one
+commit (the hourly sync lane runs against repo HEAD):
+
+- **Token storage (hard cut, no shims).** `OuraTokens` load/save moved from
+  `~/Library/Application Support/Solstone/secrets/oura/` into journal config
+  under `oura.tokens.{access_token, refresh_token, expires_at, token_type}`,
+  and the confidential-client secret into `oura.client_secret` — both read
+  and written exclusively through the config owner
+  (`solstone/think/journal_config.py`, writes under `hold_config_lock`).
+  Refresh rotation persists through the same path.
+  `solstone/think/importers/local_secrets.py` and the fingerprint-keyed
+  machine-local scheme are **deleted** (the old files on disk remain
+  untouched as a safety copy; they are simply no longer read).
+- **Scopes.** The connect flow (`journal importer --connect oura`) now
+  requests an explicit scope set and prints it for the owner:
+  `email personal daily heartrate workout tag session spo2 stress
+  heart_health metabolic`. The first eight are Oura's documented set;
+  `stress` / `heart_health` / `metabolic` are live but undocumented
+  (evidence: tidepool-org/platform's Oura partner integration maps
+  `extapi:stress` → daily_resilience, `extapi:heart_health` →
+  daily_cardiovascular_age + vo2_max, `extapi:metabolic` → blood_glucose;
+  Oura's authorize front door verifiably rewrites plain `scope=X` to
+  `extapi:X`). Empirical driver: our no-scope default grant reads
+  resilience and cardiovascular age but 401s on blood_glucose.
+- **Two new sync endpoints.**
+  - `daily_cardiovascular_age` — documented (openapi-1.35): day-paged
+    documents `{id, day, pulse_wave_velocity (m/s, nullable),
+    vascular_age (years, nullable)}`; journal day is Oura's `day`
+    verbatim; normalizes to `oura.daily_cardiovascular_age`
+    (value=vascular_age, unit=years).
+  - `blood_glucose` — live but absent from the published spec (route
+    exists: unauthenticated GET returns missing-token 400 where bogus
+    routes 404; 401 with our current token = scope gap, not 404).
+    **Pinned assumptions** (comment + tests; the first post-reauth sync
+    falsifies or confirms): heartrate-shaped series rows
+    `{timestamp, glucose}`, UTC instants converted to owner-local for
+    day/month (raw timestamp kept in `source_record_id`), mg/dL,
+    datetime-paged with a 31-day chunk cap.
+- **Cursor upgrade / backfill.** Per-endpoint cursor state gains
+  `backfill_complete`. Endpoints missing from an existing cursor are
+  fetched from `BACKFILL_HORIZON_DAY` (2015-01-01, pre-dating any Oura
+  data) on the first post-upgrade save — full history within chunk
+  limits, not just the trailing window. Endpoints that complete a fetch
+  with no data are marked backfilled and poll a 30-day trailing window
+  thereafter (no horizon re-walks). Fresh installs keep the deliberate
+  30-day first-sync window.
+- **Scope degradation (deploy safety).** A 401 that survives one good
+  token refresh raises `OuraEndpointUnauthorized`; the sync engine skips
+  that endpoint, reports it in `errors`, and keeps every other endpoint
+  syncing — so the hourly lane stays alive between this commit landing
+  and the owner's reauthorization, and the skipped endpoint backfills
+  from the horizon on the first post-reauth save.
+
+Operator steps after this lands: `journal importer --connect oura`
+(browser reauth with the printed scopes), then
+`journal importer --sync oura --save --confirm-health-save` (the new
+endpoints backfill from the horizon automatically).
+
+---
+
+## 10. What landed with this doc (phase O0 inventory)
 
 - `solstone/think/importers/oura.py` — parse layer (`parse_oura_bundle`, `parse_endpoint_document`, `parse_oura_day`), normalizer (`normalize_bundle` → rows + `HealthDedupeRecord`s via `health_schema`), §13 copy reference (`render_day_summary`), `OuraImporter` (detect/preview/dry-run live; save gated then seamed), `OuraSyncBackend` + OAuth seams (all raise, pointing here). Zero network imports, test-enforced.
 - `solstone/think/importers/health_schema.py` — `SOURCE_OURA_API`, `KNOWN_SOURCE_FAMILIES` entry, friendly names for the seven `oura.*` record types.

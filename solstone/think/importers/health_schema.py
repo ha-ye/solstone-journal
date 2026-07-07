@@ -94,6 +94,8 @@ FRIENDLY_TYPE_NAMES: Final[Mapping[str, str]] = {
     # the pipe — presentation-side supersede keeps one canonical pipe.
     "oura.daily_activity": "Daily activity",
     "oura.heartrate": "Heart rate",
+    "oura.daily_cardiovascular_age": "Cardiovascular age",
+    "oura.blood_glucose": "Blood glucose",
 }
 
 # Owner-facing names for Oura score-contributor keys — the anatomies of

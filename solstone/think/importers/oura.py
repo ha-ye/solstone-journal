@@ -27,16 +27,21 @@ Timezone rule (load-bearing): Oura documents carry their own ``day``
 field, already attributed by Oura (a night belongs to the day it ended,
 matching the journal's cross-midnight canon). The journal day IS Oura's
 ``day`` field verbatim — never recomputed against local time. The
-``heartrate`` series is the exception: it carries no ``day`` field and
-Oura returns UTC instants, so samples are converted to the owner's
-journal timezone for ``start_date`` and day/month assignment while the
-raw timestamp stays in ``source_record_id`` for stable dedupe.
+instant-only series (``heartrate``, and ``blood_glucose`` by pinned
+assumption — see ``_normalize_item``) are the exception: they carry no
+``day`` field and Oura returns UTC instants, so samples are converted to
+the owner's journal timezone for ``start_date`` and day/month assignment
+while the raw timestamp stays in ``source_record_id`` for stable dedupe.
 
-Token boundary: access/refresh tokens live outside the journal behind
-``solstone.think.importers.local_secrets`` (L2 owner, built separately);
-this module only calls its loader/saver through lazy imports. The OAuth
-``client_id`` is a PKCE public-client identifier — not a secret — and is
-read (read-only) from journal config ``{"oura": {"client_id": ...}}``.
+Token boundary: OAuth tokens and the confidential-client secret live in
+the journal — the one trusted store (owner ruling, 2026-07-07; no
+machine-local carve-out for device tokens) — in journal config under the
+reserved ``oura`` key, read and written exclusively through the config
+owner ``solstone/think/journal_config.py`` (L2) via the
+``solstone.think.importers.oura_auth`` loaders/savers, lazily imported
+here so this module's import graph stays network-free. The OAuth
+``client_id`` is a public-client identifier — not a secret — read from
+the same config section.
 
 Design doc: ``oura_design_20260705.md`` (Codex outputs, 2026-07-03
 check-m-2), amended by the locked morning decisions O-1..O-9 (O-5
@@ -94,8 +99,9 @@ NORMALIZED_SCHEMA: Final = "solstone.health.oura.v1"
 IMPORT_STREAM: Final = "import.oura"
 SYNC_BACKEND_NAME: Final = "oura"
 SYNC_STATE_SCHEMA: Final = "solstone.import_sync.oura.v1"
-# Journal-config key holding the PKCE public client id (never tokens):
-# config/journal.json -> {"oura": {"client_id": ...}} — read-only here.
+# Journal-config section holding the Oura OAuth material (client_id,
+# client_secret, tokens.*): config/journal.json -> {"oura": {...}}.
+# Read-only here; writes route through oura_auth -> journal_config (L2).
 OAUTH_CONFIG_KEY: Final = "oura"
 DESIGN_DOC: Final = "oura_design_20260705.md"
 
@@ -109,12 +115,12 @@ DEFAULT_FIRST_SYNC_WINDOW_DAYS: Final = 30
 # every run re-fetches this trailing window; document-id dedupe keys make
 # the re-fetch an in-place upsert (L9-idempotent).
 TRAILING_REFETCH_DAYS: Final = 7
-
-AUTH_LAYER_MISSING_MESSAGE: Final = (
-    "Oura auth layer not yet installed "
-    "(solstone.think.importers.local_secrets / oura_auth) — the "
-    "owner-present OAuth step (phase O2) installs it."
-)
+# Backfill horizon for endpoints that join SYNC_ENDPOINTS after a journal
+# already carries a cursor: the first post-upgrade save walks the new
+# endpoint's full account history (chunked per _MAX_WINDOW_DAYS) instead
+# of a trailing window. 2015 predates the first consumer Oura ring, so no
+# account data can be older.
+BACKFILL_HORIZON_DAY: Final = "2015-01-01"
 
 _DAY_SUMMARY_SOURCE_LINE: Final = "brought in via the Oura API"
 
@@ -147,6 +153,8 @@ ENDPOINT_RECORD_TYPES: Final[Mapping[str, tuple[str, ...]]] = {
     "sleep": ("oura.sleep",),
     "daily_activity": ("oura.daily_activity",),
     "heartrate": ("oura.heartrate",),
+    "daily_cardiovascular_age": ("oura.daily_cardiovascular_age",),
+    "blood_glucose": ("oura.blood_glucose",),
 }
 
 # Endpoints the sync engine polls, in a fixed fetch order.
@@ -159,17 +167,38 @@ SYNC_ENDPOINTS: Final[tuple[str, ...]] = (
     "sleep",
     "daily_activity",
     "heartrate",
+    "daily_cardiovascular_age",
+    "blood_glucose",
 )
 
-# The heartrate series paginates by datetime (start_datetime/end_datetime),
-# not by day, and its rows carry no document id or day field.
-_DATETIME_PAGED_ENDPOINTS: Final = frozenset({"heartrate"})
+# Series endpoints that paginate by datetime (start_datetime/end_datetime),
+# not by day; their rows carry no document id or day field. blood_glucose
+# membership is a pinned assumption (see _SERIES_REQUIRED_FIELDS).
+_DATETIME_PAGED_ENDPOINTS: Final = frozenset({"heartrate", "blood_glucose"})
+
+# Required row fields per instant-series endpoint: (timestamp field,
+# value field). heartrate is documented (openapi-1.35 PublicHeartRateRow:
+# timestamp + bpm). blood_glucose is ABSENT from the published spec
+# (verified 2026-07-07: openapi-1.35 has no blood_glucose path or schema,
+# though the live route exists — missing-token 400 vs 404 for bogus
+# routes); its shape here is pinned to Oura's series-row convention of a
+# UTC ``timestamp`` plus a domain-named value field (heartrate -> bpm,
+# ring_battery_level -> level, hence blood_glucose -> glucose, mg/dL per
+# Oura's Stelo integration). The first post-reauthorization fetch
+# confirms or falsifies this pin — a mismatch fails loudly in
+# parse_endpoint_document, naming the missing fields.
+_SERIES_REQUIRED_FIELDS: Final[Mapping[str, tuple[str, str]]] = {
+    "heartrate": ("timestamp", "bpm"),
+    "blood_glucose": ("timestamp", "glucose"),
+}
 
 # Oura rejects over-wide windows per endpoint (heartrate 400s past ~1
 # month of datetime range — hit live during the 2026-07-06 full-history
-# backfill). Requests are chunked to these maxima and results
-# concatenated; pagination still runs within every chunk.
-_MAX_WINDOW_DAYS: Final = {"heartrate": 31}
+# backfill; blood_glucose is capped identically as a high-frequency
+# series by the same pinned assumption). Requests are chunked to these
+# maxima and results concatenated; pagination still runs within every
+# chunk.
+_MAX_WINDOW_DAYS: Final = {"heartrate": 31, "blood_glucose": 31}
 _DEFAULT_MAX_WINDOW_DAYS: Final = 364
 
 
@@ -182,7 +211,16 @@ class OuraApiError(RuntimeError):
 
 
 class OuraAuthorizationNeeded(OuraApiError):
-    """Raised when no usable Oura authorization exists on this machine."""
+    """Raised when no usable Oura authorization exists for this journal."""
+
+
+class OuraEndpointUnauthorized(OuraApiError):
+    """Raised when one endpoint stays 401 after a good token refresh.
+
+    Distinguishes a scope gap — this authorization cannot read this
+    endpoint, while other endpoints keep working — from token death,
+    where the refresh grant itself fails and aborts the run.
+    """
 
 
 class OuraSyncStateError(RuntimeError):
@@ -218,8 +256,9 @@ def parse_endpoint_document(
 
     The Oura API v2 returns ``{"data": [...], "next_token": ...}`` pages.
     Document-shaped endpoints require ``id`` and ``day`` on every item;
-    the ``heartrate`` series instead requires ``timestamp`` and ``bpm``
-    (its rows carry no document id — see ``_normalize_item``).
+    instant-series endpoints (``_SERIES_REQUIRED_FIELDS``) instead require
+    a timestamp plus their value field (their rows carry no document id —
+    see ``_normalize_item``).
     """
 
     if endpoint not in ENDPOINT_RECORD_TYPES:
@@ -233,6 +272,7 @@ def parse_endpoint_document(
             f"Oura {endpoint} document must carry a 'data' list, "
             f"got {type(data).__name__}"
         )
+    series_fields = _SERIES_REQUIRED_FIELDS.get(endpoint)
     items: list[dict[str, Any]] = []
     for index, item in enumerate(data):
         if not isinstance(item, dict):
@@ -240,10 +280,12 @@ def parse_endpoint_document(
                 f"Oura {endpoint} data[{index}] must be an object, "
                 f"got {type(item).__name__}"
             )
-        if endpoint == "heartrate":
-            if not item.get("timestamp") or item.get("bpm") is None:
+        if series_fields is not None:
+            timestamp_field, value_field = series_fields
+            if not item.get(timestamp_field) or item.get(value_field) is None:
                 raise OuraDocumentError(
-                    f"Oura {endpoint} data[{index}] is missing 'timestamp' or 'bpm'"
+                    f"Oura {endpoint} data[{index}] is missing "
+                    f"{timestamp_field!r} or {value_field!r}"
                 )
         elif not item.get("id") or not item.get("day"):
             raise OuraDocumentError(
@@ -593,6 +635,62 @@ def _normalize_item(
                 raw_ref=raw_ref,
             )
         )
+    elif endpoint == "daily_cardiovascular_age":
+        # Documented day-granularity endpoint (openapi-1.35
+        # PublicDailyCardiovascularAge: id + day required,
+        # pulse_wave_velocity m/s and vascular_age years nullable). The
+        # journal day is Oura's ``day`` field verbatim, like every other
+        # daily document.
+        rows.append(
+            _build_item(
+                record_type="oura.daily_cardiovascular_age",
+                kind="daily_summary",
+                source_record_id=str(item["id"]),
+                day=day,
+                start_time=str(item.get("timestamp") or item["day"]),
+                value=item.get("vascular_age"),
+                unit="years",
+                metadata=_pick(item, ("pulse_wave_velocity",)),
+                import_id=import_id,
+                raw_ref=raw_ref,
+            )
+        )
+    elif endpoint == "blood_glucose":
+        # PINNED ASSUMPTION (endpoint absent from openapi-1.35; see
+        # _SERIES_REQUIRED_FIELDS): blood_glucose is an instant series
+        # shaped like heartrate — no document id, no day field, and
+        # ``timestamp`` is a UTC instant (the spec types every series-row
+        # timestamp as UtcDateTime; heartrate empirically returns UTC-Z,
+        # commit e42d67a7). Day/month assignment therefore converts to
+        # the owner's journal timezone while the raw timestamp stays in
+        # source_record_id for stable dedupe; values are mg/dL (Oura's
+        # Stelo integration). The first post-reauthorization sync
+        # confirms or falsifies each pin — tests mark the fixture side.
+        timestamp = str(item["timestamp"])
+        local_timestamp = _owner_local_timestamp(timestamp, owner_timezone)
+        glucose_metadata: dict[str, Any] = {
+            "raw_timestamp": timestamp,
+            "timezone": _timezone_label(owner_timezone),
+        }
+        if item.get("source") is not None:
+            glucose_metadata["source"] = str(item["source"])
+        rows.append(
+            _build_item(
+                record_type="oura.blood_glucose",
+                kind="sample",
+                # One CGM stream per account: the raw timestamp alone is
+                # the stable sample identity (unlike heartrate, whose
+                # sources can collide on a timestamp).
+                source_record_id=f"blood_glucose/{timestamp}",
+                day=parse_oura_day(local_timestamp[:10]) or "",
+                start_time=local_timestamp,
+                value=item.get("glucose"),
+                unit="mg/dL",
+                metadata=glucose_metadata,
+                import_id=import_id,
+                raw_ref=raw_ref,
+            )
+        )
     else:  # pragma: no cover - parse_endpoint_document rejects these first
         raise OuraDocumentError(f"Unsupported Oura endpoint {endpoint!r}")
     return rows
@@ -714,6 +812,8 @@ def _fact_line(row: Mapping[str, Any]) -> str | None:
         return f"Nightly blood oxygen {value}% · Oura's average"
     if record_type == "oura.daily_activity":
         return f"Activity score {value} · Oura's score"
+    if record_type == "oura.daily_cardiovascular_age":
+        return f"Cardiovascular age {value} · Oura's estimate"
     if record_type == "oura.temperature_deviation":
         return f"Temperature deviation {value:+.2f} °C · Oura's measurement"
     if record_type == "oura.sleep":
@@ -723,8 +823,9 @@ def _fact_line(row: Mapping[str, Any]) -> str | None:
         if stages:
             line += f" — {stages}"
         return line
-    # Heartrate samples are a series, not a day fact — never summarized
-    # into prose here (no derived aggregates presented as ours).
+    # Heartrate and blood-glucose samples are series, not day facts —
+    # never summarized into prose here (no derived aggregates presented
+    # as ours).
     return None
 
 
@@ -891,26 +992,29 @@ class OuraFetchResult:
     requests: int
 
 
-def _load_tokens_via_local_secrets() -> Any:
-    try:
-        from solstone.think.importers.local_secrets import load_oura_tokens
-    except ImportError as exc:
-        raise OuraAuthorizationNeeded(AUTH_LAYER_MISSING_MESSAGE) from exc
-    return load_oura_tokens()
+# oura_auth is imported lazily throughout: it carries network-capable
+# machinery (urllib.request, webbrowser, http.server) that must stay out
+# of this module's import graph (see the no-network guard in tests).
 
 
-def _save_tokens_via_local_secrets(tokens: Any) -> None:
-    from solstone.think.importers.local_secrets import save_oura_tokens
+def _load_tokens_from_config(journal_root: Path | None) -> Any:
+    from solstone.think.importers.oura_auth import load_oura_tokens
 
-    save_oura_tokens(tokens)
+    return load_oura_tokens(journal_root)
 
 
-def _refresh_tokens_via_oura_auth(tokens: Any, *, client_id: str) -> Any:
-    try:
-        from solstone.think.importers.oura_auth import refresh_tokens
-    except ImportError as exc:
-        raise OuraAuthorizationNeeded(AUTH_LAYER_MISSING_MESSAGE) from exc
-    return refresh_tokens(tokens, client_id=client_id)
+def _save_tokens_to_config(tokens: Any, journal_root: Path | None) -> None:
+    from solstone.think.importers.oura_auth import save_oura_tokens
+
+    save_oura_tokens(tokens, journal_root)
+
+
+def _refresh_tokens_via_oura_auth(
+    tokens: Any, *, client_id: str, journal_root: Path | None
+) -> Any:
+    from solstone.think.importers.oura_auth import refresh_tokens
+
+    return refresh_tokens(tokens, client_id=client_id, journal_root=journal_root)
 
 
 class OuraApiClient:
@@ -921,11 +1025,15 @@ class OuraApiClient:
     sequential — one request per page per endpoint per run — and 429s are
     honored with bounded exponential backoff rather than retried hot.
 
-    Auth flow: bearer token from ``local_secrets`` (lazy import; tests
-    inject fakes). A 401 triggers exactly one ``oura_auth.refresh_tokens``
-    attempt (persisted via ``save_oura_tokens``), then the request is
-    retried once; a second 401 fails loud. Backoff sleeps go through an
-    injectable ``sleep`` callable so tests never wait.
+    Auth flow: bearer token from journal config (via ``oura_auth``, lazy
+    import; tests inject fakes). A 401 triggers at most one
+    ``oura_auth.refresh_tokens`` attempt per client instance (persisted
+    via ``save_oura_tokens``), then the request is retried once; a 401
+    after a successful refresh raises ``OuraEndpointUnauthorized`` — the
+    authorization is missing that endpoint's scope, which the sync engine
+    degrades to a per-endpoint skip instead of failing the whole run.
+    Backoff sleeps go through an injectable ``sleep`` callable so tests
+    never wait.
     """
 
     def __init__(
@@ -945,14 +1053,23 @@ class OuraApiClient:
         self._transport = transport if transport is not None else _default_transport
         self._journal_root = Path(journal_root) if journal_root is not None else None
         self._client_id = client_id
-        self._load_tokens = load_tokens or _load_tokens_via_local_secrets
-        self._save_tokens = save_tokens or _save_tokens_via_local_secrets
-        self._refresh_tokens = refresh_tokens or _refresh_tokens_via_oura_auth
+        self._load_tokens = load_tokens or (
+            lambda: _load_tokens_from_config(self._journal_root)
+        )
+        self._save_tokens = save_tokens or (
+            lambda tokens: _save_tokens_to_config(tokens, self._journal_root)
+        )
+        self._refresh_tokens = refresh_tokens or (
+            lambda tokens, *, client_id: _refresh_tokens_via_oura_auth(
+                tokens, client_id=client_id, journal_root=self._journal_root
+            )
+        )
         self._sleep = sleep if sleep is not None else time.sleep
         self._max_attempts = max_attempts
         self._backoff_base_seconds = backoff_base_seconds
         self._max_pages_per_endpoint = max_pages_per_endpoint
         self._tokens: Any = None
+        self._refresh_attempted = False
 
     def fetch_endpoint(
         self, endpoint: str, *, start_day: str, end_day: str
@@ -1010,20 +1127,22 @@ class OuraApiClient:
 
     def _request_json(self, endpoint: str, query: dict[str, str]) -> dict[str, Any]:
         url = f"{API_BASE_URL}/{endpoint}?{urlencode(sorted(query.items()))}"
-        refreshed = False
         retryable_failures = 0
         while True:
             headers = {"Authorization": f"Bearer {self._access_token()}"}
             response = self._transport(url, headers)
             if response.status == 401:
-                if refreshed:
-                    raise OuraApiError(
-                        f"Oura API {endpoint}: still unauthorized after one "
-                        "token refresh — re-run owner-present authorization "
-                        "(sol import --connect oura)."
+                # At most one refresh per client instance: a 401 with a
+                # freshly refreshed token means the grant is missing this
+                # endpoint's scope, not that the token expired.
+                if self._refresh_attempted:
+                    raise OuraEndpointUnauthorized(
+                        f"Oura API {endpoint}: still unauthorized after a "
+                        "token refresh — the authorization is missing this "
+                        "endpoint's scope. Re-run owner-present: "
+                        "journal importer --connect oura"
                     )
                 self._refresh_once()
-                refreshed = True
                 continue
             if response.status == 429 or 500 <= response.status <= 599:
                 retryable_failures += 1
@@ -1060,12 +1179,13 @@ class OuraApiClient:
             self._tokens = self._load_tokens()
         if self._tokens is None:
             raise OuraAuthorizationNeeded(
-                "Oura authorization needed — no tokens on this machine. "
-                "Run owner-present: sol import --connect oura"
+                "Oura authorization needed — no tokens in journal config. "
+                "Run owner-present: journal importer --connect oura"
             )
         return self._tokens.access_token
 
     def _refresh_once(self) -> None:
+        self._refresh_attempted = True
         refreshed = self._refresh_tokens(
             self._tokens, client_id=self._resolve_client_id()
         )
@@ -1087,7 +1207,7 @@ class OuraApiClient:
             raise OuraAuthorizationNeeded(
                 "Oura client_id missing from journal config "
                 '(config/journal.json -> {"oura": {"client_id": ...}}) — '
-                "run owner-present: sol import --connect oura"
+                "run owner-present: journal importer --connect oura"
             )
         return client_id
 
@@ -1179,17 +1299,34 @@ class OuraSyncBackend:
         bundle: dict[str, list[dict[str, Any]]] = {}
         raw_pages: dict[str, list[dict[str, Any]]] = {}
         windows: dict[str, tuple[str, str]] = {}
+        errors: list[str] = []
+        fetched_endpoints: set[str] = set()
         pages_fetched = 0
         for endpoint in SYNC_ENDPOINTS:
             window = _sync_window(
                 state, endpoint, today=resolved_today, window_days=window_days
             )
             windows[endpoint] = window
-            fetched = api.fetch_endpoint(
-                endpoint, start_day=window[0], end_day=window[1]
-            )
+            try:
+                fetched = api.fetch_endpoint(
+                    endpoint, start_day=window[0], end_day=window[1]
+                )
+            except OuraEndpointUnauthorized as exc:
+                # Scope gap on one endpoint (e.g. a newly added endpoint
+                # before the owner reauthorizes with its scope): skip it,
+                # keep every other endpoint syncing, and report the fact.
+                # The cursor never marks a skipped endpoint backfilled,
+                # so the first post-reauthorization save fetches it from
+                # the backfill horizon. Token death is different — the
+                # refresh grant itself fails and aborts the whole run.
+                logger.warning("Oura sync: %s", exc)
+                errors.append(str(exc))
+                bundle[endpoint] = []
+                raw_pages[endpoint] = []
+                continue
             bundle[endpoint] = fetched.items
             raw_pages[endpoint] = fetched.pages
+            fetched_endpoints.add(endpoint)
             pages_fetched += fetched.requests
 
         if dry_run:
@@ -1212,6 +1349,7 @@ class OuraSyncBackend:
                 months=[],
                 cron_hint=None,
                 known_rows=known,
+                errors=errors,
             )
 
         # Quiet-run check: classify the fetch against the dedupe ledger
@@ -1241,6 +1379,7 @@ class OuraSyncBackend:
                 updated=0,
                 pages=pages_fetched,
                 quiet_run=True,
+                fetched_endpoints=fetched_endpoints,
             )
             save_sync_state(journal_root, SYNC_BACKEND_NAME, new_state)
             return _sync_result(
@@ -1255,6 +1394,7 @@ class OuraSyncBackend:
                 months=[],
                 cron_hint=_scheduled_cron_hint(journal_root),
                 quiet_run=True,
+                errors=errors,
             )
 
         import_id = _new_import_id(journal_root)
@@ -1284,6 +1424,7 @@ class OuraSyncBackend:
             inserted=saved["inserted"],
             updated=saved["updated"],
             pages=pages_fetched,
+            fetched_endpoints=fetched_endpoints,
         )
         save_sync_state(journal_root, SYNC_BACKEND_NAME, new_state)
 
@@ -1299,6 +1440,7 @@ class OuraSyncBackend:
             updated=saved["updated"],
             months=saved["months"],
             cron_hint=cron_hint,
+            errors=errors,
         )
 
 
@@ -1400,6 +1542,7 @@ def _sync_result(
     cron_hint: str | None,
     known_rows: int = 0,
     quiet_run: bool = False,
+    errors: list[str] | None = None,
 ) -> dict[str, Any]:
     rows = len(items)
     days = sorted({item.day for item in items if item.day})
@@ -1432,7 +1575,7 @@ def _sync_result(
         "known_refetch": known_rows if dry_run else 0,
         "imported": known_rows if dry_run else updated,
         "downloaded": 0 if dry_run else inserted,
-        "errors": [],
+        "errors": list(errors or []),
         # Oura-specific detail:
         "rows": rows,
         "inserted": inserted,
@@ -1512,6 +1655,15 @@ def _endpoint_watermark(
         ) from None
 
 
+def _endpoint_backfill_complete(state: Mapping[str, Any] | None, endpoint: str) -> bool:
+    """Whether a completed save run has ever covered this endpoint."""
+
+    if not state:
+        return False
+    info = (state.get("endpoints") or {}).get(endpoint) or {}
+    return info.get("backfill_complete") is True
+
+
 def _sync_window(
     state: Mapping[str, Any] | None,
     endpoint: str,
@@ -1526,16 +1678,29 @@ def _sync_window(
         start = today - dt.timedelta(days=window_days)
     else:
         watermark = _endpoint_watermark(state, endpoint)
-        if watermark is None:
-            # First sync: a trailing window, NOT deep history.
-            start = today - dt.timedelta(days=DEFAULT_FIRST_SYNC_WINDOW_DAYS)
-        else:
+        if watermark is not None:
             # No-gap + revision rule: resume the day after the watermark,
             # but never start later than the trailing revision window.
             start = min(
                 watermark + dt.timedelta(days=1),
                 today - dt.timedelta(days=TRAILING_REFETCH_DAYS),
             )
+        elif state is None or not _endpoint_backfill_complete(state, endpoint):
+            if state is None:
+                # First sync of a fresh install: a trailing window, NOT
+                # deep history (a deliberate --window-days decision).
+                start = today - dt.timedelta(days=DEFAULT_FIRST_SYNC_WINDOW_DAYS)
+            else:
+                # Cursor-upgrade path: this endpoint joined SYNC_ENDPOINTS
+                # after the journal already had a cursor. Treat it as
+                # never-synced and backfill its full history (chunked per
+                # _MAX_WINDOW_DAYS) — not just the trailing window.
+                start = dt.date.fromisoformat(BACKFILL_HORIZON_DAY)
+        else:
+            # Backfilled before but no data ever seen (e.g. no CGM on the
+            # account): poll a modest trailing window instead of walking
+            # the full horizon every run.
+            start = today - dt.timedelta(days=DEFAULT_FIRST_SYNC_WINDOW_DAYS)
     if start > today:
         start = today
     return (start.isoformat(), today.isoformat())
@@ -1561,7 +1726,9 @@ def _advance_cursor_state(
     updated: int,
     pages: int,
     quiet_run: bool = False,
+    fetched_endpoints: set[str] | None = None,
 ) -> dict[str, Any]:
+    fetched_ok = fetched_endpoints if fetched_endpoints is not None else set()
     endpoints_state: dict[str, dict[str, Any]] = {}
     for endpoint in SYNC_ENDPOINTS:
         watermark = _endpoint_watermark(previous, endpoint)
@@ -1574,6 +1741,18 @@ def _advance_cursor_state(
         candidates.extend(fetched_days)
         endpoints_state[endpoint] = {
             "high_water_day": max(candidates) if candidates else None,
+            # An endpoint whose fetch completed on any save run has had
+            # its history covered (this window plus prior state) — even
+            # when the fetch came back empty. A skipped endpoint (scope
+            # gap) never earns the flag, so the first sync after
+            # reauthorization backfills it from the horizon. Once earned,
+            # the flag sticks. Note the deliberate asymmetry with
+            # high_water_day: the watermark is data-based (no-gap rule),
+            # this flag is fetch-based (anti-thrash for empty endpoints).
+            "backfill_complete": (
+                endpoint in fetched_ok
+                or _endpoint_backfill_complete(previous, endpoint)
+            ),
             # next_token is transient pagination state; a completed run
             # always drained it. Persisted for schema completeness.
             "next_token": None,
@@ -1733,8 +1912,10 @@ def _scheduled_cron_hint(journal_root: Path) -> str | None:
         return None
     cadence = str(consent.get("cadence") or "")
     hours = _cadence_hours(cadence)
-    sol_path = shutil.which("sol") or "sol"
-    return f"0 */{hours} * * * {sol_path} import --sync oura --save --scheduled"
+    # The host-side importer CLI (`journal importer`) is the sync surface;
+    # the thin `sol import` client rejects --sync on purpose.
+    journal_path = shutil.which("journal") or "journal"
+    return f"0 */{hours} * * * {journal_path} importer --sync oura --save --scheduled"
 
 
 def _cadence_hours(cadence: str) -> int:
