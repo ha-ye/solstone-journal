@@ -59,6 +59,8 @@ uv tool install solstone        # the sol client, on PATH
 uvx solstone --help             # or ephemerally — no install, one-shot
 ```
 
+Running the journal? Check the machine first: `uvx solstone check` renders a one-shot readiness verdict (GPU, memory, free disk) for the bundled local models — no install required. It exits 0 when ready, and prints exactly what's missing when not.
+
 A thin/no-extras install carries only `sol` and `solstone`; `journal setup`,
 `journal start`, and `mlx-vlm-server` require a `solstone-journal` host install.
 

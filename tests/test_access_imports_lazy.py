@@ -35,6 +35,7 @@ MODULES = (
     "solstone.think.notify_cli",
     "solstone.think.skills_cli",
     "solstone.think.doctor",
+    "solstone.think.check",
     "solstone.convey.reasons",
     "solstone.think.sol_cli",
     "solstone.think.import_client",

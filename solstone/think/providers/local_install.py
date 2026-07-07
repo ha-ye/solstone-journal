@@ -35,6 +35,10 @@ from solstone.think.providers.local import (
     LocalProviderError,
     normalize_model_id,
 )
+from solstone.think.providers.local_cuda import (
+    CUDA_EMBEDDED_ARCH_SET,
+    CUDA_MIN_DRIVER_VERSION,
+)
 from solstone.think.providers.memory import assess_memory
 from solstone.think.providers.oci_image import OciSignaturePolicy
 from solstone.think.utils import get_journal
@@ -117,9 +121,8 @@ CUDA_SERVER_PIN = CudaServerPin(
         "ghcr.io/ggml-org/llama.cpp@sha256:"
         "bc998878c040cf2095b4c5cf3b1cf56df3984053e2a2650e5c4c66a4953e10cb"
     ),
-    cuda_version=13,
-    # TODO(AC10): confirm via cuobjdump --list-elf libggml-cuda.so on hardware.
-    embedded_arch_set=frozenset({"sm_86", "sm_89", "sm_120a", "sm_121a"}),
+    cuda_version=CUDA_MIN_DRIVER_VERSION,
+    embedded_arch_set=CUDA_EMBEDDED_ARCH_SET,
     binary_name="llama-server",
     # TODO(AC10): confirm CUDA device flag + visible-devices env on the CUDA build.
     device_flag_value="CUDA0",

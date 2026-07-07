@@ -86,6 +86,8 @@ A `pip install solstone-journal` puts `journal` and `mlx-vlm-server` on PATH nat
 
 want only the thin `sol` client — to talk to a journal running elsewhere? `uv tool install solstone` (no extras), or `uvx solstone` for an ephemeral one-shot.
 
+not sure a computer is up to running the journal? `uvx solstone check` gives a one-shot readiness verdict — GPU, memory, and disk — before you install anything.
+
 then open http://localhost:5015 in a browser; the first-run wizard handles identity and the gemini API key.
 
 see [INSTALL.md](INSTALL.md) for prerequisites, observer install, and troubleshooting; see [CONTRIBUTING.md](CONTRIBUTING.md) if you want to develop on solstone from a source checkout.

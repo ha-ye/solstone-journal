@@ -84,7 +84,9 @@ def test_access_help_groups_match_canonical_membership() -> None:
     assert sol_cli.ACCESS_HELP_GROUPS == (
         sol_cli.HelpGroup(sol_cli.SOL_HELP_GROUP_CONVERSATION, ("chat",)),
         sol_cli.HelpGroup(sol_cli.SOL_HELP_GROUP_YOUR_JOURNAL, ("call", "import")),
-        sol_cli.HelpGroup(sol_cli.SOL_HELP_GROUP_DIAGNOSE, ("notify", "doctor")),
+        sol_cli.HelpGroup(
+            sol_cli.SOL_HELP_GROUP_DIAGNOSE, ("notify", "doctor", "check")
+        ),
         sol_cli.HelpGroup(sol_cli.SOL_HELP_GROUP_TOOLS, ("skills", "link", "contract")),
     )
 

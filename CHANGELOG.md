@@ -6,6 +6,10 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [0.8.1] - 2026-07-07
 
+### Added
+
+- `sol check` (also `journal check`) gives a one-shot readiness verdict for whether this computer can run the journal with the bundled local models — a zero-install pre-flight you can run with `uvx solstone check`, human-readable by default or `--json` for agents.
+
 ### Fixed
 
 - sol-only installs now render provider readiness in `sol call health summary` without importing journal-only model setup code.
