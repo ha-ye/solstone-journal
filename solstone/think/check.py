@@ -6,7 +6,9 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
+import os
 import platform
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError
@@ -20,6 +22,11 @@ DISK_MIN_BYTES = 20 * 1024**3
 MACOS_MEMORY_FLOOR_BYTES = 16 * 1024**3
 LINUX_RAM_WARN_BYTES = 8 * 1024**3
 FEEDBACK_URL = "https://github.com/solpbc/solstone-journal"
+_RENDER_NODE_INACCESSIBLE_HINT = (
+    "a GPU render node exists under /dev/dri but this user cannot open it — "
+    "add yourself to the render group with `sudo usermod -aG render $USER`, "
+    "then log out and back in and run `sol check` again"
+)
 
 
 @dataclass(frozen=True)
@@ -160,13 +167,28 @@ def _macos_memory_check() -> FitCheck:
     )
 
 
+def _render_nodes_present_but_inaccessible() -> bool:
+    """True iff >=1 /dev/dri render node exists and none are R/W-openable here."""
+    nodes = glob.glob("/dev/dri/renderD*")
+    if not nodes:
+        return False
+    return not any(os.access(node, os.R_OK | os.W_OK) for node in nodes)
+
+
 def _linux_gpu_check(probe: object) -> FitCheck:
     try:
         from solstone.think.providers import local_cuda, local_vulkan, memory
 
         if not bool(getattr(probe, "detected")):
             devices = local_vulkan.detect_gpus()
-            if not local_vulkan.gpu_probe_ok():
+            probe_ok = local_vulkan.gpu_probe_ok()
+            selected = local_vulkan.select_device(devices) if probe_ok else None
+            inaccessible = (
+                not probe_ok or selected is None
+            ) and _render_nodes_present_but_inaccessible()
+            if inaccessible:
+                return FitCheck("gpu", "unknown", _RENDER_NODE_INACCESSIBLE_HINT)
+            if not probe_ok:
                 return FitCheck(
                     "gpu",
                     "unknown",
@@ -175,7 +197,6 @@ def _linux_gpu_check(probe: object) -> FitCheck:
                         "GPU readiness is unknown"
                     ),
                 )
-            selected = local_vulkan.select_device(devices)
             if selected is None:
                 return FitCheck(
                     "gpu",

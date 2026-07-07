@@ -195,6 +195,7 @@ def test_linux_no_usable_gpu_blocks(
     monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", _undetected_probe)
     monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
     monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: True)
+    monkeypatch.setattr(check, "_render_nodes_present_but_inaccessible", lambda: False)
 
     result = check.build_check_report()
 
@@ -212,6 +213,7 @@ def test_linux_vulkan_probe_failed_warns(
     monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", _undetected_probe)
     monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
     monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: False)
+    monkeypatch.setattr(check, "_render_nodes_present_but_inaccessible", lambda: False)
 
     result = check.build_check_report()
 
@@ -228,11 +230,86 @@ def test_linux_nvidia_smi_absent_path_does_not_raise(
     monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", _undetected_probe)
     monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
     monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: True)
+    monkeypatch.setattr(check, "_render_nodes_present_but_inaccessible", lambda: False)
 
     result = check.build_check_report()
 
     assert result.report.overall == "blocked"
     assert _checks(result)["gpu"].severity == "blocked"
+
+
+def test_linux_inaccessible_render_node_hints(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    _patch_linux_ok(monkeypatch)
+    monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", _undetected_probe)
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: True)
+    monkeypatch.setattr(check, "_render_nodes_present_but_inaccessible", lambda: True)
+
+    result = check.build_check_report()
+
+    gpu_check = _checks(result)["gpu"]
+    assert gpu_check.severity == "unknown"
+    assert "usermod -aG render" in gpu_check.detail
+    assert result.report.overall == "warning"
+    assert check.main([]) == 1
+    capsys.readouterr()
+
+
+def test_linux_probe_failed_with_inaccessible_node_hints(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    _patch_linux_ok(monkeypatch)
+    monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", _undetected_probe)
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: False)
+    monkeypatch.setattr(check, "_render_nodes_present_but_inaccessible", lambda: True)
+
+    result = check.build_check_report()
+
+    gpu_check = _checks(result)["gpu"]
+    assert gpu_check.severity == "unknown"
+    assert "usermod -aG render" in gpu_check.detail
+    assert result.report.overall == "warning"
+    assert check.main([]) == 1
+    capsys.readouterr()
+
+
+def test_linux_accessible_render_node_still_blocks(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    _patch_linux_ok(monkeypatch)
+    monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", _undetected_probe)
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: True)
+    monkeypatch.setattr(check, "_render_nodes_present_but_inaccessible", lambda: False)
+
+    result = check.build_check_report()
+
+    gpu_check = _checks(result)["gpu"]
+    assert gpu_check.severity == "blocked"
+    assert "no usable GPU" in gpu_check.detail
+    assert result.report.overall == "blocked"
+    assert check.main([]) == 2
+    capsys.readouterr()
+
+
+def test_render_nodes_present_but_inaccessible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(check.glob, "glob", lambda _pat: [])
+    assert check._render_nodes_present_but_inaccessible() is False
+
+    monkeypatch.setattr(check.glob, "glob", lambda _pat: ["/dev/dri/renderD128"])
+    monkeypatch.setattr(check.os, "access", lambda _path, _mode: True)
+    assert check._render_nodes_present_but_inaccessible() is False
+
+    monkeypatch.setattr(check.os, "access", lambda _path, _mode: False)
+    assert check._render_nodes_present_but_inaccessible() is True
 
 
 def test_macos_arm64_ok(
