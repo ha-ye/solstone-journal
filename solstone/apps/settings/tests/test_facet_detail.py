@@ -160,10 +160,10 @@ def test_settings_index_has_hidden_guard():
     above the facet detail (the 2026-07-06 facet-detail-below-fold regression).
     Guard against its removal.
     """
-    workspace = (
-        Path(__file__).resolve().parents[1] / "workspace.html"
-    ).read_text(encoding="utf-8")
+    workspace = (Path(__file__).resolve().parents[1] / "workspace.html").read_text(
+        encoding="utf-8"
+    )
     assert ".settings-wrap[hidden]" in workspace
-    guard = workspace[workspace.index(".settings-wrap[hidden]"):]
+    guard = workspace[workspace.index(".settings-wrap[hidden]") :]
     guard = guard[: guard.index("}")]
     assert "display: none" in guard
