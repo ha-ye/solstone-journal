@@ -954,7 +954,14 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
 
                 frame = dict(entry)
                 frame_content = dict(frame.get("content") or {})
-                media_content = dict(frame_content.get("media") or {})
+                # content["media"] is photo metadata only when it's a dict (the
+                # external mentra-photo observer). For a "media"-category describe
+                # frame it is a markdown string — leave it untouched and treat the
+                # frame as carrying no photo metadata.
+                media_value = frame_content.get("media")
+                had_media_key = "media" in frame_content
+                is_photo_dict = isinstance(media_value, dict)
+                media_content = dict(media_value) if is_photo_dict else {}
                 frame_raw = (
                     frame.get("raw")
                     or media_content.get("photo_file")
@@ -977,8 +984,12 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                     media_content.setdefault("photo_file", frame_raw)
                     if description and not media_content.get("description"):
                         media_content["description"] = description
-                    frame_content["media"] = media_content
-                    frame["content"] = frame_content
+                    # Only persist synthesized photo metadata for genuine photo
+                    # frames (media was a dict) or frames with no "media" key —
+                    # never clobber a "media"-category markdown string.
+                    if is_photo_dict or not had_media_key:
+                        frame_content["media"] = media_content
+                        frame["content"] = frame_content
                     if description:
                         analysis = dict(frame.get("analysis") or {})
                         existing_description = str(

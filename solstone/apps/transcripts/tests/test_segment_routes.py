@@ -700,6 +700,44 @@ def test_segment_content_maps_still_images_to_screen_frames(client, journal_copy
     assert data["media_sizes"]["screen"] == len(b"first-image") + len(b"second-image")
 
 
+def test_segment_content_renders_media_category_string_frame(client, journal_copy):
+    day = "20990119"
+    stream = "default"
+    segment = "164900_60"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "frame-1.jpg").write_bytes(b"image-bytes")
+    _write_jsonl(
+        segment_dir / "screen.jsonl",
+        [
+            {"raw": "frame-1.jpg", "modality": "screen"},
+            {
+                "frame_id": 1,
+                "timestamp": 0,
+                "raw": "frame-1.jpg",
+                "analysis": {"primary": "media"},
+                "content": {"media": "A video player showing a nature documentary.\n"},
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    screen_warnings = [
+        detail
+        for detail in data.get("warning_details", [])
+        if detail["type"] == "screen"
+    ]
+    assert screen_warnings == []
+    screen_chunks = [chunk for chunk in data["chunks"] if chunk["type"] == "screen"]
+    assert screen_chunks
+    assert (
+        "A video player showing a nature documentary." in screen_chunks[0]["markdown"]
+    )
+
+
 def test_segment_content_returns_deduped_signal_context(client, journal_copy):
     day = "20990118"
     stream = "mentra-live"
