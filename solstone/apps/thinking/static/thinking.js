@@ -817,15 +817,15 @@
         scout.type = 'button';
         scout.className = 'textlink';
         scout.dataset.openView = 'scout-setup';
-        scout.textContent = ' scout';
+        scout.textContent = 'scout';
         scout.addEventListener('click', () => showView('scout-setup'));
         const byo = document.createElement('button');
         byo.type = 'button';
         byo.className = 'textlink';
         byo.dataset.openView = 'byo-setup';
-        byo.textContent = ' your own key';
+        byo.textContent = 'your own key';
         byo.addEventListener('click', () => showView('byo-setup'));
-        links.append(requirements, document.createTextNode(' or use'), scout, document.createTextNode(' /'), byo);
+        links.append(requirements, document.createTextNode(' or use '), scout, document.createTextNode(' / '), byo);
       }
     }
   }
