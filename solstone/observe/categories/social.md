@@ -1,6 +1,6 @@
 {
 
-  "description": "Social platforms — feeds, threads, profiles (X, Bluesky, Reddit, Instagram, TikTok, LinkedIn, Mastodon, HN)",
+  "description": "Social platforms with feeds, threads, profiles, posts, comments, or timelines (X, Bluesky, Reddit, Instagram, TikTok, LinkedIn, Mastodon, HN)",
   "output": "markdown",
   "extraction": "Extract when platform, feed context, or visible thread changes"
 

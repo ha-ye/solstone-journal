@@ -14,7 +14,7 @@ You have one job: identify the primary foreground and (if present) secondary app
 }
 
 Rules:
-- For visual_description summarize the **overall desktop view** in **1–2 sentences** for a visually impaired person, focus on layout, window arrangement, and types of content.
+- For visual_description summarize the **overall desktop view** in **1–2 sentences** for a visually impaired person, first state what kind of content dominates the screen (app UI, photo/video, feed/thread, text document, terminal, or meeting), then summarize layout and window arrangement.
 - For the most visible primary foreground app choose the best category from the list below.
 - Set "secondary" to "none" and "overlap" to true if the primary effectively fills the screen or no distinct second category/window is visible.
 - Set overlap to true if the primary app overlaps, covers, clips, or obscures the secondary in any way.
@@ -22,3 +22,8 @@ Rules:
 
 Categories (choose one):
 $categories
+
+Tie-break rules:
+- If a photo, video, image gallery, or visual media fills most of the screen, choose media even when it is inside a browser.
+- If the dominant surface is a feed, thread, profile, posts, comments, or timeline, choose social rather than browsing.
+- Choose browsing for ordinary web pages, search, news, shopping, or documentation when no social feed or media viewer dominates.
