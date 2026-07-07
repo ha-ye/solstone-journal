@@ -101,7 +101,7 @@ def is_name_variant_match(name_a: str, name_b: str) -> bool:
 def validate_aka_uniqueness(
     aka: str,
     entities: list[EntityDict],
-    exclude_entity_name: str | None = None,
+    exclude_entity_id: str | None = None,
     fuzzy_threshold: int = 90,
 ) -> str | None:
     """Check if an aka collides with another entity's name or aka.
@@ -112,25 +112,26 @@ def validate_aka_uniqueness(
     Args:
         aka: The alias to validate
         entities: List of entity dicts to check against
-        exclude_entity_name: Entity name to exclude from checks (the entity
-                            being updated). Case-sensitive exact match.
+        exclude_entity_id: Entity id to exclude from checks (the entity
+                           being updated). None excludes nothing.
         fuzzy_threshold: Minimum score for fuzzy matching (default: 90)
 
     Returns:
         Name of conflicting entity if collision found, None if ok
 
     Example:
-        >>> entities = [{"name": "CTT", ...}, {"name": "Other", ...}]
-        >>> validate_aka_uniqueness("CTT", entities, exclude_entity_name="Other")
-        "CTT"  # Conflicts with entity named "CTT"
-        >>> validate_aka_uniqueness("ctt", entities, exclude_entity_name="CTT")
-        None  # Ok, adding to CTT's own akas
+        >>> entities = [{"id": "michael_bauer", "name": "Michael Bauer", ...}]
+        >>> validate_aka_uniqueness("Michael Bauer (RadialNexus)", entities, exclude_entity_id="michael_bauer")
+        None  # Ok, adding an own-variant to Michael Bauer
+        >>> entities.append({"id": "radialnexus", "name": "RadialNexus", ...})
+        >>> validate_aka_uniqueness("RadialNexus", entities, exclude_entity_id="michael_bauer")
+        "RadialNexus"  # Conflicts with another entity named "RadialNexus"
     """
     # Filter out the entity being updated, detached entities, and blocked entities
     check_entities = [
         e
         for e in entities
-        if e.get("name") != exclude_entity_name
+        if (exclude_entity_id is None or e.get("id") != exclude_entity_id)
         and not e.get("detached")
         and not e.get("blocked")
     ]

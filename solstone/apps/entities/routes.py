@@ -531,7 +531,6 @@ def add_aka_for_call(facet_name: str) -> Any:
             facet_name,
             entity_id,
             aka,
-            exclude_name=exclude_name,
         )
     except AkaConflictError as exc:
         return error_response(

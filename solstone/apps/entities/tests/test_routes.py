@@ -12,6 +12,7 @@ from solstone.think.entities import (
     detach_facet_entity,
     load_entities,
     load_facet_relationship,
+    load_journal_entity,
     save_entities,
 )
 from solstone.think.journal_io import LockTimeout
@@ -101,6 +102,31 @@ def test_update_description_by_id(client):
         load_facet_relationship("personal", "description_route_person")["description"]
         == "New"
     )
+
+
+def test_add_aka_excludes_own_entity_by_id_when_request_name_misaligned(client):
+    attach_or_reactivate_entity(
+        "personal",
+        entity_type="Person",
+        name="Michael Bauer",
+        description="Friend",
+    )
+
+    response = client.post(
+        "/app/entities/api/personal/aka",
+        json={
+            "entity_id": "michael_bauer",
+            "aka": "Michael Bauer (RadialNexus)",
+            # Lowercase simulates the former name-exclusion mismatch; id exclusion
+            # must still remove the current entity before fuzzy collision checks.
+            "exclude_name": "michael bauer",
+        },
+    )
+
+    assert 200 <= response.status_code < 300
+    entity = load_journal_entity("michael_bauer")
+    assert entity is not None
+    assert "Michael Bauer (RadialNexus)" in entity["aka"]
 
 
 def test_delete_detected_returns_days_modified(client):

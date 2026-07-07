@@ -279,7 +279,7 @@ def _apply_aliases(
             counts["skipped"] += 1
             continue
         try:
-            add_entity_aka(facet, entity_id, clean_alias, exclude_name=canonical_name)
+            add_entity_aka(facet, entity_id, clean_alias)
             counts["aliased"] += 1
         except AkaConflictError:
             counts["skipped"] += 1

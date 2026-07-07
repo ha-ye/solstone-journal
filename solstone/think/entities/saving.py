@@ -353,7 +353,7 @@ def update_facet_entity_identity(
             conflict = validate_aka_uniqueness(
                 aka,
                 entities,
-                exclude_entity_name=old_name,
+                exclude_entity_id=target["id"],
             )
             if conflict:
                 raise AkaConflictError(aka, conflict)
@@ -405,8 +405,6 @@ def add_entity_aka(
     facet: str,
     entity_id: str,
     aka: str,
-    *,
-    exclude_name: str,
 ) -> list[str]:
     """Add a single alias to a journal entity after locked facet dedup checks."""
 
@@ -419,7 +417,7 @@ def add_entity_aka(
         conflict = validate_aka_uniqueness(
             aka,
             entities,
-            exclude_entity_name=exclude_name,
+            exclude_entity_id=entity_id,
         )
         if conflict:
             raise AkaConflictError(aka, conflict)

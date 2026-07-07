@@ -672,10 +672,27 @@ def test_aka_success_duplicate_first_word_conflict_and_busy_byte_exact(
                 "attached_at": 1001,
                 "updated_at": 1001,
             },
+            {
+                "type": "Person",
+                "name": "Michael Bauer",
+                "description": "Colleague",
+                "attached_at": 1002,
+                "updated_at": 1002,
+            },
         ]
     )
 
     added = runner.invoke(app, ["aka", "Alice Johnson", "Ally", "-f", "personal"])
+    parenthetical = runner.invoke(
+        app,
+        [
+            "aka",
+            "Michael Bauer",
+            "Michael Bauer (RadialNexus)",
+            "-f",
+            "personal",
+        ],
+    )
     duplicate = runner.invoke(app, ["aka", "Alice Johnson", "Ali", "-f", "personal"])
     first_word = runner.invoke(
         app,
@@ -688,6 +705,10 @@ def test_aka_success_duplicate_first_word_conflict_and_busy_byte_exact(
 
     assert added.exit_code == 0
     assert added.stdout == "Added alias 'Ally' to 'Alice Johnson'.\n"
+    assert parenthetical.exit_code == 0
+    assert parenthetical.stdout == (
+        "Added alias 'Michael Bauer (RadialNexus)' to 'Michael Bauer'.\n"
+    )
     assert duplicate.exit_code == 0
     assert duplicate.stdout == "Alias 'Ali' already exists for 'Alice Johnson'.\n"
     assert first_word.exit_code == 0
