@@ -1490,6 +1490,14 @@ body.menu-all .menu-bar {
     width: 0;
     border-right: 0;
     overflow: hidden;
+    box-shadow: none;
+    pointer-events: none;
+    visibility: hidden;
+  }
+
+  body:not(.menu-full) .menu-bar .menu-items,
+  body:not(.menu-full) .menu-bar .menu-expander {
+    display: none;
   }
 }
 
@@ -2929,6 +2937,7 @@ a:focus-visible {
 
 body.has-date-nav .chat-app {
   height: calc(100dvh - var(--facet-bar-height) - var(--date-nav-height) - 16px);
+  padding-top: 8px;
 }
 
 .chat-app-search {
