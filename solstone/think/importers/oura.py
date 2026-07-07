@@ -328,9 +328,7 @@ def _owner_timezone_for_journal(journal_root: Path | None = None) -> ZoneInfo:
                 exc,
             )
         else:
-            configured = str(
-                config.get("identity", {}).get("timezone") or ""
-            ).strip()
+            configured = str(config.get("identity", {}).get("timezone") or "").strip()
             if configured:
                 try:
                     return ZoneInfo(configured)
