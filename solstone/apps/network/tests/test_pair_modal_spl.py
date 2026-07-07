@@ -14,20 +14,29 @@ def _link_pair_script(body: str) -> str:
     return body[start:end]
 
 
+def _link_state(env) -> dict[str, object]:
+    response = env.client.get("/app/network/api/state")
+    assert response.status_code == 200
+    return response.get_json()
+
+
 def test_spl_pair_modal_is_qr_only_with_five_minute_window(link_env) -> None:
     env = link_env(posture="spl", service_token="svc-token")
 
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
+    state = _link_state(env)
+    assert state["posture"] == "spl"
+    assert state["link_copy"]["WINDOW_CLOSED_BUTTON"] == copy.WINDOW_CLOSED_BUTTON
+    assert state["link_copy"]["EXPIRED_BUTTON"] == copy.EXPIRED_BUTTON
     assert 'id="link-pair-manual-code"' not in body
     assert 'id="link-pair-rotation-ring"' not in body
     assert 'id="link-pair-rotation"' not in body
     assert 'id="link-pair-network"' in body
-    assert copy.PAIR_NETWORK_LINE in body
-    assert copy.WINDOW_CLOSED_BUTTON in body
-    assert copy.EXPIRED_BUTTON not in body
+    assert 'data-copy="PAIR_NETWORK_LINE"' in body
+    assert 'id="link-pair-regenerate"' in body
     assert "this code expired" not in body
     assert "countdown-number" not in body
     assert "LINK_POSTURE" not in body
@@ -53,13 +62,17 @@ def test_direct_pair_modal_keeps_network_and_expired_copy(
 ) -> None:
     env = link_env()
 
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
+    state = _link_state(env)
+    assert state["posture"] == "direct"
+    assert state["link_copy"]["PAIR_NETWORK_LINE"] == copy.PAIR_NETWORK_LINE
+    assert state["link_copy"]["EXPIRED_BUTTON"] == copy.EXPIRED_BUTTON
     assert 'id="link-pair-manual-code"' not in body
-    assert copy.PAIR_NETWORK_LINE in body
+    assert 'data-copy="PAIR_NETWORK_LINE"' in body
     assert 'id="link-pair-rotation"' not in body
     assert 'id="link-pair-network"' in body
-    assert copy.EXPIRED_BUTTON in body
+    assert 'id="link-pair-regenerate"' in body
     assert "LINK_POSTURE" not in body

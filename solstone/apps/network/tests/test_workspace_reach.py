@@ -24,9 +24,15 @@ def _normalized_body(body: str) -> str:
     )
 
 
+def _link_state(env) -> dict[str, object]:
+    response = env.client.get("/app/network/api/state")
+    assert response.status_code == 200
+    return response.get_json()
+
+
 def test_workspace_renders_reach_shell_copy_and_static_guards(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
@@ -42,30 +48,32 @@ def test_workspace_renders_reach_shell_copy_and_static_guards(link_env) -> None:
     ):
         assert gone not in body_text
 
-    for value in copy.STATUS_SENTENCES.values():
-        assert value in body_text
-    for value in (
-        copy.BRANDLOCK_LINE,
-        copy.REACH_SELECTOR_TITLE,
-        copy.REACH_SELECTOR_HINT,
-        copy.MODE_BYO_NAME,
-        copy.MODE_BYO_DESC,
-        copy.MODE_BYO_DISCLOSURE,
-        copy.MODE_HOSTED_NAME,
-        copy.MODE_HOSTED_DESC,
-        copy.MODE_HOSTED_DISCLOSURE,
-        copy.MODE_BYO_BODY_NOTE,
-        copy.MODE_HOSTED_SETUP_NOTE,
-        copy.MODE_HOSTED_SETUP_CTA,
-        copy.APP_ONOFF_LABEL,
-        copy.APP_ONOFF_SUB_BYO,
-        copy.APP_ONOFF_SUB_HOSTED,
+    state = _link_state(env)
+    payload = state["link_copy"]
+    assert payload["STATUS_SENTENCES"] == copy.STATUS_SENTENCES
+    for name in (
+        "BRANDLOCK_LINE",
+        "REACH_SELECTOR_TITLE",
+        "REACH_SELECTOR_HINT",
+        "MODE_BYO_NAME",
+        "MODE_BYO_DESC",
+        "MODE_BYO_DISCLOSURE",
+        "MODE_HOSTED_NAME",
+        "MODE_HOSTED_DESC",
+        "MODE_HOSTED_DISCLOSURE",
+        "MODE_BYO_BODY_NOTE",
+        "MODE_HOSTED_SETUP_NOTE",
+        "MODE_HOSTED_SETUP_CTA",
+        "APP_ONOFF_LABEL",
+        "APP_ONOFF_SUB_BYO",
+        "APP_ONOFF_SUB_HOSTED",
+        "REACH_HOST_ADDRESS_DISCLOSURE",
+        "REACH_HOST_ADDRESS_PLACEHOLDER",
+        "REACH_HOST_ADDRESS_APPLY_LABEL",
+        "REACH_HOST_ADDRESS_CLEAR_LABEL",
     ):
-        assert value in body_text
-    assert copy.REACH_HOST_ADDRESS_DISCLOSURE in body_text
-    assert copy.REACH_HOST_ADDRESS_PLACEHOLDER in body_text
-    assert copy.REACH_HOST_ADDRESS_APPLY_LABEL in body_text
-    assert copy.REACH_HOST_ADDRESS_CLEAR_LABEL in body_text
+        assert payload[name] == getattr(copy, name)
+        assert name in body
     assert '<p class="link-brandlock">' in body
     assert "background: #E8923A; color: #1A1A1A" in body
     assert "#B06A1A" in body
@@ -118,16 +126,16 @@ def test_workspace_renders_reach_shell_copy_and_static_guards(link_env) -> None:
     ):
         assert removed_export not in body
 
-    assert re.search(
-        r'<a href="https://services\.solstone\.app/" '
-        r'target="_blank" rel="noopener noreferrer">[^<]+</a>',
-        body,
+    assert (
+        '<a href="https://services.solstone.app/" target="_blank" '
+        'rel="noopener noreferrer" data-copy="REACH_SPL_MANAGE_LABEL"></a>' in body
     )
     for color in ("#1e7b42", "#b88400", "#a53a1f"):
         assert color in body
     assert "SurfaceState.replaceLoading('link-status-panel'" in body
     assert 'id="link-pair-btn"' in body
-    assert "pair a device" in body_text
+    assert 'data-copy="DEVICE_PAIR_CTA"' in body
+    assert payload["DEVICE_PAIR_CTA"] == copy.DEVICE_PAIR_CTA
 
     for forbidden in (
         "'/posture'",
@@ -144,53 +152,48 @@ def test_workspace_renders_hosted_mode_and_states(link_env) -> None:
         posture="spl",
         service_token="svc-token",
     )
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    body_text = _normalized_body(body)
+    state = _link_state(env)
 
+    assert state["posture"] == "spl"
     assert 'id="link-reach-selector"' in body
-    assert re.search(r'id="link-seg-hosted"[^>]+class="link-seg is-selected"', body)
-    assert re.search(r'id="link-seg-hosted"[^>]+aria-checked="true"', body)
-    assert re.search(r'id="link-seg-byo"[^>]+aria-checked="false"', body)
-    assert re.search(r'<div id="link-mode-byo-body"[^>]+hidden', body)
+    assert re.search(r'id="link-seg-byo"[^>]+class="link-seg is-selected"', body)
+    assert re.search(r'id="link-seg-byo"[^>]+aria-checked="true"', body)
+    assert re.search(r'id="link-seg-hosted"[^>]+aria-checked="false"', body)
+    assert re.search(r'<div id="link-mode-byo-body"[^>]*>', body)
     assert re.search(r'<div id="link-mode-hosted-setup"[^>]+hidden', body)
-    assert re.search(r'<div id="link-mode-hosted-active"[^>]*>', body)
-    for value in (
-        copy.REACH_SPL_ACTIVE_BODY,
-        copy.REACH_SPL_TRUST_LINE,
-        copy.REACH_SPL_MANAGE_LABEL,
-        copy.PRIVATE_LINK_DISABLE_CTA,
+    assert re.search(r'<div id="link-mode-hosted-active"[^>]+hidden', body)
+    for name in (
+        "REACH_SPL_ACTIVE_BODY",
+        "REACH_SPL_TRUST_LINE",
+        "REACH_SPL_MANAGE_LABEL",
+        "PRIVATE_LINK_DISABLE_CTA",
     ):
-        assert value in body_text
-    hosted_start = body_text.index('<div id="link-mode-hosted-active"')
-    hosted_end = body_text.index("</div>", hosted_start)
-    hosted_body = body_text[hosted_start:hosted_end]
-    assert re.search(
-        r'<a href="https://services\.solstone\.app/" '
-        r'target="_blank" rel="noopener noreferrer">'
-        + re.escape(copy.REACH_SPL_MANAGE_LABEL)
-        + r"</a>",
-        hosted_body,
-    )
+        assert state["link_copy"][name] == getattr(copy, name)
+        assert f'data-copy="{name}"' in body
+    hosted_start = body.index('<div id="link-mode-hosted-active"')
+    hosted_end = body.index("</div>", hosted_start)
+    hosted_body = body[hosted_start:hosted_end]
+    assert 'data-copy="REACH_SPL_MANAGE_LABEL"' in hosted_body
     assert 'id="link-private-link-disable"' in hosted_body
 
     assert 'id="link-spl-connecting-note"' in body
-    assert copy.REACH_SPL_CONNECTING_NOTE in body_text
+    assert 'data-copy="REACH_SPL_CONNECTING_NOTE"' in body
     assert 'id="link-spl-check-again"' in body
-    assert f"[ {copy.CHECK_AGAIN_LABEL} ]" in body_text
+    assert 'data-copy="CHECK_AGAIN_LABEL"' in body
     assert "splCheckAgain?.addEventListener('click', () => {" in body
     assert "refreshPrivateLinkStatus();" in body
 
 
 def test_workspace_home_candidate_picker_markup_stays_in_byo_body(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    body_text = _normalized_body(body)
 
     byo_start = body.index('id="link-mode-byo-body"')
     hosted_setup_start = body.index('id="link-mode-hosted-setup"', byo_start)
@@ -203,17 +206,25 @@ def test_workspace_home_candidate_picker_markup_stays_in_byo_body(link_env) -> N
     assert picker_idx < override_idx
     assert 'id="link-home-candidates-list"' in byo_body
     assert 'id="link-home-candidates-problem"' in byo_body
-    assert f'data-refresh-fail="{copy.REACH_HOME_CANDIDATES_REFRESH_FAIL}"' in body_text
-    assert f'data-unavailable="{copy.REACH_HOME_CANDIDATES_UNAVAILABLE}"' in body_text
-    assert copy.REACH_HOME_CANDIDATES_LABEL in body_text
-    assert copy.REACH_HOME_CANDIDATES_REFRESH_FAIL in body_text
-    assert copy.REACH_HOME_CANDIDATES_UNAVAILABLE in body_text
+    assert "data-refresh-fail:REACH_HOME_CANDIDATES_REFRESH_FAIL" in body
+    assert "data-unavailable:REACH_HOME_CANDIDATES_UNAVAILABLE" in body
+    assert 'data-copy="REACH_HOME_CANDIDATES_LABEL"' in body
+    payload = _link_state(env)["link_copy"]
+    assert payload["REACH_HOME_CANDIDATES_LABEL"] == copy.REACH_HOME_CANDIDATES_LABEL
+    assert (
+        payload["REACH_HOME_CANDIDATES_REFRESH_FAIL"]
+        == copy.REACH_HOME_CANDIDATES_REFRESH_FAIL
+    )
+    assert (
+        payload["REACH_HOME_CANDIDATES_UNAVAILABLE"]
+        == copy.REACH_HOME_CANDIDATES_UNAVAILABLE
+    )
     assert 'id="link-home-candidates-picker"' not in hosted_body
 
 
 def test_workspace_home_candidate_picker_js_paths(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
@@ -271,29 +282,27 @@ def test_workspace_keeps_spl_trust_line_out_of_header_and_direct_card(
     link_env,
 ) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
-    body_text = _normalized_body(response.get_data(as_text=True))
+    body = response.get_data(as_text=True)
 
-    header = body_text[body_text.index("<header") : body_text.index("</header>")]
-    byo_start = body_text.index('<div id="link-mode-byo-body"')
-    hosted_setup_start = body_text.index('<div id="link-mode-hosted-setup"', byo_start)
-    byo_body = body_text[byo_start:hosted_setup_start]
-    hosted_start = body_text.index(
-        '<div id="link-mode-hosted-active"', hosted_setup_start
-    )
-    hosted_end = body_text.index("</div>", hosted_start)
-    hosted_body = body_text[hosted_start:hosted_end]
+    header = body[body.index("<header") : body.index("</header>")]
+    byo_start = body.index('<div id="link-mode-byo-body"')
+    hosted_setup_start = body.index('<div id="link-mode-hosted-setup"', byo_start)
+    byo_body = body[byo_start:hosted_setup_start]
+    hosted_start = body.index('<div id="link-mode-hosted-active"', hosted_setup_start)
+    hosted_end = body.index("</div>", hosted_start)
+    hosted_body = body[hosted_start:hosted_end]
 
-    assert copy.REACH_SPL_TRUST_LINE not in header
-    assert copy.REACH_SPL_TRUST_LINE not in byo_body
-    assert copy.REACH_SPL_TRUST_LINE in hosted_body
+    assert 'data-copy="REACH_SPL_TRUST_LINE"' not in header
+    assert 'data-copy="REACH_SPL_TRUST_LINE"' not in byo_body
+    assert 'data-copy="REACH_SPL_TRUST_LINE"' in hosted_body
 
 
 def test_workspace_maps_spl_status_without_red_offline_dot(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)

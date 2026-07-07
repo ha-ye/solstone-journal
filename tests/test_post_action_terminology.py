@@ -86,22 +86,19 @@ def test_facet_detail_copy_constants_use_allowed_terms():
             _assert_clean(getattr(settings_copy, name))
 
 
-def test_facet_detail_template_render_uses_allowed_terms(journal_copy):
-    facet_dir = journal_copy / "facets" / "terminology-test"
-    facet_dir.mkdir(parents=True, exist_ok=True)
-    (facet_dir / "facet.json").write_text(
-        json.dumps({"title": "Test Facet", "emoji": "TF", "color": "#123456"}),
-        encoding="utf-8",
+def test_facet_detail_copy_render_uses_allowed_terms():
+    title = "Test Facet"
+    rendered = "\n".join(
+        [
+            settings_copy.FACET_DETAIL_SUCCESS_HEADING.format(title=title),
+            settings_copy.FACET_DETAIL_VALUE_FRAMING.format(title=title),
+            settings_copy.FACET_DETAIL_PRIMARY_CTA.format(title=title),
+            settings_copy.FACET_DETAIL_SECONDARY_CTA,
+            settings_copy.FACET_DETAIL_TERTIARY_ESCAPE,
+        ]
     )
 
-    client = create_app(str(journal_copy)).test_client()
-    response = client.get("/app/settings/facets/terminology-test")
-
-    assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    start = html.index('<section\n  class="facet-detail-page"')
-    end = html.index("<script>", start)
-    _assert_clean(html[start:end])
+    _assert_clean(rendered)
 
 
 def test_home_needs_you_strings_use_allowed_terms(journal_copy, monkeypatch):

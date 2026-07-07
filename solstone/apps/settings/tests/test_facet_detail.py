@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-from html import unescape
 from pathlib import Path
 
 from solstone.apps.settings import copy as settings_copy
@@ -58,17 +57,39 @@ def test_facet_detail_route_renders_existing_facet(settings_env):
     response = client.get("/app/settings/facets/test-facet")
 
     assert response.status_code == 200
-    html = unescape(response.get_data(as_text=True))
-    assert settings_copy.FACET_DETAIL_SUCCESS_HEADING.format(title="Test Facet") in html
-    assert "TF" in html
-    assert "#123456" in html
-    assert settings_copy.FACET_DETAIL_VALUE_FRAMING.format(title="Test Facet") in html
-    assert settings_copy.FACET_DETAIL_PRIMARY_CTA.format(title="Test Facet") in html
-    assert settings_copy.FACET_DETAIL_SECONDARY_CTA in html
-    assert settings_copy.FACET_DETAIL_TERTIARY_ESCAPE in html
-    assert 'href="/app/entities/"' in html
-    assert 'href="/app/settings#facets"' in html
-    assert 'href="/app/settings"' in html
+    assert 'data-solstone-shell="spa"' in response.get_data(as_text=True)
+
+    state = client.get("/app/settings/api/state")
+    assert state.status_code == 200
+    state_copy = state.get_json()["settings_copy"]
+    assert (
+        state_copy["FACET_DETAIL_SUCCESS_HEADING"]
+        == settings_copy.FACET_DETAIL_SUCCESS_HEADING
+    )
+    assert (
+        state_copy["FACET_DETAIL_VALUE_FRAMING"]
+        == settings_copy.FACET_DETAIL_VALUE_FRAMING
+    )
+    assert (
+        state_copy["FACET_DETAIL_PRIMARY_CTA"] == settings_copy.FACET_DETAIL_PRIMARY_CTA
+    )
+    assert (
+        state_copy["FACET_DETAIL_SECONDARY_CTA"]
+        == settings_copy.FACET_DETAIL_SECONDARY_CTA
+    )
+    assert (
+        state_copy["FACET_DETAIL_TERTIARY_ESCAPE"]
+        == settings_copy.FACET_DETAIL_TERTIARY_ESCAPE
+    )
+
+    facet = client.get("/app/settings/api/facet/test-facet")
+    assert facet.status_code == 200
+    payload = facet.get_json()
+    assert payload["facet"] == "test-facet"
+    assert payload["config"]["title"] == "Test Facet"
+    assert payload["config"]["description"] == "Test Facet test facet"
+    assert payload["config"]["emoji"] == "TF"
+    assert payload["config"]["color"] == "#123456"
 
 
 def test_facet_detail_route_404s_missing_facet(settings_env):
@@ -76,7 +97,12 @@ def test_facet_detail_route_404s_missing_facet(settings_env):
 
     response = client.get("/app/settings/facets/nonexistent")
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert 'data-solstone-shell="spa"' in response.get_data(as_text=True)
+
+    api_response = client.get("/app/settings/api/facet/nonexistent")
+
+    assert api_response.status_code == 404
 
 
 def test_facet_detail_steady_state(settings_env):

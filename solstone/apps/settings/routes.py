@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from flask import Blueprint, abort, jsonify, render_template, request
+from flask import Blueprint, current_app, jsonify, request
 
 from solstone.apps.chat import copy as chat_copy
 from solstone.apps.chat.config import (
@@ -85,6 +85,8 @@ settings_bp = Blueprint(
     "app:settings",
     __name__,
     url_prefix="/app/settings",
+    static_folder="static",
+    static_url_path="/static",
 )
 
 
@@ -215,46 +217,41 @@ def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     return projected
 
 
-@settings_bp.app_context_processor
-def _inject_settings_copy() -> dict[str, Any]:
+def _uppercase_copy_payload(module: Any) -> dict[str, Any]:
     return {
-        "convey_copy": convey_copy,
+        name: value
+        for name, value in vars(module).items()
+        if name.isupper() and not name.startswith("_")
+    }
+
+
+def _settings_state_payload() -> dict[str, Any]:
+    return {
+        "settings_copy": _uppercase_copy_payload(settings_copy),
         "install_copy": {
             name: getattr(install_copy, name) for name in install_copy.__all__
         },
-        "chat_config": load_chat_config(),
-        "chat_copy": chat_copy,
-        "settings_copy": settings_copy,
-        "sol_voice_copy": sol_voice_copy,
+        "chat_copy": _uppercase_copy_payload(chat_copy),
+        "sol_voice_copy": _uppercase_copy_payload(sol_voice_copy),
+        "thinking_surfaces": load_chat_config().get("thinking_surfaces"),
     }
 
 
 @settings_bp.route("/facets/<slug>")
 def view_facet_detail(slug: str) -> str:
-    from solstone.think.facets import get_facets
+    return current_app.send_static_file("shell.html")
 
-    facets = get_facets()
-    facet = facets.get(slug)
-    if facet is None:
-        abort(404)
 
-    title = str(facet.get("title") or slug)
-    color = str(facet.get("color") or "")
-    emoji = str(facet.get("emoji") or "")
-    return render_template(
-        "settings/facet_detail.html",
-        app="settings",
-        slug=slug,
-        title=title,
-        color=color,
-        emoji=emoji,
-        muted=bool(facet.get("muted", False)),
-        primary_cta=settings_copy.FACET_DETAIL_PRIMARY_CTA.format(title=title),
-        secondary_cta=settings_copy.FACET_DETAIL_SECONDARY_CTA,
-        tertiary_cta=settings_copy.FACET_DETAIL_TERTIARY_ESCAPE,
-        success_heading=settings_copy.FACET_DETAIL_SUCCESS_HEADING.format(title=title),
-        value_framing=settings_copy.FACET_DETAIL_VALUE_FRAMING.format(title=title),
-    )
+@settings_bp.route("/api/state")
+def api_state() -> Any:
+    try:
+        return jsonify(_settings_state_payload())
+    except Exception:
+        logger.exception("settings state load failed")
+        return error_response(
+            FILE_READ_FAILED,
+            detail="Failed to load settings state.",
+        )
 
 
 @settings_bp.route("/api/config")

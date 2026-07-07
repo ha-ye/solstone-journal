@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import html
 import re
 
 from solstone.apps.network import copy
@@ -13,20 +12,9 @@ from solstone.apps.network import copy
 
 def _body(link_env) -> str:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
     assert response.status_code == 200
     return response.get_data(as_text=True)
-
-
-def _normalized_body(body: str) -> str:
-    return (
-        html.unescape(body)
-        .replace('\\"', '"')
-        .replace("\\u0027", "'")
-        .replace("\\u00b7", "·")
-        .replace("\\u2014", "—")
-        .replace("\\u2192", "→")
-    )
 
 
 def _function_body(body: str, start_marker: str, end_marker: str) -> str:
@@ -35,9 +23,18 @@ def _function_body(body: str, start_marker: str, end_marker: str) -> str:
     return body[start:end]
 
 
+def _link_copy(env) -> dict[str, object]:
+    response = env.client.get("/app/network/api/state")
+    assert response.status_code == 200
+    return response.get_json()["link_copy"]
+
+
 def test_pair_presentation_selector_markup_and_copy(link_env) -> None:
-    body = _body(link_env)
-    body_text = _normalized_body(body)
+    env = link_env()
+    response = env.client.get("/app/network/workspace")
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    payload = _link_copy(env)
 
     title_idx = body.index('id="link-pair-modal-title"')
     selector_idx = body.index('id="link-present-selector"')
@@ -46,7 +43,8 @@ def test_pair_presentation_selector_markup_and_copy(link_env) -> None:
 
     selector = body[selector_idx:pair_code_idx]
     assert 'role="radiogroup"' in selector
-    assert f'aria-label="{copy.PRESENTATION_SELECTOR_LABEL}"' in selector
+    assert 'data-copy-attr="aria-label:PRESENTATION_SELECTOR_LABEL"' in selector
+    assert payload["PRESENTATION_SELECTOR_LABEL"] == copy.PRESENTATION_SELECTOR_LABEL
     for button_id, mode, label, checked in (
         ("link-present-phone", "phone", copy.PRESENTATION_PHONE_LABEL, "true"),
         (
@@ -61,14 +59,25 @@ def test_pair_presentation_selector_markup_and_copy(link_env) -> None:
         assert 'role="radio"' in selector
         assert f'aria-checked="{checked}"' in selector
         assert f'data-presentation-mode="{mode}"' in selector
-        assert label in body_text
+        assert (
+            payload[
+                {
+                    "phone": "PRESENTATION_PHONE_LABEL",
+                    "computer": "PRESENTATION_COMPUTER_LABEL",
+                    "glasses": "PRESENTATION_GLASSES_LABEL",
+                }[mode]
+            ]
+            == label
+        )
 
     input_idx = body.index('id="link-pair-link-input"')
     assert "readonly" in body[input_idx : input_idx + 200]
     assert 'aria-labelledby="link-pair-link-label"' in body[input_idx : input_idx + 200]
     assert 'id="link-pair-link-copy"' in body
-    assert copy.PAIR_LINK_FIELD_LABEL in body_text
-    assert copy.PAIR_LINK_COPY_LABEL in body_text
+    assert 'data-copy="PAIR_LINK_FIELD_LABEL"' in body
+    assert 'data-copy="PAIR_LINK_COPY_LABEL"' in body
+    assert payload["PAIR_LINK_FIELD_LABEL"] == copy.PAIR_LINK_FIELD_LABEL
+    assert payload["PAIR_LINK_COPY_LABEL"] == copy.PAIR_LINK_COPY_LABEL
     assert "pair_url" not in body
 
 

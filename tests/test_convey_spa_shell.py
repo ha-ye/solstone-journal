@@ -68,8 +68,8 @@ def test_api_shell_shape_ordering_label_and_backgrounds(client, journal_copy):
     assert by_name["sol"]["label"] == "Ada"
     assert by_name["search"]["spa"] is True
     assert by_name["search"]["workspace_url"] == "/app/search/workspace"
-    assert by_name["network"]["spa"] is False
-    assert by_name["network"]["workspace_url"] is None
+    assert by_name["network"]["spa"] is True
+    assert by_name["network"]["workspace_url"] == "/app/network/workspace"
     assert by_name["timeline"]["background_url"] == "/app/timeline/background"
     assert by_name["support"]["background_url"] == "/app/support/background"
     assert set(payload["chat_bar"]) == {"placeholder", "attention", "sol_request"}
@@ -119,13 +119,17 @@ def test_search_spa_index_workspace_and_route_resolution(convey_app, client):
         assert endpoint
 
 
-def test_unflagged_timeline_workspace_404_and_index_stays_jinja(client):
-    response = client.get("/app/network/workspace")
-    assert response.status_code == 404
+def test_network_spa_index_and_workspace(client):
+    response = client.get("/app/network/")
+    assert response.status_code == 200
+    assert b'data-solstone-shell="spa"' in response.data
 
-    index_response = client.get("/app/network/", follow_redirects=True)
-    assert index_response.status_code == 200
-    assert b'data-solstone-shell="spa"' not in index_response.data
+    workspace_response = client.get("/app/network/workspace")
+    assert workspace_response.status_code == 200
+    assert (
+        workspace_response.data
+        == (APPS_ROOT / "network" / "workspace.html").read_bytes()
+    )
 
 
 def test_background_routes_are_verbatim(client):

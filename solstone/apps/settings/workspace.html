@@ -2148,6 +2148,96 @@ button:focus:not(:focus-visible) {
   border-top: 1px solid var(--facet-border, #e5e0db);
 }
 
+.facet-detail-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 2rem 1rem calc(var(--app-bar-height, 60px) + 2rem);
+}
+
+.facet-detail-page[hidden] {
+  display: none;
+}
+
+.facet-detail-back {
+  display: inline-flex;
+  color: #64748b;
+  font-size: 0.9rem;
+  margin-bottom: 1.5rem;
+  text-decoration: none;
+}
+
+.facet-detail-heading {
+  color: #111827;
+  font-size: 2rem;
+  line-height: 1.15;
+  margin: 0 0 1rem;
+}
+
+.facet-detail-meta {
+  align-items: center;
+  display: flex;
+  gap: 0.75rem;
+  margin-bottom: 1.25rem;
+}
+
+.facet-detail-emoji {
+  font-size: 1.75rem;
+}
+
+.facet-detail-swatch {
+  border: 1px solid rgba(15, 23, 42, 0.16);
+  border-radius: 50%;
+  display: inline-block;
+  height: 1.25rem;
+  width: 1.25rem;
+}
+
+.facet-detail-muted {
+  background: #f1f5f9;
+  border-radius: 999px;
+  color: #64748b;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.6rem;
+}
+
+.facet-detail-copy {
+  color: #475569;
+  font-size: 1rem;
+  line-height: 1.6;
+  margin: 0 0 2rem;
+}
+
+.facet-detail-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.facet-detail-action {
+  border-radius: 8px;
+  display: inline-flex;
+  font-weight: 600;
+  padding: 0.7rem 1rem;
+  text-decoration: none;
+}
+
+.facet-detail-action--primary {
+  background: var(--facet-color, #E8923A);
+  color: white;
+}
+
+.facet-detail-action--secondary {
+  background: #f8fafc;
+  color: #334155;
+}
+
+.facet-detail-action--tertiary {
+  color: #64748b;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .settings-wrap {
@@ -2181,7 +2271,10 @@ button:focus:not(:focus-visible) {
 }
 </style>
 
-<div class="settings-wrap">
+<script src="/app/settings/static/settings.js"></script>
+
+<div id="settings-state-gate" class="settings-state-gate" aria-live="polite"></div>
+<div class="settings-wrap" id="settings-index-view" hidden>
   <!-- Mobile nav dropdown -->
   <div class="settings-nav-mobile">
     <select class="settings-nav-select" id="navSelect">
@@ -2201,7 +2294,7 @@ button:focus:not(:focus-visible) {
         <option value="vision">vision</option>
       </optgroup>
       <optgroup label="voice">
-        <option value="sol-voice">{{ sol_voice_copy.SOL_VOICE_SETTINGS_HEADING }}</option>
+        <option value="sol-voice" data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_HEADING"></option>
       </optgroup>
       <optgroup label="chat">
         <option value="chat">chat</option>
@@ -2245,7 +2338,7 @@ button:focus:not(:focus-visible) {
     </div>
     <div class="settings-nav-group">
       <div class="settings-nav-label">voice</div>
-      <button class="settings-nav-item" data-section="sol-voice" id="tab-sol-voice" role="tab" aria-selected="false" aria-controls="section-sol-voice" tabindex="-1">{{ sol_voice_copy.SOL_VOICE_SETTINGS_HEADING }}</button>
+      <button class="settings-nav-item" data-section="sol-voice" id="tab-sol-voice" role="tab" aria-selected="false" aria-controls="section-sol-voice" tabindex="-1" data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_HEADING"></button>
     </div>
     <div class="settings-nav-group">
       <div class="settings-nav-label">chat</div>
@@ -2656,39 +2749,39 @@ button:focus:not(:focus-visible) {
 
     <!-- Sol Voice Section -->
     <section class="settings-section" id="section-sol-voice" role="tabpanel" aria-labelledby="tab-sol-voice">
-      <h2>{{ sol_voice_copy.SOL_VOICE_SETTINGS_HEADING }}</h2>
+      <h2 data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_HEADING"></h2>
       <form class="settings-form" onsubmit="return false;">
         <div class="sol-voice-grid">
           <div class="sol-voice-subsection">
             <div class="settings-field">
-              <label for="field-sol-voice-daily-cap">{{ sol_voice_copy.SOL_VOICE_SETTINGS_DAILY_CAP_LABEL }}</label>
+              <label for="field-sol-voice-daily-cap" data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_DAILY_CAP_LABEL"></label>
               <input type="number" id="field-sol-voice-daily-cap" min="0" step="1" style="max-width: 9em;">
               <small></small>
             </div>
 
             <div class="settings-field">
-              <label>{{ sol_voice_copy.SOL_VOICE_SETTINGS_CATEGORY_CAPS_LABEL }}</label>
+              <label data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_CATEGORY_CAPS_LABEL"></label>
               <div id="solVoiceCategoryCaps" class="sol-voice-subsection"></div>
               <small></small>
             </div>
 
             <div class="settings-field">
-              <label for="field-sol-voice-rate-floor">{{ sol_voice_copy.SOL_VOICE_SETTINGS_RATE_FLOOR_LABEL }}</label>
+              <label for="field-sol-voice-rate-floor" data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_RATE_FLOOR_LABEL"></label>
               <input type="number" id="field-sol-voice-rate-floor" min="0" step="1" style="max-width: 9em;">
               <small></small>
             </div>
           </div>
 
           <div class="sol-voice-subsection">
-            <h3>{{ sol_voice_copy.SOL_VOICE_SETTINGS_QUIET_HOURS_HEADING }}</h3>
+            <h3 data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_QUIET_HOURS_HEADING"></h3>
             <div class="sol-voice-inline">
               <div class="settings-field">
-                <label for="field-sol-voice-mute-start">{{ sol_voice_copy.SOL_VOICE_SETTINGS_QUIET_HOURS_START_LABEL }}</label>
+                <label for="field-sol-voice-mute-start" data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_QUIET_HOURS_START_LABEL"></label>
                 <input type="number" id="field-sol-voice-mute-start" min="0" max="23" step="1" style="max-width: 8em;">
                 <small></small>
               </div>
               <div class="settings-field">
-                <label for="field-sol-voice-mute-end">{{ sol_voice_copy.SOL_VOICE_SETTINGS_QUIET_HOURS_END_LABEL }}</label>
+                <label for="field-sol-voice-mute-end" data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_QUIET_HOURS_END_LABEL"></label>
                 <input type="number" id="field-sol-voice-mute-end" min="0" max="23" step="1" style="max-width: 8em;">
                 <small></small>
               </div>
@@ -2696,14 +2789,14 @@ button:focus:not(:focus-visible) {
           </div>
 
           <div class="sol-voice-subsection">
-            <h3>{{ sol_voice_copy.SOL_VOICE_SETTINGS_SYSTEM_NOTIFICATIONS_HEADING }}</h3>
+            <h3 data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_SYSTEM_NOTIFICATIONS_HEADING"></h3>
             <div class="settings-field">
               <div class="toggle-container" style="justify-content: flex-start; gap: 1em;">
                 <label class="toggle-switch toggle-positive">
                   <input type="checkbox" id="field-sol-voice-system-macos">
                   <span class="slider"></span>
                 </label>
-                <label for="field-sol-voice-system-macos" class="toggle-label" style="cursor: pointer;">{{ sol_voice_copy.SOL_VOICE_SETTINGS_SYSTEM_NOTIFICATIONS_MACOS_LABEL }}</label>
+                <label for="field-sol-voice-system-macos" class="toggle-label" style="cursor: pointer;" data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_SYSTEM_NOTIFICATIONS_MACOS_LABEL"></label>
               </div>
               <small></small>
             </div>
@@ -2713,21 +2806,21 @@ button:focus:not(:focus-visible) {
                   <input type="checkbox" id="field-sol-voice-system-linux">
                   <span class="slider"></span>
                 </label>
-                <label for="field-sol-voice-system-linux" class="toggle-label" style="cursor: pointer;">{{ sol_voice_copy.SOL_VOICE_SETTINGS_SYSTEM_NOTIFICATIONS_LINUX_LABEL }}</label>
+                <label for="field-sol-voice-system-linux" class="toggle-label" style="cursor: pointer;" data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_SYSTEM_NOTIFICATIONS_LINUX_LABEL"></label>
               </div>
               <small></small>
             </div>
           </div>
 
           <div class="sol-voice-subsection">
-            <h3>{{ sol_voice_copy.SOL_VOICE_SETTINGS_DEBUG_HEADING }}</h3>
+            <h3 data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_DEBUG_HEADING"></h3>
             <div class="settings-field">
               <div class="toggle-container" style="justify-content: flex-start; gap: 1em;">
                 <label class="toggle-switch toggle-positive">
                   <input type="checkbox" id="field-sol-voice-debug-show-throttled">
                   <span class="slider"></span>
                 </label>
-                <label for="field-sol-voice-debug-show-throttled" class="toggle-label" style="cursor: pointer;">{{ sol_voice_copy.SOL_VOICE_SETTINGS_DEBUG_SHOW_THROTTLED_LABEL }}</label>
+                <label for="field-sol-voice-debug-show-throttled" class="toggle-label" style="cursor: pointer;" data-copy="sol_voice_copy.SOL_VOICE_SETTINGS_DEBUG_SHOW_THROTTLED_LABEL"></label>
               </div>
               <small></small>
               <div id="sol-voice-throttled-log" class="sol-voice-throttled-log" hidden></div>
@@ -2742,22 +2835,22 @@ button:focus:not(:focus-visible) {
       <h2>chat</h2>
       <form class="settings-form" id="chatSettingsForm" onsubmit="return false;">
         <div class="settings-field">
-          <label>{{ chat_copy.CHAT_THINKING_SETTING_LABEL }}</label>
+          <label data-copy="chat_copy.CHAT_THINKING_SETTING_LABEL"></label>
           <div style="display:grid; gap:0.65em;">
             <label class="toggle-container" for="field-chat-thinking-on-tap" style="justify-content:flex-start; gap:0.75em;">
-              <input type="radio" id="field-chat-thinking-on-tap" name="thinking_surfaces" value="on_tap"{% if chat_config.thinking_surfaces == "on_tap" %} checked{% endif %}>
-              <span>{{ chat_copy.CHAT_THINKING_OPT_ON_TAP }}</span>
+              <input type="radio" id="field-chat-thinking-on-tap" name="thinking_surfaces" value="on_tap">
+              <span data-copy="chat_copy.CHAT_THINKING_OPT_ON_TAP"></span>
             </label>
             <label class="toggle-container" for="field-chat-thinking-always" style="justify-content:flex-start; gap:0.75em;">
-              <input type="radio" id="field-chat-thinking-always" name="thinking_surfaces" value="always"{% if chat_config.thinking_surfaces == "always" %} checked{% endif %}>
-              <span>{{ chat_copy.CHAT_THINKING_OPT_ALWAYS }}</span>
+              <input type="radio" id="field-chat-thinking-always" name="thinking_surfaces" value="always">
+              <span data-copy="chat_copy.CHAT_THINKING_OPT_ALWAYS"></span>
             </label>
             <label class="toggle-container" for="field-chat-thinking-never" style="justify-content:flex-start; gap:0.75em;">
-              <input type="radio" id="field-chat-thinking-never" name="thinking_surfaces" value="never"{% if chat_config.thinking_surfaces == "never" %} checked{% endif %}>
-              <span>{{ chat_copy.CHAT_THINKING_OPT_NEVER }}</span>
+              <input type="radio" id="field-chat-thinking-never" name="thinking_surfaces" value="never">
+              <span data-copy="chat_copy.CHAT_THINKING_OPT_NEVER"></span>
             </label>
           </div>
-          <small>{{ chat_copy.CHAT_THINKING_SETTING_HELP }}</small>
+          <small data-copy="chat_copy.CHAT_THINKING_SETTING_HELP"></small>
         </div>
       </form>
     </section>
@@ -3264,10 +3357,14 @@ button:focus:not(:focus-visible) {
     </div>
   </div>
 </div>
+<section id="settings-facet-detail-view" class="facet-detail-page" hidden></section>
 
 <script>
-const INSTALL_COPY = {{ install_copy | tojson }};
+let INSTALL_COPY = {};
 const IN_FLIGHT_INSTALL_STATES = ['resolving', 'downloading', 'verifying', 'installing'];
+const settingsStateGate = document.getElementById('settings-state-gate');
+const settingsIndexView = document.getElementById('settings-index-view');
+const settingsFacetDetailView = document.getElementById('settings-facet-detail-view');
 
 // ========== STATE ==========
 let configData = null;
@@ -3278,19 +3375,20 @@ let keyValidationData = {};
 let solVoiceData = null;
 let solVoiceThrottledTimer = null;
 let transcribeResource = null;
+let settingsInitialized = false;
 const iconSvgCache = new Map();
 const escapeHtml = (value) => window.AppServices.escapeHtml(value);
-const solVoiceCopy = {
-  autoMutedFormat: {{ sol_voice_copy.SOL_VOICE_SETTINGS_CATEGORY_CAP_AUTO_MUTED_FORMAT | tojson }},
-  clearButton: {{ sol_voice_copy.SOL_VOICE_SETTINGS_CATEGORY_CAP_CLEAR_BUTTON | tojson }},
-  throttledEmpty: {{ sol_voice_copy.SOL_VOICE_THROTTLED_LOG_EMPTY | tojson }},
-  throttledError: {{ sol_voice_copy.SOL_VOICE_THROTTLED_LOG_ERROR | tojson }},
-  throttledHeaderWhen: {{ sol_voice_copy.SOL_VOICE_THROTTLED_LOG_HEADER_WHEN | tojson }},
-  throttledHeaderCategory: {{ sol_voice_copy.SOL_VOICE_THROTTLED_LOG_HEADER_CATEGORY | tojson }},
-  throttledHeaderDedupeKey: {{ sol_voice_copy.SOL_VOICE_THROTTLED_LOG_HEADER_DEDUPE_KEY | tojson }},
-  throttledHeaderOutcome: {{ sol_voice_copy.SOL_VOICE_THROTTLED_LOG_HEADER_OUTCOME | tojson }},
+let solVoiceCopy = {
+  autoMutedFormat: '',
+  clearButton: '',
+  throttledEmpty: '',
+  throttledError: '',
+  throttledHeaderWhen: '',
+  throttledHeaderCategory: '',
+  throttledHeaderDedupeKey: '',
+  throttledHeaderOutcome: '',
 };
-const solVoiceCategories = {{ sol_voice_copy.CATEGORIES | list | tojson }};
+let solVoiceCategories = [];
 
 // ========== TAB ATTENTION ==========
 
@@ -4061,9 +4159,7 @@ async function saveChatSettings(el) {
       body: JSON.stringify({ thinking_surfaces: el.value }),
     });
     const selected = result.thinking_surfaces || el.value;
-    document.querySelectorAll('input[name="thinking_surfaces"]').forEach((input) => {
-      input.checked = input.value === selected;
-    });
+    window.SettingsRender.applyThinkingSurfaces(document, selected);
     showFieldStatus(el, 'saved');
   } catch (err) {
     showFieldStatus(el, 'error', err?.serverMessage || err?.message || 'Save failed');
@@ -6928,7 +7024,113 @@ document.getElementById('cleanupLogsPreviewBtn').addEventListener('click', runLo
 document.getElementById('cleanupLogsConfirmBtn').addEventListener('click', runLogCleanupExecute);
 
 // ========== INIT ==========
+function mergedSettingsCopy(state) {
+  return {
+    settings_copy: state.settings_copy || {},
+    install_copy: state.install_copy || {},
+    chat_copy: state.chat_copy || {},
+    sol_voice_copy: state.sol_voice_copy || {},
+  };
+}
+
+function applySettingsState(state) {
+  if (!window.SettingsRender || typeof window.SettingsRender.applyCopy !== 'function') {
+    throw new Error('settings renderer unavailable');
+  }
+  const solCopy = state.sol_voice_copy || {};
+  INSTALL_COPY = state.install_copy || {};
+  solVoiceCategories = Array.isArray(solCopy.CATEGORIES) ? solCopy.CATEGORIES : [];
+  solVoiceCopy = {
+    autoMutedFormat: solCopy.SOL_VOICE_SETTINGS_CATEGORY_CAP_AUTO_MUTED_FORMAT || '',
+    clearButton: solCopy.SOL_VOICE_SETTINGS_CATEGORY_CAP_CLEAR_BUTTON || '',
+    throttledEmpty: solCopy.SOL_VOICE_THROTTLED_LOG_EMPTY || '',
+    throttledError: solCopy.SOL_VOICE_THROTTLED_LOG_ERROR || '',
+    throttledHeaderWhen: solCopy.SOL_VOICE_THROTTLED_LOG_HEADER_WHEN || '',
+    throttledHeaderCategory: solCopy.SOL_VOICE_THROTTLED_LOG_HEADER_CATEGORY || '',
+    throttledHeaderDedupeKey: solCopy.SOL_VOICE_THROTTLED_LOG_HEADER_DEDUPE_KEY || '',
+    throttledHeaderOutcome: solCopy.SOL_VOICE_THROTTLED_LOG_HEADER_OUTCOME || '',
+  };
+  window.SettingsRender.applyCopy(document, mergedSettingsCopy(state));
+  window.SettingsRender.applyThinkingSurfaces(document, state.thinking_surfaces);
+}
+
+function facetDetailSlug() {
+  const match = window.location.pathname.match(/^\/app\/settings\/facets\/([^/]+)\/?$/);
+  return match ? decodeURIComponent(match[1]) : '';
+}
+
+function showSettingsLoading() {
+  if (settingsIndexView) settingsIndexView.hidden = true;
+  if (settingsFacetDetailView) settingsFacetDetailView.hidden = true;
+  if (!settingsStateGate || !window.SurfaceState) return;
+  settingsStateGate.hidden = false;
+  settingsStateGate.innerHTML = window.SurfaceState.loading({ text: 'loading settings...' });
+}
+
+function revealSettingsIndex() {
+  if (settingsStateGate) {
+    settingsStateGate.hidden = true;
+    settingsStateGate.innerHTML = '';
+  }
+  if (settingsFacetDetailView) settingsFacetDetailView.hidden = true;
+  if (settingsIndexView) settingsIndexView.hidden = false;
+}
+
+function revealFacetDetail() {
+  if (settingsStateGate) {
+    settingsStateGate.hidden = true;
+    settingsStateGate.innerHTML = '';
+  }
+  if (settingsIndexView) settingsIndexView.hidden = true;
+  if (settingsFacetDetailView) settingsFacetDetailView.hidden = false;
+}
+
+function showSettingsStateError(err) {
+  if (settingsIndexView) settingsIndexView.hidden = true;
+  if (settingsFacetDetailView) settingsFacetDetailView.hidden = true;
+  if (!settingsStateGate || !window.SurfaceState) return;
+  settingsStateGate.hidden = false;
+  settingsStateGate.innerHTML = window.SurfaceState.error({
+    heading: "Couldn't load settings",
+    retry: true,
+    serverMessage: err?.serverMessage,
+    detail: err,
+  });
+  settingsStateGate.querySelector('.surface-state-retry')?.addEventListener('click', initSettingsWorkspace, { once: true });
+}
+
+async function loadSettingsState() {
+  return await window.apiJson('/app/settings/api/state', { headers: { accept: 'application/json' } });
+}
+
+async function initSettingsWorkspace() {
+  showSettingsLoading();
+  const slug = facetDetailSlug();
+  try {
+    if (slug) {
+      const [state, facet] = await Promise.all([
+        loadSettingsState(),
+        window.apiJson(`/app/settings/api/facet/${encodeURIComponent(slug)}`, { headers: { accept: 'application/json' } }),
+      ]);
+      applySettingsState(state || {});
+      window.SettingsRender.renderFacetDetail(document, facet || {}, state.settings_copy || {});
+      revealFacetDetail();
+      return;
+    }
+
+    const state = await loadSettingsState();
+    applySettingsState(state || {});
+    revealSettingsIndex();
+    initSettings();
+  } catch (err) {
+    window.logError?.(err, { context: 'settings: state load failed' });
+    showSettingsStateError(err);
+  }
+}
+
 function initSettings() {
+  if (settingsInitialized) return;
+  settingsInitialized = true;
   updateFacetNav();
   initFromHash();
   loadConfig();
@@ -6959,8 +7161,8 @@ function initSettings() {
 }
 
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', initSettings);
+  document.addEventListener('DOMContentLoaded', initSettingsWorkspace);
 } else {
-  initSettings();
+  initSettingsWorkspace();
 }
 </script>

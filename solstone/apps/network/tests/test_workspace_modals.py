@@ -10,7 +10,7 @@ import re
 
 def test_workspace_modals_are_hidden_by_attribute_and_css(link_env):
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)

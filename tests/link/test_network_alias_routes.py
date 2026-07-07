@@ -34,25 +34,29 @@ def test_legacy_link_prefix_mirrors_network_routes(
         assert network_rule.endpoint.startswith("app:network.")
         assert legacy_rule.endpoint.startswith("app:link.")
         assert network_endpoint_suffix == legacy_endpoint_suffix
+        if network_endpoint_suffix == "static":
+            # Flask binds static views per registration; app-view parity is the guard.
+            continue
         assert (
             app.view_functions[network_rule.endpoint]
             is app.view_functions[legacy_rule.endpoint]
         )
 
 
-def test_network_and_legacy_roots_render_workspace(
+def test_network_root_serves_shell_and_legacy_root_redirects(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app, _journal = make_convey_app(tmp_path, monkeypatch, link={"posture": "spl"})
     client = app.test_client()
 
-    for path in ("/app/network/", "/app/link/"):
-        response = client.get(path)
+    network_response = client.get("/app/network/")
+    assert network_response.status_code == 200
+    assert b'data-solstone-shell="spa"' in network_response.data
 
-        assert response.status_code == 200
-        assert b'class="link-dashboard"' in response.data
-        assert b'id="link-status-panel"' in response.data
+    legacy_response = client.get("/app/link/")
+    assert legacy_response.status_code == 302
+    assert legacy_response.headers["Location"] == "/app/network/"
 
 
 def test_legacy_link_prefix_serves_native_client_routes(

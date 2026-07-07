@@ -5,65 +5,62 @@
 
 from __future__ import annotations
 
-import html
 import re
 
 from solstone.apps.network import copy
 
-U4_COPY_VALUES = [
-    copy.MODAL_TITLE,
-    copy.STEP_1,
-    copy.STEP_2,
-    copy.STEP_3,
-    copy.PAIR_NETWORK_LINE,
-    copy.DETAILS_DISCLOSURE,
-    copy.CA_FP_LABEL,
-    copy.CA_FP_NOTE,
-    copy.DEVICE_LABEL_FIELD_LABEL,
-    copy.EXPIRED_BUTTON,
-    copy.PAIR_ERROR_BODY,
-    copy.SUCCESS_HEADING,
-    copy.SUCCESS_SUBHEAD,
-    copy.SUCCESS_DONE,
-    copy.SUCCESS_VERIFY_NOTE,
-    copy.SUCCESS_REMOVE_LABEL,
-    copy.DEVICE_LABEL_PLACEHOLDER,
-    copy.HERO_TITLE,
-    copy.HERO_BODY,
-    copy.HERO_HOW_REACH_LABEL,
-]
+U4_COPY_NAMES = (
+    "MODAL_TITLE",
+    "STEP_1",
+    "STEP_2",
+    "STEP_3",
+    "PAIR_NETWORK_LINE",
+    "DETAILS_DISCLOSURE",
+    "CA_FP_LABEL",
+    "CA_FP_NOTE",
+    "DEVICE_LABEL_FIELD_LABEL",
+    "EXPIRED_BUTTON",
+    "PAIR_ERROR_BODY",
+    "SUCCESS_HEADING",
+    "SUCCESS_SUBHEAD",
+    "SUCCESS_DONE",
+    "SUCCESS_VERIFY_NOTE",
+    "SUCCESS_REMOVE_LABEL",
+    "DEVICE_LABEL_PLACEHOLDER",
+    "HERO_TITLE",
+    "HERO_BODY",
+    "HERO_HOW_REACH_LABEL",
+)
+U4_COPY_VALUES = [getattr(copy, name) for name in U4_COPY_NAMES]
 
-U8_COPY_VALUES = [
-    copy.WINDOW_CLOSED_BUTTON,
-    copy.SUCCESS_VERIFY_NOTE_ANYWHERE,
-    copy.RECENT_NETWORK_LABEL_ANYWHERE,
-]
+U8_COPY_NAMES = (
+    "WINDOW_CLOSED_BUTTON",
+    "SUCCESS_VERIFY_NOTE_ANYWHERE",
+    "RECENT_NETWORK_LABEL_ANYWHERE",
+)
+U8_COPY_VALUES = [getattr(copy, name) for name in U8_COPY_NAMES]
 
-PRESENTATION_COPY_VALUES = [
-    copy.PRESENTATION_SELECTOR_LABEL,
-    copy.PRESENTATION_PHONE_LABEL,
-    copy.PRESENTATION_COMPUTER_LABEL,
-    copy.PRESENTATION_GLASSES_LABEL,
-    copy.PAIR_LINK_FIELD_LABEL,
-    copy.PAIR_LINK_COPY_LABEL,
-    copy.PAIR_LINK_COPY_SUCCESS_TOAST,
-    copy.PAIR_LINK_COPY_FAIL_TOAST,
-    copy.REACH_HOME_CANDIDATES_LABEL,
-    copy.REACH_HOME_CANDIDATES_REFRESH_FAIL,
-    copy.REACH_HOME_CANDIDATES_UNAVAILABLE,
-    copy.HOME_CANDIDATES_ERROR,
-]
+PRESENTATION_COPY_NAMES = (
+    "PRESENTATION_SELECTOR_LABEL",
+    "PRESENTATION_PHONE_LABEL",
+    "PRESENTATION_COMPUTER_LABEL",
+    "PRESENTATION_GLASSES_LABEL",
+    "PAIR_LINK_FIELD_LABEL",
+    "PAIR_LINK_COPY_LABEL",
+    "PAIR_LINK_COPY_SUCCESS_TOAST",
+    "PAIR_LINK_COPY_FAIL_TOAST",
+    "REACH_HOME_CANDIDATES_LABEL",
+    "REACH_HOME_CANDIDATES_REFRESH_FAIL",
+    "REACH_HOME_CANDIDATES_UNAVAILABLE",
+    "HOME_CANDIDATES_ERROR",
+)
+PRESENTATION_COPY_VALUES = [getattr(copy, name) for name in PRESENTATION_COPY_NAMES]
 
 
-def _normalized_body(body: str) -> str:
-    return (
-        html.unescape(body)
-        .replace('\\"', '"')
-        .replace("\\u0027", "'")
-        .replace("\\u00b7", "·")
-        .replace("\\u2014", "—")
-        .replace("\\u2192", "→")
-    )
+def _link_copy(env) -> dict[str, object]:
+    response = env.client.get("/app/network/api/state")
+    assert response.status_code == 200
+    return response.get_json()["link_copy"]
 
 
 def test_u4_copy_values_are_locked() -> None:
@@ -170,25 +167,17 @@ def test_u8_copy_stays_in_bounds() -> None:
         assert not device_noun_re.search(lowered), value
 
 
-def test_u4_copy_matches_rendered_body(link_env) -> None:
+def test_u4_copy_matches_state_payload(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    payload = _link_copy(env)
 
-    assert response.status_code == 200
-    body_text = _normalized_body(response.get_data(as_text=True))
-
-    for value in U4_COPY_VALUES:
-        assert value in body_text
+    for name in U4_COPY_NAMES:
+        assert payload[name] == getattr(copy, name)
 
 
-def test_presentation_copy_matches_rendered_body(link_env) -> None:
+def test_presentation_copy_matches_state_payload(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    payload = _link_copy(env)
 
-    assert response.status_code == 200
-    body_text = _normalized_body(response.get_data(as_text=True))
-
-    for value in PRESENTATION_COPY_VALUES:
-        if value == copy.HOME_CANDIDATES_ERROR:
-            continue
-        assert value in body_text
+    for name in PRESENTATION_COPY_NAMES:
+        assert payload[name] == getattr(copy, name)

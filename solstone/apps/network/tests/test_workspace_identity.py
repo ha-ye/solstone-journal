@@ -10,7 +10,7 @@ from solstone.apps.network import copy
 
 
 def _workspace_body(env) -> str:
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
     assert response.status_code == 200
     return response.get_data(as_text=True)
 
@@ -23,6 +23,12 @@ def _body_text(body: str) -> str:
         .replace("\\u2014", "—")
         .replace("\\u2192", "→")
     )
+
+
+def _link_copy(env) -> dict[str, object]:
+    response = env.client.get("/app/network/api/state")
+    assert response.status_code == 200
+    return response.get_json()["link_copy"]
 
 
 def test_workspace_identity_fetches_once_and_not_on_poll(link_env) -> None:
@@ -59,10 +65,12 @@ def test_workspace_identity_scaffold_is_empty_and_guarded(link_env) -> None:
 def test_workspace_identity_copy_and_visible_terms(link_env) -> None:
     env = link_env()
     body = _workspace_body(env)
-    body_text = _body_text(body)
+    payload = _link_copy(env)
 
-    assert copy.IDENTITY_HEADER_LABEL in body_text
-    assert copy.IDENTITY_ID_LABEL in body_text
+    assert 'data-copy="IDENTITY_HEADER_LABEL"' in body
+    assert 'data-copy="IDENTITY_ID_LABEL"' in body
+    assert payload["IDENTITY_HEADER_LABEL"] == copy.IDENTITY_HEADER_LABEL
+    assert payload["IDENTITY_ID_LABEL"] == copy.IDENTITY_ID_LABEL
 
     visible_text = _body_text(re.sub(r"<[^>]+>", " ", body))
     assert re.search(r"\bjid\b", visible_text) is None

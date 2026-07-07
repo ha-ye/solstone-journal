@@ -40,12 +40,6 @@ def _workspace_text() -> str:
     return WORKSPACE.read_text(encoding="utf-8")
 
 
-def _without_install_copy_declaration(text: str) -> str:
-    return "\n".join(
-        line for line in text.splitlines() if "const INSTALL_COPY = " not in line
-    )
-
-
 def test_workspace_has_no_legacy_install_state_terms():
     text = _workspace_text()
 
@@ -54,7 +48,7 @@ def test_workspace_has_no_legacy_install_state_terms():
 
 
 def test_workspace_does_not_duplicate_install_copy_strings():
-    text = _without_install_copy_declaration(_workspace_text())
+    text = _workspace_text()
 
     for name in UNIQUE_INSTALL_COPY_NAMES:
         value = getattr(install_copy, name)

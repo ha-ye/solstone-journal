@@ -38,12 +38,13 @@ from pathlib import Path
 from typing import Any
 
 from cryptography.hazmat.primitives import serialization
-from flask import Blueprint, Response, abort, g, jsonify, request
+from flask import Blueprint, Response, abort, current_app, g, jsonify, redirect, request
 
 from solstone.apps.network import copy as link_copy
 from solstone.apps.network.copy import (
     PAIR_LINK_HOST,
     PAIR_LINK_PATH,
+    link_copy_payload,
 )
 from solstone.apps.network.crockford32 import encode as crockford_encode
 from solstone.apps.network.relay_link import (
@@ -55,6 +56,7 @@ from solstone.convey import emit
 from solstone.convey.bridge import get_cached_state
 from solstone.convey.reasons import (
     CONVEY_OPERATION_FAILED,
+    FILE_READ_FAILED,
     INVALID_CONFIG_VALUE,
     INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
@@ -126,20 +128,20 @@ network_bp = Blueprint(
     "app:network",
     __name__,
     url_prefix="/app/network",
+    static_folder="static",
+    static_url_path="/static",
 )
 
 
 @network_bp.route("/")
 def index() -> str:
     # One view object serves both /app/network/ (canonical) and the /app/link/
-    # legacy alias. app.html keys off `app`, but the context processor only
-    # resolves it from the URL segment for *registered* app names — "link" is
-    # no longer one — so pin the canonical name here. Flask's
-    # update_template_context lets this explicit value win over the processor,
-    # so BOTH prefixes render the network workspace.
-    from flask import render_template
-
-    return render_template("app.html", app="network")
+    # legacy alias. The canonical route serves the SPA shell; the alias index
+    # redirects only at the root so every other /app/link/* route keeps resolving
+    # through the double-registered blueprint.
+    if request.blueprint == "app:link":
+        return redirect("/app/network/")
+    return current_app.send_static_file("shell.html")
 
 
 def _authorized() -> AuthorizedClients:
@@ -454,6 +456,18 @@ def _start_operation_response(
 # ---------------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------------
+
+
+@network_bp.route("/api/state")
+def api_state() -> Any:
+    try:
+        return jsonify({"posture": read_posture(), "link_copy": link_copy_payload()})
+    except Exception:
+        logger.exception("network state load failed")
+        return error_response(
+            FILE_READ_FAILED,
+            detail="Failed to load network state.",
+        )
 
 
 @network_bp.route("/api/devices")
@@ -1029,14 +1043,3 @@ def _entry_to_json(entry: ClientEntry) -> dict[str, Any]:
         "kind": entry.kind,
         "observer_handle": entry.observer_handle,
     }
-
-
-# ---------------------------------------------------------------------------
-# helpers for the workspace template
-# ---------------------------------------------------------------------------
-
-
-@network_bp.app_context_processor
-def _inject_link_helpers() -> dict[str, Any]:
-    """Make `url_for` to link endpoints easy from templates."""
-    return {"link_copy": link_copy, "posture": read_posture()}

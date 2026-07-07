@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 PAIR_LINK_HOST = "go.solstone.app"
 PAIR_LINK_PATH = "/p"
 MODAL_TITLE = "pair a device"
@@ -187,3 +189,8 @@ IDENTITY_ID_LABEL = "journal id"
 IDENTITY_ID_COPY_LABEL = "copy"
 IDENTITY_ID_COPY_SUCCESS_TOAST = "journal id copied"
 IDENTITY_ID_COPY_FAIL_TOAST = "couldn't copy journal id"
+
+
+def link_copy_payload() -> dict[str, Any]:
+    """Return the complete static copy payload for the network workspace."""
+    return {name: value for name, value in globals().items() if name.isupper()}

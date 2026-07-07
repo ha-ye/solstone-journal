@@ -1,4 +1,5 @@
 {
   "icon": "⚙️",
-  "label": "settings"
+  "label": "settings",
+  "spa": true
 }

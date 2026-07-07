@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import re
 
 import pytest
 
@@ -25,16 +24,11 @@ def settings_client(settings_env):
     return app.test_client()
 
 
-def test_workspace_embeds_install_copy(settings_client):
-    response = settings_client.get("/app/settings/", follow_redirects=True)
+def test_settings_state_serves_install_copy(settings_client):
+    response = settings_client.get("/app/settings/api/state")
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert html.count("const INSTALL_COPY = ") == 1
-    match = re.search(r"const INSTALL_COPY = (\{.*?\});", html)
-    assert match is not None
-
-    payload = json.loads(match.group(1))
+    payload = response.get_json()["install_copy"]
     assert set(payload) == set(install_copy.__all__)
     for name in install_copy.__all__:
         assert payload[name] == getattr(install_copy, name)

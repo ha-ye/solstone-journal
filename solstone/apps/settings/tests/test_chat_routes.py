@@ -4,10 +4,18 @@
 from __future__ import annotations
 
 import logging
-import re
 
+from solstone.apps.chat import copy as chat_copy
 from solstone.apps.chat.config import load_chat_config, save_chat_config
 from solstone.convey import create_app
+
+CHAT_THINKING_COPY_NAMES = (
+    "CHAT_THINKING_SETTING_LABEL",
+    "CHAT_THINKING_OPT_ON_TAP",
+    "CHAT_THINKING_OPT_ALWAYS",
+    "CHAT_THINKING_OPT_NEVER",
+    "CHAT_THINKING_SETTING_HELP",
+)
 
 
 def _base_config() -> dict:
@@ -22,21 +30,30 @@ def _client(journal_path):
     return app.test_client()
 
 
-def test_settings_page_renders_checked_chat_thinking_value(settings_env):
+def test_settings_state_returns_chat_thinking_value(settings_env):
     journal_path, _config = settings_env(_base_config())
     save_chat_config({"thinking_surfaces": "always"})
     client = _client(journal_path)
 
-    response = client.get("/app/settings/", follow_redirects=True)
+    response = client.get("/app/settings/api/state")
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert 'data-section="chat" id="tab-chat"' in html
+    payload = response.get_json()
+    assert payload["thinking_surfaces"] == "always"
+    for name in CHAT_THINKING_COPY_NAMES:
+        assert payload["chat_copy"][name] == getattr(chat_copy, name)
+
+    workspace = client.get("/app/settings/workspace")
+    assert workspace.status_code == 200
+    html = workspace.get_data(as_text=True)
+    assert 'id="tab-chat"' in html
     assert 'id="section-chat"' in html
-    assert re.search(
-        r'<input[^>]+name="thinking_surfaces"[^>]+value="always"[^>]+checked',
-        html,
-    )
+    for name in (
+        "CHAT_THINKING_OPT_ON_TAP",
+        "CHAT_THINKING_OPT_ALWAYS",
+        "CHAT_THINKING_OPT_NEVER",
+    ):
+        assert f'data-copy="chat_copy.{name}"' in html
 
 
 def test_chat_api_get_returns_config(settings_env):

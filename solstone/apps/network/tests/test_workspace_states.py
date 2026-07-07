@@ -5,36 +5,33 @@
 
 from __future__ import annotations
 
-import html
 import re
 
 from solstone.apps.network import copy
 
 
-def _normalized_body(body: str) -> str:
-    return (
-        html.unescape(body)
-        .replace('\\"', '"')
-        .replace("\\u0027", "'")
-        .replace("\\u00b7", "·")
-        .replace("\\u2014", "—")
-        .replace("\\u2192", "→")
-    )
+def _link_copy(env) -> dict[str, object]:
+    response = env.client.get("/app/network/api/state")
+    assert response.status_code == 200
+    return response.get_json()["link_copy"]
 
 
 def test_first_run_hero_present_and_zero_clients(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    body_text = _normalized_body(body)
 
     assert 'id="link-first-run-hero"' in body
     assert re.search(r'<section id="link-first-run-hero"[^>]{0,200}\bhidden\b', body)
-    assert copy.HERO_TITLE in body_text
-    assert copy.HERO_BODY in body_text
-    assert copy.HERO_HOW_REACH_LABEL in body_text
+    assert 'data-copy="HERO_TITLE"' in body
+    assert 'data-copy="HERO_BODY"' in body
+    assert 'data-copy="HERO_HOW_REACH_LABEL"' in body
+    payload = _link_copy(env)
+    assert payload["HERO_TITLE"] == copy.HERO_TITLE
+    assert payload["HERO_BODY"] == copy.HERO_BODY
+    assert payload["HERO_HOW_REACH_LABEL"] == copy.HERO_HOW_REACH_LABEL
     assert "isFirstRun" in body
     assert "applyFirstRunGate" in body
     assert "latestDevices.length === 0" in body
@@ -47,7 +44,7 @@ def test_first_run_hero_present_and_zero_clients(link_env) -> None:
 
 def test_loading_skeletons_present(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
@@ -63,7 +60,7 @@ def test_loading_skeletons_present(link_env) -> None:
 
 def test_lan_banner_removed_and_pair_blocking_stays(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
@@ -86,26 +83,25 @@ def test_lan_banner_removed_and_pair_blocking_stays(link_env) -> None:
 
 def test_qr_expired_overlay_renders(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    body_text = _normalized_body(body)
 
     assert 'id="link-qr-expired"' in body
     assert re.search(r'<div id="link-qr-expired"[^>]{0,200}\bhidden\b', body)
-    assert copy.EXPIRED_BUTTON in body_text
+    assert 'id="link-pair-regenerate"' in body
+    assert _link_copy(env)["EXPIRED_BUTTON"] == copy.EXPIRED_BUTTON
     assert ".is-expired" in body
     assert "qrContainer.classList.add('is-expired')" in body
 
 
 def test_success_card_structure(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    body_text = _normalized_body(body)
 
     for element_id in (
         "link-pair-success",
@@ -115,9 +111,13 @@ def test_success_card_structure(link_env) -> None:
         "link-pair-done",
     ):
         assert f'id="{element_id}"' in body
-    assert copy.SUCCESS_VERIFY_NOTE in body_text
-    assert copy.SUCCESS_REMOVE_LABEL in body_text
-    assert copy.SUCCESS_DONE in body_text
+    assert 'data-copy="SUCCESS_VERIFY_NOTE"' in body
+    assert 'data-copy="SUCCESS_REMOVE_LABEL"' in body
+    assert 'data-copy="SUCCESS_DONE"' in body
+    payload = _link_copy(env)
+    assert payload["SUCCESS_VERIFY_NOTE"] == copy.SUCCESS_VERIFY_NOTE
+    assert payload["SUCCESS_REMOVE_LABEL"] == copy.SUCCESS_REMOVE_LABEL
+    assert payload["SUCCESS_DONE"] == copy.SUCCESS_DONE
 
     remove_start = body.index("pairRemove.addEventListener")
     remove_end = body.index("pairModal.addEventListener", remove_start)
@@ -139,7 +139,7 @@ def test_success_card_structure(link_env) -> None:
 
 def test_pair_complete_single_refresh(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
@@ -158,7 +158,7 @@ def test_pair_complete_single_refresh(link_env) -> None:
 
 def test_workspace_uses_server_display_label_for_device_titles(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
@@ -182,33 +182,32 @@ def test_workspace_uses_server_display_label_for_device_titles(link_env) -> None
 
 def test_pair_modal_error_state_present(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    body_text = _normalized_body(body)
 
     assert 'id="link-pair-error"' in body
     assert re.search(r'<div id="link-pair-error"[^>]{0,200}\bhidden\b', body)
-    assert copy.PAIR_ERROR_BODY in body_text
+    assert 'data-copy="PAIR_ERROR_BODY"' in body
+    assert _link_copy(env)["PAIR_ERROR_BODY"] == copy.PAIR_ERROR_BODY
     assert "function showPairError" in body
     assert body.count("showPairError(") >= 2
 
 
 def test_private_link_consent_link_rendering(link_env) -> None:
     env = link_env()
-    response = env.client.get("/app/network/")
+    response = env.client.get("/app/network/workspace")
 
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    body_text = _normalized_body(body)
 
     assert "browser_open_" + "succeeded" not in body
     assert "PRIVATE_LINK_TERMINAL_PHASES.has(operation.phase)" in body
     assert "privateLinkSetup.hidden = !!operation &&" in body
     assert "typeof operation.portal_url === 'string'" in body
     assert "PRIVATE_LINK_PORTAL_CTA" in body
-    assert copy.PRIVATE_LINK_PORTAL_CTA in body_text
+    assert _link_copy(env)["PRIVATE_LINK_PORTAL_CTA"] == copy.PRIVATE_LINK_PORTAL_CTA
 
     setup_start = body.index("async function startPrivateLinkSetup")
     setup_end = body.index("async function disablePrivateLink", setup_start)
