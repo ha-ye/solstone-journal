@@ -917,6 +917,36 @@ def test_segment_content_returns_warning_details_for_parse_failures(
     assert data["media_purged"] == {"audio": False, "screen": False}
 
 
+def test_segment_content_screen_media_description_string(client, journal_copy):
+    day = "20990106"
+    stream = "default"
+    segment = "090000_300"
+    _write_segment(journal_copy, day, stream, segment, screen=False)
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    _write_jsonl(
+        segment_dir / "screen.jsonl",
+        [
+            {"raw": "screen.webm"},
+            {
+                "frame_id": 1,
+                "timestamp": 1,
+                "analysis": {
+                    "primary": "media",
+                    "visual_description": "Watching a livestream.",
+                },
+                "content": {"media": "# [OpenAI - Introducing GPT-Live]"},
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["warnings"] == 0
+    assert any(chunk["type"] == "screen" for chunk in data["chunks"])
+
+
 @pytest.mark.parametrize("raw_name", ["audio.flac", "audio.m4a"])
 def test_segment_content_raw_audio_without_jsonl_is_pending(
     client, journal_copy, raw_name
