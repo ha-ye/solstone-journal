@@ -1,15 +1,15 @@
 {
 
-  "description": "Spreadsheets, slides, document editors, calendars, task and issue tracking tools, other workplace desktop or web apps and professional tools",
+  "description": "Spreadsheets, slides, document editors, task and issue tracking tools, dashboards, other workplace desktop or web apps and professional tools that are not primarily calendar/scheduling views",
   "output": "markdown",
-  "extraction": "Extract when different application or service is shown (e.g. ChatGPT vs Calendar vs Docs)",
+  "extraction": "Extract when different application or service is shown (e.g. ChatGPT vs Docs vs issue tracker)",
   "importance": "high"
 
 }
 
 # Productivity App Text Extraction
 
-Extract text from this productivity screenshot (spreadsheets, slides, calendars, task managers, issue trackers, project management tools).
+Extract text from this productivity screenshot (spreadsheets, slides, document editors, task managers, issue trackers, dashboards, project management tools).
 
 ## Header
 
@@ -20,9 +20,9 @@ Extract text from this productivity screenshot (spreadsheets, slides, calendars,
 Extract all visible data with appropriate structure:
 
 - **Tables/Spreadsheets**: Use markdown tables, include headers
-- **Calendars**: Include event times and titles (`**9:00 AM** - Team Standup`)
 - **Tasks/Issues**: Include title, status, assignee, and due date if visible
 - **Slides**: Use `##` for slide titles, bullets for content
+- **Dashboards/Apps**: Preserve labels, values, statuses, and visible hierarchy
 
 ## Quality
 

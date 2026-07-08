@@ -101,12 +101,13 @@ Rules:
 
 Categories (choose one):
 - browsing: General web browsing, news, shopping, or reference pages without a dominant social feed or media viewer
+- calendar: Calendar and scheduling interfaces: day/week/month views, agenda lists, event details, event creation forms, booking pages, availability grids, and RSVP/scheduling workflows
 - code: Code editors and IDEs
 - gaming: Video games, puzzles, idle games
 - media: Photos, video players, image galleries, or visual media dominating the view, even when displayed inside a browser tab
 - meeting: Video calls/conferencing (Zoom, Meet, Teams, Webex, etc.)
 - messaging: Chat or email apps (Slack, Discord, Messages/iMessage, Gmail, etc.)
-- productivity: Spreadsheets, slides, document editors, calendars, task and issue tracking tools, other workplace desktop or web apps and professional tools
+- productivity: Spreadsheets, slides, document editors, task and issue tracking tools, dashboards, other workplace desktop or web apps and professional tools that are not primarily calendar/scheduling views
 - reading: Documents, articles, PDFs, documentation
 - social: Social platforms with feeds, threads, profiles, posts, comments, or timelines (X, Bluesky, Reddit, Instagram, TikTok, LinkedIn, Mastodon, HN)
 - terminal: Command line interfaces, logs, shell
@@ -114,7 +115,10 @@ Categories (choose one):
 Tie-break rules:
 - If a photo, video, image gallery, or visual media fills most of the screen, choose media even when it is inside a browser.
 - If the dominant surface is a feed, thread, profile, posts, comments, or timeline, choose social rather than browsing.
-- Choose browsing for ordinary web pages, search, news, shopping, or documentation when no social feed or media viewer dominates."""
+- Choose browsing for ordinary web pages, search, news, shopping, or documentation when no social feed or media viewer dominates.
+- Choose calendar for calendar grids, agenda views, event detail/edit forms, availability pickers, booking pages, and scheduling assistants, even when they appear inside a browser or productivity suite.
+- Choose meeting only for an active live call/conference UI; a calendar event for a meeting is calendar, not meeting.
+- Choose messaging/email when the dominant surface is an email or chat conversation, even if it discusses scheduling; choose calendar when an invite/event editor, RSVP pane, availability grid, or booking flow is dominant."""
     prompt = describe_module.CATEGORIZATION_PROMPT
 
     assert prompt == expected
@@ -123,7 +127,9 @@ Tie-break rules:
     assert "�" not in prompt
     assert "Tie-break rules:" in prompt
     assert prompt.index("- terminal:") < prompt.index("Tie-break rules:")
-    assert prompt.rstrip().endswith("when no social feed or media viewer dominates.")
+    assert prompt.rstrip().endswith(
+        "choose calendar when an invite/event editor, RSVP pane, availability grid, or booking flow is dominant."
+    )
 
 
 def test_redact_instruction_empty():

@@ -7,6 +7,12 @@
       "importance": "normal",
       "label": "Browsing"
     },
+    "calendar": {
+      "extraction": "Extract when the visible date range, event detail, availability grid, booking page, or scheduling workflow changes",
+      "group": "Screen Analysis",
+      "importance": "high",
+      "label": "Calendar"
+    },
     "code": {
       "extraction": "Extract when viewing different repositories, files, or switching between editor and browser",
       "group": "Screen Analysis",
@@ -38,7 +44,7 @@
       "label": "Messaging"
     },
     "productivity": {
-      "extraction": "Extract when different application or service is shown (e.g. ChatGPT vs Calendar vs Docs)",
+      "extraction": "Extract when different application or service is shown (e.g. ChatGPT vs Docs vs issue tracker)",
       "group": "Screen Analysis",
       "importance": "high",
       "label": "Productivity"
