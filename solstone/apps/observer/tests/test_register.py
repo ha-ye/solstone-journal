@@ -430,8 +430,9 @@ def test_registered_observer_segments_legacy_record_uses_locked_stream(observer_
     data = resp.get_json()
     assert data[0]["files"][0]["status"] == "present"
     # This proves the read-path fallback used observer["stream"] ("fedora.tmux");
-    # stream_name(observer="fedora.tmux") would look under fedora/ and fall
-    # through to the inode-based relocated/missing path, not present.
+    # stream_name(observer="fedora.tmux") would look under fedora/ and resolve
+    # the recorded path as missing. Path presence decides status; legacy inode
+    # fields are ignored.
 
 
 def test_legacy_key_only_observer_still_honors_meta_stream(observer_env):

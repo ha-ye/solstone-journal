@@ -138,9 +138,6 @@
       "SegmentFile": {
         "additionalProperties": true,
         "properties": {
-          "current_path": {
-            "type": "string"
-          },
           "name": {
             "type": "string"
           },
@@ -153,7 +150,6 @@
           "status": {
             "enum": [
               "present",
-              "relocated",
               "missing"
             ],
             "type": "string"
@@ -3757,7 +3753,7 @@
     },
     "/app/observer/ingest/segments/{day}": {
       "get": {
-        "description": "Return segment upload history for one day. Protocol version 2 and newer receive a collection envelope; older or absent protocol headers receive a legacy bare array. Per-file `status` is `present` (file at its recorded path), `relocated` (located by inode elsewhere; `current_path` gives the new journal-relative location), or `missing` (not found). A local file is proven held by the journal only when its listing entry is `present` or `relocated` AND the entry `sha256` matches the local file; a `missing` status \u2014 or any local file the listing does not positively account for \u2014 is needs-upload, and the client must never delete a local copy on that basis. `relocated` is a held state, not needs-upload: the journal provably holds the bytes (inode-verified, `current_path`), and re-uploading only returns `duplicate`. Confirm-before-delete matches every upload-eligible local file to a listing entry per (filename, sha256) \u2014 the listing filename is `submitted_name` when present, else `name` \u2014 and deletes only on a proven-held match. `submitted_name` appears only when the stored filename differs from the submitted one; segment-level `original_key` carries the client's originally requested segment key when a collision remapped it.",
+        "description": "Return segment upload history for one day. Protocol version 2 and newer receive a collection envelope; older or absent protocol headers receive a legacy bare array. Per-file `status` is `present` (file at its recorded path) or `missing` (not found). A local file is proven held by the journal only when its listing entry is `present` AND the entry `sha256` matches the local file; a `missing` status \u2014 or any local file the listing does not positively account for \u2014 is needs-upload, and the client must never delete a local copy on that basis. Confirm-before-delete matches every upload-eligible local file to a listing entry per (filename, sha256) \u2014 the listing filename is `submitted_name` when present, else `name` \u2014 and deletes only on a proven-held match. `submitted_name` appears only when the stored filename differs from the submitted one; segment-level `original_key` carries the client's originally requested segment key when a collision remapped it.",
         "operationId": "observer.ingestSegments",
         "parameters": [
           {

@@ -8,6 +8,9 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import shutil
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import solstone.apps.observer.routes as routes_module
@@ -78,6 +81,37 @@ def _create_observer(env, name: str) -> str:
     )
     assert resp.status_code == 200
     return resp.get_json()["key"]
+
+
+def _upload_audio(
+    env,
+    key: str,
+    content: bytes,
+    *,
+    day: str = "20250103",
+    segment: str = "120000_300",
+    filename: str = "audio.flac",
+):
+    return env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": day,
+            "segment": segment,
+            "files": (io.BytesIO(content), filename),
+        },
+    )
+
+
+def _listed_file_info(env, key: str, *, day: str = "20250103") -> dict:
+    resp = env.client.get(
+        f"/app/observer/ingest/segments/{day}",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data) == 1
+    return data[0]["files"][0]
 
 
 def _observer_record() -> dict:
@@ -1755,7 +1789,6 @@ def test_ingest_creates_sync_history(observer_env):
     assert file_rec["written"] == "audio.flac"  # Segment prefix stripped
     assert file_rec["size"] == len(test_data)
     assert len(file_rec["sha256"]) == 64  # SHA256 hex length
-    assert file_rec["inode"] > 0
 
 
 def test_ingest_history_with_collision(observer_env):
@@ -2144,84 +2177,85 @@ def test_segments_endpoint_missing_file(observer_env):
     assert file_info["status"] == "missing"
 
 
-def test_segments_endpoint_relocated_file(observer_env):
-    """Test segments endpoint detects relocated files by inode."""
+def test_segments_endpoint_renamed_recorded_file_is_missing(observer_env):
+    """A renamed file is missing because only the recorded path proves presence."""
     env = observer_env()
+    observer_name = "segments-renamed-missing-test"
+    key = _create_observer(env, observer_name)
+    test_data = b"test audio for renamed path"
 
-    # Create a observer
-    resp = env.client.post(
-        "/app/observer/api/create",
-        json={"name": "segments-relocate-test"},
-        content_type="application/json",
-    )
-    key = resp.get_json()["key"]
-
-    # Upload a file
-    test_data = b"test audio for relocation"
-    resp = env.client.post(
-        "/app/observer/ingest",
-        headers={"Authorization": f"Bearer {key}"},
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "files": (io.BytesIO(test_data), "120000_300_audio.flac"),
-        },
-    )
+    resp = _upload_audio(env, key, test_data)
     assert resp.status_code == 200
 
-    # Move the file to a different name (simulating some file reorganization)
-    day_dir = _day_dir(env)
-    segment_dir = day_dir / "segments-relocate-test" / "120000_300"
-    original_path = segment_dir / "audio.flac"
-    new_path = segment_dir / "renamed_audio.flac"
-    original_path.rename(new_path)
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    recorded_path = segment_dir / "audio.flac"
+    recorded_path.rename(segment_dir / "renamed_audio.flac")
 
-    # Query segments - should detect relocation by inode
-    resp = env.client.get(
-        "/app/observer/ingest/segments/20250103",
-        headers={"Authorization": f"Bearer {key}"},
-    )
-    data = resp.get_json()
-
-    assert len(data) == 1
-    file_info = data[0]["files"][0]
-    assert file_info["status"] == "relocated"
-    assert (
-        file_info["current_path"]
-        == "segments-relocate-test/120000_300/renamed_audio.flac"
-    )
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
 
 
-def test_find_by_inode(observer_env):
-    """Test _find_by_inode helper."""
-    from solstone.apps.observer.routes import _find_by_inode
-
+def test_segments_endpoint_same_content_elsewhere_is_missing(observer_env):
+    """Same bytes elsewhere do not prove presence at the recorded path."""
     env = observer_env()
+    observer_name = "segments-same-content-missing-test"
+    key = _create_observer(env, observer_name)
+    test_data = b"test audio for same content elsewhere"
+
+    resp = _upload_audio(env, key, test_data)
+    assert resp.status_code == 200
+
     day_dir = _day_dir(env)
-    day_dir.mkdir(parents=True)
+    segment_dir = day_dir / observer_name / "120000_300"
+    recorded_path = segment_dir / "audio.flac"
+    (day_dir / observer_name / "same_bytes.flac").write_bytes(test_data)
+    recorded_path.unlink()
 
-    # Create a file and get its inode
-    test_file = day_dir / "test.txt"
-    test_file.write_bytes(b"hello")
-    inode = test_file.stat().st_ino
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
 
-    # Should find it at original location
-    found = _find_by_inode(day_dir, inode)
-    assert found == test_file
 
-    # Move to subdirectory
-    subdir = day_dir / "subdir"
-    subdir.mkdir()
-    new_path = subdir / "renamed.txt"
-    test_file.rename(new_path)
+def test_segments_endpoint_same_inode_elsewhere_is_missing(observer_env):
+    """A hardlink elsewhere still leaves the recorded path missing."""
+    env = observer_env()
+    observer_name = "segments-same-inode-missing-test"
+    key = _create_observer(env, observer_name)
+    test_data = b"test audio for same inode elsewhere"
 
-    # Should still find by inode
-    found = _find_by_inode(day_dir, inode)
-    assert found == new_path
+    resp = _upload_audio(env, key, test_data)
+    assert resp.status_code == 200
 
-    # Non-existent inode returns None
-    found = _find_by_inode(day_dir, 999999999)
-    assert found is None
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    recorded_path = segment_dir / "audio.flac"
+    os.link(recorded_path, segment_dir / "hardlinked_audio.flac")
+    recorded_path.unlink()
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_missing_path_does_not_scan_day_tree(
+    observer_env, monkeypatch
+):
+    """Missing-path resolution must not descend through the day tree."""
+    env = observer_env()
+    observer_name = "segments-no-descent-test"
+    key = _create_observer(env, observer_name)
+    test_data = b"test audio for no descent"
+
+    resp = _upload_audio(env, key, test_data)
+    assert resp.status_code == 200
+
+    recorded_path = _day_dir(env) / observer_name / "120000_300" / "audio.flac"
+    recorded_path.unlink()
+
+    def fail_rglob(self, *args, **kwargs):
+        raise AssertionError("day-tree scan attempted")
+
+    monkeypatch.setattr(Path, "rglob", fail_rglob)
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
 
 
 def test_segments_endpoint_revoked_key(observer_env):
@@ -2506,40 +2540,37 @@ def test_ingest_reuploads_deleted_file_and_uses_newest_history_record(observer_e
     assert data["existing_segment"]
 
 
-def test_ingest_duplicate_accepts_relocated_file(observer_env):
-    """A file relocated within the day still counts as held by inode."""
+def test_ingest_reupload_after_removed_segment_restores_recorded_path(observer_env):
+    """Re-uploading after freeing the segment slot restores the recorded path."""
     env = observer_env()
 
-    observer_name = "dedup-relocated-test"
+    observer_name = "dedup-restored-path-test"
     key = _create_observer(env, observer_name)
-    test_data = b"test audio content for relocated duplicate"
+    test_data = b"test audio content for recorded path restoration"
 
     def upload():
-        return env.client.post(
-            "/app/observer/ingest",
-            headers={"Authorization": f"Bearer {key}"},
-            data={
-                "day": "20250103",
-                "segment": "120000_300",
-                "files": (io.BytesIO(test_data), "audio.flac"),
-            },
-        )
+        return _upload_audio(env, key, test_data)
 
     resp = upload()
     assert resp.status_code == 200
     data = resp.get_json()
     assert data["status"] == "ok"
+    original_segment = data["segment"]
+    assert original_segment == "120000_300"
 
-    segment_dir = _day_dir(env) / observer_name / data["segment"]
-    original_path = segment_dir / "audio.flac"
-    relocated_path = segment_dir / "renamed_audio.flac"
-    original_path.rename(relocated_path)
+    segment_dir = _day_dir(env) / observer_name / original_segment
+    # Removing the whole segment dir frees the slot, so the existing heal path
+    # restores the re-upload at the original recorded path without remapping.
+    shutil.rmtree(segment_dir)
 
     resp = upload()
     assert resp.status_code == 200
     data = resp.get_json()
-    assert data["status"] == "duplicate"
-    assert data["existing_segment"]
+    assert data["status"] == "ok"
+    assert data["segment"] == original_segment
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "present"
 
 
 def test_ingest_duplicate_does_not_emit_event(observer_env, monkeypatch):

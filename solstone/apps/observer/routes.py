@@ -642,54 +642,20 @@ def api_get_key(key_prefix: str) -> Any:
     )
 
 
-# === Sync history helpers ===
-
-
-def _find_by_inode(day_dir: Path, inode: int) -> Path | None:
-    """Find a file by inode in the day directory.
-
-    Searches recursively for a file with the given inode.
-
-    Args:
-        day_dir: Path to day directory
-        inode: Inode number to search for
-
-    Returns:
-        Path to file if found, None otherwise
-    """
-    try:
-        for path in day_dir.rglob("*"):
-            if path.is_file():
-                try:
-                    if path.stat().st_ino == inode:
-                        return path
-                except OSError:
-                    continue
-    except OSError:
-        pass
-    return None
-
-
 def resolve_file_presence(
     day_dir: Path,
     stream: str,
     segment: str,
     written: str,
-    inode: int | None,
-) -> tuple[str, Path | None]:
-    """Read-only status check for a recorded file on disk.
+) -> str:
+    """Read-only presence check for a recorded file on disk.
 
-    Uses only stat/exists/rglob reads to classify a recorded file as present at
-    its stored path, relocated within the day by inode, or missing.
+    The recorded day/stream/segment/filename path is the only proof the
+    journal still holds an uploaded file. Returns "present" when the file
+    exists at that exact path, else "missing". Does not scan descendants.
     """
     recorded_path = day_dir / stream / segment / written
-    if recorded_path.exists():
-        return "present", None
-    if inode and day_dir.exists():
-        relocated = _find_by_inode(day_dir, inode)
-        if relocated:
-            return "relocated", relocated
-    return "missing", None
+    return "present" if recorded_path.exists() else "missing"
 
 
 def check_matched_files_held(
@@ -698,14 +664,14 @@ def check_matched_files_held(
     matched_sha256s: set[str],
     fallback_stream: str,
 ) -> bool:
-    """Return True only when every matched sha is present or relocated on disk.
+    """Return True only when every matched sha is present at its recorded path.
 
     This is read-only. It resolves each sha through the most-recent upload
     history record before checking disk truth.
     """
     day_dir = day_path(day)
     records = load_history(key_prefix, day)
-    latest: dict[str, tuple[str, str, str, int | None]] = {}
+    latest: dict[str, tuple[str, str, str]] = {}
 
     for record in records:
         if record.get("type"):
@@ -721,7 +687,6 @@ def check_matched_files_held(
                     stream,
                     segment,
                     file_rec.get("written", ""),
-                    file_rec.get("inode"),
                 )
 
     for sha256 in matched_sha256s:
@@ -729,10 +694,8 @@ def check_matched_files_held(
         if entry is None:
             return False
 
-        stream, segment, written, inode = entry
-        status, _relocated = resolve_file_presence(
-            day_dir, stream, segment, written, inode
-        )
+        stream, segment, written = entry
+        status = resolve_file_presence(day_dir, stream, segment, written)
         if status == "missing":
             return False
 
@@ -1029,7 +992,6 @@ def _process_ingest_files(
             target_path.write_bytes(content)
             stat = target_path.stat()
             file_size = stat.st_size
-            file_inode = stat.st_ino
 
             saved_files.append(simple_filename)
             total_bytes += file_size
@@ -1038,7 +1000,6 @@ def _process_ingest_files(
                 {
                     "submitted": submitted_filename,
                     "written": simple_filename,
-                    "inode": file_inode,
                     "size": file_size,
                     "sha256": sha256,
                 }
@@ -1383,7 +1344,6 @@ def ingest_segments(day: str) -> Any:
 
     Returns JSON array of segments with file status:
     - present: File exists at recorded path
-    - relocated: File found at different path (by inode)
     - missing: File not found
 
     Args:
@@ -1450,7 +1410,6 @@ def ingest_segments(day: str) -> Any:
         for file_rec in record.get("files", []):
             written = file_rec.get("written", "")
             submitted = file_rec.get("submitted", "")
-            inode = file_rec.get("inode")
             size = file_rec.get("size", 0)
             sha256 = file_rec.get("sha256", "")
 
@@ -1464,12 +1423,9 @@ def ingest_segments(day: str) -> Any:
             if submitted != written:
                 file_info["submitted_name"] = submitted
 
-            status, relocated = resolve_file_presence(
-                day_dir, stream, segment, written, inode
+            file_info["status"] = resolve_file_presence(
+                day_dir, stream, segment, written
             )
-            file_info["status"] = status
-            if status == "relocated":
-                file_info["current_path"] = str(relocated.relative_to(day_dir))
 
             # Deduplicate by sha256 - later uploads overwrite earlier
             segments[segment]["files_by_sha"][sha256] = file_info
