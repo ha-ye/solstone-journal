@@ -1076,6 +1076,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 # markdown description string on media-watching frames;
                 # only the dict form carries photo-file keys.
                 raw_media_field = frame_content.get("media")
+                media_is_description = isinstance(raw_media_field, str)
                 media_content = (
                     dict(raw_media_field) if isinstance(raw_media_field, dict) else {}
                 )
@@ -1098,11 +1099,12 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 if media_kind == "image" and isinstance(frame_raw, str):
                     frame["raw"] = frame_raw
                     description = image_description(frame_raw)
-                    media_content.setdefault("photo_file", frame_raw)
-                    if description and not media_content.get("description"):
-                        media_content["description"] = description
-                    frame_content["media"] = media_content
-                    frame["content"] = frame_content
+                    if not media_is_description:
+                        media_content.setdefault("photo_file", frame_raw)
+                        if description and not media_content.get("description"):
+                            media_content["description"] = description
+                        frame_content["media"] = media_content
+                        frame["content"] = frame_content
                     if description:
                         analysis = dict(frame.get("analysis") or {})
                         existing_description = str(

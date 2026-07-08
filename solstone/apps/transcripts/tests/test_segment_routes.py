@@ -944,7 +944,52 @@ def test_segment_content_screen_media_description_string(client, journal_copy):
     assert response.status_code == 200
     data = response.get_json()
     assert data["warnings"] == 0
-    assert any(chunk["type"] == "screen" for chunk in data["chunks"])
+    screen_chunk = next(chunk for chunk in data["chunks"] if chunk["type"] == "screen")
+    assert "# [OpenAI - Introducing GPT-Live]" in screen_chunk["markdown"]
+
+
+def test_segment_content_preserves_image_backed_media_description_string(
+    client, journal_copy
+):
+    day = "20990119"
+    stream = "mentra-live"
+    segment = "164900_60"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "frame.jpg").write_bytes(b"image-frame")
+    _write_jsonl(
+        segment_dir / "frame.jsonl",
+        [
+            {"raw": "frame.jpg", "kind": "image"},
+            {"start": "00:00:00", "text": "Image sidecar description."},
+        ],
+    )
+    _write_jsonl(
+        segment_dir / "screen.jsonl",
+        [
+            {"raw": "frame.jpg", "modality": "photo"},
+            {
+                "frame_id": 1,
+                "timestamp": 0,
+                "analysis": {
+                    "primary": "media",
+                    "visual_description": "Mentra Live photo captured.",
+                },
+                "content": {"media": "# [Original Markdown Media]"},
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    screen_chunk = next(chunk for chunk in data["chunks"] if chunk["type"] == "screen")
+    assert "# [Original Markdown Media]" in screen_chunk["markdown"]
+    assert '"photo_file": "frame.jpg"' not in screen_chunk["markdown"]
+    assert "Image sidecar description." in screen_chunk["markdown"]
+    assert screen_chunk["source_ref"]["raw"] == "frame.jpg"
+    assert screen_chunk["source_ref"]["media_kind"] == "image"
 
 
 @pytest.mark.parametrize("raw_name", ["audio.flac", "audio.m4a"])
