@@ -5,8 +5,9 @@
 
 An EDGE_SOURCES entry maps a chronicle-free journal-relative glob pattern to an
 extractor function identified by ``(module_path, function_name)``. The indexer
-driver loads primary JSONL files and passes their entries to the extractor;
-extractors never open their own source file. Order matters: first match wins.
+driver usually loads primary JSONL files and passes their entries to the
+extractor; extractors registered for JSON-object artifacts may read their source
+path directly. Order matters: first match wins.
 """
 
 from __future__ import annotations
@@ -40,10 +41,14 @@ EDGE_SOURCES: dict[str, tuple[str, str]] = {
         "solstone.think.event_formatter",
         "extract_event_edges",
     ),
+    "*/*/*/talents/speaker_labels.json": (
+        "solstone.apps.speakers.edges",
+        "extract_speaker_edges",
+    ),
 }
 
-# Reserved: the future per-segment speaker source will be a */-prefixed
-# day-rooted pattern and will use discover_files()' day-rooted branch.
+# Day-rooted patterns use discover_files()' chronicle-root branch and receive
+# chronicle-free paths.
 
 
 def edge_source_patterns() -> tuple[list[str], list[str]]:
