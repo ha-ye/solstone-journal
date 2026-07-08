@@ -1,0 +1,154 @@
+# solstone-systemd-test
+
+Docker image that runs `systemd --user` end-to-end so the solstone
+install-integration suite can verify that `journal setup` actually starts the
+user service — not just that the unit file got written to
+`~/.config/systemd/user/solstone.service`.
+
+For trade-offs (privilege requirements, host-kernel assumptions, what
+this image does NOT model, and the CI-runner path forward) see the
+operational playbook in the sol pbc org repo,
+`vpe/playbooks/solstone-systemd-test.md`. Read that first.
+
+## quick start
+
+```bash
+make build               # build the image
+make smoke               # ~30s — verifies systemd --user works end-to-end
+make install             # ~3-5min — uv tool host install && journal setup
+make observer-ingest     # ~3-5min — install + setup + observer ingest round-trip
+make legacy-upgrade      # ~3-5min — install over a seeded legacy non-symlink wrapper
+```
+
+`smoke` installs a tiny `runner-smoke.service` and confirms systemd
+`--user` accepts, enables, starts, and reports it active. Use it as a
+fast pre-flight before chasing solstone-specific failures.
+
+`install` runs the actual journal install path (`uv tool install solstone-journal && journal setup -y --skip-models --skip-skills`) and
+verifies the resulting `solstone.service` reaches `active` plus `journal
+service status` returns 0. `--skip-models / --skip-skills` are passed by default because
+faster-whisper / Parakeet / Claude-skill installation is orthogonal to
+the systemd question; use `make full` to drop those flags.
+
+`observer-ingest` extends `install` with one real observer round-trip. It
+registers a loopback observer through `/app/observer/register`, posts a
+minimal contract-covered `screen.jsonl` segment to `/app/observer/ingest`,
+then asserts the segment file and `stream.json` landed under
+`~/journal/chronicle/` and `/app/observer/ingest/segments/<day>` reports
+that segment with `screen.jsonl` present and `observed: true`. This is the
+release gate for package-data omissions such as a missing
+`solstone/think/contract/layout.json`: it installs the built wheel, not the
+source checkout, and drives the route that calls the ingest contract.
+
+For a pre-publish local wheel gate, build the solstone artifacts and mount
+that `dist/` directory. The directory must contain the root `solstone`
+wheel, the `solstone-journal` leaf wheel, and the `solstone-journal-models`
+wheel; the runner installs the leaf with the root pinned as a direct-URL
+requirement plus `--find-links /work/dist`, so every first-party artifact
+is resolved from the candidate build, not PyPI.
+
+```bash
+cd ~/projects/solstone            # repo root
+rm -rf dist/ && uv build
+cd tests/systemd-test
+SOLSTONE_WHEEL_DIR=~/projects/solstone/dist make observer-ingest
+```
+
+`legacy-upgrade` is `install` with one precondition added: before
+`journal setup` runs, it seeds a **legacy non-symlink regular-file wrapper**
+at `~/.local/bin/sol` (the accumulated manual-materialization state a clean
+install never has — `cat`s a marker-less bash wrapper over the alias after
+`rm`-ing the uv symlink, so `check_alias` classifies it `FOREIGN`). It then
+asserts setup self-heals the foreign wrapper — replaced by a managed wrapper
+(`# managed-version:` marker), legacy content preserved at
+`/tmp/sol.old-symlink-*` — and a full `journal doctor` reports
+`service_identity: ok`. This guards the wrapper/identity self-heal class
+(Ryan Bennett's 0.4.10→0.5.1 cutover #2) that the clean-install matrix can't
+exercise, because a clean install classifies the alias `OWNED` and never
+takes the `FOREIGN` heal path. Cell 6 in `vpe/playbooks/solstone-install-verify.md` (org repo).
+
+## the worked example
+
+```bash
+docker build -t solstone-systemd-test .
+./run-test.sh install
+```
+
+Internally that runs (as the non-root `solstone` user inside a
+`--privileged` container that booted `/sbin/init` to PID 1):
+
+```bash
+uv tool install solstone-journal
+journal setup -y --skip-models --skip-skills
+test -f ~/.config/systemd/user/solstone.service
+systemctl --user is-active solstone        # → active
+journal service status                      # → exit 0
+```
+
+## interactive debugging
+
+```bash
+make shell                                  # opens a user shell in the running container
+# inside: systemctl --user status solstone, journalctl --user -u solstone, etc.
+```
+
+`KEEP=1 ./run-test.sh install` runs the test then leaves the container
+up — useful when an install step fails and you want to poke at it.
+
+## environment knobs
+
+| Variable     | Default                       | What it does                                                            |
+|--------------|-------------------------------|-------------------------------------------------------------------------|
+| `IMAGE`      | `solstone-systemd-test:latest`| Image tag.                                                              |
+| `CONTAINER`  | `solstone-systemd-test-run`   | Container name (so parallel runs need distinct names).                  |
+| `TEST_USER`  | `solstone`                    | Non-root user inside the image. Matches the Dockerfile `TEST_USER` arg. |
+| `PRIVILEGED` | `1`                           | `0` switches to the less-privileged path (cgroup-v2 host namespace + `CAP_SYS_ADMIN` + apparmor=unconfined). |
+| `KEEP`       | `0`                           | `1` leaves the container up on success for inspection.                  |
+| `SOLSTONE_WHEEL_DIR` | unset                  | Optional host `dist/` directory mounted at `/work/dist`; the latest `solstone_journal-*-py3-none-any.whl` is installed with the root `solstone-*.whl` as a direct-URL requirement; `solstone_journal_models-*.whl` must also be present. |
+| `SOLSTONE_INSTALL_TARGET` | `solstone-journal` | Package spec used when `SOLSTONE_WHEEL_DIR` is unset.                   |
+
+## why `--privileged`
+
+Booting `systemd` as PID 1 inside a container needs read-write access to
+the cgroup hierarchy and a few capabilities (`CAP_SYS_ADMIN`, etc.) that
+the default Docker profile denies. `--privileged` is the simplest, most
+portable way to grant that. On modern Docker (≥20.10) with a cgroup-v2
+host (Fedora 31+, Debian 11+, Ubuntu 21.10+, Arch), the same setup works
+with just `--cgroupns=host`, `CAP_SYS_ADMIN`, and a bind-mount of
+`/sys/fs/cgroup` — that's what `PRIVILEGED=0` uses. Run the less-
+privileged path first on a new host; fall back to `--privileged` if you
+hit cgroup write-permission errors.
+
+See `vpe/playbooks/solstone-systemd-test.md` (org repo) § trade-offs for the full
+discussion including the rootless-podman, distrobox, and lima
+alternatives.
+
+## what this does NOT model
+
+- No graphical login session (no `pam_systemd` running for real, no
+  `user@<uid>.service` graph populated by GUI login)
+- No real journald persistence across container restarts
+- No NetworkManager, no resolved as the resolver
+- No hardware-backed secure enclaves, no TPM
+- No real PL-networked observer client or tunnel. `observer-ingest` uses
+  the real register and ingest HTTP routes, but the client is a loopback
+  `curl` payload inside the container.
+- 7657 (the mutual-TLS pairing/sync surface) is bound by the convey
+  secure_listener (`solstone/solstone/convey/secure_listener/accept.py:41`)
+  for device-to-device pairing/sync. Plain HTTP on 5015
+  (`DEFAULT_SERVICE_PORT`) is the convey Flask app — login, `/init`,
+  `/app/today`, etc. — and is reachable from the container, but there
+  is no explicit `/health` route there. The authoritative readiness
+  probe is `journal service status`, which talks to the callosum Unix
+  socket at `<journal>/health/callosum.sock`. The runner uses that
+  probe instead of `curl http://localhost:5015/health` (the request
+  body's shorthand).
+
+## file inventory
+
+| File          | What it is                                                                |
+|---------------|---------------------------------------------------------------------------|
+| `Dockerfile`  | Debian 12 (bookworm) base, full systemd, dbus-user-session, pre-lingered non-root user, uv pre-installed. |
+| `run-test.sh` | `smoke` / `install` / `observer-ingest` / `legacy-upgrade` / `shell` modes. Drives the boot-wait, runs the install, asserts readiness. |
+| `Makefile`    | `build` / `smoke` / `install` / `observer-ingest` / `full` / `legacy-upgrade` / `shell` / `clean` / `rebuild`. |
+| `README.md`   | This file.                                                                |
