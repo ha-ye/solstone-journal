@@ -642,6 +642,9 @@ def api_get_key(key_prefix: str) -> Any:
     )
 
 
+# === Sync history helpers ===
+
+
 def resolve_file_presence(
     day_dir: Path,
     stream: str,

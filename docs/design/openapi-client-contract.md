@@ -153,7 +153,7 @@ The 200 response schema is `oneOf`:
 
 `SegmentItem` names `key`, `observed`, `files`, and optional `original_key`.
 Each file object names `name`, `size`, `sha256`, `status`, and optional
-`submitted_name` at `solstone/apps/observer/routes.py:1380-1486`.
+`submitted_name` at `solstone/apps/observer/routes.py:1344-1448`.
 
 This does not introduce a new negotiation system. `protocol_version` is only the
 existing v2 response-envelope field.
