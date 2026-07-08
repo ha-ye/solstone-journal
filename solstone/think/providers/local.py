@@ -10,6 +10,7 @@ Network clients and daemon startup are created only inside provider functions.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import traceback
 from collections.abc import Callable
@@ -159,6 +160,29 @@ def _build_messages(
     return messages
 
 
+def _normalize_schema_patterns(schema: dict) -> dict:
+    """Rewrite `\\d` shorthand, unsupported by llama.cpp's GBNF converter.
+
+    Rewrites `\\d` to `[0-9]` in every schema `pattern`. Deep-copies so the
+    caller's schema is never mutated.
+    """
+    normalized = copy.deepcopy(schema)
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            if isinstance(node.get("pattern"), str):
+                node["pattern"] = node["pattern"].replace("\\d", "[0-9]")
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(normalized)
+
+    return normalized
+
+
 def _build_request_body(
     model_id: str,
     messages: list[dict[str, Any]],
@@ -180,7 +204,7 @@ def _build_request_body(
             "type": "json_schema",
             "json_schema": {
                 "name": "local_schema",
-                "schema": json_schema,
+                "schema": _normalize_schema_patterns(json_schema),
                 "strict": True,
             },
         }

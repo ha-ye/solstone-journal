@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import importlib
 import json
 import sys
@@ -291,8 +292,193 @@ def test_run_generate_bundled_clips_oversized_text_block(monkeypatch):
     assert "latest " in user_message
     assert "talent prompt" in user_message
     assert len(user_message) < len(big_block)
-    assert captured["json"]["response_format"]["json_schema"]["schema"] is schema
+    assert captured["json"]["response_format"]["json_schema"]["schema"] == schema
     assert result["input_budget"]["clipped"] is True
+
+
+def test_run_generate_normalizes_schema_pattern_shorthand(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "model": LOCAL_MODEL,
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            }
+
+    def fake_post(url, json, timeout):
+        captured.update({"url": url, "json": json, "timeout": timeout})
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "timestamp": {
+                "type": "string",
+                "pattern": r"^\d{2}:\d{2}:\d{2}$",
+            },
+            "slots": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "pattern": r"^([01]\d|2[0-3]):[0-5]\d$",
+                },
+            },
+        },
+        "anyOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "string",
+                        "pattern": r"^\d{2}:\d{2}:\d{2}$",
+                    }
+                },
+            }
+        ],
+    }
+
+    provider.run_generate("hello", model=LOCAL_MODEL, json_schema=schema)
+
+    posted_schema = captured["json"]["response_format"]["json_schema"]["schema"]
+    patterns = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if isinstance(node.get("pattern"), str):
+                patterns.append(node["pattern"])
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(posted_schema)
+
+    assert patterns
+    for pattern in patterns:
+        assert "[0-9]" in pattern
+        assert "\\d" not in pattern
+
+
+def test_run_generate_does_not_mutate_caller_schema(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "model": LOCAL_MODEL,
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            }
+
+    def fake_post(url, json, timeout):
+        captured.update({"url": url, "json": json, "timeout": timeout})
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "timestamp": {
+                "type": "string",
+                "pattern": r"^\d{2}:\d{2}:\d{2}$",
+            }
+        },
+    }
+    original_schema = copy.deepcopy(schema)
+
+    provider.run_generate("hello", model=LOCAL_MODEL, json_schema=schema)
+
+    posted_schema = captured["json"]["response_format"]["json_schema"]["schema"]
+    assert (
+        posted_schema["properties"]["timestamp"]["pattern"]
+        == "^[0-9]{2}:[0-9]{2}:[0-9]{2}$"
+    )
+    assert schema == original_schema
+    assert schema["properties"]["timestamp"]["pattern"] == r"^\d{2}:\d{2}:\d{2}$"
+
+
+def test_run_generate_preserves_non_pattern_backslash_d(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "model": LOCAL_MODEL,
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            }
+
+    def fake_post(url, json, timeout):
+        captured.update({"url": url, "json": json, "timeout": timeout})
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    schema = {
+        "type": "object",
+        "properties": {
+            "timestamp": {
+                "type": "string",
+                "description": r"Matches \d time groups.",
+                "const": r"\d literal example",
+                "pattern": r"^\d{2}:\d{2}:\d{2}$",
+            }
+        },
+    }
+
+    provider.run_generate("hello", model=LOCAL_MODEL, json_schema=schema)
+
+    posted_timestamp = captured["json"]["response_format"]["json_schema"]["schema"][
+        "properties"
+    ]["timestamp"]
+    assert posted_timestamp["description"] == r"Matches \d time groups."
+    assert posted_timestamp["const"] == r"\d literal example"
+    assert posted_timestamp["pattern"] == "^[0-9]{2}:[0-9]{2}:[0-9]{2}$"
 
 
 def test_run_generate_bundled_non_overflow_keeps_body_unmarked(monkeypatch):
