@@ -5394,7 +5394,7 @@ def test_day_api_oura_cardio_vo2_and_audit_only_details(body_env):
     ]
 
     html = env.client.get("/app/body/20260728").get_data(as_text=True)
-    assert '<span>Vascular age</span>' in html
+    assert "<span>Vascular age</span>" in html
     assert "34 · Oura&#39;s estimate" in html
     assert "Pulse-wave velocity" in html
     assert "Sessions and tags stay here until a day-card use is clear." in html

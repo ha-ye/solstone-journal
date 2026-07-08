@@ -3305,7 +3305,8 @@ def _window_family_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _window_signal_items(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     counts: Counter[str] = Counter(
-        friendly_type_name(str(row.get("record_type") or "")) for row in rows
+        friendly_type_name(str(row.get("record_type") or ""))
+        for row in rows
         if str(row.get("record_type") or "") not in _AUDIT_ONLY_OURA_TYPES
     )
     return [
