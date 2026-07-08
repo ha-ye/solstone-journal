@@ -9,10 +9,10 @@ build-backend = "setuptools.build_meta"
 name = "solstone-journal-cuda"
 description = "the journal with the NVIDIA CUDA transcription runtime — the memory sol keeps for you, on a computer you choose. Installs the journal service and includes sol."
 readme = {text = "the journal with the NVIDIA CUDA transcription runtime — the memory sol keeps for you, on a computer you choose. Installs the journal service and includes sol.\n\n    pip install solstone-journal-cuda\n\nSee https://github.com/solpbc/solstone-journal.", content-type = "text/markdown"}
-version = "0.8.1"
+version = "0.8.2"
 requires-python = ">=3.12"
 dependencies = [
-    "solstone[journal-host]==0.8.1",
+    "solstone[journal-host]==0.8.2",
     # GPU ONNX runtime (NVIDIA / Linux x86_64): the GPU wheel supplies the
     # `onnxruntime` namespace (incl. CPU providers) for VAD, diarization, and
     # WeSpeaker. Never co-install with the CPU `solstone-journal` leaf — both own

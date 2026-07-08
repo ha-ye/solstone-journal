@@ -4,6 +4,20 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.8.2] - 2026-07-07
+
+### Added
+
+- sol now notices calendar and scheduling moments and files them as their own category in your journal, so appointments and plans are easier to find.
+
+### Fixed
+
+- the screen and combined-transcript tabs no longer go blank when a moment comes through in an unexpected shape. if you'd seen either tab empty out, this resolves it.
+- the home page no longer shows the same thing to do twice across its "needs you" and "needs attention" lists.
+- adding an alternate name to a person or company no longer trips a false "name already in use" warning against that same person or company. real conflicts between different ones still flag.
+- local thinking on your own machine is more reliable. sol now uses the right runtime for your hardware instead of quietly falling back to cpu, and local requests that use time-like patterns no longer fail before the model starts.
+- on linux, sol check no longer reports "no usable gpu" when the gpu is present but the current user lacks permission to reach it. it now flags this as a permission problem you can fix instead of a wrong "no gpu" verdict.
+
 ## [0.8.1] - 2026-07-07
 
 ### Added
