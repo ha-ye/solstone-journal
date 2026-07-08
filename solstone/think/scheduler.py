@@ -384,6 +384,7 @@ def register_defaults() -> None:
     need_cadence = "cadence" not in _entries
     need_providers = "providers" not in _entries
     need_facet_candidates = "facet-candidates" not in _entries
+    need_rebuild_edges = "rebuild-edges" not in _entries
 
     if (
         not need_heartbeat
@@ -391,6 +392,7 @@ def register_defaults() -> None:
         and not need_cadence
         and not need_providers
         and not need_facet_candidates
+        and not need_rebuild_edges
     ):
         return
 
@@ -432,6 +434,14 @@ def register_defaults() -> None:
     if need_facet_candidates and "facet-candidates" not in raw:
         additions["facet-candidates"] = {
             "cmd": ["journal", "facet-candidates"],
+            "every": "weekly",
+            "enabled": True,
+            "max_runtime": "10m",
+        }
+
+    if need_rebuild_edges and "rebuild-edges" not in raw:
+        additions["rebuild-edges"] = {
+            "cmd": ["journal", "indexer", "--rebuild-edges"],
             "every": "weekly",
             "enabled": True,
             "max_runtime": "10m",

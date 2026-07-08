@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -155,12 +156,25 @@ def _segment_section(
     }
 
 
+def _edges_section(
+    rows_folded: int = 0,
+    self_edges_dropped: int = 0,
+    error: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "rows_folded": rows_folded,
+        "self_edges_dropped": self_edges_dropped,
+        "error": error,
+    }
+
+
 def _empty_result_section() -> dict[str, Any]:
     return {
         "identity": _identity_section([], [], False),
         "voiceprints": _voiceprint_section(0, 0, 0),
         "facets": _facet_section([], [], 0),
         "segments": _segment_section(0, 0, 0, []),
+        "edges": _edges_section(),
     }
 
 
@@ -619,6 +633,11 @@ def _audit_counts(result: dict[str, Any]) -> dict[str, Any]:
             "files_scanned": result["segments"]["files_scanned"],
             "errors": len(result["segments"]["errors"]),
         },
+        "edges": {
+            "rows_folded": result["edges"]["rows_folded"],
+            "self_edges_dropped": result["edges"]["self_edges_dropped"],
+            "error": result["edges"]["error"],
+        },
     }
 
 
@@ -699,6 +718,19 @@ def merge_entity(
     facet_plan = _plan_facet_merge(source_id, target_id)
     segment_plan = _plan_segment_rewrites(source_id, target_id)
 
+    would_fold_edges: int | None = None
+    if not commit:
+        from solstone.think.indexer.edges import count_entity_edges
+
+        try:
+            would_fold_edges = count_entity_edges(source_id)
+        except (sqlite3.Error, OSError):
+            logger.exception(
+                "entity merge dry-run edge count failed (source=%s target=%s)",
+                source_id,
+                target_id,
+            )
+
     zero = _empty_result_section()
     result: dict[str, Any] = {
         "merged": commit,
@@ -708,12 +740,14 @@ def merge_entity(
         "voiceprints": voiceprint_plan["section"] if commit else zero["voiceprints"],
         "facets": facet_plan["section"] if commit else zero["facets"],
         "segments": segment_plan["section"] if commit else zero["segments"],
+        "edges": zero["edges"],
         "caches_cleared": [],
         "audit_log_path": None,
         "would_identity": None if commit else identity_plan,
         "would_voiceprints": None if commit else voiceprint_plan["section"],
         "would_facets": None if commit else facet_plan["section"],
         "would_segments": None if commit else segment_plan["section"],
+        "would_fold_edges": None if commit else would_fold_edges,
     }
 
     if not commit:
@@ -738,6 +772,22 @@ def merge_entity(
         caches_cleared = _apply_destructive_plan(facet_plan["operations"], source_id)
 
         result["caches_cleared"] = caches_cleared
+
+        try:
+            from solstone.think.indexer.edges import fold_entity_edges
+
+            fold = fold_entity_edges(source_id, target_id)
+            result["edges"] = _edges_section(
+                rows_folded=fold["rows_folded"],
+                self_edges_dropped=fold["self_edges_dropped"],
+            )
+        except (sqlite3.Error, OSError) as exc:
+            logger.exception(
+                "entity merge edge fold failed (source=%s target=%s)",
+                source_id,
+                target_id,
+            )
+            result["edges"] = _edges_section(error=str(exc))
 
         try:
             result["audit_log_path"] = _append_audit_log(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +18,10 @@ from solstone.apps.entities.call import app as entities_app
 from solstone.think.convey_client import ConveyClient
 from solstone.think.entities import merge as merge_mod
 from solstone.think.entities.journal import load_journal_entity
+from solstone.think.indexer.edges import insert_edges
+from solstone.think.indexer.journal import get_journal_index
 from tests._baseline_harness import make_test_client
+from tests._sqlite_assertions import edges_content_hash
 
 runner = CliRunner()
 STREAM = "test"
@@ -77,6 +81,53 @@ def _voiceprint_count(env, entity_id: str) -> int:
     path = env.journal / "entities" / entity_id / "voiceprints.npz"
     with np.load(path, allow_pickle=False) as data:
         return len(data["embeddings"])
+
+
+def _edge_row(
+    src: str,
+    dst: str,
+    kind: str,
+    path: str,
+    *,
+    weight: int = 1,
+) -> dict:
+    return {
+        "src": src,
+        "dst": dst,
+        "kind": kind,
+        "source": "merge-test",
+        "path": path,
+        "weight": weight,
+    }
+
+
+def _insert_edge_rows(env, rows: list[dict]) -> None:
+    conn, _ = get_journal_index(str(env.journal))
+    insert_edges(conn, rows)
+    conn.commit()
+    conn.close()
+
+
+def _edge_hash(env) -> str:
+    conn, _ = get_journal_index(str(env.journal))
+    try:
+        return edges_content_hash(conn)
+    finally:
+        conn.close()
+
+
+def _edge_rows(env) -> list[dict]:
+    conn, _ = get_journal_index(str(env.journal))
+    conn.row_factory = sqlite3.Row
+    try:
+        return [
+            dict(row)
+            for row in conn.execute(
+                "SELECT src, dst, path FROM edges ORDER BY path"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
 
 
 def test_merge_dry_run_plans_without_writing(speakers_env):
@@ -156,6 +207,7 @@ def test_merge_dry_run_plans_without_writing(speakers_env):
     assert data["would_facets"]["moved"] == ["personal"]
     assert data["would_segments"]["labels_rewritten"] == 1
     assert data["would_segments"]["corrections_rewritten"] == 1
+    assert data["would_fold_edges"] is None
     assert data["audit_log_path"] is None
     assert data["caches_cleared"] == []
 
@@ -172,6 +224,38 @@ def test_merge_dry_run_plans_without_writing(speakers_env):
     assert cache_path.exists()
     assert load_journal_entity("dry_alias") is not None
     assert not _audit_log_path(env).exists()
+
+
+def test_merge_dry_run_reports_would_fold_edges(speakers_env):
+    env = speakers_env()
+    env.create_entity("Edge Count Source")
+    env.create_entity("Edge Count Target")
+    _insert_edge_rows(
+        env,
+        [
+            _edge_row("edge_count_source", "edge_count_peer", "co-present", "count/1"),
+            _edge_row(
+                "edge_other_peer", "edge_count_source", "committed-to", "count/2"
+            ),
+        ],
+    )
+    before_hash = _edge_hash(env)
+
+    result = merge_mod.merge_entity(
+        "edge_count_source",
+        "edge_count_target",
+        commit=False,
+    )
+
+    assert result["merged"] is False
+    assert result["would_fold_edges"] == 2
+    assert result["edges"] == {
+        "rows_folded": 0,
+        "self_edges_dropped": 0,
+        "error": None,
+    }
+    assert _edge_hash(env) == before_hash
+    assert load_journal_entity("edge_count_source") is not None
 
 
 def test_merge_commit_deep_merges_and_logs(speakers_env):
@@ -314,6 +398,89 @@ def test_merge_commit_deep_merges_and_logs(speakers_env):
         "voiceprints",
         "facets",
         "segments",
+        "edges",
+    }
+
+
+def test_merge_commit_folds_edges_and_records_audit_counts(speakers_env):
+    env = speakers_env()
+    env.create_entity("Edge Fold Source")
+    env.create_entity("Edge Fold Target")
+    _insert_edge_rows(
+        env,
+        [
+            _edge_row(
+                "edge_fold_source",
+                "edge_fold_peer",
+                "co-present",
+                "fold/survive",
+            ),
+            _edge_row(
+                "edge_fold_source",
+                "edge_fold_target",
+                "co-present",
+                "fold/self",
+            ),
+        ],
+    )
+
+    result = merge_mod.merge_entity("edge_fold_source", "edge_fold_target", commit=True)
+
+    assert result["merged"] is True
+    assert result["edges"] == {
+        "rows_folded": 2,
+        "self_edges_dropped": 1,
+        "error": None,
+    }
+    rows = [row for row in _edge_rows(env) if row["path"].startswith("fold/")]
+    assert len(rows) == 1
+    assert all("edge_fold_source" not in {row["src"], row["dst"]} for row in rows)
+    assert all("edge_fold_target" in {row["src"], row["dst"]} for row in rows)
+
+    audit_entries = [
+        json.loads(line)
+        for line in _audit_log_path(env).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert audit_entries[-1]["counts"]["edges"] == {
+        "rows_folded": 2,
+        "self_edges_dropped": 1,
+        "error": None,
+    }
+
+
+def test_merge_commit_continues_when_edge_fold_fails(speakers_env, monkeypatch):
+    env = speakers_env()
+    env.create_entity("Edge Failure Source")
+    env.create_entity("Edge Failure Target")
+
+    def fail_fold(*args, **kwargs):
+        raise sqlite3.OperationalError("boom")
+
+    monkeypatch.setattr("solstone.think.indexer.edges.fold_entity_edges", fail_fold)
+
+    result = merge_mod.merge_entity(
+        "edge_failure_source",
+        "edge_failure_target",
+        commit=True,
+    )
+
+    assert result["merged"] is True
+    assert result["edges"] == {
+        "rows_folded": 0,
+        "self_edges_dropped": 0,
+        "error": "boom",
+    }
+    assert load_journal_entity("edge_failure_source") is None
+    audit_entries = [
+        json.loads(line)
+        for line in _audit_log_path(env).read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert audit_entries[-1]["counts"]["edges"] == {
+        "rows_folded": 0,
+        "self_edges_dropped": 0,
+        "error": "boom",
     }
 
 

@@ -1567,6 +1567,84 @@ class TestHeartbeatSchedule:
         }
         assert mod._entries["facet-candidates"]["max_runtime"] == 600
 
+    def test_register_defaults_creates_rebuild_edges(self, journal_path):
+        """register_defaults() creates the weekly edge rebuild entry."""
+        import solstone.think.scheduler as mod
+
+        mock_cal = Mock()
+        mod.init(mock_cal)
+        mod.register_defaults()
+
+        config_path = journal_path / "config" / "schedules.json"
+        with open(config_path) as f:
+            raw = json.load(f)
+
+        assert raw["rebuild-edges"] == {
+            "cmd": ["journal", "indexer", "--rebuild-edges"],
+            "every": "weekly",
+            "enabled": True,
+            "max_runtime": "10m",
+        }
+        assert mod._entries["rebuild-edges"]["max_runtime"] == 600
+
+    def test_register_defaults_seeds_rebuild_edges_when_existing_defaults_present(
+        self,
+        journal_path,
+    ):
+        """A config with the old full default set still gets rebuild-edges."""
+        import solstone.think.scheduler as mod
+
+        _write_config(
+            journal_path,
+            {
+                "heartbeat": {
+                    "cmd": ["journal", "heartbeat"],
+                    "every": "daily",
+                    "enabled": True,
+                    "max_runtime": "10m",
+                },
+                "weekly-agents": {
+                    "cmd": ["journal", "think", "--weekly", "-v"],
+                    "every": "weekly",
+                    "enabled": True,
+                    "max_runtime": "30m",
+                },
+                "cadence": {
+                    "cmd": ["journal", "think", "--cadence"],
+                    "every": "5m",
+                    "enabled": True,
+                    "max_runtime": "10m",
+                },
+                "providers": {
+                    "cmd": ["journal", "providers", "check"],
+                    "every": "daily",
+                    "enabled": True,
+                    "max_runtime": "5m",
+                },
+                "facet-candidates": {
+                    "cmd": ["journal", "facet-candidates"],
+                    "every": "weekly",
+                    "enabled": True,
+                    "max_runtime": "10m",
+                },
+            },
+        )
+
+        mock_cal = Mock()
+        mod.init(mock_cal)
+        mod.register_defaults()
+
+        config_path = journal_path / "config" / "schedules.json"
+        with open(config_path) as f:
+            raw = json.load(f)
+        assert raw["rebuild-edges"] == {
+            "cmd": ["journal", "indexer", "--rebuild-edges"],
+            "every": "weekly",
+            "enabled": True,
+            "max_runtime": "10m",
+        }
+        assert mod._entries["rebuild-edges"]["max_runtime"] == 600
+
     def test_register_defaults_creates_cadence(self, journal_path):
         """register_defaults() creates a cadence entry."""
         import solstone.think.scheduler as mod
