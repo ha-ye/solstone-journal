@@ -652,8 +652,17 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
     else:
         from solstone.think.providers import local_vulkan
 
-        binary_path = Path(record.get("binary_path") or binary_path_for_pin())
-        binary_installed = binary_path.exists() and os.access(binary_path, os.X_OK)
+        pin = pin_for_current_platform()
+        binary_path = binary_path_for_pin(pin=pin)
+        recorded_binary_path = record.get("binary_path")
+        binary_installed = (
+            record.get("binary_artifact") == pin["filename"]
+            and record.get("binary_sha256") == pin["sha256"]
+            and recorded_binary_path is not None
+            and Path(recorded_binary_path) == binary_path
+            and binary_path.exists()
+            and os.access(binary_path, os.X_OK)
+        )
         selected_gpu = local_vulkan.select_device(
             local_vulkan.detect_gpus(), override_index=gpu_device_override()
         )

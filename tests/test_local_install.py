@@ -630,6 +630,52 @@ def test_install_local_ready_short_circuits_before_fit_report(tmp_path, monkeypa
     assert result["install_state"] == "installed"
 
 
+def test_install_local_reinstalls_runtime_when_binary_record_stale(
+    tmp_path, monkeypatch
+):
+    _init_journal(tmp_path, monkeypatch)
+    gguf = local_install.model_path(LOCAL_MODEL)
+    gguf.parent.mkdir(parents=True, exist_ok=True)
+    gguf.write_text("qwen", encoding="utf-8")
+    mmproj = local_install.mmproj_path(LOCAL_MODEL)
+    assert mmproj is not None
+    mmproj.write_text("mmproj", encoding="utf-8")
+    canonical = local_install.binary_path_for_pin()
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"llama-server")
+    canonical.chmod(0o755)
+    local_install._write_local_metadata(
+        {
+            "binary_artifact": "llama-b9291-bin-ubuntu-x64.tar.gz",
+            "binary_sha256": "deadbeef" * 8,
+            "binary_path": str(canonical),
+        }
+    )
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+    monkeypatch.setattr(
+        fit_report, "build_local_fit_report", lambda model_id: _fit("ok")
+    )
+    calls: list[str] = []
+
+    def fake_install_llama_server():
+        calls.append("llama_server")
+        return {"install_state": "installed"}
+
+    def fake_install_model(model_id: str):
+        calls.append("model")
+        return {"install_state": "installed", "model_id": model_id}
+
+    monkeypatch.setattr(
+        local_install, "install_llama_server", fake_install_llama_server
+    )
+    monkeypatch.setattr(local_install, "install_model", fake_install_model)
+
+    result = local_install.install_local(LOCAL_MODEL)
+
+    assert result == {"install_state": "installed", "model_id": LOCAL_MODEL}
+    assert calls == ["llama_server", "model"]
+
+
 def test_ensure_artifacts_installed_returns_binary_gguf_and_optional_mmproj(
     tmp_path, monkeypatch
 ):
@@ -865,6 +911,52 @@ def test_inspect_readiness_reports_gpu_unavailable_without_hardware(
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
     assert readiness["gpu_available"] is False
+
+
+def test_inspect_readiness_stale_non_cuda_binary_record_reports_not_installed(
+    tmp_path, monkeypatch
+):
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+    canonical = local_install.binary_path_for_pin()
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"llama-server")
+    canonical.chmod(0o755)
+    local_install._write_local_metadata(
+        {
+            "binary_artifact": "llama-b9291-bin-ubuntu-x64.tar.gz",
+            "binary_sha256": "deadbeef" * 8,
+            "binary_path": str(canonical),
+        }
+    )
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+
+    assert readiness["binary_installed"] is False
+    assert readiness["binary_path"] == str(canonical)
+
+
+def test_inspect_readiness_matching_non_cuda_binary_record_reports_installed(
+    tmp_path, monkeypatch
+):
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+    pin = local_install.pin_for_current_platform()
+    canonical = local_install.binary_path_for_pin()
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"llama-server")
+    canonical.chmod(0o755)
+    local_install._write_local_metadata(
+        {
+            "binary_artifact": pin["filename"],
+            "binary_sha256": pin["sha256"],
+            "binary_path": str(canonical),
+        }
+    )
+
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+
+    assert readiness["binary_installed"] is True
 
 
 def test_inspect_readiness_honors_vulkan_device_override(tmp_path, monkeypatch):

@@ -445,6 +445,14 @@ def test_local_readiness_gpu_unavailable_flows_from_inspect_without_launch(
     mmproj = local_install.mmproj_path(LOCAL_MODEL)
     if mmproj is not None:
         mmproj.write_text("mmproj", encoding="utf-8")
+    pin = local_install.pin_for_current_platform()
+    local_install._write_local_metadata(
+        {
+            "binary_artifact": pin["filename"],
+            "binary_sha256": pin["sha256"],
+            "binary_path": str(binary),
+        }
+    )
 
     monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
     monkeypatch.setattr(
@@ -485,6 +493,14 @@ def test_local_readiness_gpu_probe_failed_flows_from_inspect_without_launch(
     mmproj = local_install.mmproj_path(LOCAL_MODEL)
     if mmproj is not None:
         mmproj.write_text("mmproj", encoding="utf-8")
+    pin = local_install.pin_for_current_platform()
+    local_install._write_local_metadata(
+        {
+            "binary_artifact": pin["filename"],
+            "binary_sha256": pin["sha256"],
+            "binary_path": str(binary),
+        }
+    )
 
     monkeypatch.setattr(
         local_vulkan,
