@@ -106,7 +106,7 @@ def _ensure_edges_schema(conn: sqlite3.Connection) -> None:
 
 def insert_edges(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
     """Validate, normalize, and insert edge rows."""
-    inserted = 0
+    prepared: list[tuple[Any, ...]] = []
     for row in rows:
         kind = row.get("kind")
         if kind not in KINDS:
@@ -146,18 +146,19 @@ def insert_edges(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
             "ts": row.get("ts"),
             "weight": row.get("weight"),
         }
-        conn.execute(
-            """
-            INSERT INTO edges(
-                src, dst, kind, directed, src_name, dst_name, day, facet,
-                source, path, anchor, label, ts, weight
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            tuple(values[column] for column in EDGE_COLUMNS),
-        )
-        inserted += 1
+        prepared.append(tuple(values[column] for column in EDGE_COLUMNS))
 
-    return inserted
+    conn.executemany(
+        """
+        INSERT INTO edges(
+            src, dst, kind, directed, src_name, dst_name, day, facet,
+            source, path, anchor, label, ts, weight
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        prepared,
+    )
+
+    return len(prepared)
 
 
 def delete_edges_for_path(conn: sqlite3.Connection, path: str) -> int:
@@ -249,7 +250,6 @@ def rebuild_edges(journal: str) -> dict[str, int]:
     from solstone.think.indexer.journal import get_journal_index
 
     conn, _ = get_journal_index(journal)
-    _ensure_edges_schema(conn)
     conn.execute("DELETE FROM edges")
     conn.execute("DELETE FROM edge_files")
     conn.execute(

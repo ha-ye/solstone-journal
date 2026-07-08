@@ -186,7 +186,8 @@ def index_file(journal: str, file_path: str, verbose: bool = False) -> bool:
     """Index a single file into the journal index.
 
     Validates that the file exists, is under the journal directory, and has
-    a registered formatter. Then indexes it (replacing any existing chunks).
+    a registered formatter and/or edge source. Formatter matches replace chunks;
+    edge source matches replace derived edge rows.
 
     Args:
         journal: Path to journal root directory
@@ -197,7 +198,7 @@ def index_file(journal: str, file_path: str, verbose: bool = False) -> bool:
         True if file was indexed successfully
 
     Raises:
-        ValueError: If file is outside journal or has no formatter
+        ValueError: If file is outside journal or matches neither formatter nor edge source
         FileNotFoundError: If file doesn't exist
     """
     journal_path = Path(journal).resolve()

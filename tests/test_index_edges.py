@@ -436,6 +436,43 @@ def test_insert_bad_kind_raises_directly(edges_journal):
     conn.close()
 
 
+def test_insert_edges_validates_whole_batch_before_insert(edges_journal):
+    conn = _conn(edges_journal)
+    before = conn.execute("SELECT count(*) FROM edges").fetchone()[0]
+    with pytest.raises(ValueError, match="Unknown edge kind"):
+        insert_edges(
+            conn,
+            [
+                {
+                    "src": "edge_ada",
+                    "dst": "edge_byron",
+                    "kind": "attended-with",
+                    "src_name": None,
+                    "dst_name": None,
+                    "day": "20260430",
+                    "facet": "edges-activity",
+                    "source": "participation",
+                    "path": "synthetic",
+                    "anchor": "ok",
+                    "label": "valid row",
+                    "ts": 0,
+                    "weight": 1,
+                },
+                {
+                    "src": "edge_ada",
+                    "dst": "edge_byron",
+                    "kind": "not-a-kind",
+                    "source": "participation",
+                    "path": "synthetic",
+                    "weight": 1,
+                },
+            ],
+        )
+    after = conn.execute("SELECT count(*) FROM edges").fetchone()[0]
+    assert after == before
+    conn.close()
+
+
 def test_schema_version_migration_preserves_chunks_and_files(
     edges_journal,
     monkeypatch,
