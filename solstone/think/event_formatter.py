@@ -6,8 +6,37 @@
 import logging
 import re
 from datetime import datetime
+from itertools import combinations
 from pathlib import Path
 from typing import Any
+
+from solstone.think.edge_sources import EdgeContext
+
+
+def _event_base_ts(day_str: str | None) -> int:
+    if not day_str:
+        return 0
+    try:
+        dt = datetime.strptime(day_str, "%Y%m%d")
+        return int(dt.timestamp() * 1000)
+    except ValueError:
+        return 0
+
+
+def _event_timestamp(day_str: str | None, start_time: Any) -> int:
+    base_ts = _event_base_ts(day_str)
+    if not base_ts:
+        return 0
+    if not isinstance(start_time, str) or not start_time:
+        return base_ts
+    try:
+        time_parts = start_time.split(":")
+        hours = int(time_parts[0])
+        minutes = int(time_parts[1]) if len(time_parts) > 1 else 0
+        seconds = int(time_parts[2]) if len(time_parts) > 2 else 0
+        return base_ts + (hours * 3600 + minutes * 60 + seconds) * 1000
+    except (ValueError, IndexError):
+        return base_ts
 
 
 def format_events(
@@ -54,15 +83,6 @@ def format_events(
         if file_path.stem.isdigit() and len(file_path.stem) == 8:
             day_str = file_path.stem
 
-    # Calculate base timestamp (midnight of the event day) in milliseconds
-    base_ts = 0
-    if day_str:
-        try:
-            dt = datetime.strptime(day_str, "%Y%m%d")
-            base_ts = int(dt.timestamp() * 1000)
-        except ValueError:
-            pass
-
     # Build header
     if day_str:
         formatted_day = f"{day_str[:4]}-{day_str[4:6]}-{day_str[6:8]}"
@@ -82,18 +102,8 @@ def format_events(
         occurred = event.get("occurred", True)
 
         # Calculate timestamp from day + start time
-        ts = base_ts
         start_time = event.get("start", "")
-        if start_time and base_ts:
-            try:
-                # Parse HH:MM:SS or HH:MM
-                time_parts = start_time.split(":")
-                hours = int(time_parts[0])
-                minutes = int(time_parts[1]) if len(time_parts) > 1 else 0
-                seconds = int(time_parts[2]) if len(time_parts) > 2 else 0
-                ts = base_ts + (hours * 3600 + minutes * 60 + seconds) * 1000
-            except (ValueError, IndexError):
-                pass
+        ts = _event_timestamp(day_str, start_time)
 
         # Build markdown
         type_prefix = "Planned " if not occurred else ""
@@ -164,3 +174,51 @@ def format_events(
     meta["indexer"] = {"agent": "event"}
 
     return chunks, meta
+
+
+def extract_event_edges(entries: list[dict], ctx: EdgeContext) -> list[dict]:
+    """Extract attended-with edges from legacy facet events."""
+    rows: list[dict[str, Any]] = []
+
+    for event in entries:
+        if not isinstance(event, dict):
+            continue
+        title = event.get("title")
+        if not title:
+            continue
+        participants = event.get("participants")
+        if not isinstance(participants, list):
+            continue
+
+        resolved_by_id: dict[str, str] = {}
+        for name in participants:
+            if not isinstance(name, str) or not name.strip():
+                continue
+            entity_id = ctx.resolve(name)
+            if entity_id is None:
+                continue
+            resolved_by_id.setdefault(entity_id, name.strip())
+
+        resolved = list(resolved_by_id.items())
+        for (src_id, src_name), (dst_id, dst_name) in combinations(resolved, 2):
+            if src_id == dst_id:
+                continue
+            rows.append(
+                {
+                    "src": src_id,
+                    "dst": dst_id,
+                    "kind": "attended-with",
+                    "src_name": src_name,
+                    "dst_name": dst_name,
+                    "day": ctx.day,
+                    "facet": ctx.facet,
+                    "source": "event-legacy",
+                    "path": ctx.path,
+                    "anchor": "",
+                    "label": str(title).strip(),
+                    "ts": _event_timestamp(ctx.day, event.get("start", "")),
+                    "weight": 1,
+                }
+            )
+
+    return rows

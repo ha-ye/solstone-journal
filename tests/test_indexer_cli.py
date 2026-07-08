@@ -46,6 +46,23 @@ def test_rescan_file_does_not_create_root_task_log(tmp_path, monkeypatch):
     assert not (journal / "task_log.txt").exists()
 
 
+def test_rebuild_edges_does_not_create_root_task_log(tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    rebuilt: list[str] = []
+
+    def rebuild_edges(journal_arg: str) -> dict[str, int]:
+        rebuilt.append(journal_arg)
+        return {"files": 1, "rows": 2, "drops": 0, "failed": 0}
+
+    monkeypatch.setattr(indexer_cli, "rebuild_edges", rebuild_edges)
+
+    _run_indexer_cli(monkeypatch, journal, ["--rebuild-edges"])
+
+    assert rebuilt == [str(journal)]
+    assert not (journal / "task_log.txt").exists()
+
+
 @pytest.mark.parametrize(
     ("args", "full"),
     [

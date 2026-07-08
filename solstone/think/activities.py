@@ -16,9 +16,11 @@ import logging
 import os
 import re
 from datetime import UTC, datetime
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
+from solstone.think.edge_sources import EdgeContext
 from solstone.think.journal_io import atomic_replace, hold_lock
 from solstone.think.utils import get_journal, segment_parse
 
@@ -1550,3 +1552,130 @@ def format_activities(
         )
 
     return chunks, meta
+
+
+def _edge_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _edge_str(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def extract_activity_edges(entries: list[dict], ctx: EdgeContext) -> list[dict]:
+    """Extract deterministic entity edges from activity records."""
+    rows: list[dict[str, Any]] = []
+
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        record = _normalize_activity_record(entry)
+        record_id = _edge_str(record.get("id"))
+        title = _edge_str(record.get("title"))
+        ts = _edge_int(record.get("created_at"))
+
+        participation = record.get("participation")
+        if isinstance(participation, list):
+            attendees: list[str] = []
+            seen: set[str] = set()
+            for part in participation:
+                if not isinstance(part, dict):
+                    continue
+                entity_id = part.get("entity_id")
+                if (
+                    part.get("role") == "attendee"
+                    and isinstance(entity_id, str)
+                    and entity_id
+                    and entity_id not in seen
+                ):
+                    attendees.append(entity_id)
+                    seen.add(entity_id)
+
+            for src, dst in combinations(attendees, 2):
+                rows.append(
+                    {
+                        "src": src,
+                        "dst": dst,
+                        "kind": "attended-with",
+                        "src_name": None,
+                        "dst_name": None,
+                        "day": ctx.day,
+                        "facet": ctx.facet,
+                        "source": "participation",
+                        "path": ctx.path,
+                        "anchor": record_id,
+                        "label": title,
+                        "ts": ts,
+                        "weight": 1,
+                    }
+                )
+
+        commitments = record.get("commitments")
+        if isinstance(commitments, list):
+            rows.extend(
+                _extract_story_edge_rows(
+                    commitments,
+                    ctx=ctx,
+                    source="commitment",
+                    anchor=record_id,
+                    ts=ts,
+                )
+            )
+
+        closures = record.get("closures")
+        if isinstance(closures, list):
+            rows.extend(
+                _extract_story_edge_rows(
+                    closures,
+                    ctx=ctx,
+                    source="closure",
+                    anchor=record_id,
+                    ts=ts,
+                )
+            )
+
+    return rows
+
+
+def _extract_story_edge_rows(
+    entries: list[Any],
+    *,
+    ctx: EdgeContext,
+    source: str,
+    anchor: str,
+    ts: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        owner_id = item.get("owner_entity_id")
+        counterparty_id = item.get("counterparty_entity_id")
+        if not isinstance(owner_id, str) or not owner_id:
+            continue
+        if not isinstance(counterparty_id, str) or not counterparty_id:
+            continue
+        if owner_id == counterparty_id:
+            continue
+        rows.append(
+            {
+                "src": owner_id,
+                "dst": counterparty_id,
+                "kind": "committed-to",
+                "src_name": None,
+                "dst_name": None,
+                "day": ctx.day,
+                "facet": ctx.facet,
+                "source": source,
+                "path": ctx.path,
+                "anchor": anchor,
+                "label": _edge_str(item.get("action")),
+                "ts": ts,
+                "weight": 1,
+            }
+        )
+    return rows

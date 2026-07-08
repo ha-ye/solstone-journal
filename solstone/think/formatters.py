@@ -302,6 +302,35 @@ def load_markdown(file_path: str | Path) -> str:
         return f.read()
 
 
+def discover_files(
+    journal: str,
+    structural_patterns: list[str],
+    day_rooted_patterns: list[str],
+) -> dict[str, str]:
+    """Discover files by explicit structural and day-rooted glob patterns."""
+    files: dict[str, str] = {}
+    journal_path = Path(journal)
+    day_root = (
+        journal_path / CHRONICLE_DIR
+        if (journal_path / CHRONICLE_DIR).is_dir()
+        else journal_path
+    )
+
+    for pattern in structural_patterns:
+        for match in journal_path.glob(pattern):
+            if match.is_file():
+                rel = match.relative_to(journal_path).as_posix()
+                files[rel] = str(match)
+
+    for pattern in day_rooted_patterns:
+        for match in day_root.glob(pattern):
+            if match.is_file():
+                rel = match.relative_to(day_root).as_posix()
+                files[rel] = str(match)
+
+    return files
+
+
 def find_formattable_files(journal: str) -> dict[str, str]:
     """Find all indexable files in the journal.
 
@@ -314,33 +343,19 @@ def find_formattable_files(journal: str) -> dict[str, str]:
     Returns:
         Mapping of journal-relative paths to absolute paths
     """
-    files: dict[str, str] = {}
-    journal_path = Path(journal)
-    day_root = (
-        journal_path / CHRONICLE_DIR
-        if (journal_path / CHRONICLE_DIR).is_dir()
-        else journal_path
-    )
-
+    structural_patterns: list[str] = []
     for pattern in _STRUCTURAL_PATTERNS:
         _mod, _func, indexed = FORMATTERS[pattern]
-        if not indexed:
-            continue
-        for match in journal_path.glob(pattern):
-            if match.is_file():
-                rel = match.relative_to(journal_path).as_posix()
-                files[rel] = str(match)
+        if indexed:
+            structural_patterns.append(pattern)
 
+    day_rooted_patterns: list[str] = []
     for pattern in _DAY_ROOTED_PATTERNS:
         _mod, _func, indexed = FORMATTERS[pattern]
-        if not indexed:
-            continue
-        for match in day_root.glob(pattern):
-            if match.is_file():
-                rel = match.relative_to(day_root).as_posix()
-                files[rel] = str(match)
+        if indexed:
+            day_rooted_patterns.append(pattern)
 
-    return files
+    return discover_files(journal, structural_patterns, day_rooted_patterns)
 
 
 def format_file(

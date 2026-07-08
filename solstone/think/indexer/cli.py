@@ -9,6 +9,7 @@ from typing import Any
 
 from solstone.think.utils import get_journal, require_solstone, setup_cli
 
+from .edges import rebuild_edges
 from .journal import (
     index_file,
     reset_journal_index,
@@ -102,6 +103,11 @@ def main() -> None:
         help="Index a specific file (absolute or journal-relative path)",
     )
     parser.add_argument(
+        "--rebuild-edges",
+        action="store_true",
+        help="Rebuild derived edge tables only",
+    )
+    parser.add_argument(
         "--reset",
         action="store_true",
         help="Remove the index before rescan",
@@ -165,6 +171,7 @@ def main() -> None:
         not args.rescan
         and not args.rescan_full
         and not args.rescan_file
+        and not args.rebuild_edges
         and not args.reset
         and args.query is None
     ):
@@ -173,6 +180,16 @@ def main() -> None:
 
     if args.reset:
         reset_journal_index(journal)
+
+    if args.rebuild_edges:
+        result = rebuild_edges(journal)
+        logger.info(
+            "indexer edges rebuilt: files=%s rows=%s drops=%s failed=%s",
+            result.get("files", 0),
+            result.get("rows", 0),
+            result.get("drops", 0),
+            result.get("failed", 0),
+        )
 
     if args.rescan_file:
         # Single file indexing (incompatible with --rescan/--rescan-full)

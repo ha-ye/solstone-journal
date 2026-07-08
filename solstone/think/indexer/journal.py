@@ -24,6 +24,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
+from solstone.think.edge_sources import get_edge_source
 from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.relationships import (
     load_all_facet_relationships_across_facets,
@@ -33,6 +34,14 @@ from solstone.think.formatters import (
     find_formattable_files,
     format_file,
     get_formatter,
+)
+from solstone.think.indexer.edges import (
+    _ensure_edges_schema,
+    _extract_file_edges,
+    delete_edges_for_path,
+    discover_edge_files,
+    edge_file_mtimes,
+    replace_edge_file_mtime,
 )
 from solstone.think.indexer.rerank_scorer import score
 from solstone.think.markdown import format_markdown
@@ -91,6 +100,8 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.execute("DROP TABLE IF EXISTS files")
         for statement in SCHEMA:
             conn.execute(statement)
+
+    _ensure_edges_schema(conn)
 
 
 def _time_bucket(rel: str) -> str:
@@ -207,8 +218,9 @@ def index_file(journal: str, file_path: str, verbose: bool = False) -> bool:
     except ValueError:
         raise ValueError(f"File is outside journal directory: {abs_path}") from None
 
-    # Validate formatter exists
-    if get_formatter(rel_path) is None:
+    formatter = get_formatter(rel_path)
+    edge_src = get_edge_source(rel_path)
+    if formatter is None and edge_src is None:
         raise ValueError(f"No formatter found for: {rel_path}")
 
     # Get file mtime
@@ -217,27 +229,40 @@ def index_file(journal: str, file_path: str, verbose: bool = False) -> bool:
     # Index the file
     conn, _ = get_journal_index(journal)
 
-    # Delete existing chunks for this file
-    conn.execute("DELETE FROM chunks WHERE path=?", (rel_path,))
+    if formatter is not None:
+        # Delete existing chunks for this file
+        conn.execute("DELETE FROM chunks WHERE path=?", (rel_path,))
 
-    if verbose:
-        logger.info("Indexing %s", rel_path)
+        if verbose:
+            logger.info("Indexing %s", rel_path)
 
-    stream = _extract_stream(journal, rel_path)
-    _index_file(conn, rel_path, str(abs_path), verbose, stream=stream)
+        stream = _extract_stream(journal, rel_path)
+        _index_file(conn, rel_path, str(abs_path), verbose, stream=stream)
 
-    # Update file mtime
-    conn.execute("REPLACE INTO files(path, mtime) VALUES (?, ?)", (rel_path, mtime))
+        # Update file mtime
+        conn.execute("REPLACE INTO files(path, mtime) VALUES (?, ?)", (rel_path, mtime))
 
-    # Regenerate segment chunk if file is in a segment
-    parts = rel_path.replace("\\", "/").split("/")
-    if len(parts) >= 4 and segment_key(parts[2]):
-        rel_segment = "/".join(parts[:3])
-        seg_dir = str(resolve_journal_path(journal, rel_segment))
-        conn.execute("DELETE FROM chunks WHERE path=?", (rel_segment,))
-        if os.path.isdir(seg_dir):
-            seg_stream = _extract_stream(journal, rel_segment + "/dummy")
-            _index_segment_chunks(conn, seg_dir, rel_segment, seg_stream, verbose)
+        # Regenerate segment chunk if file is in a segment
+        parts = rel_path.replace("\\", "/").split("/")
+        if len(parts) >= 4 and segment_key(parts[2]):
+            rel_segment = "/".join(parts[:3])
+            seg_dir = str(resolve_journal_path(journal, rel_segment))
+            conn.execute("DELETE FROM chunks WHERE path=?", (rel_segment,))
+            if os.path.isdir(seg_dir):
+                seg_stream = _extract_stream(journal, rel_segment + "/dummy")
+                _index_segment_chunks(conn, seg_dir, rel_segment, seg_stream, verbose)
+
+    if edge_src is not None:
+        delete_edges_for_path(conn, rel_path)
+        result = _extract_file_edges(conn, rel_path, str(abs_path), {})
+        replace_edge_file_mtime(conn, rel_path, mtime)
+        logger.info(
+            "edge file indexed: %s rows=%s drops=%s failed=%s",
+            rel_path,
+            result.rows_inserted,
+            result.drops,
+            result.failed,
+        )
 
     conn.commit()
     conn.close()
@@ -687,8 +712,61 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
         )
         conn.commit()
 
+    edge_files = discover_edge_files(journal)
+    if not full:
+        edge_files = {
+            rel: path for rel, path in edge_files.items() if not _is_historical_day(rel)
+        }
+
+    db_edge_mtimes = edge_file_mtimes(conn)
+    edge_to_index = []
+    for rel, path in edge_files.items():
+        try:
+            mtime = int(os.path.getmtime(path))
+        except OSError:
+            continue
+        if db_edge_mtimes.get(rel) != mtime:
+            edge_to_index.append((rel, path, mtime))
+
+    if full:
+        edge_removed = set(db_edge_mtimes) - set(edge_files)
+    else:
+        in_scope_edge_db = {
+            rel for rel in db_edge_mtimes if not _is_historical_day(rel)
+        }
+        edge_removed = in_scope_edge_db - set(edge_files)
+
+    edge_cache: dict[str, list[dict[str, Any]]] = {}
+    edge_rows_inserted = 0
+    edge_rows_removed = 0
+    edge_drops = 0
+
+    for rel, path, mtime in edge_to_index:
+        edge_rows_removed += delete_edges_for_path(conn, rel)
+        result = _extract_file_edges(conn, rel, path, edge_cache)
+        edge_rows_inserted += result.rows_inserted
+        edge_drops += result.drops
+        replace_edge_file_mtime(conn, rel, mtime)
+
+    for rel in edge_removed:
+        edge_rows_removed += delete_edges_for_path(conn, rel)
+
+    edge_changed = bool(edge_to_index or edge_removed)
+    if edge_changed:
+        conn.commit()
+
+    logger.info(
+        "%s edge files indexed, %s edge files removed, %s edge rows inserted, "
+        "%s edge rows removed, %s edge drops",
+        len(edge_to_index),
+        len(edge_removed),
+        edge_rows_inserted,
+        edge_rows_removed,
+        edge_drops,
+    )
+
     conn.close()
-    return bool(to_index or removed or entity_changed)
+    return bool(to_index or removed or entity_changed or edge_changed)
 
 
 # Compiled patterns for temporal extraction (checked against unquoted text only)
