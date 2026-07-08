@@ -294,6 +294,11 @@
       "label": "Browsing",
       "tier": 2
     },
+    "observe.describe.calendar": {
+      "group": "Screen Analysis",
+      "label": "Calendar",
+      "tier": 2
+    },
     "observe.describe.code": {
       "group": "Screen Analysis",
       "label": "Code",
