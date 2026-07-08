@@ -953,7 +953,10 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                     continue
 
                 frame = dict(entry)
-                frame_content = dict(frame.get("content") or {})
+                content_value = frame.get("content")
+                frame_content = (
+                    dict(content_value) if isinstance(content_value, dict) else {}
+                )
                 # content["media"] is photo metadata only when it's a dict (the
                 # external mentra-photo observer). For a "media"-category describe
                 # frame it is a markdown string — leave it untouched and treat the
@@ -991,7 +994,12 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                         frame_content["media"] = media_content
                         frame["content"] = frame_content
                     if description:
-                        analysis = dict(frame.get("analysis") or {})
+                        analysis_value = frame.get("analysis")
+                        analysis = (
+                            dict(analysis_value)
+                            if isinstance(analysis_value, dict)
+                            else {}
+                        )
                         existing_description = str(
                             analysis.get("visual_description") or ""
                         ).strip()
@@ -1041,8 +1049,10 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 # Extract participant boxes for meeting frames
                 participants = []
                 meeting_data = frame_content.get("meeting")
-                if meeting_data:
+                if isinstance(meeting_data, dict):
                     for p in meeting_data.get("participants", []):
+                        if not isinstance(p, dict):
+                            continue
                         box = p.get("box_2d")
                         # Only include participants with video and valid box_2d
                         if p.get("video") and box and len(box) == 4:
