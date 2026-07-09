@@ -185,11 +185,13 @@ def _prepare_local_schema(schema: dict) -> dict:
     Strip string constraints that break llama.cpp grammar generation:
     maxLength becomes repetition counts that can exceed the grammar parser
     limit, and pattern anchors are mistranslated into literal characters.
-    Canonical response validation in models.py still enforces the original
-    constraints. Adds maxItems to array nodes, because bounded arrays force
-    closure before Qwen can repeat entries to the context wall. Does not recurse
-    into enum/const values, because those are JSON literals, not schemas.
-    Deep-copies so the caller's schema is never mutated.
+    models.py still checks the canonical schema: generate() raises
+    SchemaValidationError, while generate_with_result() records
+    schema_validation for callers; the talent path writes output and withholds
+    clean provenance on violations. Adds maxItems to array nodes, because
+    bounded arrays force closure before Qwen can repeat entries to the context
+    wall. Does not recurse into enum/const values, because those are JSON
+    literals, not schemas. Deep-copies so the caller's schema is never mutated.
     """
     prepared = copy.deepcopy(schema)
 

@@ -112,7 +112,8 @@ provider. `STRICT_UNSUPPORTED_KEYWORDS` is the single support matrix for strict
 cloud providers. Local receives a canonical copy from `schema_prep.py`, then the
 local provider drops string constraints request-side before llama.cpp grammar
 generation while keeping array bounds. Response validation still uses the
-canonical schema.
+canonical schema: `generate()` raises on violations, while
+`generate_with_result()` records `schema_validation` instead.
 
 Use `make check-schema-bounds` to run the bounds ratchet for canonical schemas.
 Use `make eval-schemas` to run the opt-in local llama.cpp structured-output

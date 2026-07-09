@@ -16,9 +16,10 @@ def _has_type(node: dict[str, Any], schema_type: str) -> bool:
 
 
 def unbounded_nodes(schema: dict[str, Any]) -> list[str]:
-    """Return paths for generation nodes missing local grammar bounds.
+    """Return paths for generation-schema nodes missing bounds.
 
-    Violations:
+    ``maxItems`` reaches the local grammar; ``maxLength`` is enforced only by
+    canonical response validation. Violations:
     - array nodes (``type == "array"`` or nullable/list-valued type containing
       ``"array"``) without ``maxItems``
     - free-text string nodes (``"string"`` in type) that have none of
