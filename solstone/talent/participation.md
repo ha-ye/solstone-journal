@@ -9,6 +9,8 @@
   "tier": 3,
   "output": "json",
   "schema": "participation.schema.json",
+  "max_output_tokens": 12288,
+  "timeout_s": 480,
   "load": {
     "transcripts": true,
     "percepts": true,

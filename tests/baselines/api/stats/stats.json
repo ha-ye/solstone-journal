@@ -269,6 +269,7 @@
         },
         "transcripts": true
       },
+      "max_output_tokens": 12288,
       "mtime": 0,
       "output": "json",
       "path": "<PROJECT>/solstone/talent/participation.md",
@@ -277,6 +278,7 @@
       "schema": "participation.schema.json",
       "source": "system",
       "tier": 3,
+      "timeout_s": 480,
       "title": "Participation",
       "type": "generate"
     },
@@ -356,6 +358,7 @@
         "talents": false,
         "transcripts": true
       },
+      "max_output_tokens": 12288,
       "mtime": 0,
       "output": "json",
       "path": "<PROJECT>/solstone/talent/sense.md",
@@ -364,6 +367,7 @@
       "schema": "sense.schema.json",
       "source": "system",
       "tier": 3,
+      "timeout_s": 480,
       "title": "Segment Sense",
       "type": "generate"
     },

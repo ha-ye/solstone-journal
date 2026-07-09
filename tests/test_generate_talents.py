@@ -40,3 +40,25 @@ def test_generation_params_thinking_budget_zero_disables_thinking():
     assert _generation_params({"thinking_budget": None})["thinking_budget"] == 8192 * 2
     # explicit positive value -> passes through unchanged
     assert _generation_params({"thinking_budget": 4096})["thinking_budget"] == 4096
+
+
+def test_json_extraction_talents_pin_output_cap_and_timeout():
+    from solstone.think.talent import get_talent
+    from solstone.think.talents import _generation_params
+
+    largest_observed_legitimate_completion = 3560
+
+    for name in ("sense", "participation"):
+        config = get_talent(name)
+        params = _generation_params(config)
+        max_output_tokens = params["max_output_tokens"]
+        derived_timeout = min(
+            480,
+            max(120, (max_output_tokens + params["thinking_budget"]) // 100),
+        )
+
+        assert max_output_tokens >= 2 * largest_observed_legitimate_completion
+        assert max_output_tokens < 8192 * 6
+        assert config.get("timeout_s") == 480
+        assert config["timeout_s"] != derived_timeout
+        assert "temperature" not in config
