@@ -193,7 +193,7 @@ def _imports_section() -> dict[str, Any]:
                     continue
                 if (seg_dir / "meetings.md").exists():
                     meetings += 1
-                if (seg_dir / "screen.md").exists():
+                if (seg_dir / "talents" / "screen.json").exists():
                     screens += 1
 
     return {"meetings_files": meetings, "screen_files": screens}

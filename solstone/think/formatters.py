@@ -223,6 +223,16 @@ FORMATTERS: dict[str, tuple[str, str, bool]] = {
         "format_sense",
         True,
     ),
+    "*/*/*/talents/documents.json": (
+        "solstone.think.talent_outputs",
+        "format_document_analysis",
+        True,
+    ),
+    "*/*/*/talents/screen.json": (
+        "solstone.think.talent_outputs",
+        "format_screen_record",
+        True,
+    ),
     "*/talents/*.jsonl": (
         "solstone.think.day_accumulator",
         "format_day_accumulator",

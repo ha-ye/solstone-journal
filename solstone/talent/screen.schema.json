@@ -1,0 +1,56 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "narrative",
+    "entities"
+  ],
+  "properties": {
+    "narrative": {
+      "type": "string",
+      "maxLength": 24000
+    },
+    "entities": {
+      "type": "array",
+      "maxItems": 96,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "name",
+          "role",
+          "context"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "Person",
+              "Company",
+              "Project",
+              "Tool",
+              "FilePath",
+              "URL"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "attendee",
+              "mentioned"
+            ]
+          },
+          "context": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      }
+    }
+  }
+}

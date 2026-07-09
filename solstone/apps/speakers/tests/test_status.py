@@ -205,6 +205,26 @@ def test_status_embeddings_with_data(speakers_env):
     assert result["date_range"] == ["20240101", "20240102"]
 
 
+def test_status_imports_counts_segment_screen_json(speakers_env):
+    from solstone.apps.speakers.status import get_speakers_status
+
+    env = speakers_env()
+    env.create_segment("20240101", "090000_300", ["mic_audio"])
+    talents_dir = (
+        env.journal / "chronicle" / "20240101" / "test" / "090000_300" / "talents"
+    )
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "screen.json").write_text(
+        json.dumps({"narrative": "Meeting screen.", "entities": []}),
+        encoding="utf-8",
+    )
+
+    result = get_speakers_status(section="imports")
+
+    assert result["screen_files"] == 1
+    assert result["meetings_files"] == 0
+
+
 def test_status_attribution_with_labels(speakers_env, caplog):
     from solstone.apps.speakers.status import get_speakers_status
 

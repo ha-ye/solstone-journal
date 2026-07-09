@@ -70,7 +70,6 @@ from solstone.think.data_state import (
     repair_modality_markers,
 )
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
-from solstone.think.formatters import format_file
 from solstone.think.journal_stats import load_fresh_day_cache
 from solstone.think.media import MIME_TYPES
 from solstone.think.models import get_usage_cost
@@ -81,6 +80,7 @@ from solstone.think.pipeline_health import (
     segment_fully_thought,
 )
 from solstone.think.supervisor import is_supervisor_up
+from solstone.think.talent_outputs import talent_projection_map
 from solstone.think.utils import (
     STREAM_RE,
     day_dirs,
@@ -1150,42 +1150,17 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
     # Get cost data for this segment
     cost_data = get_usage_cost(day, segment=segment_key)
 
-    # Collect talent .md files
-    md_files = {}
+    # Collect text projections of talent outputs.
     talents_dir = segment_dir_path / "talents"
-    if talents_dir.is_dir():
-        for md_path in sorted(talents_dir.rglob("*.md")):
-            try:
-                key = md_path.relative_to(talents_dir).with_suffix("").as_posix()
-                md_files[key] = md_path.read_text()
-            except Exception:
-                continue
+    md_files = talent_projection_map(talents_dir)
 
     # UI dedup: when a segment has structural modality data (screen/audio),
-    # the structural tab already covers it — drop the matching talents/<mod>.md
-    # from md_files so the tab row doesn't render two tabs labeled the same.
-    # Speaker attribution reads talents/screen.md directly from disk
-    # (apps/speakers/attribution.py), unaffected by this UI-side suppression.
+    # the structural tab already covers it — drop the matching talents/<mod>
+    # projection so the tab row doesn't render two tabs labeled the same.
     if "screen" in data_state:
         md_files.pop("screen", None)
     if "audio" in data_state:
         md_files.pop("audio", None)
-
-    md_files.pop("sense", None)
-    sense_json = talents_dir / "sense.json"
-    if sense_json.is_file():
-        try:
-            chunks, _meta = format_file(sense_json)
-            rendered = "\n".join(
-                chunk["markdown"] for chunk in chunks if chunk.get("markdown")
-            )
-            if rendered:
-                md_files["sense"] = rendered
-        except Exception:
-            logger.warning(
-                "segment detail: failed to render sense.json",
-                exc_info=True,
-            )
 
     signals = _load_segment_signals(segment_dir_path)
 

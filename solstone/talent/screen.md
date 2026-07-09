@@ -7,7 +7,9 @@
   "schedule": "segment",
   "priority": 10,
   "tier": 3,
-  "output": "md",
+  "output": "json",
+  "schema": "screen.schema.json",
+  "max_output_tokens": 12288,
   "load": {"transcripts": true, "percepts": "required", "talents": false}
 
 }
@@ -16,70 +18,15 @@ $segment_preamble
 
 # Segment Screen Record
 
-## Objective
+Return JSON only. No markdown fences. No prose outside the JSON object.
 
-Create a **detailed documentary record** of what occurred on screen during this segment. Your job is to produce a comprehensive, factual account that preserves important details for future reference and review.
+Create a detailed documentary record of what occurred on screen during this segment. Your job is to produce a comprehensive, factual account that preserves important details for future reference and review.
 
-## Input Structure
+The segment data includes audio transcript content and frame-by-frame screen activity with timestamps, monitor names, activity categories, visual descriptions, extracted text, and meeting analysis.
 
-The segment data includes:
+Return exactly this two-field JSON object:
 
-### Audio Transcript
-Spoken content captured during the segment - use this to understand context for screen actions.
+- `narrative`: a Markdown string containing the detailed activity log. Use past tense. Structure it chronologically by time periods or major activity shifts. Include approximate timestamps for transitions. Weave multiple monitors into a coherent timeline. Include key commands and outputs, specific files, functions, or code sections edited, relevant message excerpts, documentation topics reviewed, URLs, file paths, and error messages. For meetings, list participants detected, summarize discussion topics, and note shared screens, slides, or documents. Do not include idle activities, facet associations, interpretation of intent, or progress-state analysis.
+- `entities`: array of significant entities encountered. Use `[]` when there are none. Use `type` values `Person`, `Company`, `Project`, `Tool`, `FilePath`, or `URL`. Use `role: "attendee"` only for people visibly participating in a meeting or call; use `role: "mentioned"` for all other entities and non-attendee people. `context` should briefly state why the entity mattered in this screen record.
 
-### Screen Activity
-Frame-by-frame analyses with:
-- **Timestamp**: Wall-clock time (HH:MM:SS)
-- **Monitor**: Which display (when multiple monitors present)
-- **Category**: Activity type (terminal, code, messaging, meeting, browsing, calendar, reading, media, gaming, productivity, social)
-- **Visual description**: What was visible on screen
-- **Extracted text**: OCR content (commands, code, messages, documents)
-- **Meeting analysis**: Participants, topics, shared content when meetings detected
-
-## Guidelines
-
-### Chronological Narrative
-- Structure by time periods or major activity shifts
-- Include approximate timestamps for transitions
-- Weave multiple monitors into a coherent timeline
-
-### Preserve Details
-- Include key commands and their outputs
-- Note specific files, functions, or code sections edited
-- Quote relevant message excerpts
-- List documentation topics reviewed
-- Capture URLs, file paths, error messages
-
-### Meeting Documentation
-- List all participants detected
-- Summarize discussion topics
-- Note any shared screens, slides, or documents
-
-### Entity Extraction
-Capture all significant entities encountered:
-- People names
-- Project/repository names
-- Company/product names
-- Tool names
-- File paths and URLs
-
-End with a **## Entities** section listing all significant entities.
-
-## Output Format
-
-Provide a comprehensive markdown report:
-
-- **Headers** (##, ###) to organize by time or activity
-- **Past tense** narrative style
-- **Code blocks** for commands, code, and technical output
-- **Blockquotes** for message excerpts
-- **Lists** for entity sections
-
-## What NOT to Include
-
-- Interpretation of intent or underlying goals
-- Progress state analysis (blocked, exploring, etc.)
-- Facet associations
-- Idle activities (games, screensavers)
-
-The output should serve as a **detailed activity log** - someone reviewing it should know exactly what happened on screen without watching the recording.
+The rendered record should let someone understand exactly what happened on screen without watching the recording.

@@ -3,6 +3,7 @@
 
 """Tests for the formatters framework."""
 
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -10,6 +11,15 @@ from pathlib import Path
 import pytest
 
 # Set SOLSTONE_JOURNAL to fixtures for tests
+
+
+def _segment_talents_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    talents_dir = (
+        tmp_path / "chronicle" / "20240101" / "default" / "120000_300" / "talents"
+    )
+    talents_dir.mkdir(parents=True)
+    return talents_dir
 
 
 class TestRegistry:
@@ -92,6 +102,25 @@ class TestRegistry:
 
         assert formatter is not None
         assert formatter.__name__ == "format_sense"
+
+    def test_get_formatter_segment_document_and_screen_json(self):
+        """Segment document and screen JSON use dedicated talent-output formatters."""
+        from solstone.think.formatters import get_formatter
+
+        documents = get_formatter("20240101/default/120000_300/talents/documents.json")
+        screen = get_formatter("20240101/default/120000_300/talents/screen.json")
+
+        assert documents is not None
+        assert documents.__name__ == "format_document_analysis"
+        assert screen is not None
+        assert screen.__name__ == "format_screen_record"
+
+    def test_no_day_level_document_or_screen_json_formatter(self):
+        """Document and screen JSON formatters are segment-level only."""
+        from solstone.think.formatters import get_formatter
+
+        assert get_formatter("20240101/talents/documents.json") is None
+        assert get_formatter("20240101/talents/screen.json") is None
 
     def test_no_spans_formatter_registered(self):
         """Spans JSONL is no longer registered after the story refactor."""
@@ -256,6 +285,240 @@ class TestFormatFile:
                 format_file(str(temp_file))
         finally:
             temp_file.unlink()
+
+
+def test_format_document_analysis_omits_empty_required_string_segments():
+    from solstone.think.talent_outputs import format_document_analysis
+
+    chunks, meta = format_document_analysis(
+        [
+            {
+                "overview": "Revocable trust amendment naming fiduciaries.",
+                "parties": [
+                    {
+                        "name": "Priya Shah",
+                        "role": "primary trustee",
+                        "formal_term": "",
+                        "appointment_tier": "primary",
+                        "context": "",
+                    }
+                ],
+                "key_provisions": [
+                    {
+                        "type": "power",
+                        "text": "Trustee may distribute trust assets.",
+                        "applies_to": "",
+                    }
+                ],
+                "assets": [],
+                "conditions": [
+                    {
+                        "trigger": "Settlor's death",
+                        "effect": "Mandatory review begins.",
+                        "date_or_timing": "",
+                    }
+                ],
+                "important_dates": [],
+                "summary": "Priya Shah is appointed primary trustee.",
+            }
+        ]
+    )
+
+    rendered = chunks[0]["markdown"]
+    assert meta["indexer"]["agent"] == "documents"
+    assert "- Priya Shah - primary trustee [primary]" in rendered
+    assert "()" not in rendered
+    assert "Applies to:" not in rendered
+    assert "Timing:" not in rendered
+    assert "## Assets and Property\n\nNot specified in this document" in rendered
+
+
+def test_format_document_analysis_renders_all_seven_sections():
+    from solstone.think.talent_outputs import format_document_analysis
+
+    chunks, meta = format_document_analysis(
+        [
+            {
+                "overview": "Miller Family Trust Amendment updates fiduciaries.",
+                "parties": [
+                    {
+                        "name": "Priya Shah",
+                        "role": "primary trustee",
+                        "formal_term": "Trustee",
+                        "appointment_tier": "primary",
+                        "context": "Responsible for initial trust administration.",
+                    }
+                ],
+                "key_provisions": [
+                    {
+                        "type": "distribution power",
+                        "text": "Trustee may distribute education expenses.",
+                        "applies_to": "Miller grandchildren",
+                    }
+                ],
+                "assets": [
+                    {
+                        "name": "Brokerage Account",
+                        "asset_type": "financial_account",
+                        "disposition": "Transferred to the continuing trust.",
+                    }
+                ],
+                "conditions": [
+                    {
+                        "trigger": "Settlor's death",
+                        "effect": "Successor trustee takes office.",
+                        "date_or_timing": "Upon written acceptance.",
+                    }
+                ],
+                "important_dates": [
+                    {
+                        "date": "the third anniversary of the Settlor's death",
+                        "meaning": "Mandatory accounting deadline.",
+                    }
+                ],
+                "summary": "Quick reference summary for fiduciary succession.",
+            }
+        ]
+    )
+
+    rendered = chunks[0]["markdown"]
+    headings = [
+        "Overview",
+        "Parties and Roles",
+        "Key Provisions",
+        "Assets and Property",
+        "Conditions and Triggers",
+        "Important Dates",
+        "Summary",
+    ]
+    positions = [rendered.index(f"## {heading}") for heading in headings]
+
+    def section(heading: str) -> str:
+        index = headings.index(heading)
+        start = positions[index]
+        end = positions[index + 1] if index + 1 < len(positions) else len(rendered)
+        return rendered[start:end]
+
+    assert meta["indexer"]["agent"] == "documents"
+    assert positions == sorted(positions)
+    assert "Miller Family Trust Amendment" in section("Overview")
+    assert "Priya Shah - primary trustee (Trustee) [primary]" in section(
+        "Parties and Roles"
+    )
+    assert "Trustee may distribute education expenses" in section("Key Provisions")
+    assert "Brokerage Account" in section("Assets and Property")
+    assert "Settlor's death" in section("Conditions and Triggers")
+    assert "third anniversary" in section("Important Dates")
+    assert "Quick reference summary" in section("Summary")
+
+
+def test_format_screen_record_renders_narrative_entities_and_agent_meta():
+    from solstone.think.talent_outputs import format_screen_record
+
+    chunks, meta = format_screen_record(
+        [
+            {
+                "narrative": "09:00 Alice Smith discussed the solstone repository.",
+                "entities": [
+                    {
+                        "type": "Person",
+                        "name": "Alice Smith",
+                        "role": "attendee",
+                        "context": "Visible in the meeting participant tile.",
+                    },
+                    {
+                        "type": "FilePath",
+                        "name": "solstone/think/cluster.py",
+                        "role": "mentioned",
+                        "context": "Open in the editor.",
+                    },
+                ],
+            }
+        ]
+    )
+
+    rendered = chunks[0]["markdown"]
+    assert meta["indexer"]["agent"] == "screen"
+    assert "09:00 Alice Smith discussed the solstone repository." in rendered
+    assert "## Entities" in rendered
+    assert (
+        "- Person: Alice Smith (attendee) - Visible in the meeting participant tile."
+        in rendered
+    )
+    assert (
+        "- FilePath: solstone/think/cluster.py (mentioned) - Open in the editor."
+        in rendered
+    )
+
+
+def test_iter_talent_text_projections_filters_before_rendering(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    from solstone.think.talent_outputs import iter_talent_text_projections
+
+    talents_dir = _segment_talents_dir(tmp_path, monkeypatch)
+    (talents_dir / "sense.json").write_text("{not valid json", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="solstone.think.talent_outputs"):
+        projections = list(
+            iter_talent_text_projections(
+                talents_dir,
+                stem_filter=lambda stem: stem == "screen",
+            )
+        )
+
+    assert projections == []
+    assert caplog.records == []
+
+
+def test_talent_projection_map_skips_unregistered_json_sidecars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    from solstone.think.talent_outputs import talent_projection_map
+
+    talents_dir = _segment_talents_dir(tmp_path, monkeypatch)
+    for name in ("facets", "density", "speakers"):
+        (talents_dir / f"{name}.json").write_text(
+            json.dumps({"sidecar": name}), encoding="utf-8"
+        )
+    (talents_dir / "screen.json").write_text(
+        json.dumps(
+            {
+                "narrative": "Reviewed the release dashboard.",
+                "entities": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (talents_dir / "notes.md").write_text("Plain notes", encoding="utf-8")
+
+    projections = talent_projection_map(talents_dir)
+
+    assert set(projections) == {"screen", "notes"}
+    assert "Reviewed the release dashboard." in projections["screen"]
+    assert projections["notes"] == "Plain notes"
+
+
+def test_talent_projection_map_does_not_fallback_to_markdown_for_malformed_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+):
+    from solstone.think.talent_outputs import talent_projection_map
+
+    talents_dir = _segment_talents_dir(tmp_path, monkeypatch)
+    (talents_dir / "screen.json").write_text("{not valid json", encoding="utf-8")
+    (talents_dir / "screen.md").write_text("Fallback screen text", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="solstone.think.talent_outputs"):
+        projections = talent_projection_map(talents_dir)
+
+    captured = capsys.readouterr()
+    assert "screen" not in projections
+    assert "failed to render talent JSON output" in caplog.text
+    assert captured.out == ""
+    assert captured.err == ""
 
 
 class TestFormatScreen:

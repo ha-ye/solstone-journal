@@ -7,7 +7,7 @@ Runs per-segment after transcription and embedding.  Operates in layers
 from cheapest to most expensive:
 
 Layer 1: Owner separation (cosine similarity to owner centroid passes Layer 1)
-Layer 2: Structural heuristics (speaker count, setting field, screen.md,
+Layer 2: Structural heuristics (speaker count, setting field, screen.json,
          meetings.md) — no LLM
 Layer 3: Acoustic matching (voiceprint cosine similarity, same-stream
          preference) — no LLM
@@ -201,42 +201,34 @@ def _load_setting_field(seg_dir: Path) -> str | None:
 
 
 def _extract_screen_participants(seg_dir: Path) -> list[str]:
-    """Extract participant names from screen.md agent output.
-
-    screen.md captures video-call participant panels.  The content is
-    free-form markdown so extraction is best-effort.
-    """
-    screen_path = seg_dir / "talents" / "screen.md"
+    """Extract attendee names from structured screen.json agent output."""
+    screen_path = seg_dir / "talents" / "screen.json"
     if not screen_path.exists():
         return []
     try:
-        content = screen_path.read_text(encoding="utf-8")
-    except Exception:
+        data = json.loads(screen_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning(
+            "speaker attribution: failed to read screen participants from %s",
+            screen_path,
+            exc_info=True,
+        )
         return []
-
-    names: list[str] = []
-    kw_re = re.compile(
-        r"participant|attendee|joined|present|member|panelist",
-        re.IGNORECASE,
-    )
-    for line in content.splitlines():
-        if not kw_re.search(line):
-            continue
-        # Strip markdown formatting
-        clean = re.sub(r"[*_#\-\[\]>]", "", line)
-        # Take text after the label
-        after_label = re.split(r"[:–—\-]\s*", clean, maxsplit=1)
-        name_text = after_label[-1] if len(after_label) > 1 else clean
-        for part in re.split(r"[,;]", name_text):
-            part = part.strip()
-            if (
-                part
-                and len(part) > 2
-                and not kw_re.search(part)
-                and not part.lower().startswith(("the ", "a "))
-            ):
-                names.append(part)
-    return names
+    if not isinstance(data, dict) or not isinstance(data.get("entities"), list):
+        logger.warning(
+            "speaker attribution: malformed screen participants in %s",
+            screen_path,
+        )
+        return []
+    return [
+        entity["name"].strip()
+        for entity in data.get("entities", [])
+        if isinstance(entity, dict)
+        and entity.get("type") == "Person"
+        and entity.get("role") == "attendee"
+        and isinstance(entity.get("name"), str)
+        and entity["name"].strip()
+    ]
 
 
 def _extract_meeting_participants(day: str, segment_key: str) -> list[str]:

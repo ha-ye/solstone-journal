@@ -71,6 +71,33 @@ def _seed_talent_output(
     (segment_dir / f"{name}.md").write_text(content, encoding="utf-8")
 
 
+def _seed_screen_json(segment_dir: Path) -> None:
+    talents_dir = segment_dir / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "screen.json").write_text(
+        json.dumps(
+            {
+                "narrative": "09:00 Alice Smith reviewed the launch board.",
+                "entities": [
+                    {
+                        "type": "Person",
+                        "name": "Alice Smith",
+                        "role": "attendee",
+                        "context": "Visible in the meeting participant tile.",
+                    },
+                    {
+                        "type": "Project",
+                        "name": "launch board",
+                        "role": "mentioned",
+                        "context": "Reviewed on screen.",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_cluster(tmp_path, monkeypatch):
     """Test cluster() uses transcripts and agent output summaries (*.md files)."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
@@ -604,6 +631,118 @@ def test_cluster_with_agent_filter_app_namespaced(tmp_path, monkeypatch):
     assert counts["talents"] == 1  # Only app:name
     assert "System entity results" not in result
     assert "App agent results" in result
+
+
+def test_schedule_screen_talent_filter_loads_screen_json_only(tmp_path, monkeypatch):
+    """Schedule's screen filter includes formatted screen.json without screen.md."""
+    from solstone.think.talent import get_talent
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    segment = day_dir / "default" / "120000_300"
+    segment.mkdir(parents=True)
+    _seed_screen_json(segment)
+
+    mod = importlib.import_module("solstone.think.cluster")
+    agents = get_talent("schedule")["sources"]["talents"]
+    result, counts = mod.cluster(
+        "20240101",
+        sources={"transcripts": False, "percepts": False, "agents": agents},
+    )
+
+    assert agents == {"screen": True}
+    assert counts["talents"] == 1
+    assert "### screen summary" in result
+    assert "09:00 Alice Smith reviewed the launch board." in result
+    assert "Project: launch board (mentioned)" in result
+
+
+def test_speaker_attribution_screen_filter_loads_screen_json_only(
+    tmp_path, monkeypatch
+):
+    """Speaker attribution's screen filter includes formatted screen.json only."""
+    from solstone.think.talent import get_talent
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    segment = day_dir / "default" / "120000_300"
+    segment.mkdir(parents=True)
+    _seed_screen_json(segment)
+
+    mod = importlib.import_module("solstone.think.cluster")
+    agents = get_talent("speaker_attribution")["sources"]["talents"]
+    result, counts = mod.cluster(
+        "20240101",
+        sources={"transcripts": False, "percepts": False, "agents": agents},
+    )
+
+    assert agents == {"screen": True}
+    assert counts["talents"] == 1
+    assert "### screen summary" in result
+    assert "Alice Smith" in result
+    assert "Visible in the meeting participant tile." in result
+
+
+def test_participation_sense_filter_uses_single_formatted_sense_json_projection(
+    tmp_path, monkeypatch
+):
+    """Participation's sense filter gets formatted sense.json, not stale sense.md."""
+    from solstone.think.talent import get_talent
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    segment = day_dir / "default" / "120000_300"
+    talents_dir = segment / "talents"
+    talents_dir.mkdir(parents=True)
+    (talents_dir / "sense.json").write_text(
+        json.dumps(
+            {
+                "density": "active",
+                "content_type": "meeting",
+                "activity_summary": "Discussed the launch timeline.",
+                "entities": [
+                    {
+                        "type": "Person",
+                        "name": "Alice Smith",
+                        "role": "attendee",
+                        "source": "voice",
+                        "context": "Owned the timeline follow-up.",
+                        "level": "high",
+                    }
+                ],
+                "facets": [
+                    {
+                        "facet": "work",
+                        "activity": "launch planning",
+                        "level": "high",
+                    }
+                ],
+                "meeting_detected": True,
+                "speakers": ["Alice Smith", "Bob Chen"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (talents_dir / "sense.md").write_text(
+        "# Sense Entities\n\n- STALE SENSE MD BULLET",
+        encoding="utf-8",
+    )
+
+    mod = importlib.import_module("solstone.think.cluster")
+    agents = get_talent("participation")["sources"]["talents"]
+    result, counts = mod.cluster(
+        "20240101",
+        sources={"transcripts": False, "percepts": False, "agents": agents},
+    )
+
+    assert agents == {"sense": True}
+    assert counts["talents"] == 1
+    assert result.count("### sense summary") == 1
+    assert "Discussed the launch timeline." in result
+    assert "work: launch planning (high)" in result
+    assert "**Speakers:** Alice Smith, Bob Chen" in result
+    assert "Person: Alice Smith" in result
+    assert "STALE SENSE MD BULLET" not in result
 
 
 def test_cluster_with_empty_agent_filter(tmp_path, monkeypatch):

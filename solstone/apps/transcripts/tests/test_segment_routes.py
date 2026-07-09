@@ -627,6 +627,86 @@ def test_segment_content_renders_sense_json_over_stale_markdown(client, journal_
     assert "STALE MD" not in md_files["sense"]
 
 
+def test_segment_content_renders_documents_json_projection(client, journal_copy):
+    day = "20990118"
+    stream = "default"
+    segment = "090000_300"
+    _write_segment(journal_copy, day, stream, segment, audio=False, screen=False)
+    talents_dir = journal_copy / "chronicle" / day / stream / segment / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "documents.json").write_text(
+        json.dumps(
+            {
+                "overview": "Miller Family Trust Amendment executed March 4, 2026.",
+                "parties": [
+                    {
+                        "name": "Priya Shah",
+                        "role": "primary trustee",
+                        "formal_term": "Trustee",
+                        "appointment_tier": "primary",
+                        "context": "Appointed to administer the trust.",
+                    }
+                ],
+                "key_provisions": [],
+                "assets": [],
+                "conditions": [],
+                "important_dates": [
+                    {
+                        "date": "March 4, 2026",
+                        "meaning": "Execution date.",
+                    }
+                ],
+                "summary": "Priya Shah is appointed as primary trustee.",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    md_files = response.get_json()["md_files"]
+    assert "documents" in md_files
+    assert "## Overview" in md_files["documents"]
+    assert "## Parties and Roles" in md_files["documents"]
+    assert "Priya Shah - primary trustee (Trustee) [primary]" in md_files["documents"]
+    assert "## Important Dates" in md_files["documents"]
+
+
+def test_segment_content_drops_screen_json_projection_when_screen_analyzed(
+    client, journal_copy
+):
+    day = "20990119"
+    stream = "default"
+    segment = "090000_300"
+    _write_segment(journal_copy, day, stream, segment, audio=False, screen=True)
+    talents_dir = journal_copy / "chronicle" / day / stream / segment / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "screen.json").write_text(
+        json.dumps(
+            {
+                "narrative": "09:00 Alice Smith reviewed the launch board.",
+                "entities": [
+                    {
+                        "type": "Person",
+                        "name": "Alice Smith",
+                        "role": "attendee",
+                        "context": "Visible in the meeting participant tile.",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["data_state"].get("screen") == "analyzed"
+    assert "screen" not in data["md_files"]
+
+
 def test_segment_content_maps_still_images_to_screen_frames(client, journal_copy):
     day = "20990117"
     stream = "mentra-live"

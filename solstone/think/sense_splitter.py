@@ -34,13 +34,11 @@ def write_sense_outputs(
             }
         ),
     )
-    # Keep the structured and markdown Sense channels distinct.
-    # load.talents consumers do not see sense.json: think/cluster.py discovers
-    # talent outputs only by globbing {segment}/talents/**/*.md.
-    # The conditional sense.md write below is the sole .md-glob-discoverable
-    # Sense channel. Per-segment absence is normal when Sense found no entities,
-    # and consumers must tolerate missing snippets. Removing that write would
-    # silently starve participation and any future load.talents.sense consumer.
+    # Keep the structured Sense artifact and temporary markdown projection.
+    # think/talent_outputs.py renders sense.json for consumers that need text,
+    # but sense.md remains until the follow-up lode removes the dual channel.
+    # Per-segment absence is normal when Sense found no entities, and consumers
+    # must tolerate missing snippets.
     atomic_replace(agents_dir / "sense.json", json.dumps(sense_json))
 
     if entities:

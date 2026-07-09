@@ -85,10 +85,11 @@
       },
       "max_output_tokens": 8192,
       "mtime": 0,
-      "output": "md",
+      "output": "json",
       "path": "<PROJECT>/solstone/talent/documents.md",
       "priority": 10,
       "schedule": "segment",
+      "schema": "documents.schema.json",
       "source": "system",
       "thinking_budget": 8192,
       "title": "Document Analysis",
@@ -342,11 +343,13 @@
         "talents": false,
         "transcripts": true
       },
+      "max_output_tokens": 12288,
       "mtime": 0,
-      "output": "md",
+      "output": "json",
       "path": "<PROJECT>/solstone/talent/screen.md",
       "priority": 10,
       "schedule": "segment",
+      "schema": "screen.schema.json",
       "source": "system",
       "tier": 3,
       "title": "Screen Record",
@@ -382,8 +385,7 @@
       },
       "load": {
         "talents": {
-          "screen": true,
-          "speakers": true
+          "screen": true
         },
         "transcripts": true
       },

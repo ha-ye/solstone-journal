@@ -134,6 +134,8 @@ def test_shipped_schemas_prep_to_a_provider_supported_subset(
 # graduate off its allowlist.
 BOUNDED_SCHEMAS = (
     "solstone/talent/story.schema.json",
+    "solstone/talent/documents.schema.json",
+    "solstone/talent/screen.schema.json",
     "solstone/apps/entities/talent/entity_observer.schema.json",
 )
 

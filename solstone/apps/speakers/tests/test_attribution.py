@@ -134,6 +134,73 @@ def test_parse_setting_names():
     assert _parse_setting_names("Call with Ryan") == ["Ryan"]
 
 
+def test_extract_screen_participants_returns_empty_when_screen_json_absent(tmp_path):
+    from solstone.apps.speakers.attribution import _extract_screen_participants
+
+    seg_dir = tmp_path / "20240101" / STREAM / "090000_300"
+    seg_dir.mkdir(parents=True)
+
+    assert _extract_screen_participants(seg_dir) == []
+
+
+def test_extract_screen_participants_filters_structured_screen_entities(tmp_path):
+    from solstone.apps.speakers.attribution import _extract_screen_participants
+
+    seg_dir = tmp_path / "20240101" / STREAM / "090000_300"
+    talents_dir = seg_dir / "talents"
+    talents_dir.mkdir(parents=True)
+    (talents_dir / "screen.json").write_text(
+        json.dumps(
+            {
+                "narrative": "Alice Smith and Bob Chen appeared in Zoom.",
+                "entities": [
+                    {
+                        "type": "Person",
+                        "name": " Alice Smith ",
+                        "role": "attendee",
+                        "context": "Visible in participant tile.",
+                    },
+                    {
+                        "type": "Person",
+                        "name": "Carol Jones",
+                        "role": "mentioned",
+                        "context": "Named in chat.",
+                    },
+                    {
+                        "type": "Tool",
+                        "name": "Zoom",
+                        "role": "mentioned",
+                        "context": "Meeting tool.",
+                    },
+                    {
+                        "type": "Person",
+                        "name": "Bob Chen",
+                        "role": "attendee",
+                        "context": "Visible in participant tile.",
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert _extract_screen_participants(seg_dir) == ["Alice Smith", "Bob Chen"]
+
+
+def test_extract_screen_participants_logs_and_skips_malformed_json(tmp_path, caplog):
+    from solstone.apps.speakers.attribution import _extract_screen_participants
+
+    seg_dir = tmp_path / "20240101" / STREAM / "090000_300"
+    talents_dir = seg_dir / "talents"
+    talents_dir.mkdir(parents=True)
+    (talents_dir / "screen.json").write_text("{ invalid json", encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="solstone.apps.speakers.attribution"):
+        assert _extract_screen_participants(seg_dir) == []
+
+    assert "failed to read screen participants" in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Layer 1: Owner separation
 # ---------------------------------------------------------------------------

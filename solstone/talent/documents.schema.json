@@ -1,0 +1,186 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "overview",
+    "parties",
+    "key_provisions",
+    "assets",
+    "conditions",
+    "important_dates",
+    "summary"
+  ],
+  "properties": {
+    "overview": {
+      "type": "string",
+      "maxLength": 3000
+    },
+    "parties": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "role",
+          "formal_term",
+          "appointment_tier",
+          "context"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "formal_term": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "appointment_tier": {
+            "type": "string",
+            "enum": [
+              "primary",
+              "successor",
+              "contingent",
+              "not_applicable",
+              "unspecified"
+            ]
+          },
+          "context": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "key_provisions": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "type",
+          "text",
+          "applies_to"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "term",
+              "obligation",
+              "right",
+              "distribution",
+              "power",
+              "restriction",
+              "other"
+            ]
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 1500
+          },
+          "applies_to": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "asset_type",
+          "disposition"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "asset_type": {
+            "type": "string",
+            "enum": [
+              "account",
+              "property",
+              "real_estate",
+              "valuable",
+              "business_interest",
+              "digital_asset",
+              "other",
+              "unspecified"
+            ]
+          },
+          "disposition": {
+            "type": "string",
+            "maxLength": 1500
+          }
+        }
+      }
+    },
+    "conditions": {
+      "type": "array",
+      "maxItems": 96,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "trigger",
+          "effect",
+          "date_or_timing"
+        ],
+        "properties": {
+          "trigger": {
+            "type": "string",
+            "maxLength": 512
+          },
+          "effect": {
+            "type": "string",
+            "maxLength": 1500
+          },
+          "date_or_timing": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
+      }
+    },
+    "important_dates": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "date",
+          "meaning"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "meaning": {
+            "type": "string",
+            "maxLength": 1000
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 3000
+    }
+  }
+}

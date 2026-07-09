@@ -18,6 +18,7 @@ from solstone.think.data_state import (
     read_processing_record,
 )
 from solstone.think.media import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
+from solstone.think.talent_outputs import iter_talent_text_projections
 
 from .streams import read_segment_stream
 from .utils import day_from_path, day_path
@@ -258,7 +259,7 @@ def _process_segment(
                     file=sys.stderr,
                 )
 
-    # Process agent output summaries from talents/**/*.md files (with optional filtering)
+    # Process text projections of talent outputs (with optional filtering).
     if agents:
         # Convert bool to filter: True -> None (all), False handled by outer if
         agent_filter = (
@@ -266,35 +267,27 @@ def _process_segment(
         )
         talents_dir = segment_path / "talents"
         if talents_dir.is_dir():
-            for md_file in sorted(talents_dir.rglob("*.md")):
-                if not md_file.is_file():
-                    continue
-
-                # Check if this agent matches the filter
-                if not _agent_matches_filter(md_file.stem, agent_filter):
-                    continue
-
-                try:
-                    content = md_file.read_text()
-                    if content.strip():
-                        rel_md_path = md_file.relative_to(talents_dir).as_posix()
-                        entries.append(
-                            {
-                                "timestamp": segment_start,
-                                "segment_key": segment_key,
-                                "segment_start": segment_start,
-                                "segment_end": segment_end,
-                                "prefix": "agent_output",
-                                "output_name": md_file.stem,
-                                "content": content,
-                                "name": f"{segment_path.name}/talents/{rel_md_path}",
-                                "stream": stream,
-                            }
-                        )
-                except Exception as e:  # pragma: no cover - warning only
-                    print(
-                        f"Warning: Could not read file {md_file.name}: {e}",
-                        file=sys.stderr,
+            for projection in iter_talent_text_projections(
+                talents_dir,
+                stem_filter=lambda stem: _agent_matches_filter(stem, agent_filter),
+            ):
+                content = projection.text
+                if content.strip():
+                    entries.append(
+                        {
+                            "timestamp": segment_start,
+                            "segment_key": segment_key,
+                            "segment_start": segment_start,
+                            "segment_end": segment_end,
+                            "prefix": "agent_output",
+                            "output_name": projection.stem,
+                            "content": content,
+                            "name": (
+                                f"{segment_path.name}/talents/"
+                                f"{projection.relative_path}"
+                            ),
+                            "stream": stream,
+                        }
                     )
 
     return entries
