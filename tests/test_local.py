@@ -34,6 +34,24 @@ def _provider():
     return importlib.reload(importlib.import_module("solstone.think.providers.local"))
 
 
+def _schema_keyword_paths(schema, keywords):
+    found = []
+
+    def walk(node, path="$"):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child_path = f"{path}/{key}"
+                if key in keywords:
+                    found.append(child_path)
+                walk(value, child_path)
+        elif isinstance(node, list):
+            for index, item in enumerate(node):
+                walk(item, f"{path}[{index}]")
+
+    walk(schema)
+    return found
+
+
 def test_local_model_prefix_maps_to_provider():
     assert get_model_provider(LOCAL_MODEL) == "local"
 
@@ -300,88 +318,6 @@ def test_run_generate_bundled_clips_oversized_text_block(monkeypatch):
     assert result["input_budget"]["clipped"] is True
 
 
-def test_run_generate_normalizes_schema_pattern_shorthand(monkeypatch):
-    provider = _provider()
-    monkeypatch.setattr(
-        "solstone.think.providers.local_server.connect",
-        lambda: SimpleNamespace(
-            port=4321,
-            base_url="http://127.0.0.1:4321",
-            served_model_id=LOCAL_MODEL,
-        ),
-    )
-    captured = {}
-
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "model": LOCAL_MODEL,
-                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-            }
-
-    def fake_post(url, json, timeout):
-        captured.update({"url": url, "json": json, "timeout": timeout})
-        return Response()
-
-    import httpx
-
-    monkeypatch.setattr(httpx, "post", fake_post)
-
-    schema = {
-        "type": "object",
-        "properties": {
-            "timestamp": {
-                "type": "string",
-                "pattern": r"^\d{2}:\d{2}:\d{2}$",
-            },
-            "slots": {
-                "type": "array",
-                "items": {
-                    "type": "string",
-                    "pattern": r"^([01]\d|2[0-3]):[0-5]\d$",
-                },
-            },
-        },
-        "anyOf": [
-            {
-                "type": "object",
-                "properties": {
-                    "start": {
-                        "type": "string",
-                        "pattern": r"^\d{2}:\d{2}:\d{2}$",
-                    }
-                },
-            }
-        ],
-    }
-
-    provider.run_generate("hello", model=LOCAL_MODEL, json_schema=schema)
-
-    posted_schema = captured["json"]["response_format"]["json_schema"]["schema"]
-    patterns = []
-
-    def walk(node):
-        if isinstance(node, dict):
-            if isinstance(node.get("pattern"), str):
-                patterns.append(node["pattern"])
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(posted_schema)
-
-    assert patterns
-    for pattern in patterns:
-        assert "[0-9]" in pattern
-        assert "\\d" not in pattern
-    assert posted_schema["properties"]["slots"]["maxItems"] == 192
-
-
 def test_run_generate_does_not_mutate_caller_schema(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(
@@ -418,6 +354,8 @@ def test_run_generate_does_not_mutate_caller_schema(monkeypatch):
             "timestamp": {
                 "type": "string",
                 "pattern": r"^\d{2}:\d{2}:\d{2}$",
+                "minLength": 8,
+                "maxLength": 8,
             },
             "slots": {"type": "array", "items": {"type": "string"}},
         },
@@ -427,13 +365,18 @@ def test_run_generate_does_not_mutate_caller_schema(monkeypatch):
     provider.run_generate("hello", model=LOCAL_MODEL, json_schema=schema)
 
     posted_schema = captured["json"]["response_format"]["json_schema"]["schema"]
-    assert (
-        posted_schema["properties"]["timestamp"]["pattern"]
-        == "^[0-9]{2}:[0-9]{2}:[0-9]{2}$"
-    )
+    unsupported = {"pattern", "minLength", "maxLength"}
+    assert _schema_keyword_paths(posted_schema, unsupported) == []
     assert posted_schema["properties"]["slots"]["maxItems"] == 192
     assert schema == original_schema
     assert schema["properties"]["timestamp"]["pattern"] == r"^\d{2}:\d{2}:\d{2}$"
+    assert schema["properties"]["timestamp"]["minLength"] == 8
+    assert schema["properties"]["timestamp"]["maxLength"] == 8
+    assert sorted(_schema_keyword_paths(schema, unsupported)) == [
+        "$/properties/timestamp/maxLength",
+        "$/properties/timestamp/minLength",
+        "$/properties/timestamp/pattern",
+    ]
     assert "maxItems" not in schema["properties"]["slots"]
 
 
@@ -444,7 +387,13 @@ def test_prepare_local_schema_bounds_arrays_only_and_preserves_input():
         "properties": {
             "items": {
                 "type": "array",
-                "items": {"type": "string", "pattern": r"^\d+$"},
+                "minItems": 1,
+                "items": {
+                    "type": "string",
+                    "pattern": r"^\d+$",
+                    "minLength": 1,
+                    "maxLength": 5,
+                },
             },
             "nullable_items": {
                 "type": ["array", "null"],
@@ -458,6 +407,7 @@ def test_prepare_local_schema_bounds_arrays_only_and_preserves_input():
             "status": {"type": "string", "enum": ["open", "closed"]},
             "empty": {"type": "null"},
             "name": {"type": "string"},
+            "score": {"type": "number", "minimum": 0, "maximum": 10},
         },
     }
     original_schema = copy.deepcopy(schema)
@@ -467,27 +417,17 @@ def test_prepare_local_schema_bounds_arrays_only_and_preserves_input():
     assert not hasattr(provider, "_normalize_schema_patterns")
     assert schema == original_schema
     assert prepared["properties"]["items"]["maxItems"] == 192
+    assert prepared["properties"]["items"]["minItems"] == 1
     assert prepared["properties"]["nullable_items"]["maxItems"] == 192
     assert prepared["properties"]["prebounded"]["maxItems"] == 7
-    assert prepared["properties"]["items"]["items"]["pattern"] == "^[0-9]+$"
+    assert prepared["properties"]["items"]["items"] == {"type": "string"}
     assert prepared["properties"]["status"] == schema["properties"]["status"]
     assert prepared["properties"]["empty"] == schema["properties"]["empty"]
     assert prepared["properties"]["name"] == schema["properties"]["name"]
+    assert prepared["properties"]["score"]["minimum"] == 0
+    assert prepared["properties"]["score"]["maximum"] == 10
 
-    forbidden = {"maxLength", "minItems", "minLength", "minimum", "maximum"}
-    found = set()
-
-    def walk(node):
-        if isinstance(node, dict):
-            found.update(forbidden & node.keys())
-            for value in node.values():
-                walk(value)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item)
-
-    walk(prepared)
-    assert found == set()
+    assert _schema_keyword_paths(prepared, {"pattern", "minLength", "maxLength"}) == []
 
 
 def test_prepare_local_schema_skips_json_literals_and_bounds_schema_nodes():
@@ -497,13 +437,18 @@ def test_prepare_local_schema_skips_json_literals_and_bounds_schema_nodes():
         "properties": {
             "literal": {
                 "enum": [
-                    {"type": "array", "pattern": r"^\d+$"},
+                    {"type": "array", "pattern": r"^\d+$", "maxLength": 12},
                 ],
             },
             "fixed": {
-                "const": {"type": "array", "pattern": r"^\d+$"},
+                "const": {"type": "array", "pattern": r"^\d+$", "maxLength": 12},
             },
-            "code": {"type": "string", "pattern": r"^\d+$"},
+            "code": {
+                "type": "string",
+                "pattern": r"^\d+$",
+                "minLength": 1,
+                "maxLength": 12,
+            },
             "type": {"type": "array", "items": {"type": "string"}},
         },
     }
@@ -511,15 +456,16 @@ def test_prepare_local_schema_skips_json_literals_and_bounds_schema_nodes():
     prepared = provider._prepare_local_schema(schema)
 
     assert prepared["properties"]["literal"]["enum"] == [
-        {"type": "array", "pattern": r"^\d+$"},
+        {"type": "array", "pattern": r"^\d+$", "maxLength": 12},
     ]
     assert "maxItems" not in prepared["properties"]["literal"]["enum"][0]
     assert prepared["properties"]["fixed"]["const"] == {
         "type": "array",
         "pattern": r"^\d+$",
+        "maxLength": 12,
     }
     assert "maxItems" not in prepared["properties"]["fixed"]["const"]
-    assert prepared["properties"]["code"]["pattern"] == "^[0-9]+$"
+    assert prepared["properties"]["code"] == {"type": "string"}
     assert prepared["properties"]["type"]["maxItems"] == 192
 
 
@@ -535,58 +481,6 @@ def test_prepare_local_schema_bounds_array_schema_with_enum():
 
     assert prepared["maxItems"] == 192
     assert prepared["enum"] == [["a"], ["b"]]
-
-
-def test_run_generate_preserves_non_pattern_backslash_d(monkeypatch):
-    provider = _provider()
-    monkeypatch.setattr(
-        "solstone.think.providers.local_server.connect",
-        lambda: SimpleNamespace(
-            port=4321,
-            base_url="http://127.0.0.1:4321",
-            served_model_id=LOCAL_MODEL,
-        ),
-    )
-    captured = {}
-
-    class Response:
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return {
-                "model": LOCAL_MODEL,
-                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
-            }
-
-    def fake_post(url, json, timeout):
-        captured.update({"url": url, "json": json, "timeout": timeout})
-        return Response()
-
-    import httpx
-
-    monkeypatch.setattr(httpx, "post", fake_post)
-
-    schema = {
-        "type": "object",
-        "properties": {
-            "timestamp": {
-                "type": "string",
-                "description": r"Matches \d time groups.",
-                "const": r"\d literal example",
-                "pattern": r"^\d{2}:\d{2}:\d{2}$",
-            }
-        },
-    }
-
-    provider.run_generate("hello", model=LOCAL_MODEL, json_schema=schema)
-
-    posted_timestamp = captured["json"]["response_format"]["json_schema"]["schema"][
-        "properties"
-    ]["timestamp"]
-    assert posted_timestamp["description"] == r"Matches \d time groups."
-    assert posted_timestamp["const"] == r"\d literal example"
-    assert posted_timestamp["pattern"] == "^[0-9]{2}:[0-9]{2}:[0-9]{2}$"
 
 
 def test_run_generate_bundled_non_overflow_keeps_body_unmarked(monkeypatch):

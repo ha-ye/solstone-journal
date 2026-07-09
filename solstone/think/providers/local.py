@@ -40,11 +40,16 @@ LOG = logging.getLogger(__name__)
 _DEFAULT_TIMEOUT = 120.0
 _LOCAL_PREFIX = "local/"
 # Qwen3.5-4B runaway repetition emits duplicate array entries until the context
-# wall. llama.cpp's GBNF converter honors maxItems, so a bounded array forces
-# closure with finish_reason="stop" and valid (if bloated) JSON. 192 is 2.4x the
-# largest observed sense.entities[] length (80, n=1128); downstream dedupe
-# absorbs the slack.
+# wall. llama.cpp's GBNF converter honors maxItems, so bounded arrays force
+# grammar-friendly closure with finish_reason="stop" and valid (if bloated) JSON.
+# 192 is 2.4x the largest observed sense.entities[] length (80, n=1128);
+# downstream dedupe absorbs the slack.
 _LOCAL_SCHEMA_MAX_ITEMS = 192
+# llama.cpp's GBNF converter turns string length limits into repetition counts
+# that can exceed its grammar parser limit, and it mistranslates pattern anchors
+# into literal characters. Drop these request-side only; canonical validation
+# still enforces them after generation.
+_LOCAL_UNSUPPORTED_STRING_KEYWORDS = frozenset({"pattern", "minLength", "maxLength"})
 # Qwen3.5-4B model card sampling recommendations. The card explicitly warns
 # against greedy / near-greedy decoding, which drives runaway repetition on
 # entity-rich extractions. presence_penalty is the vendor-sanctioned
@@ -177,18 +182,21 @@ def _build_messages(
 def _prepare_local_schema(schema: dict) -> dict:
     """Prepare a JSON Schema for llama.cpp's GBNF converter.
 
-    Rewrites `\\d` to `[0-9]` in every schema `pattern`, because llama.cpp does
-    not support that regex shorthand. Adds maxItems to array nodes, because
-    bounded arrays force closure before Qwen can repeat entries to the context
-    wall. Does not recurse into enum/const values, because those are JSON
-    literals, not schemas. Deep-copies so the caller's schema is never mutated.
+    Strip string constraints that break llama.cpp grammar generation:
+    maxLength becomes repetition counts that can exceed the grammar parser
+    limit, and pattern anchors are mistranslated into literal characters.
+    Canonical response validation in models.py still enforces the original
+    constraints. Adds maxItems to array nodes, because bounded arrays force
+    closure before Qwen can repeat entries to the context wall. Does not recurse
+    into enum/const values, because those are JSON literals, not schemas.
+    Deep-copies so the caller's schema is never mutated.
     """
     prepared = copy.deepcopy(schema)
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
-            if isinstance(node.get("pattern"), str):
-                node["pattern"] = node["pattern"].replace("\\d", "[0-9]")
+            for key in _LOCAL_UNSUPPORTED_STRING_KEYWORDS:
+                node.pop(key, None)
             node_type = node.get("type")
             if "maxItems" not in node and (
                 node_type == "array"
