@@ -52,7 +52,9 @@ def test_json_extraction_talents_pin_output_cap_and_timeout():
         config = get_talent(name)
         params = _generation_params(config)
         max_output_tokens = params["max_output_tokens"]
-        derived_timeout = min(
+        # Mirror talents.py's resolution: frontmatter timeout_s short-circuits
+        # the derivation.
+        resolved = config.get("timeout_s") or min(
             480,
             max(120, (max_output_tokens + params["thinking_budget"]) // 100),
         )
@@ -60,5 +62,6 @@ def test_json_extraction_talents_pin_output_cap_and_timeout():
         assert max_output_tokens >= 2 * largest_observed_legitimate_completion
         assert max_output_tokens < 8192 * 6
         assert config.get("timeout_s") == 480
-        assert config["timeout_s"] != derived_timeout
+        assert resolved == config["timeout_s"]
+        assert resolved >= 480
         assert "temperature" not in config
