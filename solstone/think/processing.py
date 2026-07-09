@@ -22,6 +22,7 @@ DRAIN_STATE_REALTIME = "realtime"
 DRAIN_STATE_WINDOW_OPEN = "window_open"
 DRAIN_STATE_WAITING = "waiting_for_window"
 DRAIN_STATE_NO_CONDITION = "no_active_condition"
+DRAIN_STATE_NO_ENGINE = "no_engine"
 
 _MISSING = object()
 _MODES = frozenset({"realtime", "deferred"})
@@ -273,8 +274,11 @@ def read_last_drained_at() -> int | None:
 def derive_drain_state(
     settings: ProcessingSettings,
     gate_state: GateState,
+    no_engine: bool,
 ) -> str:
     """Return the stable drain-state token for current settings and gate state."""
+    if no_engine:
+        return DRAIN_STATE_NO_ENGINE
     if settings.mode != "deferred":
         return DRAIN_STATE_REALTIME
     if gate_state.open:
@@ -364,6 +368,7 @@ def _hhmm_minutes(value: str) -> int:
 __all__ = [
     "AWAITING_ANALYSIS_TEMPLATE",
     "DRAIN_STATE_NO_CONDITION",
+    "DRAIN_STATE_NO_ENGINE",
     "DRAIN_STATE_REALTIME",
     "DRAIN_STATE_WAITING",
     "DRAIN_STATE_WINDOW_OPEN",

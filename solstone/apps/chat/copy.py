@@ -67,6 +67,7 @@ CHAT_SUPPORT_DRAFT_CANCELLED = "Okay — nothing was sent to solstone support."
 # but not yet analyzed"). Backend-only — no chat_copy.js twin. Substance locked
 # (wording VPX-refinable). Copy-canon compliant: no surveillance verbs.
 CHAT_DEFERRED_NOT_ANALYZED = "Today's segments aren't analyzed yet — they'll process during your deferred window."
+CHAT_THINKING_ENGINE_NOT_CHOSEN = "No thinking engine is chosen yet. Choose one in Thinking so I can answer from your observations."
 # fmt: on
 
 from typing import Literal

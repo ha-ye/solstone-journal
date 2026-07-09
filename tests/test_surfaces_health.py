@@ -21,6 +21,7 @@ from solstone.think.pipeline_health import SegmentBacklog, SegmentCompletion
 from solstone.think.processing import (
     DISPLAY_POWERSAVE_UNAVAILABLE,
     DRAIN_STATE_NO_CONDITION,
+    DRAIN_STATE_NO_ENGINE,
     DRAIN_STATE_REALTIME,
     DRAIN_STATE_WAITING,
     DRAIN_STATE_WINDOW_OPEN,
@@ -608,6 +609,9 @@ def test_segment_backlog_deferred_awaiting_analysis_uses_unsensed(
         lambda settings, now, reading: GateState(open=False, conditions={}),
     )
     monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    monkeypatch.setattr(
+        "solstone.think.models.no_thinking_engine_chosen", lambda: False
+    )
     _stub_display_powersave(monkeypatch)
 
     backlog = health_surface._build_segment_backlog_health()
@@ -634,6 +638,9 @@ def test_segment_backlog_realtime_omits_awaiting_analysis_text(monkeypatch) -> N
         lambda settings, now, reading: GateState(open=True, conditions={}),
     )
     monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    monkeypatch.setattr(
+        "solstone.think.models.no_thinking_engine_chosen", lambda: False
+    )
     _stub_display_powersave(monkeypatch)
 
     backlog = health_surface._build_segment_backlog_health()
@@ -688,11 +695,40 @@ def test_segment_backlog_drain_state_tokens(monkeypatch, gate, expected_state) -
         lambda settings, now, reading: gate,
     )
     monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    monkeypatch.setattr(
+        "solstone.think.models.no_thinking_engine_chosen", lambda: False
+    )
     _stub_display_powersave(monkeypatch)
 
     backlog = health_surface._build_segment_backlog_health()
 
     assert backlog.drain_state == expected_state
+
+
+def test_segment_backlog_no_engine_wins_before_realtime(monkeypatch) -> None:
+    monkeypatch.setattr(
+        health_surface,
+        "read_segment_backlog",
+        lambda: _segment_backlog({"20260410": 2}, not_sensed=3),
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "load_processing_settings",
+        lambda: _processing_settings("realtime"),
+    )
+    monkeypatch.setattr(
+        health_surface,
+        "evaluate_drain_gate",
+        lambda settings, now, reading: GateState(open=True, conditions={}),
+    )
+    monkeypatch.setattr(health_surface, "read_last_drained_at", lambda: None)
+    monkeypatch.setattr("solstone.think.models.no_thinking_engine_chosen", lambda: True)
+    _stub_display_powersave(monkeypatch)
+
+    backlog = health_surface._build_segment_backlog_health()
+
+    assert backlog.awaiting_analysis_text == health_surface.NO_ENGINE_ANALYSIS_TEXT
+    assert backlog.drain_state == DRAIN_STATE_NO_ENGINE
 
 
 def test_segment_backlog_last_drained_at_passes_through(monkeypatch) -> None:

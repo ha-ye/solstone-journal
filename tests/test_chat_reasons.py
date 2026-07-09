@@ -12,6 +12,7 @@ from solstone.convey.provider_readiness import (
 
 EXPECTED_CODES = {
     "provider_key_missing",
+    "thinking_engine_not_chosen",
     "ram_insufficient",
     "gpu_unavailable",
     "gpu_probe_failed",

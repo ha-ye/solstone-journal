@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
+from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER, QWEN_35_9B
 from solstone.think.providers import (
     local_endpoint,
     local_install,
@@ -244,6 +244,16 @@ def test_cloud_readiness_missing_key(monkeypatch):
 
     assert provider_state.status == "blocked"
     assert provider_state.reason_code == "provider_key_missing"
+    assert provider_state.source == "config"
+
+
+def test_no_brain_readiness_is_not_key_missing(monkeypatch):
+    monkeypatch.setattr(state, "cloud_key_configured", lambda _env_key: False)
+
+    provider_state = state.readiness_for_provider(NO_BRAIN_PROVIDER, "generate", "")
+
+    assert provider_state.status == "blocked"
+    assert provider_state.reason_code == "thinking_engine_not_chosen"
     assert provider_state.source == "config"
 
 

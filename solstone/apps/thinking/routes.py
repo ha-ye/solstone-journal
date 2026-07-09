@@ -45,7 +45,12 @@ from solstone.think.journal_config import (
     read_journal_config,
     write_journal_config,
 )
-from solstone.think.models import LOCAL_MODEL, TYPE_DEFAULTS
+from solstone.think.models import (
+    LOCAL_MODEL,
+    NO_BRAIN_PROVIDER,
+    TYPE_DEFAULTS,
+    resolve_provider,
+)
 from solstone.think.providers import (
     PROVIDER_REGISTRY,
     build_provider_status,
@@ -203,8 +208,9 @@ def _type_settings(providers_config: dict[str, Any]) -> dict[str, dict[str, Any]
         type_config = providers_config.get(agent_type, {})
         if not isinstance(type_config, dict):
             type_config = {}
+        provider, _ = resolve_provider("", agent_type)
         settings[agent_type] = {
-            "provider": type_config.get("provider", defaults["provider"]),
+            "provider": provider,
             "tier": type_config.get("tier", defaults["tier"]),
             "backup": type_config.get("backup", defaults["backup"]),
         }
@@ -212,6 +218,8 @@ def _type_settings(providers_config: dict[str, Any]) -> dict[str, dict[str, Any]
 
 
 def _lane_for_provider(provider: str) -> str:
+    if provider == NO_BRAIN_PROVIDER:
+        return "none"
     if provider == "local":
         return "local"
     if provider == "google" and scout.is_scout_enabled():

@@ -15,7 +15,7 @@ from PIL import Image
 from solstone.observe.detect import detect_objects, detections_block
 from solstone.observe.utils import get_segment_key, resize_for_vlm
 from solstone.think.journal_io import write_jsonl
-from solstone.think.models import generate
+from solstone.think.models import NoBrainConfiguredError, generate
 from solstone.think.utils import require_solstone, setup_cli
 
 logger = logging.getLogger(__name__)
@@ -57,9 +57,16 @@ def run(image_path: Path, *, redo: bool = False) -> Path | None:
         img.save(buf, format="PNG")
         detect_png = buf.getvalue()
         prepared = resize_for_vlm(img)
-        description = generate(
-            contents=[_DESCRIBE_PROMPT, prepared], context="observe.depict"
-        ).strip()
+        try:
+            description = generate(
+                contents=[_DESCRIBE_PROMPT, prepared], context="observe.depict"
+            ).strip()
+        except NoBrainConfiguredError:
+            logger.info(
+                "No thinking engine chosen; deferring still-image description for %s",
+                image_path,
+            )
+            return None
 
     header = _build_header(image_path.name, "image")
     entry = {"start": "00:00:00", "text": description}

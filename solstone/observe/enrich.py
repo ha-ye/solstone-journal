@@ -22,7 +22,7 @@ import numpy as np
 from google.genai import types
 
 from solstone.observe.utils import audio_to_flac_bytes
-from solstone.think.models import generate
+from solstone.think.models import NoBrainConfiguredError, generate
 from solstone.think.prompts import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -145,6 +145,9 @@ def enrich_transcript(
 
         return result
 
+    except NoBrainConfiguredError:
+        logger.info("No thinking engine chosen; audio enrichment skipped")
+        return None
     except Exception as e:
         logger.warning(f"Enrichment failed: {e}")
         from solstone.think.models import IncompleteJSONError

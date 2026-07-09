@@ -53,6 +53,7 @@ DISPLAY_NAMES: dict[str, str] = {
 
 PROVIDER_LEVEL_CODES = frozenset(
     {
+        "thinking_engine_not_chosen",
         "provider_key_missing",
         "provider_key_invalid",
         "provider_quota_exceeded",
@@ -70,6 +71,10 @@ _SETTINGS_ACTION = RecoveryAction(
     label="Open Settings",
     target="/app/thinking/#main",
 )
+_THINKING_ACTION = RecoveryAction(
+    label="Open Thinking",
+    target="/app/thinking/#main",
+)
 _LOCAL_SETUP_ACTION = RecoveryAction(
     label="Open Local Model Setup",
     target="/app/thinking/#local-setup",
@@ -81,6 +86,12 @@ _LOCAL_VERIFY_DETAIL = (
 )
 
 _ENTRIES: dict[str, _Entry] = {
+    "thinking_engine_not_chosen": _Entry(
+        klass="setup",
+        summary="no thinking engine is chosen yet",
+        detail="Open Thinking to choose how sol thinks, then try again.",
+        recovery_action=_THINKING_ACTION,
+    ),
     "provider_key_missing": _Entry(
         klass="setup",
         summary="{provider} needs credentials before it can read your screen descriptions",

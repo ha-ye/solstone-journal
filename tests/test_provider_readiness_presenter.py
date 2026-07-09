@@ -85,9 +85,11 @@ def test_semantic_key_composition_is_stable():
     provider_level = semantic_key_for(
         "provider_key_missing", "anthropic", "claude-test"
     )
+    no_engine = semantic_key_for("thinking_engine_not_chosen", "none", "")
     model_level = semantic_key_for("local_model_missing", "local", "llama-test")
 
     assert provider_level == "provider_key_missing:anthropic:"
+    assert no_engine == "thinking_engine_not_chosen:none:"
     assert semantic_key_for("provider_key_missing", "anthropic", "other") == (
         provider_level
     )

@@ -151,7 +151,7 @@ def detect_transcript_segment(text: str, start_time: str) -> List[tuple[str, str
     contents = f"START_TIME: {start_time}\n{numbered}"
     logging.info(f"Starting transcript segmentation (start: {start_time})...")
 
-    from solstone.think.models import generate
+    from solstone.think.models import NoBrainConfiguredError, generate
 
     try:
         response_text = generate(
@@ -170,6 +170,9 @@ def detect_transcript_segment(text: str, start_time: str) -> List[tuple[str, str
         segments = segments_from_boundaries(lines, boundaries)
 
         return segments
+    except NoBrainConfiguredError:
+        logging.info("No thinking engine chosen; transcript segmentation skipped")
+        return []
     except (ValueError, json.JSONDecodeError) as e:
         logging.error(f"Transcript segmentation failed: {e}")
         return []
@@ -192,7 +195,7 @@ def detect_transcript_json(text: str, segment_start: str) -> Optional[dict]:
     # Prepend SEGMENT_START for the prompt
     contents = f"SEGMENT_START: {segment_start}\n{text}"
 
-    from solstone.think.models import generate
+    from solstone.think.models import NoBrainConfiguredError, generate
 
     try:
         response_text = generate(
@@ -210,6 +213,9 @@ def detect_transcript_json(text: str, segment_start: str) -> Optional[dict]:
         result = json.loads(response_text)
         logging.info("Successfully converted transcript to JSON")
         return result
+    except NoBrainConfiguredError:
+        logging.info("No thinking engine chosen; transcript JSON conversion skipped")
+        return None
     except (ValueError, json.JSONDecodeError) as e:
         logging.error(f"Failed to parse JSON response from LLM: {e}")
         return None

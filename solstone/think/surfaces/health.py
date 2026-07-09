@@ -57,6 +57,10 @@ INDEXER_STALE_WARN_DAYS = 7
 # 7d matches the weekly freshness bar for search-backed consumers; shorter windows would over-warn on journals that intentionally rebuild less often.
 LEDGER_STALE_DAYS = 14
 # 14d mirrors the consumer-signal stale-item threshold so the health surface stays aligned with ledger backlog review.
+NO_ENGINE_ANALYSIS_TEXT = (
+    "No thinking engine is chosen yet. Choose one in Thinking so observations "
+    "can be analyzed."
+)
 USER_EDIT_ACTOR_PREFIXES = ("cli:", "owner", "user")
 # These prefixes identify operator- or user-authored corrections without trying to enumerate every internal automation actor string.
 DEGRADED_OUTPUT_NOTE_CAP = 10
@@ -513,13 +517,17 @@ def _build_segment_backlog_health() -> SegmentBacklogHealth:
     settings = load_processing_settings()
     reading = last_display_powersave()
     gate = evaluate_drain_gate(settings, datetime.now(), reading)
-    drain_state = derive_drain_state(settings, gate)
+    from solstone.think.models import no_thinking_engine_chosen
+
+    no_engine = no_thinking_engine_chosen()
+    drain_state = derive_drain_state(settings, gate, no_engine)
     awaiting_total = backlog.not_sensed + backlog.not_thought
-    awaiting_text = (
-        format_awaiting_analysis(awaiting_total)
-        if settings.mode == "deferred"
-        else None
-    )
+    if no_engine:
+        awaiting_text = NO_ENGINE_ANALYSIS_TEXT
+    elif settings.mode == "deferred":
+        awaiting_text = format_awaiting_analysis(awaiting_total)
+    else:
+        awaiting_text = None
     return SegmentBacklogHealth(
         not_thought=backlog.not_thought,
         days_with_backlog=days_with_backlog,

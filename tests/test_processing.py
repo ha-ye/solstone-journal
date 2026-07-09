@@ -14,6 +14,7 @@ from solstone.think.processing import (
     DEFAULT_PROCESSING,
     DISPLAY_POWERSAVE_UNAVAILABLE,
     DRAIN_STATE_NO_CONDITION,
+    DRAIN_STATE_NO_ENGINE,
     DRAIN_STATE_REALTIME,
     DRAIN_STATE_WAITING,
     DRAIN_STATE_WINDOW_OPEN,
@@ -280,7 +281,7 @@ def test_display_powersave_undetectable_has_no_active_condition() -> None:
     )
 
     assert gate.open is False
-    assert derive_drain_state(settings, gate) == DRAIN_STATE_NO_CONDITION
+    assert derive_drain_state(settings, gate, False) == DRAIN_STATE_NO_CONDITION
 
 
 def test_derive_drain_state_tokens() -> None:
@@ -300,17 +301,20 @@ def test_derive_drain_state_tokens() -> None:
         },
     )
 
-    assert derive_drain_state(_settings(mode="realtime"), open_gate) == (
+    assert derive_drain_state(_settings(mode="realtime"), open_gate, False) == (
         DRAIN_STATE_REALTIME
     )
-    assert derive_drain_state(_settings(mode="deferred"), open_gate) == (
+    assert derive_drain_state(_settings(mode="deferred"), open_gate, False) == (
         DRAIN_STATE_WINDOW_OPEN
     )
-    assert derive_drain_state(_settings(mode="deferred"), waiting_gate) == (
+    assert derive_drain_state(_settings(mode="deferred"), waiting_gate, False) == (
         DRAIN_STATE_WAITING
     )
-    assert derive_drain_state(_settings(mode="deferred"), unavailable_gate) == (
+    assert derive_drain_state(_settings(mode="deferred"), unavailable_gate, False) == (
         DRAIN_STATE_NO_CONDITION
+    )
+    assert derive_drain_state(_settings(mode="realtime"), open_gate, True) == (
+        DRAIN_STATE_NO_ENGINE
     )
 
 

@@ -452,6 +452,7 @@
     blocker: 3,
   };
   const PROVIDER_LEVEL_REASON_CODES = new Set([
+    'thinking_engine_not_chosen',
     'provider_key_missing',
     'provider_key_invalid',
     'provider_quota_exceeded',

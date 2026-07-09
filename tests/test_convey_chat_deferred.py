@@ -8,7 +8,10 @@ import json
 import pytest
 from flask import Flask
 
-from solstone.apps.chat.copy import CHAT_DEFERRED_NOT_ANALYZED
+from solstone.apps.chat.copy import (
+    CHAT_DEFERRED_NOT_ANALYZED,
+    CHAT_THINKING_ENGINE_NOT_CHOSEN,
+)
 from solstone.convey.chat import chat_bp, compose_honest_degradation
 from solstone.convey.chat_stream import read_chat_events
 from solstone.think.pipeline_health import SegmentBacklog, SegmentCompletion
@@ -39,6 +42,13 @@ def _reset_chat_state(chat_module) -> None:
             timer.cancel()
         chat_module._watchdog_timers.clear()
         chat_module._last_use_id = 0
+
+
+@pytest.fixture(autouse=True)
+def _default_thinking_engine_selected(monkeypatch):
+    monkeypatch.setattr(
+        "solstone.convey.chat._no_thinking_engine_chosen", lambda: False
+    )
 
 
 def _set_current_chat(chat_module, logical_use_id: str, raw_use_id: str | None) -> None:
@@ -226,6 +236,22 @@ def test_compose_honest_degradation_ignores_indeterminate_backlog():
     )
 
     assert result is None
+
+
+def test_compose_honest_degradation_fires_for_no_engine_realtime(monkeypatch):
+    import solstone.convey.chat as chat
+
+    monkeypatch.setattr(chat, "_no_thinking_engine_chosen", lambda: True)
+    today = chat._today_day()
+
+    result = compose_honest_degradation(
+        _settings("realtime"),
+        _backlog(today, not_sensed=2, not_thought=1),
+    )
+
+    assert result is not None
+    assert CHAT_THINKING_ENGINE_NOT_CHOSEN in result
+    assert format_awaiting_analysis(3) in result
 
 
 def test_empty_chat_finish_substitutes_honest_degradation(chat_client, monkeypatch):

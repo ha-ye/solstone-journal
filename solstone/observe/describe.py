@@ -695,7 +695,7 @@ class VideoProcessor:
             Path to write JSONL output (when None, no output file is written)
         """
         from solstone.think.batch import Batch
-        from solstone.think.models import resolve_provider
+        from solstone.think.models import NO_BRAIN_PROVIDER, resolve_provider
 
         # Load config for max_extractions and redaction rules
         config = get_config()
@@ -748,7 +748,10 @@ class VideoProcessor:
 
         try:
             # Resolve model for frame description (tier from describe.md frontmatter)
-            _, frame_model = resolve_provider(FRAME_CONTEXT, "generate")
+            frame_provider, frame_model = resolve_provider(FRAME_CONTEXT, "generate")
+            if frame_provider == NO_BRAIN_PROVIDER:
+                logger.info("No thinking engine selected; deferring frame description")
+                return
 
             # Create vision requests for all qualified frames
             for frame_data in qualified_frames:
@@ -1068,7 +1071,15 @@ class VideoProcessor:
                     is_json = cat_meta.get("output") == "json"
 
                     # Resolve model for this category context
-                    _, cat_model = resolve_provider(cat_meta["context"], "generate")
+                    cat_provider, cat_model = resolve_provider(
+                        cat_meta["context"], "generate"
+                    )
+                    if cat_provider == NO_BRAIN_PROVIDER:
+                        logger.info(
+                            "No thinking engine selected; deferring %s extraction",
+                            category,
+                        )
+                        continue
 
                     batch.update(
                         extract_req,

@@ -10,6 +10,10 @@
   });
 
   const CHAT_REASONS = Object.freeze({
+    "thinking_engine_not_chosen": {
+      "template": "no thinking engine is chosen yet",
+      "action": {"label": "Open Thinking", "href": "/app/thinking/#main"}
+    },
     "provider_key_missing": {
       "template": "{provider} needs credentials before it can read your screen descriptions",
       "action": {"label": "Open Settings", "href": "/app/thinking/#main"}

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -46,6 +47,7 @@ _SUBSECOND_RE = re.compile(r"(\d{2}:\d{2}:\d{2})\.\d+")
 _SCHEMA = json.loads(
     (Path(__file__).parent / "detect_created.schema.json").read_text(encoding="utf-8")
 )
+logger = logging.getLogger(__name__)
 
 
 def _load_system_prompt() -> str:
@@ -263,7 +265,7 @@ def detect_created(
     if guidance:
         markdown += f"\n\nImportant guidance from the user: {guidance}"
 
-    from solstone.think.models import generate
+    from solstone.think.models import NoBrainConfiguredError, generate
 
     try:
         response_text = generate(
@@ -277,6 +279,11 @@ def detect_created(
             json_schema=_SCHEMA,
         )
         result = json.loads(response_text)
+    except NoBrainConfiguredError:
+        logger.info(
+            "No thinking engine chosen; creation timestamp model detection skipped"
+        )
+        return None
     except (ValueError, json.JSONDecodeError):
         return None
 

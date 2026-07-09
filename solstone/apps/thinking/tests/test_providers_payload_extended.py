@@ -11,7 +11,7 @@ import pytest
 from solstone.apps.thinking import routes
 from solstone.apps.thinking.local_bootstrap import LOCAL_MODEL_SPECS
 from solstone.convey import create_app
-from solstone.think.models import LOCAL_MODEL
+from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER
 from solstone.think.providers.install_state import InstallState
 from solstone.think.providers.state import ProviderState
 
@@ -158,6 +158,32 @@ def test_get_providers_reports_byo_when_split_cloud_providers_share_lane(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["active_lane"]["lane"] == "byo"
+    assert payload["active_lane"]["split"] is False
+
+
+def test_get_providers_reports_none_lane_when_no_engine_selected(
+    settings_env,
+    monkeypatch,
+):
+    journal_path, config = settings_env(
+        {
+            "setup": {"completed_at": "2026-05-23T00:00:00Z"},
+            "env": {},
+            "providers": {"contexts": {}, "models": {}},
+        }
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.state.local_runtime_ready", lambda: False
+    )
+    client, _journal_path = _settings_client_with_journal(
+        lambda: (journal_path, config)
+    )
+
+    response = client.get("/app/thinking/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["active_lane"]["lane"] == NO_BRAIN_PROVIDER
     assert payload["active_lane"]["split"] is False
 
 
@@ -549,6 +575,7 @@ def test_effective_contexts_show_local_resolution_differences(
     cloud_pin = effective_contexts["talent.cloud.pin"]
     assert cloud_pin["interface"] == "generate"
     assert cloud_pin["provider"] == "local"
+    assert cloud_pin["model"] == LOCAL_MODEL
     assert cloud_pin["differs_from_raw"] is True
     blank_pin = effective_contexts["talent.local.blank"]
     assert blank_pin["provider"] == "local"
@@ -566,6 +593,10 @@ def test_ai_readiness_context_routes_use_effective_local_route(
     config["providers"]["contexts"]["talent.cloud.pin"] = {
         "provider": "google",
         "model": "gemini-flash-lite-latest",
+    }
+    config["providers"]["contexts"]["talent.local.blank"] = {
+        "provider": "local",
+        "model": "",
     }
     _write_config(journal_path, config)
 
@@ -586,7 +617,7 @@ def test_ai_readiness_context_routes_use_effective_local_route(
 
     assert response.status_code == 200
     context_routes = response.get_json()["ai_readiness"]["context_routes"]
-    assert any(route["provider"] == "local" for route in context_routes)
+    assert {route["provider"] for route in context_routes} == {"local"}
 
 
 def test_get_providers_ai_readiness_surfaces_gpu_probe_failed_from_inspect(

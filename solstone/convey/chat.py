@@ -39,6 +39,7 @@ from solstone.apps.chat.copy import (
     CHAT_SUPPORT_SUBMIT_AMBIGUOUS,
     CHAT_SUPPORT_SUBMIT_FAILED,
     CHAT_SUPPORT_SUBMIT_FILED_FORMAT,
+    CHAT_THINKING_ENGINE_NOT_CHOSEN,
 )
 from solstone.apps.support.tools import support_attach, support_create, support_reply
 from solstone.convey.chat_sources import parse_sol_sources
@@ -555,6 +556,12 @@ def _proxy_progress(message: dict[str, Any]) -> None:
     _emit_cortex_event(message["event"], **fields)
 
 
+def _no_thinking_engine_chosen() -> bool:
+    from solstone.think.models import no_thinking_engine_chosen
+
+    return no_thinking_engine_chosen()
+
+
 def compose_honest_degradation(
     settings: ProcessingSettings,
     backlog: SegmentBacklog,
@@ -571,15 +578,22 @@ def compose_honest_degradation(
     fire requires pending > 0; it is derived from the real backlog read, never
     fabricated.
     """
-    if settings.mode != "deferred":
+    no_engine = _no_thinking_engine_chosen()
+    if not no_engine and settings.mode != "deferred":
         return None
     if backlog.errors:
-        return None
+        return CHAT_THINKING_ENGINE_NOT_CHOSEN if no_engine else None
     anchor_day = queried_day if queried_day is not None else _today_day()
     completion = backlog.per_day.get(anchor_day)
     if completion is None:
-        return None
+        return CHAT_THINKING_ENGINE_NOT_CHOSEN if no_engine else None
     pending = completion.not_sensed + completion.not_thought
+    if no_engine:
+        if pending > 0:
+            return (
+                f"{CHAT_THINKING_ENGINE_NOT_CHOSEN} {format_awaiting_analysis(pending)}"
+            )
+        return CHAT_THINKING_ENGINE_NOT_CHOSEN
     if pending <= 0:
         return None
     return f"{CHAT_DEFERRED_NOT_ANALYZED} {format_awaiting_analysis(pending)}"

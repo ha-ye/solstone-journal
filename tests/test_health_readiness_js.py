@@ -76,6 +76,7 @@ def test_health_readiness_js_semantic_key_glance_and_grouping():
         )
         for code, provider, model in (
             ("provider_key_missing", "anthropic", "claude-test"),
+            ("thinking_engine_not_chosen", "none", ""),
             ("provider_quota_exceeded", "openai", "gpt-test"),
             ("local_model_missing", "local", "qwen-test"),
             ("local_server_unhealthy", "local", "qwen-test"),
