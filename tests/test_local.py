@@ -490,6 +490,53 @@ def test_prepare_local_schema_bounds_arrays_only_and_preserves_input():
     assert found == set()
 
 
+def test_prepare_local_schema_skips_json_literals_and_bounds_schema_nodes():
+    provider = _provider()
+    schema = {
+        "type": "object",
+        "properties": {
+            "literal": {
+                "enum": [
+                    {"type": "array", "pattern": r"^\d+$"},
+                ],
+            },
+            "fixed": {
+                "const": {"type": "array", "pattern": r"^\d+$"},
+            },
+            "code": {"type": "string", "pattern": r"^\d+$"},
+            "type": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+    prepared = provider._prepare_local_schema(schema)
+
+    assert prepared["properties"]["literal"]["enum"] == [
+        {"type": "array", "pattern": r"^\d+$"},
+    ]
+    assert "maxItems" not in prepared["properties"]["literal"]["enum"][0]
+    assert prepared["properties"]["fixed"]["const"] == {
+        "type": "array",
+        "pattern": r"^\d+$",
+    }
+    assert "maxItems" not in prepared["properties"]["fixed"]["const"]
+    assert prepared["properties"]["code"]["pattern"] == "^[0-9]+$"
+    assert prepared["properties"]["type"]["maxItems"] == 192
+
+
+def test_prepare_local_schema_bounds_array_schema_with_enum():
+    provider = _provider()
+    schema = {
+        "type": "array",
+        "enum": [["a"], ["b"]],
+        "items": {"type": "string"},
+    }
+
+    prepared = provider._prepare_local_schema(schema)
+
+    assert prepared["maxItems"] == 192
+    assert prepared["enum"] == [["a"], ["b"]]
+
+
 def test_run_generate_preserves_non_pattern_backslash_d(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(

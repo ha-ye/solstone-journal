@@ -180,7 +180,8 @@ def _prepare_local_schema(schema: dict) -> dict:
     Rewrites `\\d` to `[0-9]` in every schema `pattern`, because llama.cpp does
     not support that regex shorthand. Adds maxItems to array nodes, because
     bounded arrays force closure before Qwen can repeat entries to the context
-    wall. Deep-copies so the caller's schema is never mutated.
+    wall. Does not recurse into enum/const values, because those are JSON
+    literals, not schemas. Deep-copies so the caller's schema is never mutated.
     """
     prepared = copy.deepcopy(schema)
 
@@ -189,16 +190,14 @@ def _prepare_local_schema(schema: dict) -> dict:
             if isinstance(node.get("pattern"), str):
                 node["pattern"] = node["pattern"].replace("\\d", "[0-9]")
             node_type = node.get("type")
-            if (
-                "enum" not in node
-                and "maxItems" not in node
-                and (
-                    node_type == "array"
-                    or (isinstance(node_type, list) and "array" in node_type)
-                )
+            if "maxItems" not in node and (
+                node_type == "array"
+                or (isinstance(node_type, list) and "array" in node_type)
             ):
                 node["maxItems"] = _LOCAL_SCHEMA_MAX_ITEMS
-            for value in node.values():
+            for key, value in node.items():
+                if key in {"const", "enum"}:
+                    continue
                 _walk(value)
         elif isinstance(node, list):
             for item in node:
