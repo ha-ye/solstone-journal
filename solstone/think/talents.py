@@ -1413,7 +1413,8 @@ async def _execute_with_tools(
 
             completed_at_ms = now_ms()
             runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
-            # No cogitate talent declares JSON output/schema today; if one does, mirror the generate-path terminal schema gate.
+            # No cogitate talent declares JSON output or a schema today; if one
+            # does, mirror the generate-path terminal schema gate.
             schema_clean = _output_valid_for_schema(
                 result,
                 config.get("output"),

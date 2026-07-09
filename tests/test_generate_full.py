@@ -546,6 +546,85 @@ def test_no_output_does_not_log_day_ok(tmp_path, monkeypatch):
     assert "talent blank_day_gen ok" not in log_text
 
 
+def test_schema_invalid_does_not_log_day_ok(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.talents")
+    copy_day(tmp_path, monkeypatch)
+
+    import solstone.think.talent as talent
+
+    monkeypatch.setattr(talent, "TALENT_DIR", tmp_path)
+    _write_generator_file(
+        tmp_path,
+        "schema_invalid_day_gen",
+        {
+            "type": "generate",
+            "schedule": "daily",
+            "priority": 10,
+            "output": "json",
+            "schema": "schema_invalid_day_gen.schema.json",
+            "load": {"transcripts": True, "percepts": True},
+        },
+    )
+    _write_schema_file(
+        tmp_path,
+        "schema_invalid_day_gen.schema.json",
+        {
+            "type": "object",
+            "required": ["summary"],
+            "properties": {"summary": {"type": "string"}},
+        },
+    )
+
+    from solstone.think import models
+
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda *a, **k: {
+            "text": '{"summary": 42}',
+            "usage": {"input_tokens": 1, "output_tokens": 3},
+            "schema_validation": {
+                "valid": False,
+                "errors": [
+                    {
+                        "path": "/summary",
+                        "constraint": "type",
+                        "message": "42 is not of type 'string'",
+                    }
+                ],
+            },
+        },
+    )
+    monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    events = run_generator_with_config(
+        mod,
+        {
+            "name": "schema_invalid_day_gen",
+            "day": "20240101",
+            "output": "json",
+            "provider": "google",
+            "model": "gemini-2.0-flash",
+        },
+        monkeypatch,
+    )
+
+    error_events = [e for e in events if e["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "schema_invalid"
+    assert [e for e in events if e["event"] == "finish"] == []
+
+    task_log = tmp_path / "chronicle" / "20240101" / "task_log.txt"
+    log_text = task_log.read_text(encoding="utf-8") if task_log.exists() else ""
+    assert "talent schema_invalid_day_gen ok" not in log_text
+
+    output_path = (
+        tmp_path / "chronicle" / "20240101" / "talents" / "schema_invalid_day_gen.json"
+    )
+    assert not output_path.exists()
+
+
 def test_execute_generate_blank_without_output_path_still_finishes(
     tmp_path, monkeypatch
 ):
