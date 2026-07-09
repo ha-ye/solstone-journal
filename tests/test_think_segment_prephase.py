@@ -178,10 +178,35 @@ def test_daily_health_log_keeps_segment_events_out(journal_copy, monkeypatch):
     ]
 
 
+def _forbid_slot_discovery(monkeypatch, mod):
+    def _unreachable() -> int:
+        raise AssertionError("slot discovery must not run for non-local defaults")
+
+    monkeypatch.setattr(mod, "read_server_parallel_slots", _unreachable)
+
+
+def _pin_describe_non_local(monkeypatch, mod):
+    """Pin the describe default to its CPU formula, independent of host state."""
+    monkeypatch.setattr(mod, "_describe_uses_bundled_local", lambda: False)
+    _forbid_slot_discovery(monkeypatch, mod)
+
+
+def _pin_segments_non_local(monkeypatch, mod):
+    """Pin the segment default to its CPU formula, independent of host state.
+
+    These tests run against tmp journals with no provider config, so the
+    predicate would otherwise resolve through host artifact state.
+    """
+    monkeypatch.setattr(mod, "_segment_work_uses_bundled_local", lambda: False)
+    _forbid_slot_discovery(monkeypatch, mod)
+
+
 def test_sense_repair_prephase_uses_default_describe_jobs(journal_copy, monkeypatch):
     mod = importlib.import_module("solstone.think.thinking")
     bounded_calls = []
     daily_called = []
+
+    _pin_describe_non_local(monkeypatch, mod)
 
     monkeypatch.setattr(mod.os, "cpu_count", lambda: 16)
     assert mod._default_describe_jobs() == 4
@@ -234,6 +259,7 @@ def test_daily_segment_prephase_timeout_is_nonfatal(journal_copy, monkeypatch):
         return (5, 0, [], set())
 
     _patch_main_runtime(monkeypatch)
+    _pin_describe_non_local(monkeypatch, mod)
     monkeypatch.setattr(mod.os, "cpu_count", lambda: 16)
     monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded)
     monkeypatch.setattr(mod, "run_command", fake_command)
@@ -443,6 +469,7 @@ def test_segment_health_log_receives_segment_talent_events(tmp_path, monkeypatch
     assert any(segment["key"] == ACTIVE_SEGMENT for segment in segments)
 
     _patch_main_runtime(monkeypatch)
+    _pin_segments_non_local(monkeypatch, think)
     monkeypatch.setattr(
         think,
         "get_talent_configs",
@@ -1360,6 +1387,7 @@ def test_segments_mode_zero_segment_noop(tmp_path, monkeypatch, caplog):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     _patch_main_runtime(monkeypatch)
+    _pin_segments_non_local(monkeypatch, think)
     monkeypatch.setattr("sys.argv", ["sol think", "--segments", "--day", day])
 
     caplog.set_level(logging.INFO)
@@ -1368,3 +1396,111 @@ def test_segments_mode_zero_segment_noop(tmp_path, monkeypatch, caplog):
 
     assert excinfo.value.code == 0
     assert f"No segments found for {day}" in caplog.text
+
+
+def _patch_segment_run(monkeypatch, think, journal):
+    """Seed a runnable segment and stub the talent machinery around it."""
+    _seed_segment(journal, DAY, ACTIVE_SEGMENT)
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(
+        think,
+        "get_talent_configs",
+        lambda schedule=None, **kwargs: _segment_configs("sense"),
+    )
+    monkeypatch.setattr(
+        think,
+        "cortex_request",
+        lambda prompt, name, config=None, **kwargs: f"agent-{name}",
+    )
+    monkeypatch.setattr(
+        think,
+        "wait_for_uses",
+        lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
+    )
+
+
+def test_segments_default_local_slot_fallback_logs_once_across_call_sites(
+    tmp_path, monkeypatch, caplog
+):
+    """Discovery failure yields the floor value and logs the fallback once.
+
+    ``--segments`` calls ``_default_segment_workers()`` twice in one process:
+    once in argument validation and once in the run path. The tmp journal has
+    no ``health/local.port``, so discovery fails without any network I/O.
+    """
+    from solstone.think import thinking as think
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    _patch_segment_run(monkeypatch, think, journal)
+    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think.os, "cpu_count", lambda: 12)
+    monkeypatch.setattr("sys.argv", ["sol think", "--segments", "--day", DAY])
+
+    assert not (journal / "health" / "local.port").exists()
+
+    derived = []
+    original_default = think._default_segment_workers
+
+    def spy_default() -> int:
+        value = original_default()
+        derived.append(value)
+        return value
+
+    monkeypatch.setattr(think, "_default_segment_workers", spy_default)
+
+    caplog.set_level(logging.INFO)
+    with pytest.raises(SystemExit) as excinfo:
+        think.main()
+    assert excinfo.value.code == 0
+
+    # Validation (thinking.py:4161) and the run path (:4270) both call it.
+    assert derived == [1, 1]
+
+    messages = [record.getMessage() for record in caplog.records]
+    fallbacks = [m for m in messages if "local_server_parallel_slots fallback" in m]
+    assert fallbacks == [
+        "local_server_parallel_slots fallback slots=1 port=None "
+        "context_tokens=None source=default"
+    ]
+
+    caps = [m for m in messages if "default_segment_workers capped" in m]
+    assert caps == [
+        "default_segment_workers capped provider=local slots=1 formula=6 derived=1"
+    ]
+
+
+def test_segments_explicit_segment_workers_bypasses_local_default_at_call_site(
+    tmp_path, monkeypatch
+):
+    """An explicit --segment-workers wins over a smaller derived default."""
+    from solstone.think import thinking as think
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    _patch_segment_run(monkeypatch, think, journal)
+
+    # The derived default would be 1; the CLI asks for 6.
+    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "read_server_parallel_slots", lambda: 1)
+    monkeypatch.setattr(think.os, "cpu_count", lambda: 12)
+    assert think._default_segment_workers() == 1
+
+    observed = []
+    original_batch = think._run_segment_repair_batch
+
+    def spy_batch(**kwargs):
+        observed.append(kwargs["segment_workers"])
+        return original_batch(**kwargs)
+
+    monkeypatch.setattr(think, "_run_segment_repair_batch", spy_batch)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["sol think", "--segments", "--day", DAY, "--segment-workers", "6"],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        think.main()
+
+    assert excinfo.value.code == 0
+    assert observed == [6]

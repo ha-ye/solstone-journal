@@ -8,6 +8,7 @@ import base64
 import copy
 import importlib
 import json
+import logging
 import sys
 import types
 from pathlib import Path
@@ -1622,3 +1623,115 @@ def test_local_server_connect_linux_health_shape_uses_logical_model(monkeypatch)
 
     assert info.model_id == LOCAL_MODEL
     assert info.served_model_id == LOCAL_MODEL
+
+
+# --- read_server_parallel_slots ---------------------------------------------
+
+
+def _local_journal(monkeypatch, tmp_path: Path) -> Path:
+    journal = tmp_path / "journal"
+    (journal / "health").mkdir(parents=True)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    return journal
+
+
+def test_read_server_parallel_slots_prefers_live_props(monkeypatch, tmp_path):
+    from solstone.think.providers import local_server
+
+    journal = _local_journal(monkeypatch, tmp_path)
+    (journal / "health" / "local.port").write_text("2468")
+    # A launch-time context window that maps to the floor tier's single slot.
+    (journal / "health" / "local.ctx").write_text(
+        str(local_server._FLOOR_TIER.context_tokens)
+    )
+    monkeypatch.setattr(
+        local_server,
+        "fetch_props",
+        lambda port, timeout_s=1.0: {"n_ctx": 32768, "total_slots": 2},
+    )
+
+    # /props is ground truth; it wins over the persisted tier.
+    assert local_server.read_server_parallel_slots() == 2
+
+
+def test_read_server_parallel_slots_no_port_returns_floor(
+    monkeypatch, tmp_path, caplog
+):
+    from solstone.think.providers import local_server
+
+    _local_journal(monkeypatch, tmp_path)
+
+    def _no_network(port, timeout_s=1.0):
+        raise AssertionError("fetch_props must not run without a port")
+
+    monkeypatch.setattr(local_server, "fetch_props", _no_network)
+
+    caplog.set_level(logging.INFO)
+    assert local_server.read_server_parallel_slots() == 1
+    assert (
+        "local_server_parallel_slots fallback slots=1 port=None "
+        "context_tokens=None source=default" in caplog.text
+    )
+
+
+@pytest.mark.parametrize("slots", [1, 2])
+def test_read_server_parallel_slots_falls_back_to_launched_tier(
+    monkeypatch, tmp_path, slots
+):
+    from solstone.think.providers import local_server
+
+    tier = local_server._FLOOR_TIER if slots == 1 else local_server._CAPABLE_TIER
+    journal = _local_journal(monkeypatch, tmp_path)
+    (journal / "health" / "local.port").write_text("2468")
+    (journal / "health" / "local.ctx").write_text(str(tier.context_tokens))
+    monkeypatch.setattr(local_server, "fetch_props", lambda port, timeout_s=1.0: None)
+
+    assert local_server.read_server_parallel_slots() == tier.parallel_slots
+
+
+def test_read_server_parallel_slots_unknown_context_window_returns_floor(
+    monkeypatch, tmp_path
+):
+    from solstone.think.providers import local_server
+
+    journal = _local_journal(monkeypatch, tmp_path)
+    (journal / "health" / "local.port").write_text("2468")
+    (journal / "health" / "local.ctx").write_text("99999")
+    monkeypatch.setattr(local_server, "fetch_props", lambda port, timeout_s=1.0: None)
+
+    assert local_server.read_server_parallel_slots() == 1
+
+
+@pytest.mark.parametrize("props", [{}, {"total_slots": 0}, {"total_slots": "many"}])
+def test_read_server_parallel_slots_rejects_unusable_total_slots(
+    monkeypatch, tmp_path, props
+):
+    from solstone.think.providers import local_server
+
+    journal = _local_journal(monkeypatch, tmp_path)
+    (journal / "health" / "local.port").write_text("2468")
+    monkeypatch.setattr(local_server, "fetch_props", lambda port, timeout_s=1.0: props)
+
+    assert local_server.read_server_parallel_slots() == 1
+
+
+def test_read_server_parallel_slots_is_memoized_and_resettable(monkeypatch, tmp_path):
+    from solstone.think.providers import local_server
+
+    journal = _local_journal(monkeypatch, tmp_path)
+    (journal / "health" / "local.port").write_text("2468")
+    calls = []
+
+    def counting_props(port, timeout_s=1.0):
+        calls.append(port)
+        return {"total_slots": 2}
+
+    monkeypatch.setattr(local_server, "fetch_props", counting_props)
+
+    assert local_server.read_server_parallel_slots() == 2
+    assert local_server.read_server_parallel_slots() == 2
+    assert len(calls) == 1
+
+    local_server.reset_parallel_slots_cache()
+    assert local_server.read_server_parallel_slots() == 2
+    assert len(calls) == 2

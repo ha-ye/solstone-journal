@@ -150,6 +150,23 @@ def pytest_sessionfinish(session, exitstatus):
 
 
 @pytest.fixture(autouse=True)
+def _reset_local_slot_sizing_state():
+    """Keep per-process slot discovery and cap-log dedupe from leaking across tests."""
+
+    def _reset() -> None:
+        local_server = sys.modules.get("solstone.think.providers.local_server")
+        if local_server is not None:
+            local_server.reset_parallel_slots_cache()
+        thinking = sys.modules.get("solstone.think.thinking")
+        if thinking is not None:
+            thinking.reset_default_cap_log_state()
+
+    _reset()
+    yield
+    _reset()
+
+
+@pytest.fixture(autouse=True)
 def _default_local_vulkan_gpu():
     """Keep local-provider readiness deterministic on GPU-less test hosts."""
     from solstone.think.providers import local_vulkan

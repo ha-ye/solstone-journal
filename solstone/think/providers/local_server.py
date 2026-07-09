@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -160,6 +161,73 @@ def read_local_context_window() -> int | None:
         return None
 
 
+# Slot count assumed when no launched tier can be identified. Not a tier value:
+# the mlx-vlm server on darwin exposes neither /props nor a ServerTier, and a
+# server that never launched has no slots at all.
+_UNKNOWN_SLOTS = 1
+
+_PARALLEL_SLOTS_CACHE: int | None = None
+
+
+def _extract_total_slots(props: dict[str, Any]) -> int | None:
+    """Positive ``total_slots`` from a /props body, else None."""
+    try:
+        slots = int(props["total_slots"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return slots if slots > 0 else None
+
+
+def _slots_from_launched_tier(context_tokens: int | None) -> int | None:
+    """Reverse-map a persisted context window onto its launching tier's slots."""
+    for tier in (_FLOOR_TIER, _CAPABLE_TIER):
+        if context_tokens == tier.context_tokens:
+            return tier.parallel_slots
+    return None
+
+
+def _discover_parallel_slots() -> int:
+    port = read_service_port(_SERVICE_NAME)
+    props = fetch_props(port) if port is not None else None
+    if props is not None:
+        slots = _extract_total_slots(props)
+        if slots is not None:
+            return slots
+
+    context_tokens = read_local_context_window()
+    slots = _slots_from_launched_tier(context_tokens)
+    source = "local_ctx" if slots is not None else "default"
+    slots = slots if slots is not None else _UNKNOWN_SLOTS
+    logging.info(
+        "local_server_parallel_slots fallback slots=%d port=%s "
+        "context_tokens=%s source=%s",
+        slots,
+        port,
+        context_tokens,
+        source,
+    )
+    return slots
+
+
+def read_server_parallel_slots() -> int:
+    """Return the bundled local server's parallel-slot count.
+
+    Prefers live ``/props`` ``total_slots``; falls back to the tier implied by
+    the context window persisted at launch, then to ``_UNKNOWN_SLOTS``.
+    Discovered once per process. Never raises; always returns >= 1.
+    """
+    global _PARALLEL_SLOTS_CACHE
+    if _PARALLEL_SLOTS_CACHE is None:
+        _PARALLEL_SLOTS_CACHE = _discover_parallel_slots()
+    return _PARALLEL_SLOTS_CACHE
+
+
+def reset_parallel_slots_cache() -> None:
+    """Clear the per-process slot-discovery memo."""
+    global _PARALLEL_SLOTS_CACHE
+    _PARALLEL_SLOTS_CACHE = None
+
+
 def _resolve_served_model_id(health_body: dict[str, Any] | None) -> str | None:
     """Served/wire id from the /health body. None signals present-but-invalid."""
     if not isinstance(health_body, dict) or "loaded_model" not in health_body:
@@ -221,6 +289,8 @@ __all__ = [
     "probe_state",
     "read_local_context_window",
     "read_server_context_window",
+    "read_server_parallel_slots",
+    "reset_parallel_slots_cache",
     "select_server_tier",
     "write_local_context_window",
 ]
