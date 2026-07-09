@@ -83,7 +83,9 @@ vertex_app = typer.Typer(help="Vertex credentials.")
 app.add_typer(vertex_app, name="vertex-credentials")
 local_app = typer.Typer(help="Local model readiness and setup.")
 app.add_typer(local_app, name="local")
-scout_app = typer.Typer(help="Scout program — a Gemini key we provision on your behalf.")
+scout_app = typer.Typer(
+    help="Scout program — a Gemini key we provision on your behalf."
+)
 app.add_typer(scout_app, name="scout")
 
 
