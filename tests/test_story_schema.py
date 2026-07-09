@@ -6,7 +6,8 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
-from solstone.talent.story import ALLOWED_RESOLUTIONS
+from solstone.talent.story import ALLOWED_RELATION_KINDS, ALLOWED_RESOLUTIONS
+from solstone.think.schema_bounds import unbounded_nodes
 from solstone.think.talent import get_talent
 from tests.test_story_hook import _valid_result
 
@@ -41,6 +42,7 @@ def test_story_schema_mirrors_hook_requirements():
         "commitments",
         "closures",
         "decisions",
+        "relations",
     }
     assert set(properties["commitments"]["items"]["required"]) == {
         "owner",
@@ -63,8 +65,20 @@ def test_story_schema_mirrors_hook_requirements():
     assert set(properties["decisions"]["items"]["required"]) == {
         "owner",
         "action",
+        "counterparty",
         "context",
     }
+    assert set(properties["relations"]["items"]["required"]) == {
+        "from",
+        "to",
+        "kind",
+        "note",
+        "quote",
+    }
+    assert (
+        set(properties["relations"]["items"]["properties"]["kind"]["enum"])
+        == ALLOWED_RELATION_KINDS
+    )
 
 
 def test_story_hook_fixtures_validate_against_schema():
@@ -74,3 +88,26 @@ def test_story_hook_fixtures_validate_against_schema():
     errors = list(Draft202012Validator(schema).iter_errors(payload))
 
     assert errors == []
+
+
+def test_story_schema_rejects_unknown_relation_kind():
+    schema = _load_story_schema()
+    payload = json.loads(
+        _valid_result(
+            relations=[
+                {
+                    "from": "Mina",
+                    "to": "Ravi",
+                    "kind": "mentors",
+                    "note": "Mina mentors Ravi.",
+                    "quote": "Mina mentors Ravi.",
+                }
+            ]
+        )
+    )
+
+    assert not Draft202012Validator(schema).is_valid(payload)
+
+
+def test_story_schema_has_no_unbounded_nodes():
+    assert unbounded_nodes(_load_story_schema()) == []

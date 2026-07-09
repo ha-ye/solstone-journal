@@ -72,9 +72,11 @@ def _valid_result(**overrides) -> str:
             {
                 "owner": "Team",
                 "action": "move the launch review to Tuesday",
+                "counterparty": None,
                 "context": "The group aligned on Tuesday after checking calendars.",
             }
         ],
+        "relations": [],
     }
     payload.update(overrides)
     return json.dumps(payload)
@@ -110,12 +112,14 @@ def test_story_hook_parses_and_writes(tmp_path, monkeypatch):
     assert record["commitments"][0]["owner"] == "Mina"
     assert record["closures"][0]["resolution"] == "sent"
     assert record["decisions"][0]["owner"] == "Team"
+    assert record["relations"] == []
     assert record["edits"][-1]["actor"] == "story"
     assert record["edits"][-1]["fields"] == [
         "story",
         "commitments",
         "closures",
         "decisions",
+        "relations",
     ]
 
 
@@ -138,6 +142,7 @@ def test_story_hook_empty_arrays(tmp_path, monkeypatch):
     assert record["commitments"] == []
     assert record["closures"] == []
     assert record["decisions"] == []
+    assert record["relations"] == []
 
 
 def test_story_hook_bad_resolution_skipped(tmp_path, monkeypatch, caplog):
@@ -217,6 +222,7 @@ def test_story_hook_missing_required_field_skipped(tmp_path, monkeypatch, caplog
                 {
                     "owner": "Team",
                     "action": "move the launch review to Tuesday",
+                    "counterparty": None,
                     "context": "Valid decision.",
                 },
                 {
@@ -282,8 +288,31 @@ def test_story_hook_resolves_entities(tmp_path, monkeypatch):
                 {
                     "owner": "Mina Lee",
                     "action": "move the launch review to Tuesday",
+                    "counterparty": "Ravi",
                     "context": "Valid decision.",
-                }
+                },
+                {
+                    "owner": "Team",
+                    "action": "keep the review owner unchanged",
+                    "counterparty": None,
+                    "context": "Decision without a counterparty.",
+                },
+            ],
+            relations=[
+                {
+                    "from": "Mina",
+                    "to": "Ravi",
+                    "kind": "works-with",
+                    "note": "",
+                    "quote": "Mina and Ravi will handle the deck.",
+                },
+                {
+                    "from": "Mina",
+                    "to": "Nobody Visible",
+                    "kind": "knows",
+                    "note": "Mina mentioned knowing someone outside the tracked entities.",
+                    "quote": None,
+                },
             ],
         ),
         _context(tmp_path),
@@ -297,8 +326,62 @@ def test_story_hook_resolves_entities(tmp_path, monkeypatch):
     assert record["closures"][0]["owner_entity_id"] == "ravi_shah"
     assert record["closures"][0]["counterparty_entity_id"] == "mina_lee"
     assert record["decisions"][0]["owner_entity_id"] == "mina_lee"
+    assert record["decisions"][0]["counterparty"] == "Ravi"
+    assert record["decisions"][0]["counterparty_entity_id"] == "ravi_shah"
+    assert record["decisions"][1]["counterparty"] is None
+    assert record["decisions"][1]["counterparty_entity_id"] is None
+    assert record["relations"][0]["from_entity_id"] == "mina_lee"
+    assert record["relations"][0]["to_entity_id"] == "ravi_shah"
+    assert record["relations"][1]["to"] == "Nobody Visible"
+    assert record["relations"][1]["to_entity_id"] is None
+    assert record["relations"][1]["note"] == (
+        "Mina mentioned knowing someone outside the tracked entities."
+    )
+    assert record["relations"][1]["quote"] is None
     assert record["commitments"][0]["owner"] == "Mina"
     assert record["closures"][0]["counterparty"] == "Mina"
+
+
+def test_story_hook_skips_invalid_relations(tmp_path, monkeypatch, caplog):
+    from solstone.talent.story import post_process
+    from solstone.think.activities import append_activity_record
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    append_activity_record("work", "20260418", _activity_record())
+
+    post_process(
+        _valid_result(
+            relations=[
+                {
+                    "from": "Mina",
+                    "to": "Ravi",
+                    "kind": "works-with",
+                    "note": "",
+                    "quote": "They are paired on the deck.",
+                },
+                {
+                    "from": "Mina",
+                    "to": "Ravi",
+                    "kind": "other",
+                    "note": " ",
+                    "quote": "They have a custom relationship.",
+                },
+                {
+                    "from": "Mina",
+                    "to": "Ravi",
+                    "kind": "mentors",
+                    "note": "Mina mentors Ravi.",
+                    "quote": "Mina mentors Ravi.",
+                },
+            ]
+        ),
+        _context(tmp_path),
+    )
+
+    record = _load_record("work", "20260418")
+    assert [relation["kind"] for relation in record["relations"]] == ["works-with"]
+    assert "other kind requires note" in caplog.text
+    assert "invalid kind 'mentors'" in caplog.text
 
 
 def test_story_hook_idempotent_rerun(tmp_path, monkeypatch):
@@ -308,9 +391,23 @@ def test_story_hook_idempotent_rerun(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     append_activity_record("work", "20260418", _activity_record())
 
-    post_process(_valid_result(), _context(tmp_path))
+    post_process(
+        _valid_result(
+            relations=[
+                {
+                    "from": "Mina",
+                    "to": "Ravi",
+                    "kind": "works-with",
+                    "note": "",
+                    "quote": "Mina and Ravi owned the first pass.",
+                }
+            ]
+        ),
+        _context(tmp_path),
+    )
     first = _load_record("work", "20260418")
     assert len(first["edits"]) == 1
+    assert first["relations"][0]["kind"] == "works-with"
 
     post_process(
         _valid_result(
@@ -322,7 +419,17 @@ def test_story_hook_idempotent_rerun(tmp_path, monkeypatch):
                 {
                     "owner": "Lead",
                     "action": "ship the patch on Wednesday",
+                    "counterparty": None,
                     "context": "The second pass reached a more specific plan.",
+                }
+            ],
+            relations=[
+                {
+                    "from": "Lead",
+                    "to": "Patch",
+                    "kind": "created",
+                    "note": "",
+                    "quote": None,
                 }
             ],
         ),
@@ -342,11 +449,31 @@ def test_story_hook_idempotent_rerun(tmp_path, monkeypatch):
         {
             "owner": "Lead",
             "action": "ship the patch on Wednesday",
+            "counterparty": None,
             "context": "The second pass reached a more specific plan.",
             "owner_entity_id": None,
+            "counterparty_entity_id": None,
+        }
+    ]
+    assert second["relations"] == [
+        {
+            "from": "Lead",
+            "to": "Patch",
+            "kind": "created",
+            "note": "",
+            "quote": None,
+            "from_entity_id": None,
+            "to_entity_id": None,
         }
     ]
     assert len(second["edits"]) == 2
+    assert second["edits"][-1]["fields"] == [
+        "story",
+        "commitments",
+        "closures",
+        "decisions",
+        "relations",
+    ]
 
 
 def test_story_hook_normalizes_topics(tmp_path, monkeypatch):

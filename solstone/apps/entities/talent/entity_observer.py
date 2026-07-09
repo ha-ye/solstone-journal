@@ -15,8 +15,10 @@ from __future__ import annotations
 import json
 import logging
 
+from solstone.talent.story import ALLOWED_RELATION_KINDS
 from solstone.think.entities.context import assemble_observer_context
 from solstone.think.entities.loading import detected_entities_path, load_entities
+from solstone.think.entities.matching import find_matching_entity
 from solstone.think.entities.observations import record_observation_ops
 from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import now_ms
@@ -35,7 +37,14 @@ def pre_process(context: dict) -> dict | None:
 
 
 def _empty_counts() -> dict[str, int]:
-    return {"update": 0, "add": 0, "drop": 0, "keep": 0, "skipped": 0}
+    return {
+        "update": 0,
+        "add": 0,
+        "drop": 0,
+        "keep": 0,
+        "skipped": 0,
+        "relation_unresolved": 0,
+    }
 
 
 def _write_outcome(
@@ -65,35 +74,88 @@ def _target_quote(value: object) -> str | None:
     return value or None
 
 
-def _clean_operation(item: object, seen_indexes: set[int]) -> tuple[dict | None, bool]:
+def _clean_relation(
+    value: object,
+    op: str,
+    entities: list[dict],
+) -> tuple[dict | None, str | None]:
+    if value is None or op in {"drop", "keep"}:
+        return None, None
+    if not isinstance(value, dict):
+        logger.warning("entity_observer: invalid relation payload for %s", op)
+        return None, "skipped"
+
+    kind = value.get("kind")
+    target_name = value.get("target_name")
+    note = value.get("note")
+    if (
+        not isinstance(kind, str)
+        or not isinstance(target_name, str)
+        or not isinstance(note, str)
+    ):
+        logger.warning("entity_observer: invalid relation fields for %s", op)
+        return None, "skipped"
+    if kind not in ALLOWED_RELATION_KINDS:
+        logger.warning("entity_observer: invalid relation kind %r", kind)
+        return None, "skipped"
+    if kind == "other" and not note.strip():
+        logger.warning("entity_observer: relation kind 'other' requires note")
+        return None, "skipped"
+
+    match = find_matching_entity(target_name, entities, fuzzy_threshold=90)
+    if not match:
+        logger.warning(
+            "entity_observer: unresolved relation target %r for %s op",
+            target_name,
+            op,
+        )
+        return None, "relation_unresolved"
+
+    return {
+        "kind": kind,
+        "target_entity_id": match["id"],
+        "target_name": target_name,
+        "note": note,
+    }, None
+
+
+def _clean_operation(
+    item: object, seen_indexes: set[int], entities: list[dict]
+) -> tuple[dict | None, str | None]:
     if not isinstance(item, dict):
-        return None, True
+        return None, "skipped"
 
     op = item.get("op")
     if op == "add":
         content = item.get("content")
         if not isinstance(content, str) or not content.strip():
-            return None, True
-        return {"op": "add", "content": content.strip()}, False
+            return None, "skipped"
+        relation, status = _clean_relation(item.get("relation"), op, entities)
+        if status is not None:
+            return None, status
+        cleaned = {"op": "add", "content": content.strip()}
+        if relation is not None:
+            cleaned["relation"] = relation
+        return cleaned, None
 
     if op not in {"update", "drop", "keep"}:
-        return None, True
+        return None, "skipped"
 
     target_index = _target_index(item.get("target_index"))
     if target_index is None:
-        return None, True
+        return None, "skipped"
     content: str | None = None
     if op == "update":
         raw_content = item.get("content")
         if not isinstance(raw_content, str) or not raw_content.strip():
-            return None, True
+            return None, "skipped"
         content = raw_content.strip()
     raw_quote = item.get("target_quote")
     if raw_quote is not None and not isinstance(raw_quote, str):
-        return None, True
+        return None, "skipped"
     quote = _target_quote(raw_quote)
     if target_index in seen_indexes:
-        return None, True
+        return None, "skipped"
     seen_indexes.add(target_index)
 
     cleaned: dict = {"op": op, "target_index": target_index}
@@ -103,7 +165,13 @@ def _clean_operation(item: object, seen_indexes: set[int]) -> tuple[dict | None,
     if content is not None:
         cleaned["content"] = content
 
-    return cleaned, False
+    relation, status = _clean_relation(item.get("relation"), op, entities)
+    if status is not None:
+        return None, status
+    if relation is not None:
+        cleaned["relation"] = relation
+
+    return cleaned, None
 
 
 def _merge_counts(target: dict[str, int], source: dict[str, int]) -> None:
@@ -138,8 +206,9 @@ def post_process(result: str, context: dict) -> str | None:
             logger.warning("entity_observer: entities is not a list")
             return None
 
+        attached_entities = load_entities(facet)
         valid_entity_ids = {
-            entity.get("id") for entity in load_entities(facet) if entity.get("id")
+            entity.get("id") for entity in attached_entities if entity.get("id")
         }
 
         for entry in entities:
@@ -155,6 +224,8 @@ def post_process(result: str, context: dict) -> str | None:
                 counts["skipped"] += len(operations)
                 logger.debug("Skipping entity entry with invalid entity_id: %r", entry)
                 continue
+            # entity_id is enumerated in $observer_context and validated with load_entities(facet).
+            # Name-first would touch assemble_observer_context, prompt numbering, record_observation_ops.
             if entity_id not in valid_entity_ids:
                 counts["skipped"] += len(operations)
                 logger.debug("Skipping unrecognized entity_id: %s", entity_id)
@@ -163,9 +234,11 @@ def post_process(result: str, context: dict) -> str | None:
             clean_ops: list[dict] = []
             seen_indexes: set[int] = set()
             for item in operations:
-                clean_op, skipped = _clean_operation(item, seen_indexes)
-                if skipped:
-                    counts["skipped"] += 1
+                clean_op, status = _clean_operation(
+                    item, seen_indexes, attached_entities
+                )
+                if status is not None:
+                    counts[status] += 1
                     continue
                 if clean_op is not None:
                     clean_ops.append(clean_op)

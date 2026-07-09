@@ -17,6 +17,18 @@ from solstone.think.entities.matching import find_matching_entity
 logger = logging.getLogger(__name__)
 
 ALLOWED_RESOLUTIONS = frozenset({"sent", "done", "signed", "dropped", "deferred"})
+ALLOWED_RELATION_KINDS = frozenset(
+    {
+        "works-with",
+        "works-at",
+        "reports-to",
+        "family-of",
+        "knows",
+        "uses",
+        "created",
+        "other",
+    }
+)
 
 
 def _normalize_topics(value: Any) -> list[str] | None:
@@ -96,6 +108,7 @@ def post_process(result: str, context: dict) -> str:
     commitments = data.get("commitments")
     closures = data.get("closures")
     decisions = data.get("decisions")
+    relations = data.get("relations")
 
     if not isinstance(body, str) or not body.strip():
         logger.warning("story hook: missing body")
@@ -114,6 +127,9 @@ def post_process(result: str, context: dict) -> str:
         return ""
     if not isinstance(decisions, list):
         logger.warning("story hook: missing decisions list")
+        return ""
+    if not isinstance(relations, list):
+        logger.warning("story hook: missing relations list")
         return ""
 
     activity = context.get("activity")
@@ -201,11 +217,66 @@ def post_process(result: str, context: dict) -> str:
                 index,
             )
             continue
+        counterparty = entry.get("counterparty")
+        if counterparty is not None and not isinstance(counterparty, str):
+            logger.warning(
+                "story hook: skipping decision[%d]: invalid counterparty field",
+                index,
+            )
+            continue
         resolved_decision = dict(normalized)
+        resolved_decision["counterparty"] = counterparty
         resolved_decision["owner_entity_id"] = _resolve_entity_id(
             normalized["owner"], entities
         )
+        resolved_decision["counterparty_entity_id"] = (
+            _resolve_entity_id(counterparty, entities)
+            if isinstance(counterparty, str) and counterparty.strip()
+            else None
+        )
         resolved_decisions.append(resolved_decision)
+
+    resolved_relations: list[dict[str, Any]] = []
+    for index, entry in enumerate(relations):
+        if not isinstance(entry, dict):
+            logger.warning("story hook: skipping relation[%d]: expected object", index)
+            continue
+        normalized = _validate_fields(entry, ("from", "to", "kind", "note"))
+        if normalized is None:
+            logger.warning(
+                "story hook: skipping relation[%d]: missing required string field",
+                index,
+            )
+            continue
+        if normalized["kind"] not in ALLOWED_RELATION_KINDS:
+            logger.warning(
+                "story hook: skipping relation[%d]: invalid kind '%s'",
+                index,
+                normalized["kind"],
+            )
+            continue
+        if normalized["kind"] == "other" and not normalized["note"].strip():
+            logger.warning(
+                "story hook: skipping relation[%d]: other kind requires note",
+                index,
+            )
+            continue
+        quote = entry.get("quote")
+        if quote is not None and not isinstance(quote, str):
+            logger.warning(
+                "story hook: skipping relation[%d]: invalid quote field",
+                index,
+            )
+            continue
+        resolved_relation = dict(normalized)
+        resolved_relation["quote"] = quote
+        resolved_relation["from_entity_id"] = _resolve_entity_id(
+            normalized["from"], entities
+        )
+        resolved_relation["to_entity_id"] = _resolve_entity_id(
+            normalized["to"], entities
+        )
+        resolved_relations.append(resolved_relation)
 
     talent_name = context.get("name") or ""
     if not talent_name:
@@ -226,6 +297,7 @@ def post_process(result: str, context: dict) -> str:
         commitments=resolved_commitments,
         closures=resolved_closures,
         decisions=resolved_decisions,
+        relations=resolved_relations,
         actor="story",
         note=None,
     )

@@ -257,13 +257,17 @@ def _target_quote_matches(observation: dict[str, Any], target_quote: Any) -> boo
     return target_quote.strip().casefold() in content.casefold()
 
 
-def _new_observation(content: str, source_day: str | None) -> dict[str, Any]:
+def _new_observation(
+    content: str, source_day: str | None, relation: dict[str, Any] | None = None
+) -> dict[str, Any]:
     observation: dict[str, Any] = {
         "content": content,
         "observed_at": now_ms(),
     }
     if source_day is not None:
         observation["source_day"] = source_day
+    if relation is not None:
+        observation["relation"] = dict(relation)
     return observation
 
 
@@ -284,12 +288,13 @@ def _apply_observation_ops(
             continue
 
         action = op.get("op")
+        relation = op.get("relation")
         if action == "add":
             content = op.get("content")
             if not isinstance(content, str) or not content.strip():
                 counts["skipped"] += 1
                 continue
-            additions.append(_new_observation(content.strip(), source_day))
+            additions.append(_new_observation(content.strip(), source_day, relation))
             counts["add"] += 1
             changed = True
             continue
@@ -322,7 +327,7 @@ def _apply_observation_ops(
         if not isinstance(content, str) or not content.strip():
             counts["skipped"] += 1
             continue
-        updates[target_index] = _new_observation(content.strip(), source_day)
+        updates[target_index] = _new_observation(content.strip(), source_day, relation)
         drops.discard(target_index)
         counts["update"] += 1
         changed = True

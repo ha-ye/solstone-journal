@@ -14,7 +14,7 @@ import pytest
 
 from solstone.apps.timeline.rollup import build_rollup_schema
 from solstone.think.models import SchemaValidationError, generate
-from solstone.think.schema_prep import prepare_provider_schema
+from solstone.think.schema_prep import prepare_provider_schema, unsupported_keyword_hits
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -40,14 +40,16 @@ def bounded_schema() -> dict[str, Any]:
     }
 
 
-def _discover_schemas() -> tuple[dict[str, Any], ...]:
-    discovered: list[dict[str, Any]] = []
+def _discover_schemas() -> tuple[Any, ...]:
+    discovered: list[Any] = []
     for path in sorted((REPO_ROOT / "solstone").glob("**/*.schema.json")):
         schema = json.loads(path.read_text(encoding="utf-8"))
         if isinstance(schema.get("x-journal-contract"), dict):
             continue
-        discovered.append(schema)
-    discovered.append(build_rollup_schema(3))
+        discovered.append(
+            pytest.param(schema, id=path.relative_to(REPO_ROOT).as_posix())
+        )
+    discovered.append(pytest.param(build_rollup_schema(3), id="build_rollup_schema(3)"))
     return tuple(discovered)
 
 
@@ -108,10 +110,88 @@ def test_none_and_unknown_provider_passthrough(
 
 @pytest.mark.parametrize("provider", ["local", "openai", "google", "anthropic"])
 @pytest.mark.parametrize("schema", _discover_schemas())
-def test_current_shipped_schemas_are_byte_identical_after_prep(
+def test_shipped_schemas_prep_to_a_provider_supported_subset(
     schema: dict[str, Any], provider: str
 ) -> None:
-    assert prepare_provider_schema(schema, provider) == schema
+    """Prep strips exactly the provider's unsupported keywords, and nothing else.
+
+    Asserting byte-identity here would pin the suite to "no shipped schema is
+    bounded", which the schema-bounds ratchet is designed to falsify.
+    """
+    original = copy.deepcopy(schema)
+    prepared = prepare_provider_schema(schema, provider)
+
+    assert schema == original
+    assert unsupported_keyword_hits(prepared, provider) == []
+    if unsupported_keyword_hits(schema, provider):
+        assert prepared != schema
+    else:
+        assert prepared == schema
+
+
+# Schemas carrying generation bounds. The schema-bounds ratchet
+# (scripts/check_schema_bounds.py) grows this set; add entries as schemas
+# graduate off its allowlist.
+BOUNDED_SCHEMAS = (
+    "solstone/talent/story.schema.json",
+    "solstone/apps/entities/talent/entity_observer.schema.json",
+)
+
+
+def _load_shipped_schema(relative_path: str) -> dict[str, Any]:
+    return json.loads((REPO_ROOT / relative_path).read_text(encoding="utf-8"))
+
+
+def _keyword_paths(node: Any, keyword: str, path: str = "$") -> list[str]:
+    found: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == keyword:
+                found.append(f"{path}/{key}")
+            found.extend(_keyword_paths(value, keyword, f"{path}/{key}"))
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            found.extend(_keyword_paths(value, keyword, f"{path}[{index}]"))
+    return found
+
+
+@pytest.mark.parametrize("relative_path", BOUNDED_SCHEMAS)
+def test_bounded_schemas_really_carry_bounds(relative_path: str) -> None:
+    """Guards the three tests below from passing vacuously."""
+    schema = _load_shipped_schema(relative_path)
+
+    assert _keyword_paths(schema, "maxLength")
+    assert _keyword_paths(schema, "maxItems")
+
+
+@pytest.mark.parametrize("relative_path", BOUNDED_SCHEMAS)
+def test_bounded_schemas_reach_local_provider_with_bounds_intact(
+    relative_path: str,
+) -> None:
+    schema = _load_shipped_schema(relative_path)
+
+    assert prepare_provider_schema(schema, "local") == schema
+
+
+@pytest.mark.parametrize("provider", ["openai", "google"])
+@pytest.mark.parametrize("relative_path", BOUNDED_SCHEMAS)
+def test_bounded_schemas_lose_only_maxlength_for_openai_and_google(
+    relative_path: str, provider: str
+) -> None:
+    prepared = prepare_provider_schema(_load_shipped_schema(relative_path), provider)
+
+    assert _keyword_paths(prepared, "maxLength") == []
+    assert _keyword_paths(prepared, "maxItems")
+
+
+@pytest.mark.parametrize("relative_path", BOUNDED_SCHEMAS)
+def test_bounded_schemas_lose_every_size_bound_for_anthropic(
+    relative_path: str,
+) -> None:
+    prepared = prepare_provider_schema(_load_shipped_schema(relative_path), "anthropic")
+
+    assert _keyword_paths(prepared, "maxLength") == []
+    assert _keyword_paths(prepared, "maxItems") == []
 
 
 def _patched_generate(

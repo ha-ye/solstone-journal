@@ -8,6 +8,8 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
+from solstone.talent.story import ALLOWED_RELATION_KINDS
+from solstone.think.schema_bounds import unbounded_nodes
 from solstone.think.talent import get_talent
 
 SCHEMA_PATH = (
@@ -51,6 +53,7 @@ def test_valid_operations_payload():
                             "content": "Prefers concise morning planning meetings",
                             "target_quote": "morning meetings",
                             "reasoning": "Fresh source narrows the preference.",
+                            "relation": None,
                         },
                         {
                             "op": "add",
@@ -58,6 +61,11 @@ def test_valid_operations_payload():
                             "content": "Has deep knowledge of distributed systems",
                             "target_quote": None,
                             "reasoning": "Durable expertise.",
+                            "relation": {
+                                "kind": "works-with",
+                                "target_name": "Bob Lee",
+                                "note": "",
+                            },
                         },
                         {
                             "op": "drop",
@@ -65,6 +73,7 @@ def test_valid_operations_payload():
                             "content": None,
                             "target_quote": "legacy planning",
                             "reasoning": "Stale duplicate.",
+                            "relation": None,
                         },
                         {
                             "op": "keep",
@@ -72,6 +81,7 @@ def test_valid_operations_payload():
                             "content": None,
                             "target_quote": None,
                             "reasoning": "Still useful.",
+                            "relation": None,
                         },
                     ],
                 }
@@ -107,7 +117,17 @@ def test_invalid_extra_property_at_each_level():
             "entities": [
                 {
                     "entity_id": "alice_johnson",
-                    "operations": [{"op": "keep", "reasoning": "audit", "extra": True}],
+                    "operations": [
+                        {
+                            "op": "keep",
+                            "target_index": 0,
+                            "content": None,
+                            "target_quote": None,
+                            "reasoning": "audit",
+                            "relation": None,
+                            "extra": True,
+                        }
+                    ],
                 }
             ],
             "summary": "extra operation",
@@ -130,11 +150,50 @@ def test_invalid_unknown_op_enum():
                             "content": None,
                             "target_quote": None,
                             "reasoning": "unknown op",
+                            "relation": None,
                         }
                     ],
                 }
             ],
             "summary": "unknown op",
+        }
+    )
+
+
+def test_relation_kind_enum_matches_python():
+    schema = _load_schema()
+    relation = schema["properties"]["entities"]["items"]["properties"]["operations"][
+        "items"
+    ]["properties"]["relation"]
+
+    assert set(relation["properties"]["kind"]["enum"]) == ALLOWED_RELATION_KINDS
+
+
+def test_invalid_unknown_relation_kind():
+    validator = Draft202012Validator(_load_schema())
+
+    assert not validator.is_valid(
+        {
+            "entities": [
+                {
+                    "entity_id": "alice_johnson",
+                    "operations": [
+                        {
+                            "op": "add",
+                            "target_index": None,
+                            "content": "Has a durable relation.",
+                            "target_quote": None,
+                            "reasoning": "relation audit",
+                            "relation": {
+                                "kind": "mentors",
+                                "target_name": "Bob Lee",
+                                "note": "Alice mentors Bob.",
+                            },
+                        }
+                    ],
+                }
+            ],
+            "summary": "bad relation",
         }
     )
 
@@ -145,3 +204,8 @@ def test_schema_has_no_conditional_keywords():
     assert '"if"' not in schema
     assert '"then"' not in schema
     assert '"oneOf"' not in schema
+    assert '"anyOf"' not in schema
+
+
+def test_schema_has_no_unbounded_nodes():
+    assert unbounded_nodes(_load_schema()) == []

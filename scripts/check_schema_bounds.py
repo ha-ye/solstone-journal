@@ -28,9 +28,6 @@ ALLOWLIST: dict[str, str] = {
     "solstone/apps/entities/talent/entities_review.schema.json": (
         "entity_observer follow-on lode"
     ),
-    "solstone/apps/entities/talent/entity_observer.schema.json": (
-        "entity_observer follow-on lode"
-    ),
     "solstone/apps/timeline/talent/segment_summary.schema.json": (
         "documents follow-on lode"
     ),
@@ -53,7 +50,6 @@ ALLOWLIST: dict[str, str] = {
         "unbounded pending KG schema enrichment arc"
     ),
     "solstone/talent/steward.schema.json": "morning_briefing follow-on lode",
-    "solstone/talent/story.schema.json": "story follow-on lode",
     "solstone/think/detect_created.schema.json": (
         "unbounded pending KG schema enrichment arc"
     ),

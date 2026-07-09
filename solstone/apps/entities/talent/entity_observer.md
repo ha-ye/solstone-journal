@@ -76,12 +76,13 @@ Use operations to maintain the numbered current observations shown in context:
 
 Rules:
 - Use the `entity_id` from context.
-- Include every field on each operation; set non-applicable fields (`target_index`, `content`, `target_quote`) to `null`.
+- Include every field on each operation; set non-applicable fields (`target_index`, `content`, `target_quote`, `relation`) to `null`.
 - Prefer `update` or `drop` over adding a near-duplicate observation.
 - For `update` and `drop`, include a short verbatim `target_quote` from the target observation.
 - At most one operation may target a given observation index for an entity.
 - Use `add` only for facts that pass the durability litmus.
 - One fact per observation — no compound sentences.
+- `relation` is `null` unless the observation asserts a relationship. `target_name` is the other entity's NAME, never an id. `kind` must be one of `works-with`, `works-at`, `reports-to`, `family-of`, `knows`, `uses`, `created`, `other`. `note` explains the relationship and is required when `kind` is `"other"`.
 - The `reasoning` field is for audit only.
 - Empty operations are valid when no changes are needed for an entity.
 
@@ -100,28 +101,36 @@ Respond with a JSON object in this exact format:
           "target_index": 0,
           "content": "The revised durable observation text",
           "target_quote": "short exact quote from the old observation",
-          "reasoning": "Why this update is warranted"
+          "reasoning": "Why this update is warranted",
+          "relation": null
         },
         {
           "op": "add",
           "target_index": null,
           "content": "A new durable observation text",
           "target_quote": null,
-          "reasoning": "Why this qualifies"
+          "reasoning": "Why this qualifies",
+          "relation": {
+            "kind": "works-with",
+            "target_name": "Bob Lee",
+            "note": ""
+          }
         },
         {
           "op": "drop",
           "target_index": 2,
           "content": null,
           "target_quote": "short exact quote from the old observation",
-          "reasoning": "Why this should be removed"
+          "reasoning": "Why this should be removed",
+          "relation": null
         },
         {
           "op": "keep",
           "target_index": 3,
           "content": null,
           "target_quote": null,
-          "reasoning": "Why this should remain unchanged"
+          "reasoning": "Why this should remain unchanged",
+          "relation": null
         }
       ]
     }

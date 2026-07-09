@@ -1216,6 +1216,7 @@ def merge_story_fields(
     commitments: list[dict],
     closures: list[dict],
     decisions: list[dict],
+    relations: list[dict],
     actor: str,
     note: str | None = None,
 ) -> bool:
@@ -1233,10 +1234,17 @@ def merge_story_fields(
                 merged["commitments"] = [dict(entry) for entry in commitments]
                 merged["closures"] = [dict(entry) for entry in closures]
                 merged["decisions"] = [dict(entry) for entry in decisions]
+                merged["relations"] = [dict(entry) for entry in relations]
                 merged = append_edit(
                     merged,
                     actor=actor,
-                    fields=["story", "commitments", "closures", "decisions"],
+                    fields=[
+                        "story",
+                        "commitments",
+                        "closures",
+                        "decisions",
+                        "relations",
+                    ],
                     note=note,
                 )
                 new_records.append(merged)

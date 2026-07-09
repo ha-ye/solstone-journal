@@ -7,16 +7,20 @@
     "confidence",
     "commitments",
     "closures",
-    "decisions"
+    "decisions",
+    "relations"
   ],
   "properties": {
     "body": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 4000
     },
     "topics": {
       "type": "array",
+      "maxItems": 10,
       "items": {
-        "type": "string"
+        "type": "string",
+        "maxLength": 48
       }
     },
     "confidence": {
@@ -24,6 +28,7 @@
     },
     "commitments": {
       "type": "array",
+      "maxItems": 6,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -36,25 +41,31 @@
         ],
         "properties": {
           "owner": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           },
           "action": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           },
           "counterparty": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           },
           "when": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           },
           "context": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
     },
     "closures": {
       "type": "array",
+      "maxItems": 6,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -67,13 +78,16 @@
         ],
         "properties": {
           "owner": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           },
           "action": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           },
           "counterparty": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           },
           "resolution": {
             "type": "string",
@@ -86,30 +100,92 @@
             ]
           },
           "context": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
           }
         }
       }
     },
     "decisions": {
       "type": "array",
+      "maxItems": 6,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": [
           "owner",
           "action",
+          "counterparty",
           "context"
         ],
         "properties": {
           "owner": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
           },
           "action": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 200
+          },
+          "counterparty": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 200
           },
           "context": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 400
+          }
+        }
+      }
+    },
+    "relations": {
+      "type": "array",
+      "maxItems": 6,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "to",
+          "kind",
+          "note",
+          "quote"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "to": {
+            "type": "string",
+            "maxLength": 120
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "works-with",
+              "works-at",
+              "reports-to",
+              "family-of",
+              "knows",
+              "uses",
+              "created",
+              "other"
+            ]
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "quote": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 400
           }
         }
       }

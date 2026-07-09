@@ -8,6 +8,7 @@
   "properties": {
     "entities": {
       "type": "array",
+      "maxItems": 24,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -17,10 +18,12 @@
         ],
         "properties": {
           "entity_id": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 160
           },
           "operations": {
             "type": "array",
+            "maxItems": 20,
             "items": {
               "type": "object",
               "additionalProperties": false,
@@ -29,7 +32,8 @@
                 "target_index",
                 "content",
                 "target_quote",
-                "reasoning"
+                "reasoning",
+                "relation"
               ],
               "properties": {
                 "op": {
@@ -51,16 +55,54 @@
                   "type": [
                     "string",
                     "null"
-                  ]
+                  ],
+                  "maxLength": 600
                 },
                 "target_quote": {
                   "type": [
                     "string",
                     "null"
-                  ]
+                  ],
+                  "maxLength": 300
                 },
                 "reasoning": {
-                  "type": "string"
+                  "type": "string",
+                  "maxLength": 300
+                },
+                "relation": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "target_name",
+                    "note"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "works-with",
+                        "works-at",
+                        "reports-to",
+                        "family-of",
+                        "knows",
+                        "uses",
+                        "created",
+                        "other"
+                      ]
+                    },
+                    "target_name": {
+                      "type": "string",
+                      "maxLength": 120
+                    },
+                    "note": {
+                      "type": "string",
+                      "maxLength": 300
+                    }
+                  }
                 }
               }
             }
@@ -69,7 +111,8 @@
       }
     },
     "summary": {
-      "type": "string"
+      "type": "string",
+      "maxLength": 500
     }
   }
 }

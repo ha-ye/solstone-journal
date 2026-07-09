@@ -213,6 +213,7 @@ def _write_story_activity(
         commitments=commitments or [],
         closures=closures or [],
         decisions=decisions or [],
+        relations=[],
         actor="story",
     )
 

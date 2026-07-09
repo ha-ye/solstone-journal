@@ -35,6 +35,7 @@
         "talents": false,
         "transcripts": true
       },
+      "max_output_tokens": 12288,
       "mtime": 0,
       "output": "json",
       "path": "<PROJECT>/solstone/talent/conversation.md",
@@ -209,6 +210,7 @@
         "talents": false,
         "transcripts": true
       },
+      "max_output_tokens": 12288,
       "mtime": 0,
       "output": "json",
       "path": "<PROJECT>/solstone/talent/event.md",
@@ -462,6 +464,7 @@
         "talents": false,
         "transcripts": true
       },
+      "max_output_tokens": 12288,
       "mtime": 0,
       "output": "json",
       "path": "<PROJECT>/solstone/talent/work.md",

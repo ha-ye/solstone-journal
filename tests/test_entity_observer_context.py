@@ -62,7 +62,7 @@ def _obs_path(facet: str, entity_id: str) -> Path:
     return Path("facets") / facet / "entities" / entity_id / "observations.jsonl"
 
 
-COUNT_KEYS = ("update", "add", "drop", "keep", "skipped")
+COUNT_KEYS = ("update", "add", "drop", "keep", "skipped", "relation_unresolved")
 
 
 def _outcome_path(root: Path, facet: str, day: str) -> Path:
@@ -563,6 +563,7 @@ def test_post_process_applies_operations_and_writes_outcome(tmp_path, monkeypatc
         "drop": 1,
         "keep": 1,
         "skipped": 0,
+        "relation_unresolved": 0,
     }
     assert outcome["error"] is None
     assert _count_sum(outcome) == 4
@@ -613,6 +614,7 @@ def test_post_process_unknown_entity_counts_all_operation_rows_skipped(
         "drop": 0,
         "keep": 0,
         "skipped": 3,
+        "relation_unresolved": 0,
     }
     assert outcome["error"] is None
     assert _count_sum(outcome) == 3
@@ -633,6 +635,7 @@ def test_post_process_handles_malformed_json_with_zero_outcome(tmp_path, monkeyp
         "drop": 0,
         "keep": 0,
         "skipped": 0,
+        "relation_unresolved": 0,
     }
     assert outcome["error"] is None
 
@@ -710,6 +713,7 @@ def test_post_process_rejects_malformed_ops_and_counts_skipped(tmp_path, monkeyp
         "drop": 0,
         "keep": 0,
         "skipped": 8,
+        "relation_unresolved": 0,
     }
     assert outcome["error"] is None
     assert _count_sum(outcome) == 9
@@ -774,6 +778,7 @@ def test_post_process_duplicate_target_index_first_clean_op_wins(tmp_path, monke
         "drop": 0,
         "keep": 1,
         "skipped": 1,
+        "relation_unresolved": 0,
     }
     assert outcome["error"] is None
     assert _count_sum(outcome) == 3
@@ -826,6 +831,7 @@ def test_post_process_storage_failure_sets_error_and_writes_outcome(
         "drop": 0,
         "keep": 0,
         "skipped": 2,
+        "relation_unresolved": 0,
     }
     assert outcome["error"] == "OSError: disk busy"
     assert _count_sum(outcome) == 2
@@ -871,8 +877,155 @@ def test_post_process_invalid_entity_id_counts_operation_rows_skipped(
         "drop": 0,
         "keep": 0,
         "skipped": 1,
+        "relation_unresolved": 0,
     }
     assert _count_sum(outcome) == 1
+
+
+def test_post_process_persists_resolved_relation_on_observation(tmp_path, monkeypatch):
+    _set_journal(monkeypatch, str(tmp_path))
+    facet = "work"
+    day = "20260304"
+    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+    _attach_entity(tmp_path, facet, "bob_lee", "Bob Lee")
+
+    post_process(
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "entity_id": "alice_johnson",
+                        "operations": [
+                            {
+                                "op": "add",
+                                "content": "Pairs with Bob Lee on the platform team",
+                                "reasoning": "Durable working relationship.",
+                                "relation": {
+                                    "kind": "works-with",
+                                    "target_name": "Bob Lee",
+                                    "note": "",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "summary": "one relational add",
+            }
+        ),
+        {"facet": facet, "day": day},
+    )
+
+    observations = load_observations(facet, "alice_johnson")
+    assert len(observations) == 1
+    assert observations[0]["relation"] == {
+        "kind": "works-with",
+        "target_entity_id": "bob_lee",
+        "target_name": "Bob Lee",
+        "note": "",
+    }
+    outcome = _load_outcome(tmp_path, facet, day)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 0,
+        "add": 1,
+        "drop": 0,
+        "keep": 0,
+        "skipped": 0,
+        "relation_unresolved": 0,
+    }
+
+
+def test_post_process_drops_op_with_unresolvable_relation_target(
+    tmp_path, monkeypatch, caplog
+):
+    _set_journal(monkeypatch, str(tmp_path))
+    facet = "work"
+    day = "20260304"
+    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+
+    post_process(
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "entity_id": "alice_johnson",
+                        "operations": [
+                            {
+                                "op": "add",
+                                "content": "Reports to someone we cannot identify",
+                                "reasoning": "Relational, but the target is unknown.",
+                                "relation": {
+                                    "kind": "reports-to",
+                                    "target_name": "Nobody Visible",
+                                    "note": "",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "summary": "unresolvable relation target",
+            }
+        ),
+        {"facet": facet, "day": day},
+    )
+
+    assert load_observations(facet, "alice_johnson") == []
+    assert "unresolved relation target" in caplog.text
+    outcome = _load_outcome(tmp_path, facet, day)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 0,
+        "add": 0,
+        "drop": 0,
+        "keep": 0,
+        "skipped": 0,
+        "relation_unresolved": 1,
+    }
+
+
+def test_post_process_drops_op_with_other_relation_kind_and_no_note(
+    tmp_path, monkeypatch
+):
+    _set_journal(monkeypatch, str(tmp_path))
+    facet = "work"
+    day = "20260304"
+    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+    _attach_entity(tmp_path, facet, "bob_lee", "Bob Lee")
+
+    post_process(
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "entity_id": "alice_johnson",
+                        "operations": [
+                            {
+                                "op": "add",
+                                "content": "Has an unusual tie to Bob Lee",
+                                "reasoning": "Relational, but the note is blank.",
+                                "relation": {
+                                    "kind": "other",
+                                    "target_name": "Bob Lee",
+                                    "note": " ",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "summary": "other kind without a note",
+            }
+        ),
+        {"facet": facet, "day": day},
+    )
+
+    assert load_observations(facet, "alice_johnson") == []
+    outcome = _load_outcome(tmp_path, facet, day)
+    assert {key: outcome[key] for key in COUNT_KEYS} == {
+        "update": 0,
+        "add": 0,
+        "drop": 0,
+        "keep": 0,
+        "skipped": 1,
+        "relation_unresolved": 0,
+    }
 
 
 # ============================================================================
