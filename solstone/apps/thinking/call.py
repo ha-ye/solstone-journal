@@ -83,7 +83,7 @@ vertex_app = typer.Typer(help="Vertex credentials.")
 app.add_typer(vertex_app, name="vertex-credentials")
 local_app = typer.Typer(help="Local model readiness and setup.")
 app.add_typer(local_app, name="local")
-scout_app = typer.Typer(help="Scout hosted Gemini lane.")
+scout_app = typer.Typer(help="Scout program — a Gemini key we provision on your behalf.")
 app.add_typer(scout_app, name="scout")
 
 
@@ -225,7 +225,7 @@ def _echo_scout_terminal(
 @scout_app.command("status")
 @convey_cli
 def scout_status() -> None:
-    """Show Scout hosted Gemini lane status."""
+    """Show scout status."""
 
     response = _get_scout_status()
     _echo_json(response)
@@ -235,7 +235,7 @@ def scout_status() -> None:
 @scout_app.command("check")
 @convey_cli
 def scout_check() -> None:
-    """Check Scout hosted Gemini status."""
+    """Check scout status over the connection."""
 
     response = _post_scout_action("/app/thinking/api/scout/check")
     _echo_json(response)
@@ -252,7 +252,7 @@ def scout_enable(
         1.0, "--poll-interval", help="Seconds between status polls."
     ),
 ) -> None:
-    """Enable Scout hosted Gemini."""
+    """Enable scout — a Gemini key we provision on your behalf."""
 
     response = _post_scout_action("/app/thinking/api/scout/enable")
     _maybe_echo_scout_portal(
@@ -277,7 +277,7 @@ def scout_refresh(
         1.0, "--poll-interval", help="Seconds between status polls."
     ),
 ) -> None:
-    """Refresh Scout hosted Gemini status."""
+    """Refresh scout status."""
 
     response = _post_scout_action("/app/thinking/api/scout/refresh")
     _maybe_echo_scout_portal(
@@ -295,7 +295,7 @@ def scout_refresh(
 @scout_app.command("disable")
 @convey_cli
 def scout_disable() -> None:
-    """Disable Scout hosted Gemini."""
+    """Disable scout."""
 
     response = _post_scout_action("/app/thinking/api/scout/disable")
     _echo_json(
