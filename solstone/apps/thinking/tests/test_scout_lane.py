@@ -41,29 +41,26 @@ def _clear_scout(journal: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("setup", "expected"),
+    ("source_state", "expected"),
     [
         ("enabled", thinking_copy.SCOUT_STATE_ON),
         ("pending", thinking_copy.SCOUT_STATE_REQUESTED),
-        ("manual", thinking_copy.SCOUT_STATE_MANUAL_KEY_PRESENT),
-        ("absent", thinking_copy.SCOUT_STATE_OFF),
+        ("manual_key", thinking_copy.SCOUT_STATE_MANUAL_KEY_PRESENT),
+        ("disabled", thinking_copy.SCOUT_STATE_OFF),
+        ("invited", thinking_copy.SCOUT_STATE_INVITED),
+        ("ended", thinking_copy.SCOUT_STATE_ENDED),
     ],
 )
-def test_resting_state_maps_storage_states(
-    journal_copy: Path,
-    setup: str,
+def test_resting_state_maps_service_states(
+    monkeypatch: pytest.MonkeyPatch,
+    source_state: str,
     expected: str,
 ) -> None:
-    _clear_scout(journal_copy)
-
-    if setup == "enabled":
-        scout.provision_scout_handoff(_approved_payload())
-    elif setup == "pending":
-        scout.record_scout_pending("acct-pending", 1770000000000)
-    elif setup == "manual":
-        config = _read_config(journal_copy)
-        config.setdefault("env", {})["GOOGLE_API_KEY"] = "manual-key"
-        _write_config(config)
+    monkeypatch.setattr(
+        scout_lane.scout,
+        "update_scout_check",
+        lambda **_kwargs: scout.ScoutCheckResult(source_state, True, "checked", None),
+    )
 
     assert scout_lane.resting_state() == expected
 
@@ -169,27 +166,6 @@ def test_manual_key_takes_precedence_over_pending_block(journal_copy: Path) -> N
     _write_config(config)
 
     assert scout_lane.resting_state() == thinking_copy.SCOUT_STATE_MANUAL_KEY_PRESENT
-
-
-@pytest.mark.parametrize(
-    ("source_state", "product_state"),
-    [
-        ("invited", thinking_copy.SCOUT_STATE_INVITED),
-        ("ended", thinking_copy.SCOUT_STATE_ENDED),
-    ],
-)
-def test_resting_state_maps_live_check_states(
-    monkeypatch: pytest.MonkeyPatch,
-    source_state: str,
-    product_state: str,
-) -> None:
-    monkeypatch.setattr(
-        scout_lane.scout,
-        "update_scout_check",
-        lambda **_kwargs: scout.ScoutCheckResult(source_state, True, "checked", None),
-    )
-
-    assert scout_lane.resting_state() == product_state
 
 
 def test_status_payload_uses_single_check_result_and_is_secret_free(

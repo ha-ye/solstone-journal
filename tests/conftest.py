@@ -88,6 +88,7 @@ def _install_heavy_module_stubs():
 
 
 from solstone.convey.chat import stop_all_chat_runtime
+from solstone.think.link.runtime import stop_all_link_runtime
 from solstone.think.push.runtime import stop_all_push_runtime
 from solstone.think.utils import now_ms
 from solstone.think.voice import brain as voice_brain
@@ -133,6 +134,7 @@ def set_test_journal_path(monkeypatch, _isolate_os_environ):
         str(Path("tests/fixtures/journal").resolve()),
     )
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+    monkeypatch.setenv("SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES", "1")
     think_utils._journal_path_cache = None
     yield
     think_utils._journal_path_cache = None
@@ -160,6 +162,12 @@ def _cleanup_voice_runtime():
 def _cleanup_push_runtime():
     yield
     stop_all_push_runtime()
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_link_runtime():
+    yield
+    stop_all_link_runtime()
 
 
 def _reset_chat_module_state():

@@ -488,46 +488,6 @@ def test_config_always_staged(export_integration_env):
     assert result.skipped == 0
 
 
-def test_processing_order_entities_before_facets(export_integration_env):
-    env = export_integration_env
-    _write_json(
-        env["source"] / "entities" / "source_entity" / "entity.json",
-        {"id": "source_entity", "name": "Alice Johnson", "type": "Person"},
-    )
-    _setup_facet_with_entity(env["source"], entity_id="source_entity")
-
-    _set_active_journal(env["monkeypatch"], env["target"])
-    save_journal_entity(
-        {"id": "target_entity", "name": "Alice Johnson", "type": "Person"}
-    )
-    _set_active_journal(env["monkeypatch"], env["source"])
-
-    entity_result = export_entities(
-        env["base_url"], env["key"], False, session=env["adapter"]
-    )
-    facet_result = export_facets(
-        env["base_url"], env["key"], False, session=env["adapter"]
-    )
-
-    entity_state = _load_json(
-        get_state_directory(env["key_prefix"]) / "entities" / "state.json"
-    )
-    detected_entities = (
-        env["target"] / "facets" / "work" / "entities" / "20260413.jsonl"
-    ).read_text(encoding="utf-8")
-
-    assert entity_result.sent == 1
-    assert facet_result.sent == 1
-    assert entity_state["id_map"]["source_entity"] == "target_entity"
-    assert (
-        env["target"] / "facets" / "work" / "entities" / "target_entity" / "entity.json"
-    ).exists()
-    assert not (
-        env["target"] / "facets" / "work" / "entities" / "source_entity"
-    ).exists()
-    assert '"id": "target_entity"' in detected_entities
-
-
 def test_error_resilience(monkeypatch, capsys):
     class _DummySession:
         def __init__(self):

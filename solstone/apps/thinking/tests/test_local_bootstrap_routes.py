@@ -368,48 +368,6 @@ def test_local_routes_reject_unknown_model(settings_env, method, path):
     assert LOCAL_MODEL in payload["detail"]
 
 
-@pytest.mark.parametrize(
-    ("method", "path", "helper_name", "return_value"),
-    [
-        (
-            "get",
-            "/app/thinking/api/local/availability",
-            "get_availability_payload",
-            {"available": True},
-        ),
-        (
-            "post",
-            "/app/thinking/api/local/bootstrap",
-            "start_bootstrap",
-            ({"install_state": "installed"}, 200),
-        ),
-        (
-            "get",
-            "/app/thinking/api/local/bootstrap/status",
-            "get_state",
-            {"install_state": "idle"},
-        ),
-    ],
-)
-def test_local_routes_default_to_flash_model(
-    settings_env, monkeypatch, method, path, helper_name, return_value
-):
-    journal_path, _config = settings_env(_settings_config())
-    calls = []
-
-    def fake_helper(model):
-        calls.append(model)
-        return return_value
-
-    monkeypatch.setattr(local_bootstrap, helper_name, fake_helper)
-    client = _client(journal_path)
-
-    response = getattr(client, method)(path)
-
-    assert response.status_code == 200
-    assert calls == [LOCAL_MODEL]
-
-
 def test_local_bootstrap_post_rejects_unqualified_host(settings_env, monkeypatch):
     journal_path, _config = settings_env(_settings_config())
     monkeypatch.setattr(

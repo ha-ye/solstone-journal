@@ -38,6 +38,9 @@ def journal(tmp_path, monkeypatch):
 def runner(journal, monkeypatch):
     client = ConveyClient(session=make_test_client(journal), base_url="")
     monkeypatch.setattr("solstone.apps.activities.call.get_client", lambda: client)
+    monkeypatch.setattr(
+        activities_routes, "log_call_action", lambda *args, **kwargs: None
+    )
     return CliRunner()
 
 

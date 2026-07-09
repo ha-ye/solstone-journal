@@ -3,6 +3,8 @@
 
 """Tests for facet-scoped entity utilities."""
 
+import json
+
 import pytest
 
 from solstone.think.entities import (
@@ -993,12 +995,10 @@ def test_load_recent_entity_names_respects_limit(
     fixture_journal, tmp_path, monkeypatch
 ):
     """Test that limit parameter is respected."""
-    facet_path = tmp_path / "facets" / "test_facet"
-    facet_path.mkdir(parents=True)
+    facet_entities_path = tmp_path / "facets" / "test_facet" / "entities"
+    journal_entities_path = tmp_path / "entities"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
-    # Create 30 entities with speakable names (no digits)
-    # Use unique first names that won't collide
     names = [
         "Alice",
         "Bob",
@@ -1031,21 +1031,26 @@ def test_load_recent_entity_names_respects_limit(
         "Cody",
         "Dawn",
     ]
-    entities = [
-        {"type": "Person", "name": name, "last_seen": f"202601{i:02d}"}
-        for i, name in enumerate(names, start=1)
-    ]
-    save_entities("test_facet", entities)
+    for index, name in enumerate(names, start=1):
+        entity_id = entity_slug(name)
+        relationship_dir = facet_entities_path / entity_id
+        relationship_dir.mkdir(parents=True, exist_ok=True)
+        (relationship_dir / "entity.json").write_text(
+            json.dumps({"last_seen": f"202601{index:02d}"}), encoding="utf-8"
+        )
+        entity_dir = journal_entities_path / entity_id
+        entity_dir.mkdir(parents=True, exist_ok=True)
+        (entity_dir / "entity.json").write_text(
+            json.dumps({"id": entity_id, "type": "Person", "name": name}),
+            encoding="utf-8",
+        )
 
-    # Request only 5
     result = load_recent_entity_names(limit=5)
 
     assert result is not None
     assert isinstance(result, list)
-    # Most recent 5 should be included (Dawn, Cody, Beth, Abel, Zane - last_seen 30, 29, 28, 27, 26)
     assert "Dawn" in result
     assert "Zane" in result
-    # Earlier ones should not be included
     assert "Alice" not in result
 
 

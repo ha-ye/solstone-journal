@@ -157,9 +157,14 @@ def create_app(journal: str = "") -> Flask:
     register_app_context(app, registry)
 
     start_voice_runtime(app)
-    start_push_runtime(app)
-    start_chat_runtime(app)
-    start_link_runtime(app)
+    if os.environ.get("SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES") == "1":
+        app.push_runtime_started = False
+        app.chat_runtime_started = False
+        app.link_runtime_started = False
+    else:
+        start_push_runtime(app)
+        start_chat_runtime(app)
+        start_link_runtime(app)
 
     if journal:
         state.journal_root = journal

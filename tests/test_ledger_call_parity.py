@@ -173,21 +173,6 @@ def test_ledger_request_mapping(monkeypatch):
     assert "top" not in session.urls[1]
 
 
-def test_ledger_list_pages_past_boundary_and_top_preserves_order(runner, journal):
-    _seed_commitments(journal, 125)
-
-    full = runner.invoke(app, ["list", "--json"])
-    top = runner.invoke(app, ["list", "--top", "7", "--json"])
-
-    assert full.exit_code == 0
-    assert top.exit_code == 0
-    full_items = json.loads(full.stdout)
-    top_items = json.loads(top.stdout)
-    assert len(full_items) == 125
-    assert len(top_items) == 7
-    assert top_items == full_items[:7]
-
-
 def test_ledger_get_and_close_json_wrap_single_object(runner, journal):
     _seed_commitments(journal, 1)
     listed = runner.invoke(app, ["list", "--json"])

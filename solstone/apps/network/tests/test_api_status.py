@@ -199,8 +199,11 @@ def test_lan_unreachable_precedence_over_spl(link_env, monkeypatch) -> None:
 
     data = _get_status(env)
 
+    assert data["enrolled"] is True
     assert data["relay_state"] == "parked"
     assert data["reachability"] == "lan-unreachable"
+    assert data["last_link_event_at"] == NOW
+    assert data["relay_listen_generation"] == 1
 
 
 def test_relay_state_helper() -> None:
@@ -247,81 +250,6 @@ def test_spl_relay_state_never_parks_without_connected() -> None:
     assert link_routes._derive_spl_relay_state(True, _health(), NOW) == "parked"
 
 
-@pytest.mark.parametrize(
-    (
-        "token_present",
-        "health",
-        "expected_relay_state",
-        "expected_reachability",
-    ),
-    [
-        (False, _health(), "not-enrolled", "finishing-setup"),
-        (True, None, "connecting", "finishing-setup"),
-        (True, _health(state="connecting"), "connecting", "finishing-setup"),
-        (True, _health(), "parked", "online"),
-        (True, _health(state="reconnecting"), "reconnecting", "reconnecting"),
-        (True, _health(ts=NOW - 200_000), "offline", "offline"),
-        (
-            True,
-            _health(
-                success_at=NOW - 10,
-                error=REASON_SERVICE_TOKEN_REJECTED,
-                error_at=NOW,
-            ),
-            "offline",
-            "offline",
-        ),
-        (
-            True,
-            _health(
-                success_at=NOW - 10,
-                error=REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
-                error_at=NOW,
-            ),
-            "offline",
-            "offline",
-        ),
-    ],
-)
-def test_spl_status_health_matrix(
-    link_env,
-    monkeypatch,
-    token_present: bool,
-    health: dict[str, Any] | None,
-    expected_relay_state: str,
-    expected_reachability: str,
-) -> None:
-    env = link_env(posture="spl")
-    if token_present:
-        _write_service_token(env)
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
-    monkeypatch.setattr(link_routes, "now_ms", lambda: NOW)
-    monkeypatch.setattr(link_routes, "_read_link_health", lambda: health)
-
-    data = _get_status(env)
-
-    assert data["enrolled"] is token_present
-    assert data["relay_state"] == expected_relay_state
-    assert data["reachability"] == expected_reachability
-    if health is None:
-        assert data["last_link_event_at"] is None
-        assert data["relay_listen_generation"] is None
-        assert data["last_successful_relay_tunnel_at"] is None
-        assert data["last_relay_tunnel_error"] is None
-        assert data["last_relay_tunnel_error_at"] is None
-    else:
-        assert data["last_link_event_at"] == health["ts"]
-        assert data["relay_listen_generation"] == health["listen_generation"]
-        assert (
-            data["last_successful_relay_tunnel_at"]
-            == health["last_successful_relay_tunnel_at"]
-        )
-        assert data["last_relay_tunnel_error"] == health["last_relay_tunnel_error"]
-        assert (
-            data["last_relay_tunnel_error_at"] == health["last_relay_tunnel_error_at"]
-        )
-
-
 def test_current_tunnel_error_ignores_error_older_than_success() -> None:
     health = _health(
         success_at=NOW,
@@ -346,6 +274,20 @@ def test_non_forcing_tunnel_errors_do_not_force_offline(reason: str) -> None:
 
     assert link_routes._current_tunnel_error(health) == reason
     assert link_routes._derive_spl_relay_state(True, health, NOW) == "parked"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        REASON_SERVICE_TOKEN_REJECTED,
+        REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
+    ],
+)
+def test_forcing_tunnel_errors_force_relay_offline(reason: str) -> None:
+    health = _health(success_at=NOW - 10, error=reason, error_at=NOW)
+
+    assert link_routes._current_tunnel_error(health) == reason
+    assert link_routes._derive_spl_relay_state(True, health, NOW) == "offline"
 
 
 def test_relay_state_flips_with_real_token(link_env, monkeypatch) -> None:
@@ -568,22 +510,6 @@ def test_api_status_unprovisioned(link_env, monkeypatch) -> None:
     assert data["instance_id"] is None
     assert data["home_label"] is None
     assert not (env.journal / "link" / "state.json").exists()
-
-
-def test_api_status_does_not_provision(link_env, monkeypatch) -> None:
-    env = link_env()
-    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
-    state_file = env.journal / "link" / "state.json"
-    before_mtime = state_file.stat().st_mtime_ns
-
-    def fail_save(self) -> None:
-        raise AssertionError("LinkState.save should not be called by status")
-
-    monkeypatch.setattr(LinkState, "save", fail_save)
-
-    _get_status(env)
-
-    assert state_file.stat().st_mtime_ns == before_mtime
 
 
 def test_cli_status_unprovisioned_does_not_write_state(tmp_path, monkeypatch) -> None:

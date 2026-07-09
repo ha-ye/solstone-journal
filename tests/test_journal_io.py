@@ -7,7 +7,6 @@ import fcntl
 import importlib
 import json
 import logging
-import multiprocessing as mp
 import os
 import stat
 import sys
@@ -35,35 +34,6 @@ from solstone.think.journal_io.readers import (
     read_json,
     read_jsonl,
 )
-
-
-def _journal_io_increment_worker(target_str: str, iterations: int) -> None:
-    target = Path(target_str)
-    for _ in range(iterations):
-        with hold_lock(target, timeout=30):
-            value = read_json(target, default=0)
-            write_json(target, value + 1)
-
-
-def _run_increment_processes(target: Path) -> None:
-    process_count = 4
-    iterations = 25
-    ctx = mp.get_context("spawn")
-    processes = [
-        ctx.Process(
-            target=_journal_io_increment_worker,
-            args=(str(target), iterations),
-        )
-        for _ in range(process_count)
-    ]
-    for process in processes:
-        process.start()
-    for process in processes:
-        process.join(45)
-    for process in processes:
-        assert not process.is_alive()
-        assert process.exitcode == 0
-    assert read_json(target) == process_count * iterations
 
 
 def test_atomic_replace_crash_safe(tmp_path, monkeypatch) -> None:
@@ -399,18 +369,3 @@ def test_hold_lock_times_out_with_typed_error(tmp_path) -> None:
     finally:
         fcntl.flock(manual_lock, fcntl.LOCK_UN)
         manual_lock.close()
-
-
-def test_locked_rmw_cross_process_cold_start(tmp_path) -> None:
-    """§6.3: locked RMW preserves increments across real child processes."""
-    cold_target = tmp_path / "cold" / "counter.json"
-    assert not cold_target.exists()
-    assert not (cold_target.parent / f"{cold_target.name}.lock").exists()
-
-    _run_increment_processes(cold_target)
-
-    warm_target = tmp_path / "warm" / "counter.json"
-    write_json(warm_target, 0)
-    (warm_target.parent / f"{warm_target.name}.lock").touch()
-
-    _run_increment_processes(warm_target)

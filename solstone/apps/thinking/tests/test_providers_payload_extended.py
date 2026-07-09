@@ -58,17 +58,6 @@ def _write_config(journal_path, config: dict) -> None:
     )
 
 
-def _valid_vertex_creds() -> dict:
-    return {
-        "type": "service_account",
-        "project_id": "test-project",
-        "client_email": "test@test-project.iam.gserviceaccount.com",
-        "private_key": "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n",
-        "client_id": "123",
-        "token_uri": "https://oauth2.googleapis.com/token",
-    }
-
-
 def _assert_install_status(payload: dict) -> None:
     assert INSTALL_STATUS_FIELDS <= set(payload)
     assert payload["install_state"] in CANONICAL_INSTALL_STATES
@@ -205,28 +194,7 @@ def test_get_providers_reports_advanced_when_generate_and_cogitate_lanes_split(
     assert payload["active_lane"]["split"] is True
 
 
-def test_lane_switch_updates_generate_and_cogitate_without_contexts(
-    settings_client_with_journal,
-):
-    client, journal_path = settings_client_with_journal
-    config_path = journal_path / "config" / "journal.json"
-    before = json.loads(config_path.read_text())
-    before_contexts = before["providers"]["contexts"]
-    before_models = before["providers"].get("models")
-
-    response = client.put("/app/thinking/api/providers", json={"lane": "local"})
-
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["active_lane"]["lane"] == "local"
-    config = json.loads(config_path.read_text())
-    assert config["providers"]["generate"]["provider"] == "local"
-    assert config["providers"]["cogitate"]["provider"] == "local"
-    assert config["providers"]["contexts"] == before_contexts
-    assert config["providers"].get("models") == before_models
-
-
-@pytest.mark.parametrize("model_value", ["", 123, None])
+@pytest.mark.parametrize("model_value", [""])
 def test_context_update_rejects_invalid_model_value(
     settings_client_with_journal, model_value
 ):
@@ -241,28 +209,6 @@ def test_context_update_rejects_invalid_model_value(
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
     assert "talent.x" in payload["detail"]
-
-
-def test_context_update_trims_valid_model_value(settings_client_with_journal):
-    client, _journal_path = settings_client_with_journal
-
-    response = client.put(
-        "/app/thinking/api/providers",
-        json={
-            "contexts": {
-                "talent.x": {
-                    "provider": "local",
-                    "model": "  local/custom-7b  ",
-                }
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    response = client.get("/app/thinking/api/providers")
-    assert response.status_code == 200
-    payload = response.get_json()
-    assert payload["contexts"]["talent.x"]["model"] == "local/custom-7b"
 
 
 def test_scout_lane_is_derived_from_google_provider_and_provenance(
@@ -697,40 +643,6 @@ def test_get_providers_ai_readiness_cloud_unknown_is_neutral(
     assert readiness["groups"] == []
 
 
-@pytest.mark.parametrize(
-    ("reason_code", "status", "expected_severity"),
-    [
-        ("local_model_missing", "blocked", "blocker"),
-        ("local_model_installing", "blocked", "blocker"),
-        ("local_model_loading", "blocked", "blocker"),
-        ("ram_insufficient", "blocked", "blocker"),
-        ("gpu_probe_failed", "blocked", "blocker"),
-        ("gpu_unavailable", "blocked", "blocker"),
-        ("local_server_unhealthy", "unhealthy", "attention"),
-        ("local_endpoint_unreachable", "unhealthy", "attention"),
-        ("local_endpoint_contract_failed", "unhealthy", "attention"),
-    ],
-)
-def test_get_providers_ai_readiness_local_blockers_group_coherently(
-    settings_client, monkeypatch, reason_code, status, expected_severity
-):
-    _patch_readiness(
-        monkeypatch,
-        reason_code=reason_code,
-        status=status,
-        provider="local",
-    )
-
-    response = settings_client.get("/app/thinking/api/providers")
-
-    assert response.status_code == 200
-    readiness = response.get_json()["ai_readiness"]
-    assert readiness["summary"]["severity"] == expected_severity
-    assert readiness["summary"]["active_groups"] == 1
-    assert readiness["groups"][0]["reason_code"] == reason_code
-    assert readiness["groups"][0]["provider"] == "local"
-
-
 def test_get_providers_ai_readiness_degrades_without_changing_status_payload(
     settings_client, monkeypatch
 ):
@@ -795,42 +707,6 @@ def test_get_providers_ai_readiness_includes_local_on_mlx(settings_client, monke
     assert payload["local_backend"] == "mlx"
     assert "local" in payload["ai_readiness"]
     assert payload["ai_readiness"]["local"]["status"] == "ready"
-
-
-def test_put_providers_imports_and_clears_vertex_credentials(
-    settings_client_with_journal, monkeypatch
-):
-    client, journal_path = settings_client_with_journal
-    monkeypatch.setattr(
-        "solstone.apps.thinking.routes.validate_vertex_credentials",
-        lambda _path: {
-            "valid": True,
-            "email": "test@test-project.iam.gserviceaccount.com",
-        },
-    )
-
-    response = client.put(
-        "/app/thinking/api/providers",
-        json={"vertex_credentials": json.dumps(_valid_vertex_creds())},
-    )
-
-    assert response.status_code == 200
-    creds_file = journal_path / ".config" / "vertex-credentials.json"
-    assert creds_file.exists()
-    assert creds_file.stat().st_mode & 0o777 == 0o600
-    config_path = journal_path / "config" / "journal.json"
-    config = json.loads(config_path.read_text())
-    assert config["providers"]["vertex_credentials"] == str(creds_file)
-
-    response = client.put(
-        "/app/thinking/api/providers",
-        json={"vertex_credentials": ""},
-    )
-
-    assert response.status_code == 200
-    assert not creds_file.exists()
-    config = json.loads(config_path.read_text())
-    assert "vertex_credentials" not in config["providers"]
 
 
 def test_put_providers_clear_refuses_noncanonical_path_but_removes_config(

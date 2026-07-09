@@ -13,6 +13,22 @@ import pytest
 import solstone.think.entities.observations as observations
 
 
+@pytest.fixture(autouse=True)
+def _fast_observation_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fast_atomic_replace(
+        path: Path, data: str | bytes, *, mode: int | None = None
+    ) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(data, bytes):
+            path.write_bytes(data)
+        else:
+            path.write_text(data, encoding="utf-8")
+        if mode is not None:
+            path.chmod(mode)
+
+    monkeypatch.setattr(observations, "atomic_replace", fast_atomic_replace)
+
+
 def _set_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 

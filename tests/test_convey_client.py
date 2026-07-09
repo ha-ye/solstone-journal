@@ -22,6 +22,7 @@ from solstone.think.convey_client import (
     ConveyTimeoutError,
     ConveyUnreachableError,
     convey_cli,
+    paginate_collection,
     resolve_base_url,
 )
 
@@ -99,6 +100,43 @@ class RecordingSession:
 
 def _json_response(status_code: int, body: dict[str, Any]) -> FakeResponse:
     return FakeResponse(status_code, json.dumps(body))
+
+
+def test_paginate_collection_pages_until_total_and_honors_top() -> None:
+    session = RecordingSession(
+        [
+            _json_response(200, {"items": [{"id": "a"}, {"id": "b"}], "total": 5}),
+            _json_response(200, {"items": [{"id": "c"}, {"id": "d"}], "total": 5}),
+            _json_response(200, {"items": [{"id": "e"}], "total": 5}),
+        ]
+    )
+    client = ConveyClient(session=session, base_url="http://localhost:5015")
+
+    assert [
+        item["id"] for item in paginate_collection(client, "/api/items", page_size=2)
+    ] == ["a", "b", "c", "d", "e"]
+    assert [call[1] for call in session.calls] == [
+        "http://localhost:5015/api/items?limit=2&offset=0",
+        "http://localhost:5015/api/items?limit=2&offset=2",
+        "http://localhost:5015/api/items?limit=2&offset=4",
+    ]
+
+    session = RecordingSession(
+        [
+            _json_response(200, {"items": [{"id": "a"}, {"id": "b"}], "total": 5}),
+            _json_response(200, {"items": [{"id": "c"}, {"id": "d"}], "total": 5}),
+        ]
+    )
+    client = ConveyClient(session=session, base_url="http://localhost:5015")
+
+    assert [
+        item["id"]
+        for item in paginate_collection(client, "/api/items", page_size=2, top=3)
+    ] == ["a", "b", "c"]
+    assert [call[1] for call in session.calls] == [
+        "http://localhost:5015/api/items?limit=2&offset=0",
+        "http://localhost:5015/api/items?limit=2&offset=2",
+    ]
 
 
 @pytest.mark.parametrize(

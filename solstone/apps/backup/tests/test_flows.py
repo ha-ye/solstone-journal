@@ -69,10 +69,9 @@ def test_enable_blocked_until_recovery_key_confirmed(
     assert _read_config(env)["backup"]["enabled"] is False
 
 
-def test_enable_after_confirmation_sets_up_repository_and_queues_backup(
+def test_enable_thunk_sets_up_repository_and_queues_backup(
     backup_env,
     monkeypatch,
-    wait_until_helper,
 ) -> None:
     env = backup_env()
     _write_config(env, _configured_backup(confirmed=True))
@@ -84,12 +83,19 @@ def test_enable_after_confirmation_sets_up_repository_and_queues_backup(
     monkeypatch.setattr(backup_routes, "init_repository", init_repository)
     monkeypatch.setattr(backup_routes, "request_backup_now", request_backup_now)
 
-    response = env.client.post("/app/backup/enable")
-    wait_until_helper(lambda: init_repository.called)
+    outcome = backup_routes._enable_thunk()
 
-    assert response.status_code == 202
+    assert outcome.status == "ok"
+    assert outcome.reason_code is None
     assert _read_config(env)["backup"]["enabled"] is True
     init_repository.assert_called_once()
+    _, kwargs = init_repository.call_args
+    assert kwargs == {
+        "daily_key": "daily-secret",
+        "recovery_key": "A" * 64,
+        "restic_path": Path("/restic"),
+        "timeout": backup_routes.ENABLE_TIMEOUT,
+    }
     request_backup_now.assert_called_once_with()
 
 

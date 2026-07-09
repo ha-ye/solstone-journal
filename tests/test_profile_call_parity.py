@@ -108,22 +108,6 @@ def _path_with_query(url: str) -> str:
     return parsed.path + (f"?{parsed.query}" if parsed.query else "")
 
 
-def _seed_active_people(journal, monkeypatch, count: int) -> None:
-    _minimal_facet_tree(journal)
-    monkeypatch.setattr(profile_surface, "_today_day", lambda: "20260420")
-    for index in range(count):
-        entity_id = f"person_{index:03d}"
-        _append_activity(
-            "work",
-            "20260418",
-            _activity_record(
-                "20260418",
-                [_participant(entity_id, name=entity_id.title())],
-                record_id=f"meeting_{index:03d}",
-            ),
-        )
-
-
 def test_profile_request_mapping(monkeypatch):
     session = _CaptureSession()
     client = ConveyClient(session=session, base_url="")
@@ -206,17 +190,6 @@ def test_profile_bare_404_maps_to_not_found(monkeypatch):
     assert result.exit_code == 1
     assert result.stderr == "profile not found: slash/name\n"
     assert result.stdout == ""
-
-
-def test_profile_list_active_pages_past_boundary(runner, journal, monkeypatch):
-    _seed_active_people(journal, monkeypatch, 125)
-
-    result = runner.invoke(app, ["list-active", "--json"])
-
-    assert result.exit_code == 0
-    ids = json.loads(result.stdout)
-    assert len(ids) == 125
-    assert ids == sorted(ids)
 
 
 def test_profile_list_active_malformed_envelope_exits_without_stdout(monkeypatch):
