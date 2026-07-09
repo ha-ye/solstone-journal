@@ -206,6 +206,9 @@ TYPE_DEFAULTS: Dict[str, Dict[str, Any]] = {
 # ---------------------------------------------------------------------------
 
 
+_LENGTH_FINISH_REASONS = frozenset({"length", "max_tokens"})
+
+
 class IncompleteJSONError(ValueError):
     """Raised when JSON response is truncated due to token limits or other reasons.
 
@@ -217,6 +220,11 @@ class IncompleteJSONError(ValueError):
     def __init__(self, reason: str, partial_text: str):
         self.reason = reason
         self.partial_text = partial_text
+        # Safety/content-filter/recitation finishes are refusals, not length
+        # truncations; labeling them incomplete_json_length would be dishonest
+        # and retrying a refusal would not help.
+        if str(reason).strip().lower() in _LENGTH_FINISH_REASONS:
+            self.reason_code = "incomplete_json_length"
         super().__init__(f"JSON response incomplete (reason: {reason})")
 
 

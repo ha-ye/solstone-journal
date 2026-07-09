@@ -37,6 +37,7 @@ EXPECTED_CODES = {
     "chat_pipeline_unavailable",
     "chat_timeout",
     "context_window_exceeded",
+    "incomplete_json_length",
     "max_turns_exhausted",
     "no_output",
     "token_budget_exceeded",

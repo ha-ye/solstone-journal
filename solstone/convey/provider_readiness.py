@@ -253,6 +253,16 @@ _ENTRIES: dict[str, _Entry] = {
         detail="Try a shorter or more focused request.",
         recovery_action=None,
     ),
+    "incomplete_json_length": _Entry(
+        klass="generic",
+        summary="the answer ran out of room before it finished",
+        detail=(
+            "The reply hit its length limit before it could finish. On your own "
+            "machine sol tries once more with different settings; if it still runs "
+            "long, ask for less at once or choose another provider."
+        ),
+        recovery_action=None,
+    ),
     "max_turns_exhausted": _Entry(
         klass="generic",
         summary="this took too many steps to finish",

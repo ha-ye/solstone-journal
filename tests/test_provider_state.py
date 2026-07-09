@@ -129,6 +129,7 @@ def test_runtime_reason_codes_are_state_reason_codes():
         "provider_unavailable",
         "provider_response_invalid",
         "context_window_exceeded",
+        "incomplete_json_length",
         "max_turns_exhausted",
         "unknown",
     }

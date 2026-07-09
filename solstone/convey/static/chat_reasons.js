@@ -114,6 +114,10 @@
       "template": "the conversation grew too long to finish",
       "action": null
     },
+    "incomplete_json_length": {
+      "template": "the answer ran out of room before it finished",
+      "action": null
+    },
     "max_turns_exhausted": {
       "template": "this took too many steps to finish",
       "action": null

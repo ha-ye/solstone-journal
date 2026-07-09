@@ -132,6 +132,45 @@ def test_get_model_provider_mlx_backend_models_are_local():
     assert get_model_provider(QWEN_35_9B) == "local"
 
 
+@pytest.mark.parametrize("reason", ["length", "max_tokens", "MAX_TOKENS", " Length "])
+def test_incomplete_json_error_sets_length_reason_code(reason):
+    exc = IncompleteJSONError(reason, "")
+
+    assert exc.reason_code == "incomplete_json_length"
+
+
+@pytest.mark.parametrize("reason", ["safety", "content_filter", "recitation", "error"])
+def test_incomplete_json_error_non_length_reasons_have_no_reason_code(reason):
+    exc = IncompleteJSONError(reason, "")
+
+    assert not hasattr(exc, "reason_code")
+
+
+def test_incomplete_json_error_preserves_positional_and_keyword_construction():
+    positional = IncompleteJSONError("length", "partial")
+    keyword = IncompleteJSONError(reason="max_tokens", partial_text="body")
+
+    assert positional.reason == "length"
+    assert positional.partial_text == "partial"
+    assert keyword.reason == "max_tokens"
+    assert keyword.partial_text == "body"
+    assert positional.reason_code == "incomplete_json_length"
+    assert keyword.reason_code == "incomplete_json_length"
+
+
+def test_classify_provider_error_uses_incomplete_json_reason_code():
+    from solstone.think.providers.shared import classify_provider_error
+
+    assert (
+        classify_provider_error(IncompleteJSONError("length", ""), "local")
+        == "incomplete_json_length"
+    )
+    assert (
+        classify_provider_error(IncompleteJSONError("safety", ""), "local")
+        != "incomplete_json_length"
+    )
+
+
 def test_calc_token_cost_gemma4_zero_cost():
     token_data = {
         "model": GEMMA4_26B_A4B_4BIT,
