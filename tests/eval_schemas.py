@@ -63,7 +63,7 @@ def run_case(case: dict[str, Any]) -> dict[str, Any]:
         context="schema.eval",
         provider="local",
         temperature=0.0,
-        max_output_tokens=512,
+        max_output_tokens=int(case.get("max_output_tokens", 512)),
         system_instruction=case["system_instruction"],
         json_output=True,
         json_schema=case["schema"],
