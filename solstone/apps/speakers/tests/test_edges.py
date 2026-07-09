@@ -32,6 +32,7 @@ def edge_journal(tmp_path, monkeypatch) -> Path:
     journal = tmp_path / "journal"
     journal.mkdir()
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    # Some tests mutate entities after extraction against the same tmp journal.
     speaker_edges._CANDIDATE_CACHE.clear()
     return journal
 
@@ -225,6 +226,63 @@ def test_ac4_boundaries_short_forms_and_escaped_parenthetical_aka(edge_journal):
     assert [(row["dst"], row["label"], row["weight"]) for row in mentions] == [
         ("ryan_target", "Ryan Reed", 1)
     ]
+
+
+def test_punctuation_terminal_variant_matches_at_nonword_boundaries(edge_journal):
+    _write_entity(edge_journal, "acme_target", "Acme Inc.")
+    _write_transcript(
+        edge_journal,
+        [
+            "Acme Inc. shipped the release.",
+            "Acme Inc.orporated should not match.",
+        ],
+    )
+
+    rows = _extract(
+        edge_journal,
+        [
+            {"sentence_id": 1, "speaker": "speaker_a"},
+            {"sentence_id": 2, "speaker": "speaker_a"},
+        ],
+    )
+
+    mentions = [row for row in rows if row["kind"] == "mentioned"]
+    assert [(row["dst"], row["label"], row["weight"]) for row in mentions] == [
+        ("acme_target", "Acme Inc.", 1)
+    ]
+
+
+def test_punctuation_initial_aka_matches_at_nonword_boundaries(edge_journal):
+    _write_entity(edge_journal, "dotnet_target", "Dot Net Entity", aka=[".NET"])
+    _write_transcript(
+        edge_journal,
+        [
+            "We worked on .NET today.",
+            "foo.NET should not match.",
+        ],
+    )
+
+    rows = _extract(
+        edge_journal,
+        [
+            {"sentence_id": 1, "speaker": "speaker_a"},
+            {"sentence_id": 2, "speaker": "speaker_a"},
+        ],
+    )
+
+    mentions = [row for row in rows if row["kind"] == "mentioned"]
+    assert [(row["dst"], row["label"], row["weight"]) for row in mentions] == [
+        ("dotnet_target", ".NET", 1)
+    ]
+
+
+def test_unicode_casefold_roundtrip_miss_is_silent(edge_journal):
+    _write_entity(edge_journal, "iris_target", "Iris Example")
+    _write_transcript(edge_journal, ["İris Example joined."])
+
+    rows = _extract(edge_journal, [{"sentence_id": 1, "speaker": "speaker_a"}])
+
+    assert [row for row in rows if row["kind"] == "mentioned"] == []
 
 
 def test_ac5_self_mentions_emit_no_rows(edge_journal):

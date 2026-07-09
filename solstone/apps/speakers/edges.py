@@ -82,9 +82,6 @@ def extract_speaker_edges(entries: list[dict], ctx: EdgeContext) -> list[dict]:
         return rows
 
     candidates = _candidate_index_for_journal(journal)
-    if candidates.pattern is None:
-        return rows
-
     rows.extend(
         _mentioned_rows(
             mention_labels,
@@ -234,7 +231,9 @@ def _build_candidate_index() -> CandidateIndex:
         key=lambda variant: (-len(variant), variant.casefold(), variant),
     )
     pattern = re.compile(
-        r"\b(?:" + "|".join(re.escape(variant) for variant in variants) + r")\b",
+        r"(?<!\w)(?:"
+        + "|".join(re.escape(variant) for variant in variants)
+        + r")(?!\w)",
         re.IGNORECASE,
     )
     return CandidateIndex(pattern=pattern, candidates_by_key=candidates_by_key)
@@ -332,6 +331,8 @@ def _mentioned_rows(
             continue
 
         for match in candidates.pattern.finditer(text):
+            # Non-ASCII case-fold matches that cannot round-trip are silently
+            # dropped for precision over recall.
             candidate = candidates.candidates_by_key.get(match.group().casefold())
             if candidate is None or candidate.entity_id == speaker:
                 continue
