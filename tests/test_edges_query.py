@@ -46,6 +46,10 @@ FILE_COLUMNS = ["path", "mtime"]
 EDGE_FILE_COLUMNS = ["path", "mtime"]
 
 
+def _half_life_decay(age_days: int) -> float:
+    return math.exp(-age_days * math.log(2) / edge_index.HALF_LIFE_DAYS)
+
+
 @pytest.fixture
 def edges_journal(tmp_path, monkeypatch):
     journal = tmp_path / "edges_journal"
@@ -205,7 +209,7 @@ def test_entity_network_scores_kinds_decay_and_null_days(edges_journal):
         "edge_gold_cora",
     ]
     bob, cora = network["neighbors"]
-    assert bob["score"] == pytest.approx(9.866125242295157)
+    assert bob["score"] == pytest.approx(10.1748021039364)
     assert bob["score"] == pytest.approx(
         sum(kind["weighted"] for kind in bob["kinds"].values())
     )
@@ -215,17 +219,17 @@ def test_entity_network_scores_kinds_decay_and_null_days(edges_journal):
     assert bob["directed"] == {"out": 1, "in": 0}
     assert bob["kinds"]["co-present"] == {"count": 1, "weighted": 2.0}
     assert bob["kinds"]["spoke-with"]["weighted"] == pytest.approx(
-        4 * math.exp(-30 / 90)
+        4 * _half_life_decay(30)
     )
     assert bob["kinds"]["committed-to"] == {"count": 1, "weighted": 5.0}
 
-    assert cora["score"] == pytest.approx(7.839397205857212)
+    assert cora["score"] == pytest.approx(8.5)
     assert cora["directed"] == {"out": 1, "in": 0}
     assert cora["first_seen"] == "20260301"
     assert cora["last_seen"] == "20260530"
     assert cora["kinds"]["mentioned"] == {"count": 1, "weighted": 6.0}
     assert cora["kinds"]["co-present"]["weighted"] == pytest.approx(
-        5 * math.exp(-90 / 90)
+        5 * _half_life_decay(90)
     )
 
 
@@ -263,7 +267,7 @@ def test_entity_network_ranks_by_weighted_decayed_score(edges_journal):
         "edge_rank_byron",
     ]
     assert network["neighbors"][0]["score"] == pytest.approx(4.0)
-    assert network["neighbors"][1]["score"] == pytest.approx(1.4715177646857693)
+    assert network["neighbors"][1]["score"] == pytest.approx(2.0)
 
 
 def test_edge_evidence_total_pagination_and_stable_newest_order(edges_journal):
@@ -399,7 +403,7 @@ def test_filters_apply_to_scores_and_network_evidence(edges_journal):
     )
 
     assert network["total_neighbors"] == 1
-    assert network["neighbors"][0]["score"] == pytest.approx(4 * math.exp(-15 / 90))
+    assert network["neighbors"][0]["score"] == pytest.approx(4 * _half_life_decay(15))
     assert [row["label"] for row in network["neighbors"][0]["evidence"]] == ["match"]
     assert evidence["total"] == 1
     assert [row["label"] for row in evidence["evidence"]] == ["match"]
@@ -586,7 +590,7 @@ def test_network_overview_shape_totals_kinds_entities_and_filter(edges_journal):
         limit=2,
     )
 
-    decayed_co = 2 * math.exp(-90 / 90)
+    decayed_co = 2 * _half_life_decay(90)
     assert overview["filters"]["facet"] == "overview"
     assert overview["totals"] == {"edges": 2, "entities": 3}
     assert overview["kinds"]["spoke-with"] == {"count": 1, "weighted": 4.0}

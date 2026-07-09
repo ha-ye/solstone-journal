@@ -41,8 +41,8 @@ KIND_WEIGHTS = {
     "co-present": 1,
 }
 """Relationship-strength weights; commitments outweigh passive co-presence."""
-DECAY_TAU_DAYS = 90.0
-"""E-folding decay tau: ~0.368 at 90 days, ~0.135 at 180; not a half-life."""
+HALF_LIFE_DAYS = 90.0
+"""Edge score half-life in days; 90-day-old evidence contributes half weight."""
 
 EDGE_COLUMNS = (
     "src",
@@ -290,7 +290,7 @@ def _decay_factor(day: str | None, reference: date) -> float:
     if day is None:
         return 1.0
     age_days = max(0, (reference - _parse_day(day)).days)
-    return math.exp(-age_days / DECAY_TAU_DAYS)
+    return math.exp(-age_days * math.log(2) / HALF_LIFE_DAYS)
 
 
 def _empty_kind() -> dict[str, Any]:

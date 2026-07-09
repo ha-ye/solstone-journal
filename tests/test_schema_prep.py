@@ -16,7 +16,7 @@ from solstone.apps.timeline.rollup import build_rollup_schema
 from solstone.think.models import SchemaValidationError, generate
 from solstone.think.schema_prep import prepare_provider_schema, unsupported_keyword_hits
 from solstone.think.talent import RUNTIME_FACETS_SENTINEL
-from tests.eval_schemas import DEFAULT_CASES, load_cases
+from tests.eval_schemas import DEFAULT_CASES, DEFAULT_OUT, load_cases
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -125,6 +125,13 @@ def test_schema_eval_cases_hydrate_runtime_facets() -> None:
     assert facet_schema.get("enum") != [RUNTIME_FACETS_SENTINEL]
     assert RUNTIME_FACETS_SENTINEL not in facet_schema.get("enum", [])
     assert facet_schema["maxLength"] == 80
+
+
+def test_schema_eval_default_output_is_committable_fixture_path() -> None:
+    rel = DEFAULT_OUT.relative_to(REPO_ROOT)
+
+    assert rel.parts[:3] == ("tests", "fixtures", "schema_eval")
+    assert "tmp" not in rel.parts
 
 
 @pytest.mark.parametrize("provider", ["local", "openai", "google", "anthropic", "fake"])

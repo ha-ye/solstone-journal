@@ -26,7 +26,7 @@ from solstone.think.schema_eval import (  # noqa: E402
 from solstone.think.talent import hydrate_runtime_enums  # noqa: E402
 
 DEFAULT_CASES = ROOT / "tests" / "fixtures" / "schema_eval" / "cases.jsonl"
-DEFAULT_OUT = ROOT / "tmp" / "schema-eval"
+DEFAULT_OUT = ROOT / "tests" / "fixtures" / "schema_eval" / "results" / "local"
 LOCAL_NOT_READY = (
     "Local schema eval requires the bundled local provider. Run "
     "`journal install-provider local`, then start it with `journal start` "

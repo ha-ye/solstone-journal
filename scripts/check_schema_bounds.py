@@ -33,31 +33,25 @@ ALLOWLIST: dict[str, str] = {
     ),
     "solstone/observe/categories/meeting.schema.json": "screen follow-on lode",
     "solstone/observe/describe.schema.json": "screen follow-on lode",
-    "solstone/observe/enrich.schema.json": (
-        "unbounded pending KG schema enrichment arc"
-    ),
+    "solstone/observe/enrich.schema.json": "vision enrichment follow-on lode",
     "solstone/observe/extract.schema.json": "screen follow-on lode",
-    "solstone/observe/transcribe/gemini.schema.json": (
-        "unbounded pending KG schema enrichment arc"
-    ),
+    "solstone/observe/transcribe/gemini.schema.json": ("transcription follow-on lode"),
     "solstone/talent/chat.schema.json": "messaging follow-on lode",
     "solstone/talent/participation.schema.json": "calendar follow-on lode",
     "solstone/talent/participation_entry.schema.json": "calendar follow-on lode",
     "solstone/talent/pulse.schema.json": "morning_briefing follow-on lode",
     "solstone/talent/schedule.schema.json": "calendar follow-on lode",
-    "solstone/talent/sense.schema.json": ("unbounded pending KG schema enrichment arc"),
+    "solstone/talent/sense.schema.json": "sense follow-on lode",
     "solstone/talent/speaker_attribution.schema.json": (
-        "unbounded pending KG schema enrichment arc"
+        "speaker attribution follow-on lode"
     ),
     "solstone/talent/steward.schema.json": "morning_briefing follow-on lode",
-    "solstone/think/detect_created.schema.json": (
-        "unbounded pending KG schema enrichment arc"
-    ),
+    "solstone/think/detect_created.schema.json": "created-detection follow-on lode",
     "solstone/think/detect_transcript_json.schema.json": (
-        "unbounded pending KG schema enrichment arc"
+        "transcript detection follow-on lode"
     ),
     "solstone/think/detect_transcript_segment.schema.json": (
-        "unbounded pending KG schema enrichment arc"
+        "transcript detection follow-on lode"
     ),
 }
 

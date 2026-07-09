@@ -203,6 +203,24 @@ def test_ac3_aka_match_emits_returned_mentioned_direction_and_variant_label(
     ]
 
 
+def test_candidate_index_refreshes_when_entity_files_change(edge_journal):
+    _write_entity(edge_journal, "alpha_target", "Alpha Target")
+    _write_transcript(edge_journal, ["Alpha Target is named."])
+    assert [
+        (row["dst"], row["label"])
+        for row in _extract(edge_journal, [{"sentence_id": 1, "speaker": "speaker_a"}])
+        if row["kind"] == "mentioned"
+    ] == [("alpha_target", "Alpha Target")]
+
+    _write_entity(edge_journal, "beta_target", "Beta Target")
+    _write_transcript(edge_journal, ["Beta Target is named."])
+    assert [
+        (row["dst"], row["label"])
+        for row in _extract(edge_journal, [{"sentence_id": 1, "speaker": "speaker_a"}])
+        if row["kind"] == "mentioned"
+    ] == [("beta_target", "Beta Target")]
+
+
 def test_ac4_boundaries_short_forms_and_escaped_parenthetical_aka(edge_journal):
     _write_entity(edge_journal, "ann_target", "Ann")
     _write_entity(edge_journal, "short_target", "Al", aka=["Bo"])

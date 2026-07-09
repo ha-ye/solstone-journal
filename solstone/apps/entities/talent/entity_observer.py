@@ -109,7 +109,12 @@ def _clean_relation(
             target_name,
             op,
         )
-        return None, "relation_unresolved"
+        return {
+            "kind": kind,
+            "target_entity_id": None,
+            "target_name": target_name,
+            "note": note,
+        }, "relation_unresolved"
 
     return {
         "kind": kind,
@@ -131,12 +136,12 @@ def _clean_operation(
         if not isinstance(content, str) or not content.strip():
             return None, "skipped"
         relation, status = _clean_relation(item.get("relation"), op, entities)
-        if status is not None:
+        if status == "skipped":
             return None, status
         cleaned = {"op": "add", "content": content.strip()}
         if relation is not None:
             cleaned["relation"] = relation
-        return cleaned, None
+        return cleaned, status
 
     if op not in {"update", "drop", "keep"}:
         return None, "skipped"
@@ -166,12 +171,12 @@ def _clean_operation(
         cleaned["content"] = content
 
     relation, status = _clean_relation(item.get("relation"), op, entities)
-    if status is not None:
+    if status == "skipped":
         return None, status
     if relation is not None:
         cleaned["relation"] = relation
 
-    return cleaned, None
+    return cleaned, status
 
 
 def _merge_counts(target: dict[str, int], source: dict[str, int]) -> None:
@@ -239,7 +244,6 @@ def post_process(result: str, context: dict) -> str | None:
                 )
                 if status is not None:
                     counts[status] += 1
-                    continue
                 if clean_op is not None:
                     clean_ops.append(clean_op)
 

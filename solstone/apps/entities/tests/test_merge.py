@@ -18,7 +18,7 @@ from solstone.apps.entities.call import app as entities_app
 from solstone.think.convey_client import ConveyClient
 from solstone.think.entities import merge as merge_mod
 from solstone.think.entities.journal import load_journal_entity
-from solstone.think.indexer.edges import insert_edges
+from solstone.think.indexer.edges import insert_edges, rebuild_edges
 from solstone.think.indexer.journal import get_journal_index
 from tests._baseline_harness import make_test_client
 from tests._sqlite_assertions import edges_content_hash
@@ -71,6 +71,25 @@ def _corrections_path(env, day: str, segment_key: str):
         / "talents"
         / "speaker_corrections.json"
     )
+
+
+def _activity_path(env, facet: str, day: str) -> Path:
+    return env.journal / "facets" / facet / "activities" / f"{day}.jsonl"
+
+
+def _write_activity_records(
+    env,
+    facet: str,
+    day: str,
+    records: list[dict],
+) -> Path:
+    path = _activity_path(env, facet, day)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(record) + "\n" for record in records),
+        encoding="utf-8",
+    )
+    return path
 
 
 def _audit_log_path(env):
@@ -130,6 +149,20 @@ def _edge_rows(env) -> list[dict]:
         conn.close()
 
 
+def _edge_rows_with_kind(env) -> list[dict]:
+    conn, _ = get_journal_index(str(env.journal))
+    conn.row_factory = sqlite3.Row
+    try:
+        return [
+            dict(row)
+            for row in conn.execute(
+                "SELECT src, dst, kind, path FROM edges ORDER BY kind, path, src, dst"
+            ).fetchall()
+        ]
+    finally:
+        conn.close()
+
+
 def test_merge_dry_run_plans_without_writing(speakers_env):
     env = speakers_env()
     env.create_segment("20240101", "143022_300", ["mic_audio"])
@@ -179,6 +212,30 @@ def test_merge_dry_run_plans_without_writing(speakers_env):
             }
         ],
     )
+    activity_path = _write_activity_records(
+        env,
+        "work",
+        "20240101",
+        [
+            {
+                "id": "meeting_143022_300",
+                "activity": "meeting",
+                "title": "Dry-run merge meeting",
+                "created_at": 1700000000000,
+                "participation": [
+                    {"role": "attendee", "entity_id": "dry_alias"},
+                    {"role": "attendee", "entity_id": "dry_peer"},
+                ],
+                "commitments": [
+                    {
+                        "owner_entity_id": "dry_alias",
+                        "counterparty_entity_id": "dry_peer",
+                        "action": "follow up",
+                    }
+                ],
+            }
+        ],
+    )
     cache_path = env.journal / "awareness" / "discovery_clusters.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     cache_path.write_text('{"clusters": []}', encoding="utf-8")
@@ -191,6 +248,7 @@ def test_merge_dry_run_plans_without_writing(speakers_env):
     corrections_before = _corrections_path(env, "20240101", "143022_300").read_text(
         encoding="utf-8"
     )
+    activity_before = activity_path.read_text(encoding="utf-8")
 
     result = runner.invoke(entities_app, ["merge", "dry_alias", "dry_canon"])
 
@@ -207,6 +265,20 @@ def test_merge_dry_run_plans_without_writing(speakers_env):
     assert data["would_facets"]["moved"] == ["personal"]
     assert data["would_segments"]["labels_rewritten"] == 1
     assert data["would_segments"]["corrections_rewritten"] == 1
+    assert data["activities"] == {
+        "records_rewritten": 0,
+        "fields_rewritten": 0,
+        "files_scanned": 0,
+        "files_rewritten": 0,
+        "errors": [],
+    }
+    assert data["would_activities"] == {
+        "records_rewritten": 1,
+        "fields_rewritten": 2,
+        "files_scanned": 1,
+        "files_rewritten": 1,
+        "errors": [],
+    }
     assert data["would_fold_edges"] is None
     assert data["audit_log_path"] is None
     assert data["caches_cleared"] == []
@@ -221,6 +293,7 @@ def test_merge_dry_run_plans_without_writing(speakers_env):
         _corrections_path(env, "20240101", "143022_300").read_text(encoding="utf-8")
         == corrections_before
     )
+    assert activity_path.read_text(encoding="utf-8") == activity_before
     assert cache_path.exists()
     assert load_journal_entity("dry_alias") is not None
     assert not _audit_log_path(env).exists()
@@ -344,6 +417,13 @@ def test_merge_commit_deep_merges_and_logs(speakers_env):
     assert data["segments"]["labels_rewritten"] == 1
     assert data["segments"]["corrections_rewritten"] == 1
     assert data["segments"]["errors"] == []
+    assert data["activities"] == {
+        "records_rewritten": 0,
+        "fields_rewritten": 0,
+        "files_scanned": 0,
+        "files_rewritten": 0,
+        "errors": [],
+    }
     assert data["audit_log_path"] == str(_audit_log_path(env))
     assert data["caches_cleared"] == ["discovery_clusters"]
 
@@ -398,6 +478,7 @@ def test_merge_commit_deep_merges_and_logs(speakers_env):
         "voiceprints",
         "facets",
         "segments",
+        "activities",
         "edges",
     }
 
@@ -447,6 +528,127 @@ def test_merge_commit_folds_edges_and_records_audit_counts(speakers_env):
         "self_edges_dropped": 1,
         "error": None,
     }
+
+
+def test_merge_then_rebuild_converges_all_edge_source_kinds(speakers_env):
+    env = speakers_env()
+    day = "20240101"
+    segment_key = "120000_300"
+    source_id = "merge_edge_source"
+    target_id = "merge_edge_target"
+    peer_id = "merge_edge_peer"
+    mention_id = "merge_edge_mention"
+
+    env.create_segment(day, segment_key, ["audio"], num_sentences=2)
+    transcript = "\n".join(
+        [
+            json.dumps({"raw": "audio.flac", "model": "test"}),
+            json.dumps({"text": "Merge Edge Mention came up in planning."}),
+            json.dumps({"text": "The peer answered."}),
+        ]
+    )
+    for segment_dir in (
+        env.journal / day / STREAM / segment_key,
+        env.journal / "chronicle" / day / STREAM / segment_key,
+    ):
+        (segment_dir / "audio.jsonl").write_text(
+            transcript + "\n",
+            encoding="utf-8",
+        )
+
+    for name in (
+        "Merge Edge Source",
+        "Merge Edge Target",
+        "Merge Edge Peer",
+        "Merge Edge Mention",
+    ):
+        env.create_entity(name)
+    for entity_id in (source_id, target_id, peer_id, mention_id):
+        env.create_facet_relationship("work", entity_id)
+
+    detected_path = env.journal / "facets" / "work" / "entities" / f"{day}.jsonl"
+    detected_path.parent.mkdir(parents=True, exist_ok=True)
+    detected_path.write_text(
+        "\n".join(
+            [
+                json.dumps({"name": "Merge Edge Source", "segments": [segment_key]}),
+                json.dumps({"name": "Merge Edge Peer", "segments": [segment_key]}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    env.create_speaker_labels(
+        day,
+        segment_key,
+        [
+            {"sentence_id": 1, "speaker": source_id},
+            {"sentence_id": 2, "speaker": peer_id},
+        ],
+    )
+    _write_activity_records(
+        env,
+        "work",
+        day,
+        [
+            {
+                "id": "meeting_120000_300",
+                "activity": "meeting",
+                "title": "Edge convergence review",
+                "created_at": 1700000000000,
+                "participation": [
+                    {"role": "attendee", "entity_id": source_id},
+                    {"role": "attendee", "entity_id": peer_id},
+                ],
+                "commitments": [
+                    {
+                        "owner_entity_id": source_id,
+                        "counterparty_entity_id": peer_id,
+                        "action": "rerun rebuild",
+                    }
+                ],
+            }
+        ],
+    )
+
+    rebuild_edges(str(env.journal))
+    pre_rows = _edge_rows_with_kind(env)
+    source_kinds = {
+        row["kind"] for row in pre_rows if source_id in {row["src"], row["dst"]}
+    }
+    assert source_kinds == {
+        "attended-with",
+        "co-present",
+        "committed-to",
+        "mentioned",
+        "spoke-with",
+    }
+
+    result = merge_mod.merge_entity(source_id, target_id, commit=True)
+
+    assert result["merged"] is True
+    assert result["activities"]["fields_rewritten"] == 2
+    assert all(
+        source_id not in {row["src"], row["dst"]} for row in _edge_rows_with_kind(env)
+    )
+
+    rebuild_edges(str(env.journal))
+    rebuilt_rows = _edge_rows_with_kind(env)
+    assert all(source_id not in {row["src"], row["dst"]} for row in rebuilt_rows)
+    target_kinds = {
+        row["kind"] for row in rebuilt_rows if target_id in {row["src"], row["dst"]}
+    }
+    assert target_kinds == {
+        "attended-with",
+        "co-present",
+        "committed-to",
+        "mentioned",
+        "spoke-with",
+    }
+
+    first_hash = _edge_hash(env)
+    rebuild_edges(str(env.journal))
+    assert _edge_hash(env) == first_hash
 
 
 def test_merge_commit_continues_when_edge_fold_fails(speakers_env, monkeypatch):

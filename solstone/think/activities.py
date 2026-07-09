@@ -10,6 +10,7 @@ Also provides utilities for activity records — completed activity spans
 stored as facets/{facet}/activities/{day}.jsonl.
 """
 
+import copy
 import difflib
 import json
 import logging
@@ -842,6 +843,118 @@ def locked_modify(
         if existed and updated == current:
             return
         _write_jsonl_records(path, updated)
+
+
+def _activity_record_paths() -> list[Path]:
+    facets_dir = Path(get_journal()) / "facets"
+    if not facets_dir.is_dir():
+        return []
+    return sorted(
+        path for path in facets_dir.glob("*/activities/*.jsonl") if path.is_file()
+    )
+
+
+def _remap_activity_record_entity_ids(
+    record: dict[str, Any],
+    source_id: str,
+    target_id: str,
+) -> tuple[dict[str, Any], int]:
+    updated = copy.deepcopy(record)
+    rewrites = 0
+
+    active_entities = updated.get("active_entities")
+    if isinstance(active_entities, list):
+        remapped_active_entities: list[Any] = []
+        changed = False
+        for value in active_entities:
+            if value == source_id:
+                remapped_active_entities.append(target_id)
+                rewrites += 1
+                changed = True
+            else:
+                remapped_active_entities.append(value)
+        if changed:
+            updated["active_entities"] = remapped_active_entities
+
+    list_fields = {
+        "participation": ("entity_id",),
+        "commitments": ("owner_entity_id", "counterparty_entity_id"),
+        "closures": ("owner_entity_id", "counterparty_entity_id"),
+        "decisions": ("owner_entity_id", "counterparty_entity_id"),
+        "relations": ("from_entity_id", "to_entity_id"),
+    }
+    for list_field, id_fields in list_fields.items():
+        items = updated.get(list_field)
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for id_field in id_fields:
+                if item.get(id_field) == source_id:
+                    item[id_field] = target_id
+                    rewrites += 1
+
+    if rewrites == 0:
+        return record, 0
+    return updated, rewrites
+
+
+def remap_activity_entity_ids(
+    source_id: str,
+    target_id: str,
+    *,
+    commit: bool = False,
+) -> dict[str, Any]:
+    """Plan or apply source->target entity-id rewrites in activity records."""
+    result: dict[str, Any] = {
+        "records_rewritten": 0,
+        "fields_rewritten": 0,
+        "files_scanned": 0,
+        "files_rewritten": 0,
+        "errors": [],
+    }
+
+    for path in _activity_record_paths():
+        result["files_scanned"] += 1
+        file_records_rewritten = 0
+        file_fields_rewritten = 0
+
+        def modify(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            nonlocal file_records_rewritten, file_fields_rewritten
+            updated_records: list[dict[str, Any]] = []
+            for record in records:
+                updated, rewrites = _remap_activity_record_entity_ids(
+                    record,
+                    source_id,
+                    target_id,
+                )
+                if rewrites:
+                    file_records_rewritten += 1
+                    file_fields_rewritten += rewrites
+                updated_records.append(updated)
+            return updated_records
+
+        if commit:
+            locked_modify(path, modify)
+        else:
+            try:
+                modify(_read_jsonl_records(path))
+            except OSError as exc:
+                result["errors"].append(
+                    {
+                        "path": str(path),
+                        "message": str(exc),
+                    }
+                )
+                continue
+
+        if file_fields_rewritten:
+            result["records_rewritten"] += file_records_rewritten
+            result["fields_rewritten"] += file_fields_rewritten
+            result["files_rewritten"] += 1
+
+    return result
 
 
 def append_edit(

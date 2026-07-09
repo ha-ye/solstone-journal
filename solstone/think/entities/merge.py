@@ -156,6 +156,22 @@ def _segment_section(
     }
 
 
+def _activity_section(
+    records_rewritten: int = 0,
+    fields_rewritten: int = 0,
+    files_scanned: int = 0,
+    files_rewritten: int = 0,
+    errors: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "records_rewritten": records_rewritten,
+        "fields_rewritten": fields_rewritten,
+        "files_scanned": files_scanned,
+        "files_rewritten": files_rewritten,
+        "errors": errors or [],
+    }
+
+
 def _edges_section(
     rows_folded: int = 0,
     self_edges_dropped: int = 0,
@@ -174,6 +190,7 @@ def _empty_result_section() -> dict[str, Any]:
         "voiceprints": _voiceprint_section(0, 0, 0),
         "facets": _facet_section([], [], 0),
         "segments": _segment_section(0, 0, 0, []),
+        "activities": _activity_section(),
         "edges": _edges_section(),
     }
 
@@ -633,6 +650,13 @@ def _audit_counts(result: dict[str, Any]) -> dict[str, Any]:
             "files_scanned": result["segments"]["files_scanned"],
             "errors": len(result["segments"]["errors"]),
         },
+        "activities": {
+            "records_rewritten": result["activities"]["records_rewritten"],
+            "fields_rewritten": result["activities"]["fields_rewritten"],
+            "files_scanned": result["activities"]["files_scanned"],
+            "files_rewritten": result["activities"]["files_rewritten"],
+            "errors": len(result["activities"]["errors"]),
+        },
         "edges": {
             "rows_folded": result["edges"]["rows_folded"],
             "self_edges_dropped": result["edges"]["self_edges_dropped"],
@@ -717,6 +741,9 @@ def merge_entity(
     voiceprint_plan = _plan_voiceprint_merge(source_id, target_id)
     facet_plan = _plan_facet_merge(source_id, target_id)
     segment_plan = _plan_segment_rewrites(source_id, target_id)
+    from solstone.think.activities import remap_activity_entity_ids
+
+    activity_plan = remap_activity_entity_ids(source_id, target_id, commit=False)
 
     would_fold_edges: int | None = None
     if not commit:
@@ -740,6 +767,7 @@ def merge_entity(
         "voiceprints": voiceprint_plan["section"] if commit else zero["voiceprints"],
         "facets": facet_plan["section"] if commit else zero["facets"],
         "segments": segment_plan["section"] if commit else zero["segments"],
+        "activities": zero["activities"],
         "edges": zero["edges"],
         "caches_cleared": [],
         "audit_log_path": None,
@@ -747,6 +775,7 @@ def merge_entity(
         "would_voiceprints": None if commit else voiceprint_plan["section"],
         "would_facets": None if commit else facet_plan["section"],
         "would_segments": None if commit else segment_plan["section"],
+        "would_activities": None if commit else activity_plan,
         "would_fold_edges": None if commit else would_fold_edges,
     }
 
@@ -767,6 +796,13 @@ def merge_entity(
 
         failed_phase = "segments"
         _apply_segment_plan(segment_plan["operations"], source_id, target_id)
+
+        failed_phase = "activities"
+        result["activities"] = remap_activity_entity_ids(
+            source_id,
+            target_id,
+            commit=True,
+        )
 
         failed_phase = "cleanup"
         caches_cleared = _apply_destructive_plan(facet_plan["operations"], source_id)

@@ -20,6 +20,7 @@ from solstone.think.journal_io import MalformedPolicy, read_json
 from solstone.think.utils import get_journal, resolve_journal_path
 
 logger = logging.getLogger(__name__)
+EntityFingerprint = tuple[int, int, int, int]
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,7 @@ class CandidateIndex:
 
     pattern: re.Pattern[str] | None
     candidates_by_key: dict[str, MentionCandidate]
+    entity_fingerprint: EntityFingerprint
 
 
 _CANDIDATE_CACHE: dict[str, CandidateIndex] = {}
@@ -193,14 +195,37 @@ def _load_transcript_texts(segment_dir: Path, stem: str) -> dict[int, str] | Non
 def _candidate_index_for_journal(journal: str) -> CandidateIndex:
     """Return the memoized candidate index for the active journal path."""
     cache_key = str(Path(journal).resolve())
+    fingerprint = _entity_file_fingerprint(cache_key)
     cached = _CANDIDATE_CACHE.get(cache_key)
-    if cached is None:
-        cached = _build_candidate_index()
+    if cached is None or cached.entity_fingerprint != fingerprint:
+        cached = _build_candidate_index(fingerprint)
         _CANDIDATE_CACHE[cache_key] = cached
     return cached
 
 
-def _build_candidate_index() -> CandidateIndex:
+def _entity_file_fingerprint(journal: str) -> EntityFingerprint:
+    """Return a cheap mutation fingerprint for journal-level entity files."""
+    entities_dir = Path(journal) / "entities"
+    if not entities_dir.is_dir():
+        return (0, 0, 0, 0)
+
+    count = 0
+    max_mtime_ns = 0
+    sum_mtime_ns = 0
+    sum_size = 0
+    for path in sorted(entities_dir.glob("*/entity.json")):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        count += 1
+        max_mtime_ns = max(max_mtime_ns, stat.st_mtime_ns)
+        sum_mtime_ns += stat.st_mtime_ns
+        sum_size += stat.st_size
+    return (count, max_mtime_ns, sum_mtime_ns, sum_size)
+
+
+def _build_candidate_index(fingerprint: EntityFingerprint) -> CandidateIndex:
     """Build mention candidates, ambiguity drops, and the combined regex."""
     candidates_by_key: dict[str, MentionCandidate] = {}
     ambiguous: set[str] = set()
@@ -224,7 +249,11 @@ def _build_candidate_index() -> CandidateIndex:
                 ambiguous.add(key)
 
     if not candidates_by_key:
-        return CandidateIndex(pattern=None, candidates_by_key={})
+        return CandidateIndex(
+            pattern=None,
+            candidates_by_key={},
+            entity_fingerprint=fingerprint,
+        )
 
     variants = sorted(
         (candidate.variant for candidate in candidates_by_key.values()),
@@ -236,7 +265,11 @@ def _build_candidate_index() -> CandidateIndex:
         + r")(?!\w)",
         re.IGNORECASE,
     )
-    return CandidateIndex(pattern=pattern, candidates_by_key=candidates_by_key)
+    return CandidateIndex(
+        pattern=pattern,
+        candidates_by_key=candidates_by_key,
+        entity_fingerprint=fingerprint,
+    )
 
 
 def _entity_variants(entity: dict[str, Any]) -> list[str]:

@@ -934,7 +934,7 @@ def test_post_process_persists_resolved_relation_on_observation(tmp_path, monkey
     }
 
 
-def test_post_process_drops_op_with_unresolvable_relation_target(
+def test_post_process_preserves_op_with_unresolvable_relation_target(
     tmp_path, monkeypatch, caplog
 ):
     _set_journal(monkeypatch, str(tmp_path))
@@ -968,12 +968,20 @@ def test_post_process_drops_op_with_unresolvable_relation_target(
         {"facet": facet, "day": day},
     )
 
-    assert load_observations(facet, "alice_johnson") == []
+    observations = load_observations(facet, "alice_johnson")
+    assert len(observations) == 1
+    assert observations[0]["content"] == "Reports to someone we cannot identify"
+    assert observations[0]["relation"] == {
+        "kind": "reports-to",
+        "target_entity_id": None,
+        "target_name": "Nobody Visible",
+        "note": "",
+    }
     assert "unresolved relation target" in caplog.text
     outcome = _load_outcome(tmp_path, facet, day)
     assert {key: outcome[key] for key in COUNT_KEYS} == {
         "update": 0,
-        "add": 0,
+        "add": 1,
         "drop": 0,
         "keep": 0,
         "skipped": 0,
