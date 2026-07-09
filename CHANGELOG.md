@@ -4,6 +4,12 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [Unreleased]
+
+### Fixed
+
+- local thinking on your own machine no longer gets stuck repeating itself on busy stretches. if a local run still runs out of room, sol tries once more with different settings before giving up clearly.
+
 ## [0.8.2] - 2026-07-07
 
 ### Added

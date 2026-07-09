@@ -13,6 +13,7 @@ import pytest
 from solstone.think.models import (
     LOCAL_MODEL,
     TYPE_DEFAULTS,
+    IncompleteJSONError,
     get_backup_provider,
     is_provider_healthy,
     is_provider_model_interface_healthy,
@@ -677,6 +678,202 @@ def test_execute_generate_local_failure_does_not_consult_backup(monkeypatch):
     }
 
     with pytest.raises(RuntimeError, match="binary_missing"):
+        asyncio.run(_execute_generate(config, events.append))
+
+    assert calls["count"] == 1
+    assert not any(e.get("event") == "fallback" for e in events)
+
+
+@pytest.mark.parametrize(
+    ("base_temperature", "expected_retry_temperature"),
+    [
+        (None, 0.7),
+        (0.8, 0.8),
+    ],
+)
+def test_execute_generate_local_length_retry_succeeds(
+    monkeypatch, base_temperature, expected_retry_temperature
+):
+    from solstone.think.talents import _execute_generate
+
+    events = []
+    calls = []
+
+    def mock_generate_with_result(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise IncompleteJSONError("length", '{"partial":')
+        assert kwargs["temperature"] == expected_retry_temperature
+        return {"text": "ok", "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+    def fail_backup(_agent_type):
+        raise AssertionError("local retry must not consult cloud backup")
+
+    monkeypatch.setattr(
+        "solstone.think.talent.key_to_context", lambda _name: "talent.system.default"
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result", mock_generate_with_result
+    )
+    monkeypatch.setattr("solstone.think.models.get_backup_provider", fail_backup)
+
+    config = {
+        "name": "chat",
+        "provider": "local",
+        "model": LOCAL_MODEL,
+        "prompt": "hello",
+        "health_stale": False,
+    }
+    if base_temperature is not None:
+        config["temperature"] = base_temperature
+
+    asyncio.run(_execute_generate(config, events.append))
+
+    assert len(calls) == 2
+    assert calls[0]["temperature"] == (base_temperature or 0.3)
+    assert calls[1]["temperature"] == expected_retry_temperature
+    assert not any(e.get("event") == "fallback" for e in events)
+    assert events[-1]["event"] == "finish"
+    assert events[-1]["retries"] == 1
+
+
+def test_main_async_local_length_retry_second_failure_emits_one_error(
+    monkeypatch, capsys
+):
+    from solstone.think import talents
+
+    ndjson_input = json.dumps({"name": "chat", "prompt": "hello"})
+    calls = {"count": 0}
+
+    def mock_generate_with_result(**_kwargs):
+        calls["count"] += 1
+        raise IncompleteJSONError("length", '{"partial":')
+
+    mock_args = MagicMock()
+    mock_args.verbose = False
+    mock_args.dry_run = False
+    mock_args.subcommand = None
+
+    config = {
+        "type": "generate",
+        "name": "chat",
+        "provider": "local",
+        "model": LOCAL_MODEL,
+        "prompt": "hello",
+        "health_stale": False,
+    }
+
+    monkeypatch.setattr("sys.stdin", StringIO(ndjson_input))
+    monkeypatch.setattr("solstone.think.talents.setup_cli", lambda _parser: mock_args)
+    monkeypatch.setattr(
+        "solstone.think.talents.setup_logging",
+        lambda _verbose=False: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "solstone.think.talents.prepare_config", lambda _request: config
+    )
+    monkeypatch.setattr("solstone.think.talents.validate_config", lambda _config: None)
+    monkeypatch.setattr("solstone.think.talents._run_pre_hooks", lambda _config: {})
+    monkeypatch.setattr(
+        "solstone.think.talent.key_to_context", lambda _name: "talent.system.default"
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result", mock_generate_with_result
+    )
+    monkeypatch.setattr(
+        "solstone.think._extraction_utils.log_extraction_failure",
+        lambda _exc, _name: None,
+    )
+
+    asyncio.run(talents.main_async())
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    events = [json.loads(line) for line in lines]
+    error_events = [event for event in events if event.get("event") == "error"]
+    finish_events = [event for event in events if event.get("event") == "finish"]
+
+    assert calls["count"] == 2
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "incomplete_json_length"
+    assert finish_events == []
+    assert all("retries" not in event for event in events)
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        IncompleteJSONError("safety", '{"partial":'),
+        RuntimeError("binary_missing"),
+    ],
+)
+def test_execute_generate_local_non_length_errors_do_not_retry(monkeypatch, exc):
+    from solstone.think.talents import _execute_generate
+
+    events = []
+    calls = {"count": 0}
+
+    def mock_generate_with_result(**_kwargs):
+        calls["count"] += 1
+        raise exc
+
+    def fail_backup(_agent_type):
+        raise AssertionError("local failure must not consult cloud backup")
+
+    monkeypatch.setattr(
+        "solstone.think.talent.key_to_context", lambda _name: "talent.system.default"
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result", mock_generate_with_result
+    )
+    monkeypatch.setattr("solstone.think.models.get_backup_provider", fail_backup)
+
+    config = {
+        "name": "chat",
+        "provider": "local",
+        "model": LOCAL_MODEL,
+        "prompt": "hello",
+        "health_stale": False,
+    }
+
+    with pytest.raises(type(exc)):
+        asyncio.run(_execute_generate(config, events.append))
+
+    assert calls["count"] == 1
+    assert not any(e.get("event") == "fallback" for e in events)
+
+
+def test_execute_generate_cloud_incomplete_json_preserves_existing_nonlocal_path(
+    monkeypatch,
+):
+    from solstone.think.talents import _execute_generate
+
+    events = []
+    calls = {"count": 0}
+
+    def mock_generate_with_result(**_kwargs):
+        calls["count"] += 1
+        raise IncompleteJSONError("length", '{"partial":')
+
+    def fail_backup(_agent_type):
+        raise AssertionError("IncompleteJSONError is ValueError; no fallback today")
+
+    monkeypatch.setattr(
+        "solstone.think.talent.key_to_context", lambda _name: "talent.system.default"
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result", mock_generate_with_result
+    )
+    monkeypatch.setattr("solstone.think.models.get_backup_provider", fail_backup)
+
+    config = {
+        "name": "chat",
+        "provider": "google",
+        "model": "gemini-3-flash-preview",
+        "prompt": "hello",
+        "health_stale": False,
+    }
+
+    with pytest.raises(IncompleteJSONError):
         asyncio.run(_execute_generate(config, events.append))
 
     assert calls["count"] == 1

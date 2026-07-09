@@ -78,6 +78,11 @@ TALENT_EXECUTION_MODULE = "solstone.think.talents"
 
 LOG = logging.getLogger("solstone.think.talents")
 
+# Qwen3.5-4B's model card warns against greedy / near-greedy decoding. A single
+# retry above this floor perturbs the sampler out of a repetition attractor.
+# This is a floor, not a base: talent-owned temperature above it is preserved.
+_LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR = 0.7
+
 # Minimum content length for transcript-based generation
 MIN_INPUT_CHARS = 50
 # Minimum model output tokens before a degradation-checked talent run is flagged near-empty
@@ -1516,7 +1521,7 @@ async def _execute_generate(
         config: Prepared config dict
         emit_event: Event emission callback
     """
-    from solstone.think.models import generate_with_result
+    from solstone.think.models import IncompleteJSONError, generate_with_result
     from solstone.think.talent import key_to_context
 
     name = config["name"]
@@ -1540,6 +1545,7 @@ async def _execute_generate(
     contents = _build_generation_contents(config)
     context = key_to_context(name)
     runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
+    retries = 0
     try:
         gen_result = generate_with_result(
             contents=contents,
@@ -1557,55 +1563,80 @@ async def _execute_generate(
     except Exception as exc:
         provider = config.get("provider", "google")
         if provider == "local":
-            raise
-        if config.get("fallback_from") or not _should_fallback(exc):
-            raise
-        from solstone.think.models import (
-            get_backup_provider,
-            resolve_model_for_provider,
-        )
-        from solstone.think.providers import PROVIDER_METADATA
-
-        backup = get_backup_provider("generate")
-        if not backup or backup == provider:
-            raise
-        env_key = PROVIDER_METADATA.get(backup, {}).get("env_key")
-        if env_key and not os.getenv(env_key):
-            raise
-
-        backup_model = resolve_model_for_provider(context, backup, "generate")
-
-        emit_event(
-            {
-                "event": "fallback",
-                "ts": now_ms(),
-                "original_provider": provider,
-                "backup_provider": backup,
-                "reason": "on_failure",
-                "error": str(exc),
-            }
-        )
-
-        config["fallback_from"] = provider
-        config["provider"] = backup
-        config["model"] = backup_model
-
-        try:
+            if (
+                not isinstance(exc, IncompleteJSONError)
+                or getattr(exc, "reason_code", None) != "incomplete_json_length"
+            ):
+                raise
+            LOG.warning(
+                "Retrying local talent %s after incomplete JSON length limit "
+                "(reason=%s)",
+                name,
+                exc.reason,
+            )
+            retries = 1
             gen_result = generate_with_result(
                 contents=contents,
                 context=context,
-                temperature=temperature,
+                temperature=max(temperature, _LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR),
                 max_output_tokens=max_output_tokens,
                 thinking_budget=thinking_budget,
                 system_instruction=system_instruction,
                 json_output=is_json_output,
                 json_schema=runtime_json_schema,
                 timeout_s=timeout_s,
-                provider=backup,
-                model=backup_model,
+                provider=config.get("provider"),
+                model=config.get("model"),
             )
-        except Exception:
-            raise exc
+        else:
+            if config.get("fallback_from") or not _should_fallback(exc):
+                raise
+            from solstone.think.models import (
+                get_backup_provider,
+                resolve_model_for_provider,
+            )
+            from solstone.think.providers import PROVIDER_METADATA
+
+            backup = get_backup_provider("generate")
+            if not backup or backup == provider:
+                raise
+            env_key = PROVIDER_METADATA.get(backup, {}).get("env_key")
+            if env_key and not os.getenv(env_key):
+                raise
+
+            backup_model = resolve_model_for_provider(context, backup, "generate")
+
+            emit_event(
+                {
+                    "event": "fallback",
+                    "ts": now_ms(),
+                    "original_provider": provider,
+                    "backup_provider": backup,
+                    "reason": "on_failure",
+                    "error": str(exc),
+                }
+            )
+
+            config["fallback_from"] = provider
+            config["provider"] = backup
+            config["model"] = backup_model
+
+            try:
+                gen_result = generate_with_result(
+                    contents=contents,
+                    context=context,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    thinking_budget=thinking_budget,
+                    system_instruction=system_instruction,
+                    json_output=is_json_output,
+                    json_schema=runtime_json_schema,
+                    timeout_s=timeout_s,
+                    provider=backup,
+                    model=backup_model,
+                )
+            except Exception:
+                raise exc
     finally:
         if config.get("health_stale"):
             from solstone.think.models import request_health_recheck
@@ -1684,6 +1715,8 @@ async def _execute_generate(
         finish_event["input_budget"] = gen_result["input_budget"]
     if degraded:
         finish_event["degraded"] = degraded
+    if retries:
+        finish_event["retries"] = retries
     emit_event(finish_event)
 
 
