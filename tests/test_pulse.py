@@ -17,6 +17,22 @@ def journal(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _select_local_provider(journal_path):
+    config_dir = journal_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "generate": {"provider": "local"},
+                    "cogitate": {"provider": "local"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _pulse_payload(**overrides):
     payload = {
         "title": "Focused morning",
@@ -222,5 +238,6 @@ def test_accumulate_suppresses_single_file_output_path(journal):
     assert "output" not in request_config
     assert "refresh" not in request_config
 
+    _select_local_provider(journal)
     prepared = prepare_config({"name": "pulse", "day": "20260611"})
     assert "output_path" not in prepared

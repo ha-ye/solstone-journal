@@ -41,6 +41,22 @@ def _set_journal(monkeypatch: pytest.MonkeyPatch, journal: Path) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
 
+def _select_local_provider(journal: Path) -> None:
+    config_dir = journal / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "generate": {"provider": "local"},
+                    "cogitate": {"provider": "local"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _valid_body(*, status: str = "sol is well.", needs: str = "") -> str:
     return "\n".join(
         [
@@ -881,5 +897,6 @@ def test_accumulate_suppresses_single_file_output_path(tmp_path, monkeypatch):
     assert "output" not in request_config
     assert "refresh" not in request_config
 
+    _select_local_provider(tmp_path)
     prepared = prepare_config({"name": "steward", "day": "20260607"})
     assert "output_path" not in prepared

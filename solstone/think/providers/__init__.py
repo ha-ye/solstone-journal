@@ -106,6 +106,10 @@ def get_provider_module(provider: str) -> ModuleType:
     ValueError
         If the provider is not registered.
     """
+    if provider == "none":
+        from solstone.think.models import NoBrainConfiguredError
+
+        raise NoBrainConfiguredError()
     if provider not in PROVIDER_REGISTRY:
         valid = ", ".join(sorted(PROVIDER_REGISTRY.keys()))
         raise ValueError(f"Unknown provider: {provider!r}. Valid providers: {valid}")

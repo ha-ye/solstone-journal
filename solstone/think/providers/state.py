@@ -43,6 +43,7 @@ READINESS_REASON_CODES = frozenset(
         "gpu_probe_failed",
         "gpu_unavailable",
         "local_server_unhealthy",
+        "thinking_engine_not_chosen",
     }
 )
 REASON_CODES = READINESS_REASON_CODES | RUNTIME_REASON_CODES
@@ -269,6 +270,20 @@ def cloud_key_configured(env_key: str) -> bool:
 
 def _is_darwin() -> bool:
     return sys.platform == "darwin"
+
+
+def local_runtime_ready(model_id: str | None = None) -> bool:
+    """Return True when bundled local artifacts are present."""
+    if _is_darwin():
+        from solstone.think.providers import mlx_install
+
+        artifacts = mlx_install.inspect_artifacts(model_id)
+        return bool(artifacts["model_installed"])
+
+    from solstone.think.providers import local_install
+
+    artifacts = local_install.inspect_artifacts(model_id)
+    return bool(artifacts["binary_installed"] and artifacts["model_installed"])
 
 
 def local_status_dict() -> dict:
@@ -714,6 +729,17 @@ def readiness_for_provider(
     model: str | None = None,
 ) -> ProviderState:
     """Return passive readiness for a provider/model/interface."""
+    from solstone.think.models import NO_BRAIN_PROVIDER
+
+    if provider == NO_BRAIN_PROVIDER:
+        return _state(
+            provider,
+            interface,
+            "blocked",
+            "thinking_engine_not_chosen",
+            model=model,
+            source="config",
+        )
     if provider == "local":
         return _local_readiness_for_provider(provider, interface, model)
     return _cloud_readiness_for_provider(provider, interface, model)
@@ -739,6 +765,7 @@ __all__ = [
     "is_provider_healthy",
     "is_provider_model_interface_healthy",
     "local_status_dict",
+    "local_runtime_ready",
     "read_health_status",
     "readiness_for_context",
     "readiness_for_provider",

@@ -365,24 +365,18 @@ def _write_mlx_metadata(
     write_journal_config(config)
 
 
-def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
+def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
     config = read_journal_config()
     record = config.get("providers", {}).get("bundled", {}).get(_LOCAL_NAME, {})
     if not isinstance(record, dict):
         record = {}
     selected_model = model_id or record.get("mlx_model_id") or QWEN_35_9B
     spec = resolve_model_spec(str(selected_model))
-    status = _read_status()
     presence = _artifact_presence(spec)
-    verdict = assess_memory(MLX_AVAILABLE_FLOOR_BYTES, block_below_floor=True)
     return {
-        "install_state": status["install_state"],
         "model_installed": presence["model_installed"],
         "snapshot_installed": presence["snapshot_installed"],
         "variant_installed": presence["variant_installed"],
-        "ram_sufficient": verdict.severity != "blocked",
-        "platform_supported": is_mlx_platform_supported(),
-        "package_available": _check_platform_and_package()[0],
         "model_id": spec.name,
         "snapshot_dir": str(presence["snapshot_dir"]),
         "variant_dir": (
@@ -391,6 +385,25 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
             else None
         ),
         "runtime_dir": str(presence["runtime_dir"]),
+    }
+
+
+def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
+    status = _read_status()
+    artifacts = inspect_artifacts(model_id)
+    verdict = assess_memory(MLX_AVAILABLE_FLOOR_BYTES, block_below_floor=True)
+    return {
+        "install_state": status["install_state"],
+        "model_installed": artifacts["model_installed"],
+        "snapshot_installed": artifacts["snapshot_installed"],
+        "variant_installed": artifacts["variant_installed"],
+        "ram_sufficient": verdict.severity != "blocked",
+        "platform_supported": is_mlx_platform_supported(),
+        "package_available": _check_platform_and_package()[0],
+        "model_id": artifacts["model_id"],
+        "snapshot_dir": artifacts["snapshot_dir"],
+        "variant_dir": artifacts["variant_dir"],
+        "runtime_dir": artifacts["runtime_dir"],
         "install_error": status["install_error"],
     }
 

@@ -252,6 +252,13 @@ def test_run_check_targeted_filters_to_configured_pairs(tmp_path, monkeypatch):
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
     monkeypatch.setattr("solstone.think.models.TYPE_DEFAULTS", fake_type_defaults)
+    monkeypatch.setattr(
+        "solstone.think.models.resolve_provider",
+        lambda _context, agent_type: (
+            fake_type_defaults[agent_type]["provider"],
+            fake_defaults[fake_type_defaults[agent_type]["provider"]][2],
+        ),
+    )
     _patch_health_journal(monkeypatch, providers_cli, tmp_path)
     monkeypatch.setattr(
         providers_cli,
@@ -314,6 +321,13 @@ def test_run_check_targeted_flock_dedup(tmp_path, monkeypatch):
     monkeypatch.setattr("solstone.think.providers.PROVIDER_REGISTRY", fake_registry)
     monkeypatch.setattr("solstone.think.models.PROVIDER_DEFAULTS", fake_defaults)
     monkeypatch.setattr("solstone.think.models.TYPE_DEFAULTS", fake_type_defaults)
+    monkeypatch.setattr(
+        "solstone.think.models.resolve_provider",
+        lambda _context, agent_type: (
+            fake_type_defaults[agent_type]["provider"],
+            fake_defaults[fake_type_defaults[agent_type]["provider"]][2],
+        ),
+    )
     _patch_health_journal(monkeypatch, providers_cli, tmp_path)
     monkeypatch.setattr("solstone.think.utils.get_config", lambda: {})
     monkeypatch.setattr("solstone.think.models.get_backup_provider", lambda _: None)

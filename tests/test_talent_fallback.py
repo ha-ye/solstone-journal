@@ -12,8 +12,10 @@ import pytest
 
 from solstone.think.models import (
     LOCAL_MODEL,
+    NO_BRAIN_PROVIDER,
     TYPE_DEFAULTS,
     IncompleteJSONError,
+    NoBrainConfiguredError,
     get_backup_provider,
     is_provider_healthy,
     is_provider_model_interface_healthy,
@@ -154,8 +156,23 @@ def test_get_backup_provider_from_config(monkeypatch):
     assert get_backup_provider("generate") == "openai"
 
 
-def test_get_backup_provider_fallback_constant(monkeypatch):
+def test_get_backup_provider_no_brain_disables_backup(monkeypatch):
     monkeypatch.setattr("solstone.think.models.get_config", lambda: {})
+    monkeypatch.setattr(
+        "solstone.think.providers.state.local_runtime_ready", lambda: False
+    )
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    assert get_backup_provider("generate") is None
+    assert get_backup_provider("cogitate") is None
+
+
+def test_get_backup_provider_keyed_default_uses_fallback_constant(monkeypatch):
+    monkeypatch.setattr("solstone.think.models.get_config", lambda: {})
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+
     assert get_backup_provider("generate") == TYPE_DEFAULTS["generate"]["backup"]
     assert get_backup_provider("cogitate") == TYPE_DEFAULTS["cogitate"]["backup"]
 
@@ -183,6 +200,24 @@ def test_get_backup_provider_local_disables_backup(monkeypatch, agent_type):
         },
     )
     assert get_backup_provider(agent_type) is None
+
+
+@pytest.mark.parametrize("agent_type", ["generate", "cogitate"])
+def test_get_backup_provider_no_brain_primary_disables_backup(monkeypatch, agent_type):
+    monkeypatch.setattr(
+        "solstone.think.models.get_config",
+        lambda: {
+            "providers": {
+                agent_type: {"provider": NO_BRAIN_PROVIDER, "backup": "anthropic"},
+            }
+        },
+    )
+    assert get_backup_provider(agent_type) is None
+
+
+def test_no_brain_error_is_non_retryable():
+    assert _is_retryable_error(NoBrainConfiguredError()) is False
+    assert _should_fallback(NoBrainConfiguredError()) is False
 
 
 def test_execute_with_tools_local_failure_does_not_consult_backup(monkeypatch):

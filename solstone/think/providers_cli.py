@@ -200,17 +200,27 @@ async def _run_check(args: argparse.Namespace) -> None:
     if args.targeted and not args.provider and not args.tier:
         import fcntl
 
-        from solstone.think.models import TYPE_DEFAULTS, get_backup_provider
+        from solstone.think.models import (
+            NO_BRAIN_PROVIDER,
+            TYPE_DEFAULTS,
+            get_backup_provider,
+            resolve_provider,
+        )
         from solstone.think.utils import get_config
 
         targeted_pairs = set()
         config = get_config()
         providers_config = config.get("providers", {})
+        if not isinstance(providers_config, dict):
+            providers_config = {}
         for talent_type, defaults in TYPE_DEFAULTS.items():
             type_config = providers_config.get(talent_type, {})
-            provider = type_config.get("provider", defaults["provider"])
+            if not isinstance(type_config, dict):
+                type_config = {}
+            provider, _ = resolve_provider("", talent_type)
             tier = type_config.get("tier", defaults["tier"])
-            targeted_pairs.add((provider, tier))
+            if provider != NO_BRAIN_PROVIDER:
+                targeted_pairs.add((provider, tier))
             backup = get_backup_provider(talent_type)
             if backup:
                 targeted_pairs.add((backup, tier))

@@ -197,9 +197,12 @@ PROVIDER_DEFAULTS: Dict[str, Dict[int, str]] = {
 }
 
 TYPE_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "generate": {"provider": "google", "tier": TIER_FLASH, "backup": "anthropic"},
-    "cogitate": {"provider": "google", "tier": TIER_FLASH, "backup": "anthropic"},
+    "generate": {"tier": TIER_FLASH, "backup": "anthropic"},
+    "cogitate": {"tier": TIER_FLASH, "backup": "anthropic"},
 }
+
+NO_BRAIN_PROVIDER = "none"
+IMPLICIT_CLOUD_PROVIDER_ORDER = ("google", "anthropic", "openai")
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +249,16 @@ class SchemaValidationError(ValueError):
             "JSON response failed schema validation "
             f"({len(errors)} error(s); preview={self.preview!r})"
         )
+
+
+class NoBrainConfiguredError(RuntimeError):
+    """Raised when no thinking engine has been selected for model execution."""
+
+    reason_code = "thinking_engine_not_chosen"
+    provider = NO_BRAIN_PROVIDER
+
+    def __init__(self) -> None:
+        super().__init__("No thinking engine is chosen yet. Choose one in Thinking.")
 
 
 # ---------------------------------------------------------------------------
@@ -473,6 +486,38 @@ def _resolve_tier(context: str, agent_type: str) -> int:
     return default_tier
 
 
+def _resolve_default_provider(
+    providers: dict[str, Any],
+    agent_type: str,
+    *,
+    local_ready: bool | None = None,
+) -> str:
+    type_config = providers.get(agent_type, {}) if isinstance(providers, dict) else {}
+    if not isinstance(type_config, dict):
+        type_config = {}
+
+    explicit_provider = type_config.get("provider")
+    if isinstance(explicit_provider, str) and explicit_provider:
+        return explicit_provider
+
+    from solstone.think.providers import PROVIDER_METADATA
+    from solstone.think.providers.state import (
+        cloud_key_configured,
+        local_runtime_ready,
+    )
+
+    for provider in IMPLICIT_CLOUD_PROVIDER_ORDER:
+        env_key = PROVIDER_METADATA[provider]["env_key"]
+        if cloud_key_configured(env_key):
+            return provider
+
+    if local_ready is None:
+        local_ready = local_runtime_ready()
+    if local_ready:
+        return "local"
+    return NO_BRAIN_PROVIDER
+
+
 def _resolve_model(provider: str, tier: int, config_models: Dict[str, Any]) -> str:
     """Resolve tier to model string for a given provider.
 
@@ -512,9 +557,14 @@ def _resolve_model(provider: str, tier: int, config_models: Dict[str, Any]) -> s
         if t in provider_defaults:
             return provider_defaults[t]
 
-    # Ultimate fallback: system default for provider at TIER_FLASH
-    provider_defaults = PROVIDER_DEFAULTS.get(provider, PROVIDER_DEFAULTS["google"])
-    return provider_defaults.get(TIER_FLASH, GEMINI_FLASH)
+    if provider == NO_BRAIN_PROVIDER:
+        raise NoBrainConfiguredError()
+    provider_defaults = PROVIDER_DEFAULTS.get(provider)
+    if provider_defaults is None:
+        raise ValueError(f"Unknown provider: {provider!r}")
+    if TIER_FLASH in provider_defaults:
+        return provider_defaults[TIER_FLASH]
+    raise ValueError(f"Unknown provider: {provider!r}")
 
 
 def resolve_model_for_provider(
@@ -555,10 +605,31 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
     Matches context against configured contexts using exact match first,
     then glob patterns (via fnmatch), falling back to type-specific defaults.
 
+    Provider precedence:
+
+    0. If ``type_default_is_local(agent_type)``: resolve to local. A cloud
+       context / frontmatter / request pin may NOT override an explicit local
+       type default — its cloud model string is neutralized. An explicit local
+       context pin (provider: local + model) is honored verbatim. (D8 hard
+       promise; predates this lode and is load-bearing for privacy.)
+    1. Explicit ``providers.contexts.<match>.provider``.
+    2. Explicit ``providers.<agent_type>.provider``.
+    3. Key-presence fallback: first of google -> anthropic -> openai with
+       cloud_key_configured(...). This order equals today's TYPE_DEFAULTS
+       provider -> backup -> remainder, so every existing keyed install resolves
+       to exactly the provider it does today. That IS the grandfather guarantee.
+    4. ``local``, if bundled artifacts are present.
+    5. NO_BRAIN_PROVIDER.
+
+    The key-presence order is ``google -> anthropic -> openai`` because that is
+    exactly today's provider -> backup -> remainder order. This is the
+    grandfather guarantee: every existing keyed install with no explicit
+    provider resolves to the same provider it does today.
+
     Supports both explicit model strings and tier-based routing:
     - {"provider": "google", "model": "gemini-flash-latest"} - explicit model
     - {"provider": "google", "tier": 2} - tier-based (2=flash)
-    - {"tier": 1} - tier only, inherits provider from type default
+    - {"tier": 1} - tier only, inherits the resolved default provider
 
     The "models" section in providers config allows overriding which model
     is used for each tier per provider.
@@ -574,25 +645,36 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
     -------
     tuple[str, str]
         (provider_name, model) tuple. Provider is one of "google", "openai",
-        "anthropic". Model is the full model identifier string.
+        "anthropic", "local", or NO_BRAIN_PROVIDER. Model is the full model
+        identifier string, or "" for NO_BRAIN_PROVIDER.
     """
     config = get_config()
     providers = config.get("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
     config_models = providers.get("models", {})
+    if not isinstance(config_models, dict):
+        config_models = {}
 
     # Get type-specific defaults from config, falling back to system constants
     type_defaults = TYPE_DEFAULTS[agent_type]
     type_config = providers.get(agent_type, {})
-    default_provider = type_config.get("provider", type_defaults["provider"])
+    if not isinstance(type_config, dict):
+        type_config = {}
+    default_provider = _resolve_default_provider(providers, agent_type)
     default_tier = type_config.get("tier", type_defaults["tier"])
 
     # Handle explicit "model" key in type config (overrides tier-based resolution)
-    if "model" in type_config and "tier" not in type_config:
+    if default_provider == NO_BRAIN_PROVIDER:
+        default_model = ""
+    elif "model" in type_config and "tier" not in type_config:
         default_model = type_config["model"]
     else:
         default_model = _resolve_model(default_provider, default_tier, config_models)
 
     contexts = providers.get("contexts", {})
+    if not isinstance(contexts, dict):
+        contexts = {}
 
     # Find matching context config
     match_config: Optional[Dict[str, Any]] = None
@@ -635,6 +717,8 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
                     context_tier = matches[0][1]
 
         if context_tier is not None:
+            if default_provider == NO_BRAIN_PROVIDER:
+                return (NO_BRAIN_PROVIDER, "")
             model = _resolve_model(default_provider, context_tier, config_models)
             return (default_provider, model)
 
@@ -644,7 +728,7 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
     provider = match_config.get("provider", default_provider)
 
     # Local type-default is a hard promise: a cloud context provider pin cannot
-    # override it — its cloud model string is neutralized. An *explicit* local
+    # override it -- its cloud model string is neutralized. An explicit local
     # context pin (provider: local + model) is honored verbatim; otherwise only
     # the context's tier feeds local model selection.
     if type_default_is_local(agent_type, config):
@@ -660,9 +744,13 @@ def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
             tier = default_tier
         return ("local", _resolve_model("local", tier, config_models))
 
-    # Resolve model: explicit model takes precedence over tier
-    if "model" in match_config:
-        model = match_config["model"]
+    if provider == NO_BRAIN_PROVIDER:
+        return (NO_BRAIN_PROVIDER, "")
+
+    # Resolve model: explicit non-empty model takes precedence over tier
+    explicit_model = match_config.get("model")
+    if isinstance(explicit_model, str) and explicit_model.strip():
+        model = explicit_model
     elif "tier" in match_config:
         tier = match_config["tier"]
         # Validate tier
@@ -711,21 +799,42 @@ def is_local_provider_needed(config: dict[str, Any] | None = None) -> bool:
     contexts = providers.get("contexts", {})
     if not isinstance(contexts, dict):
         return False
-    return any(
+    if any(
         isinstance(context_config, dict) and context_config.get("provider") == "local"
         for context_config in contexts.values()
+    ):
+        return True
+
+    from solstone.think.providers.state import local_runtime_ready
+
+    local_ready = local_runtime_ready()
+    return any(
+        _resolve_default_provider(providers, agent_type, local_ready=local_ready)
+        == "local"
+        for agent_type in ("generate", "cogitate")
+    )
+
+
+def no_thinking_engine_chosen(config: dict[str, Any] | None = None) -> bool:
+    """Return True when neither default thinking interface has an engine."""
+    journal_config = config if config is not None else get_config()
+    providers = journal_config.get("providers", {})
+    if not isinstance(providers, dict):
+        providers = {}
+    from solstone.think.providers.state import local_runtime_ready
+
+    local_ready = local_runtime_ready()
+    return all(
+        _resolve_default_provider(providers, agent_type, local_ready=local_ready)
+        == NO_BRAIN_PROVIDER
+        for agent_type in ("generate", "cogitate")
     )
 
 
 def type_default_is_local(
     agent_type: str, config: dict[str, Any] | None = None
 ) -> bool:
-    """Return True when the per-type provider default for agent_type is local.
-
-    This is the authority for the local-lane hard promise: when a type's default
-    provider is local, no cloud context override or cloud frontmatter/request pin
-    may route a talent of that type onto a cloud provider.
-    """
+    """Return True when the explicit per-type provider for agent_type is local."""
     journal_config = config if config is not None else get_config()
     providers = journal_config.get("providers", {})
     if not isinstance(providers, dict):
@@ -856,6 +965,11 @@ def _reject_local_cloud_model_override(
             f"local provider cannot serve cloud model override {model_override!r}: "
             "remove the model override or select a matching cloud provider."
         )
+
+
+def _raise_if_no_brain(provider: str) -> None:
+    if provider == NO_BRAIN_PROVIDER:
+        raise NoBrainConfiguredError()
 
 
 def get_model_provider(model: str) -> str:
@@ -1295,6 +1409,7 @@ def generate(
     if model_override:
         model = model_override
 
+    _raise_if_no_brain(provider)
     _reject_local_cloud_model_override(provider, model_override)
 
     # Get provider module via registry (raises ValueError for unknown providers)
@@ -1355,10 +1470,14 @@ def get_backup_provider(agent_type: str) -> Optional[str]:
     type_defaults = TYPE_DEFAULTS[agent_type]
     config = get_config()
     providers_config = config.get("providers", {})
+    if not isinstance(providers_config, dict):
+        providers_config = {}
     type_config = providers_config.get(agent_type, {})
-    primary_provider = type_config.get("provider", type_defaults["provider"])
+    if not isinstance(type_config, dict):
+        type_config = {}
+    primary_provider = _resolve_default_provider(providers_config, agent_type)
     backup = type_config.get("backup", type_defaults["backup"])
-    if primary_provider == "local":
+    if primary_provider in {"local", NO_BRAIN_PROVIDER}:
         return None
     if backup == primary_provider:
         return None
@@ -1510,6 +1629,7 @@ def generate_with_result(
     if model_override:
         model = model_override
 
+    _raise_if_no_brain(provider)
     _reject_local_cloud_model_override(provider, model_override)
 
     provider_mod = get_provider_module(provider)
@@ -1618,6 +1738,7 @@ async def agenerate(
     if model_override:
         model = model_override
 
+    _raise_if_no_brain(provider)
     _reject_local_cloud_model_override(provider, model_override)
 
     # Get provider module via registry (raises ValueError for unknown providers)
@@ -1665,6 +1786,8 @@ async def agenerate(
 __all__ = [
     # Provider configuration
     "TYPE_DEFAULTS",
+    "NO_BRAIN_PROVIDER",
+    "NoBrainConfiguredError",
     "PROMPT_PATHS",
     "get_context_registry",
     # Model constants (used by provider backends for defaults)
@@ -1685,6 +1808,7 @@ __all__ = [
     "resolve_provider",
     "resolve_effective_route",
     "is_local_provider_needed",
+    "no_thinking_engine_chosen",
     "type_default_is_local",
     # Utilities
     "log_token_usage",

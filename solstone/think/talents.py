@@ -552,9 +552,11 @@ def prepare_config(request: dict) -> dict:
         Fully prepared config dict
     """
     from solstone.think.models import (
+        NO_BRAIN_PROVIDER,
         TIER_FLASH,
         TIER_LITE,
         TIER_PRO,
+        NoBrainConfiguredError,
         _resolve_tier,
         resolve_model_for_provider,
         resolve_provider,
@@ -678,6 +680,8 @@ def prepare_config(request: dict) -> dict:
     config["provider"] = provider
     config["model"] = model
     config["context"] = context
+    if provider == NO_BRAIN_PROVIDER:
+        raise NoBrainConfiguredError()
     tier = _resolve_tier(context, talent_type)
     config["tier"] = {
         TIER_PRO: "pro",
@@ -1292,8 +1296,13 @@ def _emit_terminal_hook_error(
     )
 
 
+from solstone.think.models import NO_BRAIN_PROVIDER, NoBrainConfiguredError
+
 _NON_RETRYABLE_ERRORS = (
     TalentHookError,
+    # No implicit cloud fallback: a journal with no thinking engine selected
+    # must stop here rather than retrying on any cloud provider.
+    NoBrainConfiguredError,
     ValueError,
     json.JSONDecodeError,
     KeyError,
@@ -1424,7 +1433,7 @@ async def _execute_with_tools(
         _emit_terminal_hook_error(config, emit_event, exc)
         return
     except Exception as exc:
-        if provider == "local":
+        if provider in {"local", NO_BRAIN_PROVIDER}:
             raise
         if config.get("fallback_from") or not _should_fallback(exc):
             raise
@@ -1562,6 +1571,8 @@ async def _execute_generate(
         )
     except Exception as exc:
         provider = config.get("provider", "google")
+        if provider == NO_BRAIN_PROVIDER:
+            raise
         if provider == "local":
             if (
                 not isinstance(exc, IncompleteJSONError)

@@ -26,6 +26,7 @@ from solstone.think.models import (
     GPT_5_MINI,
     GPT_5_NANO,
     LOCAL_MODEL,
+    NO_BRAIN_PROVIDER,
     PROMPT_PATHS,
     PROVIDER_DEFAULTS,
     QWEN_35_9B,
@@ -34,6 +35,7 @@ from solstone.think.models import (
     TIER_PRO,
     TYPE_DEFAULTS,
     IncompleteJSONError,
+    NoBrainConfiguredError,
     SchemaValidationError,
     _Family,
     _find_pricing_fallback,
@@ -291,19 +293,27 @@ def test_resolve_provider_empty_context(use_fixtures_journal):
 
 
 def test_resolve_provider_no_config(monkeypatch, tmp_path):
-    """Test fallback when no provider config exists."""
+    """Test no-brain resolution when no provider config exists."""
     # Use a journal path with no config
     empty_journal = tmp_path / "empty_journal"
     empty_journal.mkdir()
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(empty_journal))
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "solstone.think.providers.state.local_runtime_ready", lambda: False
+    )
 
     provider, model = resolve_provider("anything", "generate")
-    assert provider == "google"
-    assert model == GEMINI_FLASH
+    assert provider == NO_BRAIN_PROVIDER
+    assert provider != "google"
+    assert model == ""
 
     provider, model = resolve_provider("anything", "cogitate")
-    assert provider == "google"
-    assert model == GEMINI_FLASH
+    assert provider == NO_BRAIN_PROVIDER
+    assert provider != "google"
+    assert model == ""
 
 
 # ---------------------------------------------------------------------------
@@ -325,12 +335,12 @@ def test_type_defaults():
 
     for agent_type in ("generate", "cogitate"):
         defaults = TYPE_DEFAULTS[agent_type]
-        assert "provider" in defaults
+        assert "provider" not in defaults
         assert "tier" in defaults
         assert "backup" in defaults
 
-    assert TYPE_DEFAULTS["generate"]["provider"] == "google"
-    assert TYPE_DEFAULTS["cogitate"]["provider"] == "google"
+    assert TYPE_DEFAULTS["generate"]["backup"] == "anthropic"
+    assert TYPE_DEFAULTS["cogitate"]["backup"] == "anthropic"
 
 
 def test_prompt_paths_exist():
@@ -433,8 +443,22 @@ def test_is_local_provider_needed_true_for_selected_surfaces(config):
         {"providers": []},
     ],
 )
-def test_is_local_provider_needed_false_when_not_selected(config):
+def test_is_local_provider_needed_false_when_not_selected(config, monkeypatch):
+    monkeypatch.setattr(
+        "solstone.think.providers.state.local_runtime_ready", lambda: False
+    )
     assert is_local_provider_needed(config) is False
+
+
+def test_is_local_provider_needed_true_for_implicit_local(monkeypatch):
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "solstone.think.providers.state.local_runtime_ready", lambda: True
+    )
+
+    assert is_local_provider_needed({}) is True
 
 
 def test_resolve_provider_tier_based(use_fixtures_journal):
@@ -537,10 +561,10 @@ def test_resolve_provider_invalid_tier(use_fixtures_journal, monkeypatch, tmp_pa
     assert model == GEMINI_FLASH
 
 
-def test_resolve_provider_local_type_default_overrides_cloud_context(
+def test_resolve_provider_local_type_default_neutralizes_cloud_context_pin(
     use_fixtures_journal, monkeypatch, tmp_path
 ):
-    """Local type defaults override cloud context provider/model pins."""
+    """A cloud context provider/model pin cannot override an explicit local lane."""
     _write_tmp_journal_config(
         tmp_path,
         monkeypatch,
@@ -659,7 +683,7 @@ def test_resolve_provider_local_context_malformed_pin_uses_type_default_tier(
 def test_resolve_provider_local_honors_context_tier_and_models_override(
     use_fixtures_journal, monkeypatch, tmp_path
 ):
-    """Local type defaults use context tier without mutating stored context data."""
+    """Tier-only context config inherits the local type default."""
     _write_tmp_journal_config(
         tmp_path,
         monkeypatch,
@@ -669,7 +693,6 @@ def test_resolve_provider_local_honors_context_tier_and_models_override(
                 "models": {"local": {"3": "local/lite-test"}},
                 "contexts": {
                     "talent.x": {
-                        "provider": "google",
                         "tier": 3,
                         "disabled": True,
                         "extract": "foo",
@@ -778,6 +801,51 @@ def test_agenerate_rejects_cloud_model_override_for_local_provider():
     ):
         with pytest.raises(ValueError, match="local provider cannot serve"):
             asyncio.run(agenerate("hello", "test.context", model="gpt-5.5"))
+
+
+def test_generate_stops_before_provider_module_when_no_brain():
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=(NO_BRAIN_PROVIDER, ""),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            side_effect=AssertionError("provider module should not be invoked"),
+        ),
+    ):
+        with pytest.raises(NoBrainConfiguredError):
+            generate("hello", "test.context")
+
+
+def test_generate_with_result_stops_before_provider_module_when_no_brain():
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=(NO_BRAIN_PROVIDER, ""),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            side_effect=AssertionError("provider module should not be invoked"),
+        ),
+    ):
+        with pytest.raises(NoBrainConfiguredError):
+            generate_with_result("hello", "test.context")
+
+
+def test_agenerate_stops_before_provider_module_when_no_brain():
+    with (
+        patch(
+            "solstone.think.models.resolve_provider",
+            return_value=(NO_BRAIN_PROVIDER, ""),
+        ),
+        patch(
+            "solstone.think.providers.get_provider_module",
+            side_effect=AssertionError("provider module should not be invoked"),
+        ),
+    ):
+        with pytest.raises(NoBrainConfiguredError):
+            asyncio.run(agenerate("hello", "test.context"))
 
 
 def test_unknown_model_override_for_local_provider_proceeds_to_provider():

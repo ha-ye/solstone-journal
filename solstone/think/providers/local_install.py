@@ -595,15 +595,13 @@ def install_local(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
     return install_model(selected_model)
 
 
-def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
-    from solstone.think.providers import local_cuda, oci_image
+def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
+    from solstone.think.providers import oci_image
 
-    choice = local_cuda.resolve_local_backend(CUDA_SERVER_PIN)
     config = read_journal_config()
     record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
     if not isinstance(record, dict):
         record = {}
-    status = _read_local_status()
     selected_model = normalize_model_id(
         model_id or record.get("model_id") or LOCAL_MODEL
     )
@@ -631,38 +629,69 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
         selected_model
     )
     mmproj_installed = resolved_mmproj is None or resolved_mmproj.exists()
-    memory_verdict = assess_memory(spec.min_ram_bytes, block_below_floor=False)
+
+    pin = pin_for_current_platform()
+    vulkan_binary_path = binary_path_for_pin(pin=pin)
+    recorded_binary_path = record.get("binary_path")
+    vulkan_binary_installed = (
+        record.get("binary_artifact") == pin["filename"]
+        and record.get("binary_sha256") == pin["sha256"]
+        and recorded_binary_path is not None
+        and Path(recorded_binary_path) == vulkan_binary_path
+        and vulkan_binary_path.exists()
+        and os.access(vulkan_binary_path, os.X_OK)
+    )
+
+    arch = _oci_arch()
+    cuda_binary = cuda_binary_path()
+    cuda_binary_installed = (
+        oci_image.verify_sidecar_install(
+            CUDA_SERVER_PIN.image_ref,
+            arch,
+            CUDA_SERVER_PIN.wanted_files_for_arch(arch),
+            cuda_binary_dir(),
+        )
+        and cuda_binary.exists()
+        and os.access(cuda_binary, os.X_OK)
+    )
+
+    return {
+        "binary_installed": vulkan_binary_installed or cuda_binary_installed,
+        "model_installed": gguf_path.exists() and mmproj_installed,
+        "gguf_installed": gguf_path.exists(),
+        "mmproj_installed": mmproj_installed,
+        "vulkan_binary_installed": vulkan_binary_installed,
+        "cuda_binary_installed": cuda_binary_installed,
+        "vulkan_binary_path": str(vulkan_binary_path),
+        "cuda_binary_path": str(cuda_binary),
+        "binary_path": str(vulkan_binary_path),
+        "model_path": str(gguf_path),
+        "mmproj_path": str(resolved_mmproj) if resolved_mmproj is not None else None,
+        "model_id": selected_model,
+        "min_ram_bytes": spec.min_ram_bytes,
+    }
+
+
+def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
+    from solstone.think.providers import local_cuda
+
+    choice = local_cuda.resolve_local_backend(CUDA_SERVER_PIN)
+    status = _read_local_status()
+    artifacts = inspect_artifacts(model_id)
+    memory_verdict = assess_memory(
+        int(artifacts["min_ram_bytes"]), block_below_floor=False
+    )
 
     if choice.backend == "cuda":
-        arch = _oci_arch()
-        wanted_files = CUDA_SERVER_PIN.wanted_files_for_arch(arch)
-        binary_path = cuda_binary_path()
-        binary_installed = (
-            oci_image.verify_sidecar_install(
-                CUDA_SERVER_PIN.image_ref,
-                arch,
-                wanted_files,
-                cuda_binary_dir(),
-            )
-            and binary_path.exists()
-            and os.access(binary_path, os.X_OK)
-        )
+        binary_path = Path(str(artifacts["cuda_binary_path"]))
+        binary_installed = bool(artifacts["cuda_binary_installed"])
         gpu_available = True
         gpu_probe_ok = True
     else:
         from solstone.think.providers import local_vulkan
 
-        pin = pin_for_current_platform()
-        binary_path = binary_path_for_pin(pin=pin)
-        recorded_binary_path = record.get("binary_path")
-        binary_installed = (
-            record.get("binary_artifact") == pin["filename"]
-            and record.get("binary_sha256") == pin["sha256"]
-            and recorded_binary_path is not None
-            and Path(recorded_binary_path) == binary_path
-            and binary_path.exists()
-            and os.access(binary_path, os.X_OK)
-        )
+        binary_path = Path(str(artifacts["vulkan_binary_path"]))
+        binary_installed = bool(artifacts["vulkan_binary_installed"])
         selected_gpu = local_vulkan.select_device(
             local_vulkan.detect_gpus(), override_index=gpu_device_override()
         )
@@ -672,16 +701,16 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
     return {
         "install_state": status["install_state"],
         "binary_installed": binary_installed,
-        "model_installed": gguf_path.exists() and mmproj_installed,
-        "gguf_installed": gguf_path.exists(),
-        "mmproj_installed": mmproj_installed,
+        "model_installed": artifacts["model_installed"],
+        "gguf_installed": artifacts["gguf_installed"],
+        "mmproj_installed": artifacts["mmproj_installed"],
         "ram_sufficient": memory_verdict.severity != "blocked",
         "gpu_available": gpu_available,
         "gpu_probe_ok": gpu_probe_ok,
         "binary_path": str(binary_path),
-        "model_path": str(gguf_path),
-        "mmproj_path": str(resolved_mmproj) if resolved_mmproj is not None else None,
-        "model_id": selected_model,
+        "model_path": artifacts["model_path"],
+        "mmproj_path": artifacts["mmproj_path"],
+        "model_id": artifacts["model_id"],
         "install_error": status["install_error"],
         "backend": choice.backend,
         "backend_reason": choice.reason,
