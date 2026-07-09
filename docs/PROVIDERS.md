@@ -102,6 +102,20 @@ class GenerateResult(TypedDict, total=False):
 
 **Important:** Providers should gracefully ignore unsupported parameters rather than raising errors.
 
+### Structured-output schema preparation
+
+Canonical generation schemas may contain local grammar bounds such as
+`maxItems` and `maxLength`. The wrapper in `solstone/think/models.py` prepares a
+provider-facing copy with `solstone/think/schema_prep.py` before calling a
+provider. `STRICT_UNSUPPORTED_KEYWORDS` is the single support matrix for strict
+cloud providers; local receives a canonical copy so llama.cpp can turn bounds
+into grammar constraints. Response validation still uses the canonical schema.
+
+Use `make check-schema-bounds` to run the bounds ratchet for canonical schemas.
+Use `make eval-schemas` to run the opt-in local llama.cpp structured-output
+eval harness; it requires `journal install-provider local` and a running local
+server via `journal start` or `journal service start`.
+
 ## run_cogitate()
 
 Handles tool-calling execution.

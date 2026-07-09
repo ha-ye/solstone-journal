@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Union
 import frontmatter
 from jsonschema import Draft202012Validator
 
+from solstone.think.schema_prep import prepare_provider_schema
 from solstone.think.utils import get_config, get_journal
 
 logger = logging.getLogger(__name__)
@@ -1298,6 +1299,7 @@ def generate(
 
     # Get provider module via registry (raises ValueError for unknown providers)
     provider_mod = get_provider_module(provider)
+    provider_schema = prepare_provider_schema(json_schema, provider)
 
     timeout_s = DEFAULT_PROVIDER_TIMEOUT_S if timeout_s is None else timeout_s
 
@@ -1310,7 +1312,7 @@ def generate(
         max_output_tokens=max_output_tokens,
         system_instruction=system_instruction,
         json_output=json_output,
-        json_schema=json_schema,
+        json_schema=provider_schema,
         thinking_budget=thinking_budget,
         timeout_s=timeout_s,
         **kwargs,
@@ -1511,6 +1513,7 @@ def generate_with_result(
     _reject_local_cloud_model_override(provider, model_override)
 
     provider_mod = get_provider_module(provider)
+    provider_schema = prepare_provider_schema(json_schema, provider)
 
     timeout_s = DEFAULT_PROVIDER_TIMEOUT_S if timeout_s is None else timeout_s
 
@@ -1522,7 +1525,7 @@ def generate_with_result(
         max_output_tokens=max_output_tokens,
         system_instruction=system_instruction,
         json_output=json_output,
-        json_schema=json_schema,
+        json_schema=provider_schema,
         thinking_budget=thinking_budget,
         timeout_s=timeout_s,
         **kwargs,
@@ -1619,6 +1622,7 @@ async def agenerate(
 
     # Get provider module via registry (raises ValueError for unknown providers)
     provider_mod = get_provider_module(provider)
+    provider_schema = prepare_provider_schema(json_schema, provider)
 
     timeout_s = DEFAULT_PROVIDER_TIMEOUT_S if timeout_s is None else timeout_s
 
@@ -1631,7 +1635,7 @@ async def agenerate(
         max_output_tokens=max_output_tokens,
         system_instruction=system_instruction,
         json_output=json_output,
-        json_schema=json_schema,
+        json_schema=provider_schema,
         thinking_budget=thinking_budget,
         timeout_s=timeout_s,
         **kwargs,

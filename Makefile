@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging openapi check-openapi contract check-contract dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging openapi check-openapi contract check-contract dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -230,6 +230,9 @@ verify-api: .installed
 	$(MAKE) sandbox-stop; \
 	exit $$RESULT
 
+eval-schemas: .installed
+	$(VENV_BIN)/python tests/eval_schemas.py
+
 # Regenerate API baseline files. By default uses the deterministic Flask
 # test-client path (frozen time). For sandbox-only endpoints (graph, search,
 # badge-count, updated-days), pass SANDBOX=1 to regenerate from the live
@@ -410,6 +413,9 @@ install-checks: .installed
 	@echo "=== Running call-http-only check ==="
 	@$(MAKE) check-call-http-only
 	@echo ""
+	@echo "=== Running schema-bounds check ==="
+	@$(MAKE) check-schema-bounds
+	@echo ""
 	@echo "=== Running tools-http-only check ==="
 	@$(MAKE) check-tools-http-only
 	@echo ""
@@ -511,6 +517,10 @@ check-journal-io-mechanic: .installed
 # sol call HTTP-only gate (call.py reaches the journal only over HTTP)
 check-call-http-only: .installed
 	$(VENV_BIN)/python scripts/check_call_http_only.py
+
+# Generation schema bounds ratchet
+check-schema-bounds: .installed
+	$(VENV_BIN)/python scripts/check_schema_bounds.py
 
 # Built-in sol call tools HTTP-only gate
 check-tools-http-only: .installed

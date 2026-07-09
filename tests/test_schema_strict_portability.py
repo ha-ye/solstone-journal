@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Offline CI gate for req_bfbdbux6 strict schema portability."""
+"""Offline CI gate for strict structured-output schema portability."""
 
 from __future__ import annotations
 
@@ -12,21 +12,14 @@ from typing import Any
 import pytest
 
 from solstone.apps.timeline.rollup import build_rollup_schema
+from solstone.think.schema_prep import (
+    prepare_provider_schema,
+    unsupported_keyword_hits,
+)
 from solstone.think.talent import hydrate_runtime_enums
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BANNED_KEYS = frozenset(
-    {
-        "$schema",
-        "$comment",
-        "minLength",
-        "maxLength",
-        "minItems",
-        "maxItems",
-        "minimum",
-        "maximum",
-    }
-)
+STRICT_PROVIDERS = ("openai", "anthropic", "google")
 
 
 def _discover_schemas() -> tuple[tuple[str, dict[str, Any]], ...]:
@@ -56,8 +49,6 @@ def violations(schema: dict[str, Any]) -> list[str]:
     def walk(node: Any, path: str) -> None:
         if isinstance(node, dict):
             for key in node:
-                if key in BANNED_KEYS:
-                    found.append(f"{path}: banned key {key!r}")
                 if key == "oneOf":
                     found.append(f"{path}: banned key 'oneOf'")
 
@@ -80,23 +71,6 @@ def violations(schema: dict[str, Any]) -> list[str]:
     return found
 
 
-def banned_key_hits(schema: dict[str, Any]) -> list[str]:
-    found: list[str] = []
-
-    def walk(node: Any, path: str) -> None:
-        if isinstance(node, dict):
-            for key, value in node.items():
-                if key in BANNED_KEYS:
-                    found.append(f"{path}: banned key {key!r}")
-                walk(value, f"{path}/{key}")
-        elif isinstance(node, list):
-            for index, value in enumerate(node):
-                walk(value, f"{path}[{index}]")
-
-    walk(schema, "$")
-    return found
-
-
 @pytest.mark.parametrize(
     ("schema_id", "schema"),
     [pytest.param(schema_id, schema, id=schema_id) for schema_id, schema in SCHEMAS],
@@ -106,6 +80,20 @@ def test_all_discovered_schemas_are_strict_portable(
 ) -> None:
     schema_violations = violations(schema)
     assert schema_violations == [], f"{schema_id}: {schema_violations}"
+
+
+@pytest.mark.parametrize("provider", STRICT_PROVIDERS)
+@pytest.mark.parametrize(
+    ("schema_id", "schema"),
+    [pytest.param(schema_id, schema, id=schema_id) for schema_id, schema in SCHEMAS],
+)
+def test_prepared_schemas_have_no_provider_unsupported_keywords(
+    schema_id: str, schema: dict[str, Any], provider: str
+) -> None:
+    prepared = prepare_provider_schema(schema, provider)
+
+    assert prepared is not None
+    assert unsupported_keyword_hits(prepared, provider) == [], schema_id
 
 
 @pytest.mark.parametrize(
@@ -123,7 +111,10 @@ def test_zero_facet_runtime_hydration_of_shipped_schemas_has_no_banned_keys(
 
     hydrated = hydrate_runtime_enums(schema)
 
-    assert banned_key_hits(hydrated) == []
+    for provider in STRICT_PROVIDERS:
+        prepared = prepare_provider_schema(hydrated, provider)
+        assert prepared is not None
+        assert unsupported_keyword_hits(prepared, provider) == []
 
 
 @pytest.mark.parametrize(
@@ -131,15 +122,20 @@ def test_zero_facet_runtime_hydration_of_shipped_schemas_has_no_banned_keys(
     [
         {
             "type": "object",
-            "$comment": "bad",
             "properties": {
-                "a": {"type": "array", "minItems": 1},
+                "a": {"type": "array"},
                 "b": {"type": "string"},
+                "c": {"oneOf": [{"type": "string"}, {"type": "integer"}]},
             },
             "required": ["a"],
-            "additionalProperties": False,
         }
     ],
 )
 def test_strict_portability_guard_rejects_bad_schema(schema: dict[str, Any]) -> None:
-    assert violations(schema)
+    schema_violations = violations(schema)
+
+    assert any(
+        "object missing additionalProperties:false" in v for v in schema_violations
+    )
+    assert any("properties not required" in v for v in schema_violations)
+    assert any("banned key 'oneOf'" in v for v in schema_violations)
