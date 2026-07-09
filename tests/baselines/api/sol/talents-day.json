@@ -52,7 +52,7 @@
     "conversation": {
       "app": null,
       "color": "#00796b",
-      "description": "Generates a conversation story, topics, and structured commitments, closures, and decisions to merge onto the activity record.",
+      "description": "Generates a conversation story, topics, and structured commitments, closures, decisions, and relations to merge onto the activity record.",
       "multi_facet": false,
       "output_format": "json",
       "schedule": "activity",
@@ -140,7 +140,7 @@
     "event": {
       "app": null,
       "color": "#ff7043",
-      "description": "Generates an event story, topics, and structured commitments, closures, and decisions to merge onto the activity record.",
+      "description": "Generates an event story, topics, and structured commitments, closures, decisions, and relations to merge onto the activity record.",
       "multi_facet": false,
       "output_format": "json",
       "schedule": "activity",
@@ -316,7 +316,7 @@
     "work": {
       "app": null,
       "color": "#6d4c41",
-      "description": "Generates a work story, topics, and structured commitments, closures, and decisions to merge onto the activity record.",
+      "description": "Generates a work story, topics, and structured commitments, closures, decisions, and relations to merge onto the activity record.",
       "multi_facet": false,
       "output_format": "json",
       "schedule": "activity",

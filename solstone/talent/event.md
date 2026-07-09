@@ -1,7 +1,7 @@
 {
   "type": "generate",
   "title": "Event Story",
-  "description": "Generates an event story, topics, and structured commitments, closures, and decisions to merge onto the activity record.",
+  "description": "Generates an event story, topics, and structured commitments, closures, decisions, and relations to merge onto the activity record.",
   "color": "#ff7043",
   "schedule": "activity",
   "activities": ["appointment", "event", "travel", "errand", "celebration", "deadline", "reminder"],

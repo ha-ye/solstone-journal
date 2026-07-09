@@ -1,7 +1,7 @@
 {
   "type": "generate",
   "title": "Work Story",
-  "description": "Generates a work story, topics, and structured commitments, closures, and decisions to merge onto the activity record.",
+  "description": "Generates a work story, topics, and structured commitments, closures, decisions, and relations to merge onto the activity record.",
   "color": "#6d4c41",
   "schedule": "activity",
   "activities": ["coding", "browsing", "reading"],
