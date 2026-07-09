@@ -498,7 +498,7 @@
       return;
     }
     if (scoutState === 'on') {
-      notice.textContent = 'the token is never shown here — it lives in your journal and you never have to touch it. the scout program only sets up the token; it never sees what you ask.';
+      notice.textContent = 'the token is never shown here — it lives in your journal and you never have to touch it. the scout program only provisions the token; your requests go straight to Gemini, not through us.';
       return;
     }
     if (scoutState === 'manual_key_present') {

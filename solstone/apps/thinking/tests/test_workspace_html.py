@@ -185,3 +185,22 @@ def test_thinking_copy_avoids_forbidden_terms() -> None:
 
     for phrase in ("sol pbc", "this machine", "this device"):
         assert re.search(rf"\b{re.escape(phrase)}\b", combined, re.IGNORECASE) is None
+
+
+def test_thinking_copy_avoids_banned_absolute_claims() -> None:
+    def owner_surface_text(path: Path) -> str:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        return "\n".join(
+            line
+            for line in lines
+            if "SPDX-License-Identifier" not in line
+            and "Copyright (c) 2026 sol pbc" not in line
+        )
+
+    combined = "\n".join(thinking_copy.thinking_copy_values())
+    combined += "\n" + json.loads(APP_JSON.read_text(encoding="utf-8"))["label"]
+    combined += "\n" + owner_surface_text(WORKSPACE)
+    combined += "\n" + owner_surface_text(STATIC)
+
+    phrase = "never " + "sees"
+    assert re.search(rf"\b{re.escape(phrase)}\b", combined, re.IGNORECASE) is None
