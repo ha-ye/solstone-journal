@@ -115,9 +115,22 @@ def _build_packet(
     counts["steward_health"] = "present" if health else "missing"
     counts["segments"] = len(_distinct_result_paths(followup_results, decision_results))
 
-    return {
+    metadata = {
         "generated": datetime.now().isoformat(timespec="seconds"),
         "model": model,
+        "sources": counts,
+        "gaps": gaps,
+        "coverage_preamble": _render_coverage_preamble(
+            counts,
+            gaps,
+            decisions_total=decisions_total,
+            forward_count=len(anticipated_forward),
+            followups_total=followups_total,
+        ),
+    }
+
+    return {
+        "briefing_metadata": json.dumps(metadata, indent=2),
         "active_facets": _render_facets(facets),
         "facet_newsletters": _render_newsletters(newsletters),
         "anticipated_today": _render_activities(anticipated_today),
@@ -129,15 +142,6 @@ def _build_packet(
         "health_surface": health or "(missing)",
         "followups": _render_search_results(followup_results),
         "decisions": _render_search_results(decision_results),
-        "source_counts": _render_source_counts(counts),
-        "source_gaps": json.dumps(gaps),
-        "coverage_preamble": _render_coverage_preamble(
-            counts,
-            gaps,
-            decisions_total=decisions_total,
-            forward_count=len(anticipated_forward),
-            followups_total=followups_total,
-        ),
     }
 
 
@@ -406,18 +410,6 @@ def _distinct_result_paths(
             if path:
                 paths.add(path)
     return paths
-
-
-def _render_source_counts(counts: dict[str, int | str]) -> str:
-    return "\n".join(
-        [
-            f"  segments: {counts['segments']}",
-            f"  anticipated_activities: {counts['anticipated_activities']}",
-            f"  facet_newsletters: {counts['facet_newsletters']}",
-            f"  followups: {counts['followups']}",
-            f"  steward_health: {counts['steward_health']}",
-        ]
-    )
 
 
 def _render_coverage_preamble(

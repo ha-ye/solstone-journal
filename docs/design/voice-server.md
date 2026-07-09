@@ -229,7 +229,7 @@ Rules that apply to every tool:
 | `commitments.list` | `{"state": "open"|"closed"|"dropped"|null, "facet": "<string>|null", "limit": 20|null}` | `{"commitments": [{"id": "<id>", "owner": "<owner>", "action": "<action>", "counterparty": "<counterparty>", "state": "<state>", "context": "<context>", "day_opened": "YYYY-MM-DD", "day_closed": "YYYY-MM-DD"?, "resolution": "<resolution>"?}]}` | No nav hint | `think.surfaces.ledger.list(state=..., facets=[facet] if facet else None, top=limit or 20)`. Convert each `LedgerItem` dataclass to a dict, drop `sources`, and derive `day_*` strings from the millisecond timestamps. `resolution` is best-effort only: set it to `"dropped"` when `item.state == "dropped"`, otherwise omit because the ledger surface does not expose the close-note resolution (`solstone/think/surfaces/ledger.py:441-487`, `solstone/think/surfaces/types.py:16-32`) | `{"error": "invalid state"}` |
 | `commitments.complete` | `{"commitment_id": "lg_...", "resolution": "done"|"sent"|"signed"|"dropped"|"deferred"}` | `{"ok": true, "commitment": {"id": "...", "owner": "...", "action": "...", "counterparty": "...", "state": "...", "context": "...", "day_opened": "YYYY-MM-DD", "day_closed": "YYYY-MM-DD"?, "resolution": "<input-resolution>"}}` | No nav hint | Validate `resolution`. Map `dropped -> as_state="dropped", note="resolution: dropped"`. Map `done|sent|signed|deferred -> as_state="closed", note="resolution: <value>"`. Call `think.surfaces.ledger.close(...)`, catch `KeyError`, and shape the returned `LedgerItem` as above (`solstone/think/surfaces/ledger.py:497-529`, `solstone/think/activities.py:1156-1207`) | `{"error": "invalid resolution"}` or `{"error": "not found"}` |
 | `calendar.today` | `{}` | `{"date": "YYYY-MM-DD", "events": [{"time": "HH:MM", "title": "<title>", "attendees": ["<name>"], "location": "<string>", "prep_notes": "<string>"}], "_nav_target": "today"}` | Always emit `_nav_target` | `think.activities.load_activity_records(facet, day)` across all enabled facets, filtered to `source == "anticipated"` using the same participation parsing pattern Home uses today (`solstone/apps/home/routes.py:305-337`, `solstone/think/activities.py:877-890`) | `{"error": "today unavailable"}` only on unexpected failures; normal empty day is `{"date": "...", "events": [], "_nav_target": "today"}` |
-| `briefing.get` | `{}` | `{"date": "YYYY-MM-DD", "facet": "identity", "text": "<spoken-English body>", "highlights": ["...", "..."], "_nav_target": "today"}` or `{"error": "no briefing today yet"}` | Emit `_nav_target` only when a fresh briefing exists | Reuse `solstone/apps/home/routes.py::_load_briefing_md(today)` exactly. If `metadata.date != today`, return the error object. `text` is a plain-text join of the loaded sections; `highlights` comes from `needs_attention` bullets first, then falls back to the first three bullets across the other sections (`solstone/apps/home/routes.py:149-198`) | `{"error": "no briefing today yet"}` |
+| `briefing.get` | `{}` | `{"date": "YYYY-MM-DD", "facet": "identity", "text": "<spoken-English body>", "highlights": ["...", "..."], "_nav_target": "today"}` or `{"error": "no briefing today yet"}` | Emit `_nav_target` only when a fresh briefing exists | Reuse `solstone.think.briefing.load_briefing(today)` and `render_briefing_sections(...)` exactly. `None` returns the error object. `text` is a plain-text join of the loaded sections; `highlights` comes from `needs_attention` items first, then falls back to the first three bullets across the other sections | `{"error": "no briefing today yet"}` |
 | `observer.start_listening` | `{"mode": "meeting"|"voice_memo"}` | `{"status": "ack", "mode": "<mode>", "note": "wave-4 observer not yet wired"}` | No nav hint | No data dependency in Wave 2. Log the requested mode at INFO and return the stub acknowledgement. | `{"error": "invalid mode"}` |
 
 Implementation notes by tool:
@@ -242,7 +242,7 @@ Implementation notes by tool:
 - `entities.recent_with` sorts interactions descending by activity timestamp and truncates to a small spoken-friendly limit, default 10.
 - `commitments.list` and `commitments.complete` must strip `sources` before returning anything model-facing.
 - `calendar.today.location` and `calendar.today.prep_notes` default to `""` because current anticipated activity rows do not guarantee either field.
-- `briefing.get.facet` is the literal string `"identity"` as a fixed spoken-context label, not a facet-scoped talent output; the briefing itself is read from `chronicle/<day>/talents/morning_briefing.md`.
+- `briefing.get.facet` is the literal string `"identity"` as a fixed spoken-context label, not a facet-scoped talent output; the briefing itself is read from `chronicle/<day>/talents/morning_briefing.json`.
 
 ## 6. Brain init prompt (full text)
 
@@ -275,7 +275,7 @@ Before you write the instruction, ingest the current context:
 - Read the active entities that matter right now.
 - Read the open commitments.
 - Read today's calendar and anticipated activities.
-- Read today's morning briefing at chronicle/<today>/talents/morning_briefing.md if it exists.
+- Read today's morning briefing at chronicle/<today>/talents/morning_briefing.json if it exists.
 
 Then write one system instruction that does all of the following:
 - Establish who {agent_name} is and how the voice should speak.
@@ -417,7 +417,7 @@ Uniform fixture-date strategy:
 - Add one narrow helper in `think.voice.tools`, for example `_today() -> datetime.date` plus a formatter helper in the same module.
 - All date-sensitive voice tools (`journal.get_day`, `journal.search` day-window math, `calendar.today`, `briefing.get`) use that helper.
 - Tests monkeypatch the helper to the fixture briefing date or another explicit date instead of rewriting shared fixture files.
-- This keeps the shared fixture journal stable and avoids clock-driven flakes from `tests/fixtures/journal/chronicle/20260327/talents/morning_briefing.md` being dated `20260327`.
+- This keeps the shared fixture journal stable and avoids clock-driven flakes from `tests/fixtures/journal/chronicle/20260327/talents/morning_briefing.json` being dated `20260327`.
 
 Per-file plan:
 
@@ -456,7 +456,7 @@ Journal-data rule:
 
 - Brain-not-ready behavior: this design treats the bridge contract and acceptance list as canonical and returns HTTP 503 from `/api/voice/session` after a 10-second wait, instead of using the older static fallback instruction path from the scope prose.
 - Routing location: this design uses a root-level `solstone/convey/voice.py` blueprint, not `solstone/apps/voice/`, because the feature is a root API and the app shell assumes `/app/<name>` plus `workspace.html`.
-- Briefing source path: `_load_briefing_md(...)` reads the canonical `chronicle/<day>/talents/morning_briefing.md` talent output. (Updated 2026-07-02: an earlier revision read the phantom identity-dir briefing file; retired in the H1 lode.)
+- Briefing source path: `solstone.think.briefing.load_briefing(...)` reads the canonical `chronicle/<day>/talents/morning_briefing.json` talent output. (Updated 2026-07-02: an earlier revision read the phantom identity-dir briefing file; retired in the H1 lode.)
 - Commitments resolution mapping: this design maps `done|sent|signed|deferred -> as_state="closed"` and `dropped -> as_state="dropped"` because `think.surfaces.ledger.close(...)` only accepts `closed|dropped`.
 - OpenAI key sourcing: this design uses `config.voice.openai_api_key` in `journal/config/journal.json` first, then `OPENAI_API_KEY`, and does not add `journal/config/openai.json`.
 - `ask_sol` clause: this design removes it from the brain init prompt and does not add a 10th tool to the manifest.

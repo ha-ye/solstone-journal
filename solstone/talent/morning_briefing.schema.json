@@ -1,0 +1,171 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "metadata",
+    "your_day",
+    "yesterday",
+    "needs_attention",
+    "forward_look",
+    "reading"
+  ],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generated",
+        "model",
+        "sources",
+        "gaps",
+        "coverage_preamble"
+      ],
+      "properties": {
+        "generated": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(Z|[+-]\\d{2}:?\\d{2})?$",
+          "maxLength": 32
+        },
+        "model": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "sources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "segments",
+            "anticipated_activities",
+            "facet_newsletters",
+            "followups",
+            "steward_health"
+          ],
+          "properties": {
+            "segments": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "anticipated_activities": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "facet_newsletters": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "followups": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "steward_health": {
+              "type": "string",
+              "enum": [
+                "present",
+                "missing"
+              ]
+            }
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "maxItems": 20,
+          "items": {
+            "type": "string",
+            "maxLength": 240
+          }
+        },
+        "coverage_preamble": {
+          "type": "string",
+          "maxLength": 1200
+        }
+      }
+    },
+    "your_day": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "time",
+          "text"
+        ],
+        "properties": {
+          "time": {
+            "type": "string",
+            "pattern": "^$|^([01]\\d|2[0-3]):[0-5]\\d$",
+            "maxLength": 5
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 700
+          }
+        }
+      }
+    },
+    "yesterday": {
+      "type": "array",
+      "maxItems": 10,
+      "items": {
+        "type": "string",
+        "maxLength": 700
+      }
+    },
+    "needs_attention": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "text",
+          "source_id"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 700
+          },
+          "source_id": {
+            "type": "string",
+            "pattern": "^$|^sol://[^\\s)]+$",
+            "maxLength": 240
+          }
+        }
+      }
+    },
+    "forward_look": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "string",
+        "maxLength": 700
+      }
+    },
+    "reading": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "facet",
+          "summary"
+        ],
+        "properties": {
+          "facet": {
+            "type": "string",
+            "enum": [
+              "__RUNTIME_FACETS__"
+            ],
+            "maxLength": 80
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 700
+          }
+        }
+      }
+    }
+  }
+}

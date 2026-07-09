@@ -15,8 +15,12 @@ from typing import Any, Callable
 from urllib.parse import quote_plus
 
 from solstone.apps.entities.routes import _build_facet_relationships
-from solstone.apps.home.routes import _load_briefing_md
 from solstone.think.activities import load_activity_records
+from solstone.think.briefing import (
+    briefing_needs_items,
+    load_briefing,
+    render_briefing_sections,
+)
 from solstone.think.cluster import cluster_segments, scan_day
 from solstone.think.entities.journal import load_journal_entity
 from solstone.think.facets import get_facets
@@ -682,9 +686,11 @@ def _briefing_highlights(
 def handle_briefing_get(payload: dict[str, Any], app: Any) -> dict[str, Any]:
     del payload, app
     internal_day = _today_internal()
-    sections, metadata, needs_attention_items = _load_briefing_md(internal_day)
-    if not metadata or str(metadata.get("date")) != internal_day:
+    briefing = load_briefing(internal_day)
+    if not briefing:
         return {"error": "no briefing today yet"}
+    sections = render_briefing_sections(briefing)
+    needs_attention_items = [item["text"] for item in briefing_needs_items(briefing)]
     return {
         "date": _format_day_external(internal_day),
         "facet": "identity",

@@ -6,7 +6,9 @@
   "color": "#1565c0",
   "schedule": "daily",
   "priority": 50,
-  "output": "md",
+  "output": "json",
+  "schema": "morning_briefing.schema.json",
+  "max_output_tokens": 8192,
   "degradation_check": true,
   "hook": {"pre": "morning_briefing"}
 }
@@ -17,38 +19,32 @@ The source packet below is complete. Do not invent data outside the packet. When
 
 ## Output Contract
 
-Return only the complete briefing markdown in this exact outer shape:
+Return only the JSON object. Do not wrap it in a markdown fence. Do not include prose before or after the object. JSON output is not fence-stripped by the runner; a fence is a hard failure.
 
 ```
----
-type: morning_briefing
-date: $day_YYYYMMDD
-generated: $generated
-model: $model
-sources:
-$source_counts
-gaps: $source_gaps
----
-
-$coverage_preamble
-
-## Your Day
-[today's prioritized agenda]
-
-## Yesterday
-[what happened yesterday]
-
-## Needs Attention
-[ranked actions and pipeline gaps]
-
-## Forward Look
-[next seven days]
-
-## Reading
-[facet newsletter links]
+{
+  "metadata": $briefing_metadata,
+  "your_day": [
+    {"time": "HH:MM or empty string", "text": "today's prioritized agenda item"}
+  ],
+  "yesterday": [
+    "what happened yesterday"
+  ],
+  "needs_attention": [
+    {"text": "ranked action or pipeline gap", "source_id": "sol://... or empty string"}
+  ],
+  "forward_look": [
+    "next seven days"
+  ],
+  "reading": [
+    {"facet": "facet slug", "summary": "one-line newsletter summary"}
+  ]
+}
 ```
 
-Omit any section that has no content. Keep the YAML frontmatter, `sources`, `gaps`, and coverage preamble exactly as injected above.
+Copy `metadata` exactly as injected above. Use the lowercase `$briefing_metadata` placeholder only in this prompt; never use the capitalized form because the runner's capitalization alias would corrupt the JSON string.
+
+Every root key shown above is required. Use empty arrays when a section has no content.
 
 ## Source Packet
 
@@ -92,15 +88,15 @@ $decisions
 
 **Source attribution.** Attribute high-consequence factual claims to their source using inline parenthetical links with `sol://` URIs when a source URI is present in the packet. Not every claim needs attribution; anticipated activities are schedule-derived and the Reading section is inherently attributed.
 
-**Your Day** - What's ahead today. Lead with anticipated activities in chronological order. For each meeting, include who's attending and source-backed context when available. If no anticipated activities exist, lead with the highest-priority follow-ups or pulse needs.
+**Your Day** - What's ahead today. Lead with anticipated activities in chronological order. Put a zero-padded `HH:MM` in `time` when the item has a specific start time; otherwise use `""`. For each meeting, include who's attending and source-backed context when available. If no anticipated activities exist, lead with the highest-priority follow-ups or pulse needs.
 
 **Yesterday** - What happened. Draw from facet newsletters, pulse, and decisions. Highlight accomplishments, consequential decisions, and notable interactions. Keep to 3-5 bullets max. Only include if facet newsletters or decisions have content for the analysis day.
 
-**Needs Attention** - Ranked action list. Start with steward health pipeline gaps when the health surface contains needs-attention items. Then include overdue commitments, missed follow-ups, pending follow-ups, and important pulse needs without calendar time blocked. Do not include pipeline gaps when the steward health surface has no needs-attention bullets.
+**Needs Attention** - Ranked action list. Start with steward health pipeline gaps when the health surface contains needs-attention items. Then include overdue commitments, missed follow-ups, pending follow-ups, and important pulse needs without calendar time blocked. Do not include pipeline gaps when the steward health surface has no needs-attention bullets. Set `source_id` to the primary source's `sol://` URI when one exists, else `""`. Keep inline `[label](sol://...)` links inside `text`.
 
 **Forward Look** - What's coming. Draw from anticipated activity records and upcoming scheduled items in the next seven days. Note preparation needed for upcoming meetings or deadlines.
 
-**Reading** - Links to full facet newsletters for deeper context. List each active facet that has a newsletter for the analysis day, with a brief one-line description of what it covers.
+**Reading** - Links to full facet newsletters for deeper context. List each active facet slug that has a newsletter for the analysis day, with a brief one-line description of what it covers.
 
 ## Evidence Strength
 

@@ -115,6 +115,17 @@ class TestRegistry:
         assert screen is not None
         assert screen.__name__ == "format_screen_record"
 
+    def test_get_formatter_day_level_morning_briefing_json(self):
+        """Morning briefing JSON uses a day-level formatter only by registered path."""
+        from solstone.think.formatters import FORMATTERS, get_formatter
+
+        formatter = get_formatter("20240101/talents/morning_briefing.json")
+
+        assert formatter is not None
+        assert formatter.__name__ == "format_morning_briefing"
+        assert "*/talents/*.json" not in FORMATTERS
+        assert get_formatter("20240101/talents/other.json") is None
+
     def test_no_day_level_document_or_screen_json_formatter(self):
         """Document and screen JSON formatters are segment-level only."""
         from solstone.think.formatters import get_formatter
@@ -410,6 +421,74 @@ def test_format_document_analysis_renders_all_seven_sections():
     assert "Settlor's death" in section("Conditions and Triggers")
     assert "third anniversary" in section("Important Dates")
     assert "Quick reference summary" in section("Summary")
+
+
+def test_format_morning_briefing_renders_all_five_sections():
+    from solstone.think.talent_outputs import format_morning_briefing
+
+    briefing = {
+        "metadata": {
+            "generated": "2026-03-27T06:45:00",
+            "model": "test-model",
+            "sources": {
+                "segments": 1,
+                "anticipated_activities": 1,
+                "facet_newsletters": 1,
+                "followups": 1,
+                "steward_health": "present",
+            },
+            "gaps": [],
+            "coverage_preamble": "Built from test sources. No gaps.",
+        },
+        "your_day": [{"time": "09:00", "text": "Meet Sarah."}],
+        "yesterday": ["Shipped the formatter."],
+        "needs_attention": [
+            {
+                "text": "Review the report.",
+                "source_id": "sol://20260327/default/090000_300",
+            }
+        ],
+        "forward_look": ["Prepare for Monday."],
+        "reading": [{"facet": "work", "summary": "Newsletter summary."}],
+    }
+
+    chunks, meta = format_morning_briefing([briefing])
+
+    rendered = chunks[0]["markdown"]
+    headings = [
+        "Your Day",
+        "Yesterday",
+        "Needs Attention",
+        "Forward Look",
+        "Reading",
+    ]
+    assert meta["indexer"]["agent"] == "morning_briefing"
+    assert chunks == [{"markdown": rendered, "timestamp": 0, "source": briefing}]
+    assert [rendered.index(f"## {heading}") for heading in headings] == sorted(
+        rendered.index(f"## {heading}") for heading in headings
+    )
+    assert rendered.count("## ") == 5
+    assert "> Built from test sources. No gaps." in rendered
+    assert "- **09:00** — Meet Sarah." in rendered
+    assert "- **work** — Newsletter summary." in rendered
+
+
+def test_find_formattable_includes_day_level_morning_briefing_only(tmp_path: Path):
+    from solstone.think.formatters import find_formattable_files
+
+    day_level = tmp_path / "chronicle" / "20240101" / "talents"
+    segment_level = (
+        tmp_path / "chronicle" / "20240101" / "default" / "120000_300" / "talents"
+    )
+    day_level.mkdir(parents=True)
+    segment_level.mkdir(parents=True)
+    (day_level / "morning_briefing.json").write_text("{}", encoding="utf-8")
+    (segment_level / "morning_briefing.json").write_text("{}", encoding="utf-8")
+
+    files = find_formattable_files(str(tmp_path))
+
+    assert "20240101/talents/morning_briefing.json" in files
+    assert "20240101/default/120000_300/talents/morning_briefing.json" not in files
 
 
 def test_format_screen_record_renders_narrative_entities_and_agent_meta():

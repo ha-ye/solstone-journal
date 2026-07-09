@@ -23,6 +23,7 @@ from solstone.think.schema_eval import (  # noqa: E402
     content_preservation,
     schema_validity,
 )
+from solstone.think.talent import hydrate_runtime_enums  # noqa: E402
 
 DEFAULT_CASES = ROOT / "tests" / "fixtures" / "schema_eval" / "cases.jsonl"
 DEFAULT_OUT = ROOT / "tmp" / "schema-eval"
@@ -49,7 +50,9 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
             case = json.loads(stripped)
             if "schema_path" in case:
                 schema_path = _resolve_path(Path(case["schema_path"]))
-                case["schema"] = json.loads(schema_path.read_text(encoding="utf-8"))
+                schema = json.loads(schema_path.read_text(encoding="utf-8"))
+                # Match runtime provider schemas; empty facet journals drop the enum.
+                case["schema"] = hydrate_runtime_enums(schema)
             cases.append(case)
     return cases
 

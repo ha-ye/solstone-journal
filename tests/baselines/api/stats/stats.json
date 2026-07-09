@@ -247,11 +247,13 @@
       "hook": {
         "pre": "morning_briefing"
       },
+      "max_output_tokens": 8192,
       "mtime": 0,
-      "output": "md",
+      "output": "json",
       "path": "<PROJECT>/solstone/talent/morning_briefing.md",
       "priority": 50,
       "schedule": "daily",
+      "schema": "morning_briefing.schema.json",
       "source": "system",
       "title": "Morning Briefing",
       "type": "generate"

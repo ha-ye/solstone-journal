@@ -238,10 +238,13 @@ def test_briefing_get_happy(monkeypatch):
 
     result = tools.handle_briefing_get({}, object())
 
+    assert set(result) == {"date", "facet", "text", "highlights", "_nav_target"}
     assert result["date"] == "2026-03-27"
     assert result["facet"] == "identity"
     assert result["_nav_target"] == "today"
     assert result["highlights"]
+    assert len(result["highlights"]) <= 3
+    assert "Series A term sheet" in result["highlights"][0]
 
 
 def test_briefing_get_failure(monkeypatch):

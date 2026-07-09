@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -16,16 +17,25 @@ def _patch_minimal_pulse_context(
     monkeypatch,
     *,
     pulse_needs: list[Any],
-    briefing_needs: list[str],
+    briefing_needs: list[Any],
     attention: Any = None,
 ):
     import solstone.apps.home.routes as home_routes
 
-    briefing_sections = (
-        {"needs_attention": "\n".join(f"- {item}" for item in briefing_needs)}
-        if briefing_needs
-        else {}
-    )
+    briefing = None
+    if briefing_needs:
+        needs_items = [
+            item if isinstance(item, dict) else {"text": item, "source_id": ""}
+            for item in briefing_needs
+        ]
+        briefing = {
+            "metadata": {"generated": "2026-04-16T09:00:00"},
+            "your_day": [],
+            "yesterday": [],
+            "needs_attention": needs_items,
+            "forward_look": [],
+            "reading": [],
+        }
     monkeypatch.setattr(
         home_routes,
         "get_capture_health",
@@ -46,12 +56,8 @@ def _patch_minimal_pulse_context(
     )
     monkeypatch.setattr(
         home_routes,
-        "_load_briefing_md",
-        lambda today: (
-            briefing_sections,
-            {"generated": "2026-04-16T09:00:00"},
-            briefing_needs,
-        ),
+        "load_briefing",
+        lambda today: briefing,
     )
     monkeypatch.setattr(
         home_routes, "_collect_anticipated_activities", lambda today: []
@@ -219,7 +225,7 @@ def test_pulse_and_briefing_needs_dedup_by_shared_source(monkeypatch):
                 "source_id": source,
             }
         ],
-        briefing_needs=[f"Look at the Q3 numbers {source}"],
+        briefing_needs=[{"text": "Look at the Q3 numbers", "source_id": source}],
     )
 
     ctx = home_routes._build_pulse_context()
@@ -235,15 +241,15 @@ def test_briefing_repeated_source_identity_renders_once(monkeypatch):
         monkeypatch,
         pulse_needs=[],
         briefing_needs=[
-            f"Review the Q3 report {source}",
-            f"Look at the Q3 numbers {source}",
+            {"text": "Review the Q3 report", "source_id": source},
+            {"text": "Look at the Q3 numbers", "source_id": source},
         ],
     )
 
     ctx = home_routes._build_pulse_context()
 
     assert ctx["briefing_needs_shared_count"] == 0
-    assert ctx["briefing_needs_deduped"] == [f"Review the Q3 report {source}"]
+    assert ctx["briefing_needs_deduped"] == ["Review the Q3 report"]
 
 
 def test_briefing_different_source_identities_stay_distinct(monkeypatch):
@@ -253,8 +259,8 @@ def test_briefing_different_source_identities_stay_distinct(monkeypatch):
         monkeypatch,
         pulse_needs=[],
         briefing_needs=[
-            f"Review the report {source_a}",
-            f"Review the report {source_b}",
+            {"text": "Review the report", "source_id": source_a},
+            {"text": "Review the report", "source_id": source_b},
         ],
     )
 
@@ -262,8 +268,8 @@ def test_briefing_different_source_identities_stay_distinct(monkeypatch):
 
     assert ctx["briefing_needs_shared_count"] == 0
     assert ctx["briefing_needs_deduped"] == [
-        f"Review the report {source_a}",
-        f"Review the report {source_b}",
+        "Review the report",
+        "Review the report",
     ]
 
 
@@ -279,3 +285,38 @@ def test_legacy_plain_string_needs_still_dedup_by_normalized_text(monkeypatch):
     assert len(ctx["needs_you_items"]) == 1
     assert ctx["briefing_needs_shared_count"] == 1
     assert ctx["briefing_needs_deduped"] == []
+
+
+def test_markdown_briefing_loader_removed():
+    import solstone.apps.home.routes as home_routes
+
+    source = Path(home_routes.__file__).read_text(encoding="utf-8")
+
+    assert not hasattr(home_routes, "_load_briefing_md")
+    assert not hasattr(home_routes, "_BRIEFING_SECTIONS")
+    assert 'startswith("## ")' not in source
+
+
+def test_briefing_needs_dedup_by_inline_sol_link(monkeypatch):
+    source = "sol://20260313/archon/091500_300"
+    home_routes = _patch_minimal_pulse_context(
+        monkeypatch,
+        pulse_needs=[],
+        briefing_needs=[
+            {
+                "text": f"Review the Q3 report ([standup]({source}))",
+                "source_id": "",
+            },
+            {
+                "text": f"Look at the Q3 numbers ([standup]({source}))",
+                "source_id": "",
+            },
+        ],
+    )
+
+    ctx = home_routes._build_pulse_context()
+
+    assert ctx["briefing_needs_shared_count"] == 0
+    assert ctx["briefing_needs_deduped"] == [
+        f"Review the Q3 report ([standup]({source}))"
+    ]

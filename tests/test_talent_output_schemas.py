@@ -8,6 +8,7 @@ from pathlib import Path
 
 from jsonschema import Draft202012Validator
 
+from solstone.think.schema_bounds import unbounded_nodes
 from solstone.think.talent import get_talent
 
 TALENT_DIR = Path(__file__).resolve().parents[1] / "solstone" / "talent"
@@ -62,3 +63,28 @@ def test_screen_talent_uses_bounded_json_schema():
     _assert_declares_max_output_tokens("screen")
     assert talent["json_schema"] == schema
     assert sorted(schema["properties"]) == ["entities", "narrative"]
+
+
+def test_morning_briefing_talent_uses_bounded_json_schema():
+    from scripts.check_schema_bounds import ALLOWLIST
+
+    schema = _load_schema("morning_briefing")
+    Draft202012Validator.check_schema(schema)
+
+    talent = get_talent("morning_briefing")
+
+    assert talent["output"] == "json"
+    assert talent["max_output_tokens"] == 8192
+    _assert_declares_max_output_tokens("morning_briefing")
+    assert talent["json_schema"] == schema
+    assert talent["degradation_check"] is True
+    assert unbounded_nodes(schema) == []
+    assert "solstone/talent/morning_briefing.schema.json" not in ALLOWLIST
+    assert sorted(schema["properties"]) == [
+        "forward_look",
+        "metadata",
+        "needs_attention",
+        "reading",
+        "yesterday",
+        "your_day",
+    ]

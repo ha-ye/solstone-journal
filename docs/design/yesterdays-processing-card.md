@@ -31,7 +31,7 @@ Internal helpers called only by `_summarize_yesterday_processing`:
   Reads `stats_data["heatmap_data"]["hours"]`, keeps the top 3 non-zero hours, sorts by minutes desc then hour asc.
 
 - `_briefing_freshness(today: str) -> dict`
-  Reads `chronicle/<day>/talents/morning_briefing.md` with local `frontmatter.load`. Valid only when frontmatter has `type: morning_briefing` and `date` (which may be a YAML int) equal to `today`. `generated` is used only for the display label.
+  Reads `chronicle/<day>/talents/morning_briefing.json`. Valid only when the JSON root has the required morning-briefing keys. `metadata.generated` is used only for the display label.
 
 - `_newsletter_attempts_from_think_logs(yesterday: str) -> tuple[int, int]`
   Option A helper from section 3. Counts successful facet newsletters from files plus failed facet newsletter attempts from think logs.
@@ -339,8 +339,8 @@ Fixture plan:
 
 Supporting non-chronicle fixture:
 
-- `tests/fixtures/journal/chronicle/20260327/talents/morning_briefing.md`
-  Valid morning-briefing frontmatter fixture for healthy cases.
+- `tests/fixtures/journal/chronicle/20260327/talents/morning_briefing.json`
+  Valid morning-briefing JSON fixture for healthy cases.
   Tests that need missing/invalid frontmatter can overwrite or delete it in `tmp_path`.
 
 Fixture minimization rule:

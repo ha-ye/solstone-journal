@@ -17,6 +17,7 @@ from solstone.apps.home.routes import (
     BRIEFING_MORNING_END_HOUR,
     _briefing_freshness,
     _briefing_lateness_state,
+    _briefing_summary,
     _build_pulse_context,
     _collect_activities,
     _collect_anticipated_activities,
@@ -118,25 +119,35 @@ def _write_briefing(
     day: str,
     generated: str,
     *,
-    metadata_type: str = "morning_briefing",
-    date: str | None = None,
+    payload: object | None = None,
 ) -> None:
     from solstone.think.talent import morning_briefing_path
 
     path = morning_briefing_path(day)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        (
-            f"---\n"
-            f"type: {metadata_type}\n"
-            f"date: {date if date is not None else day}\n"
-            f'generated: "{generated}"\n'
-            f"---\n\n"
-            "## Your Day\n\n"
-            "- One thing.\n"
-        ),
-        encoding="utf-8",
-    )
+    data = payload
+    if data is None:
+        data = {
+            "metadata": {
+                "generated": generated,
+                "model": "test-model",
+                "sources": {
+                    "segments": 1,
+                    "anticipated_activities": 1,
+                    "facet_newsletters": 1,
+                    "followups": 0,
+                    "steward_health": "present",
+                },
+                "gaps": [],
+                "coverage_preamble": "Built from test sources. No gaps.",
+            },
+            "your_day": [{"time": "", "text": "One thing."}],
+            "yesterday": [],
+            "needs_attention": [],
+            "forward_look": [],
+            "reading": [],
+        }
+    path.write_text(json.dumps(data), encoding="utf-8")
 
 
 def _append_think_log(
@@ -185,9 +196,7 @@ def _patch_minimal_pulse_context(monkeypatch, pipeline_status):
         "solstone.apps.home.routes._load_pulse_narrative",
         lambda today: (None, None, []),
     )
-    monkeypatch.setattr(
-        "solstone.apps.home.routes._load_briefing_md", lambda today: ({}, None, [])
-    )
+    monkeypatch.setattr("solstone.apps.home.routes.load_briefing", lambda today: None)
     monkeypatch.setattr(
         "solstone.apps.home.routes._collect_anticipated_activities", lambda today: []
     )
@@ -456,7 +465,7 @@ def test_activity_bullet_title_duration_facet(tmp_path, monkeypatch):
     )
 
 
-def test_briefing_frontmatter_missing_counts_as_gap(tmp_path, monkeypatch):
+def test_briefing_missing_counts_as_gap(tmp_path, monkeypatch):
     _seed_journal(tmp_path, monkeypatch)
 
     monkeypatch.setattr("solstone.apps.home.routes._today", lambda: "20260416")
@@ -485,18 +494,19 @@ def test_briefing_freshness_valid_with_prior_evening_generated(tmp_path, monkeyp
     assert result == {"exists": True, "valid": True, "generated_label": "9:30pm"}
 
 
-def test_briefing_freshness_accepts_unquoted_int_date(tmp_path, monkeypatch):
-    import frontmatter
+def test_briefing_summary_matches_fixture_projection(monkeypatch):
+    from solstone.think.briefing import load_briefing, render_briefing_sections
 
-    from solstone.think.talent import morning_briefing_path
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(FIXTURES))
 
-    _seed_journal(tmp_path, monkeypatch)
-    _write_briefing("20260702", "2026-07-01T20:00:00")
+    briefing = load_briefing("20260327")
+    assert briefing is not None
+    sections = render_briefing_sections(briefing)
 
-    meta = frontmatter.load(str(morning_briefing_path("20260702"))).metadata
-
-    assert isinstance(meta["date"], int)
-    assert _briefing_freshness("20260702")["valid"] is True
+    assert (
+        _briefing_summary(briefing, sections, len(briefing["needs_attention"]))
+        == "Morning briefing — 3 meetings, 3 items need attention"
+    )
 
 
 def test_briefing_freshness_invalid_when_missing(tmp_path, monkeypatch):
@@ -509,12 +519,12 @@ def test_briefing_freshness_invalid_when_missing(tmp_path, monkeypatch):
     }
 
 
-def test_briefing_freshness_invalid_when_wrong_type(tmp_path, monkeypatch):
+def test_briefing_freshness_invalid_when_root_is_list(tmp_path, monkeypatch):
     _seed_journal(tmp_path, monkeypatch)
     _write_briefing(
         "20260416",
         "2026-04-15T21:00:00",
-        metadata_type="daily_summary",
+        payload=[],
     )
 
     result = _briefing_freshness("20260416")
@@ -523,23 +533,30 @@ def test_briefing_freshness_invalid_when_wrong_type(tmp_path, monkeypatch):
     assert result["valid"] is False
 
 
-def test_briefing_freshness_invalid_when_date_mismatch(tmp_path, monkeypatch):
+def test_briefing_freshness_invalid_when_metadata_missing(tmp_path, monkeypatch):
     _seed_journal(tmp_path, monkeypatch)
-    _write_briefing("20260416", "2026-04-15T21:00:00", date="20260415")
+    _write_briefing(
+        "20260416",
+        "2026-04-15T21:00:00",
+        payload={
+            "your_day": [],
+            "yesterday": [],
+            "needs_attention": [],
+            "forward_look": [],
+            "reading": [],
+        },
+    )
 
     assert _briefing_freshness("20260416")["valid"] is False
 
 
-def test_briefing_freshness_invalid_when_frontmatter_unparseable(tmp_path, monkeypatch):
+def test_briefing_freshness_invalid_when_json_malformed(tmp_path, monkeypatch):
     from solstone.think.talent import morning_briefing_path
 
     _seed_journal(tmp_path, monkeypatch)
     path = morning_briefing_path("20260416")
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "---\ntype: morning_briefing\ndate: [unclosed\n---\n\nbody\n",
-        encoding="utf-8",
-    )
+    path.write_text("{not valid json", encoding="utf-8")
 
     assert _briefing_freshness("20260416") == {
         "exists": True,
@@ -791,9 +808,7 @@ def test_build_pulse_context_includes_yesterday_processing(monkeypatch):
         "solstone.apps.home.routes._load_pulse_narrative",
         lambda today: (None, None, []),
     )
-    monkeypatch.setattr(
-        "solstone.apps.home.routes._load_briefing_md", lambda today: ({}, None, [])
-    )
+    monkeypatch.setattr("solstone.apps.home.routes.load_briefing", lambda today: None)
     monkeypatch.setattr(
         "solstone.apps.home.routes._collect_anticipated_activities", lambda today: []
     )

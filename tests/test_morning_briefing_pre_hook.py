@@ -98,6 +98,7 @@ def test_morning_briefing_pre_hook_builds_source_packet(tmp_path, monkeypatch):
     ]
 
     expected = {
+        "briefing_metadata",
         "active_facets",
         "facet_newsletters",
         "anticipated_today",
@@ -107,18 +108,19 @@ def test_morning_briefing_pre_hook_builds_source_packet(tmp_path, monkeypatch):
         "health_surface",
         "followups",
         "decisions",
-        "source_counts",
-        "source_gaps",
-        "coverage_preamble",
     }
     assert expected <= set(packet)
+    assert "source_counts" not in packet
+    assert "source_gaps" not in packet
+    assert "coverage_preamble" not in packet
     assert "Planning meeting" in packet["anticipated_today"]
     assert "Proposal deadline" in packet["anticipated_forward"]
     assert "Work shipped a release." in packet["facet_newsletters"]
     assert "Pulse needs focus time." in packet["pulse_surface"]
     assert "- Review the launch checklist." in packet["pulse_surface"]
-    assert "  anticipated_activities: 1" in packet["source_counts"]
-    assert json.loads(packet["source_gaps"]) == []
+    metadata = json.loads(packet["briefing_metadata"])
+    assert metadata["sources"]["anticipated_activities"] == 1
+    assert metadata["gaps"] == []
 
 
 def test_morning_briefing_pre_hook_missing_sources_are_visible_gaps(
@@ -151,9 +153,10 @@ def test_morning_briefing_pre_hook_missing_sources_are_visible_gaps(
     )
 
     packet = morning_briefing.pre_process({"day": "20260422"})["template_vars"]
-    gaps = json.loads(packet["source_gaps"])
+    metadata = json.loads(packet["briefing_metadata"])
+    gaps = metadata["gaps"]
 
     assert any("no facet newsletter available" in gap for gap in gaps)
     assert any("no anticipated activities today" in gap for gap in gaps)
     assert any("steward health surface missing" in gap for gap in gaps)
-    assert "Gaps:" in packet["coverage_preamble"]
+    assert "Gaps:" in metadata["coverage_preamble"]

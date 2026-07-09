@@ -14,7 +14,6 @@ from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
-import frontmatter
 from flask import Blueprint, current_app, jsonify
 
 from solstone.apps.home.health_glance import build_health_glance
@@ -24,6 +23,12 @@ from solstone.convey.bridge import get_cached_state
 from solstone.convey.shell_data import _resolve_attention
 from solstone.convey.utils import DATE_RE, format_date, relative_time
 from solstone.think.awareness import get_current
+from solstone.think.briefing import (
+    briefing_meeting_count,
+    briefing_needs_items,
+    load_briefing,
+    render_briefing_sections,
+)
 from solstone.think.capture_health import get_capture_health
 from solstone.think.day_accumulator import read_latest
 from solstone.think.facets import get_enabled_facets, get_facets
@@ -36,15 +41,6 @@ from solstone.think.utils import day_path, get_journal
 BRIEFING_MORNING_END_HOUR = 10
 BRIEFING_LATENESS_THRESHOLD_HOURS = 2
 BRIEFING_EOD_HOUR = 20
-
-# Section heading -> key mapping
-_BRIEFING_SECTIONS = {
-    "your day": "your_day",
-    "yesterday": "yesterday",
-    "needs attention": "needs_attention",
-    "forward look": "forward_look",
-    "reading": "reading",
-}
 
 home_bp = Blueprint(
     "app:home",
@@ -148,60 +144,6 @@ def _load_pulse_narrative(today: str) -> tuple[str | None, str | None, list[str]
         return None, None, []
 
 
-def _load_briefing_md(
-    today: str | None = None,
-) -> tuple[dict[str, str], dict | None, list[str]]:
-    """Load today's briefing.md sections and needs_attention bullets."""
-    try:
-        today = today or _today()
-        briefing_path = morning_briefing_path(today)
-        if not briefing_path.exists():
-            return {}, None, []
-
-        post = frontmatter.load(str(briefing_path))
-        metadata = post.metadata
-        if metadata.get("type") != "morning_briefing":
-            return {}, None, []
-        if str(metadata.get("date")) != today:
-            return {}, None, []
-
-        sections = {}
-        current_key = None
-        current_lines: list[str] = []
-
-        def flush_section() -> None:
-            nonlocal current_key, current_lines
-            if not current_key:
-                current_lines = []
-                return
-            body = "\n".join(current_lines).strip()
-            if body:
-                sections[current_key] = body
-            current_lines = []
-
-        for line in post.content.splitlines():
-            if line.startswith("## "):
-                flush_section()
-                heading = line[3:].strip().lower()
-                current_key = _BRIEFING_SECTIONS.get(heading)
-                continue
-            if current_key:
-                current_lines.append(line)
-        flush_section()
-
-        needs_attention_items = []
-        needs_body = sections.get("needs_attention", "")
-        for line in needs_body.splitlines():
-            stripped = line.strip()
-            if stripped.startswith("- "):
-                needs_attention_items.append(stripped[2:].strip())
-
-        return sections, metadata, needs_attention_items
-    except Exception:
-        logger.warning("home: failed to load briefing.md", exc_info=True)
-        return {}, None, []
-
-
 def _compute_briefing_phase(
     segment_count: int, hour: int, briefing_exists: bool
 ) -> str:
@@ -233,18 +175,11 @@ def _briefing_lateness_state(now: datetime, phase: str) -> dict[str, Any]:
     return {"late": is_late, "late_hours": late_hours if is_late else 0}
 
 
-def _briefing_summary(sections: dict[str, str], needs_count: int) -> str:
+def _briefing_summary(
+    briefing: dict | None, sections: dict[str, str], needs_count: int
+) -> str:
     """Generate a short collapsed summary for the briefing card."""
-    meeting_count = 0
-    your_day = sections.get("your_day", "")
-    for line in your_day.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("- ") and "**" in stripped:
-            after_bullet = stripped[2:]
-            if after_bullet.startswith("**") and after_bullet.count("**") >= 2:
-                time_part = after_bullet.split("**", 2)[1]
-                if len(time_part) == 5 and time_part[2] == ":":
-                    meeting_count += 1
+    meeting_count = briefing_meeting_count(briefing or {})
 
     if meeting_count or needs_count:
         meeting_label = "meeting" if meeting_count == 1 else "meetings"
@@ -433,31 +368,23 @@ def _briefing_freshness(today: str) -> dict[str, Any]:
     if not briefing_path.exists():
         return {"exists": False, "valid": False, "generated_label": None}
 
-    try:
-        metadata = frontmatter.load(str(briefing_path)).metadata
-    except Exception:
-        logger.warning("home: failed to load briefing freshness", exc_info=True)
+    briefing = load_briefing(today)
+    if briefing is None:
         return {"exists": True, "valid": False, "generated_label": None}
 
-    valid = (
-        metadata.get("type") == "morning_briefing"
-        and str(metadata.get("date")) == today
-    )
-
     generated_label = None
+    metadata = (
+        briefing.get("metadata") if isinstance(briefing.get("metadata"), dict) else {}
+    )
     generated = metadata.get("generated")
     if generated is not None:
         try:
-            generated_dt = (
-                datetime.fromisoformat(generated)
-                if isinstance(generated, str)
-                else generated
-            )
+            generated_dt = datetime.fromisoformat(str(generated))
             generated_label = generated_dt.astimezone().strftime("%-I:%M%p").lower()
         except Exception:
             generated_label = None
 
-    return {"exists": True, "valid": valid, "generated_label": generated_label}
+    return {"exists": True, "valid": True, "generated_label": generated_label}
 
 
 def _newsletter_attempts_from_think_logs(yesterday: str) -> tuple[int, int]:
@@ -894,7 +821,10 @@ def _build_pulse_context() -> dict[str, Any]:
             )
 
     # Briefing card
-    briefing_sections, briefing_meta, briefing_needs = _load_briefing_md(today)
+    briefing = load_briefing(today)
+    briefing_sections = render_briefing_sections(briefing) if briefing else {}
+    briefing_meta = briefing.get("metadata") if briefing else None
+    briefing_needs = briefing_needs_items(briefing) if briefing else []
     briefing_exists = bool(briefing_sections)
     briefing_phase = _compute_briefing_phase(segment_count, now.hour, briefing_exists)
     briefing_lateness = _briefing_lateness_state(now, briefing_phase)
@@ -971,8 +901,9 @@ def _build_pulse_context() -> dict[str, Any]:
     briefing_summary = None
     if briefing_phase == "active":
         briefing_summary = _briefing_summary(
-            briefing_sections, len(briefing_needs_deduped)
+            briefing, briefing_sections, len(briefing_needs_deduped)
         )
+    briefing_needs_deduped_text = [item["text"] for item in briefing_needs_deduped]
 
     pipeline_status = read_steward_health()
     if pipeline_status is not None:
@@ -1016,7 +947,7 @@ def _build_pulse_context() -> dict[str, Any]:
         "briefing_lateness": briefing_lateness,
         "briefing_exists": briefing_exists,
         "briefing_summary": briefing_summary,
-        "briefing_needs_deduped": briefing_needs_deduped,
+        "briefing_needs_deduped": briefing_needs_deduped_text,
         "briefing_needs_shared_count": briefing_needs_shared_count,
         "briefing_needs_badge": briefing_needs_badge,
         "latest_weekly_reflection": latest_weekly_reflection,
@@ -1058,13 +989,6 @@ def api_briefing():
     """Briefing-specific JSON for WebSocket-triggered refresh."""
     ctx = _build_pulse_context()
     meta = ctx.get("briefing_meta")
-    if meta:
-        generated = meta.get("generated")
-        if hasattr(generated, "isoformat"):
-            meta = dict(meta)
-            meta["generated"] = generated.isoformat()
-        if "date" in meta:
-            meta["date"] = str(meta["date"])
     return jsonify(
         {
             "exists": ctx["briefing_exists"],

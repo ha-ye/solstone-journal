@@ -5,7 +5,7 @@
 
 Provides read and write access to ``{journal}/identity/partner.md`` and read access
 to sol's health surface. Also provides read access to the morning briefing at
-``{journal}/YYYYMMDD/talents/morning_briefing.md``.
+``{journal}/YYYYMMDD/talents/morning_briefing.json``.
 
 Top-level ``journal identity`` command.
 """
@@ -17,6 +17,7 @@ from pathlib import Path
 
 import typer
 
+from solstone.think.briefing import load_briefing, render_briefing_markdown
 from solstone.think.cortex_client import (
     CortexNotClaimed,
     CortexSpawnUnavailable,
@@ -271,20 +272,23 @@ def health_cmd(
 def briefing_cmd(
     day: str | None = typer.Option(None, "--day", "-d", help="Specific day YYYYMMDD."),
 ) -> None:
-    """Read the morning briefing from YYYYMMDD/talents/morning_briefing.md."""
+    """Read the morning briefing from YYYYMMDD/talents/morning_briefing.json."""
     if day:
-        path = morning_briefing_path(day)
-        if not path.exists():
+        briefing = load_briefing(day)
+        if briefing is None:
             typer.echo("No briefing found.", err=True)
             raise typer.Exit(1)
-        typer.echo(path.read_text(encoding="utf-8"))
+        typer.echo(render_briefing_markdown(briefing))
         return
 
     # No day specified — find most recent
     for day in sorted(day_dirs().keys(), reverse=True):
         briefing = morning_briefing_path(day)
         if briefing.exists() and briefing.stat().st_size > 0:
-            typer.echo(briefing.read_text(encoding="utf-8"))
+            data = load_briefing(day)
+            if data is None:
+                continue
+            typer.echo(render_briefing_markdown(data))
             return
 
     typer.echo("No briefing found.", err=True)

@@ -23,6 +23,7 @@ import json
 import logging
 import os
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
 
@@ -218,18 +219,29 @@ def get_output_path(
     return day / "talents" / filename
 
 
+@lru_cache(maxsize=1)
+def _briefing_output_format() -> str:
+    metadata = _load_prompt_metadata(TALENT_DIR / "morning_briefing.md")
+    output = metadata.get("output")
+    if not isinstance(output, str) or output not in {"md", "json"}:
+        raise ValueError("morning_briefing talent must declare output md or json")
+    return output
+
+
 def morning_briefing_path(day: str) -> Path:
     """Canonical filesystem path to a day's morning-briefing artifact.
 
     Delegates to the shared path authority so the
-    ``chronicle/<day>/talents/morning_briefing.md`` layout is derived in
-    exactly one place. Callers pass a ``YYYYMMDD`` day string; no directory
-    is created (read-verb safe).
+    ``chronicle/<day>/talents/morning_briefing.json`` layout is derived from
+    the talent's declared output format in exactly one place. Callers pass a
+    ``YYYYMMDD`` day string; no directory is created (read-verb safe).
     """
     from solstone.think.utils import day_path
 
     return get_output_path(
-        day_path(day, create=False), "morning_briefing", output_format="md"
+        day_path(day, create=False),
+        "morning_briefing",
+        output_format=_briefing_output_format(),
     )
 
 

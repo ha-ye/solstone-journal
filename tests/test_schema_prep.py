@@ -87,6 +87,29 @@ def test_anthropic_strips_array_and_length_bounds(
     assert item["enum"] == ["alpha", "beta"]
 
 
+@pytest.mark.parametrize("provider", ["openai", "google", "anthropic"])
+def test_morning_briefing_schema_is_provider_portable(provider: str) -> None:
+    schema = json.loads(
+        (REPO_ROOT / "solstone/talent/morning_briefing.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    prepared = prepare_provider_schema(schema, provider)
+
+    assert unsupported_keyword_hits(prepared, provider) == []
+    assert prepared["properties"]["reading"]["items"]["properties"]["facet"][
+        "enum"
+    ] == ["__RUNTIME_FACETS__"]
+    assert (
+        "pattern" in prepared["properties"]["your_day"]["items"]["properties"]["time"]
+    )
+    assert (
+        "pattern"
+        in prepared["properties"]["needs_attention"]["items"]["properties"]["source_id"]
+    )
+
+
 @pytest.mark.parametrize("provider", ["local", "openai", "google", "anthropic", "fake"])
 def test_prepare_provider_schema_is_pure_and_idempotent(
     bounded_schema: dict[str, Any], provider: str

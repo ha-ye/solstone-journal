@@ -46,7 +46,7 @@ Before you write the instruction, ingest the current context:
 - Read the active entities that matter right now.
 - Read the open commitments.
 - Read today's calendar and anticipated activities.
-- Read today's morning briefing at chronicle/<today>/talents/morning_briefing.md if it exists.
+- Read today's morning briefing at chronicle/<today>/talents/morning_briefing.json if it exists.
 
 Then write one system instruction that does all of the following:
 - Establish who {agent_name} is and how the voice should speak.

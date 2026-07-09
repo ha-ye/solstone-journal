@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from solstone.think.briefing import render_briefing_markdown
 from solstone.think.formatters import format_file, get_formatter
 from solstone.think.utils import get_journal, journal_relative_path
 
@@ -234,6 +235,21 @@ def format_screen_record(
 
     markdown = "\n".join(lines).strip()
     return [{"markdown": markdown, "timestamp": 0, "source": record}], meta
+
+
+def format_morning_briefing(
+    entries: list[dict[str, Any]],
+    context: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Render the structured Morning Briefing talent output."""
+    _ = context
+    meta = {"indexer": {"agent": "morning_briefing"}}
+    briefing = _first_object(entries)
+    if briefing is None:
+        return [], meta
+
+    markdown = render_briefing_markdown(briefing)
+    return [{"markdown": markdown, "timestamp": 0, "source": briefing}], meta
 
 
 def _render_json_projection(path: Path) -> str | None:
