@@ -357,8 +357,8 @@ def test_segments_batch_forwards_live_false(
     def _unreachable() -> int:
         raise AssertionError("slot discovery must not run for non-local defaults")
 
-    # tmp journal, no provider config: pin the default off host artifact state.
-    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: False)
+    # A tmp journal carries no local artifacts, so the real predicate resolves
+    # non-local and the default must never probe the server.
     monkeypatch.setattr(think, "read_server_parallel_slots", _unreachable)
     monkeypatch.setattr(
         "sys.argv",

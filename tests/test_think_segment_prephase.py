@@ -179,6 +179,8 @@ def test_daily_health_log_keeps_segment_events_out(journal_copy, monkeypatch):
 
 
 def _forbid_slot_discovery(monkeypatch, mod):
+    """Assert the non-local path never probes the local server."""
+
     def _unreachable() -> int:
         raise AssertionError("slot discovery must not run for non-local defaults")
 
@@ -186,18 +188,12 @@ def _forbid_slot_discovery(monkeypatch, mod):
 
 
 def _pin_describe_non_local(monkeypatch, mod):
-    """Pin the describe default to its CPU formula, independent of host state."""
-    monkeypatch.setattr(mod, "_describe_uses_bundled_local", lambda: False)
-    _forbid_slot_discovery(monkeypatch, mod)
+    """Pin the describe default to its CPU formula.
 
-
-def _pin_segments_non_local(monkeypatch, mod):
-    """Pin the segment default to its CPU formula, independent of host state.
-
-    These tests run against tmp journals with no provider config, so the
-    predicate would otherwise resolve through host artifact state.
+    The fixture journal resolves observe.* to google, but these tests assert an
+    exact -j value; stub the predicate so they do not silently depend on that.
     """
-    monkeypatch.setattr(mod, "_segment_work_uses_bundled_local", lambda: False)
+    monkeypatch.setattr(mod, "_describe_uses_bundled_local", lambda: False)
     _forbid_slot_discovery(monkeypatch, mod)
 
 
@@ -469,7 +465,9 @@ def test_segment_health_log_receives_segment_talent_events(tmp_path, monkeypatch
     assert any(segment["key"] == ACTIVE_SEGMENT for segment in segments)
 
     _patch_main_runtime(monkeypatch)
-    _pin_segments_non_local(monkeypatch, think)
+    # A tmp journal carries no local artifacts, so the real predicate resolves
+    # non-local and the default must never probe the server.
+    _forbid_slot_discovery(monkeypatch, think)
     monkeypatch.setattr(
         think,
         "get_talent_configs",
@@ -1387,7 +1385,7 @@ def test_segments_mode_zero_segment_noop(tmp_path, monkeypatch, caplog):
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     _patch_main_runtime(monkeypatch)
-    _pin_segments_non_local(monkeypatch, think)
+    _forbid_slot_discovery(monkeypatch, think)
     monkeypatch.setattr("sys.argv", ["sol think", "--segments", "--day", day])
 
     caplog.set_level(logging.INFO)
