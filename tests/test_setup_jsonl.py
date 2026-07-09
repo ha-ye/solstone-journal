@@ -230,7 +230,7 @@ def test_setup_jsonl_step_events_paired(
     ]
     assert [event["step"] for event in started] == list(STEP_NAMES)
     assert [event["step"] for event in terminal] == list(STEP_NAMES)
-    assert {event["total"] for event in started} == {7}
+    assert {event["total"] for event in started} == {setup.TOTAL_STEPS}
 
 
 def test_setup_jsonl_forwards_doctor_events_byte_for_byte(

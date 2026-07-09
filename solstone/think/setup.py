@@ -35,7 +35,6 @@ from solstone.think.user_config import (
 from solstone.think.utils import ensure_journal_config, get_project_root
 from solstone.think.utils import is_source_checkout as source_checkout
 
-TOTAL_STEPS = 7
 MANIFEST_SCHEMA_VERSION = 1
 # doctor is examine-only and must complete near-instantly; 30s is a generous
 # backstop, not a work budget. If doctor approaches it, the cause is a layer
@@ -80,6 +79,7 @@ class SetupContext:
     variant_source: str
     yes: bool
     skip_models: bool
+    skip_brain: bool
     skip_skills: bool
     skip_service: bool
     accept_existing_journal: bool
@@ -229,6 +229,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip local model installation",
     )
     parser.add_argument(
+        "--skip-brain",
+        action="store_true",
+        help="skip local brain bootstrap",
+    )
+    parser.add_argument(
         "--skip-skills",
         action="store_true",
         help="skip Claude Code skill installation",
@@ -288,6 +293,13 @@ def resolve_context(
     port_supplied = arg_supplied(raw_argv, "--port")
     step_timeout_supplied = arg_supplied(raw_argv, "--step-timeout-seconds")
     variant_supplied = arg_supplied(raw_argv, "--variant")
+    skip_brain = bool(args.skip_brain or args.skip_models)
+    if args.skip_brain:
+        skip_brain_source = "cli:--skip-brain"
+    elif args.skip_models:
+        skip_brain_source = "cli:--skip-models"
+    else:
+        skip_brain_source = "default"
 
     args_resolved: dict[str, object] = {
         "journal": {
@@ -327,6 +339,10 @@ def resolve_context(
             "value": bool(args.skip_models),
             "source": "cli" if args.skip_models else "default",
         },
+        "skip_brain": {
+            "value": skip_brain,
+            "source": skip_brain_source,
+        },
         "skip_skills": {
             "value": bool(args.skip_skills),
             "source": "cli" if args.skip_skills else "default",
@@ -365,6 +381,7 @@ def resolve_context(
         variant_source="cli" if variant_supplied else "default",
         yes=bool(args.yes),
         skip_models=bool(args.skip_models),
+        skip_brain=skip_brain,
         skip_skills=bool(args.skip_skills),
         skip_service=bool(args.skip_service),
         accept_existing_journal=bool(args.accept_existing_journal),
@@ -789,6 +806,26 @@ def skills_journal_command(ctx: SetupContext) -> list[str]:
         "--agent",
         "all",
     ]
+
+
+def brain_bootstrap_command() -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "solstone.think.sol_cli",
+        "call",
+        "thinking",
+        "local",
+        "bootstrap",
+    ]
+
+
+def brain_skip_reason(ctx: SetupContext) -> str:
+    resolved = ctx.args_resolved.get("skip_brain")
+    source = resolved.get("source") if isinstance(resolved, dict) else None
+    if source == "cli:--skip-models":
+        return "--skip-models implies --skip-brain"
+    return "--skip-brain"
 
 
 def service_install_command(ctx: SetupContext) -> list[str]:
@@ -1343,6 +1380,82 @@ def step_service(ctx: SetupContext, step_index: int) -> StepResult:
     return step_result("service", "ok", paths, started_at)
 
 
+def step_brain(ctx: SetupContext, step_index: int) -> StepResult:
+    started_at = utc_now()
+    from solstone.think.journal_config import read_journal_config, write_journal_config
+
+    cfg = read_journal_config(ctx.journal_path)
+    providers_raw = cfg.get("providers", {})
+    providers = providers_raw if isinstance(providers_raw, dict) else {}
+    generate = providers.get("generate", {})
+    cogitate = providers.get("cogitate", {})
+    typed_configs = (
+        generate if isinstance(generate, dict) else {},
+        cogitate if isinstance(cogitate, dict) else {},
+    )
+    owner_chose_other = any(
+        type_config.get("provider") is not None
+        and type_config.get("provider") != "local"
+        for type_config in typed_configs
+    )
+    if owner_chose_other:
+        reason = "a provider is already configured"
+        print_step_skipped(ctx, step_index, "brain", reason)
+        return step_result("brain", "skipped", [], started_at, reason=reason)
+
+    changed = "providers" not in cfg or providers_raw is not providers
+    if changed:
+        cfg["providers"] = providers
+    for agent_type in ("generate", "cogitate"):
+        type_config = providers.get(agent_type)
+        if not isinstance(type_config, dict):
+            type_config = {}
+            providers[agent_type] = type_config
+            changed = True
+        if type_config.get("provider") != "local":
+            type_config["provider"] = "local"
+            changed = True
+    if changed:
+        write_journal_config(cfg, ctx.journal_path)
+
+    if ctx.skip_brain:
+        reason = brain_skip_reason(ctx)
+        print_step_skipped(ctx, step_index, "brain", reason)
+        return step_result("brain", "skipped", [], started_at, reason=reason)
+
+    if ctx.skip_service:
+        reason = "--skip-service"
+        print_step_skipped(ctx, step_index, "brain", reason)
+        return step_result("brain", "skipped", [], started_at, reason=reason)
+
+    from solstone.think.check import build_check_report
+
+    verdict = build_check_report()
+    if verdict.report.overall == "blocked":
+        reason = "local provider unavailable on this host"
+        print_step_skipped(ctx, step_index, "brain", reason)
+        return step_result("brain", "skipped", [], started_at, reason=reason)
+
+    command = brain_bootstrap_command()
+    print_step_header(ctx, step_index, "brain", command)
+    result = run_step_subprocess(ctx, command, timeout=ctx.step_timeout_seconds)
+    if result.returncode == 0 and not result.timed_out:
+        return step_result("brain", "ok", [], started_at)
+
+    from solstone.think.providers import local_install
+
+    error = subprocess_error("brain", result, timeout=ctx.step_timeout_seconds)
+    error["fix_hint"] = local_install.install_hint()
+    return step_result(
+        "brain",
+        "warning",
+        [],
+        started_at,
+        error,
+        reason="local bootstrap did not start",
+    )
+
+
 CLEAN_UNINSTALL_TOTAL_STEPS = 4
 CLEAN_UNINSTALL_STEP_NAMES = ("service", "wrapper", "config", "manifest")
 
@@ -1633,6 +1746,83 @@ def dead_end_journal_is_file(ctx: SetupContext) -> None:
     )
 
 
+def _print_plan_step_header(
+    ctx: SetupContext,
+    step_index: int,
+    step: Callable[[SetupContext, int], StepResult],
+) -> None:
+    suffix = _plan_step_suffix(ctx, step)
+    narrate(ctx, f"[step {step_index}/{TOTAL_STEPS}] {_STEP_NAME[step]}{suffix}")
+
+
+def _plan_step_suffix(
+    ctx: SetupContext,
+    step: Callable[[SetupContext, int], StepResult],
+) -> str:
+    if step is step_skills_user:
+        return " - installs the sol skill for claude / codex / gemini"
+    if step is step_skills_journal:
+        return (
+            " - installs talent skills into "
+            f"{ctx.journal_path}/.{{claude,agents}}/skills"
+        )
+    return ""
+
+
+def _print_doctor_plan(ctx: SetupContext) -> None:
+    narrate(ctx, f"  would run: {format_command(doctor_command(ctx))}")
+
+
+def _print_journal_plan(ctx: SetupContext) -> None:
+    narrate(ctx, f"  would write: {ctx.config_path}")
+    narrate(ctx, f"  would use journal: {ctx.journal_path}")
+
+
+def _print_install_models_plan(ctx: SetupContext) -> None:
+    if ctx.skip_models:
+        narrate(ctx, "  skipped: --skip-models")
+    else:
+        narrate(ctx, f"  would run: {format_command(install_models_command(ctx))}")
+
+
+def _print_skills_user_plan(ctx: SetupContext) -> None:
+    if ctx.skip_skills:
+        narrate(ctx, "  skipped: --skip-skills")
+    else:
+        narrate(ctx, f"  would run: {format_command(skills_user_command())}")
+
+
+def _print_skills_journal_plan(ctx: SetupContext) -> None:
+    if ctx.skip_skills:
+        narrate(ctx, "  skipped: --skip-skills")
+    else:
+        narrate(ctx, f"  would run: {format_command(skills_journal_command(ctx))}")
+
+
+def _print_wrapper_plan(ctx: SetupContext) -> None:
+    narrate(ctx, "  would provision managed sol and journal wrappers in-process")
+
+
+def _print_service_plan(ctx: SetupContext) -> None:
+    if ctx.skip_service:
+        narrate(ctx, "  skipped: --skip-service")
+    else:
+        narrate(ctx, f"  would run: {format_command(service_install_command(ctx))}")
+        narrate(ctx, "  would call: solstone.think.service._up()")
+
+
+def _print_brain_plan(ctx: SetupContext) -> None:
+    narrate(ctx, "  would set local provider lane if unset")
+    if ctx.skip_brain:
+        narrate(ctx, f"  skipped: {brain_skip_reason(ctx)}")
+        return
+    if ctx.skip_service:
+        narrate(ctx, "  skipped: --skip-service")
+        return
+    narrate(ctx, "  would check local provider fit")
+    narrate(ctx, f"  would run: {format_command(brain_bootstrap_command())}")
+
+
 def print_plan(ctx: SetupContext, *, dry_run: bool) -> None:
     heading = "setup dry-run" if dry_run else "setup plan"
     narrate(ctx, f"{heading}:")
@@ -1647,40 +1837,13 @@ def print_plan(ctx: SetupContext, *, dry_run: bool) -> None:
     )
     narrate(ctx, f"  source checkout: {ctx.is_source_checkout}")
     narrate(ctx)
-    narrate(ctx, f"[step 1/7] {_STEP_NAME[step_doctor]}")
-    narrate(ctx, f"  would run: {format_command(doctor_command(ctx))}")
-    narrate(ctx, f"[step 2/7] {_STEP_NAME[step_journal]}")
-    narrate(ctx, f"  would write: {ctx.config_path}")
-    narrate(ctx, f"  would use journal: {ctx.journal_path}")
-    narrate(ctx, f"[step 3/7] {_STEP_NAME[step_install_models]}")
-    if ctx.skip_models:
-        narrate(ctx, "  skipped: --skip-models")
-    else:
-        narrate(ctx, f"  would run: {format_command(install_models_command(ctx))}")
-    narrate(
-        ctx,
-        f"[step 4/7] {_STEP_NAME[step_skills_user]} - installs the sol skill for claude / codex / gemini",
-    )
-    if ctx.skip_skills:
-        narrate(ctx, "  skipped: --skip-skills")
-    else:
-        narrate(ctx, f"  would run: {format_command(skills_user_command())}")
-    narrate(
-        ctx,
-        f"[step 5/7] {_STEP_NAME[step_skills_journal]} - installs talent skills into {ctx.journal_path}/.{{claude,agents}}/skills",
-    )
-    if ctx.skip_skills:
-        narrate(ctx, "  skipped: --skip-skills")
-    else:
-        narrate(ctx, f"  would run: {format_command(skills_journal_command(ctx))}")
-    narrate(ctx, f"[step 6/7] {_STEP_NAME[step_wrapper]}")
-    narrate(ctx, "  would provision managed sol and journal wrappers in-process")
-    narrate(ctx, f"[step 7/7] {_STEP_NAME[step_service]}")
-    if ctx.skip_service:
-        narrate(ctx, "  skipped: --skip-service")
-    else:
-        narrate(ctx, f"  would run: {format_command(service_install_command(ctx))}")
-        narrate(ctx, "  would call: solstone.think.service._up()")
+    for step_index, step in enumerate(_STEPS, start=1):
+        renderer = _PLAN_BODY.get(step)
+        if renderer is None:
+            name = _STEP_NAME.get(step, getattr(step, "__name__", repr(step)))
+            raise RuntimeError(f"missing setup plan body for {name}")
+        _print_plan_step_header(ctx, step_index, step)
+        renderer(ctx)
 
 
 def print_failure(ctx: SetupContext, result: StepResult) -> None:
@@ -1829,6 +1992,7 @@ _STEP_NAME: dict[Callable[[SetupContext, int], StepResult], str] = {
     step_skills_journal: "skills_journal",
     step_wrapper: "wrapper",
     step_service: "service",
+    step_brain: "brain",
 }
 
 _STEPS: tuple[Callable[[SetupContext, int], StepResult], ...] = (
@@ -1839,7 +2003,25 @@ _STEPS: tuple[Callable[[SetupContext, int], StepResult], ...] = (
     step_skills_journal,
     step_wrapper,
     step_service,
+    step_brain,
 )
+
+
+TOTAL_STEPS = len(_STEPS)
+
+
+_PLAN_BODY: dict[
+    Callable[[SetupContext, int], StepResult], Callable[[SetupContext], None]
+] = {
+    step_doctor: _print_doctor_plan,
+    step_journal: _print_journal_plan,
+    step_install_models: _print_install_models_plan,
+    step_skills_user: _print_skills_user_plan,
+    step_skills_journal: _print_skills_journal_plan,
+    step_wrapper: _print_wrapper_plan,
+    step_service: _print_service_plan,
+    step_brain: _print_brain_plan,
+}
 
 
 _CONTINUE_AFTER_FAILURE: frozenset[str] = frozenset({"skills_user", "skills_journal"})
@@ -1858,6 +2040,8 @@ def command_for_step(
         return skills_journal_command(ctx)
     if step is step_service:
         return service_install_command(ctx)
+    if step is step_brain:
+        return brain_bootstrap_command()
     return None
 
 
@@ -2022,6 +2206,8 @@ def main(argv: list[str] | None = None) -> int:
             incompatible.append("--explain")
         if args.skip_models:
             incompatible.append("--skip-models")
+        if args.skip_brain:
+            incompatible.append("--skip-brain")
         if args.skip_skills:
             incompatible.append("--skip-skills")
         if args.skip_service:

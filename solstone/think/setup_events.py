@@ -45,13 +45,19 @@ STEP_NAMES: tuple[str, ...] = (
     "skills_journal",
     "wrapper",
     "service",
+    "brain",
 )
 
 SKIPPED_REASONS: frozenset[str] = frozenset(
     {
         "--skip-models",
+        "--skip-brain",
+        "--skip-models implies --skip-brain",
         "--skip-skills",
         "--skip-service",
+        "a provider is already configured",
+        "local provider unavailable on this host",
+        "local bootstrap did not start",
         "prior_run_ok",
         "resumed_after_restart",
     }

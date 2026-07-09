@@ -7,7 +7,9 @@ import hashlib
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
@@ -17,6 +19,10 @@ from solstone.think import health_cli, install_guard, service, setup
 from solstone.think.user_config import write_user_config
 
 
+def fake_check_report(overall: str = "ok") -> SimpleNamespace:
+    return SimpleNamespace(report=SimpleNamespace(overall=overall))
+
+
 @pytest.fixture(autouse=True)
 def no_user_path_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
@@ -24,6 +30,13 @@ def no_user_path_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
         "_ensure_user_bin_on_path",
         lambda _path: ["path: ~/.local/bin already on PATH"],
     )
+
+
+@pytest.fixture(autouse=True)
+def fast_brain_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    from solstone.think import check
+
+    monkeypatch.setattr(check, "build_check_report", lambda: fake_check_report())
 
 
 def patch_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
@@ -175,6 +188,7 @@ STEP_NAMES = [
     "skills_journal",
     "wrapper",
     "service",
+    "brain",
 ]
 
 
@@ -238,6 +252,18 @@ def expected_service_restart_command() -> list[str]:
     return [str(Path(sys.executable).parent / "journal"), "service", "restart"]
 
 
+def expected_brain_bootstrap_command() -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "solstone.think.sol_cli",
+        "call",
+        "thinking",
+        "local",
+        "bootstrap",
+    ]
+
+
 def assert_command(
     calls: list[list[str]], position: int, expected_argv: list[str]
 ) -> None:
@@ -260,6 +286,23 @@ def read_manifest(journal: Path) -> dict[str, Any]:
     return json.loads(
         (journal / "health" / "setup-state.json").read_text(encoding="utf-8")
     )
+
+
+def read_journal_config_file(journal: Path) -> dict[str, Any]:
+    return json.loads((journal / "config" / "journal.json").read_text(encoding="utf-8"))
+
+
+def provider_lanes(journal: Path) -> tuple[str | None, str | None]:
+    config = read_journal_config_file(journal)
+    providers = config.get("providers", {})
+    return (
+        providers.get("generate", {}).get("provider"),
+        providers.get("cogitate", {}).get("provider"),
+    )
+
+
+def step_by_name(manifest: dict[str, Any], name: str) -> dict[str, Any]:
+    return next(step for step in manifest["steps"] if step["name"] == name)
 
 
 def touch_file(path: Path) -> None:
@@ -379,6 +422,7 @@ def prior_artifact_paths(journal: Path) -> dict[str, list[Path]]:
         ],
         "wrapper": list(install_guard.alias_paths().values()),
         "service": [service_path] if service_path is not None else [],
+        "brain": [],
     }
 
 
@@ -442,14 +486,17 @@ def test_interactive_happy_path_default_journal(
         encoding="utf-8"
     ) == f'journal = "{journal}"\n'
     manifest = read_manifest(journal)
-    assert_step_names_and_statuses(manifest, ["ok", "ok", "ok", "ok", "ok", "ok", "ok"])
+    assert_step_names_and_statuses(
+        manifest, ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+    )
     assert "solstone is running at http://localhost:5015" in capsys.readouterr().out
     assert_command(calls, 0, expected_doctor_command())
     assert_command(calls, 1, expected_install_models_command())
     assert_command(calls, 2, expected_skills_user_command())
     assert_command(calls, 3, expected_skills_journal_command(journal))
     assert_command(calls, 4, expected_service_install_command())
-    assert len(calls) == 5
+    assert_command(calls, 5, expected_brain_bootstrap_command())
+    assert len(calls) == 6
 
 
 def test_resolve_journal_path_precedence_chain(
@@ -509,7 +556,8 @@ def test_interactive_happy_path_journal_override(
     ) == f'journal = "{journal}"\n'
     assert read_manifest(journal)["args_resolved"]["journal"]["source"] == "cli"
     assert_command(calls, 4, expected_service_install_command())
-    assert len(calls) == 5
+    assert_command(calls, 5, expected_brain_bootstrap_command())
+    assert len(calls) == 6
 
 
 def test_non_interactive_happy_path(
@@ -529,9 +577,306 @@ def test_non_interactive_happy_path(
     assert rc == 0
     manifest = read_manifest(journal)
     assert manifest["completed_at"] is not None
-    assert_step_names_and_statuses(manifest, ["ok", "ok", "ok", "ok", "ok", "ok", "ok"])
+    assert_step_names_and_statuses(
+        manifest, ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+    )
     assert_command(calls, 4, expected_service_install_command())
-    assert len(calls) == 5
+    assert_command(calls, 5, expected_brain_bootstrap_command())
+    assert len(calls) == 6
+
+
+def test_brain_capable_sets_lane_and_triggers_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+    journal = tmp_path / "journal"
+
+    started = time.monotonic()
+    rc = setup.main(["--yes", "--journal", str(journal)])
+    elapsed = time.monotonic() - started
+
+    assert rc == 0
+    assert elapsed < 1
+    assert provider_lanes(journal) == ("local", "local")
+    manifest = read_manifest(journal)
+    assert step_by_name(manifest, "brain")["status"] == "ok"
+    assert_command(calls, 5, expected_brain_bootstrap_command())
+
+
+def test_brain_skip_brain_sets_lane_and_skips(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from solstone.think import check
+
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    monkeypatch.setattr(
+        check,
+        "build_check_report",
+        lambda: pytest.fail("build_check_report should not run"),
+    )
+    calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal), "--skip-brain"])
+
+    assert rc == 0
+    assert provider_lanes(journal) == ("local", "local")
+    brain_step = step_by_name(read_manifest(journal), "brain")
+    assert brain_step["status"] == "skipped"
+    assert brain_step["reason"] == "--skip-brain"
+    assert expected_brain_bootstrap_command() not in calls
+
+
+def test_brain_skip_models_derives_skip_brain(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from solstone.think import check
+
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    monkeypatch.setattr(
+        check,
+        "build_check_report",
+        lambda: pytest.fail("build_check_report should not run"),
+    )
+    calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal), "--skip-models"])
+
+    assert rc == 0
+    manifest = read_manifest(journal)
+    assert manifest["args_resolved"]["skip_brain"] == {
+        "value": True,
+        "source": "cli:--skip-models",
+    }
+    brain_step = step_by_name(manifest, "brain")
+    assert brain_step["status"] == "skipped"
+    assert brain_step["reason"] == "--skip-models implies --skip-brain"
+    assert provider_lanes(journal) == ("local", "local")
+    assert expected_brain_bootstrap_command() not in calls
+
+
+def test_brain_skip_service_sets_lane_and_skips(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from solstone.think import check
+
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    monkeypatch.setattr(
+        check,
+        "build_check_report",
+        lambda: pytest.fail("build_check_report should not run"),
+    )
+    calls = patch_subprocess(monkeypatch)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal), "--skip-service"])
+
+    assert rc == 0
+    assert provider_lanes(journal) == ("local", "local")
+    brain_step = step_by_name(read_manifest(journal), "brain")
+    assert brain_step["status"] == "skipped"
+    assert brain_step["reason"] == "--skip-service"
+    assert expected_service_install_command() not in calls
+    assert expected_brain_bootstrap_command() not in calls
+
+
+def test_brain_blocked_verdict_skips_without_trigger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from solstone.think import check
+
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    monkeypatch.setattr(
+        check, "build_check_report", lambda: fake_check_report("blocked")
+    )
+    calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    manifest = read_manifest(journal)
+    assert manifest["completed_at"] is not None
+    assert provider_lanes(journal) == ("local", "local")
+    brain_step = step_by_name(manifest, "brain")
+    assert brain_step["status"] == "skipped"
+    assert brain_step["reason"] == "local provider unavailable on this host"
+    assert expected_brain_bootstrap_command() not in calls
+
+
+def test_brain_trigger_nonzero_warns_but_setup_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+    journal = tmp_path / "journal"
+    commands: list[list[str]] = []
+
+    def fake_run_step_subprocess(
+        ctx: setup.SetupContext,
+        command: list[str],
+        *,
+        timeout: float | None = None,
+    ) -> setup.StepProcessResult:
+        del ctx, timeout
+        commands.append(command)
+        if command == expected_brain_bootstrap_command():
+            return setup.StepProcessResult(9, "", "bootstrap unavailable\n", False)
+        return setup.StepProcessResult(0, "", "", False)
+
+    monkeypatch.setattr(setup, "run_step_subprocess", fake_run_step_subprocess)
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    manifest = read_manifest(journal)
+    assert manifest["completed_at"] is not None
+    brain_step = step_by_name(manifest, "brain")
+    assert brain_step["status"] == "warning"
+    assert brain_step["reason"] == "local bootstrap did not start"
+    assert brain_step["error"]["message"] == "bootstrap unavailable"
+    assert brain_step["error"]["fix_hint"] == "journal install-provider local"
+    assert expected_brain_bootstrap_command() in commands
+
+
+def test_brain_preserves_existing_provider_lane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    journal = tmp_path / "journal"
+    config_path = journal / "config" / "journal.json"
+    config_path.parent.mkdir(parents=True)
+    original_config = {
+        "providers": {
+            "generate": {"provider": "anthropic"},
+            "cogitate": {"provider": "anthropic", "tier": 2},
+        }
+    }
+    config_path.write_text(json.dumps(original_config), encoding="utf-8")
+    calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+
+    rc = setup.main(["--yes", "--journal", str(journal), "--accept-existing-journal"])
+
+    assert rc == 0
+    assert read_journal_config_file(journal) == original_config
+    brain_step = step_by_name(read_manifest(journal), "brain")
+    assert brain_step["status"] == "skipped"
+    assert brain_step["reason"] == "a provider is already configured"
+    assert expected_brain_bootstrap_command() not in calls
+
+
+def test_brain_dry_run_writes_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--dry-run", "--journal", str(journal)])
+
+    assert rc == 0
+    assert not (journal / "config" / "journal.json").exists()
+
+
+def test_brain_never_calls_direct_installers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from solstone.think import install_provider
+    from solstone.think.providers import local_install
+
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    monkeypatch.setattr(
+        local_install,
+        "install_local",
+        lambda *args, **kwargs: pytest.fail("install_local should not run"),
+    )
+    monkeypatch.setattr(
+        install_provider,
+        "main",
+        lambda *args, **kwargs: pytest.fail("install_provider.main should not run"),
+    )
+    calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+    journal = tmp_path / "journal"
+
+    rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert rc == 0
+    assert expected_brain_bootstrap_command() in calls
+
+
+def test_brain_rerun_after_defer_triggers_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    first_calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+    journal = tmp_path / "journal"
+
+    first_rc = setup.main(["--yes", "--journal", str(journal), "--skip-brain"])
+
+    assert first_rc == 0
+    first_manifest = read_manifest(journal)
+    first_brain = step_by_name(first_manifest, "brain")
+    assert first_brain["status"] == "skipped"
+    assert first_brain["reason"] == "--skip-brain"
+    assert provider_lanes(journal) == ("local", "local")
+    assert expected_brain_bootstrap_command() not in first_calls
+
+    second_calls = patch_subprocess(monkeypatch)
+    second_rc = setup.main(["--yes", "--journal", str(journal)])
+
+    assert second_rc == 0
+    assert provider_lanes(journal) == ("local", "local")
+    second_brain = step_by_name(read_manifest(journal), "brain")
+    assert second_brain["status"] == "ok"
+    assert expected_brain_bootstrap_command() in second_calls
 
 
 @pytest.mark.parametrize("use_journal_flag", [False, True])
@@ -661,6 +1006,33 @@ def test_explain_early_exit(
     assert rc == 0
     assert calls == []
     assert "setup plan:" in capsys.readouterr().out
+
+
+def test_print_plan_step_count_matches_steps(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+
+    rc = setup.main(["--explain"])
+
+    assert rc == 0
+    assert len(setup._STEPS) == setup.TOTAL_STEPS
+    assert set(setup._STEP_NAME) == set(setup._STEPS)
+    out = capsys.readouterr().out
+    headers = [line for line in out.splitlines() if line.startswith("[step ")]
+    assert len(headers) == setup.TOTAL_STEPS
+    assert headers == [
+        f"[step {index}/{setup.TOTAL_STEPS}] {setup._STEP_NAME[step]}"
+        + setup._plan_step_suffix(
+            setup.resolve_context(setup.build_parser().parse_args(["--explain"]), []),
+            step,
+        )
+        for index, step in enumerate(setup._STEPS, start=1)
+    ]
 
 
 def test_manifest_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -971,14 +1343,15 @@ def test_partial_completion_runs_remaining_steps(
     assert rc == 0
     manifest = read_manifest(journal)
     assert_step_names_and_statuses(
-        manifest, ["skipped", "ok", "ok", "ok", "ok", "ok", "ok"]
+        manifest, ["skipped", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
     )
     assert manifest["steps"][0]["reason"] == "prior_run_ok"
     assert_command(calls, 0, expected_install_models_command())
     assert_command(calls, 1, expected_skills_user_command())
     assert_command(calls, 2, expected_skills_journal_command(journal))
     assert_command(calls, 3, expected_service_install_command())
-    assert len(calls) == 4
+    assert_command(calls, 4, expected_brain_bootstrap_command())
+    assert len(calls) == 5
 
 
 def test_non_interactive_setup_has_no_port_preflight_dead_end(
@@ -1014,7 +1387,8 @@ def test_non_interactive_setup_has_no_port_preflight_dead_end(
     assert "port_in_use_non_interactive" not in captured.out
     assert_command(calls, 0, expected_doctor_command())
     assert_command(calls, 4, expected_service_install_command())
-    assert len(calls) == 5
+    assert_command(calls, 5, expected_brain_bootstrap_command())
+    assert len(calls) == 6
 
 
 def test_doctor_timeout_records_failure(
@@ -1164,6 +1538,7 @@ def test_clean_uninstall_rejects_jsonl_with_specific_message(
         ["--dry-run"],
         ["--explain"],
         ["--skip-models"],
+        ["--skip-brain"],
         ["--skip-skills"],
         ["--skip-service"],
         ["--accept-existing-journal"],
@@ -1553,12 +1928,14 @@ def test_packaged_install_runs_service_step(
     assert_command(calls, 1, expected_service_install_command())
     assert len(calls) == 2
     steps = read_manifest(journal)["steps"]
-    assert steps[-2]["status"] == "ok"
+    service_step = next(step for step in steps if step["name"] == "service")
+    assert service_step["status"] == "ok"
     for binary, alias in install_guard.alias_paths().items():
         assert alias == home / ".local" / "bin" / binary
         assert_setup_wrapper(alias, binary, journal, bin_dir)
-    assert steps[-1]["name"] == "service"
-    assert steps[-1]["status"] == "ok"
+    brain_step = next(step for step in steps if step["name"] == "brain")
+    assert brain_step["status"] == "skipped"
+    assert brain_step["reason"] == "--skip-models implies --skip-brain"
 
 
 def test_packaged_install_absent_provisions_wrappers(
@@ -1669,7 +2046,7 @@ def test_wrapper_provisioning_failure_is_non_fatal_warning(
 
     captured = capsys.readouterr()
     manifest = read_manifest(journal)
-    wrapper_step = manifest["steps"][-2]
+    wrapper_step = step_by_name(manifest, "wrapper")
     assert rc == 0
     assert wrapper_step["status"] == "warning"
     assert "~/.local/bin" in wrapper_step["error"]["fix_hint"]
@@ -1842,7 +2219,7 @@ def test_step_skills_user_failure_does_not_block_skills_journal(
     assert expected_skills_journal_command(journal) in commands
     manifest = read_manifest(journal)
     assert_step_names_and_statuses(
-        manifest, ["ok", "ok", "skipped", "failed", "ok", "ok", "ok"]
+        manifest, ["ok", "ok", "skipped", "failed", "ok", "ok", "ok", "skipped"]
     )
 
 
@@ -1878,7 +2255,7 @@ def test_step_skills_journal_failure_does_not_block_subsequent_steps(
     assert commands[-1] == expected_service_install_command()
     manifest = read_manifest(journal)
     assert_step_names_and_statuses(
-        manifest, ["ok", "ok", "skipped", "ok", "failed", "ok", "ok"]
+        manifest, ["ok", "ok", "skipped", "ok", "failed", "ok", "ok", "skipped"]
     )
 
 
@@ -1941,7 +2318,7 @@ def test_resumption_skips_completed_steps(
     assert rc == 0
     assert calls == []
     manifest = read_manifest(journal)
-    assert_step_names_and_statuses(manifest, ["skipped"] * 7)
+    assert_step_names_and_statuses(manifest, ["skipped"] * 8)
     assert {step["reason"] for step in manifest["steps"]} == {"prior_run_ok"}
 
 
@@ -1972,7 +2349,16 @@ def test_resumption_runs_step_when_artifact_missing(
     manifest = read_manifest(journal)
     assert_step_names_and_statuses(
         manifest,
-        ["skipped", "skipped", "skipped", "skipped", "skipped", "ok", "skipped"],
+        [
+            "skipped",
+            "skipped",
+            "skipped",
+            "skipped",
+            "skipped",
+            "ok",
+            "skipped",
+            "skipped",
+        ],
     )
 
 
@@ -1995,7 +2381,7 @@ def test_resumption_wedged_service_restarts(
     assert health_check.call_count == 2
     assert_command(calls, 0, expected_service_restart_command())
     assert len(calls) == 1
-    service_step = read_manifest(journal)["steps"][-1]
+    service_step = step_by_name(read_manifest(journal), "service")
     assert service_step["status"] == "ok"
     assert service_step["reason"] == "resumed_after_restart"
 
@@ -2070,9 +2456,12 @@ def test_force_skips_resumption(
     assert_command(calls, 2, expected_skills_user_command())
     assert_command(calls, 3, expected_skills_journal_command(journal))
     assert_command(calls, 4, expected_service_install_command())
-    assert len(calls) == 5
+    assert_command(calls, 5, expected_brain_bootstrap_command())
+    assert len(calls) == 6
     manifest = read_manifest(journal)
-    assert_step_names_and_statuses(manifest, ["ok", "ok", "ok", "ok", "ok", "ok", "ok"])
+    assert_step_names_and_statuses(
+        manifest, ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"]
+    )
     assert all(step["reason"] is None for step in manifest["steps"])
 
 
@@ -2220,7 +2609,8 @@ def test_invalid_manifest_treated_as_no_prior(
     assert_command(calls, 2, expected_skills_user_command())
     assert_command(calls, 3, expected_skills_journal_command(journal))
     assert_command(calls, 4, expected_service_install_command())
-    assert len(calls) == 5
+    assert_command(calls, 5, expected_brain_bootstrap_command())
+    assert len(calls) == 6
 
 
 def test_port_propagates_to_subprocess_argv(
@@ -2240,4 +2630,5 @@ def test_port_propagates_to_subprocess_argv(
     assert rc == 0
     assert_command(calls, 0, expected_doctor_command(port=8080))
     assert_command(calls, 4, expected_service_install_command(port=8080))
-    assert len(calls) == 5
+    assert_command(calls, 5, expected_brain_bootstrap_command())
+    assert len(calls) == 6

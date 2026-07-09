@@ -320,9 +320,9 @@ Use `--jsonl` when another process needs progress events as they happen. The con
 | `step_subprocess_failed` | A setup subprocess exited non-zero. |
 | `step_subprocess_timeout` | A setup subprocess exceeded its timeout. |
 
-Step names are fixed and ordered: `doctor`, `journal`, `install_models`, `skills_user`, `skills_journal`, `wrapper`, `service`.
+Step names are fixed and ordered: `doctor`, `journal`, `install_models`, `skills_user`, `skills_journal`, `wrapper`, `service`, `brain`.
 
-Skipped or resumed reasons are fixed: `--skip-models`, `--skip-skills`, `--skip-service`, `prior_run_ok`, `resumed_after_restart`.
+Skipped, warning, or resumed reasons are fixed: `--skip-models`, `--skip-brain`, `--skip-models implies --skip-brain`, `--skip-skills`, `--skip-service`, `a provider is already configured`, `local provider unavailable on this host`, `local bootstrap did not start`, `prior_run_ok`, `resumed_after_restart`.
 
 The `wrapper` setup step provisions both managed wrappers in-process for source
 and packaged installs. It backs up a non-owned alias under `/tmp` before
@@ -337,7 +337,7 @@ Example stream excerpt for setup readiness:
 
 ```jsonl
 {"event":"setup.started","ts":"2026-05-11T20:00:00Z","version":"0.0.0+source","mode":"non_interactive"}
-{"event":"step.started","ts":"2026-05-11T20:00:00Z","step":"doctor","index":1,"total":7}
+{"event":"step.started","ts":"2026-05-11T20:00:00Z","step":"doctor","index":1,"total":8}
 {"event":"doctor.started","ts":"2026-05-11T20:00:00Z","version":"0.0.0+source","port":5015,"feature":""}
 {"event":"check.completed","ts":"2026-05-11T20:00:01Z","name":"python_version","severity":"blocker","status":"ok","detail":"Python version ok","fix":""}
 {"event":"doctor.completed","ts":"2026-05-11T20:00:01Z","status":"ok","duration_ms":120,"summary":{"total":10,"failed":0,"warnings":0,"skipped":0}}
