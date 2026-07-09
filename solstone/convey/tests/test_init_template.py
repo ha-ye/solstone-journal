@@ -157,6 +157,8 @@ def test_finalize_preserves_existing_provider_and_scout_config(
     config.setdefault("services", {})["scout"] = scout_block.copy()
     _write_config(env.journal, config)
     before = _read_config(env.journal)
+    before_env = json.dumps(before["env"], sort_keys=True)
+    before_scout = json.dumps(before["services"]["scout"], sort_keys=True)
     _commit_journal_identity()
 
     response = env.client.post(
@@ -168,5 +170,5 @@ def test_finalize_preserves_existing_provider_and_scout_config(
     assert response.status_code == 200
     assert response.get_json()["success"] is True
     saved = _read_config(env.journal)
-    assert saved["env"] == before["env"]
-    assert saved["services"]["scout"] == before["services"]["scout"]
+    assert json.dumps(saved["env"], sort_keys=True) == before_env
+    assert json.dumps(saved["services"]["scout"], sort_keys=True) == before_scout

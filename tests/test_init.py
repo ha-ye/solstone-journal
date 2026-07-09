@@ -827,6 +827,23 @@ class TestInitFinalize:
         assert "env" not in config
         assert "providers" not in config
 
+    def test_finalize_ignores_legacy_gemini_key_field(self, tmp_path, monkeypatch):
+        client, journal = _make_empty_client(tmp_path, monkeypatch)
+        client.get("/init")
+        _commit_journal_identity()
+
+        resp = client.post(
+            "/init/finalize",
+            json={"gemini_key": "SHOULD_NOT_PERSIST", "lane": "byo"},
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.get_json()["redirect"] == "/app/thinking/#byo-setup"
+        config = _read_config(journal)
+        assert "env" not in config
+        assert "providers" not in config
+
     def test_finalize_form_timezone_overrides_os_default(self, tmp_path, monkeypatch):
         client, journal = _make_empty_client(
             tmp_path, monkeypatch, timezone="America/Denver"

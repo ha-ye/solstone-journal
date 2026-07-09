@@ -307,7 +307,7 @@
       const verdict = document.createElement('div');
       verdict.className = 'laneverdict';
       if (state === 'capable') {
-        verdict.textContent = `this computer can run it — ${detail}`;
+        verdict.textContent = detail ? `this computer can run it — ${detail}` : 'this computer can run it.';
       } else if (state === 'incapable') {
         verdict.textContent = detail;
         const link = document.createElement('a');
@@ -328,6 +328,8 @@
     function renderProviderLanes() {
       const container = document.getElementById('provider-lanes');
       if (!container || !laneData.length) return;
+      const activeId = document.activeElement && document.activeElement.id;
+      const focusedLaneId = activeId && activeId.startsWith('provider-lane-') ? activeId : '';
       container.innerHTML = '';
       laneData.forEach(lane => {
         const localState = lane.id === 'local' ? localCapabilityState() : null;
@@ -363,6 +365,12 @@
         button.append(icon, body);
         container.appendChild(button);
       });
+      if (focusedLaneId) {
+        const focusedLane = document.getElementById(focusedLaneId);
+        if (focusedLane && focusedLane.getAttribute('aria-disabled') !== 'true') {
+          focusedLane.focus();
+        }
+      }
     }
 
     function selectProviderLane(lane) {
