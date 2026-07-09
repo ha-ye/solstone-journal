@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 INIT_HTML = Path(__file__).resolve().parents[1] / "templates" / "init.html"
@@ -42,33 +43,46 @@ def _commit_journal_identity() -> None:
     load_or_generate_ca(ca_dir())
 
 
-def _finalize_body(gemini_key: str) -> dict[str, Any]:
+def _finalize_body() -> dict[str, Any]:
     return {
         "name": "Setup Test",
         "preferred": "",
         "timezone": "UTC",
-        "gemini_key": gemini_key,
         "retention_mode": "keep",
         "retention_days": None,
     }
 
 
+def _walk_strings(value: Any):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _walk_strings(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _walk_strings(item)
+
+
 def test_init_provider_section_is_basics_only(convey_env_setup_pending) -> None:
     html = _render_init(convey_env_setup_pending)
 
-    assert 'id="gemini-key"' in html
-    assert 'id="gemini-validate"' in html
+    assert 'id="provider-lanes"' in html
+    assert "LANE_GLYPHS = { local: '⌂', confidential: '◎', byo: '⚿' }" in html
     assert "how should sol think?" in html
-    assert "become a solstone scout" in html
-    assert "use your own key" in html
-    assert "use local thinking models" in html
     assert (
-        "be an early tester for solstone — we'll cover your thinking, using Gemini."
-        in html
+        "init only opens the right next step. when you finish setup, "
+        "<b>thinking</b> opens to the lane you picked." in html
     )
-    assert "init captures your choice" in html
+    assert "save keys, join scout, or turn on local there." in html
     assert "skip for now" in html
-    assert "INSTALL.md#choosing-how-to-power-sol" in html
+    assert "LOCAL_REQUIREMENTS_URL" in html
+    assert "gemini-key" not in html
+    assert "gemini-validate" not in html
+    assert "provider-key-block" not in html
+    assert "password-toggle" not in html
+    assert "validate-provider" not in html
+    assert "scout-setup" not in html
     assert "data-scout-state" not in html
     assert "enableScout" not in html
     assert "subscribeScoutStream" not in html
@@ -94,7 +108,46 @@ def test_init_rendered_html_is_brand_canon_clean(convey_env_setup_pending) -> No
     assert BRAND_CANON_RE.search(html) is None
 
 
-def test_finalize_empty_gemini_key_preserves_existing_scout_config(
+def test_init_state_json_is_brand_canon_clean(convey_env_setup_pending) -> None:
+    env = convey_env_setup_pending()
+    response = env.client.get("/init/api/state")
+
+    assert response.status_code == 200
+    for value in _walk_strings(response.get_json()):
+        assert BRAND_CANON_RE.search(value) is None, value
+
+
+def test_init_local_capability_json_is_brand_canon_clean(
+    convey_env_setup_pending, monkeypatch
+) -> None:
+    env = convey_env_setup_pending()
+    report = SimpleNamespace(
+        report=SimpleNamespace(
+            overall="ok",
+            checks=(
+                SimpleNamespace(
+                    name="platform",
+                    severity="ok",
+                    detail="Linux (x86_64)",
+                ),
+                SimpleNamespace(
+                    name="gpu",
+                    severity="ok",
+                    detail="NVIDIA GPU with 6 GB",
+                ),
+            ),
+        )
+    )
+    monkeypatch.setattr("solstone.think.check.build_check_report", lambda: report)
+
+    response = env.client.get("/init/api/local-capability")
+
+    assert response.status_code == 200
+    for value in _walk_strings(response.get_json()):
+        assert BRAND_CANON_RE.search(value) is None, value
+
+
+def test_finalize_preserves_existing_provider_and_scout_config(
     convey_env_setup_pending,
 ) -> None:
     env = convey_env_setup_pending()
@@ -103,32 +156,17 @@ def test_finalize_empty_gemini_key_preserves_existing_scout_config(
     config.setdefault("env", {})["GOOGLE_API_KEY"] = "SCOUT_FIXTURE"
     config.setdefault("services", {})["scout"] = scout_block.copy()
     _write_config(env.journal, config)
+    before = _read_config(env.journal)
     _commit_journal_identity()
 
     response = env.client.post(
         "/init/finalize",
-        json=_finalize_body(""),
+        json=_finalize_body(),
         content_type="application/json",
     )
 
     assert response.status_code == 200
     assert response.get_json()["success"] is True
     saved = _read_config(env.journal)
-    assert saved["env"]["GOOGLE_API_KEY"] == "SCOUT_FIXTURE"
-    assert saved["services"]["scout"] == scout_block
-
-
-def test_finalize_manual_paste_writes_gemini_key(convey_env_setup_pending) -> None:
-    env = convey_env_setup_pending()
-    _commit_journal_identity()
-
-    response = env.client.post(
-        "/init/finalize",
-        json=_finalize_body("MANUAL_FIXTURE"),
-        content_type="application/json",
-    )
-
-    assert response.status_code == 200
-    assert response.get_json()["success"] is True
-    saved = _read_config(env.journal)
-    assert saved["env"]["GOOGLE_API_KEY"] == "MANUAL_FIXTURE"
+    assert saved["env"] == before["env"]
+    assert saved["services"]["scout"] == before["services"]["scout"]

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 INIT_HTML = Path(__file__).resolve().parents[1] / "templates" / "init.html"
@@ -13,38 +12,17 @@ def _init_text() -> str:
     return INIT_HTML.read_text(encoding="utf-8")
 
 
-def test_gemini_key_input_is_masked_by_default():
+def test_provider_key_ui_removed():
     text = _init_text()
 
-    match = re.search(r'<input[^>]*\bid="gemini-key"[^>]*>', text)
-
-    assert match, "gemini-key input not found"
-    tag = match.group(0)
-    assert 'type="password"' in tag
-    assert 'type="text"' not in tag
-
-
-def test_password_toggle_does_not_steal_focus():
-    text = _init_text()
-    idx = text.index(".password-toggle')")
-    block = text[idx : idx + 800]
-    assert "mousedown" in block
-    assert "preventDefault()" in block
-
-
-def test_gemini_key_wrapped_with_password_toggle():
-    text = _init_text()
-
-    assert re.search(
-        r'<div class="password-wrap">\s*<input[^>]*\bid="gemini-key"',
-        text,
-    )
-    assert re.search(
-        r'<button type="button" class="password-toggle" '
-        r'data-toggle="gemini-key" title="show key">\s*'
-        r"<span>&#128065;</span>",
-        text,
-    )
+    for deleted in (
+        "gemini-key",
+        "gemini-validate",
+        "provider-key-block",
+        "password-toggle",
+        "validate-provider",
+    ):
+        assert deleted not in text
 
 
 def test_result_display_ms_constant_present():
@@ -53,14 +31,10 @@ def test_result_display_ms_constant_present():
     assert text.count("RESULT_DISPLAY_MS = 1200") == 1
 
 
-def test_validate_button_starts_with_validate_label():
+def test_scout_setup_deep_link_removed():
     text = _init_text()
 
-    assert re.search(
-        r'<button type="button" id="gemini-validate" '
-        r'class="settings-preset-btn">validate</button>',
-        text,
-    )
+    assert "scout-setup" not in text
 
 
 def test_wizard_self_contained():

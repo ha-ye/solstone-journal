@@ -4,12 +4,14 @@
 import json
 import re
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from solstone.apps.observer.routes import ACTIVE_THRESHOLD_MS, STALE_THRESHOLD_MS
 from solstone.apps.observer.utils import save_observer
+from solstone.apps.thinking.copy import LANES
 from solstone.convey import create_app
 from solstone.think.utils import get_journal, now_ms
 
@@ -125,6 +127,11 @@ class TestInitDetection:
 
         assert _read_init_state(fresh_client)["version"] in {expected, "dev"}
 
+    def test_init_state_carries_thinking_lanes(self, fresh_client):
+        state = _read_init_state(fresh_client)
+
+        assert state["lanes"] == [dict(lane) for lane in LANES]
+
     def test_init_renders_journal_path_in_welcome(self, fresh_client):
         journal_path = str(Path(get_journal()))
 
@@ -142,21 +149,28 @@ class TestInitDetection:
     def test_init_sol_agent_section_renders(self, fresh_client):
         resp = fresh_client.get("/init")
         assert b">how should sol think?<" in resp.data
-        assert b"become a solstone scout" in resp.data
+        assert b'id="provider-lanes"' in resp.data
+        assert b'id="provider-skip"' in resp.data
 
     def test_init_sol_agent_paragraphs(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b"Claude, Gemini, or GPT" in resp.data
-        assert b"init captures your choice" in resp.data
+        assert (
+            b"init only opens the right next step. when you finish setup, "
+            b"<b>thinking</b> opens to the lane you picked."
+        ) in resp.data
+        assert b"save keys, join scout, or turn on local there." in resp.data
+        assert b"apply to scout" not in resp.data
 
     def test_init_no_legacy_trust_note(self, fresh_client):
         resp = fresh_client.get("/init")
         assert b"your key is stored locally" not in resp.data
 
-    def test_init_gemini_label_canonical_case(self, fresh_client):
+    def test_init_lane_cards_are_dynamic(self, fresh_client):
         resp = fresh_client.get("/init")
-        assert b"Gemini API key" in resp.data
-        assert b">gemini api key<" not in resp.data
+        assert b'id="provider-lane-local"' not in resp.data
+        assert b'id="provider-lane-confidential"' not in resp.data
+        assert b'id="provider-lane-byo"' not in resp.data
+        assert b"LANE_GLYPHS" in resp.data
 
     def test_machine_card_present_and_verbatim(self, fresh_client):
         resp = fresh_client.get("/init")
@@ -200,22 +214,7 @@ class TestInitDetection:
 
     def test_no_lowercase_gemini_in_body_copy(self, fresh_client):
         resp = fresh_client.get("/init")
-        allowed_contexts = (
-            "gemini-key",
-            "gemini-validate",
-            "geminiKey",
-            "gemini_key",
-            "gemini.google.com",
-            "gemini-api/terms",
-            "a gemini key is already on this machine",
-        )
-        # DOM identifiers, JS selectors, JSON keys, and literal domains stay lowercase.
-        body_copy = "\n".join(
-            line
-            for line in resp.data.decode().splitlines()
-            if not any(context in line for context in allowed_contexts)
-        )
-        assert re.search(r"\bgemini\b", body_copy) is None
+        assert re.search(r"\bgemini\b", resp.data.decode()) is None
 
     def test_no_banned_terms_or_surveillance_verbs(self, fresh_client):
         resp = fresh_client.get("/init")
@@ -242,10 +241,6 @@ class TestInitDetection:
         assert b"portal-unreachable" not in resp.data
         assert b"can't reach sol pbc right now." not in resp.data
         assert b"L11-stub: portal-unreachable" not in resp.data
-
-    def test_init_validate_button_present(self, fresh_client):
-        resp = fresh_client.get("/init")
-        assert b'id="gemini-validate"' in resp.data
 
     def test_init_retention_radios_present(self, fresh_client):
         resp = fresh_client.get("/init")
@@ -299,6 +294,7 @@ class TestInitDetection:
     def test_init_redirects_when_configured(self, configured_client):
         resp = configured_client.get("/init")
         assert resp.status_code == 302
+        assert resp.headers["Location"] == "/"
 
     def test_init_empty_journal_materializes_config(self, tmp_path, monkeypatch):
         client, journal = _make_empty_client(tmp_path, monkeypatch)
@@ -443,103 +439,102 @@ class TestInitMark:
             assert asset_resp.status_code == 200, url
 
 
-class TestInitValidateProvider:
-    """Tests for the validate-only provider endpoint."""
+class TestInitLocalCapability:
+    """Tests for the local capability endpoint."""
 
-    def test_validate_provider_valid_key(self, fresh_client, monkeypatch):
-        monkeypatch.setattr(
-            "solstone.think.providers.validate_key",
-            lambda provider, key: {"valid": True},
-        )
+    def test_validate_provider_route_removed(self, fresh_client):
         resp = fresh_client.post(
             "/init/validate-provider",
             json={"key": "test-api-key-123"},
             content_type="application/json",
         )
+
+        assert resp.status_code == 404
+
+    def test_local_capability_ok_payload(self, fresh_client, monkeypatch):
+        report = SimpleNamespace(
+            report=SimpleNamespace(
+                overall="ok",
+                checks=(
+                    SimpleNamespace(
+                        name="platform",
+                        severity="ok",
+                        detail="Linux (x86_64)",
+                        required_bytes=1,
+                        available_bytes=2,
+                    ),
+                    SimpleNamespace(
+                        name="gpu",
+                        severity="ok",
+                        detail="NVIDIA GPU with 6 GB",
+                        required_bytes=3,
+                        available_bytes=4,
+                    ),
+                ),
+            )
+        )
+        monkeypatch.setattr("solstone.think.check.build_check_report", lambda: report)
+
+        resp = fresh_client.get("/init/api/local-capability")
+
+        assert resp.status_code == 200
+        assert resp.get_json() == {
+            "overall": "ok",
+            "checks": [
+                {
+                    "name": "platform",
+                    "severity": "ok",
+                    "detail": "Linux (x86_64)",
+                },
+                {
+                    "name": "gpu",
+                    "severity": "ok",
+                    "detail": "NVIDIA GPU with 6 GB",
+                },
+            ],
+        }
+
+    def test_local_capability_blocked_payload(self, fresh_client, monkeypatch):
+        report = SimpleNamespace(
+            report=SimpleNamespace(
+                overall="blocked",
+                checks=(
+                    SimpleNamespace(
+                        name="platform",
+                        severity="ok",
+                        detail="Linux (x86_64)",
+                    ),
+                    SimpleNamespace(
+                        name="gpu",
+                        severity="blocked",
+                        detail="no supported NVIDIA GPU found",
+                    ),
+                ),
+            )
+        )
+        monkeypatch.setattr("solstone.think.check.build_check_report", lambda: report)
+
+        resp = fresh_client.get("/init/api/local-capability")
+
         assert resp.status_code == 200
         data = resp.get_json()
-        assert data["valid"] is True
+        assert data["overall"] == "blocked"
+        assert data["checks"][1] == {
+            "name": "gpu",
+            "severity": "blocked",
+            "detail": "no supported NVIDIA GPU found",
+        }
 
-    def test_validate_provider_invalid_key(self, fresh_client, monkeypatch):
-        from solstone.convey.provider_readiness import chat_view
+    def test_local_capability_probe_failure_is_unknown(self, fresh_client, monkeypatch):
+        def fail_probe():
+            raise RuntimeError("probe failed")
 
-        monkeypatch.setattr(
-            "solstone.think.providers.validate_key",
-            lambda provider, key: {"valid": False, "error": "Invalid key"},
-        )
-        resp = fresh_client.post(
-            "/init/validate-provider",
-            json={"key": "bad-key"},
-            content_type="application/json",
-        )
+        monkeypatch.setattr("solstone.think.check.build_check_report", fail_probe)
+
+        resp = fresh_client.get("/init/api/local-capability")
+
         assert resp.status_code == 200
-        data = resp.get_json()
-        assert data["valid"] is False
-        assert data["reason_code"] == "unknown"
-        assert data["message"] == chat_view("unknown", "google")["message"]
-        assert data["message"] != "Invalid key"
-
-    def test_validate_provider_provider_failure_no_leak(
-        self, fresh_client, monkeypatch
-    ):
-        from solstone.think.providers import google
-
-        def fail_probe(_api_key):
-            raise ConnectionError("SECRET-TRACEBACK-XYZ")
-
-        monkeypatch.setattr(google, "_probe_backend", fail_probe)
-
-        resp = fresh_client.post(
-            "/init/validate-provider",
-            json={"key": "bad-key"},
-            content_type="application/json",
-        )
-
-        text = resp.get_data(as_text=True)
-        data = resp.get_json()
-        assert resp.status_code == 200
-        assert data["valid"] is False
-        assert data["reason_code"] == "network_unreachable"
-        assert "SECRET-TRACEBACK-XYZ" not in text
-        assert "Traceback" not in text
-        assert "RuntimeError" not in text
-
-    def test_validate_provider_dispatch_failure_non_2xx(
-        self, fresh_client, monkeypatch
-    ):
-        def fail_validate(_provider, _key):
-            raise RuntimeError("SECRET-DISPATCH")
-
-        monkeypatch.setattr("solstone.think.providers.validate_key", fail_validate)
-
-        resp = fresh_client.post(
-            "/init/validate-provider",
-            json={"key": "bad-key"},
-            content_type="application/json",
-        )
-
-        text = resp.get_data(as_text=True)
-        data = resp.get_json()
-        assert resp.status_code == 500
-        assert data["reason_code"] == "provider_validation_failed"
-        assert "SECRET-DISPATCH" not in text
-
-    def test_validate_provider_no_config_write(
-        self, fresh_client, journal_copy, monkeypatch
-    ):
-        """Validate endpoint must not write to config."""
-        monkeypatch.setattr(
-            "solstone.think.providers.validate_key",
-            lambda provider, key: {"valid": True},
-        )
-        config_before = _read_config(journal_copy)
-        fresh_client.post(
-            "/init/validate-provider",
-            json={"key": "test-api-key-123"},
-            content_type="application/json",
-        )
-        config_after = _read_config(journal_copy)
-        assert config_before == config_after
+        assert resp.get_json() == {"overall": "unknown", "checks": []}
 
 
 class TestInitObservers:
@@ -678,7 +673,6 @@ class TestInitFinalize:
                 "name": "Jane Doe",
                 "preferred": "Jane",
                 "timezone": "America/Denver",
-                "gemini_key": "test-api-key-123",
             },
             content_type="application/json",
         )
@@ -693,10 +687,43 @@ class TestInitFinalize:
         assert config["identity"]["name"] == "Jane Doe"
         assert config["identity"]["preferred"] == "Jane"
         assert config["identity"]["timezone"] == "America/Denver"
-        # Provider
-        assert config["env"]["GOOGLE_API_KEY"] == "test-api-key-123"
         # Setup
         assert "completed_at" in config["setup"]
+
+    @pytest.mark.parametrize(
+        ("payload", "expected_redirect"),
+        [
+            ({"lane": "local"}, "/app/thinking/#local-setup"),
+            ({"lane": "confidential"}, "/app/thinking/#confidential-setup"),
+            ({"lane": "byo"}, "/app/thinking/#byo-setup"),
+            ({}, "/app/thinking/"),
+            ({"lane": ""}, "/app/thinking/"),
+        ],
+    )
+    def test_finalize_lane_redirects(self, fresh_client, payload, expected_redirect):
+        _commit_journal_identity()
+
+        resp = fresh_client.post(
+            "/init/finalize",
+            json=payload,
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        assert resp.get_json()["redirect"] == expected_redirect
+
+    @pytest.mark.parametrize("lane", ["scout", 123, ["local"]])
+    def test_finalize_invalid_lane_returns_reason(self, fresh_client, lane):
+        _commit_journal_identity()
+
+        resp = fresh_client.post(
+            "/init/finalize",
+            json={"lane": lane},
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 400
+        assert resp.get_json()["reason_code"] == "invalid_request_value"
 
     def test_finalize_succeeds(self, fresh_client, journal_copy):
         _commit_journal_identity()
@@ -763,8 +790,42 @@ class TestInitFinalize:
         assert resp.status_code == 200
         config = _read_config(journal_copy)
         assert "completed_at" in config["setup"]
-        # No gemini key written
+        # No provider key written.
         assert "GOOGLE_API_KEY" not in config.get("env", {})
+
+    def test_finalize_preserves_env_and_providers(self, fresh_client, journal_copy):
+        _commit_journal_identity()
+        before = _read_config(journal_copy)
+
+        resp = fresh_client.post(
+            "/init/finalize",
+            json={"lane": "byo"},
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        after = _read_config(journal_copy)
+        assert after.get("env") == before.get("env")
+        assert after.get("providers") == before.get("providers")
+        assert "lane" not in after
+
+    def test_finalize_empty_journal_writes_no_provider_config(
+        self, tmp_path, monkeypatch
+    ):
+        client, journal = _make_empty_client(tmp_path, monkeypatch)
+        client.get("/init")
+        _commit_journal_identity()
+
+        resp = client.post(
+            "/init/finalize",
+            json={},
+            content_type="application/json",
+        )
+
+        assert resp.status_code == 200
+        config = _read_config(journal)
+        assert "env" not in config
+        assert "providers" not in config
 
     def test_finalize_form_timezone_overrides_os_default(self, tmp_path, monkeypatch):
         client, journal = _make_empty_client(

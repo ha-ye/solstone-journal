@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from solstone.apps import AppRegistry
+from solstone.apps.thinking.copy import LANES
 from solstone.convey import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -179,6 +180,7 @@ def test_init_template_construct_free_and_state_matches(client, journal_copy):
     assert payload["retention_mode"] == config.get("retention", {}).get(
         "raw_media", "keep"
     )
+    assert payload["lanes"] == [dict(lane) for lane in LANES]
     assert set(payload) == {
         "version",
         "journal_path",
@@ -186,6 +188,7 @@ def test_init_template_construct_free_and_state_matches(client, journal_copy):
         "identity_preferred",
         "retention_mode",
         "retention_days",
+        "lanes",
     }
 
 
