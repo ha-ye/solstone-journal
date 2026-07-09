@@ -49,8 +49,8 @@ from .reasons import (
     IDENTITY_NOT_LOCKED,
     INVALID_CONFIG_VALUE,
     INVALID_OPERATION_FOR_STATE,
+    INVALID_REQUEST_VALUE,
     PL_REVOKED,
-    PROVIDER_VALIDATION_FAILED,
 )
 from .secure_listener import get_authorized_clients, start_secure_listener
 from .secure_listener.wsgi import CERTLESS_PAIR_ENDPOINTS
@@ -85,10 +85,10 @@ def require_access() -> Any:
     if request.endpoint in {
         "root.init",
         "root.init_state",
+        "root.init_local_capability",
         "root.init_mark",
         "root.init_mark_regenerate",
         "root.init_mark_lock",
-        "root.init_validate_provider",
         "root.init_observers",
         "root.init_finalize",
         "static",
@@ -266,6 +266,8 @@ def callosum_sse() -> Response:
 
 
 def _build_init_state() -> dict[str, Any]:
+    from solstone.apps.thinking.copy import LANES
+
     config = ensure_journal_config()
     identity = config.get("identity", {})
     identity_name = identity.get("name", "") or ""
@@ -285,12 +287,40 @@ def _build_init_state() -> dict[str, Any]:
         "identity_preferred": identity_preferred,
         "retention_mode": retention_mode,
         "retention_days": retention_days,
+        "lanes": [dict(lane) for lane in LANES],
     }
 
 
 @bp.route("/init/api/state")
 def init_state() -> Any:
     return jsonify(_build_init_state())
+
+
+@bp.route("/init/api/local-capability")
+def init_local_capability() -> Any:
+    try:
+        from solstone.think.check import build_check_report
+
+        result = build_check_report()
+    except Exception:
+        # Host probing must never break the setup wizard; log loudly and let the
+        # browser render the honest unknown state.
+        logger.exception("local capability probe failed")
+        return jsonify({"overall": "unknown", "checks": []})
+
+    return jsonify(
+        {
+            "overall": result.report.overall,
+            "checks": [
+                {
+                    "name": check.name,
+                    "severity": check.severity,
+                    "detail": check.detail,
+                }
+                for check in result.report.checks
+            ],
+        }
+    )
 
 
 @bp.route("/init")
@@ -302,30 +332,6 @@ def init() -> Any:
     # /init/api/state supplies the rendered values to the static page.
     ensure_journal_config()
     return send_from_directory(Path(__file__).parent / "templates", "init.html")
-
-
-@bp.route("/init/validate-provider", methods=["POST"])
-def init_validate_provider() -> Any:
-    data = request.get_json(silent=True) or {}
-    key = data.get("key", "")
-
-    try:
-        from solstone.convey.provider_readiness import chat_view
-        from solstone.think.providers import validate_key
-
-        result = validate_key("google", key)
-    except Exception:
-        logger.exception("provider validation dispatch failed")
-        return error_response(PROVIDER_VALIDATION_FAILED)
-
-    if result.get("valid"):
-        return jsonify({"valid": True})
-
-    reason_code = result.get("reason_code") or "unknown"
-    view = chat_view(reason_code, "google")
-    return jsonify(
-        {"valid": False, "message": view["message"], "reason_code": reason_code}
-    )
 
 
 @bp.route("/init/observers")
@@ -391,6 +397,7 @@ def init_mark_lock() -> Any:
 
 @bp.route("/init/finalize", methods=["POST"])
 def init_finalize() -> Any:
+    from solstone.apps.thinking.copy import LANES
     from solstone.think.link import establish
 
     if not establish.is_committed():
@@ -401,6 +408,17 @@ def init_finalize() -> Any:
 
     data = request.get_json(silent=True) or {}
     warnings: list[str] = []
+    lane = data.get("lane")
+    valid_lanes = {item["id"] for item in LANES}
+    if lane is None or lane == "":
+        redirect_target = url_for("app:thinking.index")
+    elif isinstance(lane, str) and lane in valid_lanes:
+        redirect_target = url_for("app:thinking.index") + f"#{lane}-setup"
+    else:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="lane must be one of: " + ", ".join(sorted(valid_lanes)),
+        )
 
     from solstone.think.utils import now_ms
 
@@ -417,9 +435,6 @@ def init_finalize() -> Any:
             if v
         }
     )
-    gemini_key = data.get("gemini_key")
-    if gemini_key:
-        config.setdefault("env", {})["GOOGLE_API_KEY"] = gemini_key
     config.setdefault("setup", {})["completed_at"] = now_ms()
     retention_mode = data.get("retention_mode", "keep")
     retention_days = data.get("retention_days")
@@ -459,7 +474,7 @@ def init_finalize() -> Any:
     return jsonify(
         {
             "success": True,
-            "redirect": url_for("app:thinking.index"),
+            "redirect": redirect_target,
             "warnings": warnings,
         }
     )

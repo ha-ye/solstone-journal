@@ -115,6 +115,7 @@
     .lane.greyed { background: #F4F1E9; border-color: #ECE3D0; cursor: default; }
     .lane.greyed .lanename { color: #6E6453; }
     .lane.greyed .laneic { color: #B8AC8E; }
+    .lane .laneverdict { font-size: .82rem; color: #6E6453; margin-top: 7px; line-height: 1.45; }
     .lane .reqlink { color: #B06A1A; font-weight: 600; text-decoration: none; }
     .routenote {
       font-size: .84rem;
@@ -129,10 +130,7 @@
     .routenote b { color: #5B5246; }
     .skip { font-size: .86rem; color: #6E6453; margin-top: 16px; }
     .skip a { color: #B06A1A; font-weight: 600; text-decoration: none; }
-    #provider-key-block { min-width: 0; }
     .footer-note { font-size: 0.8rem; color: #767676; margin-top: 1.5rem; text-align: center; }
-    .provider-key-row { display: flex; gap: 0.5rem; align-items: center; }
-    .provider-key-row input { flex: 1; min-width: 0; width: auto; }
     .settings-preset-btn {
       padding: 0.5em 0.9em; border: 1px solid #ccc; border-radius: 4px;
       background: #fff; color: #555; cursor: pointer; font-size: 0.85rem;
@@ -150,15 +148,6 @@
     .retention-days-row input[type="number"]:focus { outline: none; border-color: #E8923A; }
     .retention-days-row.is-disabled { opacity: 0.5; cursor: not-allowed; }
     .retention-days-suffix { font-size: 0.85rem; color: #666; }
-    .password-wrap { position: relative; flex: 1; min-width: 0; }
-    .password-wrap input { width: 100%; padding-right: 2.5em; box-sizing: border-box; }
-    .password-toggle {
-      position: absolute; right: 0.5em; top: 50%; transform: translateY(-50%);
-      background: none; border: none; padding: 0.4em; cursor: pointer;
-      color: #666; font-size: 1.1em;
-    }
-    .password-toggle:hover { color: #333; }
-    .password-toggle:active { color: #111; transform: translateY(-50%) scale(0.9); }
     .mark-display { display: flex; justify-content: center; min-height: 64px; margin: 0 0 0.85rem; }
     .mark-card { display: inline-flex; flex-direction: column; align-items: center; gap: 0.55rem; background: #fffdf9; border: 1px solid #e7d8c6; border-radius: 12px; padding: 1.15rem 1.4rem; }
     .mark-card.locked { border-color: #cfe3d3; box-shadow: 0 0 0 3px rgba(63,157,106,0.08); }
@@ -234,46 +223,8 @@
     <section class="init-section" id="section-provider">
       <h3>how should sol think?</h3>
       <p class="section-hint">sol needs a way to reason about your journal and answer you. pick one now — you can change it anytime in <b>thinking</b>.</p>
-      <div class="lanes">
-        <button type="button" id="provider-lane-scout" class="lane">
-          <div class="laneic">◎</div>
-          <div class="lanebody">
-            <div class="lanetop"><span class="lanename">become a solstone scout</span></div>
-            <div class="lanedesc">be an early tester for solstone — we'll cover your thinking, using Gemini.</div>
-          </div>
-        </button>
-        <button type="button" id="provider-lane-byo" class="lane active">
-          <div class="laneic">⚿</div>
-          <div class="lanebody">
-            <div class="lanetop"><span class="lanename">use your own key</span></div>
-            <div class="lanedesc">Claude, Gemini, or GPT — your key, working right away.</div>
-          </div>
-        </button>
-        <div id="provider-key-block">
-          <div class="field-group">
-            <label for="gemini-key">Gemini API key</label>
-            <div class="provider-key-row">
-              <div class="password-wrap">
-                <input type="password" id="gemini-key" autocomplete="off"
-                       data-1p-ignore data-lpignore="true" data-bwignore="true">
-                <button type="button" class="password-toggle" data-toggle="gemini-key" title="show key">
-                  <span>&#128065;</span>
-                </button>
-              </div>
-              <button type="button" id="gemini-validate" class="settings-preset-btn">validate</button>
-            </div>
-            <small class="field-status">&nbsp;</small>
-          </div>
-        </div>
-        <div class="lane greyed">
-          <div class="laneic">⌂</div>
-          <div class="lanebody">
-            <div class="lanetop"><span class="lanename">use local thinking models</span></div>
-            <div class="lanedesc">this computer can't run one yet — needs a supported GPU. <a class="reqlink" href="https://github.com/solpbc/solstone-journal/blob/main/INSTALL.md#choosing-how-to-power-sol" target="_blank" rel="noopener noreferrer">requirements ↗</a></div>
-          </div>
-        </div>
-      </div>
-      <div class="routenote">init captures your choice. when you finish setup, <b>thinking</b> opens to the lane you picked — paste your key, apply to scout, or turn on local there. the fork lives in thinking from now on.</div>
+      <div class="lanes" id="provider-lanes" aria-live="polite"></div>
+      <div class="routenote">init only opens the right next step. when you finish setup, <b>thinking</b> opens to the lane you picked. save keys, join scout, or turn on local there.</div>
       <p class="skip"><a href="#" id="provider-skip">skip for now</a> — sol will keep your journal; choose how it thinks whenever you're ready.</p>
     </section>
 
@@ -316,6 +267,130 @@
   </main>
 
   <script>
+    const LANE_GLYPHS = { local: '⌂', confidential: '◎', byo: '⚿' };
+    const LOCAL_REQUIREMENTS_URL = 'https://github.com/solpbc/solstone-journal/blob/main/INSTALL.md#choosing-how-to-power-sol';
+    const SEVERITY_RANK = { ok: 0, unknown: 1, warning: 2, blocked: 3 };
+    let selectedLane = null;
+    let laneData = [];
+    let localCapability = { overall: 'pending', checks: [] };
+
+    function laneDisplayLabel(lane) {
+      if (lane.id === 'byo') return lane.label || 'BYO';
+      return (lane.label || lane.id || '').toLowerCase();
+    }
+
+    function highestSeverityCheck(checks) {
+      return (checks || [])
+        .filter(check => check && check.name !== 'platform')
+        .reduce((winner, check) => {
+          const rank = SEVERITY_RANK[check.severity] ?? SEVERITY_RANK.unknown;
+          const winnerRank = winner ? (SEVERITY_RANK[winner.severity] ?? SEVERITY_RANK.unknown) : -1;
+          return rank > winnerRank ? check : winner;
+        }, null);
+    }
+
+    function localCapabilityState() {
+      if (localCapability.overall === 'ok' || localCapability.overall === 'warning') return 'capable';
+      if (localCapability.overall === 'blocked') return 'incapable';
+      if (localCapability.overall === 'unknown') return 'unknown';
+      return 'pending';
+    }
+
+    function localCapabilityDetail() {
+      const check = highestSeverityCheck(localCapability.checks);
+      return check && check.detail ? check.detail : '';
+    }
+
+    function renderLocalVerdict(parent) {
+      const state = localCapabilityState();
+      const detail = localCapabilityDetail();
+      const verdict = document.createElement('div');
+      verdict.className = 'laneverdict';
+      if (state === 'capable') {
+        verdict.textContent = `this computer can run it — ${detail}`;
+      } else if (state === 'incapable') {
+        verdict.textContent = detail;
+        const link = document.createElement('a');
+        link.className = 'reqlink';
+        link.href = LOCAL_REQUIREMENTS_URL;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = 'requirements ↗';
+        verdict.append(' ', link);
+      } else if (state === 'unknown') {
+        verdict.textContent = "couldn't check this computer. you can still choose local; thinking will check again.";
+      } else {
+        verdict.textContent = 'checking this computer…';
+      }
+      parent.appendChild(verdict);
+    }
+
+    function renderProviderLanes() {
+      const container = document.getElementById('provider-lanes');
+      if (!container || !laneData.length) return;
+      container.innerHTML = '';
+      laneData.forEach(lane => {
+        const localState = lane.id === 'local' ? localCapabilityState() : null;
+        const blocked = lane.id === 'local' && localState === 'incapable';
+        const active = selectedLane === lane.id && !blocked;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.id = `provider-lane-${lane.id}`;
+        button.className = `lane${active ? ' active' : ''}${blocked ? ' greyed' : ''}`;
+        if (blocked) {
+          button.setAttribute('aria-disabled', 'true');
+        } else {
+          button.addEventListener('click', () => selectProviderLane(lane.id));
+        }
+
+        const icon = document.createElement('div');
+        icon.className = 'laneic';
+        icon.textContent = LANE_GLYPHS[lane.id] || '';
+        const body = document.createElement('div');
+        body.className = 'lanebody';
+        const top = document.createElement('div');
+        top.className = 'lanetop';
+        const name = document.createElement('span');
+        name.className = 'lanename';
+        name.textContent = laneDisplayLabel(lane);
+        top.appendChild(name);
+        const desc = document.createElement('div');
+        desc.className = 'lanedesc';
+        desc.textContent = lane.description || '';
+
+        body.append(top, desc);
+        if (lane.id === 'local') renderLocalVerdict(body);
+        button.append(icon, body);
+        container.appendChild(button);
+      });
+    }
+
+    function selectProviderLane(lane) {
+      if (lane === 'local' && localCapabilityState() === 'incapable') return;
+      selectedLane = lane;
+      renderProviderLanes();
+    }
+
+    function applyLocalCapability(payload) {
+      localCapability = payload || { overall: 'unknown', checks: [] };
+      if (selectedLane === 'local' && localCapabilityState() === 'incapable') {
+        selectedLane = null;
+      } else if (selectedLane === null && localCapabilityState() === 'capable') {
+        selectedLane = 'local';
+      }
+      renderProviderLanes();
+    }
+
+    async function loadLocalCapability() {
+      try {
+        const payload = await window.apiJson('/init/api/local-capability', {noAuthRedirect: true});
+        applyLocalCapability(payload);
+      } catch (err) {
+        if (window.logError) window.logError(err, { context: 'init-local-capability' });
+        applyLocalCapability({ overall: 'unknown', checks: [] });
+      }
+    }
+
     async function hydrateInitState() {
       const state = await window.apiJson('/init/api/state', {noAuthRedirect: true});
       document.getElementById('init-version').textContent = state.version || '';
@@ -326,6 +401,8 @@
       const modeInput = document.querySelector(`input[name="retention_mode"][value="${mode}"]`);
       if (modeInput) modeInput.checked = true;
       document.getElementById('retention-days-input').value = state.retention_days || 30;
+      laneData = Array.isArray(state.lanes) ? state.lanes : [];
+      renderProviderLanes();
     }
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -337,6 +414,7 @@
         }
         if (window.logError) window.logError(err, { context: 'init-state' });
       });
+      loadLocalCapability();
     });
 
     function showFieldStatus(el, type, message) {
@@ -360,53 +438,6 @@
 
     let detectedTimezone = '';
     const RESULT_DISPLAY_MS = 1200;
-
-    function clearKeyStatus() {
-      const input = document.getElementById('gemini-key');
-      if (!input) return;
-      const group = input.closest('.field-group');
-      if (!group) return;
-      const small = group.querySelector('.field-status');
-      if (!small) return;
-      small.classList.remove('status-saved', 'status-error', 'status-fade');
-      small.textContent = '\u00a0';
-    }
-
-    async function validateProviderKey() {
-      const input = document.getElementById('gemini-key');
-      const key = input.value.trim();
-      if (!key) {
-        clearKeyStatus();
-        return;
-      }
-      const button = document.getElementById('gemini-validate');
-      const originalLabel = button.textContent;
-      const validatedValue = key;
-      button.disabled = true;
-      button.textContent = 'validating…';
-      try {
-        const result = await window.apiJson('/init/validate-provider', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({key})
-        });
-        if (result.valid) showFieldStatus(input, 'saved', 'connected');
-        else showFieldStatus(input, 'error', result.message || 'validation failed');
-        if (input.value.trim() === validatedValue) {
-          button.textContent = result.valid ? 'connected' : 'failed';
-        }
-      } catch (err) {
-        showFieldStatus(input, 'error', (err && err.serverMessage) || 'validation failed');
-        if (input.value.trim() === validatedValue) {
-          button.textContent = 'failed';
-        }
-      } finally {
-        setTimeout(() => {
-          button.textContent = originalLabel;
-          button.disabled = false;
-        }, RESULT_DISPLAY_MS);
-      }
-    }
 
     function deriveRetention(daysValue, mode) {
       if (mode === 'processed') return { mode, days: null, statusText: 'currently: delete original media after processing' };
@@ -453,58 +484,12 @@
         });
       });
 
-      const geminiKey = document.getElementById('gemini-key');
-      geminiKey.addEventListener('blur', validateProviderKey);
-      geminiKey.addEventListener('input', function() {
-        if (!this.value.trim()) clearKeyStatus();
-      });
-      document.getElementById('gemini-validate').addEventListener('click', validateProviderKey);
-      document.querySelectorAll('.password-toggle').forEach(btn => {
-        btn.onclick = () => {
-          const targetId = btn.dataset.toggle;
-          const input = document.getElementById(targetId);
-          const icon = btn.querySelector('span');
-          if (input && icon) {
-            if (input.type === 'password') {
-              input.type = 'text';
-              icon.innerHTML = '&#128064;';
-              btn.title = 'hide key';
-            } else {
-              input.type = 'password';
-              icon.innerHTML = '&#128065;';
-              btn.title = 'show key';
-            }
-          }
-        };
-        btn.addEventListener('mousedown', e => e.preventDefault());
-      });
-
-      const scoutLane = document.getElementById('provider-lane-scout');
-      const byoLane = document.getElementById('provider-lane-byo');
-      const keyBlock = document.getElementById('provider-key-block');
       const skipProvider = document.getElementById('provider-skip');
 
-      function clearProviderKey() {
-        geminiKey.value = '';
-        clearKeyStatus();
-      }
-
-      function selectProviderLane(lane) {
-        const useByo = lane === 'byo';
-        scoutLane.classList.toggle('active', lane === 'scout');
-        byoLane.classList.toggle('active', useByo);
-        keyBlock.hidden = !useByo;
-        if (!useByo) clearProviderKey();
-      }
-
-      byoLane.addEventListener('click', () => selectProviderLane('byo'));
-      scoutLane.addEventListener('click', () => selectProviderLane('scout'));
       skipProvider.addEventListener('click', e => {
         e.preventDefault();
-        scoutLane.classList.remove('active');
-        byoLane.classList.remove('active');
-        keyBlock.hidden = true;
-        clearProviderKey();
+        selectedLane = 'defer';
+        renderProviderLanes();
       });
 
       document.querySelectorAll('input[name="retention_mode"]').forEach(radio => {
@@ -669,17 +654,18 @@
         const modeInput = document.querySelector('input[name="retention_mode"]:checked');
         const selectedMode = modeInput ? modeInput.value : 'keep';
         const { mode, days } = deriveRetention(daysInput.value, selectedMode);
+        const payload = {
+          name: document.getElementById('name').value.trim(),
+          preferred: document.getElementById('preferred').value.trim(),
+          timezone: detectedTimezone,
+          retention_mode: mode,
+          retention_days: days
+        };
+        if (selectedLane && selectedLane !== 'defer') payload.lane = selectedLane;
         const data = await window.apiJson('/init/finalize', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({
-            name: document.getElementById('name').value.trim(),
-            preferred: document.getElementById('preferred').value.trim(),
-            timezone: detectedTimezone,
-            gemini_key: document.getElementById('gemini-key').value.trim(),
-            retention_mode: mode,
-            retention_days: days
-          })
+          body: JSON.stringify(payload)
         });
         if (data && data.success && data.redirect) {
           if (data.warnings && data.warnings.length) {
