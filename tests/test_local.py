@@ -170,6 +170,10 @@ def test_run_generate_posts_to_loopback(monkeypatch):
     assert captured["json"]["messages"] == [{"role": "user", "content": "hello"}]
     assert captured["json"]["max_tokens"] == 16
     assert captured["json"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert captured["json"]["top_p"] == 0.8
+    assert captured["json"]["top_k"] == 20
+    assert captured["json"]["min_p"] == 0.0
+    assert captured["json"]["presence_penalty"] == 1.5
     assert result["text"] == "hello"
     assert result["model"] == LOCAL_MODEL
     assert result["usage"] == {
@@ -375,6 +379,7 @@ def test_run_generate_normalizes_schema_pattern_shorthand(monkeypatch):
     for pattern in patterns:
         assert "[0-9]" in pattern
         assert "\\d" not in pattern
+    assert posted_schema["properties"]["slots"]["maxItems"] == 192
 
 
 def test_run_generate_does_not_mutate_caller_schema(monkeypatch):
@@ -413,7 +418,8 @@ def test_run_generate_does_not_mutate_caller_schema(monkeypatch):
             "timestamp": {
                 "type": "string",
                 "pattern": r"^\d{2}:\d{2}:\d{2}$",
-            }
+            },
+            "slots": {"type": "array", "items": {"type": "string"}},
         },
     }
     original_schema = copy.deepcopy(schema)
@@ -425,8 +431,63 @@ def test_run_generate_does_not_mutate_caller_schema(monkeypatch):
         posted_schema["properties"]["timestamp"]["pattern"]
         == "^[0-9]{2}:[0-9]{2}:[0-9]{2}$"
     )
+    assert posted_schema["properties"]["slots"]["maxItems"] == 192
     assert schema == original_schema
     assert schema["properties"]["timestamp"]["pattern"] == r"^\d{2}:\d{2}:\d{2}$"
+    assert "maxItems" not in schema["properties"]["slots"]
+
+
+def test_prepare_local_schema_bounds_arrays_only_and_preserves_input():
+    provider = _provider()
+    schema = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {"type": "string", "pattern": r"^\d+$"},
+            },
+            "nullable_items": {
+                "type": ["array", "null"],
+                "items": {"type": "string"},
+            },
+            "prebounded": {
+                "type": "array",
+                "maxItems": 7,
+                "items": {"type": "string"},
+            },
+            "status": {"type": "string", "enum": ["open", "closed"]},
+            "empty": {"type": "null"},
+            "name": {"type": "string"},
+        },
+    }
+    original_schema = copy.deepcopy(schema)
+
+    prepared = provider._prepare_local_schema(schema)
+
+    assert not hasattr(provider, "_normalize_schema_patterns")
+    assert schema == original_schema
+    assert prepared["properties"]["items"]["maxItems"] == 192
+    assert prepared["properties"]["nullable_items"]["maxItems"] == 192
+    assert prepared["properties"]["prebounded"]["maxItems"] == 7
+    assert prepared["properties"]["items"]["items"]["pattern"] == "^[0-9]+$"
+    assert prepared["properties"]["status"] == schema["properties"]["status"]
+    assert prepared["properties"]["empty"] == schema["properties"]["empty"]
+    assert prepared["properties"]["name"] == schema["properties"]["name"]
+
+    forbidden = {"maxLength", "minItems", "minLength", "minimum", "maximum"}
+    found = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            found.update(forbidden & node.keys())
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(prepared)
+    assert found == set()
 
 
 def test_run_generate_preserves_non_pattern_backslash_d(monkeypatch):
@@ -737,6 +798,83 @@ def test_run_generate_byo_posts_to_normalized_endpoint_and_skips_connect(monkeyp
     assert result["text"] == "hello"
 
 
+def test_run_generate_byo_body_omits_bundled_qwen_sampling(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    captured_posts = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {"content": "{}"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+
+    def fake_post(url, **kwargs):
+        captured_posts.append({"url": url, **kwargs})
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    schema = {
+        "type": "object",
+        "properties": {
+            "items": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+    provider.run_generate(
+        "hello",
+        model=LOCAL_MODEL,
+        temperature=0.4,
+        max_output_tokens=7,
+    )
+    provider.run_generate(
+        "hello",
+        model=LOCAL_MODEL,
+        temperature=0.5,
+        max_output_tokens=11,
+        json_schema=schema,
+    )
+
+    assert len(captured_posts) == 2
+    assert captured_posts[0]["json"] == {
+        "model": "served-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.4,
+        "max_tokens": 7,
+        "stream": False,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    assert captured_posts[1]["json"] == {
+        "model": "served-model",
+        "messages": [{"role": "user", "content": "hello"}],
+        "temperature": 0.5,
+        "max_tokens": 11,
+        "stream": False,
+        "chat_template_kwargs": {"enable_thinking": False},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "local_schema",
+                "schema": provider._prepare_local_schema(schema),
+                "strict": True,
+            },
+        },
+    }
+    for post in captured_posts:
+        for key in ("top_p", "top_k", "min_p", "presence_penalty"):
+            assert key not in post["json"]
+
+
 def test_run_generate_byo_omits_auth_header_without_credential(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(provider, "resolve_local_endpoint", lambda: _byo_endpoint(None))
@@ -760,6 +898,40 @@ def test_run_generate_byo_omits_auth_header_without_credential(monkeypatch):
     provider.run_generate("hello", model=LOCAL_MODEL)
 
     assert "headers" not in captured
+
+
+def test_generate_schema_files_do_not_declare_bounds():
+    bounded_keys = {
+        "minItems",
+        "maxItems",
+        "minLength",
+        "maxLength",
+        "minimum",
+        "maximum",
+    }
+    paths = [
+        Path("solstone/talent/sense.schema.json"),
+        Path("solstone/talent/participation.schema.json"),
+        Path("solstone/talent/participation_entry.schema.json"),
+    ]
+    found = {}
+
+    def walk(node, keys):
+        if isinstance(node, dict):
+            keys.update(bounded_keys & node.keys())
+            for value in node.values():
+                walk(value, keys)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, keys)
+
+    for path in paths:
+        keys = set()
+        walk(json.loads(path.read_text(encoding="utf-8")), keys)
+        if keys:
+            found[str(path)] = sorted(keys)
+
+    assert found == {}
 
 
 def test_run_generate_byo_network_error_maps_to_unreachable(monkeypatch):

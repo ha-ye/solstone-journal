@@ -39,6 +39,20 @@ LOG = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 120.0
 _LOCAL_PREFIX = "local/"
+# Qwen3.5-4B runaway repetition emits duplicate array entries until the context
+# wall. llama.cpp's GBNF converter honors maxItems, so a bounded array forces
+# closure with finish_reason="stop" and valid (if bloated) JSON. 192 is 2.4x the
+# largest observed sense.entities[] length (80, n=1128); downstream dedupe
+# absorbs the slack.
+_LOCAL_SCHEMA_MAX_ITEMS = 192
+# Qwen3.5-4B model card sampling recommendations. The card explicitly warns
+# against greedy / near-greedy decoding, which drives runaway repetition on
+# entity-rich extractions. presence_penalty is the vendor-sanctioned
+# anti-repetition lever; we do not touch repeat_penalty or enable DRY/XTC.
+_QWEN_TOP_P = 0.8
+_QWEN_TOP_K = 20
+_QWEN_MIN_P = 0.0
+_QWEN_PRESENCE_PENALTY = 1.5
 
 
 @dataclass(frozen=True)
@@ -160,27 +174,39 @@ def _build_messages(
     return messages
 
 
-def _normalize_schema_patterns(schema: dict) -> dict:
-    """Rewrite `\\d` shorthand, unsupported by llama.cpp's GBNF converter.
+def _prepare_local_schema(schema: dict) -> dict:
+    """Prepare a JSON Schema for llama.cpp's GBNF converter.
 
-    Rewrites `\\d` to `[0-9]` in every schema `pattern`. Deep-copies so the
-    caller's schema is never mutated.
+    Rewrites `\\d` to `[0-9]` in every schema `pattern`, because llama.cpp does
+    not support that regex shorthand. Adds maxItems to array nodes, because
+    bounded arrays force closure before Qwen can repeat entries to the context
+    wall. Deep-copies so the caller's schema is never mutated.
     """
-    normalized = copy.deepcopy(schema)
+    prepared = copy.deepcopy(schema)
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
             if isinstance(node.get("pattern"), str):
                 node["pattern"] = node["pattern"].replace("\\d", "[0-9]")
+            node_type = node.get("type")
+            if (
+                "enum" not in node
+                and "maxItems" not in node
+                and (
+                    node_type == "array"
+                    or (isinstance(node_type, list) and "array" in node_type)
+                )
+            ):
+                node["maxItems"] = _LOCAL_SCHEMA_MAX_ITEMS
             for value in node.values():
                 _walk(value)
         elif isinstance(node, list):
             for item in node:
                 _walk(item)
 
-    _walk(normalized)
+    _walk(prepared)
 
-    return normalized
+    return prepared
 
 
 def _build_request_body(
@@ -190,6 +216,7 @@ def _build_request_body(
     max_output_tokens: int,
     json_output: bool,
     json_schema: dict | None,
+    apply_qwen_sampling: bool,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model_id,
@@ -199,12 +226,21 @@ def _build_request_body(
         "stream": False,
         "chat_template_kwargs": {"enable_thinking": False},
     }
+    if apply_qwen_sampling:
+        body.update(
+            {
+                "top_p": _QWEN_TOP_P,
+                "top_k": _QWEN_TOP_K,
+                "min_p": _QWEN_MIN_P,
+                "presence_penalty": _QWEN_PRESENCE_PENALTY,
+            }
+        )
     if json_schema is not None:
         body["response_format"] = {
             "type": "json_schema",
             "json_schema": {
                 "name": "local_schema",
-                "schema": _normalize_schema_patterns(json_schema),
+                "schema": _prepare_local_schema(json_schema),
                 "strict": True,
             },
         }
@@ -315,6 +351,7 @@ def run_generate(
             max_output_tokens,
             json_output,
             json_schema,
+            endpoint.is_bundled,
         )
 
         import httpx
@@ -344,6 +381,7 @@ def run_generate(
         max_output_tokens,
         json_output,
         json_schema,
+        endpoint.is_bundled,
     )
 
     import httpx
