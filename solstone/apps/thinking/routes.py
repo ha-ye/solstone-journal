@@ -88,7 +88,7 @@ AI_ENV_TO_PROVIDER = {
 }
 AI_PROVIDERS = frozenset(AI_ENV_TO_PROVIDER.values())
 VALID_TIERS = {1, 2, 3}
-LANES = {"scout", "byo", "local"}
+LANES = {"byo", "confidential", "local"}
 GENERIC_THINKING_ERROR = (
     "something went wrong - try again, and if it persists, check the health dashboard"
 )
@@ -217,21 +217,24 @@ def _type_settings(providers_config: dict[str, Any]) -> dict[str, dict[str, Any]
     return settings
 
 
-def _lane_for_provider(provider: str) -> str:
+def _lane_for_provider(provider: str, *, local_endpoint_configured: bool) -> str:
     if provider == NO_BRAIN_PROVIDER:
         return "none"
     if provider == "local":
-        return "local"
-    if provider == "google" and scout.is_scout_enabled():
-        return "scout"
+        return "byo" if local_endpoint_configured else "local"
     return "byo"
 
 
 def _active_lane_payload(
     type_settings: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
+    endpoint = resolve_local_endpoint()
+    local_endpoint_configured = not endpoint.is_bundled
     per_type = {
-        agent_type: _lane_for_provider(str(settings.get("provider") or ""))
+        agent_type: _lane_for_provider(
+            str(settings.get("provider") or ""),
+            local_endpoint_configured=local_endpoint_configured,
+        )
         for agent_type, settings in type_settings.items()
     }
     lanes = set(per_type.values())
@@ -565,11 +568,6 @@ def keys() -> Any:
                 INVALID_REQUEST_VALUE, detail="value must be a string"
             )
         provider = AI_ENV_TO_PROVIDER[env_var]
-        if env_var == "GOOGLE_API_KEY" and scout.is_scout_enabled() and value:
-            return error_response(
-                INVALID_CONFIG_VALUE,
-                detail="Gemini is managed by scout; choose another BYO provider.",
-            )
 
         validation = None
         with hold_config_lock():
@@ -887,36 +885,44 @@ def _apply_type_update(
 
 
 def _lane_provider(request_data: dict[str, Any]) -> str | Any:
-    lane = request_data.get("lane") or request_data.get("active_lane")
+    lane = request_data["lane"]
     if lane not in LANES:
         return error_response(
             INVALID_CONFIG_VALUE,
             detail=f"Invalid lane: {lane}. Must be one of: {', '.join(sorted(LANES))}",
         )
+    endpoint = resolve_local_endpoint()
+    local_endpoint_configured = not endpoint.is_bundled
+    if lane == "confidential":
+        return error_response(
+            INVALID_OPERATION_FOR_STATE,
+            detail=(
+                "confidential processing isn't open yet — scouts get first access. "
+                "keep using local or byo for now."
+            ),
+        )
     if lane == "local":
-        return "local"
-    if lane == "scout":
-        if not scout.is_scout_enabled():
+        if local_endpoint_configured:
             return error_response(
-                INVALID_CONFIG_VALUE,
-                detail="Scout is not ready on this journal.",
+                INVALID_OPERATION_FOR_STATE,
+                detail="clear your endpoint URL first to run the bundled local model.",
             )
-        return "google"
+        return "local"
     provider = request_data.get("provider")
     if provider in {None, ""}:
         return error_response(
             INVALID_CONFIG_VALUE,
-            detail="No BYO provider selected. Must be one of: anthropic, google, openai",
+            detail="No BYO provider selected. Must be one of: anthropic, google, local, openai",
         )
-    if provider not in {"anthropic", "google", "openai"}:
+    if provider not in {"anthropic", "google", "local", "openai"}:
         return error_response(
             INVALID_CONFIG_VALUE,
-            detail="Invalid provider for BYO lane. Must be one of: anthropic, google, openai",
+            detail="Invalid provider for BYO lane. Must be one of: anthropic, google, local, openai",
         )
-    if provider == "google" and scout.is_scout_enabled():
+    if provider == "local" and not local_endpoint_configured:
         return error_response(
-            INVALID_CONFIG_VALUE,
-            detail="Gemini is managed by scout; choose Claude or GPT for BYO cloud.",
+            INVALID_OPERATION_FOR_STATE,
+            detail="save your endpoint URL first to use your own endpoint.",
         )
     return str(provider)
 
@@ -933,7 +939,7 @@ def update_providers() -> Any:
         config.setdefault("providers", {})
         changed_fields: dict[str, Any] = {}
 
-        if "lane" in request_data or "active_lane" in request_data:
+        if "lane" in request_data:
             provider = _lane_provider(request_data)
             if not isinstance(provider, str):
                 return provider

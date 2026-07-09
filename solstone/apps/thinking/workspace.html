@@ -444,34 +444,34 @@
       </div>
 
       <section class="lanegrid" aria-label="thinking options">
-        <article class="lane" id="lane-scout" data-lane="scout" data-open-view="scout-setup" role="button" tabindex="0">
-          <div class="lanehead">
-            <h2>scout</h2>
-            <span class="pill" id="scoutLaneStatus">loading</span>
-          </div>
-          <p id="scoutLaneDescription">be an early tester for solstone — we'll cover your thinking, using Gemini.</p>
-          <span class="activetag" id="scoutActiveTag" hidden>active</span>
-          <button type="button" class="trail" data-open-view="scout-setup" id="scoutLaneTrail">manage →</button>
-        </article>
-
-        <article class="lane" id="lane-byo" data-lane="byo" data-open-view="byo-setup" role="button" tabindex="0">
-          <div class="lanehead">
-            <h2>your own key</h2>
-            <span class="pill" id="byoLanePill">off</span>
-          </div>
-          <p id="byoLaneDescription">your key from Claude, Gemini, or GPT — your billing, your control. stays in your journal.</p>
-          <span class="activetag" id="byoActiveTag" hidden>active</span>
-          <button type="button" class="trail" data-open-view="byo-setup" id="byoLaneStatus">add a key →</button>
-        </article>
-
         <article class="lane" id="lane-local" data-lane="local" data-open-view="local-setup" role="button" tabindex="0">
           <div class="lanehead">
             <h2>local</h2>
             <span class="pill" id="localLanePill">checking</span>
           </div>
-          <p id="localLaneDescription">a model runs right in your journal — your data never leaves. this computer can run one.</p>
+          <p id="localLaneDescription">the bundled model runs right in your journal — your thinking never leaves.</p>
           <span class="activetag" id="localActiveTag" hidden>active</span>
           <button type="button" class="trail" data-open-view="local-setup" id="localLaneStatus">turn on local →</button>
+        </article>
+
+        <article class="lane" id="lane-confidential" data-lane="confidential" data-open-view="confidential-setup" role="button" tabindex="0">
+          <div class="lanehead">
+            <h2>confidential</h2>
+            <span class="pill" id="confidentialLanePill">not open yet</span>
+          </div>
+          <p id="confidentialLaneDescription">let sol th&#105;nk without using your device's power — on confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. not open yet; scouts get first access.</p>
+          <span class="activetag" id="confidentialActiveTag" hidden>active</span>
+          <button type="button" class="trail" data-open-view="confidential-setup" id="confidentialLaneStatus">learn more →</button>
+        </article>
+
+        <article class="lane" id="lane-byo" data-lane="byo" data-open-view="byo-setup" role="button" tabindex="0">
+          <div class="lanehead">
+            <h2>BYO</h2>
+            <span class="pill" id="byoLanePill">off</span>
+          </div>
+          <p id="byoLaneDescription">your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.</p>
+          <span class="activetag" id="byoActiveTag" hidden>active</span>
+          <button type="button" class="trail" data-open-view="byo-setup" id="byoLaneStatus">add a key or URL →</button>
         </article>
       </section>
 
@@ -524,68 +524,22 @@
           <button type="button" class="btn ghost" id="vertexClear">clear Vertex credentials</button>
         </div>
         <div class="message" id="vertexStatus"></div>
-
-        <div class="details-grid">
-          <div class="field">
-            <label for="localEndpointUrl">local endpoint URL</label>
-            <input type="url" id="localEndpointUrl">
-          </div>
-          <div class="field">
-            <label for="localEndpointModel">served model</label>
-            <input type="text" id="localEndpointModel">
-          </div>
-          <div class="field">
-            <label for="localEndpointCredential">credential</label>
-            <input type="password" id="localEndpointCredential" autocomplete="off">
-          </div>
-        </div>
-        <div class="inline-actions">
-          <button type="button" class="btn" id="localEndpointSave">save endpoint</button>
-          <button type="button" class="btn ghost" id="localEndpointClear">clear endpoint</button>
-        </div>
-        <div class="message" id="localEndpointStatus"></div>
       </details>
     </section>
 
-    <section class="view" data-view="scout-setup" hidden>
+    <section class="view" data-view="confidential-setup" hidden>
       <button type="button" class="backlink" data-open-view="main">‹ thinking</button>
-      <div class="topline">
-        <div class="panelbody">
-          <h2>solstone scout</h2>
-          <p class="intro">be an early tester for solstone — we'll cover your thinking, using Gemini.</p>
-        </div>
-        <p class="micro"><a class="textlink scoutterms" href="https://services.solstone.app/scout/terms" target="_blank" rel="noopener noreferrer">scout program terms ↗</a> · always here while you're on solstone scout</p>
-      </div>
-
-      <div class="app-onoff">
-        <div class="cardtop">
-          <h3 id="scoutSetupTitle">scout</h3>
-          <span class="pill" id="scoutSetupPill">loading</span>
-        </div>
-        <p class="gsub" id="scoutSetupSub">checking scout</p>
-        <p class="meta" id="scoutSetupMeta"></p>
-      </div>
-
-      <div class="checkstrip" id="scoutCheckstrip" hidden>
-        <span id="scoutCheckstripText"></span>
-        <button type="button" class="checknow" id="scoutCheck">check now</button>
-      </div>
-
-      <div class="message" id="scoutLaneOperation"></div>
-      <a id="scoutLaneOperationLink" class="textlink" href="" target="_blank" rel="noopener noreferrer" hidden></a>
-      <div class="notice" id="scoutNotice"></div>
-      <div class="actions">
-        <button type="button" class="btn primary" id="scoutEnable">turn on scout →</button>
-        <button type="button" class="btn" id="scoutRefresh">refresh scout</button>
-        <button type="button" class="btn ghost" id="scoutDisable">turn off</button>
+      <div class="panelbody">
+        <h2>confidential processing</h2>
+        <p class="intro" id="confidentialSetupBody">not open yet — scouts get first access. when it opens, the parts of your journal sol is thinking about go to confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. your journal stays on your device.</p>
       </div>
     </section>
 
     <section class="view" data-view="byo-setup" hidden>
       <button type="button" class="backlink" id="byoBackLink">‹ thinking</button>
       <div class="panelbody">
-        <h2>your own key</h2>
-        <p class="intro">use a key from your own provider — your billing, your control.</p>
+        <h2>BYO</h2>
+        <p class="intro">use your own key or your own endpoint URL — your billing, your control.</p>
       </div>
 
       <label class="hidden-select" for="byoProvider">provider</label>
@@ -636,6 +590,58 @@
         </article>
       </section>
 
+      <section class="panelbody" id="byoEndpointPanel">
+        <h3>use your own endpoint URL</h3>
+        <p class="micro">point local at an OpenAI-compatible endpoint you manage.</p>
+        <div class="details-grid">
+          <div class="field">
+            <label for="localEndpointUrl">local endpoint URL</label>
+            <input type="url" id="localEndpointUrl">
+          </div>
+          <div class="field">
+            <label for="localEndpointModel">served model</label>
+            <input type="text" id="localEndpointModel">
+          </div>
+          <div class="field">
+            <label for="localEndpointCredential">credential</label>
+            <input type="password" id="localEndpointCredential" autocomplete="off">
+          </div>
+        </div>
+        <div class="inline-actions">
+          <button type="button" class="btn" id="localEndpointSave">save endpoint</button>
+          <button type="button" class="btn ghost" id="localEndpointClear">clear endpoint</button>
+        </div>
+        <div class="message" id="localEndpointStatus"></div>
+      </section>
+
+      <section class="panelbody" id="byoScoutPanel">
+        <h3>scout for Gemini</h3>
+        <p class="micro" id="byoScoutAffordance">a Gemini key we provision on your behalf while you scout for solstone.</p>
+        <p class="micro"><a class="textlink scoutterms" href="https://services.solstone.app/scout/terms" target="_blank" rel="noopener noreferrer">scout program terms ↗</a></p>
+        <div class="app-onoff">
+          <div class="cardtop">
+            <h3 id="scoutSetupTitle">scout</h3>
+            <span class="pill" id="scoutSetupPill">loading</span>
+          </div>
+          <p class="gsub" id="scoutSetupSub">checking scout</p>
+          <p class="meta" id="scoutSetupMeta"></p>
+        </div>
+
+        <div class="checkstrip" id="scoutCheckstrip" hidden>
+          <span id="scoutCheckstripText"></span>
+          <button type="button" class="checknow" id="scoutCheck">check now</button>
+        </div>
+
+        <div class="message" id="scoutLaneOperation"></div>
+        <a id="scoutLaneOperationLink" class="textlink" href="" target="_blank" rel="noopener noreferrer" hidden></a>
+        <div class="notice" id="scoutNotice"></div>
+        <div class="actions">
+          <button type="button" class="btn primary" id="scoutEnable">turn on scout →</button>
+          <button type="button" class="btn" id="scoutRefresh">refresh scout</button>
+          <button type="button" class="btn ghost" id="scoutDisable">turn off</button>
+        </div>
+      </section>
+
       <section class="pastebox" id="byoPastePanel" hidden>
         <h3 id="byoPasteTitle">paste a key</h3>
         <div class="field">
@@ -673,6 +679,12 @@
         <select id="localModelSelect"></select>
       </div>
       <div class="message" id="localSetupMessage"></div>
+      <div class="notice" id="localOverrideNotice" hidden>
+        you're pointed at your own URL — clear it to run the bundled model
+        <div class="inline-actions">
+          <button type="button" class="btn ghost" id="localEndpointClearFromLocal">clear endpoint</button>
+        </div>
+      </div>
       <div class="actions">
         <button type="button" class="btn" id="localRefresh">check again</button>
         <button type="button" class="btn" id="localBootstrap">install local model</button>

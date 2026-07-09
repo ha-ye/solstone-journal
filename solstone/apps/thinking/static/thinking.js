@@ -14,10 +14,12 @@
   };
   let copy = {};
   let scoutCopy = {};
+  let byoCopy = {};
+  let confidentialCopy = {};
   const scoutTerminalPhases = new Set(['invited', 'requested', 'ended', 'repair_needed']);
   const scoutPollIntervalMs = 1500;
   const scoutPollMaxMs = 15 * 60 * 1000;
-  const views = new Set(['main', 'scout-setup', 'byo-setup', 'local-setup', 'lane-switch']);
+  const views = new Set(['main', 'byo-setup', 'local-setup', 'confidential-setup', 'lane-switch']);
   const providerEnv = {
     anthropic: 'ANTHROPIC_API_KEY',
     google: 'GOOGLE_API_KEY',
@@ -81,8 +83,12 @@
   function applyCopy(payload) {
     copy = payload || {};
     scoutCopy = copy.scout || {};
+    byoCopy = copy.byo || {};
+    confidentialCopy = copy.confidential || {};
     providerLabels = copy.provider_labels || fallbackProviderLabels;
     setText('thinkingHeading', copy.heading || 'thinking');
+    setText('confidentialSetupBody', confidentialCopy.setup_body || '');
+    setText('byoScoutAffordance', byoCopy.scout_affordance || '');
   }
 
   function renderInitialLoading() {
@@ -185,6 +191,14 @@
       .map(([provider]) => provider);
   }
 
+  function localEndpointConfigured() {
+    return !!state.providers.local_override?.enabled;
+  }
+
+  function byoIsUsable() {
+    return configuredProviders().length > 0 || localEndpointConfigured() || !!state.providers.scout_enabled;
+  }
+
   function selectedByoProvider() {
     const select = $('byoProvider');
     return state.selectedByoProvider || select?.value || defaultByoProvider();
@@ -193,14 +207,16 @@
   function defaultByoProvider() {
     const generateProvider = state.providers.generate?.provider || '';
     const cogitateProvider = state.providers.cogitate?.provider || '';
+    if (localEndpointConfigured() && (generateProvider === 'local' || cogitateProvider === 'local')) return 'local';
     if (providerEnv[generateProvider]) return generateProvider;
     if (providerEnv[cogitateProvider]) return cogitateProvider;
+    if (localEndpointConfigured() && configuredProviders().length === 0) return 'local';
+    if (state.providers.scout_enabled) return 'google';
     return configuredProviders()[0] || 'anthropic';
   }
 
   function laneProvider(lane) {
     if (lane === 'local') return 'local';
-    if (lane === 'scout') return 'google';
     return selectedByoProvider();
   }
 
@@ -241,14 +257,10 @@
     const lane = state.providers.active_lane?.lane || 'advanced';
     const generateProvider = state.providers.generate?.provider || '';
     const cogitateProvider = state.providers.cogitate?.provider || '';
-    const byoProvider = generateProvider !== 'local' ? generateProvider : cogitateProvider;
-    const scoutUsable = !!state.providers.scout_enabled;
-    const byoUsable = Object.values(state.keys.api_keys || {}).some(Boolean);
+    const byoProvider = generateProvider !== 'local' ? generateProvider : cogitateProvider || generateProvider;
+    const byoUsable = byoIsUsable();
     const advancedUsable = lane === 'advanced' && !!generateProvider && !!cogitateProvider;
 
-    if (lane === 'scout' && scoutUsable) {
-      return {kind: 'scout', providerLabel: 'Gemini', label: 'solstone scout'};
-    }
     if (lane === 'byo' && byoUsable) {
       return {kind: 'byo', provider: byoProvider, providerLabel: providerLabel(byoProvider)};
     }
@@ -267,9 +279,9 @@
   }
 
   function laneIsUsable(lane) {
-    if (lane === 'scout') return !!state.providers.scout_enabled;
-    if (lane === 'byo') return configuredProviders().length > 0;
-    if (lane === 'local') return localIsReady();
+    if (lane === 'byo') return byoIsUsable();
+    if (lane === 'local') return localIsReady() && !localEndpointConfigured();
+    if (lane === 'confidential') return false;
     return false;
   }
 
@@ -297,14 +309,10 @@
     const brain = activeBrain();
     const glance = $('brainGlance');
     if (glance) glance.classList.toggle('none', brain.kind === 'none');
-    if (brain.kind === 'scout') {
+    if (brain.kind === 'byo') {
       setText('thinkingActiveLane', 'sol is thinking with');
-      setText('thinkingActiveValue', 'solstone scout');
-      setText('thinkingActiveDetail', 'token set up through the scout program — stays in your journal');
-    } else if (brain.kind === 'byo') {
-      setText('thinkingActiveLane', 'sol is thinking with');
-      setText('thinkingActiveValue', `your own key · ${brain.providerLabel}`);
-      setText('thinkingActiveDetail', 'a key you added — stays in your journal, never shared');
+      setText('thinkingActiveValue', brain.provider === 'local' ? 'your own endpoint URL' : `BYO · ${brain.providerLabel}`);
+      setText('thinkingActiveDetail', brain.provider === 'local' ? 'an endpoint you added — stays in your journal' : 'a key you added — stays in your journal, never shared');
     } else if (brain.kind === 'local') {
       setText('thinkingActiveLane', 'sol is thinking with');
       setText('thinkingActiveValue', 'a local model');
@@ -347,50 +355,28 @@
     setText(
       'forkHint',
       brain.kind === 'none'
-        ? "pick one — it's free with scout, or bring your own."
+        ? 'pick one — use local when it is ready, or bring your own.'
         : 'one at a time — the one with the dot is active right now.',
     );
-    const scoutState = state.scout?.state || (state.providers.scout_enabled ? 'on' : 'off');
-    setCardActive('scout', brain.kind === 'scout');
-    setPill('scoutLaneStatus', scoutLabel(scoutState), brain.kind === 'scout' ? 'hot' : '');
-    let scoutTrail = 'become a scout →';
-    if (scoutState === 'requested') scoutTrail = 'check status →';
-    if (scoutState === 'invited') scoutTrail = "you're in — turn on scout →";
-    if (scoutState === 'on') scoutTrail = 'manage →';
-    if (scoutState === 'ended') scoutTrail = 'check scout →';
-    if (scoutState === 'manual_key_present') scoutTrail = 'review key →';
-    if (scoutState === 'repair_needed') scoutTrail = 'repair →';
-    setText('scoutLaneTrail', scoutTrail);
-
-    const configured = configuredProviders();
-    const activeByo = brain.kind === 'byo';
-    const byoProvider = activeByo ? brain.provider : configured[0] || defaultByoProvider();
-    setCardActive('byo', activeByo);
-    setPill('byoLanePill', activeByo ? 'active' : 'off', activeByo ? 'hot' : '');
-    if (activeByo) {
-      setText('byoLaneDescription', 'your key from Claude, Gemini, or GPT — your billing, your control. stays in your journal.');
-      setText('byoLaneStatus', `using ${providerLabel(byoProvider)} · manage →`);
-    } else if (configured.length > 0) {
-      setText('byoLaneDescription', 'your key from Claude, Gemini, or GPT — your billing, your control. stays in your journal.');
-      setText('byoLaneStatus', `manage ${providerLabel(byoProvider)} key →`);
-    } else {
-      setText('byoLaneDescription', 'your key from Claude, Gemini, or GPT — treated equally. starts working right away.');
-      setText('byoLaneStatus', 'add a key →');
-    }
 
     const local = localReadiness();
     const localCard = $('lane-local');
     const localActive = brain.kind === 'local';
     const gpuBlocked = localIsGpuBlocked();
+    const endpointOverride = localEndpointConfigured();
     setCardActive('local', localActive);
     if (localCard) {
-      localCard.classList.toggle('greyed', gpuBlocked);
+      localCard.classList.toggle('greyed', gpuBlocked || endpointOverride);
       localCard.setAttribute('aria-disabled', gpuBlocked ? 'true' : 'false');
     }
     if (localActive) {
       setPill('localLanePill', 'active', 'hot');
-      setText('localLaneDescription', 'a model runs right in your journal — your data never leaves. this computer can run one.');
+      setText('localLaneDescription', 'the bundled model runs right in your journal — your thinking never leaves.');
       setText('localLaneStatus', 'manage →');
+    } else if (endpointOverride) {
+      setPill('localLanePill', 'BYO URL');
+      setText('localLaneDescription', "you're pointed at your own URL — clear it to run the bundled model.");
+      setText('localLaneStatus', 'clear endpoint →');
     } else if (gpuBlocked) {
       setPill('localLanePill', 'unavailable', 'bad');
       const desc = $('localLaneDescription');
@@ -407,12 +393,40 @@
       setText('localLaneStatus', 'not available');
     } else if (local.status === 'ready') {
       setPill('localLanePill', 'off');
-      setText('localLaneDescription', 'a model runs right in your journal — your data never leaves. this computer can run one.');
+      setText('localLaneDescription', 'the bundled model runs right in your journal — your thinking never leaves.');
       setText('localLaneStatus', 'turn on local →');
     } else {
       setPill('localLanePill', 'off');
       setText('localLaneDescription', local.summary || 'checking whether this computer can run a local model.');
       setText('localLaneStatus', 'set up →');
+    }
+
+    setCardActive('confidential', false);
+    setPill('confidentialLanePill', 'not open yet');
+    setText(
+      'confidentialLaneDescription',
+      "let sol " +
+        "think without using your device's power — on confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. not open yet; scouts get first access.",
+    );
+    setText('confidentialLaneStatus', 'not open yet →');
+
+    const configured = configuredProviders();
+    const activeByo = brain.kind === 'byo';
+    const byoProvider = activeByo ? brain.provider : configured[0] || defaultByoProvider();
+    setCardActive('byo', activeByo);
+    setPill('byoLanePill', activeByo ? 'active' : 'off', activeByo ? 'hot' : '');
+    if (activeByo) {
+      setText('byoLaneDescription', 'your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.');
+      setText('byoLaneStatus', byoProvider === 'local' ? 'using endpoint URL · manage →' : `using ${providerLabel(byoProvider)} · manage →`);
+    } else if (endpointOverride) {
+      setText('byoLaneDescription', 'your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.');
+      setText('byoLaneStatus', 'manage endpoint URL →');
+    } else if (configured.length > 0) {
+      setText('byoLaneDescription', 'your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.');
+      setText('byoLaneStatus', `manage ${providerLabel(byoProvider)} key →`);
+    } else {
+      setText('byoLaneDescription', 'your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.');
+      setText('byoLaneStatus', 'add a key or URL →');
     }
   }
 
@@ -610,19 +624,21 @@
     const provider = selectedByoProvider();
     const validation = state.keys.key_validation?.[provider];
     const configured = !!state.keys.api_keys?.[provider];
-    const googleBlocked = provider === 'google' && state.keys.scout_enabled;
+    const endpointMode = provider === 'local' || state.byoMode === 'endpoint';
     const pickMode = state.byoMode === 'pick';
+    const pasteMode = state.byoMode === 'paste' && !endpointMode;
 
     setHidden('byoPickPanel', !pickMode);
     setHidden('byoProviderGrid', !pickMode);
-    setHidden('byoPastePanel', pickMode);
+    setHidden('byoEndpointPanel', !(pickMode || endpointMode));
+    setHidden('byoPastePanel', !pasteMode);
     setText('byoBackLink', pickMode ? '‹ thinking' : '‹ pick a different provider');
 
     document.querySelectorAll('[data-provider-card]').forEach((card) => {
       const cardProvider = card.dataset.providerCard;
       const picked = cardProvider === provider;
       card.classList.toggle('active', picked);
-      card.classList.toggle('greyed', cardProvider === 'google' && state.keys.scout_enabled);
+      card.classList.toggle('greyed', false);
       const pill = $(`prov-${cardProvider}-pill`);
       if (pill) {
         pill.textContent = picked ? 'selected' : (state.keys.api_keys?.[cardProvider] ? 'saved' : 'pick');
@@ -630,28 +646,28 @@
       }
     });
 
-    setText('prov-google-desc', state.keys.scout_enabled
-      ? 'Gemini is managed by scout right now. choose Claude or GPT for your own key.'
-      : 'use a Google AI Studio key.');
-    setText('byoPasteTitle', `paste your ${providerLabel(provider)} key`);
-    setText('byoKeyLabel', `your ${providerLabel(provider)} key`);
-    setText(
-      'byoKeyHint',
-      'it stays in your journal — the scout program never sets it up or sees it. paste it once; sol uses it from here.',
-    );
-    const terms = $('byoTermsLine');
-    if (terms) {
-      terms.textContent = `your questions will be processed by ${providerLabel(provider)}, stored only temporarily for processing, and never used for training. `;
-      const link = document.createElement('a');
-      link.className = 'textlink';
-      link.href = providerTerms[provider] || providerTerms.anthropic;
-      link.target = '_blank';
-      link.rel = 'noopener noreferrer';
-      link.textContent = 'terms ↗';
-      terms.appendChild(link);
+    setText('prov-google-desc', 'use a Google AI Studio key.');
+    if (providerEnv[provider]) {
+      setText('byoPasteTitle', `paste your ${providerLabel(provider)} key`);
+      setText('byoKeyLabel', `your ${providerLabel(provider)} key`);
+      setText(
+        'byoKeyHint',
+        'it stays in your journal. paste it once; sol uses it from here.',
+      );
+      const terms = $('byoTermsLine');
+      if (terms) {
+        terms.textContent = `your questions will be processed by ${providerLabel(provider)}, stored only temporarily for processing, and never used for training. `;
+        const link = document.createElement('a');
+        link.className = 'textlink';
+        link.href = providerTerms[provider] || providerTerms.anthropic;
+        link.target = '_blank';
+        link.rel = 'noopener noreferrer';
+        link.textContent = 'terms ↗';
+        terms.appendChild(link);
+      }
     }
 
-    $('byoSaveKey').disabled = googleBlocked;
+    $('byoSaveKey').disabled = false;
     $('byoClearKey').disabled = !configured;
     if (validation && validation.valid === false) {
       setMessage(
@@ -659,8 +675,6 @@
         `${providerLabel(provider)}: ${validation.reason_code || validation.error || 'invalid'}`,
         'error',
       );
-    } else if (googleBlocked) {
-      setMessage('byoLaneStatus', 'Gemini is managed by scout; choose Claude or GPT.', 'error');
     } else {
       setMessage(
         'byoLaneStatus',
@@ -673,6 +687,19 @@
   function localCopy() {
     const local = localReadiness();
     const reason = local.reason;
+    if (localEndpointConfigured()) {
+      return {
+        pill: 'BYO URL',
+        title: 'local',
+        sub: "you're pointed at your own URL",
+        message: '',
+        notice: "you're pointed at your own URL — clear it to run the bundled model",
+        activate: false,
+        bootstrap: false,
+        tone: '',
+        endpointOverride: true,
+      };
+    }
     if (local.status === 'ready' || reason === 'ready') {
       return {
         pill: 'off',
@@ -691,7 +718,7 @@
         title: 'local',
         sub: "this computer can't run one yet",
         message: '',
-        notice: "this computer doesn't have a supported GPU, so a local model would be too slow to use. sol can still think for free with scout or your own key.",
+        notice: "this computer doesn't have a supported GPU, so a local model would be too slow to use. sol can still think with BYO.",
         activate: false,
         bootstrap: false,
         tone: 'bad',
@@ -703,7 +730,7 @@
         title: 'local',
         sub: "this computer can't run one yet",
         message: '',
-        notice: "couldn't check this computer's GPU. sol can still think for free with scout or your own key.",
+        notice: "couldn't check this computer's GPU. sol can still think with BYO.",
         activate: false,
         bootstrap: false,
         tone: 'bad',
@@ -751,7 +778,7 @@
         title: 'local',
         sub: "your local endpoint didn't answer",
         message: local.detail || local.summary || '',
-        notice: 'check the endpoint in advanced controls, then try again.',
+        notice: 'check the endpoint in BYO, then try again.',
         activate: false,
         bootstrap: false,
         tone: 'bad',
@@ -775,7 +802,7 @@
         title: 'local',
         sub: 'this computer needs more memory for local thinking',
         message: '',
-        notice: 'sol can still think for free with scout or your own key.',
+        notice: 'sol can still think with BYO.',
         activate: false,
         bootstrap: false,
         tone: 'bad',
@@ -800,6 +827,7 @@
     setText('localSetupSub', local.sub);
     setMessage('localSetupMessage', local.message, local.tone === 'bad' ? 'error' : '');
     setText('localNotice', local.notice);
+    setHidden('localOverrideNotice', !local.endpointOverride);
     setButtonState('localBootstrap', local.bootstrap, !local.bootstrap);
     setButtonState('localActivate', local.activate, !local.activate);
     setButtonState('localRefresh', true, false);
@@ -813,19 +841,13 @@
         requirements.target = '_blank';
         requirements.rel = 'noopener noreferrer';
         requirements.textContent = 'minimum requirements ↗';
-        const scout = document.createElement('button');
-        scout.type = 'button';
-        scout.className = 'textlink';
-        scout.dataset.openView = 'scout-setup';
-        scout.textContent = 'scout';
-        scout.addEventListener('click', () => showView('scout-setup'));
         const byo = document.createElement('button');
         byo.type = 'button';
         byo.className = 'textlink';
         byo.dataset.openView = 'byo-setup';
-        byo.textContent = 'your own key';
+        byo.textContent = 'BYO';
         byo.addEventListener('click', () => showView('byo-setup'));
-        links.append(requirements, document.createTextNode(' or use '), scout, document.createTextNode(' / '), byo);
+        links.append(requirements, document.createTextNode(' or use '), byo);
       }
     }
   }
@@ -854,20 +876,24 @@
     const targetProvider = target === 'byo' ? selectedByoProvider() : laneProvider(target);
     const currentLabel = brain.kind === 'none' ? 'no provider chosen' : brain.providerLabel || brain.kind;
     const targetLabel = target === 'byo'
-      ? `your own key · ${providerLabel(targetProvider)}`
-      : target === 'scout'
-        ? 'solstone scout'
+      ? targetProvider === 'local'
+        ? 'your own endpoint URL'
+        : `BYO · ${providerLabel(targetProvider)}`
+      : target === 'confidential'
+        ? 'confidential processing'
         : target === 'local'
           ? 'local'
           : target;
     setText('switchCurrentLabel', currentLabel);
     setText('switchTargetLabel', targetLabel);
-    if (target === 'byo') {
+    if (target === 'byo' && targetProvider === 'local') {
+      setText('switchNote', 'sol will think with your own endpoint URL from now on. the endpoint stays saved in your journal — switch back anytime.');
+    } else if (target === 'byo') {
       setText('switchNote', `sol will think with ${targetLabel} from now on. your ${providerLabel(targetProvider)} key stays saved in your journal — switch back anytime without re-pasting it.`);
-    } else if (target === 'scout') {
-      setText('switchNote', 'sol will think with solstone scout from now on. your scout token stays saved in your journal — switch back anytime.');
     } else if (target === 'local') {
       setText('switchNote', 'sol will think with local from now on. local setup stays saved in your journal — switch back anytime.');
+    } else if (target === 'confidential') {
+      setText('switchNote', "confidential processing isn't open yet.");
     } else {
       setText('switchNote', 'you can switch back anytime.');
     }
@@ -978,7 +1004,9 @@
     const operation = await pollScoutUntilTerminal();
     const phase = operation?.phase;
     if (state.scout?.state === 'on' || phase === 'invited') {
-      await switchLane('scout');
+      setSelectedByoProvider('google');
+      state.byoMode = 'paste';
+      await switchLane('byo');
       await Promise.all([refreshScout(), refreshProviders(), refreshKeys()]);
       showView('main');
       return;
@@ -1106,14 +1134,22 @@
     state.providers.local_override = result.local_endpoint || {};
     if ($('localEndpointCredential')) $('localEndpointCredential').value = '';
     setMessage('localEndpointStatus', 'endpoint saved', 'ok');
-    renderLocalEndpoint();
+    setSelectedByoProvider('local');
+    state.byoMode = 'endpoint';
+    await switchLane('byo');
+    await Promise.all([refreshProviders(), refreshLocalAvailability()]);
+    showView('main');
   }
 
   async function clearLocalEndpoint() {
     const result = await api('api/local/endpoint', {method: 'DELETE'});
     state.providers.local_override = result.local_endpoint || {};
+    if (selectedByoProvider() === 'local') {
+      setSelectedByoProvider(defaultByoProvider());
+      state.byoMode = 'pick';
+    }
     setMessage('localEndpointStatus', 'endpoint cleared', 'ok');
-    renderLocalEndpoint();
+    await Promise.all([refreshProviders(), refreshLocalAvailability()]);
   }
 
   async function startLocalBootstrap() {
@@ -1123,13 +1159,18 @@
   }
 
   function openLane(lane) {
-    if (lane === 'local' && localIsGpuBlocked()) return;
     if (laneIsUsable(lane) && activeBrain().kind !== lane) {
       activateLane(lane).catch((err) => setMessage(`${lane}LaneStatus`, err.message, 'error'));
       return;
     }
     if (lane === 'byo') {
-      state.byoMode = configuredProviders().length > 0 || activeBrain().kind === 'byo' ? 'paste' : 'pick';
+      const provider = defaultByoProvider();
+      setSelectedByoProvider(provider);
+      state.byoMode = provider === 'local'
+        ? 'endpoint'
+        : configuredProviders().length > 0 || activeBrain().kind === 'byo'
+          ? 'paste'
+          : 'pick';
       renderByo();
     }
     showView(`${lane}-setup`);
@@ -1216,6 +1257,7 @@
     $('vertexClear')?.addEventListener('click', () => clearVertexCredentials().catch((err) => setMessage('vertexStatus', err.message, 'error')));
     $('localEndpointSave')?.addEventListener('click', () => saveLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));
     $('localEndpointClear')?.addEventListener('click', () => clearLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));
+    $('localEndpointClearFromLocal')?.addEventListener('click', () => clearLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));
     window.addEventListener('hashchange', () => showView(viewFromHash(), {replace: true}));
   }
 

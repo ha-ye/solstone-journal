@@ -211,7 +211,7 @@ def test_context_update_rejects_invalid_model_value(
     assert "talent.x" in payload["detail"]
 
 
-def test_scout_lane_is_derived_from_google_provider_and_provenance(
+def test_scout_enabled_google_provider_derives_byo_with_provenance(
     settings_client_with_journal,
 ):
     client, journal_path = settings_client_with_journal
@@ -230,12 +230,16 @@ def test_scout_lane_is_derived_from_google_provider_and_provenance(
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["active_lane"]["lane"] == "scout"
+    assert payload["active_lane"]["lane"] == "byo"
+    assert payload["active_lane"]["generate"] == "byo"
+    assert payload["active_lane"]["cogitate"] == "byo"
     assert payload["active_lane"]["scout_enabled"] is True
+    assert payload["active_lane"]["scout_provenance_configured"] is True
 
 
-def test_byo_gemini_key_write_is_rejected_when_scout_enabled(
+def test_byo_gemini_key_write_succeeds_when_scout_enabled(
     settings_client_with_journal,
+    monkeypatch,
 ):
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
@@ -246,17 +250,19 @@ def test_byo_gemini_key_write_is_rejected_when_scout_enabled(
         "key_fingerprint_sha256": "fingerprint",
     }
     _write_config(journal_path, config)
+    monkeypatch.setattr(
+        "solstone.apps.thinking.routes.validate_key",
+        lambda _provider, _api_key: {"valid": True},
+    )
 
     response = client.put(
         "/app/thinking/api/keys",
         json={"env_var": "GOOGLE_API_KEY", "value": "manual-key"},
     )
 
-    assert response.status_code == 400
-    payload = response.get_json()
-    assert payload["reason_code"] == "invalid_config_value"
+    assert response.status_code == 200
     config = json.loads(config_path.read_text())
-    assert config["env"]["GOOGLE_API_KEY"] == "scout-key"
+    assert config["env"]["GOOGLE_API_KEY"] == "manual-key"
 
 
 def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
@@ -321,9 +327,9 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
 
     providers_payload = responses[0].get_json()
     assert providers_payload["active_lane"] == {
-        "lane": "scout",
-        "generate": "scout",
-        "cogitate": "scout",
+        "lane": "byo",
+        "generate": "byo",
+        "cogitate": "byo",
         "split": False,
         "scout_enabled": True,
         "scout_provenance_configured": True,
@@ -386,6 +392,179 @@ def test_providers_payload_includes_secret_free_local_override(
         "credential_configured": True,
     }
     assert "test-token-PLACEHOLDER" not in json.dumps(payload)
+
+
+def test_local_endpoint_override_derives_byo_and_bundled_derives_local(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["generate"]["provider"] = "local"
+    config["providers"]["cogitate"]["provider"] = "local"
+    _write_config(journal_path, config)
+
+    response = client.get("/app/thinking/api/providers")
+
+    assert response.status_code == 200
+    assert response.get_json()["active_lane"]["lane"] == "local"
+
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/v1",
+        "served_model_id": "served-model",
+    }
+    _write_config(journal_path, config)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.probe_local_endpoint",
+        lambda _endpoint, timeout_s=1.0: (True, None),
+    )
+
+    response = client.get("/app/thinking/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["active_lane"]["lane"] == "byo"
+    assert payload["active_lane"]["generate"] == "byo"
+    assert payload["active_lane"]["cogitate"] == "byo"
+
+
+def test_lane_switch_to_local_with_override_rejects_without_config_write(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/v1",
+        "served_model_id": "served-model",
+        "credential": "secret-token",
+    }
+    _write_config(journal_path, config)
+    before = config_path.read_bytes()
+
+    response = client.put("/app/thinking/api/providers", json={"lane": "local"})
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert (
+        payload["detail"]
+        == "clear your endpoint URL first to run the bundled local model."
+    )
+    assert config_path.read_bytes() == before
+
+
+def test_byo_local_without_override_rejects_without_config_write(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    before = config_path.read_bytes()
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": "local"},
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert payload["detail"] == "save your endpoint URL first to use your own endpoint."
+    assert config_path.read_bytes() == before
+
+
+def test_byo_local_with_override_succeeds_and_rederives_byo(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/v1",
+        "served_model_id": "served-model",
+    }
+    _write_config(journal_path, config)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.probe_local_endpoint",
+        lambda _endpoint, timeout_s=1.0: (True, None),
+    )
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": "local"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["active_lane"]["lane"] == "byo"
+    assert payload["generate"]["provider"] == "local"
+    assert payload["cogitate"]["provider"] == "local"
+
+
+def test_lane_switch_to_confidential_rejects_without_config_write(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    before = config_path.read_bytes()
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "confidential"},
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "invalid_operation_for_state"
+    assert payload["detail"] == (
+        "confidential processing isn't open yet — scouts get first access. "
+        "keep using local or byo for now."
+    )
+    assert config_path.read_bytes() == before
+
+
+def test_lane_for_provider_never_returns_confidential():
+    for provider in (
+        NO_BRAIN_PROVIDER,
+        "local",
+        "anthropic",
+        "google",
+        "openai",
+        "unknown",
+    ):
+        for local_endpoint_configured in (False, True):
+            assert (
+                routes._lane_for_provider(
+                    provider,
+                    local_endpoint_configured=local_endpoint_configured,
+                )
+                != "confidential"
+            )
+
+
+def test_get_providers_scout_google_grandfather_is_zero_touch(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config.setdefault("env", {})["GOOGLE_API_KEY"] = "scout-key"
+    config.setdefault("services", {})["scout"] = {
+        "enabled_at": "2026-05-23T00:00:00Z",
+        "key_fingerprint_sha256": "fingerprint",
+    }
+    config["providers"]["generate"]["provider"] = "google"
+    config["providers"]["cogitate"]["provider"] = "google"
+    _write_config(journal_path, config)
+    before = config_path.read_bytes()
+
+    response = client.get("/app/thinking/api/providers")
+
+    assert response.status_code == 200
+    assert response.get_json()["active_lane"]["lane"] == "byo"
+    assert config_path.read_bytes() == before
 
 
 def test_providers_payload_local_status_uses_endpoint_readiness_under_byo(

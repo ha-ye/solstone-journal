@@ -33,7 +33,7 @@ def test_thinking_workspace_exposes_providers_anchor_and_lanes():
 
     assert 'id="providers"' in text
     assert 'id="thinkingActiveLane"' in text
-    assert 'id="lane-scout"' in text
+    assert 'id="lane-confidential"' in text
     assert 'id="lane-byo"' in text
     assert 'id="lane-local"' in text
     assert "window.THINKING =" not in text
@@ -72,7 +72,8 @@ def test_thinking_static_has_scout_orchestration_structures():
         "disableScout",
     ):
         assert f"function {name}(" in text
-    assert "switchLane('scout')" in text
+    assert "switchLane('byo')" in text
+    assert "setSelectedByoProvider('google')" in text
     assert "phase === 'repair_needed'" in text
     assert "api('api/scout/enable'" in text
     assert "api('api/scout/check'" in text

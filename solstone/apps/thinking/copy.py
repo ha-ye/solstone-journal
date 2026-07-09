@@ -10,26 +10,29 @@ from typing import Any
 HEADING = "thinking"
 ACTIVE_LANE_LABELS = {
     "none": "No thinking engine chosen",
-    "scout": "Scout",
-    "byo": "BYO cloud",
     "local": "Local",
+    "confidential": "Confidential processing",
+    "byo": "BYO",
     "advanced": "Advanced split",
 }
 LANES = [
     {
-        "id": "scout",
-        "label": "Scout",
-        "description": "be an early tester for solstone — we'll cover your thinking, using Gemini.",
+        "id": "local",
+        "label": "Local",
+        "description": "the bundled model runs right in your journal — your thinking never leaves.",
+    },
+    {
+        "id": "confidential",
+        "label": "Confidential processing",
+        "description": (
+            "let sol "
+            "think without using your device's power — on confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. not open yet; scouts get first access."
+        ),
     },
     {
         "id": "byo",
-        "label": "BYO cloud",
-        "description": "your key from Claude, Gemini, or GPT — your billing, your control. stays in your journal.",
-    },
-    {
-        "id": "local",
-        "label": "Local",
-        "description": "a model runs right in your journal — your data never leaves.",
+        "label": "BYO",
+        "description": "your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.",
     },
 ]
 PROVIDER_LABELS = {
@@ -88,6 +91,10 @@ SCOUT_RESTING_GUIDANCE = {
     SCOUT_STATE_ENDED: "Scout has ended.",
     SCOUT_STATE_MANUAL_KEY_PRESENT: "A Gemini key you manage is already set.",
 }
+CONFIDENTIAL_SETUP_BODY = "not open yet — scouts get first access. when it opens, the parts of your journal sol is thinking about go to confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. your journal stays on your device."
+BYO_SCOUT_AFFORDANCE_COPY = (
+    "a Gemini key we provision on your behalf while you scout for solstone."
+)
 SCOUT_MANUAL_KEY_BLOCK_COPY = "a Gemini key you manage is already set — clear it in your own key first, then turn on scout."
 SCOUT_CONSENT_CTA = "continue to approve →"
 
@@ -103,6 +110,12 @@ def thinking_copy_payload() -> dict[str, Any]:
         "key_labels": dict(KEY_LABELS),
         "state_labels": dict(STATE_LABELS),
         "action_labels": dict(ACTION_LABELS),
+        "confidential": {
+            "setup_body": CONFIDENTIAL_SETUP_BODY,
+        },
+        "byo": {
+            "scout_affordance": BYO_SCOUT_AFFORDANCE_COPY,
+        },
         "scout": {
             "state_labels": dict(SCOUT_STATE_LABELS),
             "resting_guidance": dict(SCOUT_RESTING_GUIDANCE),

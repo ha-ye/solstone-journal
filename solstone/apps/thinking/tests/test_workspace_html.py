@@ -46,18 +46,24 @@ def test_workspace_renders_each_lane(settings_env):
     assert payload["copy"] == thinking_copy.thinking_copy_payload()
 
     assert 'id="providers"' in html
-    assert 'id="lane-scout"' in html
-    assert 'id="lane-byo"' in html
     assert 'id="lane-local"' in html
+    assert 'id="lane-confidential"' in html
+    assert 'id="lane-byo"' in html
     assert 'id="scoutEnable"' in html
     assert 'id="scoutCheck"' in html
     assert 'id="scoutRefresh"' in html
     assert 'id="scoutDisable"' in html
     assert 'id="scoutLaneOperation"' in html
     assert 'id="scoutLaneOperationLink"' in html
-    for view in ("main", "scout-setup", "byo-setup", "local-setup", "lane-switch"):
+    for view in (
+        "main",
+        "byo-setup",
+        "local-setup",
+        "confidential-setup",
+        "lane-switch",
+    ):
         assert f'data-view="{view}"' in html
-    assert 'data-open-view="scout-setup"' in html
+    assert 'data-open-view="confidential-setup"' in html
     assert 'data-open-view="byo-setup"' in html
     assert 'data-open-view="local-setup"' in html
     assert "data-switch-lane" in html

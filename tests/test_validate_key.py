@@ -434,7 +434,7 @@ def test_thinking_lane_switch_requires_byo_provider(settings_client):
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
     assert payload["detail"] == (
-        "No BYO provider selected. Must be one of: anthropic, google, openai"
+        "No BYO provider selected. Must be one of: anthropic, google, local, openai"
     )
 
 
@@ -450,7 +450,7 @@ def test_thinking_lane_switch_rejects_unsupported_byo_provider(settings_client):
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
     assert payload["detail"] == (
-        "Invalid provider for BYO lane. Must be one of: anthropic, google, openai"
+        "Invalid provider for BYO lane. Must be one of: anthropic, google, local, openai"
     )
 
 
