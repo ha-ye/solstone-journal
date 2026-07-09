@@ -13,7 +13,7 @@ from solstone.think.talent import morning_briefing_path
 
 logger = logging.getLogger(__name__)
 
-ABSENT_TEXT = "Not specified in this document"
+BRIEFING_ABSENT_TEXT = "Nothing to report."
 SECTION_KEYS = (
     "your_day",
     "yesterday",
@@ -113,14 +113,13 @@ def render_briefing_markdown(briefing: dict) -> str:
     lines: list[str] = []
     if preamble:
         lines.extend(f"> {line}" if line else ">" for line in preamble.splitlines())
-    else:
-        lines.append(f"> {ABSENT_TEXT}")
 
     for key in SECTION_KEYS:
-        lines.append("")
+        if lines:
+            lines.append("")
         lines.append(f"## {SECTION_HEADINGS[key]}")
         lines.append("")
-        lines.append(sections.get(key) or ABSENT_TEXT)
+        lines.append(sections.get(key) or BRIEFING_ABSENT_TEXT)
 
     return "\n".join(lines).strip()
 

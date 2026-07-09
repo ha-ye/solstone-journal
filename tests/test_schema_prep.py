@@ -15,6 +15,8 @@ import pytest
 from solstone.apps.timeline.rollup import build_rollup_schema
 from solstone.think.models import SchemaValidationError, generate
 from solstone.think.schema_prep import prepare_provider_schema, unsupported_keyword_hits
+from solstone.think.talent import RUNTIME_FACETS_SENTINEL
+from tests.eval_schemas import DEFAULT_CASES, load_cases
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -108,6 +110,21 @@ def test_morning_briefing_schema_is_provider_portable(provider: str) -> None:
         "pattern"
         in prepared["properties"]["needs_attention"]["items"]["properties"]["source_id"]
     )
+
+
+def test_schema_eval_cases_hydrate_runtime_facets() -> None:
+    cases = load_cases(DEFAULT_CASES)
+    morning_case = next(
+        case for case in cases if case["name"] == "morning_briefing_20260708_trimmed"
+    )
+
+    facet_schema = morning_case["schema"]["properties"]["reading"]["items"][
+        "properties"
+    ]["facet"]
+
+    assert facet_schema.get("enum") != [RUNTIME_FACETS_SENTINEL]
+    assert RUNTIME_FACETS_SENTINEL not in facet_schema.get("enum", [])
+    assert facet_schema["maxLength"] == 80
 
 
 @pytest.mark.parametrize("provider", ["local", "openai", "google", "anthropic", "fake"])

@@ -36,7 +36,6 @@ from solstone.think.steward import (
     latest_daily_run_complete_ts,
     release_steward_lock,
 )
-from solstone.think.talent import morning_briefing_path
 from solstone.think.utils import day_dirs, get_journal, require_solstone
 
 app = typer.Typer(
@@ -283,12 +282,9 @@ def briefing_cmd(
 
     # No day specified — find most recent
     for day in sorted(day_dirs().keys(), reverse=True):
-        briefing = morning_briefing_path(day)
-        if briefing.exists() and briefing.stat().st_size > 0:
-            data = load_briefing(day)
-            if data is None:
-                continue
-            typer.echo(render_briefing_markdown(data))
+        briefing = load_briefing(day)
+        if briefing is not None:
+            typer.echo(render_briefing_markdown(briefing))
             return
 
     typer.echo("No briefing found.", err=True)

@@ -59,6 +59,23 @@ def test_briefing_no_day_returns_most_recent_available(tmp_path, monkeypatch):
     assert "older-marker" in result.stdout
 
 
+def test_briefing_no_day_skips_malformed_newest(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    _seed_briefing("20260101", "older-marker")
+    from solstone.think.talent import morning_briefing_path
+
+    newest = morning_briefing_path("20260102")
+    newest.parent.mkdir(parents=True, exist_ok=True)
+    newest.write_text("{not json", encoding="utf-8")
+
+    result = runner.invoke(app, ["briefing"])
+
+    assert result.exit_code == 0
+    assert "## Yesterday" in result.stdout
+    assert "older-marker" in result.stdout
+
+
 def test_briefing_no_briefing_anywhere_exits_nonzero(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 

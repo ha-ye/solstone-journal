@@ -473,6 +473,38 @@ def test_format_morning_briefing_renders_all_five_sections():
     assert "- **work** — Newsletter summary." in rendered
 
 
+def test_format_morning_briefing_omits_empty_preamble_and_marks_empty_sections():
+    from solstone.think.talent_outputs import format_morning_briefing
+
+    briefing = {
+        "metadata": {
+            "generated": "2026-03-27T06:45:00",
+            "model": "test-model",
+            "sources": {
+                "segments": 0,
+                "anticipated_activities": 0,
+                "facet_newsletters": 0,
+                "followups": 0,
+                "steward_health": "missing",
+            },
+            "gaps": [],
+            "coverage_preamble": "",
+        },
+        "your_day": [],
+        "yesterday": [],
+        "needs_attention": [],
+        "forward_look": [],
+        "reading": [],
+    }
+
+    chunks, _meta = format_morning_briefing([briefing])
+
+    rendered = chunks[0]["markdown"]
+    assert not rendered.startswith(">")
+    assert rendered.count("## ") == 5
+    assert rendered.count("Nothing to report.") == 5
+
+
 def test_find_formattable_includes_day_level_morning_briefing_only(tmp_path: Path):
     from solstone.think.formatters import find_formattable_files
 
