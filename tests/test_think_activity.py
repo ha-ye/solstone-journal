@@ -110,7 +110,7 @@ class TestRunActivityPrompts:
 
             spawned_requests = []
 
-            def mock_cortex_request(prompt, name, config):
+            def mock_cortex_request(prompt, name, config, **kwargs):
                 spawned_requests.append((name, config))
                 return f"agent-{name}"
 
@@ -168,7 +168,7 @@ class TestRunActivityPrompts:
 
             spawned = []
 
-            def mock_cortex_request(prompt, name, config):
+            def mock_cortex_request(prompt, name, config, **kwargs):
                 spawned.append(name)
                 return f"agent-{name}"
 
@@ -220,7 +220,7 @@ class TestRunActivityPrompts:
 
             captured_config = {}
 
-            def mock_cortex_request(prompt, name, config):
+            def mock_cortex_request(prompt, name, config, **kwargs):
                 captured_config.update(config)
                 return "agent-1"
 
@@ -287,7 +287,7 @@ class TestRunActivityPrompts:
             )
             monkeypatch.setattr(
                 "solstone.think.thinking.cortex_request",
-                lambda prompt, name, config: "agent-1",
+                lambda prompt, name, config, **kwargs: "agent-1",
             )
             monkeypatch.setattr(
                 "solstone.think.thinking.wait_for_uses",
@@ -397,7 +397,7 @@ class TestRunActivityPrompts:
             )
             monkeypatch.setattr(
                 "solstone.think.thinking.cortex_request",
-                lambda prompt, name, config: "agent-1",
+                lambda prompt, name, config, **kwargs: "agent-1",
             )
             monkeypatch.setattr(
                 "solstone.think.thinking.wait_for_uses",
@@ -504,7 +504,7 @@ class TestRunActivityPrompts:
 
             spawned: list[str] = []
 
-            def mock_cortex_request(prompt, name, config):
+            def mock_cortex_request(prompt, name, config, **kwargs):
                 spawned.append(name)
                 return f"agent-{name}"
 
@@ -572,7 +572,7 @@ class TestRunActivityPrompts:
 
             spawned: list[str] = []
 
-            def mock_cortex_request(prompt, name, config):
+            def mock_cortex_request(prompt, name, config, **kwargs):
                 spawned.append(config["activity"]["id"])
                 return f"agent-{config['activity']['id']}"
 
@@ -664,7 +664,9 @@ class TestRunActivityPrompts:
             )
             monkeypatch.setattr(
                 "solstone.think.thinking.cortex_request",
-                lambda prompt, name, config: pytest.fail("should not dispatch"),
+                lambda prompt, name, config, **kwargs: pytest.fail(
+                    "should not dispatch"
+                ),
             )
 
             result = run_activity_prompts(

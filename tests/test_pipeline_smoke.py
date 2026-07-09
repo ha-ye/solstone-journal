@@ -189,7 +189,7 @@ class TestPipelineSmokeTest:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: f"agent-{name}",
         )
         monkeypatch.setattr(
             think,

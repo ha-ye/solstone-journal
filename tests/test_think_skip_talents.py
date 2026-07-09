@@ -125,7 +125,9 @@ def _patch_segment_dependencies(
     monkeypatch.setattr(
         think,
         "cortex_request",
-        lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        lambda prompt, name, config=None, **kwargs: (
+            spawned.append(name) or f"agent-{name}"
+        ),
     )
     monkeypatch.setattr(
         think,

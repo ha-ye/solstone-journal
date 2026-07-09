@@ -39,6 +39,7 @@ from solstone.think.change_detection import detect_segment_change, resolve_prede
 from solstone.think.cluster import cluster_segments, read_segment_data_state
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
 from solstone.think.cortex_client import (
+    PATIENT_CLAIM_WINDOWS,
     CortexNotClaimed,
     CortexSpawnUnavailable,
     cortex_request,
@@ -897,9 +898,14 @@ class _NotClaimed:
 
 
 def _dispatch_cortex_request(**kwargs) -> str | None | _NotClaimed:
-    """Call cortex_request and classify dispatch failures for orchestrators."""
+    """Call cortex_request and classify dispatch failures for orchestrators.
+
+    Orchestrated units are re-walked hours later when a request is lost, so they
+    wait out a broadcast burst on the patient claim schedule rather than
+    fast-failing the way interactive callers do.
+    """
     try:
-        return cortex_request(**kwargs)
+        return cortex_request(**kwargs, claim_windows=PATIENT_CLAIM_WINDOWS)
     except CortexSpawnUnavailable as exc:
         logging.info("cortex_request unavailable: %s", exc.detail or "unknown")
         return None

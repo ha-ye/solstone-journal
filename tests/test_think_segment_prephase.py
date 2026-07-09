@@ -451,7 +451,7 @@ def test_segment_health_log_receives_segment_talent_events(tmp_path, monkeypatch
     monkeypatch.setattr(
         think,
         "cortex_request",
-        lambda prompt, name, config=None: f"agent-{name}",
+        lambda prompt, name, config=None, **kwargs: f"agent-{name}",
     )
     monkeypatch.setattr(
         think,
@@ -1069,7 +1069,7 @@ def test_activity_replay_dedupes_records_and_preserves_non_refresh(
     monkeypatch.setattr(
         think,
         "cortex_request",
-        lambda prompt, name, config=None: f"agent-{name}",
+        lambda prompt, name, config=None, **kwargs: f"agent-{name}",
     )
     monkeypatch.setattr(
         think,
@@ -1243,7 +1243,7 @@ def test_run_segment_sense_reports_invalid_sense_output(
     monkeypatch.setattr(
         think,
         "cortex_request",
-        lambda prompt, name, config=None: f"agent-{name}",
+        lambda prompt, name, config=None, **kwargs: f"agent-{name}",
     )
     monkeypatch.setattr(
         think,
