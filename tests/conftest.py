@@ -67,7 +67,7 @@ def _install_heavy_module_stubs():
         st_mod.SentenceTransformer = DummyST
         sys.modules["sentence_transformers"] = st_mod
     # NOTE: do NOT stub sklearn. scikit-learn is a hard, installed dependency
-    # (pyproject `scikit-learn>=1.3`) and the speakers discovery/owner code uses
+    # (pyproject `scikit-learn>=1.3`) and the speakers discovery code uses
     # the real `sklearn.cluster.HDBSCAN`. A persistent `sys.modules` stub here
     # leaked a DummyHDBSCAN (labels every point as noise) into whichever
     # co-scheduled test imported it first under xdist, silently breaking the
