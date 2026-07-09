@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 from solstone.think import catchup_state
+from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
 from solstone.think.pipeline_health import (
     BACKLOG_STATE_COMPLETE,
     BACKLOG_STATE_PENDING,
@@ -577,6 +578,58 @@ def test_read_daily_deterministic_failures(pipeline_journal):
     assert result[("reset", None)].reason_code == "context_window_exceeded"
     assert result[("facet_newsletter", "work")].count == 2
     assert result[("facet_newsletter", "personal")].count == 1
+
+
+def test_schema_invalid_is_daily_deterministic_failure(pipeline_journal):
+    assert "schema_invalid" in DETERMINISTIC_FAILURE_REASON_CODES
+
+    day = "20990217"
+    base = pipeline_journal / "chronicle" / day / "health"
+    _write_jsonl(
+        base / "001_daily.jsonl",
+        [
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "schema_bad",
+                "reason_code": "schema_invalid",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 2,
+                "mode": "daily",
+                "name": "schema_bad",
+                "reason_code": "schema_invalid",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 1,
+                "mode": "daily",
+                "name": "schema_recovered",
+                "reason_code": "schema_invalid",
+            },
+            {
+                "event": "talent.fail",
+                "ts": 2,
+                "mode": "daily",
+                "name": "schema_recovered",
+                "reason_code": "schema_invalid",
+            },
+            {
+                "event": "talent.complete",
+                "ts": 3,
+                "mode": "daily",
+                "name": "schema_recovered",
+            },
+        ],
+    )
+
+    result = read_daily_deterministic_failures(day)
+
+    assert result[("schema_bad", None)].count == 2
+    assert result[("schema_bad", None)].reason_code == "schema_invalid"
+    assert ("schema_recovered", None) not in result
 
 
 def test_read_completed_units_skips_malformed_records(pipeline_journal):

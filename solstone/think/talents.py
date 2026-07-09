@@ -1077,9 +1077,7 @@ def _output_valid_for_schema(
         if runtime_json_schema is not None:
             Draft202012Validator(runtime_json_schema).validate(parsed)
     except Exception:
-        LOG.warning(
-            "cached JSON output failed current schema validation", exc_info=True
-        )
+        LOG.warning("JSON output failed current schema validation", exc_info=True)
         return False
     return True
 
@@ -1090,6 +1088,20 @@ def _schema_validation_clean(gen_result: dict, result: str, config: dict) -> boo
         return False
     runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
     return _output_valid_for_schema(result, config.get("output"), runtime_json_schema)
+
+
+def _schema_invalid_message(gen_result: dict) -> str:
+    validation = gen_result.get("schema_validation")
+    if isinstance(validation, dict) and validation.get("valid") is False:
+        errors = validation.get("errors")
+        if errors:
+            first = errors[0]
+            text = (
+                f"{first['path'] or '<root>'}: "
+                f"{first['constraint']}: {first['message']}"
+            )
+            return text if len(text) <= 200 else text[:197] + "..."
+    return "talent output failed JSON schema validation"
 
 
 def _terminal_unit(config: dict) -> TerminalUnit | None:
@@ -1401,6 +1413,7 @@ async def _execute_with_tools(
 
             completed_at_ms = now_ms()
             runtime_json_schema = hydrate_runtime_enums(config.get("json_schema"))
+            # No cogitate talent declares JSON output/schema today; if one does, mirror the generate-path terminal schema gate.
             schema_clean = _output_valid_for_schema(
                 result,
                 config.get("output"),
@@ -1686,6 +1699,33 @@ async def _execute_generate(
                 "ts": now_ms(),
             }
         )
+        return
+
+    if (
+        output_path
+        and result
+        and not _output_valid_for_schema(
+            result,
+            config.get("output"),
+            runtime_json_schema,
+        )
+    ):
+        _mark_terminal_error_evented(config)
+        error_event: dict[str, Any] = {
+            "event": "error",
+            "error": _schema_invalid_message(gen_result),
+            "reason_code": "schema_invalid",
+            "provider": config.get("provider"),
+            "terminal": True,
+            "ts": now_ms(),
+        }
+        # Describes the raw provider text, not the post-hook candidate the gate
+        # rejected: it can read valid=True when a hook produced invalid output.
+        if "schema_validation" in gen_result:
+            error_event["schema_validation"] = gen_result["schema_validation"]
+        if retries:
+            error_event["retries"] = retries
+        emit_event(error_event)
         return
 
     # Write output

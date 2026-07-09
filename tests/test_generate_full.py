@@ -162,6 +162,339 @@ def test_execute_generate_blank_expected_output_emits_terminal_no_output(
     assert output_path.read_text(encoding="utf-8") == "old output"
 
 
+def test_execute_generate_schema_invalid_emits_terminal_error(tmp_path, monkeypatch):
+    from solstone.think import models
+    from solstone.think.talents import _execute_generate
+
+    output_path = tmp_path / "out.json"
+    validation = {
+        "valid": False,
+        "errors": [
+            {
+                "path": "/summary",
+                "constraint": "type",
+                "message": "42 is not of type 'string'",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda **kwargs: {
+            "text": '{"summary": 42}',
+            "usage": {"input_tokens": 1, "output_tokens": 3},
+            "schema_validation": validation,
+        },
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "schema_bad",
+                "prompt": "x",
+                "output": "json",
+                "output_path": str(output_path),
+                "json_schema": {
+                    "type": "object",
+                    "required": ["summary"],
+                    "properties": {"summary": {"type": "string"}},
+                },
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["reason_code"] == "schema_invalid"
+    assert events[0]["terminal"] is True
+    assert events[0]["schema_validation"] == validation
+    assert events[0]["schema_validation"]["valid"] is False
+    assert not output_path.exists()
+
+
+def test_execute_generate_schema_invalid_preserves_existing_output(
+    tmp_path, monkeypatch
+):
+    from solstone.think import models
+    from solstone.think.talents import _execute_generate
+
+    output_path = tmp_path / "out.json"
+    original = b'{"summary": "old"}'
+    output_path.write_bytes(original)
+    validation = {
+        "valid": False,
+        "errors": [
+            {
+                "path": "/summary",
+                "constraint": "type",
+                "message": "42 is not of type 'string'",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda **kwargs: {
+            "text": '{"summary": 42}',
+            "usage": {"input_tokens": 1, "output_tokens": 3},
+            "schema_validation": validation,
+        },
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "schema_bad_existing",
+                "prompt": "x",
+                "output": "json",
+                "output_path": str(output_path),
+                "json_schema": {
+                    "type": "object",
+                    "required": ["summary"],
+                    "properties": {"summary": {"type": "string"}},
+                },
+            },
+            events.append,
+        )
+    )
+
+    assert output_path.read_bytes() == original
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["reason_code"] == "schema_invalid"
+    assert events[0]["terminal"] is True
+
+
+def test_execute_generate_schema_clean_writes_file_and_clean_provenance(
+    tmp_path, monkeypatch
+):
+    from solstone.think import models
+    from solstone.think.talent_provenance import read_provenance
+    from solstone.think.talents import _execute_generate
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    output_path = tmp_path / "chronicle" / "20240101" / "talents" / "schema_clean.json"
+    validation = {"valid": True, "errors": []}
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda **kwargs: {
+            "text": '{"summary": "ok"}',
+            "usage": {"input_tokens": 1, "output_tokens": 3},
+            "schema_validation": validation,
+        },
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "schema_clean",
+                "prompt": "x",
+                "day": "20240101",
+                "schedule": "daily",
+                "output": "json",
+                "output_path": str(output_path),
+                "json_schema": {
+                    "type": "object",
+                    "required": ["summary"],
+                    "properties": {"summary": {"type": "string"}},
+                },
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["finish"]
+    assert not [event for event in events if event["event"] == "error"]
+    assert output_path.read_text(encoding="utf-8") == '{"summary": "ok"}'
+    provenance = read_provenance(output_path)
+    assert provenance is not None
+    assert provenance["output_path"] == "chronicle/20240101/talents/schema_clean.json"
+
+
+def test_execute_generate_md_output_without_schema_still_writes(tmp_path, monkeypatch):
+    from solstone.think import models
+    from solstone.think.talents import _execute_generate
+
+    output_path = tmp_path / "out.md"
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda **kwargs: {
+            "text": "plain markdown",
+            "usage": {"input_tokens": 1, "output_tokens": 3},
+        },
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "md_gen",
+                "prompt": "x",
+                "output": "md",
+                "output_path": str(output_path),
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["finish"]
+    assert output_path.read_text(encoding="utf-8") == "plain markdown"
+
+
+def test_execute_generate_json_empty_post_hook_result_finishes_without_write(
+    tmp_path, monkeypatch
+):
+    from solstone.think import models, talents
+    from solstone.think.talents import _execute_generate
+
+    output_path = tmp_path / "out.json"
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda **kwargs: {
+            "text": '{"summary": "ok"}',
+            "usage": {"input_tokens": 1, "output_tokens": 3},
+            "schema_validation": {"valid": True, "errors": []},
+        },
+    )
+    monkeypatch.setattr(
+        talents, "load_post_hook", lambda config: lambda result, ctx: ""
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "empty_hook",
+                "prompt": "x",
+                "output": "json",
+                "output_path": str(output_path),
+                "json_schema": {
+                    "type": "object",
+                    "required": ["summary"],
+                    "properties": {"summary": {"type": "string"}},
+                },
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["finish"]
+    assert not [event for event in events if event["event"] == "error"]
+    assert not output_path.exists()
+
+
+def test_execute_generate_json_without_schema_nonparseable_emits_schema_invalid(
+    tmp_path, monkeypatch
+):
+    from solstone.think import models
+    from solstone.think.talents import _execute_generate
+
+    output_path = tmp_path / "out.json"
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda **kwargs: {
+            "text": "not json",
+            "usage": {"input_tokens": 1, "output_tokens": 3},
+        },
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "json_no_schema_bad",
+                "prompt": "x",
+                "output": "json",
+                "output_path": str(output_path),
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["error"]
+    assert events[0]["reason_code"] == "schema_invalid"
+    assert events[0]["terminal"] is True
+    assert events[0]["error"] == "talent output failed JSON schema validation"
+    assert not output_path.exists()
+
+
+def test_execute_generate_invalid_raw_repaired_by_hook_still_finishes(
+    tmp_path, monkeypatch
+):
+    from solstone.think import models, talents
+    from solstone.think.talents import _execute_generate
+
+    output_path = tmp_path / "out.json"
+    repaired = '{"summary": "repaired"}'
+    validation = {
+        "valid": False,
+        "errors": [
+            {
+                "path": "",
+                "constraint": "json_parse",
+                "message": "Expecting value",
+            }
+        ],
+    }
+    monkeypatch.setattr(
+        models,
+        "generate_with_result",
+        lambda **kwargs: {
+            "text": "not json",
+            "usage": {"input_tokens": 1, "output_tokens": 3},
+            "schema_validation": validation,
+        },
+    )
+    # Pulse/steward repair hooks depend on this raw-invalid/result-valid quadrant.
+    monkeypatch.setattr(
+        talents,
+        "load_post_hook",
+        lambda config: lambda result, ctx: repaired,
+    )
+    events: list[dict] = []
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "provider": "google",
+                "model": "gemini-2.0-flash",
+                "name": "repaired_hook",
+                "prompt": "x",
+                "output": "json",
+                "output_path": str(output_path),
+                "json_schema": {
+                    "type": "object",
+                    "required": ["summary"],
+                    "properties": {"summary": {"type": "string"}},
+                },
+            },
+            events.append,
+        )
+    )
+
+    assert [event["event"] for event in events] == ["finish"]
+    assert not [event for event in events if event["event"] == "error"]
+    assert output_path.read_text(encoding="utf-8") == repaired
+
+
 def test_no_output_does_not_log_day_ok(tmp_path, monkeypatch):
     mod = importlib.import_module("solstone.think.talents")
     copy_day(tmp_path, monkeypatch)

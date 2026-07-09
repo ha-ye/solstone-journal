@@ -183,6 +183,9 @@ def test_generate_json_output_not_stripped(tmp_path, monkeypatch, caplog):
         )
 
     finish_events = [event for event in events if event["event"] == "finish"]
-    assert len(finish_events) == 1
-    assert finish_events[0]["result"] == wrapped_text
+    assert finish_events == []
+    error_events = [event for event in events if event["event"] == "error"]
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "schema_invalid"
+    assert error_events[0]["error"] == "talent output failed JSON schema validation"
     assert all(FENCE_STRIP_LOG not in record.getMessage() for record in caplog.records)

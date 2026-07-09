@@ -35,14 +35,15 @@ MAX_TURNS_HEADROOM = 2
 _FALLBACK_USD_PER_TOKEN = 0.0000025
 DETERMINISTIC_FAILURE_THRESHOLD = 2
 DEFAULT_READ_CALL_BUDGET = 200
-# Reason codes for content-deterministic crashes: re-dispatching a daily
-# unit that hit one of these will crash identically.
+# Reason codes for content-deterministic crashes and high-recurrence stochastic
+# failures we decline to auto-retry past the threshold.
 DETERMINISTIC_FAILURE_REASON_CODES = frozenset(
     {
         "agent_stuck",
         "context_window_exceeded",
         "max_turns_exhausted",
         "no_output",
+        "schema_invalid",
         "token_budget_exceeded",
         "wall_clock_exceeded",
     }
