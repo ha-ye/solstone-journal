@@ -145,6 +145,25 @@ def test_pool_persist_reload_round_trip(speakers_env, tmp_path):
     ]
 
 
+def test_load_all_candidates_is_read_only(speakers_env, tmp_path):
+    env = speakers_env()
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([_unit([0.0, 1.0])] * 3)},
+    )
+    store = tmp_path / "speaker_candidates.json"
+    tracker = CandidateTracker(store)
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+    before = store.read_text(encoding="utf-8")
+
+    candidates = CandidateTracker(store).load_all_candidates()
+
+    assert [candidate.cand_id for candidate in candidates] == [1]
+    assert store.read_text(encoding="utf-8") == before
+
+
 def test_merge_threshold_updates_existing_candidate(speakers_env, tmp_path):
     env = speakers_env()
     store = tmp_path / "speaker_candidates.json"

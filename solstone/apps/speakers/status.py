@@ -92,7 +92,7 @@ def _owner_section() -> dict[str, Any]:
         result["streams_represented"] = voiceprint.get("streams_represented")
         result["recommendation"] = voiceprint.get("recommendation")
     elif status == "low_quality":
-        result["source"] = voiceprint.get("source", "hdbscan")
+        result["source"] = voiceprint.get("source", "candidate_pool")
         result["low_quality_reason"] = voiceprint.get("low_quality_reason", "")
         result["observed_value"] = voiceprint.get("observed_value", 0.0)
         result["threshold_value"] = voiceprint.get("threshold_value", 0.0)

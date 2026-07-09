@@ -75,8 +75,8 @@ Run owner voice candidate detection. Returns the candidate plus sample segments.
 
 Behavior notes:
 
-- Only attempt when there are 50+ segments with embeddings across 3+ streams (check `owner-ready` first).
-- If fewer segments exist, wait — don't mention speaker ID proactively until there's enough data.
+- Only attempt after `owner-ready` reports a usable candidate, or when explicitly refreshing candidate-pool detection.
+- Detection expands the existing speaker candidate pool; it does not scan and cluster the full journal.
 
 Example:
 
@@ -126,7 +126,7 @@ Behavior notes:
 sol call speakers owner-ready
 ```
 
-Report whether owner voice detection should be surfaced right now (enough embeddings, enough streams, not in cooldown).
+Report whether a persisted owner voice candidate should be surfaced right now. This is a cheap state check and does not run detection.
 
 Example:
 
@@ -250,7 +250,7 @@ Bootstrap voiceprints from imported-media tracks where the participant roster is
 
 Check `speakers owner-ready` (or look at `speakers status owner`). If the owner centroid doesn't exist:
 
-- If readiness passes (50+ segments with embeddings across 3+ streams): good time to try. Run `speakers detect`.
+- If readiness reports a candidate: good time to try. Run `speakers detect`.
 - If not: wait. Don't mention speaker ID proactively until there's enough data.
 
 When you have a candidate, present it naturally: "I've been listening to your journal across your different devices and I think I can recognize your voice. Here are a few moments — does this sound right?" Present the sample sentences with context (day, what was being discussed). Don't play audio — show text and context.

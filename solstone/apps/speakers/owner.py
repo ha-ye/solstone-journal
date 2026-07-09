@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,7 +22,7 @@ from solstone.apps.speakers.encoder_config import (
     OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS,
     OWNER_THRESHOLD,
 )
-from solstone.think.awareness import update_state
+from solstone.think.awareness import get_current, update_state
 from solstone.think.entities.journal import (
     ensure_journal_entity_memory,
     get_journal_principal,
@@ -29,15 +30,18 @@ from solstone.think.entities.journal import (
 )
 from solstone.think.entities.voiceprints import load_entity_voiceprints_file
 from solstone.think.journal_io.errors import LockTimeout
-from solstone.think.journal_io.npz import load_npz, save_npz
-from solstone.think.utils import day_dirs, get_journal, segment_path
+from solstone.think.journal_io.npz import load_npz, load_npz_row_count, save_npz
+from solstone.think.utils import day_dirs, get_journal, segment_parse, segment_path
 
 if TYPE_CHECKING:
     import numpy as np
 
+    from solstone.apps.speakers.candidate_tracker import CandidateProfile
+
 logger = logging.getLogger(__name__)
 
-MAX_EMBEDDINGS = 30000
+OWNER_CANDIDATE_SOURCE = "candidate_pool"
+OWNER_CANDIDATE_EXPANSION_MAX_EMBEDDINGS = 3000
 LOW_QUALITY_REASON_TOO_FEW_STMTS = "too_few_stmts"
 LOW_QUALITY_REASON_MEDIAN_DURATION_TOO_SHORT = "median_duration_too_short"
 LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE = "cluster_too_diffuse"
@@ -57,6 +61,19 @@ class OwnerCentroid:
     last_refreshed_at: str
     intra_cosine_p25: float | None
     streams: list[str]
+
+
+@dataclass(frozen=True)
+class OwnerCandidateExpansion:
+    """Expanded candidate-pool rows and journal-touch diagnostics."""
+
+    embeddings: np.ndarray
+    durations: list[float]
+    provenance: list[dict[str, Any]]
+    segments_checked: int
+    segments_available: int
+    embeddings_available: int
+    skipped: dict[str, int]
 
 
 def _mark_no_cluster(segment_count: int) -> None:
@@ -169,10 +186,11 @@ def _routes_helpers():
     return _load_embeddings_file, _normalize_embedding, _scan_segment_embeddings
 
 
-def _owner_candidate_path() -> Path:
+def _owner_candidate_path(*, create: bool = False) -> Path:
     """Return the temporary owner candidate NPZ path."""
     awareness_dir = Path(get_journal()) / "awareness"
-    awareness_dir.mkdir(parents=True, exist_ok=True)
+    if create:
+        awareness_dir.mkdir(parents=True, exist_ok=True)
     return awareness_dir / "owner_candidate.npz"
 
 
@@ -400,29 +418,67 @@ def load_manual_tag_stats(principal_id: str) -> dict[str, int]:
     }
 
 
+def _safe_scandir(path: Path) -> list[os.DirEntry[str]]:
+    try:
+        return list(os.scandir(path))
+    except OSError:
+        return []
+
+
+def _iter_audio_embedding_sources() -> list[tuple[str, str, str, Path, list[str]]]:
+    """Return segment/source candidates for inventory without opening speakers.json."""
+    rows: list[tuple[str, str, str, Path, list[str]]] = []
+    for day, day_path in day_dirs().items():
+        for stream_entry in sorted(
+            _safe_scandir(day_path), key=lambda entry: entry.name
+        ):
+            if not stream_entry.is_dir():
+                continue
+            stream = stream_entry.name
+            for segment_entry in sorted(
+                _safe_scandir(Path(stream_entry.path)), key=lambda entry: entry.name
+            ):
+                if not segment_entry.is_dir():
+                    continue
+                segment_key = segment_entry.name
+                if segment_parse(segment_key)[0] is None:
+                    continue
+                segment_dir = Path(segment_entry.path)
+                sources = sorted(
+                    npz_path.stem
+                    for npz_path in segment_dir.glob("*.npz")
+                    if npz_path.stem == "audio" or npz_path.stem.endswith("_audio")
+                )
+                if sources:
+                    rows.append((day, stream, segment_key, segment_dir, sources))
+    return rows
+
+
 def load_owner_embedding_inventory() -> dict[str, int]:
     """Return journal-wide segment and embedding availability for owner bootstrap."""
-    load_embeddings_file, _, scan_segment_embeddings = _routes_helpers()
-
     segment_count = 0
     embeddings_count = 0
     overlap_cache: dict[Path, float] = {}
-    for day in day_dirs().keys():
-        for segment in scan_segment_embeddings(day):
-            segment_count += 1
-            segment_dir = segment_path(day, segment["key"], segment["stream"])
-            for source in segment["sources"]:
-                jsonl_path = segment_dir / f"{source}.jsonl"
-                overlap = overlap_cache.setdefault(
-                    jsonl_path,
-                    _read_segment_overlap_fraction(jsonl_path),
-                )
-                if overlap > NOISY_FLYWHEEL_OVERLAP_MAX:
-                    continue
-                emb_data = load_embeddings_file(segment_dir / f"{source}.npz")
-                if emb_data is None:
-                    continue
-                embeddings_count += int(len(emb_data[0]))
+    for (
+        _day,
+        _stream,
+        _segment_key,
+        segment_dir,
+        sources,
+    ) in _iter_audio_embedding_sources():
+        segment_count += 1
+        for source in sources:
+            jsonl_path = segment_dir / f"{source}.jsonl"
+            overlap = overlap_cache.setdefault(
+                jsonl_path,
+                _read_segment_overlap_fraction(jsonl_path),
+            )
+            if overlap > NOISY_FLYWHEEL_OVERLAP_MAX:
+                continue
+            row_count = load_npz_row_count(segment_dir / f"{source}.npz", "embeddings")
+            if row_count is None:
+                continue
+            embeddings_count += row_count
 
     return {
         "segments_available": segment_count,
@@ -651,221 +707,263 @@ def load_owner_provisional_centroid(principal_id: str) -> np.ndarray | None:
     return centroid
 
 
-def count_segments_with_embeddings() -> int:
-    """Count all journal segments that contain audio embedding files."""
-    return load_owner_embedding_inventory()["segments_available"]
+def _confirmed_owner_payload(centroid: OwnerCentroid) -> dict[str, Any]:
+    return {
+        "status": "confirmed",
+        "recommendation": "confirmed",
+        "cluster_size": centroid.cluster_size,
+        "streams_represented": len(centroid.streams),
+        "samples": [],
+    }
 
 
-def _subsample_embeddings(
-    embeddings: np.ndarray, provenance: list[dict[str, Any]]
-) -> tuple[np.ndarray, list[dict[str, Any]]]:
-    """Subsample embeddings proportionally across streams when over the limit."""
+def _candidate_payload_from_awareness(voiceprint: dict[str, Any]) -> dict[str, Any]:
+    samples = voiceprint.get("samples")
+    return {
+        "status": "candidate",
+        "cluster_size": int(voiceprint.get("cluster_size") or 0),
+        "streams_represented": int(voiceprint.get("streams_represented") or 0),
+        "recommendation": str(voiceprint.get("recommendation") or "single_stream"),
+        "samples": samples if isinstance(samples, list) else [],
+    }
+
+
+def _candidate_no_cluster(
+    reason: str,
+    *,
+    segments_checked: int,
+    segments_available: int,
+    embeddings_available: int,
+) -> dict[str, Any]:
+    _mark_no_cluster(segments_checked)
+    return {
+        "status": "no_cluster",
+        "reason": reason,
+        "segments_checked": int(segments_checked),
+        "segments_available": int(segments_available),
+        "embeddings_available": int(embeddings_available),
+        "recommendation": "no_cluster",
+    }
+
+
+def _select_owner_candidate(
+    principal_id: str | None,
+) -> tuple[CandidateProfile | None, str | None]:
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+
+    tracker = CandidateTracker()
+    pool_exists = tracker.store_path.exists()
+    candidates = tracker.load_all_candidates()
+    if not pool_exists:
+        return None, "pool_missing"
+    if not candidates:
+        return None, "pool_empty"
+
+    eligible = [
+        candidate
+        for candidate in candidates
+        if candidate.status != "rejected"
+        and (
+            candidate.confirmed_entity is None
+            or candidate.confirmed_entity == principal_id
+        )
+    ]
+    if not eligible:
+        return None, "no_eligible_candidate"
+    return (
+        sorted(
+            eligible,
+            key=lambda item: (
+                -item.n_intervals,
+                -item.total_duration_s,
+                item.cand_id,
+            ),
+        )[0],
+        None,
+    )
+
+
+def _round_robin_source_segments(
+    source_segments: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for source_segment in source_segments:
+        stream = str(source_segment.get("stream") or "")
+        grouped.setdefault(stream, []).append(source_segment)
+
+    ordered: list[dict[str, Any]] = []
+    positions = {stream: 0 for stream in grouped}
+    while True:
+        made_progress = False
+        for stream in sorted(grouped):
+            position = positions[stream]
+            if position >= len(grouped[stream]):
+                continue
+            ordered.append(grouped[stream][position])
+            positions[stream] = position + 1
+            made_progress = True
+        if not made_progress:
+            return ordered
+
+
+def _expand_owner_candidate(
+    candidate: CandidateProfile,
+    *,
+    max_embeddings: int = OWNER_CANDIDATE_EXPANSION_MAX_EMBEDDINGS,
+) -> OwnerCandidateExpansion:
+    """Expand one candidate pool profile into usable owner bootstrap rows."""
     import numpy as np
 
-    total = len(embeddings)
-    if total <= MAX_EMBEDDINGS:
-        return embeddings, provenance
+    from solstone.apps.speakers.attribution import _load_integer_speaker_labels
 
-    rng = np.random.default_rng(42)
-    stream_indices: dict[str, list[int]] = {}
-    for idx, record in enumerate(provenance):
-        stream_indices.setdefault(record["stream"], []).append(idx)
-
-    allocations: dict[str, int] = {}
-    remainders: list[tuple[float, str]] = []
-    allocated = 0
-
-    for stream, indices in stream_indices.items():
-        count = len(indices)
-        proportional = MAX_EMBEDDINGS * count / total
-        allocation = min(count, int(proportional))
-        allocations[stream] = allocation
-        allocated += allocation
-        remainders.append((proportional - allocation, stream))
-
-    remaining = MAX_EMBEDDINGS - allocated
-    for _, stream in sorted(remainders, reverse=True):
-        if remaining <= 0:
-            break
-        available = len(stream_indices[stream]) - allocations[stream]
-        if available <= 0:
-            continue
-        allocations[stream] += 1
-        remaining -= 1
-
-    selected_indices: list[int] = []
-    for stream, indices in stream_indices.items():
-        take = allocations[stream]
-        if take <= 0:
-            continue
-        if take >= len(indices):
-            selected_indices.extend(indices)
-            continue
-        sampled = rng.choice(indices, size=take, replace=False)
-        selected_indices.extend(int(idx) for idx in sampled)
-
-    selected_indices.sort()
-    sampled_embeddings = embeddings[selected_indices]
-    sampled_provenance = [provenance[idx] for idx in selected_indices]
-    return sampled_embeddings, sampled_provenance
-
-
-def detect_owner_candidate() -> dict[str, Any]:
-    """Detect a likely owner voice centroid from journal embeddings."""
-    import numpy as np
-    from sklearn.cluster import HDBSCAN
-
-    load_embeddings_file, normalize_embedding, scan_segment_embeddings = (
+    load_embeddings_file, normalize_embedding, _scan_segment_embeddings = (
         _routes_helpers()
     )
 
-    segment_count = count_segments_with_embeddings()
-
-    embedding_chunks: list[np.ndarray] = []
+    embeddings_cache: dict[
+        Path, tuple[np.ndarray, np.ndarray, np.ndarray | None] | None
+    ] = {}
+    labels_cache: dict[tuple[Path, str], dict[int, int]] = {}
+    fallback_cache: dict[Path, dict[int, float | None]] = {}
     overlap_cache: dict[Path, float] = {}
+    skipped: dict[str, int] = {}
+    seen_segments: set[tuple[str, str, str]] = set()
+    embedding_rows: list[np.ndarray] = []
+    durations: list[float] = []
     provenance: list[dict[str, Any]] = []
 
-    for day in day_dirs().keys():
-        for segment in scan_segment_embeddings(day):
-            stream = segment["stream"]
-            segment_key = segment["key"]
-            segment_dir = segment_path(day, segment_key, stream)
+    def skip(reason: str) -> None:
+        skipped[reason] = skipped.get(reason, 0) + 1
 
-            for source in segment["sources"]:
-                jsonl_path = segment_dir / f"{source}.jsonl"
-                overlap = overlap_cache.setdefault(
-                    jsonl_path, _read_segment_overlap_fraction(jsonl_path)
-                )
-                if overlap > NOISY_FLYWHEEL_OVERLAP_MAX:
-                    logger.info(
-                        "owner bootstrap skip: overlap=%.3f exceeds %.2f at %s/%s/%s",
-                        overlap,
-                        NOISY_FLYWHEEL_OVERLAP_MAX,
-                        day,
-                        segment_key,
-                        source,
-                    )
-                    continue
+    for source_segment in _round_robin_source_segments(candidate.source_segments):
+        if len(embedding_rows) >= max_embeddings:
+            break
 
-                emb_data = load_embeddings_file(segment_dir / f"{source}.npz")
-                if emb_data is None:
-                    continue
+        try:
+            day = str(source_segment["day"])
+            stream = str(source_segment["stream"])
+            segment_key = str(source_segment["segment_key"])
+            source = str(source_segment["source"])
+            cluster_label = int(source_segment["cluster_label"])
+        except (KeyError, TypeError, ValueError):
+            skip("invalid_source_segment")
+            continue
 
-                embeddings, statement_ids, durations_data = emb_data
-                if len(embeddings) == 0:
-                    continue
+        segment_triplet = (day, stream, segment_key)
+        if segment_triplet not in seen_segments:
+            seen_segments.add(segment_triplet)
 
-                fallback_durations = (
-                    {}
-                    if durations_data is not None
-                    else _fallback_statement_durations(segment_dir / f"{source}.jsonl")
-                )
-                embedding_chunks.append(embeddings.astype(np.float32))
-                provenance.extend(
-                    {
-                        "day": day,
-                        "stream": stream,
-                        "segment_key": segment_key,
-                        "source": source,
-                        "sentence_id": int(sid),
-                        "duration_s": (
-                            float(durations_data[idx])
-                            if durations_data is not None
-                            else fallback_durations.get(int(sid))
-                        ),
-                    }
-                    for idx, sid in enumerate(statement_ids)
-                )
+        seg_dir = segment_path(day, segment_key, stream, create=False)
+        if not seg_dir.is_dir():
+            skip("missing_segment_dir")
+            continue
 
-    if not embedding_chunks:
-        _mark_no_cluster(segment_count)
-        return {
-            "status": "no_embeddings",
-            "segments_available": segment_count,
-            "embeddings_available": 0,
-            "recommendation": "no_embeddings",
+        jsonl_path = seg_dir / f"{source}.jsonl"
+        overlap = overlap_cache.setdefault(
+            jsonl_path,
+            _read_segment_overlap_fraction(jsonl_path),
+        )
+        if overlap > NOISY_FLYWHEEL_OVERLAP_MAX:
+            skip("noisy_overlap")
+            continue
+
+        npz_path = seg_dir / f"{source}.npz"
+        emb_data = embeddings_cache.setdefault(npz_path, load_embeddings_file(npz_path))
+        if emb_data is None:
+            skip("missing_or_invalid_npz")
+            continue
+        embeddings, statement_ids, durations_data = emb_data
+
+        labels_key = (seg_dir, source)
+        integer_labels = labels_cache.setdefault(
+            labels_key,
+            _load_integer_speaker_labels(seg_dir, source),
+        )
+        if not integer_labels:
+            skip("missing_integer_labels")
+            continue
+
+        statement_index = {
+            int(statement_id): idx for idx, statement_id in enumerate(statement_ids)
         }
+        fallback_durations = (
+            {}
+            if durations_data is not None
+            else fallback_cache.setdefault(
+                jsonl_path,
+                _fallback_statement_durations(jsonl_path),
+            )
+        )
 
-    embeddings_matrix = np.vstack(embedding_chunks)
-    embeddings_matrix, provenance = _subsample_embeddings(embeddings_matrix, provenance)
+        for sentence_id, speaker_label in sorted(integer_labels.items()):
+            if len(embedding_rows) >= max_embeddings:
+                break
+            if int(speaker_label) != cluster_label:
+                continue
+            matched_index = statement_index.get(int(sentence_id))
+            if matched_index is None:
+                skip("sentence_id_absent")
+                continue
+            if matched_index >= len(embeddings):
+                skip("embedding_row_out_of_range")
+                continue
 
-    if len(embeddings_matrix) < 50:
-        _mark_no_cluster(segment_count)
-        return {
-            "status": "low_data",
-            "segments_available": segment_count,
-            "embeddings_available": int(len(embeddings_matrix)),
-            "recommendation": "low_data",
-        }
+            normalized = normalize_embedding(embeddings[matched_index])
+            if normalized is None:
+                skip("embedding_normalization_failed")
+                continue
 
-    clusterer = HDBSCAN(
-        min_cluster_size=50,
-        min_samples=10,
-        metric="euclidean",
+            duration_s: float | None
+            if durations_data is not None and matched_index < len(durations_data):
+                duration_s = float(durations_data[matched_index])
+            else:
+                duration_s = fallback_durations.get(int(sentence_id))
+            if duration_s is not None:
+                durations.append(float(duration_s))
+
+            embedding_rows.append(np.asarray(normalized, dtype=np.float32))
+            provenance.append(
+                {
+                    "day": day,
+                    "stream": stream,
+                    "segment_key": segment_key,
+                    "source": source,
+                    "sentence_id": int(sentence_id),
+                    "duration_s": duration_s,
+                }
+            )
+
+    if not embedding_rows:
+        embeddings_matrix = np.empty((0, 0), dtype=np.float32)
+    else:
+        embeddings_matrix = np.vstack(embedding_rows).astype(np.float32, copy=False)
+
+    return OwnerCandidateExpansion(
+        embeddings=embeddings_matrix,
+        durations=durations,
+        provenance=provenance,
+        segments_checked=len(seen_segments),
+        segments_available=int(candidate.n_segments),
+        embeddings_available=int(embeddings_matrix.shape[0]),
+        skipped=skipped,
     )
-    clusterer.fit(embeddings_matrix)
-    labels = clusterer.labels_
 
-    valid_labels = labels[labels != -1]
-    if len(valid_labels) == 0:
-        _mark_no_cluster(segment_count)
-        return {
-            "status": "no_clusters",
-            "segments_available": segment_count,
-            "embeddings_available": int(len(embeddings_matrix)),
-            "recommendation": "no_clusters",
-        }
 
-    largest_label = int(np.bincount(valid_labels).argmax())
-    cluster_indices = np.flatnonzero(labels == largest_label)
-    if len(cluster_indices) == 0:
-        _mark_no_cluster(segment_count)
-        return {
-            "status": "no_clusters",
-            "segments_available": segment_count,
-            "embeddings_available": int(len(embeddings_matrix)),
-            "recommendation": "no_clusters",
-        }
+def _owner_candidate_samples(
+    embeddings: np.ndarray,
+    centroid: np.ndarray,
+    provenance: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    import numpy as np
 
-    cluster_embeddings = embeddings_matrix[cluster_indices]
-    embeddings_count = int(embeddings_matrix.shape[0])
-    cluster_durations = [
-        float(provenance[int(i)]["duration_s"])
-        for i in cluster_indices
-        if provenance[int(i)].get("duration_s") is not None
-    ]
-    low_quality = _apply_owner_quality_gates(
-        cluster_embeddings,
-        cluster_durations,
-        segment_count,
-        embeddings_count,
-        source="hdbscan",
-    )
-    if low_quality is not None:
-        return low_quality
-
-    centroid = normalize_embedding(np.mean(cluster_embeddings, axis=0))
-    if centroid is None:
-        _mark_no_cluster(segment_count)
-        return {
-            "status": "no_clusters",
-            "segments_available": segment_count,
-            "embeddings_available": embeddings_count,
-            "recommendation": "no_clusters",
-        }
-
-    cluster_streams = {provenance[int(i)]["stream"] for i in cluster_indices}
-    streams_represented = len(cluster_streams)
-    cluster_size = int(cluster_embeddings.shape[0])
-    recommendation = "ready" if streams_represented > 1 else "single_stream"
-    similarities = np.dot(cluster_embeddings, centroid)
-    sorted_cluster_positions = np.argsort(similarities)[::-1]
+    similarities = np.dot(embeddings, centroid)
+    sorted_positions = np.argsort(similarities)[::-1]
 
     samples: list[dict[str, Any]] = []
     seen_segments: set[tuple[str, str, str]] = set()
 
-    for position in sorted_cluster_positions:
-        record = provenance[int(cluster_indices[position])]
+    for position in sorted_positions:
+        record = provenance[int(position)]
         segment_triplet = (record["day"], record["stream"], record["segment_key"])
         if segment_triplet in seen_segments:
             continue
@@ -882,30 +980,111 @@ def detect_owner_candidate() -> dict[str, Any]:
             }
         )
         if len(samples) == 3:
-            break
+            return samples
 
-    if len(samples) < 3:
-        for position in sorted_cluster_positions:
-            record = provenance[int(cluster_indices[position])]
-            sample = {
-                **record,
-                "audio_url": _audio_url(
-                    record["day"],
-                    record["stream"],
-                    record["segment_key"],
-                    record["source"],
-                ),
-            }
-            if sample in samples:
-                continue
-            samples.append(sample)
-            if len(samples) == 3:
-                break
+    for position in sorted_positions:
+        record = provenance[int(position)]
+        sample = {
+            **record,
+            "audio_url": _audio_url(
+                record["day"],
+                record["stream"],
+                record["segment_key"],
+                record["source"],
+            ),
+        }
+        if sample in samples:
+            continue
+        samples.append(sample)
+        if len(samples) == 3:
+            break
+    return samples
+
+
+def detect_owner_candidate() -> dict[str, Any]:
+    """Detect a likely owner voice centroid from the candidate pool.
+
+    The cheap statement-count prefilter opens no segment files, so its
+    low-quality payload reports the candidate's recorded n_segments and
+    n_intervals as segments_available and embeddings_available.
+    """
+    import numpy as np
+
+    confirmed = load_owner_centroid()
+    if confirmed is not None:
+        return _confirmed_owner_payload(confirmed)
+
+    candidate_path = _owner_candidate_path()
+    voiceprint = get_current().get("voiceprint", {})
+    if candidate_path.exists() and voiceprint.get("status") == "candidate":
+        return _candidate_payload_from_awareness(voiceprint)
+
+    principal_id = _principal_id_or_none()
+    candidate, missing_reason = _select_owner_candidate(principal_id)
+    if candidate is None:
+        return _candidate_no_cluster(
+            missing_reason or "no_eligible_candidate",
+            segments_checked=0,
+            segments_available=0,
+            embeddings_available=0,
+        )
+
+    if candidate.n_intervals < OWNER_BOOTSTRAP_MIN_STMTS:
+        return _bail_low_quality(
+            LOW_QUALITY_REASON_TOO_FEW_STMTS,
+            candidate.n_intervals,
+            OWNER_BOOTSTRAP_MIN_STMTS,
+            candidate.n_segments,
+            candidate.n_intervals,
+            source=OWNER_CANDIDATE_SOURCE,
+        )
+
+    expansion = _expand_owner_candidate(
+        candidate,
+        max_embeddings=OWNER_CANDIDATE_EXPANSION_MAX_EMBEDDINGS,
+    )
+    if expansion.embeddings_available == 0:
+        return _candidate_no_cluster(
+            "candidate_no_usable_embeddings",
+            segments_checked=expansion.segments_checked,
+            segments_available=expansion.segments_available,
+            embeddings_available=0,
+        )
+
+    low_quality = _apply_owner_quality_gates(
+        expansion.embeddings,
+        expansion.durations,
+        expansion.segments_checked,
+        expansion.embeddings_available,
+        source=OWNER_CANDIDATE_SOURCE,
+    )
+    if low_quality is not None:
+        return low_quality
+
+    _load_embeddings_file, normalize_embedding, _scan_segment_embeddings = (
+        _routes_helpers()
+    )
+    centroid = normalize_embedding(np.mean(expansion.embeddings, axis=0))
+    if centroid is None:
+        return _candidate_no_cluster(
+            "candidate_centroid_unusable",
+            segments_checked=expansion.segments_checked,
+            segments_available=expansion.segments_available,
+            embeddings_available=expansion.embeddings_available,
+        )
+
+    cluster_streams = {record["stream"] for record in expansion.provenance}
+    streams_represented = len(cluster_streams)
+    cluster_size = int(expansion.embeddings.shape[0])
+    recommendation = "ready" if streams_represented > 1 else "single_stream"
+    samples = _owner_candidate_samples(
+        expansion.embeddings, centroid, expansion.provenance
+    )
 
     version = _iso_now()
     try:
         save_npz(
-            _owner_candidate_path(),
+            _owner_candidate_path(create=True),
             {
                 "centroid": centroid.astype(np.float32),
                 "cluster_size": np.array(cluster_size, dtype=np.int32),
@@ -936,6 +1115,44 @@ def detect_owner_candidate() -> dict[str, Any]:
         "recommendation": recommendation,
         "samples": samples,
     }
+
+
+def owner_detection_ready() -> dict[str, Any]:
+    """Check cheap owner voice candidate state without running detection."""
+    if load_owner_centroid() is not None:
+        return {"ready": False, "reason": "centroid_exists"}
+
+    voiceprint = get_current().get("voiceprint", {})
+    rejected_at = voiceprint.get("rejected_at")
+    if rejected_at:
+        try:
+            rejection_time = datetime.fromisoformat(str(rejected_at))
+            now = datetime.now(rejection_time.tzinfo)
+            days_since = (now - rejection_time).days
+            if days_since < 14:
+                return {
+                    "ready": False,
+                    "reason": "cooldown",
+                    "days_remaining": 14 - days_since,
+                }
+        except (ValueError, TypeError):
+            pass
+
+    if _owner_candidate_path().exists() and voiceprint.get("status") == "candidate":
+        if voiceprint.get("recommendation") == "ready":
+            return {
+                "ready": True,
+                "reason": "candidate_found",
+                "cluster_size": voiceprint.get("cluster_size"),
+                "streams_represented": voiceprint.get("streams_represented"),
+                "samples": voiceprint.get("samples", []),
+            }
+        return {
+            "ready": False,
+            "reason": voiceprint.get("recommendation") or "candidate_not_ready",
+        }
+
+    return {"ready": False, "reason": "no_candidate"}
 
 
 def _load_owner_voiceprint_summary(

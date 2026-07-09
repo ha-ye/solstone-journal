@@ -61,6 +61,7 @@ from solstone.apps.speakers.owner import (
     load_owner_bootstrap_diagnostics,
     load_owner_centroid,
     load_owner_provisional_centroid,
+    owner_detection_ready,
     reject_owner_candidate,
 )
 from solstone.apps.speakers.status import get_speakers_status
@@ -95,7 +96,7 @@ from solstone.convey.utils import (
     safe_day_path,
     success_response,
 )
-from solstone.think.awareness import get_current, owner_detection_ready
+from solstone.think.awareness import get_current
 from solstone.think.entities import find_matching_entity
 from solstone.think.entities.journal import (
     ensure_journal_entity_memory,
@@ -1464,7 +1465,7 @@ def api_owner_status() -> Any:
         return jsonify(
             {
                 "status": "low_quality",
-                "source": voiceprint.get("source", "hdbscan"),
+                "source": voiceprint.get("source", "candidate_pool"),
                 "low_quality_reason": voiceprint.get("low_quality_reason", ""),
                 "observed_value": voiceprint.get("observed_value", 0.0),
                 "threshold_value": voiceprint.get("threshold_value", 0.0),

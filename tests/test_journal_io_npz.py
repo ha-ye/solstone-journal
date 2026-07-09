@@ -16,7 +16,13 @@ import pytest
 
 from solstone.think.journal_io.errors import LockTimeout, MalformedDataError
 from solstone.think.journal_io.locking import hold_lock as real_hold_lock
-from solstone.think.journal_io.npz import load_npz, save_npz, update_npz, write_npz
+from solstone.think.journal_io.npz import (
+    load_npz,
+    load_npz_row_count,
+    save_npz,
+    update_npz,
+    write_npz,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VOICEPRINT_KEYS = ("embeddings", "metadata")
@@ -86,6 +92,27 @@ def test_load_npz_missing_and_old_writer_round_trip(tmp_path) -> None:
     assert loaded["metadata"].dtype.kind == "U"
     np.testing.assert_array_equal(loaded["embeddings"], old_arrays["embeddings"])
     np.testing.assert_array_equal(loaded["metadata"], old_arrays["metadata"])
+
+
+def test_load_npz_row_count_reads_header_only(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "embeddings.npz"
+    np.savez_compressed(
+        path,
+        embeddings=np.zeros((12, 256), dtype=np.float32),
+        metadata=np.asarray(["a", "b"]),
+        scalar=np.array(1),
+    )
+
+    def fail_materialize(*args, **kwargs):
+        raise AssertionError("row count materialized arrays")
+
+    monkeypatch.setattr(np, "load", fail_materialize)
+
+    assert load_npz_row_count(path, "embeddings") == 12
+    assert load_npz_row_count(path, "metadata") == 2
+    assert load_npz_row_count(path, "scalar") is None
+    assert load_npz_row_count(path, "missing") is None
+    assert load_npz_row_count(tmp_path / "missing.npz", "embeddings") is None
 
 
 def test_save_npz_owner_centroid_schema_old_reader_compatible(tmp_path) -> None:

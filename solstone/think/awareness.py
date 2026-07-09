@@ -244,53 +244,6 @@ def _recent_chat_exchanges(limit: int = 10000) -> list[dict[str, Any]]:
     return exchanges[-limit:]
 
 
-def owner_detection_ready() -> dict[str, Any]:
-    """Check if owner voice detection should be surfaced to the user.
-
-    Returns a dict with a ``ready`` boolean and contextual fields.
-
-    Checks in order:
-    1. Owner centroid already exists → not ready
-    2. Recent rejection within 14 days → not ready (cooldown)
-    3. Calls ``detect_owner_candidate()`` → ready if positive recommendation
-    """
-    from solstone.apps.speakers.owner import detect_owner_candidate, load_owner_centroid
-
-    if load_owner_centroid() is not None:
-        return {"ready": False, "reason": "centroid_exists"}
-
-    voiceprint = get_current().get("voiceprint", {})
-    rejected_at = voiceprint.get("rejected_at")
-    if rejected_at:
-        try:
-            rejection_time = datetime.fromisoformat(rejected_at)
-            now = datetime.now(rejection_time.tzinfo)
-            days_since = (now - rejection_time).days
-            if days_since < 14:
-                return {
-                    "ready": False,
-                    "reason": "cooldown",
-                    "days_remaining": 14 - days_since,
-                }
-        except (ValueError, TypeError):
-            pass
-
-    result = detect_owner_candidate()
-    if result.get("recommendation") == "ready":
-        return {
-            "ready": True,
-            "reason": "candidate_found",
-            "cluster_size": result.get("cluster_size"),
-            "streams_represented": result.get("streams_represented"),
-            "samples": result.get("samples", []),
-        }
-
-    return {
-        "ready": False,
-        "reason": result.get("recommendation", result.get("status", "unknown")),
-    }
-
-
 def record_import(
     source_type: str,
     source_display: str | None = None,

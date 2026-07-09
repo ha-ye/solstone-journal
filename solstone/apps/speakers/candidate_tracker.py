@@ -138,6 +138,10 @@ class CandidateTracker:
                 json.dumps(data, indent=2, sort_keys=True) + "\n",
             )
 
+    def load_all_candidates(self) -> list[CandidateProfile]:
+        """Return all tracked speaker candidates without mutating state."""
+        return sorted(self._candidates.values(), key=lambda item: item.cand_id)
+
     def _new_id(self) -> int:
         cand_id = self._next_id
         self._next_id += 1

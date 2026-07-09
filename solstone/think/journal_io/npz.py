@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import zipfile
 from collections.abc import Callable, Mapping
 from io import BytesIO
 from pathlib import Path
@@ -27,6 +28,35 @@ def load_npz(path: Path) -> dict[str, np.ndarray] | None:
 
     with np.load(path, allow_pickle=False) as data:
         return {key: data[key] for key in data.files}
+
+
+def load_npz_row_count(path: Path, key: str) -> int | None:
+    """Return the first dimension for one NPZ array without materializing it."""
+    from numpy.lib import format as np_format
+
+    if not path.exists():
+        return None
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            with archive.open(f"{key}.npy") as npy_file:
+                version = np_format.read_magic(npy_file)
+                if version == (1, 0):
+                    shape, _fortran_order, _dtype = np_format.read_array_header_1_0(
+                        npy_file
+                    )
+                elif version == (2, 0):
+                    shape, _fortran_order, _dtype = np_format.read_array_header_2_0(
+                        npy_file
+                    )
+                else:
+                    return None
+    except Exception:
+        return None
+
+    if not shape:
+        return None
+    return int(shape[0])
 
 
 def save_npz(
