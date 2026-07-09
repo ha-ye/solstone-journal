@@ -15,7 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from solstone.think import health_cli, install_guard, service, setup
+from solstone.think import health_cli, install_guard, service, setup, setup_events
 from solstone.think.user_config import write_user_config
 
 
@@ -801,6 +801,41 @@ def test_brain_preserves_existing_provider_lane(
     assert expected_brain_bootstrap_command() not in calls
 
 
+@pytest.mark.parametrize(
+    "original_config",
+    [
+        {"providers": "anthropic"},
+        {"providers": {"generate": "anthropic"}},
+        {"providers": {"cogitate": ["local"]}},
+    ],
+)
+def test_brain_skips_on_malformed_provider_config(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    original_config: dict[str, Any],
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    journal = tmp_path / "journal"
+    config_path = journal / "config" / "journal.json"
+    config_path.parent.mkdir(parents=True)
+    original_text = json.dumps(original_config, sort_keys=True)
+    config_path.write_text(original_text, encoding="utf-8")
+    calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+
+    rc = setup.main(["--yes", "--journal", str(journal), "--accept-existing-journal"])
+
+    assert rc == 0
+    assert config_path.read_text(encoding="utf-8") == original_text
+    brain_step = step_by_name(read_manifest(journal), "brain")
+    assert brain_step["status"] == "skipped"
+    assert brain_step["reason"] == "provider config is not in the expected shape"
+    assert expected_brain_bootstrap_command() not in calls
+
+
 def test_brain_dry_run_writes_nothing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -877,6 +912,54 @@ def test_brain_rerun_after_defer_triggers_bootstrap(
     second_brain = step_by_name(read_manifest(journal), "brain")
     assert second_brain["status"] == "ok"
     assert expected_brain_bootstrap_command() in second_calls
+
+
+def test_brain_rerun_after_warning_retries_bootstrap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+    journal = tmp_path / "journal"
+    bootstrap_results = [
+        setup.StepProcessResult(9, "", "bootstrap unavailable\n", False),
+        setup.StepProcessResult(0, "", "", False),
+    ]
+    commands: list[list[str]] = []
+
+    def fake_run_step_subprocess(
+        ctx: setup.SetupContext,
+        command: list[str],
+        *,
+        timeout: float | None = None,
+    ) -> setup.StepProcessResult:
+        del ctx, timeout
+        commands.append(command)
+        if command == expected_brain_bootstrap_command():
+            return bootstrap_results.pop(0)
+        return setup.StepProcessResult(0, "", "", False)
+
+    monkeypatch.setattr(setup, "run_step_subprocess", fake_run_step_subprocess)
+
+    first_rc = setup.main(["--yes", "--journal", str(journal)])
+    first_brain = step_by_name(read_manifest(journal), "brain")
+
+    assert first_rc == 0
+    assert first_brain["status"] == "warning"
+    assert first_brain["reason"] == "local bootstrap did not start"
+
+    second_rc = setup.main(["--yes", "--journal", str(journal)])
+    second_brain = step_by_name(read_manifest(journal), "brain")
+
+    assert second_rc == 0
+    assert second_brain["status"] == "ok"
+    assert second_brain["reason"] is None
+    assert commands.count(expected_brain_bootstrap_command()) == 2
+    assert bootstrap_results == []
 
 
 @pytest.mark.parametrize("use_journal_flag", [False, True])
@@ -1033,6 +1116,15 @@ def test_print_plan_step_count_matches_steps(
         )
         for index, step in enumerate(setup._STEPS, start=1)
     ]
+
+
+def test_step_registries_agree() -> None:
+    assert tuple(setup._STEP_NAME[step] for step in setup._STEPS) == (
+        setup_events.STEP_NAMES
+    )
+    assert set(setup._PLAN_BODY) == set(setup._STEPS)
+    assert set(setup._STEP_NAME) == set(setup._STEPS)
+    assert setup.TOTAL_STEPS == len(setup._STEPS)
 
 
 def test_manifest_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

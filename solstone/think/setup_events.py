@@ -56,6 +56,7 @@ SKIPPED_REASONS: frozenset[str] = frozenset(
         "--skip-skills",
         "--skip-service",
         "a provider is already configured",
+        "provider config is not in the expected shape",
         "local provider unavailable on this host",
         "local bootstrap did not start",
         "prior_run_ok",

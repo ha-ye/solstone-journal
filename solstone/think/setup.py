@@ -1385,30 +1385,38 @@ def step_brain(ctx: SetupContext, step_index: int) -> StepResult:
     from solstone.think.journal_config import read_journal_config, write_journal_config
 
     cfg = read_journal_config(ctx.journal_path)
-    providers_raw = cfg.get("providers", {})
-    providers = providers_raw if isinstance(providers_raw, dict) else {}
+    reason_malformed = "provider config is not in the expected shape"
+    if "providers" in cfg and not isinstance(cfg["providers"], dict):
+        print_step_skipped(ctx, step_index, "brain", reason_malformed)
+        return step_result("brain", "skipped", [], started_at, reason=reason_malformed)
+
+    providers = cfg.get("providers", {})
+    for agent_type in ("generate", "cogitate"):
+        if agent_type in providers and not isinstance(providers[agent_type], dict):
+            print_step_skipped(ctx, step_index, "brain", reason_malformed)
+            return step_result(
+                "brain", "skipped", [], started_at, reason=reason_malformed
+            )
+
     generate = providers.get("generate", {})
     cogitate = providers.get("cogitate", {})
-    typed_configs = (
-        generate if isinstance(generate, dict) else {},
-        cogitate if isinstance(cogitate, dict) else {},
-    )
     owner_chose_other = any(
         type_config.get("provider") is not None
         and type_config.get("provider") != "local"
-        for type_config in typed_configs
+        for type_config in (generate, cogitate)
     )
     if owner_chose_other:
         reason = "a provider is already configured"
         print_step_skipped(ctx, step_index, "brain", reason)
         return step_result("brain", "skipped", [], started_at, reason=reason)
 
-    changed = "providers" not in cfg or providers_raw is not providers
-    if changed:
+    changed = False
+    if "providers" not in cfg:
         cfg["providers"] = providers
+        changed = True
     for agent_type in ("generate", "cogitate"):
         type_config = providers.get(agent_type)
-        if not isinstance(type_config, dict):
+        if type_config is None:
             type_config = {}
             providers[agent_type] = type_config
             changed = True
