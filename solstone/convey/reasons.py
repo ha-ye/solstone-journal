@@ -119,11 +119,6 @@ SETTINGS_OPERATION_FAILED = Reason(
     "I couldn't save those settings.",
     500,
 )
-PROVIDER_VALIDATION_FAILED = Reason(
-    "provider_validation_failed",
-    "I couldn't check that provider key.",
-    500,
-)
 CONVEY_OPERATION_FAILED = Reason(
     "convey_operation_failed",
     "I couldn't update the interface settings.",
