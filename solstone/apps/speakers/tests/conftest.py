@@ -64,6 +64,17 @@ def speakers_env(tmp_path, monkeypatch):
 
             clear_owner_provisional_cache()
 
+        def set_identity(self, **identity: object) -> None:
+            """Set identity config while preserving existing journal setup."""
+            config_path = self.journal / "config" / "journal.json"
+            with open(config_path, encoding="utf-8") as f:
+                config = json.load(f)
+            config["identity"] = dict(identity)
+            config_path.write_text(
+                json.dumps(config) + "\n",
+                encoding="utf-8",
+            )
+
         def _segment_dirs(
             self,
             day: str,

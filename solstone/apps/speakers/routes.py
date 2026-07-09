@@ -59,10 +59,12 @@ from solstone.apps.speakers.owner import (
     classify_sentences,
     confirm_owner_candidate,
     detect_owner_candidate,
+    ensure_principal_entity,
     load_owner_bootstrap_diagnostics,
     load_owner_centroid,
     load_owner_provisional_centroid,
     owner_detection_ready,
+    principal_identity_or_none,
     reject_owner_candidate,
 )
 from solstone.apps.speakers.status import get_speakers_status
@@ -123,6 +125,8 @@ from solstone.think.utils import segment_path as get_segment_path
 
 if TYPE_CHECKING:
     import numpy as np
+
+    from solstone.think.entities.core import EntityDict
 
 logger = logging.getLogger(__name__)
 SEGMENT_KEY_RE = re.compile(r"\d{6}_\d+")
@@ -406,6 +410,19 @@ def _principal_id_or_none() -> str | None:
     if principal is None:
         return None
     return str(principal["id"])
+
+
+def _ensure_attribution_target(entity_id: str) -> EntityDict | None:
+    """Resolve an attribution target, creating the principal on first owner tag."""
+    entity = load_journal_entity(entity_id)
+    if entity is not None:
+        return entity
+    if get_journal_principal() is not None:
+        return None
+    identity = principal_identity_or_none()
+    if identity is None or identity[0] != entity_id:
+        return None
+    return ensure_principal_entity()
 
 
 def _voiceprint_busy_response(exc: LockTimeout) -> Any:
@@ -966,6 +983,12 @@ def api_review(day: str, stream: str, segment_key: str, source: str) -> Any:
                 "is_principal": bool(entity.get("is_principal")),
             }
         )
+    if not any(e.get("is_principal") for e in journal_entities.values()):
+        identity = principal_identity_or_none()
+        if identity is not None and identity[0] not in journal_entities:
+            all_entities.append(
+                {"entity_id": identity[0], "name": identity[1], "is_principal": True}
+            )
     all_entities.sort(key=lambda x: (not x["is_principal"], x["name"].lower()))
 
     audio_file = None
@@ -1164,7 +1187,7 @@ def api_correct_attribution() -> Any:
     if not STREAM_RE.fullmatch(stream):
         return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
 
-    target_entity = load_journal_entity(new_speaker)
+    target_entity = _ensure_attribution_target(new_speaker)
     if not target_entity:
         return error_response(
             SPEAKER_NOT_FOUND,
@@ -1326,7 +1349,7 @@ def api_assign_attribution() -> Any:
     if not STREAM_RE.fullmatch(stream):
         return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
 
-    target_entity = load_journal_entity(speaker)
+    target_entity = _ensure_attribution_target(speaker)
     if not target_entity:
         return error_response(
             SPEAKER_NOT_FOUND,

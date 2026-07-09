@@ -19,6 +19,8 @@ SERVE_AUDIO_URL = (
     f"/app/speakers/api/serve_audio/{SERVE_AUDIO_DAY}/"
     f"{SERVE_AUDIO_STREAM}/{SERVE_AUDIO_SEGMENT}/{SERVE_AUDIO_SOURCE}.flac"
 )
+OWNER_DISPLAY_NAME = "Jer Miller"
+OWNER_ID = "jer_miller"
 
 
 def _convey_client(journal_root):
@@ -68,6 +70,87 @@ def _read_action_entries(journal_root):
         for line in log_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
+
+
+def _speakers_client():
+    from solstone.apps.speakers.routes import speakers_bp
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+    return app.test_client()
+
+
+def _review_payload() -> dict:
+    with _speakers_client() as client:
+        resp = client.get(
+            "/app/speakers/api/review/"
+            f"{SERVE_AUDIO_DAY}/{SERVE_AUDIO_STREAM}/"
+            f"{SERVE_AUDIO_SEGMENT}/{SERVE_AUDIO_SOURCE}"
+        )
+    assert resp.status_code == 200
+    return resp.get_json()
+
+
+def _post_assign(speaker: str, sentence_id: int = 1):
+    with _speakers_client() as client:
+        return client.post(
+            "/app/speakers/api/assign-attribution",
+            json={
+                "day": SERVE_AUDIO_DAY,
+                "stream": SERVE_AUDIO_STREAM,
+                "segment_key": SERVE_AUDIO_SEGMENT,
+                "source": SERVE_AUDIO_SOURCE,
+                "sentence_id": sentence_id,
+                "speaker": speaker,
+            },
+        )
+
+
+def _post_correct(new_speaker: str, sentence_id: int = 1):
+    with _speakers_client() as client:
+        return client.post(
+            "/app/speakers/api/correct-attribution",
+            json={
+                "day": SERVE_AUDIO_DAY,
+                "stream": SERVE_AUDIO_STREAM,
+                "segment_key": SERVE_AUDIO_SEGMENT,
+                "source": SERVE_AUDIO_SOURCE,
+                "sentence_id": sentence_id,
+                "new_speaker": new_speaker,
+            },
+        )
+
+
+def _labels_path(env) -> Path:
+    return (
+        env.journal
+        / SERVE_AUDIO_DAY
+        / SERVE_AUDIO_STREAM
+        / SERVE_AUDIO_SEGMENT
+        / "talents"
+        / "speaker_labels.json"
+    )
+
+
+def _load_labels(env) -> dict:
+    with open(_labels_path(env), encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _load_owner_entity(env) -> dict:
+    with open(
+        env.journal / "entities" / OWNER_ID / "entity.json",
+        encoding="utf-8",
+    ) as f:
+        return json.load(f)
+
+
+def _voiceprint_row_count(env, entity_id: str = OWNER_ID) -> int:
+    with np.load(
+        env.journal / "entities" / entity_id / "voiceprints.npz",
+        allow_pickle=False,
+    ) as data:
+        return int(data["embeddings"].shape[0])
 
 
 def _save_principal_manual_tags(
@@ -1014,6 +1097,185 @@ def test_api_review_no_labels(speakers_env):
         data = resp.get_json()
         assert data["has_labels"] is False
         assert data["summary"]["needs_review"] == 0
+
+
+def test_api_review_offers_configured_identity_without_principal(speakers_env):
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+
+    data = _review_payload()
+
+    assert data["all_entities"] == [
+        {"entity_id": OWNER_ID, "name": OWNER_DISPLAY_NAME, "is_principal": True}
+    ]
+
+
+def test_api_assign_creates_principal_from_identity(speakers_env):
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [{"sentence_id": 1, "speaker": None, "confidence": None, "method": None}],
+    )
+
+    resp = _post_assign(OWNER_ID)
+
+    assert resp.status_code == 200
+    entity = _load_owner_entity(env)
+    assert entity["is_principal"] is True
+    assert entity["name"] == OWNER_DISPLAY_NAME
+    labels = _load_labels(env)
+    assert labels["labels"][0]["speaker"] == OWNER_ID
+    assert labels["labels"][0]["method"] == "user_assigned"
+    assert _voiceprint_row_count(env) == 1
+
+
+def test_api_correct_creates_principal_from_identity(speakers_env):
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [{"sentence_id": 1, "speaker": None, "confidence": None, "method": None}],
+    )
+
+    resp = _post_correct(OWNER_ID)
+
+    assert resp.status_code == 200
+    entity = _load_owner_entity(env)
+    assert entity["is_principal"] is True
+    assert entity["name"] == OWNER_DISPLAY_NAME
+    labels = _load_labels(env)
+    assert labels["labels"][0]["speaker"] == OWNER_ID
+    assert labels["labels"][0]["method"] == "user_corrected"
+    assert _voiceprint_row_count(env) == 1
+
+
+def test_api_assign_reuses_principal_entity_for_second_sentence(speakers_env):
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [
+            {"sentence_id": 1, "speaker": None, "confidence": None, "method": None},
+            {"sentence_id": 2, "speaker": None, "confidence": None, "method": None},
+        ],
+    )
+
+    first = _post_assign(OWNER_ID, sentence_id=1)
+    second = _post_assign(OWNER_ID, sentence_id=2)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    entity_dirs = sorted(p.name for p in (env.journal / "entities").iterdir())
+    assert entity_dirs == [OWNER_ID]
+    assert _voiceprint_row_count(env) == 2
+
+
+def test_api_assign_unknown_target_does_not_create_identity_principal(speakers_env):
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [{"sentence_id": 1, "speaker": None, "confidence": None, "method": None}],
+    )
+
+    resp = _post_assign("some_other_person")
+
+    assert resp.status_code == 404
+    assert resp.get_json()["reason_code"] == "speaker_not_found"
+    assert not (env.journal / "entities").exists()
+
+
+def test_api_assign_owner_slug_with_foreign_principal_not_found(speakers_env):
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [{"sentence_id": 1, "speaker": None, "confidence": None, "method": None}],
+    )
+    env.create_entity("Alice Test", is_principal=True)
+
+    resp = _post_assign(OWNER_ID)
+
+    assert resp.status_code == 404
+    assert resp.get_json()["reason_code"] == "speaker_not_found"
+    assert not (env.journal / "entities" / OWNER_ID).exists()
+    assert not (env.journal / "entities" / OWNER_ID / "voiceprints.npz").exists()
+    labels = _load_labels(env)
+    assert labels["labels"][0]["speaker"] is None
+
+
+def test_api_review_and_assign_without_identity_do_not_create_principal(speakers_env):
+    env = speakers_env()
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [{"sentence_id": 1, "speaker": None, "confidence": None, "method": None}],
+    )
+
+    data = _review_payload()
+    resp = _post_assign(OWNER_ID)
+
+    assert data["all_entities"] == []
+    assert resp.status_code == 404
+    assert resp.get_json()["reason_code"] == "speaker_not_found"
+    assert not (env.journal / "entities").exists()
+
+
+def test_api_review_existing_principal_suppresses_identity_option(speakers_env):
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_entity("Alice Test", is_principal=True)
+
+    data = _review_payload()
+
+    assert data["all_entities"] == [
+        {"entity_id": "alice_test", "name": "Alice Test", "is_principal": True}
+    ]
+
+
+def test_api_review_existing_owner_slug_entity_not_duplicated(speakers_env):
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_entity(OWNER_DISPLAY_NAME)
+
+    data = _review_payload()
+    owner_entries = [
+        entity for entity in data["all_entities"] if entity["entity_id"] == OWNER_ID
+    ]
+
+    assert owner_entries == [
+        {"entity_id": OWNER_ID, "name": OWNER_DISPLAY_NAME, "is_principal": False}
+    ]
+
+
+def test_api_review_blocked_owner_slug_entity_not_synthetic_option(speakers_env):
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(SERVE_AUDIO_DAY, SERVE_AUDIO_SEGMENT, [SERVE_AUDIO_SOURCE])
+    env.create_entity(OWNER_DISPLAY_NAME)
+    entity_path = env.journal / "entities" / OWNER_ID / "entity.json"
+    entity = json.loads(entity_path.read_text(encoding="utf-8"))
+    entity["blocked"] = True
+    entity_path.write_text(json.dumps(entity) + "\n", encoding="utf-8")
+
+    data = _review_payload()
+
+    assert data["all_entities"] == []
 
 
 def test_api_review_uses_registered_audio_extension(speakers_env):

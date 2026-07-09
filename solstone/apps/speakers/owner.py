@@ -25,10 +25,13 @@ from solstone.apps.speakers.encoder_config import (
     OWNER_THRESHOLD,
 )
 from solstone.think.awareness import get_current, update_state
+from solstone.think.entities.core import entity_slug, get_identity_names
 from solstone.think.entities.journal import (
+    create_journal_entity,
     ensure_journal_entity_memory,
     get_journal_principal,
     journal_entity_memory_path,
+    load_journal_entity,
 )
 from solstone.think.entities.voiceprints import load_entity_voiceprints_file
 from solstone.think.journal_io.errors import LockTimeout
@@ -39,6 +42,7 @@ if TYPE_CHECKING:
     import numpy as np
 
     from solstone.apps.speakers.candidate_tracker import CandidateProfile
+    from solstone.think.entities.core import EntityDict
 
 logger = logging.getLogger(__name__)
 
@@ -209,6 +213,36 @@ def _principal_id_or_none() -> str | None:
     if principal is None:
         return None
     return str(principal["id"])
+
+
+def principal_identity_or_none() -> tuple[str, str] | None:
+    """Return (entity_id, display_name) for the configured identity, or None."""
+    names = get_identity_names()
+    if not names:
+        return None
+    display_name = names[0]
+    entity_id = entity_slug(display_name)
+    if not entity_id:
+        return None
+    return entity_id, display_name
+
+
+def ensure_principal_entity() -> EntityDict | None:
+    """Return the principal entity, creating it from identity config if absent."""
+    principal = get_journal_principal()
+    if principal is not None:
+        return principal
+    identity = principal_identity_or_none()
+    if identity is None:
+        return None
+    entity_id, display_name = identity
+    entity = load_journal_entity(entity_id)
+    if entity is not None:
+        return entity
+    logger.info("Creating principal entity %s from identity config", entity_id)
+    return create_journal_entity(
+        entity_id=entity_id, name=display_name, entity_type="Person"
+    )
 
 
 def _iso_now() -> str:
@@ -1273,13 +1307,6 @@ def confirm_owner_candidate() -> dict[str, Any]:
     """
     import numpy as np
 
-    from solstone.think.entities import entity_slug
-    from solstone.think.entities.core import get_identity_names
-    from solstone.think.entities.journal import (
-        create_journal_entity,
-        load_journal_entity,
-    )
-
     candidate_path = _owner_candidate_path()
     if not candidate_path.exists():
         return {"error": "No candidate available"}
@@ -1294,18 +1321,9 @@ def confirm_owner_candidate() -> dict[str, Any]:
         logger.warning("Failed to load owner candidate %s: %s", candidate_path, e)
         return {"error": "No candidate available"}
 
-    principal = get_journal_principal()
+    principal = ensure_principal_entity()
     if principal is None:
-        identity_names = get_identity_names()
-        if not identity_names:
-            return {"error": "No principal entity found"}
-        principal_name = identity_names[0]
-        principal_id = entity_slug(principal_name)
-        principal = load_journal_entity(principal_id) or create_journal_entity(
-            entity_id=principal_id,
-            name=principal_name,
-            entity_type="Person",
-        )
+        return {"error": "No principal entity found"}
 
     try:
         _write_owner_centroid(principal["id"], np.asarray(centroid), cluster_size)
