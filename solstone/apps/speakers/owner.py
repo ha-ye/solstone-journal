@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -180,10 +181,9 @@ def _routes_helpers():
     from solstone.apps.speakers.routes import (
         _load_embeddings_file,
         _normalize_embedding,
-        _scan_segment_embeddings,
     )
 
-    return _load_embeddings_file, _normalize_embedding, _scan_segment_embeddings
+    return _load_embeddings_file, _normalize_embedding
 
 
 def _owner_candidate_path(*, create: bool = False) -> Path:
@@ -597,7 +597,7 @@ def _collect_manual_tag_embeddings(
     """Load validated owner-tag embeddings and provenance for the principal."""
     import numpy as np
 
-    load_embeddings_file, _, _ = _routes_helpers()
+    load_embeddings_file, _ = _routes_helpers()
 
     rows = _load_manual_tag_rows(principal_id)
     if not rows:
@@ -693,9 +693,7 @@ def load_owner_provisional_centroid(principal_id: str) -> np.ndarray | None:
         clear_owner_provisional_cache(principal_id)
         return None
 
-    _load_embeddings_file, normalize_embedding, _scan_segment_embeddings = (
-        _routes_helpers()
-    )
+    _, normalize_embedding = _routes_helpers()
     centroid = normalize_embedding(np.mean(embeddings, axis=0))
     if centroid is None:
         clear_owner_provisional_cache(principal_id)
@@ -785,25 +783,25 @@ def _select_owner_candidate(
 
 def _round_robin_source_segments(
     source_segments: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
+) -> Iterator[dict[str, Any]]:
     grouped: dict[str, list[dict[str, Any]]] = {}
     for source_segment in source_segments:
         stream = str(source_segment.get("stream") or "")
         grouped.setdefault(stream, []).append(source_segment)
 
-    ordered: list[dict[str, Any]] = []
-    positions = {stream: 0 for stream in grouped}
+    streams = sorted(grouped)
+    positions = {stream: 0 for stream in streams}
     while True:
         made_progress = False
-        for stream in sorted(grouped):
+        for stream in streams:
             position = positions[stream]
             if position >= len(grouped[stream]):
                 continue
-            ordered.append(grouped[stream][position])
+            yield grouped[stream][position]
             positions[stream] = position + 1
             made_progress = True
         if not made_progress:
-            return ordered
+            return
 
 
 def _expand_owner_candidate(
@@ -816,9 +814,7 @@ def _expand_owner_candidate(
 
     from solstone.apps.speakers.attribution import _load_integer_speaker_labels
 
-    load_embeddings_file, normalize_embedding, _scan_segment_embeddings = (
-        _routes_helpers()
-    )
+    load_embeddings_file, normalize_embedding = _routes_helpers()
 
     embeddings_cache: dict[
         Path, tuple[np.ndarray, np.ndarray, np.ndarray | None] | None
@@ -1012,6 +1008,16 @@ def detect_owner_candidate() -> dict[str, Any]:
 
     confirmed = load_owner_centroid()
     if confirmed is not None:
+        if get_current().get("voiceprint", {}).get("status") != "confirmed":
+            # Repair stale awareness so status polling stops auto-detecting.
+            update_state(
+                "voiceprint",
+                {
+                    "status": "confirmed",
+                    "cluster_size": confirmed.cluster_size,
+                    "confirmed_at": _iso_now(),
+                },
+            )
         return _confirmed_owner_payload(confirmed)
 
     candidate_path = _owner_candidate_path()
@@ -1061,9 +1067,7 @@ def detect_owner_candidate() -> dict[str, Any]:
     if low_quality is not None:
         return low_quality
 
-    _load_embeddings_file, normalize_embedding, _scan_segment_embeddings = (
-        _routes_helpers()
-    )
+    _, normalize_embedding = _routes_helpers()
     centroid = normalize_embedding(np.mean(expansion.embeddings, axis=0))
     if centroid is None:
         return _candidate_no_cluster(
@@ -1231,7 +1235,7 @@ def classify_sentences(
     """Classify segment sentences against the confirmed owner centroid."""
     import numpy as np
 
-    load_embeddings_file, normalize_embedding, _ = _routes_helpers()
+    load_embeddings_file, normalize_embedding = _routes_helpers()
 
     centroid_data = load_owner_centroid()
     if centroid_data is None:
@@ -1334,7 +1338,7 @@ def bootstrap_owner_from_manual_tags() -> dict[str, Any]:
     """Promote validated principal manual tags into a confirmed owner centroid."""
     import numpy as np
 
-    _, normalize_embedding, _ = _routes_helpers()
+    _, normalize_embedding = _routes_helpers()
 
     principal_id = _principal_id_or_none()
     if principal_id is None:

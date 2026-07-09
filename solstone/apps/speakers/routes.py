@@ -1923,7 +1923,7 @@ def api_cli_owner_reject() -> Any:
 
 @speakers_bp.route("/api/owner/ready", methods=["POST"])
 def api_cli_owner_ready() -> Any:
-    """Return owner-detection readiness; this may refresh provisional state."""
+    """Return cheap owner-detection readiness without running detection."""
     return jsonify(owner_detection_ready())
 
 

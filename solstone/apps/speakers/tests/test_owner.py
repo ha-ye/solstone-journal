@@ -102,6 +102,21 @@ def _candidate_path(journal: Path) -> Path:
     return journal / "awareness" / "owner_candidate.npz"
 
 
+def _write_confirmed_owner_centroid(env, *, cluster_size: int = 60) -> Path:
+    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+
+    principal_dir = env.create_entity("Self Person", is_principal=True)
+    centroid = _normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32))
+    np.savez_compressed(
+        principal_dir / "owner_centroid.npz",
+        centroid=centroid,
+        cluster_size=np.array(cluster_size, dtype=np.int32),
+        threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
+        last_refreshed_at=np.array("2026-03-15T12:00:00Z"),
+    )
+    return principal_dir / "owner_centroid.npz"
+
+
 def _normalize_rows(embeddings: np.ndarray) -> np.ndarray:
     norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
     return embeddings / np.where(norms == 0, 1.0, norms)
@@ -353,6 +368,20 @@ def test_detect_owner_no_candidate_pool_marks_no_cluster(speakers_env):
     assert get_current()["voiceprint"]["status"] == "no_cluster"
 
 
+def test_detect_owner_empty_candidate_pool_marks_no_cluster(speakers_env):
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    _write_candidate_pool(env.journal, [])
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "no_cluster"
+    assert result["reason"] == "pool_empty"
+    assert result["recommendation"] == "no_cluster"
+    assert get_current()["voiceprint"]["status"] == "no_cluster"
+
+
 def test_detect_owner_candidate_pool_ready(speakers_env):
     from solstone.apps.speakers.owner import detect_owner_candidate
 
@@ -372,6 +401,13 @@ def test_detect_owner_candidate_pool_ready(speakers_env):
         {1: _owner_embeddings(20, rng)},
         stream="sys",
     )
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "092000_300",
+        {1: _owner_embeddings(20, rng)},
+        stream="mic",
+    )
     _write_candidate_pool(
         env.journal,
         [
@@ -380,9 +416,10 @@ def test_detect_owner_candidate_pool_ready(speakers_env):
                 [
                     _source_segment("20240101", "090000_300", stream="mic"),
                     _source_segment("20240101", "091000_300", stream="sys"),
+                    _source_segment("20240101", "092000_300", stream="mic"),
                 ],
-                n_intervals=40,
-                total_duration_s=200.0,
+                n_intervals=60,
+                total_duration_s=300.0,
             )
         ],
     )
@@ -390,10 +427,27 @@ def test_detect_owner_candidate_pool_ready(speakers_env):
     result = detect_owner_candidate()
 
     assert result["status"] == "candidate"
-    assert result["cluster_size"] == 40
+    assert result["cluster_size"] == 60
     assert result["streams_represented"] == 2
     assert result["recommendation"] == "ready"
     assert len(result["samples"]) == 3
+    sample_segments = set()
+    for sample in result["samples"]:
+        assert {
+            "day",
+            "stream",
+            "segment_key",
+            "source",
+            "sentence_id",
+            "duration_s",
+            "audio_url",
+        } <= set(sample)
+        sample_segments.add((sample["day"], sample["stream"], sample["segment_key"]))
+        assert sample["audio_url"] == (
+            f"/app/speakers/api/serve_audio/{sample['day']}/"
+            f"{sample['stream']}/{sample['segment_key']}/{sample['source']}.flac"
+        )
+    assert len(sample_segments) == len(result["samples"])
     assert _candidate_path(env.journal).exists()
     assert get_current()["voiceprint"]["status"] == "candidate"
 
@@ -563,6 +617,68 @@ def test_low_quality_too_few_stmts_from_candidate_pool(speakers_env):
     assert not _candidate_path(env.journal).exists()
 
 
+def test_low_quality_median_duration_too_short_from_candidate_pool(speakers_env):
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: _owner_embeddings(40, np.random.default_rng(0))},
+        stream="mic",
+        duration_s=0.1,
+    )
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [_source_segment("20240101", "090000_300", stream="mic")],
+                n_intervals=40,
+            )
+        ],
+    )
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "low_quality"
+    assert result["source"] == "candidate_pool"
+    assert result["low_quality_reason"] == "median_duration_too_short"
+    assert get_current()["voiceprint"]["source"] == "candidate_pool"
+
+
+def test_low_quality_cluster_too_diffuse_from_candidate_pool(speakers_env):
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: _noise_embeddings(40, np.random.default_rng(0))},
+        stream="mic",
+        duration_s=5.0,
+    )
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [_source_segment("20240101", "090000_300", stream="mic")],
+                n_intervals=40,
+            )
+        ],
+    )
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "low_quality"
+    assert result["source"] == "candidate_pool"
+    assert result["low_quality_reason"] == "cluster_too_diffuse"
+    assert get_current()["voiceprint"]["source"] == "candidate_pool"
+
+
 def test_detect_owner_candidate_skips_noisy_source_segments(speakers_env):
     from solstone.apps.speakers.owner import detect_owner_candidate
 
@@ -604,6 +720,68 @@ def test_detect_owner_candidate_skips_noisy_source_segments(speakers_env):
     assert result["status"] == "candidate"
     assert result["cluster_size"] == 40
     assert result["recommendation"] == "single_stream"
+
+
+def test_detect_owner_candidate_missing_npz_after_wipe_marks_no_cluster(speakers_env):
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    seg_dir = _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: _owner_embeddings(40, np.random.default_rng(1))},
+        stream="mic",
+    )
+    (seg_dir / "mic_audio.npz").unlink()
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [_source_segment("20240101", "090000_300", stream="mic")],
+                n_intervals=40,
+            )
+        ],
+    )
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "no_cluster"
+    assert result["reason"] == "candidate_no_usable_embeddings"
+    assert get_current()["voiceprint"]["status"] == "no_cluster"
+
+
+def test_detect_owner_candidate_missing_segment_dir_marks_no_cluster(speakers_env):
+    import shutil
+
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    seg_dir = _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: _owner_embeddings(40, np.random.default_rng(1))},
+        stream="mic",
+    )
+    shutil.rmtree(seg_dir)
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [_source_segment("20240101", "090000_300", stream="mic")],
+                n_intervals=40,
+            )
+        ],
+    )
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "no_cluster"
+    assert result["reason"] == "candidate_no_usable_embeddings"
+    assert get_current()["voiceprint"]["status"] == "no_cluster"
 
 
 def test_detect_owner_candidate_reuses_persisted_candidate(speakers_env, monkeypatch):
@@ -652,19 +830,10 @@ def test_detect_owner_candidate_reuses_persisted_candidate(speakers_env, monkeyp
 
 
 def test_detect_owner_candidate_confirmed_short_circuit(speakers_env):
-    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
     from solstone.apps.speakers.owner import detect_owner_candidate
 
     env = speakers_env()
-    principal_dir = env.create_entity("Self Person", is_principal=True)
-    centroid = _normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32))
-    np.savez_compressed(
-        principal_dir / "owner_centroid.npz",
-        centroid=centroid,
-        cluster_size=np.array(60, dtype=np.int32),
-        threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
-        last_refreshed_at=np.array("2026-03-15T12:00:00Z"),
-    )
+    _write_confirmed_owner_centroid(env, cluster_size=60)
 
     result = detect_owner_candidate()
 
@@ -672,6 +841,36 @@ def test_detect_owner_candidate_confirmed_short_circuit(speakers_env):
     assert result["recommendation"] == "confirmed"
     assert result["cluster_size"] == 60
     assert result["samples"] == []
+    assert get_current()["voiceprint"]["status"] == "confirmed"
+    assert get_current()["voiceprint"]["cluster_size"] == 60
+
+
+def test_detect_owner_candidate_confirmed_short_circuit_idempotent(
+    speakers_env, monkeypatch
+):
+    from solstone.apps.speakers import owner as owner_module
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    _write_confirmed_owner_centroid(env, cluster_size=60)
+    update_state(
+        "voiceprint",
+        {
+            "status": "confirmed",
+            "cluster_size": 60,
+            "confirmed_at": "2026-03-15T12:00:00Z",
+        },
+    )
+
+    def fail_update_state(*args, **kwargs):
+        raise AssertionError("confirmed short-circuit rewrote awareness")
+
+    monkeypatch.setattr(owner_module, "update_state", fail_update_state)
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "confirmed"
+    assert result["cluster_size"] == 60
 
 
 def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
@@ -1472,6 +1671,7 @@ def test_api_owner_detect(speakers_env):
 
     with app.test_client() as client:
         response = client.post("/app/speakers/api/owner/detect")
+        status_response = client.get("/app/speakers/api/owner/status")
 
     data = response.get_json()
     assert response.status_code == 200
@@ -1479,6 +1679,8 @@ def test_api_owner_detect(speakers_env):
     assert data["cluster_size"] == 40
     assert data["streams_represented"] == 2
     assert data["recommendation"] == "ready"
+    assert status_response.status_code == 200
+    assert status_response.get_json()["status"] == "candidate"
 
 
 def test_api_owner_detect_no_pool_does_not_loop_needs_detection(speakers_env):
@@ -1506,6 +1708,7 @@ def test_api_owner_detect_no_pool_does_not_loop_needs_detection(speakers_env):
     assert detect_response.status_code == 200
     assert detect_response.get_json()["status"] == "no_cluster"
     assert second_status.status_code == 200
+    assert second_status.get_json()["status"] != "needs_detection"
     assert second_status.get_json()["status"] == "no_cluster"
 
 
@@ -1546,7 +1749,39 @@ def test_api_owner_detect_small_pool_does_not_loop_needs_detection(speakers_env)
     assert detect_response.get_json()["status"] == "low_quality"
     assert detect_response.get_json()["low_quality_reason"] == "too_few_stmts"
     assert second_status.status_code == 200
+    assert second_status.get_json()["status"] != "needs_detection"
     assert second_status.get_json()["status"] == "low_quality"
+
+
+def test_api_owner_detect_confirmed_centroid_repairs_awareness_no_loop(speakers_env):
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: _owner_embeddings(40, np.random.default_rng(1))},
+        stream="mic",
+    )
+    _write_confirmed_owner_centroid(env, cluster_size=60)
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        first_status = client.get("/app/speakers/api/owner/status")
+        detect_response = client.post("/app/speakers/api/owner/detect")
+        second_status = client.get("/app/speakers/api/owner/status")
+
+    assert first_status.status_code == 200
+    assert first_status.get_json()["status"] == "needs_detection"
+    assert detect_response.status_code == 200
+    assert detect_response.get_json()["status"] == "confirmed"
+    assert get_current()["voiceprint"]["status"] == "confirmed"
+    assert second_status.status_code == 200
+    assert second_status.get_json()["status"] != "needs_detection"
+    assert second_status.get_json()["status"] == "confirmed"
 
 
 def test_api_owner_status_does_not_detect_or_materialize_embeddings(
