@@ -25,13 +25,15 @@ A journal is the on-disk record of captures, extracts, facet data, app storage, 
 
 ```
 ┌──────────────────────┐
-│ LAYER 3: OUTPUTS     │ talents/*.md, segment *.md
+│ LAYER 3: OUTPUTS     │ talents/<name>.md or .json
 ├──────────────────────┤
 │ LAYER 2: EXTRACTS    │ *.jsonl transcripts, frames, events
 ├──────────────────────┤
 │ LAYER 1: CAPTURES    │ audio/video files
 └──────────────────────┘
 ```
+
+Talent JSON outputs are rendered to text through the formatter registry.
 
 For the full pipeline, see [captures](references/captures.md).
 

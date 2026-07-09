@@ -186,8 +186,6 @@ def format_document_analysis(
     _append_section(lines, "Summary", _clean(document.get("summary")))
 
     markdown = "\n".join(lines).strip()
-    if not markdown:
-        return [], meta
     return [{"markdown": markdown, "timestamp": 0, "source": document}], meta
 
 
@@ -235,8 +233,6 @@ def format_screen_record(
     lines.extend(entity_lines or ["Not specified"])
 
     markdown = "\n".join(lines).strip()
-    if not markdown:
-        return [], meta
     return [{"markdown": markdown, "timestamp": 0, "source": record}], meta
 
 
@@ -250,14 +246,6 @@ def _render_json_projection(path: Path) -> str | None:
         chunk["markdown"] for chunk in chunks if isinstance(chunk.get("markdown"), str)
     ).strip()
     return rendered or None
-
-
-def _journal_rel(path: Path) -> str | None:
-    try:
-        return journal_relative_path(Path(get_journal()).resolve(), path.resolve())
-    except ValueError:
-        logger.warning("talent output is outside journal: %s", path, exc_info=True)
-        return None
 
 
 def iter_talent_text_projections(
@@ -281,8 +269,10 @@ def iter_talent_text_projections(
         json_path = talents_dir / f"{key}.json"
         md_path = talents_dir / f"{key}.md"
         if json_path.is_file():
-            rel_path = _journal_rel(json_path)
-            if rel_path is not None and get_formatter(rel_path) is not None:
+            rel_path = journal_relative_path(
+                Path(get_journal()).resolve(), json_path.resolve()
+            )
+            if get_formatter(rel_path) is not None:
                 rendered = _render_json_projection(json_path)
                 if rendered:
                     yield TalentTextProjection(

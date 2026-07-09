@@ -86,7 +86,7 @@ Fields:
 
 "Raw media" means layer 1 capture files only: audio files (`.flac`, `.opus`, `.ogg`, `.m4a`, `.wav`), video files (`.webm`, `.mov`, `.mp4`), and screen diffs (`monitor_*_diff.png`).
 
-All layer 2 and layer 3 content is always preserved regardless of retention policy: transcripts (`audio.jsonl`, `screen.jsonl`), talent outputs (`talents/*.md`), speaker labels (`talents/speaker_labels.json`), historical facet events (`events/*.jsonl`), entity data, segment metadata (`stream.json`), and search index entries.
+All layer 2 and layer 3 content is always preserved regardless of retention policy: transcripts (`audio.jsonl`, `screen.jsonl`), talent outputs (`talents/<name>.md` or `talents/<name>.json`, depending on the declared `output` format; JSON outputs are rendered to text through the formatter registry), speaker labels (`talents/speaker_labels.json`), historical facet events (`events/*.jsonl`), entity data, segment metadata (`stream.json`), and search index entries.
 
 Raw media is never deleted from segments that haven't finished processing. A segment is considered complete only when all four checks pass:
 

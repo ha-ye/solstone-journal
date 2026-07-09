@@ -7,9 +7,9 @@ solstone transforms raw recordings into actionable understanding through a three
 ```
 ┌─────────────────────────────────────┐
 │  LAYER 3: AGENT OUTPUTS             │  Narrative summaries
-│  (Markdown files)                   │  "What it means"
-│  - talents/*.md (daily outputs)     │
-│  - *.md (segment outputs)           │
+│  (.md/.json files)                  │  "What it means"
+│  - talents/<name>.md or .json (day) │
+│  - talents/<name>.md or .json (seg) │
 └─────────────────────────────────────┘
          ↑ synthesized from
 ┌─────────────────────────────────────┐
@@ -36,7 +36,7 @@ solstone transforms raw recordings into actionable understanding through a three
 |------|------------|----------|
 | **Capture** | Raw audio/video recording | `*.flac`, `*.ogg`, `*.opus`, `*.wav`, `*.webm` |
 | **Extract** | Structured data from captures | `*.jsonl` |
-| **Agent Output** | AI-generated narrative summary | `talents/*.md`, `HHMMSS_LEN/*.md` |
+| **Agent Output** | AI-generated narrative summary | `talents/<name>.md` or `talents/<name>.json`; segment outputs use the segment's `talents/` directory |
 
 **Organization**
 
@@ -275,11 +275,11 @@ These persisted historical files still allow the indexer to collect and search e
 
 ## Layer 3: Agent Outputs
 
-Agent outputs are AI-generated markdown files that provide human-readable narratives synthesized from captures and extracts.
+Agent outputs are AI-generated `.md` or `.json` files that provide human-readable narratives synthesized from captures and extracts. JSON outputs are rendered to text through the formatter registry.
 
 ### Segment outputs
 
-After captures are processed, segment-level outputs are generated within each segment folder as `HHMMSS_LEN/*.md` files. Available segment output types are defined by templates in `solstone/talent/` with `"schedule": "segment"` in their metadata JSON.
+After captures are processed, segment-level outputs are generated within each segment folder as `talents/<name>.md` or `talents/<name>.json`, depending on the talent's declared `output` format. Available segment output types are defined by templates in `solstone/talent/` with `"schedule": "segment"` in their metadata JSON.
 
 ### Daily outputs
 
@@ -292,9 +292,9 @@ Post-processing generates day-level outputs in the `talents/` directory that syn
 Each template is a `.md` file with JSON frontmatter containing metadata (title, description, schedule, output format). The `schedule` field is required and must be `"segment"` or `"daily"` - generators with missing or invalid schedule are skipped. Use `get_talent_configs(has_tools=False)` from `solstone/think/talent.py` to retrieve all available generators, or `get_talent_configs(has_tools=False, schedule="daily")` to get generators filtered by schedule.
 
 **Output naming:**
-- System outputs: `talents/{agent}.md` (e.g., `talents/briefing.md`, `talents/default.md`)
-- App outputs: `talents/_{app}_{agent}.md` (e.g., `talents/_entities_observer.md`)
-- JSON output: `talents/{agent}.json` when metadata specifies `"output": "json"`
+- System outputs: `talents/{agent}.md` or `talents/{agent}.json`, depending on declared `output`
+- App outputs: `talents/_{app}_{agent}.md` or `talents/_{app}_{agent}.json`, depending on declared `output`
+- JSON outputs are rendered to text through the formatter registry
 - Story fields (`story`, `commitments`, `closures`, `decisions`) live on the activity record in `facets/{facet}/activities/{day}.jsonl`
 
 Each generator type has a corresponding template file (`{name}.md`) that defines how the AI synthesizes extracts into narrative form.

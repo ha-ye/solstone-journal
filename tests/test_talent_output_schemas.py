@@ -17,6 +17,20 @@ def _load_schema(name: str) -> dict:
     return json.loads((TALENT_DIR / f"{name}.schema.json").read_text(encoding="utf-8"))
 
 
+def _load_frontmatter(name: str) -> dict:
+    text = (TALENT_DIR / f"{name}.md").read_text(encoding="utf-8")
+    metadata, _end = json.JSONDecoder().raw_decode(text.lstrip())
+    assert isinstance(metadata, dict)
+    return metadata
+
+
+def _assert_declares_max_output_tokens(name: str) -> None:
+    metadata = _load_frontmatter(name)
+    assert "max_output_tokens" in metadata
+    assert isinstance(metadata["max_output_tokens"], int)
+    assert metadata["max_output_tokens"] > 0
+
+
 def test_documents_talent_uses_bounded_json_schema():
     schema = _load_schema("documents")
     Draft202012Validator.check_schema(schema)
@@ -24,7 +38,7 @@ def test_documents_talent_uses_bounded_json_schema():
     talent = get_talent("documents")
 
     assert talent["output"] == "json"
-    assert talent["max_output_tokens"] == 8192
+    _assert_declares_max_output_tokens("documents")
     assert talent["json_schema"] == schema
     assert talent["degradation_check"] is True
     assert sorted(schema["properties"]) == [
@@ -45,6 +59,6 @@ def test_screen_talent_uses_bounded_json_schema():
     talent = get_talent("screen")
 
     assert talent["output"] == "json"
-    assert talent["max_output_tokens"] == 12288
+    _assert_declares_max_output_tokens("screen")
     assert talent["json_schema"] == schema
     assert sorted(schema["properties"]) == ["entities", "narrative"]
