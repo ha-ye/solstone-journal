@@ -43,6 +43,7 @@ from solstone.think.catchup_state import (
     KIND_SEGMENT_REPAIR,
     STUCK_THRESHOLD,
     day_eligible_to_drain,
+    read_catchup_state,
     reconcile_interrupted_attempts,
     record_attempt,
     record_outcome,
@@ -101,6 +102,7 @@ REACTIVE_TASK_CAPS = {
     "importer": 3600,  # 1h importer
 }
 GATE_TICK_INTERVAL_S = 60
+CATCHUP_RETRY_TICK_INTERVAL_S = 60
 MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
 CONVEY_READY_WINDOW_SECONDS = 60.0
@@ -235,6 +237,9 @@ _SERVICE_LIFECYCLE_VERBS = {
 shutdown_requested = False
 _last_sync_tick: float = 0.0
 _last_gate_tick: float = 0.0
+_last_catchup_retry_tick: float = 0.0
+# Wall-clock of the last catchup-retry evaluation; 0.0 means unseeded.
+_catchup_retry_watermark: float = 0.0
 _last_sync_snapshot: "SyncCheckSnapshot | None" = None
 _sync_conflict_shutdown: bool = False
 # Supervisor identity (set in main() once ref is assigned)
@@ -3176,6 +3181,74 @@ def _run_gate_tick(now: float) -> None:
     run_catchup_drain()
 
 
+def _read_catchup_retry_expiries() -> list[float]:
+    """Read the wall-clock times at which backed-off days become drain-eligible.
+
+    Mirrors run_catchup_drain's gate, which requires a day to be drainable for
+    both the daily-catchup and segment-repair kinds, so a day's eligibility time
+    is the later of its two retry times. A day with an active record can never
+    become eligible by expiry alone, and a day with no future retry time is
+    already eligible; neither contributes a crossing.
+
+    This reads catchup-state.json and nothing else -- in particular it never
+    reaches read_raw_input_fingerprint, whose per-segment hashing is the IO tax
+    this cheap gate exists to avoid.
+    """
+    entries = read_catchup_state()["entries"]
+    blocked: set[str] = set()
+    retries: dict[str, float] = {}
+
+    for key, record in entries.items():
+        day, _, kind = key.rpartition(":")
+        if kind not in (KIND_DAILY_CATCHUP, KIND_SEGMENT_REPAIR):
+            continue
+        if record.get("active"):
+            blocked.add(day)
+            continue
+        retry = float(record.get("next_retry_at") or 0)
+        if retry > 0:
+            retries[day] = max(retries.get(day, 0.0), retry)
+
+    return [retry for day, retry in retries.items() if day not in blocked]
+
+
+def _run_catchup_retry_tick(now: float) -> None:
+    """Re-fire the catchup drain when a backed-off day's retry time passes.
+
+    Live mode has no drain trigger between midnights, so a day that was still
+    inside its backoff window at rollover waited ~24h for its next chance.
+    Deferred mode is already served by _run_gate_tick.
+    """
+    global _last_catchup_retry_tick, _catchup_retry_watermark
+
+    if now - _last_catchup_retry_tick < CATCHUP_RETRY_TICK_INTERVAL_S:
+        return
+    _last_catchup_retry_tick = now
+    if _is_remote_mode:
+        return
+    if load_processing_settings().mode == "deferred":
+        return
+
+    expiries = _read_catchup_retry_expiries()
+
+    # Seed on the first evaluation rather than firing: _startup_catchup_drain()
+    # already covered every day whose retry expired before the supervisor came up.
+    if _catchup_retry_watermark == 0.0:
+        _catchup_retry_watermark = now
+        return
+
+    fired = any(_catchup_retry_watermark < expiry <= now for expiry in expiries)
+    _catchup_retry_watermark = now
+    if not fired:
+        return
+
+    # Today is perpetually "updated" while recording, and draining it mid-day
+    # records a non-completion, pushing today into backoff churn and crowding the
+    # freshest-days cap that the stuck older days need.
+    today_str = datetime.now().date().strftime("%Y%m%d")
+    run_catchup_drain(exclude={today_str})
+
+
 _FATAL_TICK_EXCEPTIONS = (KeyboardInterrupt, asyncio.CancelledError, SystemExit)
 
 # Consecutive-duplicate suppression for tick-step failure logging.
@@ -3230,10 +3303,13 @@ async def supervise(
     and checks scheduled agents.
     """
     global _last_gate_tick, _last_sync_tick
+    global _last_catchup_retry_tick, _catchup_retry_watermark
     global _last_sync_snapshot, _sync_conflict_shutdown
 
     last_status_emit = 0.0
     _last_gate_tick = 0.0
+    _last_catchup_retry_tick = 0.0
+    _catchup_retry_watermark = 0.0
     reset_display_powersave_monitor()
     _last_sync_tick = 0.0
     _last_sync_snapshot = None
@@ -3280,6 +3356,9 @@ async def supervise(
             if daily:
                 _guarded_tick_step("handle_daily_tasks", handle_daily_tasks)
                 _guarded_tick_step("run_gate_tick", lambda: _run_gate_tick(now))
+                _guarded_tick_step(
+                    "run_catchup_retry_tick", lambda: _run_catchup_retry_tick(now)
+                )
 
             # Check periodic task schedules (non-blocking, submits via callosum)
             if schedule:
