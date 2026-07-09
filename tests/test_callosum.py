@@ -7,6 +7,12 @@ These tests use mocks to test logic in isolation without real I/O.
 """
 
 import logging
+import queue
+import shutil
+import socket
+import tempfile
+import threading
+import time
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -24,6 +30,33 @@ def journal_path(tmp_path, monkeypatch):
     yield journal
 
 
+@pytest.fixture
+def short_callosum_server(monkeypatch):
+    """Start Callosum under a short /tmp path to avoid Unix socket path limits."""
+    tmp_dir = tempfile.mkdtemp(dir="/tmp", prefix="callosum_")
+    tmp_path = Path(tmp_dir)
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    server = CallosumServer()
+    server_thread = threading.Thread(target=server.start, daemon=True)
+    server_thread.start()
+
+    socket_path = tmp_path / "health" / "callosum.sock"
+    for _ in range(50):
+        if socket_path.exists():
+            break
+        time.sleep(0.1)
+    else:
+        pytest.fail("Callosum server did not start in time")
+
+    yield server
+
+    server.stop()
+    server_thread.join(timeout=2)
+    shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def test_server_broadcast_validates_tract_field():
     """Test that messages without tract field are rejected."""
     server = CallosumServer()
@@ -35,6 +68,277 @@ def test_server_broadcast_validates_tract_field():
     assert result is False
     # Should not be queued
     assert server.broadcast_queue.qsize() == 0
+
+
+def test_client_inbound_flood_receives_300kb_under_5s(short_callosum_server):
+    server = short_callosum_server
+    total_messages = 1024
+    payload = "x" * 300
+    received = 0
+    lock = threading.Lock()
+    all_received = threading.Event()
+
+    def callback(message):
+        nonlocal received
+        if message.get("tract") != "flood":
+            return
+        with lock:
+            received += 1
+            if received == total_messages:
+                all_received.set()
+
+    client = CallosumConnection()
+    client.start(callback=callback)
+    try:
+        for _ in range(50):
+            if server.client_count() >= 1:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("Callosum client did not connect in time")
+
+        start = time.monotonic()
+        for index in range(total_messages):
+            assert server.broadcast(
+                {
+                    "tract": "flood",
+                    "event": "chunk",
+                    "index": index,
+                    "payload": payload,
+                }
+            )
+
+        finished = all_received.wait(timeout=5.0)
+        elapsed = time.monotonic() - start
+
+        with lock:
+            count = received
+        assert finished, (
+            f"received {count}/{total_messages} callbacks in {elapsed:.2f}s"
+        )
+    finally:
+        client.stop()
+
+
+def test_client_emit_during_inbound_flood_reaches_server_under_2s(
+    short_callosum_server,
+):
+    server = short_callosum_server
+    inbound_started = threading.Event()
+    outbound_received = threading.Event()
+    stop_producer = threading.Event()
+    inbound_count = 0
+    lock = threading.Lock()
+
+    def callback(message):
+        nonlocal inbound_count
+        if message.get("tract") == "flood":
+            with lock:
+                inbound_count += 1
+                if inbound_count >= 20:
+                    inbound_started.set()
+        elif message.get("tract") == "probe" and message.get("event") == "mid_flood":
+            outbound_received.set()
+
+    client = CallosumConnection()
+    client.start(callback=callback)
+
+    def producer():
+        index = 0
+        while not stop_producer.is_set():
+            server.broadcast(
+                {
+                    "tract": "flood",
+                    "event": "chunk",
+                    "index": index,
+                    "payload": "x" * 300,
+                }
+            )
+            index += 1
+            time.sleep(0.001)
+
+    producer_thread = threading.Thread(target=producer, daemon=True)
+    try:
+        for _ in range(50):
+            if server.client_count() >= 1:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("Callosum client did not connect in time")
+
+        producer_thread.start()
+        assert inbound_started.wait(timeout=2.0)
+
+        start = time.monotonic()
+        assert client.emit("probe", "mid_flood")
+        assert outbound_received.wait(timeout=2.0)
+        assert time.monotonic() - start < 2.0
+    finally:
+        stop_producer.set()
+        producer_thread.join(timeout=2)
+        client.stop()
+
+
+def test_client_receives_during_outbound_flood(short_callosum_server):
+    server = short_callosum_server
+    inbound_received = threading.Event()
+    stop_producer = threading.Event()
+    inbound_count = 0
+    lock = threading.Lock()
+
+    def callback(message):
+        nonlocal inbound_count
+        if message.get("tract") != "inbound":
+            return
+        with lock:
+            inbound_count += 1
+            if inbound_count >= 20:
+                inbound_received.set()
+
+    client = CallosumConnection()
+    client.start(callback=callback)
+
+    def producer():
+        index = 0
+        while not stop_producer.is_set():
+            try:
+                client.send_queue.put_nowait(
+                    {"tract": "outbound", "event": "flood", "index": index}
+                )
+                index += 1
+            except queue.Full:
+                time.sleep(0.001)
+
+    producer_thread = threading.Thread(target=producer, daemon=True)
+    try:
+        for _ in range(50):
+            if server.client_count() >= 1:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("Callosum client did not connect in time")
+
+        producer_thread.start()
+        for index in range(20):
+            assert server.broadcast(
+                {"tract": "inbound", "event": "probe", "index": index}
+            )
+
+        assert inbound_received.wait(timeout=2.0)
+    finally:
+        stop_producer.set()
+        producer_thread.join(timeout=2)
+        client.stop()
+
+
+def test_client_disconnected_idle_blocks_and_drops_emit(tmp_path, monkeypatch, caplog):
+    client = CallosumConnection(socket_path=tmp_path / "missing.sock")
+    original_wait = client.stop_event.wait
+    wait_calls = 0
+
+    def counted_wait(timeout=None):
+        nonlocal wait_calls
+        wait_calls += 1
+        return original_wait(timeout)
+
+    monkeypatch.setattr(client.stop_event, "wait", counted_wait)
+
+    with caplog.at_level(logging.INFO, logger="solstone.think.callosum"):
+        client.start()
+        try:
+            time.sleep(0.25)
+            assert client.emit("test", "event")
+            deadline = time.monotonic() + 1.0
+            while "Dropping message (not connected): test/event" not in caplog.text:
+                if time.monotonic() > deadline:
+                    pytest.fail("disconnected emit was not dropped in time")
+                time.sleep(0.01)
+        finally:
+            client.stop()
+
+    assert 1 <= wait_calls <= 20
+
+
+def test_client_does_not_join_partial_json_across_reconnect():
+    client = CallosumConnection()
+    delivered = []
+
+    read1, write1 = socket.socketpair()
+    read2, write2 = socket.socketpair()
+    write1.sendall(b"xx")
+    write2.sendall(b"x")
+
+    sock1 = Mock()
+    sock2 = Mock()
+    sock1.fileno.return_value = read1.fileno()
+    sock2.fileno.return_value = read2.fileno()
+
+    first_calls = 0
+
+    def recv_first(_n):
+        nonlocal first_calls
+        read1.recv(1)
+        first_calls += 1
+        if first_calls == 1:
+            return b'{"tract":"split"'
+        return b""
+
+    def recv_second(_n):
+        read2.recv(1)
+        client.stop_event.set()
+        return b',"event":"joined"}\n'
+
+    sock1.recv.side_effect = recv_first
+    sock2.recv.side_effect = recv_second
+
+    times = iter([2.0, 4.0, 6.0, 8.0, 10.0])
+    try:
+        with (
+            patch("solstone.think.callosum.socket.socket", side_effect=[sock1, sock2]),
+            patch("solstone.think.callosum.time.time", side_effect=lambda: next(times)),
+        ):
+            client.start(callback=delivered.append)
+            if client.thread is not None:
+                client.thread.join(timeout=1.0)
+        assert delivered == []
+    finally:
+        for handle in (read1, write1, read2, write2):
+            handle.close()
+
+
+def test_client_callback_exception_does_not_kill_thread(short_callosum_server, caplog):
+    server = short_callosum_server
+    delivered = []
+    second_received = threading.Event()
+
+    def callback(message):
+        if message.get("tract") != "callback":
+            return
+        delivered.append(message["event"])
+        if message["event"] == "first":
+            raise RuntimeError("boom")
+        if message["event"] == "second":
+            second_received.set()
+
+    client = CallosumConnection()
+    client.start(callback=callback)
+    try:
+        for _ in range(50):
+            if server.client_count() >= 1:
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("Callosum client did not connect in time")
+
+        with caplog.at_level(logging.ERROR, logger="solstone.think.callosum"):
+            assert server.broadcast({"tract": "callback", "event": "first"})
+            assert server.broadcast({"tract": "callback", "event": "second"})
+            assert second_received.wait(timeout=2.0)
+
+        assert delivered == ["first", "second"]
+        assert "Callback error: boom" in caplog.text
+    finally:
+        client.stop()
 
 
 def test_server_broadcast_validates_event_field():
@@ -186,18 +490,25 @@ def test_client_emit_returns_false_when_queue_full():
 def test_client_run_loop_warns_on_utf8_split(caplog):
     client = CallosumConnection()
     mock_sock = Mock()
+    read_sock, write_sock = socket.socketpair()
+    write_sock.sendall(b"x")
+    mock_sock.fileno.return_value = read_sock.fileno()
 
     def fake_recv(_n):
         client.stop_event.set()  # loop exits at next queue-drain
         return "⚠️".encode("utf-8")[:1]
 
     mock_sock.recv.side_effect = fake_recv
-    with (
-        patch("solstone.think.callosum.socket.socket", return_value=mock_sock),
-        patch("solstone.think.callosum.time.time", return_value=2.0),
-        caplog.at_level(logging.WARNING, logger="solstone.think.callosum"),
-    ):
-        client._run_loop()
+    try:
+        with (
+            patch("solstone.think.callosum.socket.socket", return_value=mock_sock),
+            patch("solstone.think.callosum.time.time", return_value=2.0),
+            caplog.at_level(logging.WARNING, logger="solstone.think.callosum"),
+        ):
+            client._run_loop()
+    finally:
+        read_sock.close()
+        write_sock.close()
     assert "utf-8 split" in caplog.text
     assert "[client]" in caplog.text
     assert any(r.levelno == logging.WARNING for r in caplog.records)

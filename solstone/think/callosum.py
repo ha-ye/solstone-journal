@@ -10,6 +10,7 @@ broadcast protocol. All messages require 'tract' and 'event' fields.
 import json
 import logging
 import queue
+import select
 import socket
 import sys
 import threading
@@ -20,6 +21,13 @@ from typing import Any, Callable
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)
+
+_CLIENT_IDLE_BLOCK_S = 0.1
+_CLIENT_SEND_TIMEOUT_S = 0.1
+_CLIENT_RECONNECT_INTERVAL_S = 1.0
+_CLIENT_MAX_SENDS_PER_ITERATION = 64
+_CLIENT_MAX_RECV_CHUNKS_PER_ITERATION = 8
+_CLIENT_RECV_CHUNK_BYTES = 4096
 
 
 class CallosumServer:
@@ -303,69 +311,113 @@ class CallosumConnection:
         buffer = ""
         last_connect_attempt = 0.0
 
-        while True:
-            # Try to connect if not connected (rate limited to 1/sec)
-            if not sock and time.time() - last_connect_attempt > 1.0:
-                try:
-                    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    sock.connect(str(self.socket_path))
-                    sock.settimeout(0.1)  # Short timeout for responsive queue draining
-                except Exception as e:
-                    logger.info(f"Connection attempt failed to {self.socket_path}: {e}")
-                    if sock:
-                        try:
-                            sock.close()
-                        except Exception:
-                            pass
-                        sock = None
-                    last_connect_attempt = time.time()
-
-            # ALWAYS drain queue (send if connected, drop if not)
+        def close_sock() -> None:
+            nonlocal sock
+            if sock is None:
+                return
             try:
-                msg = self.send_queue.get(timeout=0.1)
-                if sock:
-                    try:
-                        line = json.dumps(msg) + "\n"
-                        sock.sendall(line.encode("utf-8"))
-                    except Exception as e:
-                        detail = ""
-                        if msg.get("tract") == "logs" and msg.get("event") == "line":
-                            detail = f": {msg.get('line', '')[:100]}"
-                        logger.info(
-                            f"Send {e} for {msg.get('tract')}/{msg.get('event')}{detail}"
-                        )
-                        try:
-                            sock.close()
-                        except Exception:
-                            pass
-                        sock = None
-                else:
-                    # Not connected, drop message
-                    logger.info(
-                        f"Dropping message (not connected): "
-                        f"{msg.get('tract')}/{msg.get('event')}"
-                    )
-            except queue.Empty:
-                # Queue is empty - check if we should exit
-                if self.stop_event.is_set():
-                    break
-                # Otherwise continue to receive
+                sock.close()
+            except Exception:
+                pass
+            sock = None
 
-            # Receive incoming messages (only if connected)
+        def reset_connection() -> None:
+            nonlocal buffer
+            close_sock()
+            buffer = ""
+
+        def maybe_reconnect() -> None:
+            nonlocal last_connect_attempt, sock
+            if sock is not None:
+                return
+            now = time.time()
+            if now - last_connect_attempt <= _CLIENT_RECONNECT_INTERVAL_S:
+                return
+            last_connect_attempt = now
+            new_sock: socket.socket | None = None
+            try:
+                new_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                new_sock.connect(str(self.socket_path))
+                new_sock.settimeout(
+                    _CLIENT_SEND_TIMEOUT_S
+                )  # Bound sendall backpressure before reconnecting.
+                sock = new_sock
+            except Exception as e:
+                logger.info(f"Connection attempt failed to {self.socket_path}: {e}")
+                if new_sock:
+                    try:
+                        new_sock.close()
+                    except Exception:
+                        pass
+
+        def send_or_drop(msg: dict[str, Any]) -> None:
             if sock:
                 try:
-                    data = sock.recv(4096)
+                    line = json.dumps(msg) + "\n"
+                    sock.sendall(line.encode("utf-8"))
+                except Exception as e:
+                    detail = ""
+                    if msg.get("tract") == "logs" and msg.get("event") == "line":
+                        detail = f": {msg.get('line', '')[:100]}"
+                    logger.info(
+                        f"Send {e} for {msg.get('tract')}/{msg.get('event')}{detail}"
+                    )
+                    close_sock()
+            else:
+                # Not connected, drop message
+                logger.info(
+                    f"Dropping message (not connected): "
+                    f"{msg.get('tract')}/{msg.get('event')}"
+                )
+
+        def drain_all_queued() -> None:
+            while True:
+                try:
+                    msg = self.send_queue.get_nowait()
+                except queue.Empty:
+                    break
+                send_or_drop(msg)
+
+        def drain_sends_bounded() -> bool:
+            sent = False
+            for _ in range(_CLIENT_MAX_SENDS_PER_ITERATION):
+                try:
+                    msg = self.send_queue.get_nowait()
+                except queue.Empty:
+                    break
+                sent = True
+                send_or_drop(msg)
+            return sent
+
+        def handle_receive_error(error: Exception) -> None:
+            logger.info(f"Receive error: {error}")
+            reset_connection()
+
+        def drain_recv_bounded() -> bool:
+            nonlocal buffer, sock
+            if sock is None:
+                return False
+            received = False
+            chunks = 0
+            while chunks < _CLIENT_MAX_RECV_CHUNKS_PER_ITERATION and sock is not None:
+                try:
+                    readable, _, _ = select.select([sock], [], [], 0)
+                except Exception as e:
+                    handle_receive_error(e)
+                    return True
+                if not readable:
+                    break
+
+                try:
+                    data = sock.recv(_CLIENT_RECV_CHUNK_BYTES)
                     if not data:
                         # Connection closed by server
                         logger.debug("Connection closed by server")
-                        try:
-                            sock.close()
-                        except Exception:
-                            pass
-                        sock = None
-                        buffer = ""  # Clear partial data from old connection
-                        continue
+                        reset_connection()
+                        return True
 
+                    received = True
+                    chunks += 1
                     buffer += data.decode("utf-8")
                     while "\n" in buffer:
                         line, buffer = buffer.split("\n", 1)
@@ -377,35 +429,44 @@ class CallosumConnection:
                                 pass  # Silent failure - avoid feedback loops
                             except Exception as e:
                                 logger.error(f"Callback error: {e}")
-                except socket.timeout:
-                    continue  # Normal, just loop back to drain queue
+                except (BlockingIOError, TimeoutError):
+                    # select said readable, so this is only for races and mocks.
+                    break
                 except UnicodeDecodeError as e:
                     logger.warning(
                         f"utf-8 split decode drop [client] fd={sock.fileno()}: "
                         f"dropping {len(data)}-byte chunk, resetting connection "
                         f"(pos {e.start}-{e.end}, {e.reason})"
                     )
-                    try:
-                        sock.close()
-                    except Exception:
-                        pass
-                    sock = None
-                    buffer = ""
+                    reset_connection()
+                    return True
                 except Exception as e:
-                    logger.info(f"Receive error: {e}")
-                    try:
-                        sock.close()
-                    except Exception:
-                        pass
-                    sock = None
-                    buffer = ""  # Clear partial data from old connection
+                    handle_receive_error(e)
+                    return True
+            return received
+
+        def block_briefly() -> None:
+            if sock:
+                try:
+                    select.select([sock], [], [], _CLIENT_IDLE_BLOCK_S)
+                except Exception as e:
+                    handle_receive_error(e)
+            else:
+                self.stop_event.wait(_CLIENT_IDLE_BLOCK_S)
+
+        while True:
+            if self.stop_event.is_set():
+                drain_all_queued()
+                break
+
+            maybe_reconnect()
+            sent = drain_sends_bounded()
+            received = drain_recv_bounded()
+            if not sent and not received:
+                block_briefly()
 
         # Cleanup on stop
-        if sock:
-            try:
-                sock.close()
-            except Exception:
-                pass
+        close_sock()
 
     def emit(self, tract: str, event: str, **fields) -> bool:
         """Emit message via send queue.
