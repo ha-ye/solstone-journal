@@ -117,11 +117,13 @@ def test_discover_categories_attaches_meeting_schema():
     expected = _load_schema()
 
     assert describe_mod.CATEGORIES["meeting"]["json_schema"] == expected
-    assert [
+    assert {
+        name for name, meta in describe_mod.CATEGORIES.items() if "json_schema" in meta
+    } == {
         name
         for name, meta in describe_mod.CATEGORIES.items()
-        if name != "meeting" and "json_schema" in meta
-    ] == []
+        if meta["output"] == "json"
+    }
 
 
 @pytest.mark.asyncio

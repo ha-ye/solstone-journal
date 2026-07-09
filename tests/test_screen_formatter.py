@@ -438,7 +438,35 @@ def test_format_screen_uses_meeting_formatter():
 
 def test_format_screen_falls_back_for_missing_formatter():
     """Test that categories without .py formatter use default formatting."""
+    category = "nonexistent_category"
     frames = [
+        {
+            "timestamp": 0,
+            "analysis": {
+                "primary": category,
+                "visual_description": "Synthetic category content",
+            },
+            "content": {
+                # Synthetic category ensures no real category can grow a formatter
+                # and accidentally stop exercising _load_category_formatter -> None.
+                category: "# Example Page\n\nVisible text",
+            },
+        },
+    ]
+
+    context = {"include_entity_context": False}
+
+    chunks, meta = format_screen(frames, context)
+    markdown = chunks[0]["markdown"]
+
+    # Should use default text formatting
+    assert "**Nonexistent_Category:**" in markdown
+    assert "# Example Page" in markdown
+
+
+def test_format_screen_preserves_legacy_and_json_messaging_content():
+    """Test that legacy messaging strings and JSON dicts both render."""
+    legacy_frames = [
         {
             "timestamp": 0,
             "analysis": {
@@ -450,15 +478,106 @@ def test_format_screen_falls_back_for_missing_formatter():
             },
         },
     ]
+    json_frames = [
+        {
+            "timestamp": 0,
+            "analysis": {
+                "primary": "messaging",
+                "visual_description": "Chat app",
+            },
+            "content": {
+                "messaging": {
+                    "app": "Signal",
+                    "thread": "Bluesky Board ++",
+                    "view": "conversation",
+                    "messages": [
+                        {
+                            "sender": "Alice",
+                            "timestamp": "2:34 PM",
+                            "subject": None,
+                            "text": "Hello!",
+                        }
+                    ],
+                },
+            },
+        },
+    ]
 
-    context = {"include_entity_context": False}
+    legacy_chunks, _meta = format_screen(
+        legacy_frames, {"include_entity_context": False}
+    )
+    json_chunks, _meta = format_screen(json_frames, {"include_entity_context": False})
 
-    chunks, meta = format_screen(frames, context)
-    markdown = chunks[0]["markdown"]
+    legacy_markdown = legacy_chunks[0]["markdown"]
+    json_markdown = json_chunks[0]["markdown"]
+    assert "**Messaging:**" in legacy_markdown
+    assert "**Alice**: Hello!" in legacy_markdown
+    assert "```json" not in legacy_markdown
+    assert "**Messaging** (Signal - Bluesky Board ++)" in json_markdown
+    assert "**Alice** (2:34 PM): Hello!" in json_markdown
+    assert "```json" not in json_markdown
 
-    # Should use default text formatting
-    assert "**Messaging:**" in markdown
-    assert "**Alice**: Hello!" in markdown
+
+def test_format_screen_preserves_legacy_and_json_calendar_content():
+    """Test that legacy calendar strings and JSON dicts both render."""
+    legacy_frames = [
+        {
+            "timestamp": 0,
+            "analysis": {
+                "primary": "calendar",
+                "visual_description": "Calendar app",
+            },
+            "content": {
+                "calendar": "# [Google Calendar - Week]\n**Monday**: Planning",
+            },
+        },
+    ]
+    json_frames = [
+        {
+            "timestamp": 0,
+            "analysis": {
+                "primary": "calendar",
+                "visual_description": "Calendar app",
+            },
+            "content": {
+                "calendar": {
+                    "app": "Google Calendar",
+                    "view": "week",
+                    "range": "Apr 13 - Apr 19, 2026",
+                    "events": [
+                        {
+                            "title": "Planning",
+                            "start": "Mon 9:00 AM",
+                            "end": "10:00 AM",
+                            "location": None,
+                            "conferencing": None,
+                            "guests": [],
+                            "status": "unknown",
+                            "recurrence": None,
+                            "calendar": "Work",
+                            "description": None,
+                        }
+                    ],
+                    "availability": [],
+                    "notes": None,
+                },
+            },
+        },
+    ]
+
+    legacy_chunks, _meta = format_screen(
+        legacy_frames, {"include_entity_context": False}
+    )
+    json_chunks, _meta = format_screen(json_frames, {"include_entity_context": False})
+
+    legacy_markdown = legacy_chunks[0]["markdown"]
+    json_markdown = json_chunks[0]["markdown"]
+    assert "**Calendar:**" in legacy_markdown
+    assert "# [Google Calendar - Week]" in legacy_markdown
+    assert "```json" not in legacy_markdown
+    assert "**Calendar** (Google Calendar - week)" in json_markdown
+    assert "- **Planning** (Mon 9:00 AM - 10:00 AM)" in json_markdown
+    assert "```json" not in json_markdown
 
 
 def test_format_screen_handles_multiple_categories():
