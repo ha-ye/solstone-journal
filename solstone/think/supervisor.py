@@ -53,7 +53,11 @@ from solstone.think.display_powersave import (
 )
 from solstone.think.journal_config import read_journal_config
 from solstone.think.maint import run_pending_tasks
-from solstone.think.models import LOCAL_MODEL, is_local_provider_needed
+from solstone.think.models import (
+    LOCAL_MODEL,
+    is_local_provider_needed,
+    no_thinking_engine_chosen,
+)
 from solstone.think.processing import (
     DISPLAY_POWERSAVE_UNAVAILABLE,
     evaluate_drain_gate,
@@ -2764,6 +2768,10 @@ def run_catchup_drain(
     exclude: set[str] | None = None,
 ) -> list[str]:
     """Submit catchup daily think tasks for pending, eligible days."""
+    if no_thinking_engine_chosen():
+        logging.info("No thinking engine selected; catchup drain held")
+        return []
+
     all_updated = updated_days(exclude=exclude)
 
     def _eligible(day: str) -> bool:
@@ -2899,6 +2907,14 @@ def _handle_segment_observed(message: dict) -> None:
         )
         return
 
+    if no_thinking_engine_chosen():
+        logging.info(
+            "No thinking engine selected: live segment %s/%s held; no live think",
+            day,
+            segment,
+        )
+        return
+
     stream = message.get("stream")
 
     # Update flush state — new segment resets the flush timer
@@ -2945,6 +2961,9 @@ def _check_segment_flush(force: bool = False) -> None:
         return
 
     if load_processing_settings().mode == "deferred":
+        return
+
+    if no_thinking_engine_chosen():
         return
 
     if not force and time.time() - last_ts < FLUSH_TIMEOUT:

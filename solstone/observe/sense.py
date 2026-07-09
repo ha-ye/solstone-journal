@@ -773,8 +773,14 @@ class FileSensor:
                 meta = {}
             meta["stream"] = stream
 
-        deferred_live = (
-            not message.get("batch") and load_processing_settings().mode == "deferred"
+        live_segment = not message.get("batch")
+        no_engine_live = False
+        if live_segment:
+            from solstone.think.models import no_thinking_engine_chosen
+
+            no_engine_live = no_thinking_engine_chosen()
+        deferred_live = live_segment and (
+            load_processing_settings().mode == "deferred" or no_engine_live
         )
 
         # Build full paths for all files in this segment.
@@ -811,7 +817,13 @@ class FileSensor:
         # (e.g., tmux-only segments with just .jsonl files)
         with self.lock:
             if segment in self.segment_files and not self.segment_files[segment]:
-                emit_note = "deferred" if deferred_live else "no handlers"
+                emit_note = (
+                    "no_engine"
+                    if no_engine_live
+                    else "deferred"
+                    if deferred_live
+                    else "no handlers"
+                )
                 self._emit_segment_observed(segment, note=emit_note)
 
     def _emit_status(self):

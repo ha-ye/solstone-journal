@@ -31,6 +31,12 @@ from solstone.think.processing import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _default_thinking_engine_selected(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setattr(mod, "no_thinking_engine_chosen", lambda: False)
+
+
 def test_sd_notify_no_socket_is_noop(monkeypatch):
     from solstone.think.supervisor import _sd_notify
 
@@ -789,6 +795,40 @@ def test_handle_segment_observed_deferred_live_submits_nothing(monkeypatch):
     assert dict(mod._flush_state) == before
 
 
+def test_handle_segment_observed_no_engine_submits_nothing(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    capture = _CaptureTaskQueue()
+    monkeypatch.setattr(mod, "_task_queue", capture)
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("realtime"),
+    )
+    monkeypatch.setattr(mod, "no_thinking_engine_chosen", lambda: True)
+    mod._flush_state.update(
+        {
+            "last_segment_ts": 123.0,
+            "day": "20260526",
+            "segment": "110000_300",
+            "stream": "archon",
+            "flushed": True,
+        }
+    )
+    before = dict(mod._flush_state)
+
+    mod._handle_segment_observed(
+        {
+            "tract": "observe",
+            "event": "observed",
+            "day": "20260527",
+            "segment": "120000_300",
+        }
+    )
+
+    assert capture.submissions == []
+    assert dict(mod._flush_state) == before
+
+
 def test_handle_segment_observed_reads_processing_mode_fresh(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     capture = _CaptureTaskQueue()
@@ -832,6 +872,32 @@ def test_check_segment_flush_deferred_guard_submits_nothing(monkeypatch):
         "load_processing_settings",
         lambda: _supervisor_processing_settings("deferred"),
     )
+    mod._flush_state.update(
+        {
+            "last_segment_ts": 1.0,
+            "day": "20260527",
+            "segment": "120000_300",
+            "stream": None,
+            "flushed": False,
+        }
+    )
+
+    mod._check_segment_flush()
+
+    assert capture.submissions == []
+    assert mod._flush_state["flushed"] is False
+
+
+def test_check_segment_flush_no_engine_guard_submits_nothing(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    capture = _CaptureTaskQueue()
+    monkeypatch.setattr(mod, "_task_queue", capture)
+    monkeypatch.setattr(
+        mod,
+        "load_processing_settings",
+        lambda: _supervisor_processing_settings("realtime"),
+    )
+    monkeypatch.setattr(mod, "no_thinking_engine_chosen", lambda: True)
     mod._flush_state.update(
         {
             "last_segment_ts": 1.0,
@@ -2068,6 +2134,21 @@ def test_startup_catchup_drain_reconciles_before_drain(monkeypatch):
     mod._startup_catchup_drain()
 
     assert order == ["reconcile", "drain"]
+
+
+def test_run_catchup_drain_no_engine_submits_nothing(monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    capture = _CaptureTaskQueue()
+    monkeypatch.setattr(mod, "_task_queue", capture)
+    monkeypatch.setattr(mod, "no_thinking_engine_chosen", lambda: True)
+    monkeypatch.setattr(
+        mod,
+        "updated_days",
+        lambda **_kwargs: pytest.fail("drain should not enumerate days"),
+    )
+
+    assert mod.run_catchup_drain() == []
+    assert capture.submissions == []
 
 
 def test_run_gate_tick_deferred_open_runs_catchup_drain(monkeypatch):

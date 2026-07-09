@@ -28,6 +28,13 @@ from solstone.think.runner import DailyLogWriter as ProcessLogWriter
 from solstone.think.runner import _format_log_line
 
 
+@pytest.fixture(autouse=True)
+def _default_thinking_engine_selected(monkeypatch):
+    monkeypatch.setattr(
+        "solstone.think.models.no_thinking_engine_chosen", lambda: False
+    )
+
+
 class FakeProcess:
     def __init__(self, exit_code=0, delay=0.0):
         self.exit_code = exit_code
@@ -1364,6 +1371,56 @@ def test_file_sensor_deferred_live_observing_suppresses_handlers(
         "load_processing_settings",
         lambda: _processing_settings("deferred"),
     )
+
+    segment_dir = tmp_path / "chronicle" / "20250101" / "default" / "143022_300"
+    segment_dir.mkdir(parents=True)
+    audio_file = segment_dir / "audio.flac"
+    audio_file.write_text("audio content")
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.flac", "transcribe", ["echo", "{file}"])
+    emitted_events = []
+    sensor.callosum = CallosumConnection()
+    sensor.callosum.start(callback=lambda msg: emitted_events.append(msg))
+
+    with patch.object(sensor, "_handle_file") as mock_handle:
+        sensor._handle_callosum_message(
+            {
+                "tract": "observe",
+                "event": "observing",
+                "day": "20250101",
+                "stream": "default",
+                "segment": "143022_300",
+                "files": ["audio.flac"],
+            }
+        )
+
+    mock_handle.assert_not_called()
+    observed_events = [
+        event
+        for event in emitted_events
+        if event.get("tract") == "observe" and event.get("event") == "observed"
+    ]
+    assert len(observed_events) == 1
+    assert observed_events[0].get("day") == "20250101"
+    assert observed_events[0].get("segment") == "143022_300"
+    assert (tmp_path / "chronicle" / "20250101" / "health" / "stream.updated").exists()
+    assert audio_file.exists()
+
+
+def test_file_sensor_no_engine_live_observing_suppresses_handlers(
+    tmp_path, monkeypatch, mock_callosum
+):
+    import solstone.observe.sense as sense_module
+    from solstone.think.callosum import CallosumConnection
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        sense_module,
+        "load_processing_settings",
+        lambda: _processing_settings("realtime"),
+    )
+    monkeypatch.setattr("solstone.think.models.no_thinking_engine_chosen", lambda: True)
 
     segment_dir = tmp_path / "chronicle" / "20250101" / "default" / "143022_300"
     segment_dir.mkdir(parents=True)
