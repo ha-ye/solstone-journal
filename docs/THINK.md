@@ -179,7 +179,7 @@ The `journal providers check` command is an ad-hoc provider check CLI. Cortex do
 journal providers check [TASK_FILE] [--provider PROVIDER] [--model MODEL] [--max-tokens N] [-o OUT_FILE]
 ```
 
-The provider can be ``openai`` (default), ``google``, ``anthropic``, ``local``, or ``mlx``. Configure cloud API keys in the ``env`` section of ``journal/config/journal.json`` (for example, ``OPENAI_API_KEY``, ``GOOGLE_API_KEY``, or ``ANTHROPIC_API_KEY``). The ``local`` provider requires no API key — Settings installs a bundled loopback llama-server runtime and GGUF model on demand. Keys are loaded into ``os.environ`` by ``setup_cli()`` at process startup.
+Provider resolution first honors an explicit local type default: cloud context or request pins cannot override that local-only promise. It then uses an explicit context provider, an explicit type provider, key presence in ``google`` -> ``anthropic`` -> ``openai`` order, the bundled local runtime when its artifacts are ready, and finally the no-thinking-engine state. Configure cloud API keys in the ``env`` section of ``journal/config/journal.json`` (for example, ``GOOGLE_API_KEY``, ``ANTHROPIC_API_KEY``, or ``OPENAI_API_KEY``). The ``local`` provider requires no API key — Settings installs a bundled loopback llama-server runtime and model on demand. Keys are loaded into ``os.environ`` by ``setup_cli()`` at process startup.
 
 ### Provider modules
 

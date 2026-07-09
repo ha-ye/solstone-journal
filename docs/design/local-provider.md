@@ -66,11 +66,11 @@ Implementation note: the local server launch must use `[binary_path, "-m", model
 
 ## D8 Fallback opt-out
 
-Decision: `local` must never silently fall back to a cloud provider for either `generate` or `cogitate`. Keep MLX behavior unchanged: MLX opts out for `generate` only.
+Decision: `local` and the no-thinking-engine state must never silently fall back to a cloud provider for either `generate` or `cogitate`.
 
-Justification: selecting `local` is an explicit privacy and locality choice. Silent cloud fallback would violate that intent and hide fixable local installation or runtime failures.
+Justification: selecting `local` is an explicit privacy and locality choice, and choosing no thinking engine is an explicit deferred state. Silent cloud fallback would violate that intent and hide fixable local installation, runtime, or setup failures.
 
-Implementation note: in `solstone/think/models.py::get_backup_provider`, return `None` when `primary_provider == "local"` for all agent types, then keep the existing `agent_type == "generate" and primary_provider == "mlx"` branch. This makes the preflight swap in `talents.py` and the on-failure cogitate fallback no-ops because both paths already require a non-empty backup. On local failure, emit or surface a recovery reason instead of setting `config["fallback_from"]`: `binary_missing`, `model_missing`, `server_crashed`, `model_load_failed`, `port_conflict`, or `ram_insufficient`. Update `tests/test_talent_fallback.py` so `local` expects `None` for both generate and cogitate; remove the old Ollama-to-Anthropic expectation.
+Implementation note: in `solstone/think/models.py::get_backup_provider`, return `None` when the resolved primary provider is `local` or `none` for all agent types. This makes the preflight swap in `talents.py` and the on-failure cogitate fallback no-ops because both paths already require a non-empty backup. On local failure, emit or surface a recovery reason instead of setting `config["fallback_from"]`: `binary_missing`, `model_missing`, `server_crashed`, `model_load_failed`, `port_conflict`, or `ram_insufficient`. When no thinking engine is chosen, surface `thinking_engine_not_chosen` instead of consulting a backup.
 
 ## D9 Migration command
 

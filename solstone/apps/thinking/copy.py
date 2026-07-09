@@ -9,7 +9,7 @@ from typing import Any
 
 HEADING = "thinking"
 ACTIVE_LANE_LABELS = {
-    "none": "No provider chosen",
+    "none": "No thinking engine chosen",
     "scout": "Scout",
     "byo": "BYO cloud",
     "local": "Local",

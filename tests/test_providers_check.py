@@ -305,6 +305,56 @@ def test_run_check_targeted_filters_to_configured_pairs(tmp_path, monkeypatch):
     assert checked_pairs == {("provA", "flash"), ("provB", "flash"), ("provC", "flash")}
 
 
+def test_run_check_targeted_empty_journal_uses_real_resolution(
+    tmp_path, monkeypatch, capsys
+):
+    """--targeted uses resolve_provider and selects no cloud pair for no-brain."""
+    import solstone.think.providers_cli as providers_cli
+    from solstone.think.models import NO_BRAIN_PROVIDER, resolve_provider
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    for key in ("GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(
+        "solstone.think.providers.state.local_runtime_ready", lambda: False
+    )
+    _patch_health_journal(monkeypatch, providers_cli, tmp_path)
+
+    gen_mock = MagicMock(side_effect=AssertionError("cloud provider selected"))
+    cog_mock = MagicMock(side_effect=AssertionError("cloud provider selected"))
+    monkeypatch.setattr(providers_cli, "_check_generate", gen_mock)
+
+    async def mock_check_cogitate(*_args):
+        return cog_mock(*_args)
+
+    monkeypatch.setattr(providers_cli, "_check_cogitate", mock_check_cogitate)
+
+    args = argparse.Namespace(
+        provider=None,
+        interface=None,
+        tier=None,
+        json=True,
+        timeout=1,
+        targeted=True,
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        asyncio.run(providers_cli._run_check(args))
+
+    assert exc_info.value.code == 0
+    assert resolve_provider("", "generate") == (NO_BRAIN_PROVIDER, "")
+    assert resolve_provider("", "cogitate") == (NO_BRAIN_PROVIDER, "")
+    gen_mock.assert_not_called()
+    cog_mock.assert_not_called()
+
+    payload = json.loads((tmp_path / "health" / "talents.json").read_text())
+    assert payload["results"] == []
+    assert payload["summary"] == {"total": 0, "passed": 0, "skipped": 0, "failed": 0}
+    printed = capsys.readouterr().out
+    assert '"results": []' in printed
+    assert "google" not in printed
+
+
 def test_run_check_targeted_flock_dedup(tmp_path, monkeypatch):
     """--targeted exits silently when another targeted check holds the lock."""
     import fcntl

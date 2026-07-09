@@ -568,15 +568,14 @@ def compose_honest_degradation(
     *,
     queried_day: str | None = None,
 ) -> str | None:
-    """Return the honest deferred-mode message when an otherwise-empty answer is
-    really 'captured but not yet analyzed', else None.
+    """Return the honest message for deferred analysis or no thinking engine.
 
-    Pure: operates only on already-read inputs. Fires only in deferred mode when
-    the anchor day (the queried day if supplied, else today) has pending backlog
-    (not_sensed + not_thought > 0). Any per-day fold error makes the whole read
-    indeterminate -> None (fail-safe). The count is always rendered on fire since
-    fire requires pending > 0; it is derived from the real backlog read, never
-    fabricated.
+    Pure: operates only on already-read inputs. Fires in no-engine state even in
+    realtime mode; otherwise fires only in deferred mode when the anchor day
+    (the queried day if supplied, else today) has pending backlog. Any per-day
+    fold error makes deferred reads indeterminate -> None, while no-engine still
+    returns its setup guidance. Pending counts are derived from real backlog
+    reads, never fabricated.
     """
     no_engine = _no_thinking_engine_chosen()
     if not no_engine and settings.mode != "deferred":
