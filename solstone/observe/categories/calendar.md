@@ -1,35 +1,54 @@
 {
 
   "description": "Calendar and scheduling interfaces: day/week/month views, agenda lists, event details, event creation forms, booking pages, availability grids, and RSVP/scheduling workflows",
-  "output": "markdown",
+  "output": "json",
   "extraction": "Extract when the visible date range, event detail, availability grid, booking page, or scheduling workflow changes",
-  "importance": "high"
+  "importance": "high",
+  "max_output_tokens": 8192
 
 }
 
-# Calendar Text Extraction
+# Calendar Extraction
 
-Extract text from this calendar or scheduling screenshot.
+Extract structured scheduling information from this calendar or scheduling screenshot.
 
-## Header
+Return JSON matching this shape:
 
-`# [Calendar/App - View or Date Range]`
+```json
+{
+  "app": "Google Calendar",
+  "view": "week",
+  "range": "Apr 13 - Apr 19, 2026",
+  "events": [
+    {
+      "title": "Planning review",
+      "start": "Tue 10:00 AM",
+      "end": "11:00 AM",
+      "location": "Conference Room A",
+      "conferencing": "Google Meet",
+      "guests": ["Alice", "Bob"],
+      "status": "accepted",
+      "recurrence": null,
+      "calendar": "Work",
+      "description": "Visible event notes"
+    }
+  ],
+  "availability": ["Tue 2:00 PM", "Wed 10:30 AM"],
+  "notes": "Timezone, booking state, host/service, or visible form fields"
+}
+```
 
-## Content Focus
+## Field Notes
 
-Extract the scheduling information that is visible:
-
-- **Calendar views**: Preserve date range, visible days, event titles, times, locations, calendars/colors if meaningful, and attendee/status hints.
-- **Event detail/edit forms**: Include title, start/end time, date, location, conferencing link/platform, guests/attendees, description, recurrence, reminders, RSVP/status, and calendar name when visible.
-- **Availability/booking pages**: Include host/service name, timezone, available slots, selected slot, duration, location/meeting method, form fields, and booking state.
-- **Scheduling assistants**: Preserve participant names, availability blocks, conflicts, proposed times, and selected time.
-
-## Quality
-
-- Preserve chronological order.
-- Keep timezones and recurrence details when visible.
+- Set `app` to the visible calendar, scheduling, or booking app.
+- Set `view` to `day`, `week`, `month`, `agenda`, `event_detail`, `availability`, or `unknown`.
+- Use `range` for the visible date range when present; otherwise use null.
+- Preserve chronological order in `events`.
+- Include event title, start/end, location, conferencing, guests, status, recurrence, calendar name, and description when visible.
+- Put booking slots or availability labels in `availability`.
+- Use `notes` for host/service names, timezone, booking state, form fields, selected duration, or other visible scheduling context that does not belong to an event.
 - Mark unclear text with `[unclear]`.
 - Mark cut-off text with `...`.
 - Skip unrelated app chrome unless it identifies the calendar account, date range, or scheduling state.
 
-Return ONLY the formatted markdown.
+Return ONLY the JSON object.

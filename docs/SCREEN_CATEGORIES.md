@@ -13,7 +13,8 @@ Defines the category with JSON frontmatter and optional extraction prompt:
 ```markdown
 {
   "description": "One-line description for categorization prompt",
-  "output": "markdown"
+  "output": "markdown",
+  "max_output_tokens": 4096
 }
 
 Optional extraction prompt content goes here...
@@ -23,6 +24,7 @@ Optional extraction prompt content goes here...
 |-------|----------|---------|-------------|
 | `description` | Yes | - | Single-line description used in the categorization prompt |
 | `output` | No | `"markdown"` | Response format for extraction: `"json"` or `"markdown"` |
+| `max_output_tokens` | No | `4096` | Maximum output tokens for category-specific extraction |
 
 Model selection is handled via the providers configuration in `journal.json`. Each category uses the context pattern `observe.describe.<category>` for routing. See [config.md](../talent/journal/references/config.md) for details on configuring providers per context.
 
@@ -30,7 +32,18 @@ Categories with prompt content after the frontmatter are "extractable" - they ca
 - Analyze the screenshot for this specific category
 - Return content in the format specified by `output` (markdown or JSON)
 
-### 2. `<category>.py` (optional)
+### 2. `<category>.schema.json` (required for JSON output)
+
+Defines the strict structured-output schema for categories with `"output": "json"`. The file is discovered by filename convention next to the markdown prompt (`<category>.schema.json`).
+
+JSON category schemas are checked by `scripts/check_schema_bounds.py` and `tests/test_schema_strict_portability.py`:
+- Every array must have `maxItems`
+- Every free-text string must have `maxLength`
+- Every object must set `additionalProperties:false`
+- Every object must list all properties in `required`
+- Do not use `oneOf`; express nullability with type lists such as `["string", "null"]`
+
+### 3. `<category>.py` (optional)
 
 Custom formatter for rich markdown output. If not provided, default formatting applies:
 - Markdown content: displayed with category header

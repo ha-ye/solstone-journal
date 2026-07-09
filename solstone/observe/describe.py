@@ -164,6 +164,7 @@ def _discover_categories() -> dict[str, dict]:
             # Apply defaults for tier routing
             # tier: 1=pro, 2=flash, 3=lite (default: flash)
             metadata.setdefault("tier", 2)
+            metadata.setdefault("max_output_tokens", 4096)
             # label: Human-readable name (default: title-cased category name)
             metadata.setdefault("label", category.replace("_", " ").title())
             # group: Settings UI grouping (default: Screen Analysis)
@@ -1091,7 +1092,7 @@ class VideoProcessor:
                         system_instruction=cat_meta["prompt"] + redact_instruction,
                         json_output=is_json,
                         json_schema=cat_meta.get("json_schema"),
-                        max_output_tokens=4096,
+                        max_output_tokens=cat_meta["max_output_tokens"],
                         thinking_budget=6144 if is_json else 4096,
                         context=cat_meta["context"],
                     )

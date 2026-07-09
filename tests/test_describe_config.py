@@ -34,6 +34,11 @@ def test_categories_have_required_fields():
         assert "context" in metadata, f"Category {category} missing 'context'"
         assert metadata["context"].startswith("observe.describe.")
 
+        # Every category should have an output-token budget
+        assert "max_output_tokens" in metadata
+        assert isinstance(metadata["max_output_tokens"], int)
+        assert metadata["max_output_tokens"] > 0
+
 
 def test_extractable_categories_have_prompts():
     """Test that extractable categories have valid prompts loaded."""
@@ -48,6 +53,15 @@ def test_extractable_categories_have_prompts():
 
     # Sanity check: we should have at least some extractable categories
     assert extractable_count > 0, "No extractable categories found"
+
+
+def test_category_max_output_token_defaults_and_overrides():
+    """Test category output-token defaults and explicit overrides."""
+    CATEGORIES = describe_module.CATEGORIES
+
+    assert CATEGORIES["browsing"]["max_output_tokens"] == 4096
+    assert CATEGORIES["messaging"]["max_output_tokens"] == 8192
+    assert CATEGORIES["calendar"]["max_output_tokens"] == 8192
 
 
 def test_categorization_prompt_built():
