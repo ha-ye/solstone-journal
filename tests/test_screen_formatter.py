@@ -438,15 +438,18 @@ def test_format_screen_uses_meeting_formatter():
 
 def test_format_screen_falls_back_for_missing_formatter():
     """Test that categories without .py formatter use default formatting."""
+    category = "nonexistent_category"
     frames = [
         {
             "timestamp": 0,
             "analysis": {
-                "primary": "browsing",
-                "visual_description": "Web page",
+                "primary": category,
+                "visual_description": "Synthetic category content",
             },
             "content": {
-                "browsing": "# Example Page\n\nVisible text",
+                # Synthetic category ensures no real category can grow a formatter
+                # and accidentally stop exercising _load_category_formatter -> None.
+                category: "# Example Page\n\nVisible text",
             },
         },
     ]
@@ -457,7 +460,7 @@ def test_format_screen_falls_back_for_missing_formatter():
     markdown = chunks[0]["markdown"]
 
     # Should use default text formatting
-    assert "**Browsing:**" in markdown
+    assert "**Nonexistent_Category:**" in markdown
     assert "# Example Page" in markdown
 
 

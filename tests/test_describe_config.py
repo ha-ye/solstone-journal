@@ -3,8 +3,11 @@
 
 """Tests for observe/describe.py category discovery and configuration."""
 
+from pathlib import Path
+
 from solstone.observe import describe as describe_module
 from solstone.observe.describe import _build_redact_instruction
+from solstone.think.prompts import load_prompt
 
 
 def test_categories_discovered():
@@ -57,11 +60,27 @@ def test_extractable_categories_have_prompts():
 
 def test_category_max_output_token_defaults_and_overrides():
     """Test category output-token defaults and explicit overrides."""
-    CATEGORIES = describe_module.CATEGORIES
+    categories_dir = Path(describe_module.__file__).resolve().parent / "categories"
+    declared_overrides = []
+    defaulted_categories = []
 
-    assert CATEGORIES["browsing"]["max_output_tokens"] == 4096
-    assert CATEGORIES["messaging"]["max_output_tokens"] == 8192
-    assert CATEGORIES["calendar"]["max_output_tokens"] == 8192
+    for md_path in categories_dir.glob("*.md"):
+        category = md_path.stem
+        prompt_content = load_prompt(category, base_dir=categories_dir)
+        metadata = describe_module.CATEGORIES[category]
+
+        if "max_output_tokens" in prompt_content.metadata:
+            declared_overrides.append(category)
+            assert (
+                metadata["max_output_tokens"]
+                == prompt_content.metadata["max_output_tokens"]
+            )
+        else:
+            defaulted_categories.append(category)
+            assert metadata["max_output_tokens"] == 4096
+
+    assert declared_overrides
+    assert defaulted_categories
 
 
 def test_categorization_prompt_built():
