@@ -167,6 +167,7 @@
     }
   ],
   "audio_file": null,
+  "audio_mimetype": null,
   "has_labels": true,
   "segment": {
     "end": "09:05",

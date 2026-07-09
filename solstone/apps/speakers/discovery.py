@@ -12,6 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from solstone.apps.speakers.audio import resolve_audio_url
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import day_dirs, day_path, get_journal, now_ms, segment_path
 
@@ -47,11 +48,6 @@ def _owner_helpers():
     from solstone.apps.speakers.owner import load_owner_centroid
 
     return load_owner_centroid
-
-
-def _audio_url(day: str, stream: str, segment_key: str, source: str) -> str:
-    """Build the existing speakers audio-serving URL for a sample."""
-    return f"/app/speakers/api/serve_audio/{day}/{stream}/{segment_key}/{source}.flac"
 
 
 def _discovery_cache_path() -> Path:
@@ -255,7 +251,7 @@ def discover_unknown_speakers() -> dict[str, Any]:
             samples.append(
                 {
                     **record,
-                    "audio_url": _audio_url(
+                    "audio_url": resolve_audio_url(
                         record["day"],
                         record["stream"],
                         record["segment_key"],
@@ -280,7 +276,7 @@ def discover_unknown_speakers() -> dict[str, Any]:
                 )
                 sample = {
                     **record,
-                    "audio_url": _audio_url(
+                    "audio_url": resolve_audio_url(
                         record["day"],
                         record["stream"],
                         record["segment_key"],

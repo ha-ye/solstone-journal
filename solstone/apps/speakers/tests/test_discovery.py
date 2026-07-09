@@ -65,7 +65,12 @@ def _setup_owner_centroid(
     return centroid
 
 
-def _create_cluster_segments(env, embeddings: np.ndarray) -> list[tuple[str, str, int]]:
+def _create_cluster_segments(
+    env,
+    embeddings: np.ndarray,
+    *,
+    audio_extension: str = ".flac",
+) -> list[tuple[str, str, int]]:
     """Create four segments with one qualifying cluster and one filtered cluster."""
     segments = [
         ("20240101", "090000_300"),
@@ -79,7 +84,13 @@ def _create_cluster_segments(env, embeddings: np.ndarray) -> list[tuple[str, str
         segment_embeddings = embeddings
         if idx < 2:
             segment_embeddings = np.vstack([embeddings, alt_embeddings])
-        env.create_segment(day, segment_key, ["audio"], embeddings=segment_embeddings)
+        env.create_segment(
+            day,
+            segment_key,
+            ["audio"],
+            embeddings=segment_embeddings,
+            audio_extension=audio_extension,
+        )
         results.append((day, segment_key, segment_embeddings.shape[0]))
     return results
 
@@ -154,6 +165,38 @@ def test_discover_clusters_found(speakers_env):
     assert cluster["size"] == 20
     assert cluster["segment_count"] >= 3
     assert len(cluster["samples"]) == 3
+
+
+def test_discover_samples_use_registered_audio_extension(speakers_env):
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
+    _create_cluster_segments(env, embeddings, audio_extension=".m4a")
+
+    result = discover_unknown_speakers()
+
+    samples = result["clusters"][0]["samples"]
+    assert len(samples) == 3
+    for sample in samples:
+        assert sample["audio_url"] == (
+            f"/app/speakers/api/serve_audio/{sample['day']}/"
+            f"{sample['stream']}/{sample['segment_key']}/{sample['source']}.m4a"
+        )
+
+
+def test_discover_samples_allow_missing_audio(speakers_env):
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
+    segments = _create_cluster_segments(env, embeddings)
+    for day, segment_key, _sentence_count in segments:
+        (env.journal / "chronicle" / day / "test" / segment_key / "audio.flac").unlink()
+
+    result = discover_unknown_speakers()
+
+    samples = result["clusters"][0]["samples"]
+    assert len(samples) == 3
+    assert all(sample["audio_url"] is None for sample in samples)
 
 
 def test_discover_filters_attributed(speakers_env):

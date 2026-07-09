@@ -49,9 +49,11 @@ def serve_audio_client(tmp_path, monkeypatch):
     )
     segment_dir.mkdir(parents=True)
     (segment_dir / f"{SERVE_AUDIO_SOURCE}.flac").write_bytes(b"fLaC")
+    (segment_dir / f"{SERVE_AUDIO_SOURCE}.m4a").write_bytes(b"m4a")
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
     app = create_app(str(journal))
+    app.config["TESTING"] = True
     return app.test_client(), journal
 
 
@@ -750,6 +752,41 @@ def test_serve_audio_sets_flac_mimetype(serve_audio_client):
     assert response.mimetype == "audio/flac"
 
 
+def test_serve_audio_sets_registered_mimetype(serve_audio_client):
+    """Serve audio endpoint returns the registered mimetype for sample playback."""
+    client, _journal = serve_audio_client
+
+    response = client.get(
+        f"/app/speakers/api/serve_audio/{SERVE_AUDIO_DAY}/"
+        f"{SERVE_AUDIO_STREAM}/{SERVE_AUDIO_SEGMENT}/{SERVE_AUDIO_SOURCE}.m4a"
+    )
+
+    assert response.status_code == 200
+    assert response.mimetype == "audio/mp4"
+
+
+def test_serve_audio_unregistered_extension_raises(serve_audio_client):
+    """Serve audio refuses existing files with unregistered extensions."""
+    client, journal = serve_audio_client
+    segment_dir = (
+        journal
+        / "chronicle"
+        / SERVE_AUDIO_DAY
+        / SERVE_AUDIO_STREAM
+        / SERVE_AUDIO_SEGMENT
+    )
+    (segment_dir / f"{SERVE_AUDIO_SOURCE}.aac").write_bytes(b"aac")
+
+    with pytest.raises(
+        ValueError,
+        match=r"unregistered media extension for serve_audio: \.aac",
+    ):
+        client.get(
+            f"/app/speakers/api/serve_audio/{SERVE_AUDIO_DAY}/"
+            f"{SERVE_AUDIO_STREAM}/{SERVE_AUDIO_SEGMENT}/{SERVE_AUDIO_SOURCE}.aac"
+        )
+
+
 def test_serve_audio_path_traversal_is_forbidden(serve_audio_client):
     """A rel_path resolving to a real file outside the day dir is refused 403."""
     client, journal = serve_audio_client
@@ -947,6 +984,10 @@ def test_api_review_with_labels(speakers_env):
         data = resp.get_json()
         assert data["has_labels"] is True
         assert data["summary"]["total"] > 0
+        assert data["audio_file"] == (
+            "/app/speakers/api/serve_audio/20240101/test/143022_300/mic_audio.flac"
+        )
+        assert data["audio_mimetype"] == "audio/flac"
         assert data["all_entities"][0]["name"] == "Alice Test"
         sentences = data["sentences"]
         s1 = next(s for s in sentences if s["id"] == 1)
@@ -973,6 +1014,61 @@ def test_api_review_no_labels(speakers_env):
         data = resp.get_json()
         assert data["has_labels"] is False
         assert data["summary"]["needs_review"] == 0
+
+
+def test_api_review_uses_registered_audio_extension(speakers_env):
+    """Review endpoint reports the actual registered segment audio file."""
+    from flask import Flask
+
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+    env.create_segment(
+        "20240101",
+        "143022_300",
+        ["mic_audio"],
+        audio_extension=".m4a",
+    )
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        resp = client.get("/app/speakers/api/review/20240101/test/143022_300/mic_audio")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["audio_file"] == (
+            "/app/speakers/api/serve_audio/20240101/test/143022_300/mic_audio.m4a"
+        )
+        assert data["audio_mimetype"] == "audio/mp4"
+
+
+def test_api_review_omits_audio_when_registered_audio_is_missing(speakers_env):
+    """Review endpoint returns null audio metadata when source audio is purged."""
+    from flask import Flask
+
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+    env.create_segment("20240101", "143022_300", ["mic_audio"])
+    (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / "test"
+        / "143022_300"
+        / "mic_audio.flac"
+    ).unlink()
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        resp = client.get("/app/speakers/api/review/20240101/test/143022_300/mic_audio")
+        assert resp.status_code == 200
+        data = resp.get_json()
+        assert data["audio_file"] is None
+        assert data["audio_mimetype"] is None
 
 
 def test_api_review_corrections_excludes_confirmed(speakers_env):

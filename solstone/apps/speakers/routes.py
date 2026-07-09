@@ -33,6 +33,7 @@ from solstone.apps.speakers.attribution import (
     backfill_segments,
     save_speaker_labels,
 )
+from solstone.apps.speakers.audio import audio_serve_url, resolve_audio_file
 from solstone.apps.speakers.bootstrap import (
     bootstrap_voiceprints,
     link_import,
@@ -107,6 +108,7 @@ from solstone.think.entities.journal import (
 )
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.journal_io.npz import load_npz, update_npz
+from solstone.think.media import MIME_TYPES
 from solstone.think.utils import (
     STREAM_RE,
     day_dirs,
@@ -967,10 +969,11 @@ def api_review(day: str, stream: str, segment_key: str, source: str) -> Any:
     all_entities.sort(key=lambda x: (not x["is_principal"], x["name"].lower()))
 
     audio_file = None
-    audio_path = segment_dir / f"{source}.flac"
-    if audio_path.exists():
-        rel_path = f"{stream}/{segment_key}/{source}.flac"
-        audio_file = f"/app/speakers/api/serve_audio/{day}/{rel_path}"
+    audio_mimetype = None
+    audio_path = resolve_audio_file(segment_dir, source)
+    if audio_path is not None:
+        audio_file = audio_serve_url(day, stream, segment_key, audio_path.name)
+        audio_mimetype = MIME_TYPES[audio_path.suffix]
 
     parsed = segment_parse(segment_key)
     start_time, end_time = parsed if parsed[0] else (None, None)
@@ -992,6 +995,7 @@ def api_review(day: str, stream: str, segment_key: str, source: str) -> Any:
             "sentences": review_sentences,
             "all_entities": all_entities,
             "audio_file": audio_file,
+            "audio_mimetype": audio_mimetype,
             "has_labels": labels_data is not None,
             "summary": {
                 "total": len(review_sentences),
@@ -1937,4 +1941,7 @@ def serve_audio(day: str, rel_path: str) -> Any:
         return error
     if not path.is_file():
         return error_response(FILE_NOT_FOUND, detail="File not found")
-    return send_file(path, mimetype="audio/flac")
+    mimetype = MIME_TYPES.get(path.suffix.lower())
+    if mimetype is None:
+        raise ValueError(f"unregistered media extension for serve_audio: {path.suffix}")
+    return send_file(path, conditional=True, mimetype=mimetype)

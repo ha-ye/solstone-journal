@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from solstone.apps.speakers._overlap import _read_segment_overlap_fraction
+from solstone.apps.speakers.audio import resolve_audio_url
 from solstone.apps.speakers.encoder_config import (
     NOISY_FLYWHEEL_OVERLAP_MAX,
     OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
@@ -213,11 +214,6 @@ def _principal_id_or_none() -> str | None:
 def _iso_now() -> str:
     """Return a timestamp string for persisted metadata."""
     return datetime.now(UTC).isoformat().replace("+00:00", "Z")
-
-
-def _audio_url(day: str, stream: str, segment_key: str, source: str) -> str:
-    """Build the existing speakers audio-serving URL for a sample."""
-    return f"/app/speakers/api/serve_audio/{day}/{stream}/{segment_key}/{source}.flac"
 
 
 def _fallback_statement_durations(jsonl_path: Path) -> dict[int, float | None]:
@@ -967,7 +963,7 @@ def _owner_candidate_samples(
         samples.append(
             {
                 **record,
-                "audio_url": _audio_url(
+                "audio_url": resolve_audio_url(
                     record["day"],
                     record["stream"],
                     record["segment_key"],
@@ -982,7 +978,7 @@ def _owner_candidate_samples(
         record = provenance[int(position)]
         sample = {
             **record,
-            "audio_url": _audio_url(
+            "audio_url": resolve_audio_url(
                 record["day"],
                 record["stream"],
                 record["segment_key"],

@@ -92,6 +92,7 @@ def speakers_env(tmp_path, monkeypatch):
             *,
             stream: str | None = None,
             embeddings: np.ndarray | None = None,
+            audio_extension: str = ".flac",
         ) -> Path:
             """Create a segment with sentence embeddings.
 
@@ -114,7 +115,11 @@ def speakers_env(tmp_path, monkeypatch):
             )
 
             for source in sources:
-                lines = [json.dumps({"raw": f"{source}.flac", "model": "medium.en"})]
+                lines = [
+                    json.dumps(
+                        {"raw": f"{source}{audio_extension}", "model": "medium.en"}
+                    )
+                ]
 
                 # Parse segment_key to get base time (e.g., "143022_300" -> 14:30:22)
                 # This matches real transcriber output which uses absolute timestamps
@@ -159,7 +164,7 @@ def speakers_env(tmp_path, monkeypatch):
                         embeddings=source_embeddings,
                         statement_ids=statement_ids,
                     )
-                    (segment_dir / f"{source}.flac").write_bytes(b"")
+                    (segment_dir / f"{source}{audio_extension}").write_bytes(b"")
 
             return flat_dir
 

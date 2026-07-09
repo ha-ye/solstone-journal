@@ -1464,7 +1464,7 @@
               <div class="spk-owner-sample-meta">
                 ${escapeHtml(sample.day)} · ${escapeHtml(sample.stream)} · ${escapeHtml(sample.segment_key)}
               </div>
-              <audio controls preload="metadata" src="${sample.audio_url}"></audio>
+              ${sample.audio_url ? `<audio controls preload="metadata" src="${sample.audio_url}"></audio>` : ''}
             </div>
           `).join('')}
         </div>
@@ -1628,7 +1628,7 @@
               ${cluster.samples.map(sample => `
                 <div class="spk-discovery-sample">
                   <div class="spk-discovery-sample-text">${escapeHtml(sample.text || '(no transcript)')}</div>
-                  <audio controls preload="metadata" src="${sample.audio_url}"></audio>
+                  ${sample.audio_url ? `<audio controls preload="metadata" src="${sample.audio_url}"></audio>` : ''}
                 </div>
               `).join('')}
               <form class="spk-discovery-form">
@@ -2036,14 +2036,14 @@
   }
 
   function renderReview(data) {
-    const { audio_file } = data;
+    const { audio_file, audio_mimetype } = data;
     const audioContainer = document.getElementById('spkAudioContainer');
     if (audio_file) {
       audioContainer.innerHTML = `
         <div class="spk-player-controls">
           <button class="spk-skip-back" id="spkSkipBack" title="back 5s">&#8634; 5s</button>
           <audio id="spkAudio" controls preload="metadata">
-            <source src="${audio_file}" type="audio/flac">
+            <source src="${audio_file}" type="${audio_mimetype}">
           </audio>
           <button class="spk-speed-toggle" id="spkSpeedToggle" title="playback speed">1x</button>
         </div>
@@ -2823,7 +2823,7 @@
           <div class="spk-owner-sample">
             <div class="spk-card-title">sample ${index + 1}</div>
             <div class="spk-card-line">${escapeHtml(sample.day)} · ${escapeHtml(sample.stream)} · ${escapeHtml(sample.segment_key)}</div>
-            <audio controls preload="metadata" src="${escapeHtml(sample.audio_url)}"></audio>
+            ${sample.audio_url ? `<audio controls preload="metadata" src="${escapeHtml(sample.audio_url)}"></audio>` : ''}
           </div>
         `).join('')}
       </div>

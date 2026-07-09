@@ -452,6 +452,81 @@ def test_detect_owner_candidate_pool_ready(speakers_env):
     assert get_current()["voiceprint"]["status"] == "candidate"
 
 
+def test_owner_candidate_samples_use_registered_audio_extension(speakers_env):
+    from solstone.apps.speakers.owner import _owner_candidate_samples
+
+    env = speakers_env()
+    embeddings = _owner_embeddings(3, np.random.default_rng(1))
+    provenance = []
+    for idx, segment_key in enumerate(
+        ("090000_300", "091000_300", "092000_300"),
+        start=1,
+    ):
+        env.create_segment(
+            "20240101",
+            segment_key,
+            ["mic_audio"],
+            num_sentences=1,
+            embeddings=embeddings[idx - 1 : idx],
+            audio_extension=".m4a",
+        )
+        provenance.append(
+            {
+                "day": "20240101",
+                "stream": "test",
+                "segment_key": segment_key,
+                "source": "mic_audio",
+                "sentence_id": 1,
+                "duration_s": 5.0,
+            }
+        )
+
+    samples = _owner_candidate_samples(embeddings, embeddings[0], provenance)
+
+    assert len(samples) == 3
+    for sample in samples:
+        assert sample["audio_url"] == (
+            f"/app/speakers/api/serve_audio/{sample['day']}/"
+            f"{sample['stream']}/{sample['segment_key']}/{sample['source']}.m4a"
+        )
+
+
+def test_owner_candidate_samples_allow_missing_audio(speakers_env):
+    from solstone.apps.speakers.owner import _owner_candidate_samples
+
+    env = speakers_env()
+    embeddings = _owner_embeddings(1, np.random.default_rng(1))
+    env.create_segment(
+        "20240101",
+        "090000_300",
+        ["mic_audio"],
+        num_sentences=1,
+        embeddings=embeddings,
+    )
+    (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / "test"
+        / "090000_300"
+        / "mic_audio.flac"
+    ).unlink()
+    provenance = [
+        {
+            "day": "20240101",
+            "stream": "test",
+            "segment_key": "090000_300",
+            "source": "mic_audio",
+            "sentence_id": 1,
+            "duration_s": 5.0,
+        }
+    ]
+
+    samples = _owner_candidate_samples(embeddings, embeddings[0], provenance)
+
+    assert samples[0]["audio_url"] is None
+
+
 def test_detect_owner_candidate_selection_skips_rejected_and_non_principal(
     speakers_env,
 ):
