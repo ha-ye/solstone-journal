@@ -132,6 +132,7 @@ def _facet_section(
     moved: list[str],
     merged: list[str],
     observations_appended: int,
+    observation_relations_rewritten: int,
 ) -> dict[str, Any]:
     return {
         "moved": moved,
@@ -139,6 +140,7 @@ def _facet_section(
         "merged": merged,
         "merged_count": len(merged),
         "observations_appended": observations_appended,
+        "observation_relations_rewritten": observation_relations_rewritten,
     }
 
 
@@ -188,7 +190,7 @@ def _empty_result_section() -> dict[str, Any]:
     return {
         "identity": _identity_section([], [], False),
         "voiceprints": _voiceprint_section(0, 0, 0),
-        "facets": _facet_section([], [], 0),
+        "facets": _facet_section([], [], 0, 0),
         "segments": _segment_section(0, 0, 0, []),
         "activities": _activity_section(),
         "edges": _edges_section(),
@@ -350,7 +352,7 @@ def _plan_facet_merge(source_id: str, target_id: str) -> dict[str, Any]:
     if not facets_dir.exists():
         return {
             "operations": operations,
-            "section": _facet_section(moved, merged, observations_appended),
+            "section": _facet_section(moved, merged, observations_appended, 0),
         }
 
     for facet_entry in sorted(facets_dir.iterdir()):
@@ -423,7 +425,7 @@ def _plan_facet_merge(source_id: str, target_id: str) -> dict[str, Any]:
 
     return {
         "operations": operations,
-        "section": _facet_section(moved, merged, observations_appended),
+        "section": _facet_section(moved, merged, observations_appended, 0),
     }
 
 
@@ -590,6 +592,47 @@ def _apply_destructive_plan(
     return caches_cleared
 
 
+def _observation_relation_paths() -> list[Path]:
+    facets_dir = Path(get_journal()) / "facets"
+    if not facets_dir.exists():
+        return []
+    return sorted(facets_dir.glob("*/entities/*/observations.jsonl"))
+
+
+def _count_observation_relation_remaps(source_id: str) -> int:
+    count = 0
+    for path in _observation_relation_paths():
+        for observation in _read_jsonl(path):
+            relation = observation.get("relation")
+            if (
+                isinstance(relation, dict)
+                and relation.get("target_entity_id") == source_id
+            ):
+                count += 1
+    return count
+
+
+def _apply_observation_relation_remaps(source_id: str, target_id: str) -> int:
+    rewritten = 0
+    for path in _observation_relation_paths():
+        observations = _read_jsonl(path)
+        changed = False
+        for observation in observations:
+            relation = observation.get("relation")
+            if not isinstance(relation, dict):
+                continue
+            if relation.get("target_entity_id") != source_id:
+                continue
+            relation["target_entity_id"] = target_id
+            rewritten += 1
+            changed = True
+        if changed:
+            facet = path.parent.parent.parent.name
+            entity_id = path.parent.name
+            save_observations(facet, entity_id, observations)
+    return rewritten
+
+
 def _apply_segment_plan(
     operations: list[dict[str, Any]],
     source_id: str,
@@ -643,6 +686,9 @@ def _audit_counts(result: dict[str, Any]) -> dict[str, Any]:
             "moved": result["facets"]["moved_count"],
             "merged": result["facets"]["merged_count"],
             "observations_appended": result["facets"]["observations_appended"],
+            "observation_relations_rewritten": result["facets"][
+                "observation_relations_rewritten"
+            ],
         },
         "segments": {
             "labels_rewritten": result["segments"]["labels_rewritten"],
@@ -740,6 +786,9 @@ def merge_entity(
     )
     voiceprint_plan = _plan_voiceprint_merge(source_id, target_id)
     facet_plan = _plan_facet_merge(source_id, target_id)
+    facet_plan["section"]["observation_relations_rewritten"] = (
+        _count_observation_relation_remaps(source_id)
+    )
     segment_plan = _plan_segment_rewrites(source_id, target_id)
     from solstone.think.activities import remap_activity_entity_ids
 
@@ -808,6 +857,11 @@ def merge_entity(
         caches_cleared = _apply_destructive_plan(facet_plan["operations"], source_id)
 
         result["caches_cleared"] = caches_cleared
+
+        failed_phase = "observation relation remap"
+        result["facets"]["observation_relations_rewritten"] = (
+            _apply_observation_relation_remaps(source_id, target_id)
+        )
 
         try:
             from solstone.think.indexer.edges import fold_entity_edges
