@@ -89,6 +89,9 @@ def test_unreliable_memory_warns_once_and_admits(
     assert admission.throttle_state().count == 0
 
 
+# This pair is the assertion: the first test proves the discrete no-config path
+# costs nothing per admission, while the second proves explicit floor 0 also
+# skips hardware detection.
 def test_floor_zero_auto_discrete_short_circuits_without_memory_reads(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,

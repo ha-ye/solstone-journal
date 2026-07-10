@@ -22,6 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from solstone.observe.describe import FRAME_CONTEXT
 from solstone.think import admission
@@ -967,7 +968,7 @@ class _NotClaimed:
         self.use_id = use_id
 
 
-def _emit_memory_throttle_started(**fields) -> None:
+def _emit_memory_throttle_started(**fields: Any) -> None:
     emit(
         "memory_throttle_started",
         stage=fields["stage"],
@@ -976,7 +977,7 @@ def _emit_memory_throttle_started(**fields) -> None:
     )
 
 
-def _emit_memory_throttle_completed(**fields) -> None:
+def _emit_memory_throttle_completed(**fields: Any) -> None:
     emit(
         "memory_throttle_completed",
         stage=fields["stage"],

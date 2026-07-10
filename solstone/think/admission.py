@@ -68,6 +68,10 @@ def _detect_unified_memory_uncached() -> bool:
 def detect_unified_memory() -> bool:
     global _unified_memory
 
+    cached = _unified_memory
+    if cached is not None:
+        return cached
+
     with _resolution_lock:
         if _unified_memory is None:
             _unified_memory = _detect_unified_memory_uncached()
@@ -107,6 +111,10 @@ def _default_floor_bytes() -> int:
 def resolve_memory_floor_bytes() -> int:
     global _resolved_floor_bytes
     global _unified_memory
+
+    cached = _resolved_floor_bytes
+    if cached is not None:
+        return cached
 
     with _resolution_lock:
         if _resolved_floor_bytes is not None:
