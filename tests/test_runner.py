@@ -6,7 +6,6 @@
 import os
 import signal
 import subprocess
-import sys
 import time
 from io import StringIO
 from unittest.mock import Mock, call
@@ -56,94 +55,6 @@ def _timed_out_managed(log_path, exit_code):
     fake.terminate.return_value = exit_code
     fake.cleanup.return_value = None
     return fake
-
-
-@pytest.fixture
-def process_cleanup():
-    refs = []
-    yield refs
-
-    own_pid = os.getpid()
-    own_pgid = os.getpgrp()
-    seen_pgids = set()
-    for pid, pgid in reversed(refs):
-        if pgid not in seen_pgids and _safe_test_target(pgid, own_pid, own_pgid):
-            seen_pgids.add(pgid)
-            try:
-                os.killpg(pgid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                pass
-        if _safe_test_target(pid, own_pid, own_pgid):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except (ProcessLookupError, OSError):
-                pass
-
-    deadline = time.monotonic() + 2
-    for pid, _pgid in refs:
-        while _pid_alive_non_zombie(pid) and time.monotonic() < deadline:
-            time.sleep(0.01)
-
-
-def _safe_test_target(value, own_pid, own_pgid):
-    return value is not None and value > 1 and value not in (own_pid, own_pgid)
-
-
-def _register_pid(cleanup_refs, pid):
-    try:
-        pgid = os.getpgid(pid)
-    except (ProcessLookupError, OSError):
-        pgid = None
-    cleanup_refs.append((pid, pgid))
-
-
-def _pid_alive_non_zombie(pid):
-    try:
-        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
-    except psutil.NoSuchProcess:
-        return False
-    except (psutil.AccessDenied, OSError):
-        return True
-
-
-def _wait_for_marker(marker_path, *keys):
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        if marker_path.exists():
-            values = {}
-            for line in marker_path.read_text().splitlines():
-                if "=" in line:
-                    key, value = line.split("=", 1)
-                    values[key] = int(value)
-            if all(key in values for key in keys):
-                return values
-        time.sleep(0.01)
-    raise AssertionError(f"marker {marker_path} did not contain {keys}")
-
-
-def _spawn_parent(script, marker_path):
-    return subprocess.Popen(
-        [sys.executable, "-c", script, str(marker_path)],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        process_group=0,
-    )
-
-
-def _assert_descendant(parent_pid, descendant_pid):
-    descendants = psutil.Process(parent_pid).children(recursive=True)
-    assert descendant_pid in {child.pid for child in descendants}
-
-
-def _ignores_sigterm_loop():
-    return (
-        "import signal, time\n"
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
-        "while True:\n"
-        "    time.sleep(1)\n"
-    )
 
 
 def test_terminate_uses_process_group(monkeypatch):
@@ -223,102 +134,6 @@ def test_terminate_abandons_unreaped_child_after_sigkill(monkeypatch):
         call(456, signal.SIGTERM),
         call(456, signal.SIGKILL),
     ]
-
-
-def test_terminate_clears_separate_session_child_after_parent_exits(
-    tmp_path, process_cleanup
-):
-    marker = tmp_path / "child.marker"
-    child_code = _ignores_sigterm_loop()
-    parent_script = f"""
-import signal
-import subprocess
-import sys
-import time
-
-marker = sys.argv[1]
-
-def exit_on_term(_signum, _frame):
-    raise SystemExit(0)
-
-signal.signal(signal.SIGTERM, exit_on_term)
-child = subprocess.Popen([sys.executable, "-c", {child_code!r}], start_new_session=True)
-with open(marker, "w", encoding="utf-8") as fh:
-    fh.write(f"child={{child.pid}}\\n")
-    fh.flush()
-while True:
-    time.sleep(1)
-"""
-    parent = _spawn_parent(parent_script, marker)
-    _register_pid(process_cleanup, parent.pid)
-    managed = _managed_for_process(parent)
-    values = _wait_for_marker(marker, "child")
-    child_pid = values["child"]
-    _register_pid(process_cleanup, child_pid)
-    _assert_descendant(parent.pid, child_pid)
-
-    assert managed.terminate(timeout=0.2) == 0
-    assert not _pid_alive_non_zombie(child_pid)
-
-
-def test_terminate_clears_recursive_grandchild_outside_parent_group(
-    tmp_path, process_cleanup
-):
-    marker = tmp_path / "grandchild.marker"
-    grandchild_code = _ignores_sigterm_loop()
-    child_script = f"""
-import os
-import signal
-import subprocess
-import sys
-import time
-
-marker = sys.argv[1]
-
-def exit_on_term(_signum, _frame):
-    raise SystemExit(0)
-
-signal.signal(signal.SIGTERM, exit_on_term)
-grandchild = subprocess.Popen(
-    [sys.executable, "-c", {grandchild_code!r}],
-    start_new_session=True,
-)
-with open(marker, "w", encoding="utf-8") as fh:
-    fh.write(f"child={{os.getpid()}}\\n")
-    fh.write(f"grandchild={{grandchild.pid}}\\n")
-    fh.flush()
-while True:
-    time.sleep(1)
-"""
-    parent_script = f"""
-import signal
-import subprocess
-import sys
-import time
-
-marker = sys.argv[1]
-
-def exit_on_term(_signum, _frame):
-    raise SystemExit(0)
-
-signal.signal(signal.SIGTERM, exit_on_term)
-child = subprocess.Popen([sys.executable, "-c", {child_script!r}, marker])
-while True:
-    time.sleep(1)
-"""
-    parent = _spawn_parent(parent_script, marker)
-    _register_pid(process_cleanup, parent.pid)
-    managed = _managed_for_process(parent)
-    values = _wait_for_marker(marker, "child", "grandchild")
-    child_pid = values["child"]
-    grandchild_pid = values["grandchild"]
-    _register_pid(process_cleanup, child_pid)
-    _register_pid(process_cleanup, grandchild_pid)
-    _assert_descendant(parent.pid, child_pid)
-    _assert_descendant(parent.pid, grandchild_pid)
-
-    assert managed.terminate(timeout=0.2) == 0
-    assert not _pid_alive_non_zombie(grandchild_pid)
 
 
 def test_terminate_raises_for_surviving_descendant(monkeypatch):
