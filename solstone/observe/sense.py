@@ -31,6 +31,7 @@ from solstone.observe.utils import (
     PDF_EXTENSIONS,
     VIDEO_EXTENSIONS,
 )
+from solstone.think import admission
 from solstone.think.callosum import CallosumConnection
 from solstone.think.processing import load_processing_settings
 from solstone.think.runner import KILL_REAP_GRACE_S
@@ -57,6 +58,7 @@ logger = logging.getLogger(__name__)
 
 # Handlers with serialized worker pools. Add a new entry here when registering one in main().
 HANDLER_NAMES = ("describe", "transcribe", "extract", "depict")
+MEMORY_GATED_HANDLERS = frozenset({"describe", "transcribe", "depict"})
 NATIVE_OBSERVE_NAME = "native.observe"
 NATIVE_STREAM_TYPE = "screen_audio"
 
@@ -229,6 +231,7 @@ class FileSensor:
 
         Allowlisted fields only — never file paths, names, titles, or content.
         """
+        throttle = admission.throttle_state()
         with self.lock:
             pending = sum(len(v) for v in self.running_handlers.values()) + sum(
                 len(v) for v in self.queued_handlers.values()
@@ -245,7 +248,32 @@ class FileSensor:
             "pending_queue_depth": pending,
             "recent_error_count": error_count,
             "last_error_reason": last_reason,
+            "memory_throttled": throttle.throttled,
+            "memory_throttle_count": throttle.count,
+            "memory_floor_mib": throttle.floor_mib,
+            "memory_available_mib": throttle.available_mib,
         }
+
+    def _emit_memory_throttle_started(self, **fields: Any) -> None:
+        if not self.callosum:
+            return
+        self.callosum.emit(
+            "observe",
+            "memory_throttle_started",
+            stage=fields["stage"],
+            available_mib=fields["available_mib"],
+            floor_mib=fields["floor_mib"],
+        )
+
+    def _emit_memory_throttle_completed(self, **fields: Any) -> None:
+        if not self.callosum:
+            return
+        self.callosum.emit(
+            "observe",
+            "memory_throttle_completed",
+            stage=fields["stage"],
+            waited_seconds=fields["waited_seconds"],
+        )
 
     def register(self, pattern: str, handler_name: str, command: List[str]):
         """
@@ -435,15 +463,25 @@ class FileSensor:
     ) -> None:
         """Run one handler invocation from spawn through cleanup."""
         try:
+            if self._stopping.is_set():
+                return
+
+            file_path = queued_item.file_path
+            if handler_name in MEMORY_GATED_HANDLERS:
+                admission.wait_for_memory_headroom(
+                    handler_name,
+                    should_stop=self._stopping.is_set,
+                    on_throttle_start=self._emit_memory_throttle_started,
+                    on_throttle_end=self._emit_memory_throttle_completed,
+                )
+                if self._stopping.is_set():
+                    return
+
             with self.lock:
                 queued = self.queued_handlers.get(handler_name)
                 if queued and queued_item in queued:
                     queued.remove(queued_item)
 
-            if self._stopping.is_set():
-                return
-
-            file_path = queued_item.file_path
             cpu_fallback = False
             cap = self._resolve_max_runtime(handler_name)
             job_deadline = time.monotonic() + cap
@@ -1259,6 +1297,19 @@ def _install_sigterm_handler(sensor: FileSensor) -> None:
     signal.signal(signal.SIGTERM, handle_sigterm)
 
 
+def _install_batch_signal_handlers(sensor: FileSensor) -> None:
+    def handle_batch_signal(signum, _frame) -> None:
+        signal_name = signal.Signals(signum).name
+        logger.info("%s received, stopping observe batch processing", signal_name)
+        sensor.stop()
+        if signum == signal.SIGINT:
+            raise KeyboardInterrupt
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGINT, handle_batch_signal)
+    signal.signal(signal.SIGTERM, handle_batch_signal)
+
+
 def main():
     """CLI entry point."""
     parser = argparse.ArgumentParser(description="Unified observe file processor")
@@ -1400,13 +1451,18 @@ def main():
         modality_filter = (
             args.reprocess if args.reprocess in {"audio", "screen"} else None
         )
-        sensor.process_day(
-            args.day,
-            max_jobs=args.jobs,
-            segment_filter=args.segment,
-            stream_filter=args.stream,
-            modality_filter=modality_filter,
-        )
+        _install_batch_signal_handlers(sensor)
+        try:
+            sensor.process_day(
+                args.day,
+                max_jobs=args.jobs,
+                segment_filter=args.segment,
+                stream_filter=args.stream,
+                modality_filter=modality_filter,
+            )
+        except KeyboardInterrupt:
+            logger.info("Shutting down observe batch processing...")
+            sensor.stop()
     else:
         # Event mode: listen for Callosum events
         logger.info("Starting observe sensor in event mode...")

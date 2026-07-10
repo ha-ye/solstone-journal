@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -101,7 +102,7 @@ def _parse_nvidia_smi_row(
     return index, gpu_name, compute_cap, vram_mib
 
 
-def _has_unified_memory_name(gpu_name: str) -> bool:
+def has_unified_memory_name(gpu_name: str) -> bool:
     return "GB10" in gpu_name.upper()
 
 
@@ -167,6 +168,43 @@ def _probe_driver_cuda_version() -> int | None:
     return int(match.group(1))
 
 
+def detect_nvidia_unified_memory() -> bool:
+    if shutil.which("nvidia-smi") is None:
+        return False
+
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        LOG.warning(
+            "NVIDIA unified-memory probe timed out after %.0fs", _PROBE_TIMEOUT_S
+        )
+        return False
+    except OSError as exc:
+        LOG.warning("NVIDIA unified-memory probe could not start: %s", exc)
+        return False
+
+    if completed.returncode != 0:
+        LOG.warning(
+            "NVIDIA unified-memory probe exited with status %s", completed.returncode
+        )
+        return False
+
+    first_row = next(
+        (line.strip() for line in completed.stdout.splitlines() if line.strip()),
+        None,
+    )
+    if first_row is None:
+        LOG.warning("NVIDIA unified-memory probe returned no rows")
+        return False
+    return has_unified_memory_name(first_row)
+
+
 def probe_nvidia_gpu() -> NvidiaProbe:
     try:
         completed = subprocess.run(
@@ -207,7 +245,7 @@ def probe_nvidia_gpu() -> NvidiaProbe:
     index, gpu_name, compute_cap, vram_mib = parsed
     tiering_memory_mib = vram_mib
     memory_source = MEMORY_SOURCE_NVIDIA_VRAM
-    if vram_mib is None and _has_unified_memory_name(gpu_name):
+    if vram_mib is None and has_unified_memory_name(gpu_name):
         tiering_memory_mib = _read_linux_memavailable_mib()
         memory_source = (
             MEMORY_SOURCE_SYSTEM_AVAILABLE
@@ -293,6 +331,8 @@ __all__ = [
     "MEMORY_SOURCE_SYSTEM_AVAILABLE",
     "MEMORY_SOURCE_UNAVAILABLE",
     "NvidiaProbe",
+    "detect_nvidia_unified_memory",
+    "has_unified_memory_name",
     "parse_embedded_arch_set",
     "probe_nvidia_gpu",
     "resolve_local_backend",

@@ -79,6 +79,8 @@ Callosum is a JSON-per-line message bus for real-time event distribution across 
 | `status` | sense | Periodic state (every 5s) - see `emit_status()` in source |
 | `observing` | ingest | Recording window boundary crossed, files saved |
 | `detected` | sense | File detected, handler spawned |
+| `memory_throttle_started` | sense | Handler waiting for memory headroom |
+| `memory_throttle_completed` | sense | Handler admitted or stopped after memory throttle |
 | `described` | describe | Vision analysis complete |
 | `transcribed` | transcribe | Audio transcription complete (includes VAD metadata) |
 | `observed` | sense | All files for segment fully processed (may include errors) |
@@ -105,7 +107,7 @@ Callosum is a JSON-per-line message bus for real-time event distribution across 
 
 ### `think` - Generator and agent processing
 **Source:** `solstone/think/thinking.py`
-**Events:** `started`, `status`, `group_started`, `group_completed`, `talent_started`, `talent_completed`, `completed`, `segments_started`, `segments_completed`
+**Events:** `started`, `status`, `group_started`, `group_completed`, `talent_started`, `talent_completed`, `memory_throttle_started`, `memory_throttle_completed`, `completed`, `segments_started`, `segments_completed`
 **Key fields:** `mode` ("daily"/"segment"/"activity"/"flush"), `day`, `segment` (when mode="segment" or "flush"), `activity` and `facet` (when mode="activity")
 **Purpose:** Track think processing from generators through scheduled agents
 **`status`** - Periodic progress (every ~5s). Fields: `mode`, `day`, `segment`, `stream`, `agents_completed`, `agents_total`, `current_group_priority`, `current_agents` (list of running agent names). In `--segments` batch mode, also includes `segments_completed`, `segments_total`. In activity mode, includes `activity`, `facet`.

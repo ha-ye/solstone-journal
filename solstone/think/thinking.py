@@ -24,6 +24,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from solstone.observe.describe import FRAME_CONTEXT
+from solstone.think import admission
 from solstone.think.activities import (
     append_activity_record,
     get_activity_output_path,
@@ -478,11 +479,27 @@ def _flush_batch_state_machines(
 
 
 _CAP_LOGGED: set[str] = set()
+_LOCAL_PROVIDER_NEEDED: bool | None = None
 
 
 def reset_default_cap_log_state() -> None:
     """Clear the per-process record of which cap lines have been logged."""
     _CAP_LOGGED.clear()
+
+
+def reset_dispatch_admission_state() -> None:
+    """Clear the per-process local-provider admission memo."""
+    global _LOCAL_PROVIDER_NEEDED
+
+    _LOCAL_PROVIDER_NEEDED = None
+
+
+def _dispatch_local_provider_needed() -> bool:
+    global _LOCAL_PROVIDER_NEEDED
+
+    if _LOCAL_PROVIDER_NEEDED is None:
+        _LOCAL_PROVIDER_NEEDED = is_local_provider_needed()
+    return _LOCAL_PROVIDER_NEEDED
 
 
 def _segment_work_uses_bundled_local() -> bool:
@@ -950,6 +967,28 @@ class _NotClaimed:
         self.use_id = use_id
 
 
+def _emit_memory_throttle_started(**fields) -> None:
+    emit(
+        "memory_throttle_started",
+        stage=fields["stage"],
+        available_mib=fields["available_mib"],
+        floor_mib=fields["floor_mib"],
+    )
+
+
+def _emit_memory_throttle_completed(**fields) -> None:
+    emit(
+        "memory_throttle_completed",
+        stage=fields["stage"],
+        waited_seconds=fields["waited_seconds"],
+    )
+    _jsonl_log(
+        "memory_throttle.complete",
+        stage=fields["stage"],
+        waited_seconds=fields["waited_seconds"],
+    )
+
+
 def _dispatch_cortex_request(**kwargs) -> str | None | _NotClaimed:
     """Call cortex_request and classify dispatch failures for orchestrators.
 
@@ -957,6 +996,14 @@ def _dispatch_cortex_request(**kwargs) -> str | None | _NotClaimed:
     wait out a broadcast burst on the patient claim schedule rather than
     fast-failing the way interactive callers do.
     """
+    floor = admission.resolve_memory_floor_bytes()
+    if floor > 0 and _dispatch_local_provider_needed():
+        admission.wait_for_memory_headroom(
+            "think",
+            on_throttle_start=_emit_memory_throttle_started,
+            on_throttle_end=_emit_memory_throttle_completed,
+        )
+
     try:
         return cortex_request(**kwargs, claim_windows=PATIENT_CLAIM_WINDOWS)
     except CortexSpawnUnavailable as exc:

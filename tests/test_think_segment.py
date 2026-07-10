@@ -2292,6 +2292,7 @@ class TestDispatchCortexRequest:
             calls.append(kwargs)
             return "agent-1"
 
+        monkeypatch.setattr(think.admission, "resolve_memory_floor_bytes", lambda: 0)
         monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
 
         result = think._dispatch_cortex_request(prompt="hi", name="test")
@@ -2305,6 +2306,7 @@ class TestDispatchCortexRequest:
         def mock_cortex_request(**kwargs):
             raise think.CortexSpawnUnavailable(detail="FileNotFoundError")
 
+        monkeypatch.setattr(think.admission, "resolve_memory_floor_bytes", lambda: 0)
         monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
 
         result = think._dispatch_cortex_request(prompt="hi", name="test")
@@ -2317,12 +2319,145 @@ class TestDispatchCortexRequest:
         def mock_cortex_request(**kwargs):
             raise think.CortexNotClaimed(use_id="lost-1", detail="not claimed")
 
+        monkeypatch.setattr(think.admission, "resolve_memory_floor_bytes", lambda: 0)
         monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
 
         result = think._dispatch_cortex_request(prompt="hi", name="test")
 
         assert isinstance(result, think._NotClaimed)
         assert result.use_id == "lost-1"
+
+    def test_dispatch_floor_zero_skips_local_provider_check(self, monkeypatch):
+        from solstone.think import thinking as think
+
+        def fail_local_needed():
+            raise AssertionError("floor <= 0 must skip local-provider resolution")
+
+        monkeypatch.setattr(think.admission, "resolve_memory_floor_bytes", lambda: 0)
+        monkeypatch.setattr(think, "is_local_provider_needed", fail_local_needed)
+        monkeypatch.setattr(
+            think,
+            "cortex_request",
+            lambda **_kwargs: "agent-1",
+        )
+
+        assert think._dispatch_cortex_request(prompt="hi", name="test") == "agent-1"
+
+    # This pair proves only orchestrated dispatch gates; direct cortex_request stays
+    # interactive. Either test alone would be a weak assertion.
+    def test_dispatch_cortex_request_gates_when_local_needed(
+        self,
+        monkeypatch,
+    ):
+        from solstone.think import thinking as think
+
+        order = []
+        think.reset_dispatch_admission_state()
+        monkeypatch.setattr(think.admission, "resolve_memory_floor_bytes", lambda: 1)
+        monkeypatch.setattr(think, "is_local_provider_needed", lambda: True)
+        monkeypatch.setattr(think.admission, "read_available_bytes", lambda: 0)
+
+        def spy_wait(stage, **_kwargs):
+            order.append(("gate", stage))
+            return 0.0
+
+        def mock_cortex_request(**_kwargs):
+            order.append(("request", "test"))
+            return "agent-1"
+
+        monkeypatch.setattr(think.admission, "wait_for_memory_headroom", spy_wait)
+        monkeypatch.setattr(think, "cortex_request", mock_cortex_request)
+
+        assert think._dispatch_cortex_request(prompt="hi", name="test") == "agent-1"
+        assert order == [("gate", "think"), ("request", "test")]
+
+    def test_direct_cortex_request_never_gates(self, tmp_path, monkeypatch):
+        from solstone.think import cortex_client
+        from solstone.think import thinking as think
+
+        gate_calls = []
+        sent = []
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        think.reset_dispatch_admission_state()
+        monkeypatch.setattr(think.admission, "resolve_memory_floor_bytes", lambda: 1)
+        monkeypatch.setattr(think, "is_local_provider_needed", lambda: True)
+        monkeypatch.setattr(think.admission, "read_available_bytes", lambda: 0)
+        monkeypatch.setattr(
+            think.admission,
+            "wait_for_memory_headroom",
+            lambda *args, **kwargs: gate_calls.append((args, kwargs)) or 0.0,
+        )
+        monkeypatch.setattr(
+            cortex_client,
+            "callosum_send_classified",
+            lambda tract, event, **fields: sent.append((tract, event, fields)) or None,
+        )
+        monkeypatch.setattr(
+            cortex_client, "get_use_log_status", lambda _use_id: "running"
+        )
+
+        result = cortex_client.cortex_request(
+            prompt="hi",
+            name="test",
+            provider="local",
+            use_id="1713629000008",
+        )
+
+        assert result == "1713629000008"
+        assert gate_calls == []
+        assert sent[0][0:2] == ("cortex", "request")
+
+    def test_dispatch_memory_throttle_emits_callosum_and_jsonl_waited_seconds(
+        self,
+        monkeypatch,
+    ):
+        from solstone.think import thinking as think
+
+        emitted = []
+        jsonl = []
+        think.reset_dispatch_admission_state()
+        monkeypatch.setattr(think.admission, "resolve_memory_floor_bytes", lambda: 1)
+        monkeypatch.setattr(think, "is_local_provider_needed", lambda: True)
+        monkeypatch.setattr(
+            think, "emit", lambda event, **fields: emitted.append((event, fields))
+        )
+        monkeypatch.setattr(
+            think,
+            "_jsonl_log",
+            lambda event, **fields: jsonl.append((event, fields)),
+        )
+
+        def fake_wait(stage, **kwargs):
+            kwargs["on_throttle_start"](
+                stage=stage,
+                available_mib=2048,
+                floor_mib=5120,
+                available_bytes=2048 * 1024**2,
+                floor_bytes=5120 * 1024**2,
+            )
+            kwargs["on_throttle_end"](stage=stage, waited_seconds=12.5)
+            return 12.5
+
+        monkeypatch.setattr(think.admission, "wait_for_memory_headroom", fake_wait)
+        monkeypatch.setattr(think, "cortex_request", lambda **_kwargs: "agent-1")
+
+        assert think._dispatch_cortex_request(prompt="hi", name="test") == "agent-1"
+        assert emitted == [
+            (
+                "memory_throttle_started",
+                {"stage": "think", "available_mib": 2048, "floor_mib": 5120},
+            ),
+            (
+                "memory_throttle_completed",
+                {"stage": "think", "waited_seconds": 12.5},
+            ),
+        ]
+        assert jsonl == [
+            (
+                "memory_throttle.complete",
+                {"stage": "think", "waited_seconds": 12.5},
+            )
+        ]
 
 
 class TestStreamAutoResolution:

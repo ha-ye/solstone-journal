@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -18,6 +19,7 @@ import pytest
 
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
 from solstone.observe.sense import FileSensor, HandlerProcess, QueuedItem
+from solstone.think import admission
 from solstone.think.processing import (
     DisplayPowersaveSettings,
     GateSettings,
@@ -119,6 +121,10 @@ BEACON_FIELDS = {
     "pending_queue_depth",
     "recent_error_count",
     "last_error_reason",
+    "memory_throttled",
+    "memory_throttle_count",
+    "memory_floor_mib",
+    "memory_available_mib",
 }
 
 
@@ -128,6 +134,15 @@ def _status_emit_calls(sensor):
         for call in sensor.callosum.emit.call_args_list
         if call.args[:2] == ("observe", "status")
     ]
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.01)
+    raise AssertionError("condition was not met before timeout")
 
 
 # --- QueuedItem Tests ---
@@ -162,6 +177,43 @@ def test_sense_installs_sigterm_handler():
         assert signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL
     finally:
         signal.signal(signal.SIGTERM, previous)
+
+
+def test_batch_sigint_handler_stops_sensor_and_raises_keyboard_interrupt():
+    from solstone.observe import sense
+
+    previous_int = signal.getsignal(signal.SIGINT)
+    previous_term = signal.getsignal(signal.SIGTERM)
+    sensor = MagicMock()
+    try:
+        sense._install_batch_signal_handlers(sensor)
+        handler = signal.getsignal(signal.SIGINT)
+        assert callable(handler)
+        with pytest.raises(KeyboardInterrupt):
+            handler(signal.SIGINT, None)
+        sensor.stop.assert_called_once()
+    finally:
+        signal.signal(signal.SIGINT, previous_int)
+        signal.signal(signal.SIGTERM, previous_term)
+
+
+def test_batch_sigterm_handler_stops_sensor_and_exits():
+    from solstone.observe import sense
+
+    previous_int = signal.getsignal(signal.SIGINT)
+    previous_term = signal.getsignal(signal.SIGTERM)
+    sensor = MagicMock()
+    try:
+        sense._install_batch_signal_handlers(sensor)
+        handler = signal.getsignal(signal.SIGTERM)
+        assert callable(handler)
+        with pytest.raises(SystemExit) as exc_info:
+            handler(signal.SIGTERM, None)
+        assert exc_info.value.code == 143
+        sensor.stop.assert_called_once()
+    finally:
+        signal.signal(signal.SIGINT, previous_int)
+        signal.signal(signal.SIGTERM, previous_term)
 
 
 def test_resolve_concurrency_applies_to_handler_pools(tmp_path, monkeypatch, caplog):
@@ -797,6 +849,132 @@ def test_file_sensor_spawn_handler_duplicate(tmp_path):
     assert len(stub_pool.submitted) == 1
 
 
+# This pair proves only describe/transcribe/depict enter the memory gate; the
+# extract no-gate test alone would still pass if the gate were deleted.
+@pytest.mark.parametrize(
+    ("handler_name", "filename"),
+    [
+        ("describe", "screen.webm"),
+        ("transcribe", "audio.flac"),
+        ("depict", "image.png"),
+    ],
+)
+def test_describe_transcribe_depict_enter_memory_gate(
+    tmp_path,
+    monkeypatch,
+    handler_name,
+    filename,
+):
+    sensor = FileSensor(tmp_path)
+    test_file = make_segment_file(tmp_path, filename)
+    queued_item = QueuedItem(test_file)
+    sensor.queued_handlers[handler_name].append(queued_item)
+    calls = []
+    spawns = []
+
+    def fake_wait(stage, **kwargs):
+        calls.append((stage, kwargs["should_stop"]()))
+
+    def fake_spawn(*_args):
+        spawns.append(handler_name)
+        return FakeManaged(FakeProcess(0))
+
+    monkeypatch.setattr(
+        "solstone.observe.sense.admission.wait_for_memory_headroom",
+        fake_wait,
+    )
+    monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
+
+    sensor._run_handler(
+        queued_item,
+        handler_name,
+        ["journal", handler_name, "{file}"],
+        "143022_300",
+        "20250101",
+        False,
+    )
+
+    assert calls == [(handler_name, False)]
+    assert spawns == [handler_name]
+    assert sensor.queued_handlers[handler_name] == []
+
+
+def test_extract_handler_never_enters_memory_gate(tmp_path, monkeypatch):
+    sensor = FileSensor(tmp_path)
+    test_file = make_segment_file(tmp_path, "document.pdf")
+    queued_item = QueuedItem(test_file)
+    sensor.queued_handlers["extract"].append(queued_item)
+    spawns = []
+
+    def fail_wait(*_args, **_kwargs):
+        raise AssertionError("extract must not enter the memory gate")
+
+    def fake_spawn(*_args):
+        spawns.append("extract")
+        return FakeManaged(FakeProcess(0))
+
+    monkeypatch.setattr(
+        "solstone.observe.sense.admission.wait_for_memory_headroom",
+        fail_wait,
+    )
+    monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
+
+    sensor._run_handler(
+        queued_item,
+        "extract",
+        ["journal", "extract", "{file}"],
+        "143022_300",
+        "20250101",
+        False,
+    )
+
+    assert spawns == ["extract"]
+    assert sensor.queued_handlers["extract"] == []
+
+
+def test_duplicate_observing_during_memory_throttle_does_not_spawn_twice(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    test_file = make_segment_file(tmp_path, "screen.webm")
+    entered_gate = threading.Event()
+    release_gate = threading.Event()
+    gate_calls = []
+    spawn_calls = []
+
+    def fake_wait(stage, **_kwargs):
+        gate_calls.append(stage)
+        entered_gate.set()
+        assert release_gate.wait(timeout=5)
+
+    def fake_spawn(*_args):
+        spawn_calls.append(test_file)
+        return FakeManaged(FakeProcess(0))
+
+    monkeypatch.setattr(
+        "solstone.observe.sense.admission.wait_for_memory_headroom",
+        fake_wait,
+    )
+    monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
+
+    sensor._handle_file(test_file)
+    assert entered_gate.wait(timeout=5)
+    sensor._handle_file(test_file)
+
+    with sensor.lock:
+        assert len(sensor.queued_handlers["describe"]) == 1
+        assert sensor.running_handlers["describe"] == []
+
+    release_gate.set()
+    sensor.handler_pools["describe"].shutdown(wait=True)
+
+    assert gate_calls == ["describe"]
+    assert spawn_calls == [test_file]
+
+
 @patch("solstone.think.runner._current_day")
 def test_file_sensor_spawn_handler_real_process(
     mock_day, tmp_path, monkeypatch, mock_callosum
@@ -1037,6 +1215,130 @@ def test_emit_status_pending_depth_counts_work_without_path_leaks(
         value = str(kwargs[field])
         for leaked in leaked_substrings:
             assert leaked not in value
+
+
+def test_memory_throttle_beacon_uses_count_until_last_waiter_finishes(
+    tmp_path,
+    monkeypatch,
+):
+    import solstone.observe.sense as sense_module
+
+    admission.reset_admission_state()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        sense_module,
+        "get_config",
+        lambda: {"describe": {"max_concurrent": 2}},
+    )
+    monkeypatch.setattr(
+        admission, "get_config", lambda: {"memory": {"floor_mib": 5120}}
+    )
+    monkeypatch.setattr(admission, "_POLL_INTERVAL_SECONDS", 0.01)
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    files = [
+        make_segment_file(tmp_path, "screen1.webm"),
+        make_segment_file(tmp_path, "screen2.webm", segment="143023_300"),
+    ]
+    release_first = threading.Event()
+    release_second = threading.Event()
+    thread_order: dict[int, int] = {}
+    order_lock = threading.Lock()
+
+    def fake_available() -> int:
+        ident = threading.get_ident()
+        with order_lock:
+            index = thread_order.setdefault(ident, len(thread_order) + 1)
+        if index == 1 and release_first.is_set():
+            return 6 * 1024**3
+        if index == 2 and release_second.is_set():
+            return 6 * 1024**3
+        return 2 * 1024**3
+
+    monkeypatch.setattr(admission, "read_available_bytes", fake_available)
+    monkeypatch.setattr(
+        sensor,
+        "_spawn_managed_process",
+        lambda *_args: FakeManaged(FakeProcess(0)),
+    )
+
+    try:
+        for file_path in files:
+            sensor._handle_file(file_path)
+        _wait_until(lambda: admission.throttle_state().count == 2)
+
+        beacon = sensor._build_health_beacon()
+        assert beacon["memory_throttled"] is True
+        assert beacon["memory_throttle_count"] == 2
+        assert beacon["memory_floor_mib"] == 5120
+        assert beacon["memory_available_mib"] == 2048
+
+        release_first.set()
+        _wait_until(lambda: admission.throttle_state().count == 1)
+
+        beacon = sensor._build_health_beacon()
+        assert beacon["memory_throttled"] is True
+        assert beacon["memory_throttle_count"] == 1
+
+        release_second.set()
+        sensor.handler_pools["describe"].shutdown(wait=True)
+
+        beacon = sensor._build_health_beacon()
+        assert beacon["memory_throttled"] is False
+        assert beacon["memory_throttle_count"] == 0
+        assert beacon["memory_floor_mib"] is None
+        assert beacon["memory_available_mib"] is None
+    finally:
+        release_first.set()
+        release_second.set()
+        admission.reset_admission_state()
+
+
+def test_stop_returns_promptly_with_two_workers_mid_memory_wait_and_spawns_nothing(
+    tmp_path,
+    monkeypatch,
+):
+    import solstone.observe.sense as sense_module
+
+    admission.reset_admission_state()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        sense_module,
+        "get_config",
+        lambda: {"describe": {"max_concurrent": 2}},
+    )
+    monkeypatch.setattr(
+        admission, "get_config", lambda: {"memory": {"floor_mib": 5120}}
+    )
+    monkeypatch.setattr(admission, "read_available_bytes", lambda: 2 * 1024**3)
+    monkeypatch.setattr(admission, "_POLL_INTERVAL_SECONDS", 0.01)
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    files = [
+        make_segment_file(tmp_path, "stop1.webm"),
+        make_segment_file(tmp_path, "stop2.webm", segment="143023_300"),
+    ]
+    spawns = []
+    monkeypatch.setattr(
+        sensor,
+        "_spawn_managed_process",
+        lambda *_args: spawns.append("spawn") or FakeManaged(FakeProcess(0)),
+    )
+
+    try:
+        for file_path in files:
+            sensor._handle_file(file_path)
+        _wait_until(lambda: admission.throttle_state().count == 2)
+
+        started = time.monotonic()
+        sensor.stop()
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 1.0
+        assert spawns == []
+        assert admission.throttle_state().count == 0
+    finally:
+        admission.reset_admission_state()
 
 
 def test_successful_contact_and_idle_status_reset_recent_errors(tmp_path, monkeypatch):
@@ -1990,6 +2292,7 @@ def test_main_reprocess_screen_passes_stream_and_modality_filter(tmp_path, monke
     from solstone.observe import sense
 
     calls = []
+    installed = []
 
     class SensorStub:
         def __init__(self, *_args, **_kwargs):
@@ -2006,6 +2309,11 @@ def test_main_reprocess_screen_passes_stream_and_modality_filter(tmp_path, monke
     monkeypatch.setattr(sense, "FileSensor", SensorStub)
     monkeypatch.setattr(sense, "delete_outputs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
+        sense,
+        "_install_batch_signal_handlers",
+        lambda sensor: installed.append(sensor),
+    )
+    monkeypatch.setattr(
         sys,
         "argv",
         [
@@ -2021,6 +2329,7 @@ def test_main_reprocess_screen_passes_stream_and_modality_filter(tmp_path, monke
 
     sense.main()
 
+    assert len(installed) == 1
     assert calls == [
         (
             ("20250101",),
@@ -2038,6 +2347,7 @@ def test_main_reprocess_all_keeps_modality_filter_unset(tmp_path, monkeypatch):
     from solstone.observe import sense
 
     calls = []
+    installed = []
 
     class SensorStub:
         def __init__(self, *_args, **_kwargs):
@@ -2054,6 +2364,11 @@ def test_main_reprocess_all_keeps_modality_filter_unset(tmp_path, monkeypatch):
     monkeypatch.setattr(sense, "FileSensor", SensorStub)
     monkeypatch.setattr(sense, "delete_outputs", lambda *_args, **_kwargs: [])
     monkeypatch.setattr(
+        sense,
+        "_install_batch_signal_handlers",
+        lambda sensor: installed.append(sensor),
+    )
+    monkeypatch.setattr(
         sys,
         "argv",
         ["sense", "--day", "20250101", "--reprocess", "all"],
@@ -2061,6 +2376,7 @@ def test_main_reprocess_all_keeps_modality_filter_unset(tmp_path, monkeypatch):
 
     sense.main()
 
+    assert len(installed) == 1
     assert calls[0][1]["modality_filter"] is None
 
 
@@ -2122,6 +2438,61 @@ def test_transcribe_cpu_fallback_stays_in_same_worker_thread(tmp_path, monkeypat
     assert "--cpu" not in cmds[0]
     assert "--cpu" in cmds[1]
     assert checks == [(test_file, None)]
+
+
+def test_memory_gate_wait_does_not_consume_handler_cap_or_repeat_on_cpu_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
+    test_file = make_segment_file(tmp_path, "audio.flac")
+    queued_item = QueuedItem(test_file)
+    sensor.queued_handlers["transcribe"].append(queued_item)
+    gate_calls = []
+    wait_timeouts = []
+    cmds = []
+    monotonic_now = {"value": 0.0}
+
+    class RecordingProcess(FakeProcess):
+        def wait(self, timeout=None):
+            wait_timeouts.append(timeout)
+            return super().wait(timeout=timeout)
+
+    processes = [RecordingProcess(134), RecordingProcess(0)]
+
+    def fake_gate(stage, **_kwargs):
+        gate_calls.append(stage)
+        monotonic_now["value"] += 100.0
+
+    def fake_spawn(cmd, *_args):
+        cmds.append(cmd)
+        return FakeManaged(processes.pop(0))
+
+    monkeypatch.setattr(
+        "solstone.observe.sense.admission.wait_for_memory_headroom",
+        fake_gate,
+    )
+    monkeypatch.setattr(sensor, "_resolve_max_runtime", lambda _handler: 30)
+    monkeypatch.setattr(
+        "solstone.observe.sense.time.monotonic", lambda: monotonic_now["value"]
+    )
+    monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
+
+    sensor._run_handler(
+        queued_item,
+        "transcribe",
+        ["journal", "transcribe", "{file}"],
+        "143022_300",
+        "20250101",
+        False,
+    )
+
+    assert gate_calls == ["transcribe"]
+    assert wait_timeouts == [30.0, 30.0]
+    assert "--cpu" not in cmds[0]
+    assert "--cpu" in cmds[1]
 
 
 def test_watchdog_deadline_not_reset_across_cpu_fallback(tmp_path, monkeypatch):

@@ -20,10 +20,13 @@ def _patch_nvidia_smi(
     monkeypatch: pytest.MonkeyPatch,
     *,
     gpu_stdout: str = "0, NVIDIA GeForce RTX 4090, 8.9, 580.95.05, 24564\n",
+    name_stdout: str = "NVIDIA GeForce RTX 4090\n",
     version_stdout: str = "CUDA Version        : 13.0\n",
     gpu_returncode: int = 0,
+    name_returncode: int = 0,
     version_returncode: int = 0,
     gpu_exc: BaseException | None = None,
+    name_exc: BaseException | None = None,
     version_exc: BaseException | None = None,
 ) -> list[list[str]]:
     calls: list[list[str]] = []
@@ -34,6 +37,10 @@ def _patch_nvidia_smi(
             if gpu_exc is not None:
                 raise gpu_exc
             return _completed(gpu_stdout, gpu_returncode)
+        if "--query-gpu=name" in cmd:
+            if name_exc is not None:
+                raise name_exc
+            return _completed(name_stdout, name_returncode)
         if "--version" in cmd:
             if version_exc is not None:
                 raise version_exc
@@ -59,6 +66,38 @@ def test_arch_helpers() -> None:
     assert local_cuda._compute_cap_to_arch("12.1") == "sm_121"
     assert local_cuda._compute_cap_to_arch("bad") is None
     assert local_cuda._compute_cap_to_arch("8") is None
+    assert local_cuda.has_unified_memory_name("NVIDIA GB10") is True
+    assert local_cuda.has_unified_memory_name("NVIDIA GeForce RTX 4090") is False
+
+
+def test_detect_nvidia_unified_memory_absent_binary_spawns_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _patch_nvidia_smi(monkeypatch)
+    monkeypatch.setattr(local_cuda.shutil, "which", lambda _name: None)
+
+    assert local_cuda.detect_nvidia_unified_memory() is False
+    assert calls == []
+
+
+def test_detect_nvidia_unified_memory_single_name_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _patch_nvidia_smi(monkeypatch, name_stdout="NVIDIA GB10\n")
+    monkeypatch.setattr(local_cuda.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
+
+    assert local_cuda.detect_nvidia_unified_memory() is True
+    assert calls == [["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]]
+
+
+def test_detect_nvidia_unified_memory_non_gb10_name_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _patch_nvidia_smi(monkeypatch, name_stdout="NVIDIA GeForce RTX 4090\n")
+    monkeypatch.setattr(local_cuda.shutil, "which", lambda _name: "/usr/bin/nvidia-smi")
+
+    assert local_cuda.detect_nvidia_unified_memory() is False
+    assert calls == [["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"]]
 
 
 def test_probe_nvidia_gpu_parses_normal_output(monkeypatch: pytest.MonkeyPatch) -> None:
