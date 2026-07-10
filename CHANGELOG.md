@@ -4,11 +4,21 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
-## [Unreleased]
+## [0.8.3] - 2026-07-10
+
+### Added
+
+- the journal now builds a rebuildable relationship layer from evidence already in your journal. it connects people, projects, decisions, and documents without invented links.
+
+### Changed
+
+- setup and thinking settings now separate the three ways for sol to think: local on this machine, confidential processing, or an engine you bring yourself. on capable machines, local setup starts in the background; when no engine is chosen, sol says so plainly instead of choosing one silently.
 
 ### Fixed
 
-- local thinking on your own machine no longer gets stuck repeating itself on busy stretches. if a local run still runs out of room, sol tries once more with different settings before giving up clearly.
+- local thinking on your own machine is steadier under busy stretches and backlogs. sol now keeps repeat loops from taking over a run, waits out brief overload, and avoids starting more work than the local engine can handle.
+- on machines where local model work shares system memory, sol now waits for memory to free up before starting heavy work, instead of launching into out-of-memory failures.
+- speaker review can get through the first speaker setup on fresh or migrated journals. it finds a starting voice sample quickly, plays audio from mac journals, and offers your own name when the journal is new.
 
 ## [0.8.2] - 2026-07-07
 
