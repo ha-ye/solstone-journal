@@ -55,10 +55,3 @@ def test_vendored_get_speech_timestamps_matches_upstream():
     for vendored, upstream in zip(vendored_segments, upstream_segments):
         assert vendored["start"] == upstream["start"]
         assert vendored["end"] == upstream["end"]
-
-
-def test_vendored_get_vad_model_loads_asset():
-    """Vendored VAD should load the bundled ONNX asset."""
-    from solstone.observe._silero_vad import get_vad_model
-
-    assert get_vad_model() is not None

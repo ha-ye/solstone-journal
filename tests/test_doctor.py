@@ -569,7 +569,9 @@ class TestHostDependencies:
         assert pair not in doctor.READINESS_CHECKS
         assert pair not in doctor.JOURNAL_READINESS_CHECKS
 
-    def test_host_dependencies_ok_when_present(self, doctor):
+    def test_host_dependencies_ok_when_present(self, doctor, monkeypatch):
+        monkeypatch.setattr(doctor, "_host_module_present", lambda _module: True)
+
         result = doctor.host_dependencies_check(args(doctor))
 
         assert result.status == "ok"

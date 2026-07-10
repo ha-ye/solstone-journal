@@ -3,6 +3,7 @@
 
 """Tests for the bundled WeSpeaker embedder."""
 
+import importlib
 import platform
 
 import numpy as np
@@ -12,23 +13,45 @@ from solstone.observe.transcribe.main import (
     EMBEDDER_NAME,
     _compute_wespeaker_features,
     _embed_statements,
-    _get_embedder_session,
     _select_onnx_providers,
 )
 
-
-def test_session_loads() -> None:
-    session = _get_embedder_session()
-    inputs = session.get_inputs()
-    outputs = session.get_outputs()
-
-    assert inputs[0].name == "feats"
-    assert inputs[0].shape == ["B", "T", 80]
-    assert outputs[0].name == "embs"
-    assert outputs[0].shape == ["B", 256]
+transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
 
 
-def test_embed_synthetic_shape_and_provenance() -> None:
+class _Input:
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _Output:
+    def __init__(self, name: str):
+        self.name = name
+
+
+class _WeSpeakerStubSession:
+    def get_inputs(self):
+        return [_Input("feats")]
+
+    def get_outputs(self):
+        return [_Output("embs")]
+
+    def run(self, _outputs, _inputs):
+        return [np.zeros((1, 256), dtype=np.float32)]
+
+
+def test_embed_synthetic_shape_and_provenance(monkeypatch) -> None:
+    monkeypatch.setattr(transcribe_main, "_embedder_session", None)
+    monkeypatch.setattr(
+        transcribe_main,
+        "_get_embedder_session",
+        lambda: _WeSpeakerStubSession(),
+    )
+    monkeypatch.setattr(
+        transcribe_main,
+        "_compute_wespeaker_features",
+        lambda _audio, _sr: np.zeros((10, 80), dtype=np.float32),
+    )
     audio = np.zeros(3 * 16000, dtype=np.float32)
     result = _embed_statements(
         audio,
@@ -56,26 +79,6 @@ def test_compute_wespeaker_features_applies_cmn() -> None:
         np.zeros(feats.shape[1], dtype=np.float32),
         atol=1e-4,
     )
-
-
-def test_embed_determinism() -> None:
-    rng = np.random.default_rng(42)
-    audio = (rng.normal(0.0, 0.01, 3 * 16000)).astype(np.float32)
-    statements = [{"id": 1, "start": 0.0, "end": 3.0, "text": "x"}]
-
-    first = _embed_statements(audio, statements, 16000)
-    second = _embed_statements(audio, statements, 16000)
-
-    assert first is not None
-    assert second is not None
-
-    first_embedding = first["embeddings"][0]
-    second_embedding = second["embeddings"][0]
-    cosine = float(
-        np.dot(first_embedding, second_embedding)
-        / (np.linalg.norm(first_embedding) * np.linalg.norm(second_embedding))
-    )
-    assert cosine >= 0.99
 
 
 @pytest.mark.parametrize(

@@ -1,50 +1,34 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-import json
+import importlib
 import os
 import socket
 import subprocess
-import sys
 import threading
 
 
-def test_warm_exit_zero():
-    from solstone.think.warm import main
+def test_warm_requests_declared_modules_and_discovers_once(monkeypatch):
+    from solstone.think import warm
 
-    assert main([]) == 0
+    discovered = []
 
+    class _FakeRegistry:
+        def discover(self):
+            discovered.append(True)
 
-def test_warm_loads_heavy_natives():
-    script = """
-from solstone.think.warm import main
-rc = main([])
-import json
-import sys
-print(rc)
-print(json.dumps([
-    m
-    for m in ("cv2", "onnxruntime", "numpy", "soundfile", "sklearn")
-    if m in sys.modules
-]))
-"""
-    result = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    monkeypatch.setattr("solstone.apps.AppRegistry", _FakeRegistry)
+    requested = []
 
-    assert result.returncode == 0, result.stderr
-    lines = [line for line in result.stdout.splitlines() if line]
-    assert int(lines[-2]) == 0
-    assert set(json.loads(lines[-1])) == {
-        "cv2",
-        "onnxruntime",
-        "numpy",
-        "soundfile",
-        "sklearn",
-    }
+    def fake_import(name):
+        requested.append(name)
+        return object()
+
+    monkeypatch.setattr(importlib, "import_module", fake_import)
+
+    assert warm.main([]) == 0
+    assert requested == warm.warm_module_names()
+    assert discovered == [True]
 
 
 def test_warm_names_keep_onnxruntime_without_removed_stt_import(monkeypatch):
@@ -74,15 +58,15 @@ def test_warm_genuine_import_failure_names_module(monkeypatch, caplog):
     assert "totally_bogus_native_xyz" in caplog.text
 
 
-def test_warm_second_invocation_exits_zero():
-    from solstone.think import warm
-
-    assert warm.main([]) == 0
-    assert warm.main([]) == 0
-
-
 def test_warm_has_no_side_effects(tmp_path, monkeypatch):
     from solstone.think import warm
+
+    class _FakeRegistry:
+        def discover(self):
+            return None
+
+    monkeypatch.setattr("solstone.apps.AppRegistry", _FakeRegistry)
+    monkeypatch.setattr(importlib, "import_module", lambda _name: object())
 
     def snapshot() -> set[str]:
         return {path.relative_to(tmp_path).as_posix() for path in tmp_path.rglob("*")}

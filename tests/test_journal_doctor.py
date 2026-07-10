@@ -345,6 +345,7 @@ def test_service_identity_match_ok(doctor, monkeypatch):
 def test_role_skip_without_local_journal(doctor, monkeypatch, tmp_path, home_root):
     journal = tmp_path / "missing-journal"
     monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
+    monkeypatch.setattr(doctor, "_host_module_present", lambda _module: True)
     monkeypatch.setattr(doctor, "service_is_installed", lambda: False)
     monkeypatch.setattr(
         doctor,

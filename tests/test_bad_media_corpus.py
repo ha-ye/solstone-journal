@@ -37,6 +37,7 @@ from solstone.observe.processing_record import (
     STATE_FAILED,
 )
 from solstone.observe.utils import SAMPLE_RATE, AudioDecodeError
+from solstone.observe.vad import VadResult
 from solstone.think.cluster import (
     cluster_segments,
     read_segment_data_state,
@@ -291,6 +292,7 @@ def _drive_transcribe(
     from solstone.observe import processing_record
 
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    vad_module = importlib.import_module("solstone.observe.vad")
     stt_spy = Mock(return_value=[])
     monkeypatch.setattr(processing_record, "now_iso_utc", lambda: FIXED_NOW)
     monkeypatch.setattr(
@@ -299,6 +301,16 @@ def _drive_transcribe(
         lambda *args, **kwargs: None,
     )
     monkeypatch.setattr(transcribe_main, "stt_transcribe", stt_spy)
+    monkeypatch.setattr(
+        vad_module,
+        "run_vad",
+        lambda _audio, **_kwargs: VadResult(
+            duration=0.5,
+            speech_duration=0.0,
+            has_speech=False,
+        ),
+    )
+    monkeypatch.setattr(transcribe_main, "tag_audio", lambda *_args, **_kwargs: None)
 
     transcribe_main._process_one(
         audio_path,

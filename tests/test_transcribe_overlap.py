@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import sys
+import types
+
 import numpy as np
 import pytest
 
@@ -88,12 +91,35 @@ def test_compute_overlap_fraction_rejects_wrong_sample_rate():
         compute_overlap_fraction(np.zeros(16000, dtype=np.float32), sample_rate=8000)
 
 
-def test_get_overlap_session_loads_and_caches():
-    from solstone.observe.transcribe.overlap import _get_overlap_session
+def test_get_overlap_session_loads_and_caches(monkeypatch, tmp_path):
+    from solstone.observe import model_assets
+    from solstone.observe.transcribe import overlap
 
-    first = _get_overlap_session()
-    second = _get_overlap_session()
+    model = tmp_path / "seg.onnx"
+    model.write_bytes(b"stub")
+    constructions = []
 
+    class _CountingSession:
+        def __init__(self, *args, **kwargs):
+            constructions.append((args, kwargs))
+
+        def get_providers(self):
+            return ["CPUExecutionProvider"]
+
+    fake_ort = types.ModuleType("onnxruntime")
+    fake_ort.InferenceSession = _CountingSession
+    monkeypatch.setattr(overlap, "_overlap_session", None)
+    monkeypatch.setattr(
+        model_assets,
+        "resolve_pyannote_segmentation_model",
+        lambda: model,
+    )
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+
+    first = overlap._get_overlap_session()
+    second = overlap._get_overlap_session()
+
+    assert len(constructions) == 1
     assert first is second
 
 

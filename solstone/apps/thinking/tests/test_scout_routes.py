@@ -17,6 +17,19 @@ from solstone.think.journal_config import write_journal_config
 from solstone.think.services import operations, scout, scout_handoff
 
 
+class _InlineThread:
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+    def join(self, timeout=None):
+        return None
+
+
 def _approved_payload(key: str = "google-scout-key") -> dict[str, str]:
     return {
         "state": "approved",
@@ -119,17 +132,12 @@ def test_enable_success_remaps_terminal_phase_and_reads_enabled_state(
         return operations.HandoffResult("enabled", None, False)
 
     monkeypatch.setattr(scout_handoff, "run_scout_handoff", runner)
+    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
 
     response = thinking_client.post("/app/thinking/api/scout/enable")
 
     assert response.status_code == 202
     assert response.get_json()["operation"]["phase"] == "starting"
-    _wait_until(
-        lambda: (
-            _scout_status(thinking_client)["operation"]["phase"]
-            == thinking_copy.SCOUT_STATE_INVITED
-        )
-    )
     status = _scout_status(thinking_client)
     assert status["operation"]["phase"] == thinking_copy.SCOUT_STATE_INVITED
     assert status["state"] == thinking_copy.SCOUT_STATE_ON

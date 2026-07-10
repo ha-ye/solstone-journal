@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import sys
+import types
 from pathlib import Path
 
 import numpy as np
@@ -155,6 +157,7 @@ def test_get_pyannote_session_missing_asset_raises_file_not_found(
         lambda: tmp_path / "missing.onnx",
     )
     monkeypatch.setattr(diarize, "_pyannote_session", None)
+    monkeypatch.setitem(sys.modules, "onnxruntime", types.ModuleType("onnxruntime"))
 
     with pytest.raises(FileNotFoundError):
         diarize._get_pyannote_session()

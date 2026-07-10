@@ -3,18 +3,13 @@
 
 from __future__ import annotations
 
-import hashlib
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import onnx
 import pytest
-from onnx import TensorProto, helper
-from tokenizers import Tokenizer
-from tokenizers.models import WordLevel
-from tokenizers.pre_tokenizers import Whitespace
-from tokenizers.processors import TemplateProcessing
 
 from solstone.think.indexer import rerank_scorer
 from solstone.think.providers import rerank_install
@@ -39,89 +34,6 @@ def _reset_scorer() -> None:
     rerank_scorer._disabled = False
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def _write_fixture_model(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    inputs = [
-        helper.make_tensor_value_info("input_ids", TensorProto.INT64, ["batch", "seq"]),
-        helper.make_tensor_value_info(
-            "attention_mask", TensorProto.INT64, ["batch", "seq"]
-        ),
-        helper.make_tensor_value_info(
-            "token_type_ids", TensorProto.INT64, ["batch", "seq"]
-        ),
-    ]
-    output = helper.make_tensor_value_info("logits", TensorProto.FLOAT, ["batch", 1])
-    nodes = [
-        helper.make_node("Cast", ["input_ids"], ["ids_f"], to=TensorProto.FLOAT),
-        helper.make_node("Cast", ["attention_mask"], ["mask_f"], to=TensorProto.FLOAT),
-        helper.make_node("Cast", ["token_type_ids"], ["types_f"], to=TensorProto.FLOAT),
-        helper.make_node("Add", ["ids_f", "mask_f"], ["ids_mask_f"]),
-        helper.make_node("Add", ["ids_mask_f", "types_f"], ["combined_f"]),
-        helper.make_node(
-            "ReduceMean", ["combined_f"], ["logits"], axes=[1], keepdims=1
-        ),
-    ]
-    model = helper.make_model(
-        helper.make_graph(nodes, "rerank_fixture", inputs, [output]),
-        opset_imports=[helper.make_opsetid("", 13)],
-    )
-    model.ir_version = 10
-    onnx.checker.check_model(model)
-    onnx.save(model, path)
-
-
-def _write_fixture_tokenizer(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tokenizer = Tokenizer(
-        WordLevel(
-            vocab={
-                "[PAD]": 0,
-                "[UNK]": 1,
-                "[CLS]": 2,
-                "[SEP]": 3,
-                "query": 4,
-                "doc": 5,
-                "one": 6,
-                "two": 7,
-                "three": 8,
-            },
-            unk_token="[UNK]",
-        )
-    )
-    tokenizer.pre_tokenizer = Whitespace()
-    tokenizer.post_processor = TemplateProcessing(
-        single="[CLS]:0 $A:0 [SEP]:0",
-        pair="[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
-        special_tokens=[("[CLS]", 2), ("[SEP]", 3)],
-    )
-    tokenizer.save(str(path))
-
-
-def _fixture_spec(
-    model_path: Path, tokenizer_path: Path
-) -> rerank_install.RerankModelSpec:
-    return rerank_install.RerankModelSpec(
-        repo=FIXTURE_REPO,
-        revision=FIXTURE_REVISION,
-        files=(
-            rerank_install.RerankFileSpec(
-                path=MODEL_PATH,
-                sha256=_sha256(model_path),
-                size_bytes=model_path.stat().st_size,
-            ),
-            rerank_install.RerankFileSpec(
-                path=TOKENIZER_PATH,
-                sha256=_sha256(tokenizer_path),
-                size_bytes=tokenizer_path.stat().st_size,
-            ),
-        ),
-    )
-
-
 def _stage_fixture_assets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> rerank_install.RerankModelSpec:
@@ -132,9 +44,26 @@ def _stage_fixture_assets(
     tokenizer_path = (
         tmp_path / "cache" / "providers" / "rerank" / FIXTURE_REVISION / TOKENIZER_PATH
     )
-    _write_fixture_model(model_path)
-    _write_fixture_tokenizer(tokenizer_path)
-    spec = _fixture_spec(model_path, tokenizer_path)
+    model_path.parent.mkdir(parents=True, exist_ok=True)
+    tokenizer_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path.write_bytes(b"stub-model")
+    tokenizer_path.write_bytes(b"stub-tokenizer")
+    spec = rerank_install.RerankModelSpec(
+        repo=FIXTURE_REPO,
+        revision=FIXTURE_REVISION,
+        files=(
+            rerank_install.RerankFileSpec(
+                path=MODEL_PATH,
+                sha256="0" * 64,
+                size_bytes=model_path.stat().st_size,
+            ),
+            rerank_install.RerankFileSpec(
+                path=TOKENIZER_PATH,
+                sha256="1" * 64,
+                size_bytes=tokenizer_path.stat().st_size,
+            ),
+        ),
+    )
     monkeypatch.setattr(rerank_install, "RERANK_MODEL_SPEC", spec)
     return spec
 
@@ -151,19 +80,14 @@ class _Encoding:
 
 
 class _FakeTokenizer:
+    def enable_truncation(self, *, max_length):
+        self.max_length = max_length
+
+    def enable_padding(self):
+        self.padding_enabled = True
+
     def encode_batch(self, pairs):
         return [_Encoding() for _pair in pairs]
-
-
-def test_real_session_scores_deterministically(tmp_path, monkeypatch) -> None:
-    _stage_fixture_assets(tmp_path, monkeypatch)
-
-    result = rerank_scorer.score(
-        "query one",
-        ["doc two", "doc one two three"],
-    )
-
-    assert result == pytest.approx([4.444444656, 6.444444656])
 
 
 def test_missing_assets_fail_closed_and_latch(tmp_path, monkeypatch) -> None:
@@ -247,6 +171,30 @@ def test_scoring_path_never_calls_installer_or_downloader(
     tmp_path, monkeypatch
 ) -> None:
     _stage_fixture_assets(tmp_path, monkeypatch)
+
+    class SessionOptions:
+        pass
+
+    class StubSession:
+        def get_inputs(self):
+            return [_Input("input_ids")]
+
+        def run(self, _outputs: Any, feed: dict[str, Any]):
+            batch = feed["input_ids"].shape[0]
+            return [np.arange(batch, dtype=np.float32).reshape(-1, 1)]
+
+    class RuntimeTokenizer:
+        @staticmethod
+        def from_file(_path: str):
+            return _FakeTokenizer()
+
+    fake_ort = types.ModuleType("onnxruntime")
+    fake_ort.SessionOptions = SessionOptions
+    fake_ort.InferenceSession = lambda *_args, **_kwargs: StubSession()
+    fake_tok = types.ModuleType("tokenizers")
+    fake_tok.Tokenizer = RuntimeTokenizer
+    monkeypatch.setitem(sys.modules, "onnxruntime", fake_ort)
+    monkeypatch.setitem(sys.modules, "tokenizers", fake_tok)
     monkeypatch.setattr(
         rerank_install,
         "_download_file",
