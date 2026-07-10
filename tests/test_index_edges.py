@@ -78,7 +78,7 @@ def synthetic_edge_extractor(entries: list[dict], ctx: EdgeContext) -> list[dict
             "kind": "attended-with",
             "src_name": None,
             "dst_name": None,
-            "day": ctx.day,
+            "day": ctx.day or None,
             "facet": ctx.facet,
             "source": "participation",
             "path": ctx.path,
@@ -183,6 +183,24 @@ def _edge_ctx(rel: str, *, facet: str = "edges-story") -> EdgeContext:
         resolve=lambda _name: None,
         drop=lambda: None,
     )
+
+
+def _valid_insert_edge_row(day: Any, *, path: str = "synthetic") -> dict[str, Any]:
+    return {
+        "src": "edge_ada",
+        "dst": "edge_byron",
+        "kind": "attended-with",
+        "src_name": None,
+        "dst_name": None,
+        "day": day,
+        "facet": "edges-activity",
+        "source": "participation",
+        "path": path,
+        "anchor": "ok",
+        "label": "valid row",
+        "ts": 0,
+        "weight": 1,
+    }
 
 
 def test_relation_label_formats_documented_forms():
@@ -959,6 +977,64 @@ def test_rescan_file_indexes_activity_edges(edges_journal):
     conn.close()
 
 
+def test_non_date_activity_edge_source_fails_without_poisoning_sibling(
+    edges_journal,
+    caplog,
+):
+    bad_rel = "facets/edges-story/activities/notaday.jsonl"
+    bad_path = edges_journal / bad_rel
+    _write_jsonl(
+        bad_path,
+        [
+            {
+                "id": "invalid-day-activity",
+                "title": "Invalid day source",
+                "created_at": 1777555000000,
+                "participation": [
+                    {"entity_id": "edge_ada", "role": "attendee"},
+                    {"entity_id": "edge_byron", "role": "attendee"},
+                ],
+            }
+        ],
+    )
+
+    caplog.set_level(logging.ERROR, logger="solstone.think.indexer.edges")
+    conn = _conn(edges_journal)
+    result = _extract_file_edges(conn, bad_rel, str(bad_path), {})
+
+    assert result.failed
+    assert result.rows_inserted == 0
+    assert result.drops == 0
+    assert (
+        conn.execute("SELECT count(*) FROM edges WHERE path=?", (bad_rel,)).fetchone()[
+            0
+        ]
+        == 0
+    )
+    conn.close()
+    assert f"Skipping edge extraction for {bad_rel}" in caplog.text
+
+    caplog.clear()
+    assert scan_journal(str(edges_journal), full=True) is True
+
+    conn = _conn(edges_journal)
+    assert (
+        conn.execute("SELECT count(*) FROM edges WHERE path=?", (bad_rel,)).fetchone()[
+            0
+        ]
+        == 0
+    )
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM edges WHERE path=?",
+            ("facets/edges-story/activities/20260430.jsonl",),
+        ).fetchone()[0]
+        > 0
+    )
+    conn.close()
+    assert f"Skipping edge extraction for {bad_rel}" in caplog.text
+
+
 def test_rebuild_edges_is_idempotent_and_preserves_chunks_files(edges_journal):
     scan_journal(str(edges_journal), full=True)
     conn = _conn(edges_journal)
@@ -1019,6 +1095,48 @@ def test_insert_bad_kind_raises_directly(edges_journal):
                 }
             ],
         )
+    conn.close()
+
+
+@pytest.mark.parametrize("day", [None, "20260430"])
+def test_insert_edges_accepts_null_and_valid_day_values(edges_journal, day):
+    conn = _conn(edges_journal)
+    path = f"synthetic/day-ok/{day}"
+
+    assert insert_edges(conn, [_valid_insert_edge_row(day, path=path)]) == 1
+
+    stored = conn.execute("SELECT day FROM edges WHERE path=?", (path,)).fetchone()[0]
+    assert stored == day
+    conn.close()
+
+
+@pytest.mark.parametrize("day", ["", "notaday", "2026430", 20260430])
+def test_insert_edges_rejects_invalid_day_values_atomically(edges_journal, day):
+    conn = _conn(edges_journal)
+    before = conn.execute("SELECT count(*) FROM edges").fetchone()[0]
+
+    with pytest.raises(ValueError, match="Invalid edge day"):
+        insert_edges(
+            conn,
+            [
+                _valid_insert_edge_row(
+                    "20260430",
+                    path="synthetic/day-validation/valid",
+                ),
+                _valid_insert_edge_row(
+                    day,
+                    path="synthetic/day-validation/invalid",
+                ),
+            ],
+        )
+
+    assert conn.execute("SELECT count(*) FROM edges").fetchone()[0] == before
+    assert (
+        conn.execute(
+            "SELECT count(*) FROM edges WHERE path LIKE 'synthetic/day-validation/%'"
+        ).fetchone()[0]
+        == 0
+    )
     conn.close()
 
 

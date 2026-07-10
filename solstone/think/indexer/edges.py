@@ -159,6 +159,7 @@ def _ensure_edges_schema(conn: sqlite3.Connection) -> None:
 def insert_edges(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
     """Validate, normalize, and insert edge rows."""
     prepared: list[tuple[Any, ...]] = []
+    validated_days: set[str] = set()
     for row in rows:
         kind = row.get("kind")
         if kind not in KINDS:
@@ -170,6 +171,17 @@ def insert_edges(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
             raise ValueError("edge row requires non-empty string src")
         if not isinstance(dst, str) or not dst:
             raise ValueError("edge row requires non-empty string dst")
+
+        day = row.get("day")
+        if day is not None:
+            if not isinstance(day, str) or len(day) != 8 or not day.isdigit():
+                raise ValueError(f"Invalid edge day: {day!r}")
+            if day not in validated_days:
+                try:
+                    datetime.strptime(day, "%Y%m%d")
+                except ValueError as exc:
+                    raise ValueError(f"Invalid edge day: {day!r}") from exc
+                validated_days.add(day)
 
         directed = 1 if kind in DIRECTED_KINDS else 0
         src_name = row.get("src_name")
@@ -189,7 +201,7 @@ def insert_edges(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
             "directed": directed,
             "src_name": src_name,
             "dst_name": dst_name,
-            "day": row.get("day"),
+            "day": day,
             "facet": facet,
             "source": row.get("source"),
             "path": row.get("path"),

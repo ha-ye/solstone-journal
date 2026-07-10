@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Entity detection edge extraction."""
+"""Entity detection and observation-relation edge extraction."""
 
 from __future__ import annotations
 
@@ -34,8 +34,6 @@ def extract_observation_edges(entries: list[dict], ctx: EdgeContext) -> list[dic
         if not isinstance(observation, dict):
             continue
         relation = observation.get("relation")
-        if relation is None:
-            continue
         if not isinstance(relation, dict):
             continue
 
