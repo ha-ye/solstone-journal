@@ -31,16 +31,48 @@ logger = logging.getLogger(__name__)
 EDGES_SCHEMA_VERSION = 1
 EDGES_SCHEMA_PATH = "edges:__schema__"
 KINDS = frozenset(
-    {"attended-with", "co-present", "spoke-with", "mentioned", "committed-to"}
+    {
+        "attended-with",
+        "co-present",
+        "spoke-with",
+        "mentioned",
+        "committed-to",
+        "works-with",
+        "works-at",
+        "reports-to",
+        "family-of",
+        "knows",
+        "uses",
+        "created",
+        "other",
+        "decided-with",
+        "messaged-with",
+        "scheduled-with",
+        "party-of",
+    }
 )
-# Shared directional storage contract; the parallel speaker/mention edge-source
-# lode relies on these kinds being stored without endpoint normalization.
-DIRECTED_KINDS = frozenset({"committed-to", "mentioned"})
+# Directed edge kinds are stored without endpoint normalization so orientation
+# survives insertion, folding, and query.
+DIRECTED_KINDS = frozenset(
+    {"committed-to", "mentioned", "works-at", "reports-to", "uses", "created"}
+)
 KIND_WEIGHTS = {
     "committed-to": 5,
+    "works-with": 4,
+    "works-at": 4,
+    "reports-to": 4,
+    "family-of": 4,
+    "knows": 4,
+    "uses": 4,
+    "created": 4,
+    "other": 4,
+    "decided-with": 4,
     "spoke-with": 4,
     "mentioned": 3,
     "attended-with": 3,
+    "messaged-with": 3,
+    "party-of": 3,
+    "scheduled-with": 2,
     "co-present": 1,
 }
 """Relationship-strength weights; commitments outweigh passive co-presence."""

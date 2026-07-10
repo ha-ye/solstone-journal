@@ -1741,6 +1741,7 @@ def extract_activity_edges(entries: list[dict], ctx: EdgeContext) -> list[dict]:
                 _extract_story_edge_rows(
                     commitments,
                     ctx=ctx,
+                    kind="committed-to",
                     source="commitment",
                     anchor=record_id,
                     ts=ts,
@@ -1753,19 +1754,80 @@ def extract_activity_edges(entries: list[dict], ctx: EdgeContext) -> list[dict]:
                 _extract_story_edge_rows(
                     closures,
                     ctx=ctx,
+                    kind="committed-to",
                     source="closure",
                     anchor=record_id,
                     ts=ts,
                 )
             )
 
+        decisions = record.get("decisions")
+        if isinstance(decisions, list):
+            rows.extend(
+                _extract_story_edge_rows(
+                    decisions,
+                    ctx=ctx,
+                    kind="decided-with",
+                    source="decision",
+                    anchor=record_id,
+                    ts=ts,
+                )
+            )
+
+        relations = record.get("relations")
+        if isinstance(relations, list):
+            for relation in relations:
+                if not isinstance(relation, dict):
+                    continue
+                src = relation.get("from_entity_id")
+                dst = relation.get("to_entity_id")
+                if not isinstance(src, str) or not src:
+                    continue
+                if not isinstance(dst, str) or not dst:
+                    continue
+                if src == dst:
+                    continue
+                rows.append(
+                    {
+                        "src": src,
+                        "dst": dst,
+                        "kind": relation.get("kind"),
+                        "src_name": _edge_str(relation.get("from")),
+                        "dst_name": _edge_str(relation.get("to")),
+                        "day": ctx.day,
+                        "facet": ctx.facet,
+                        "source": "relation",
+                        "path": ctx.path,
+                        "anchor": record_id,
+                        "label": _relation_label(
+                            relation.get("note"),
+                            relation.get("quote"),
+                        ),
+                        "ts": ts,
+                        "weight": 1,
+                    }
+                )
+
     return rows
+
+
+def _relation_label(note: Any, quote: Any) -> str:
+    """Join relation note and quote into the canonical edge label."""
+    parts: list[str] = []
+    note_text = _edge_str(note)
+    quote_text = _edge_str(quote)
+    if note_text:
+        parts.append(note_text)
+    if quote_text:
+        parts.append(f'"{quote_text}"')
+    return " — ".join(parts)
 
 
 def _extract_story_edge_rows(
     entries: list[Any],
     *,
     ctx: EdgeContext,
+    kind: str,
     source: str,
     anchor: str,
     ts: int,
@@ -1786,7 +1848,7 @@ def _extract_story_edge_rows(
             {
                 "src": owner_id,
                 "dst": counterparty_id,
-                "kind": "committed-to",
+                "kind": kind,
                 "src_name": None,
                 "dst_name": None,
                 "day": ctx.day,

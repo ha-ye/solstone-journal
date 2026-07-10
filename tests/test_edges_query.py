@@ -44,6 +44,22 @@ CHUNK_COLUMNS = [
 ]
 FILE_COLUMNS = ["path", "mtime"]
 EDGE_FILE_COLUMNS = ["path", "mtime"]
+NEW_KINDS = frozenset(
+    {
+        "works-with",
+        "works-at",
+        "reports-to",
+        "family-of",
+        "knows",
+        "uses",
+        "created",
+        "other",
+        "decided-with",
+        "messaged-with",
+        "scheduled-with",
+        "party-of",
+    }
+)
 
 
 def _half_life_decay(age_days: int) -> float:
@@ -141,8 +157,86 @@ def _edge_rows(journal: Path) -> list[sqlite3.Row]:
 
 
 def test_edge_kind_constant_tables_stay_in_sync():
+    assert NEW_KINDS <= edge_index.KINDS
     assert set(edge_index.KIND_WEIGHTS) == set(edge_index.KINDS)
     assert edge_index.DIRECTED_KINDS <= edge_index.KINDS
+    assert {kind: edge_index.KIND_WEIGHTS[kind] for kind in sorted(NEW_KINDS)} == {
+        "created": 4,
+        "decided-with": 4,
+        "family-of": 4,
+        "knows": 4,
+        "messaged-with": 3,
+        "other": 4,
+        "party-of": 3,
+        "reports-to": 4,
+        "scheduled-with": 2,
+        "uses": 4,
+        "works-at": 4,
+        "works-with": 4,
+    }
+    assert {"works-at", "reports-to", "uses", "created"} <= edge_index.DIRECTED_KINDS
+    assert not (
+        {"works-with", "family-of", "knows", "other"} & edge_index.DIRECTED_KINDS
+    )
+
+
+def test_new_relation_kinds_store_directed_and_undirected_orientation(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_z_manager",
+                "edge_a_report",
+                "reports-to",
+                "direction/reports.jsonl",
+                src_name="Manager Name",
+                dst_name="Report Name",
+            ),
+            _row(
+                "edge_z_family",
+                "edge_a_family",
+                "family-of",
+                "direction/family.jsonl",
+                src_name="Z Family",
+                dst_name="A Family",
+            ),
+        ],
+    )
+
+    conn = _direct_conn(edges_journal)
+    try:
+        rows = {
+            row["path"]: dict(row)
+            for row in conn.execute(
+                """
+                SELECT src, dst, kind, directed, src_name, dst_name, path
+                FROM edges
+                WHERE path LIKE 'direction/%'
+                """
+            )
+        }
+    finally:
+        conn.close()
+
+    assert rows["direction/reports.jsonl"] == {
+        "src": "edge_z_manager",
+        "dst": "edge_a_report",
+        "kind": "reports-to",
+        "directed": 1,
+        "src_name": "Manager Name",
+        "dst_name": "Report Name",
+        "path": "direction/reports.jsonl",
+    }
+    assert rows["direction/family.jsonl"] == {
+        "src": "edge_a_family",
+        "dst": "edge_z_family",
+        "kind": "family-of",
+        "directed": 0,
+        "src_name": "A Family",
+        "dst_name": "Z Family",
+        "path": "direction/family.jsonl",
+    }
 
 
 def test_entity_network_scores_kinds_decay_and_null_days(edges_journal):
