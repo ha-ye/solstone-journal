@@ -3,19 +3,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
 
-from solstone.think import models
+from solstone.think import models, talents
 from solstone.think.models import (
     CLAUDE_SONNET_4,
     GEMINI_FLASH,
     GPT_5_MINI,
     LOCAL_MODEL,
     NO_BRAIN_PROVIDER,
+    AttestationNotVerifiedError,
     NoBrainConfiguredError,
     get_backup_provider,
     is_local_provider_needed,
@@ -59,6 +61,39 @@ def _write_journal_config(tmp_path: Path, config: dict) -> str:
     return payload
 
 
+def _confidential_config(*, provider_pins: bool = True) -> dict:
+    config: dict = {
+        "env": {
+            "GOOGLE_API_KEY": "test-google-key",
+            "ANTHROPIC_API_KEY": "test-anthropic-key",
+            "OPENAI_API_KEY": "test-openai-key",
+        },
+        "services": {
+            "confidential": {
+                "enabled_at": "2026-05-24T00:00:00Z",
+                "account_id": "acct-test",
+                "endpoint_url": "https://spp.example.test",
+                "served_model_id": "confidential-model",
+                "credential_created_at": "2026-05-24T00:00:00Z",
+                "credential_fingerprint_sha256": "fingerprint",
+                "prior_generate_provider": "google",
+                "prior_cogitate_provider": "openai",
+                "prior_local_endpoint": None,
+            }
+        },
+    }
+    if provider_pins:
+        config["providers"] = {
+            "generate": {"provider": "google", "backup": "openai"},
+            "cogitate": {"provider": "openai", "backup": "anthropic"},
+        }
+    return config
+
+
+def _assert_attestation_not_verified(exc: AttestationNotVerifiedError) -> None:
+    assert exc.reason_code == "attestation_not_yet_verified"
+
+
 def test_unconfigured_journal_resolves_to_no_brain(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
 
@@ -82,6 +117,104 @@ def test_unconfigured_execution_stops_before_cloud(tmp_path, monkeypatch):
     for mock in mocks:
         mock.assert_not_called()
     assert not (tmp_path / "config" / "journal.json").exists()
+
+
+def test_confidential_generate_stops_before_any_provider_dispatch(
+    tmp_path,
+    monkeypatch,
+):
+    _empty_journal(tmp_path, monkeypatch)
+    _write_journal_config(tmp_path, _confidential_config())
+    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    mocks = _cloud_call_mocks(monkeypatch)
+    httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
+    monkeypatch.setattr("httpx.post", httpx_post)
+
+    with pytest.raises(AttestationNotVerifiedError) as generate_exc:
+        models.generate("hello", "any.context")
+    _assert_attestation_not_verified(generate_exc.value)
+
+    with pytest.raises(AttestationNotVerifiedError) as result_exc:
+        models.generate_with_result("hello", "any.context")
+    _assert_attestation_not_verified(result_exc.value)
+
+    with pytest.raises(AttestationNotVerifiedError) as async_exc:
+        asyncio.run(models.agenerate("hello", "any.context"))
+    _assert_attestation_not_verified(async_exc.value)
+
+    for mock in mocks:
+        mock.assert_not_called()
+    httpx_post.assert_not_called()
+
+
+def test_confidential_cogitate_stops_before_any_provider_dispatch(
+    tmp_path,
+    monkeypatch,
+):
+    _empty_journal(tmp_path, monkeypatch)
+    _write_journal_config(tmp_path, _confidential_config())
+    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    mocks = _cloud_call_mocks(monkeypatch)
+    build_llm = Mock(side_effect=AssertionError("llm build attempted"))
+    monkeypatch.setattr("solstone.think.providers.openhands._build_llm", build_llm)
+    httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
+    monkeypatch.setattr("httpx.post", httpx_post)
+
+    with pytest.raises(AttestationNotVerifiedError) as exc_info:
+        asyncio.run(
+            talents._execute_with_tools(
+                {"provider": "google"},
+                lambda _event: None,
+            )
+        )
+
+    _assert_attestation_not_verified(exc_info.value)
+    build_llm.assert_not_called()
+    for mock in mocks:
+        mock.assert_not_called()
+    httpx_post.assert_not_called()
+
+
+def test_confidential_attestation_error_is_non_retryable(tmp_path, monkeypatch):
+    _empty_journal(tmp_path, monkeypatch)
+    _write_journal_config(tmp_path, _confidential_config())
+    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    mocks = _cloud_call_mocks(monkeypatch)
+
+    assert talents._is_retryable_error(AttestationNotVerifiedError()) is False
+
+    with pytest.raises(AttestationNotVerifiedError):
+        asyncio.run(
+            talents._execute_with_tools(
+                {"provider": "google", "backup": "anthropic"},
+                lambda _event: None,
+            )
+        )
+
+    for mock in mocks:
+        mock.assert_not_called()
+
+
+def test_confidential_gate_keys_on_provenance_not_provider_resolution(
+    tmp_path,
+    monkeypatch,
+):
+    _empty_journal(tmp_path, monkeypatch)
+    config = _confidential_config(provider_pins=False)
+    config["env"] = {"GOOGLE_API_KEY": "stray-google-key"}
+    _write_journal_config(tmp_path, config)
+    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    mocks = _cloud_call_mocks(monkeypatch)
+    httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
+    monkeypatch.setattr("httpx.post", httpx_post)
+
+    with pytest.raises(AttestationNotVerifiedError) as exc_info:
+        models.generate("hello", "any.context")
+
+    _assert_attestation_not_verified(exc_info.value)
+    for mock in mocks:
+        mock.assert_not_called()
+    httpx_post.assert_not_called()
 
 
 def test_none_provider_module_and_backup_fail_closed(tmp_path, monkeypatch):

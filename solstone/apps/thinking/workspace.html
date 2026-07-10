@@ -454,14 +454,15 @@
           <button type="button" class="trail" data-open-view="local-setup" id="localLaneStatus">turn on local →</button>
         </article>
 
-        <article class="lane" id="lane-confidential" data-lane="confidential" data-open-view="confidential-setup" role="button" tabindex="0">
+        <article class="lane" id="lane-confidential" data-lane="confidential" data-open-view="main" role="button" tabindex="0">
           <div class="lanehead">
             <h2>confidential</h2>
-            <span class="pill" id="confidentialLanePill">not open yet</span>
+            <span class="pill" id="confidentialLanePill">off</span>
           </div>
-          <p id="confidentialLaneDescription">let sol th&#105;nk without using your device's power — on confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. not open yet; scouts get first access.</p>
+          <p id="confidentialLaneDescription">send thinking work to confidential hardware only after attestation verifies. today it is not yet verified, so setup can land but thinking stays blocked.</p>
           <span class="activetag" id="confidentialActiveTag" hidden>active</span>
-          <button type="button" class="trail" data-open-view="confidential-setup" id="confidentialLaneStatus">learn more →</button>
+          <button type="button" class="trail" id="confidentialLaneStatus">set up confidential →</button>
+          <div class="message" id="confidentialLaneOperation"></div>
         </article>
 
         <article class="lane" id="lane-byo" data-lane="byo" data-open-view="byo-setup" role="button" tabindex="0">
@@ -525,14 +526,6 @@
         </div>
         <div class="message" id="vertexStatus"></div>
       </details>
-    </section>
-
-    <section class="view" data-view="confidential-setup" hidden>
-      <button type="button" class="backlink" data-open-view="main">‹ thinking</button>
-      <div class="panelbody">
-        <h2>confidential processing</h2>
-        <p class="intro" id="confidentialSetupBody">not open yet — scouts get first access. when it opens, the parts of your journal sol is thinking about go to confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. your journal stays on your device.</p>
-      </div>
     </section>
 
     <section class="view" data-view="byo-setup" hidden>

@@ -261,6 +261,24 @@ class NoBrainConfiguredError(RuntimeError):
         super().__init__("No thinking engine is chosen yet. Choose one in Thinking.")
 
 
+class AttestationNotVerifiedError(RuntimeError):
+    """Raised when confidential processing has not passed attestation."""
+
+    reason_code = "attestation_not_yet_verified"
+
+    def __init__(self) -> None:
+        super().__init__(
+            "Confidential lane is verifying; hardware attestation is not yet verified."
+        )
+
+
+# Follow-on wiring assigns a verifier that appraises composite SEV-SNP + SPDM
+# + TPM2 evidence for the pinned endpoint. It raises AttestationNotVerifiedError
+# on negative/stale verdicts (reserved reason codes: attestation_failed,
+# attestation_stale) or returns on a verified verdict.
+_CONFIDENTIAL_ATTESTATION_VERIFIER: Callable[[dict[str, Any]], None] | None = None
+
+
 # ---------------------------------------------------------------------------
 # Prompt context discovery
 #
@@ -972,6 +990,17 @@ def _raise_if_no_brain(provider: str) -> None:
         raise NoBrainConfiguredError()
 
 
+def _raise_if_confidential_unverified() -> None:
+    block = get_config().get("services", {}).get("confidential")
+    if not isinstance(block, dict):
+        return
+    verifier = _CONFIDENTIAL_ATTESTATION_VERIFIER
+    if verifier is not None:
+        verifier(block)
+        return
+    raise AttestationNotVerifiedError()
+
+
 def get_model_provider(model: str) -> str:
     """Get the provider name from a model identifier.
 
@@ -1411,6 +1440,7 @@ def generate(
 
     _raise_if_no_brain(provider)
     _reject_local_cloud_model_override(provider, model_override)
+    _raise_if_confidential_unverified()
 
     # Get provider module via registry (raises ValueError for unknown providers)
     provider_mod = get_provider_module(provider)
@@ -1631,6 +1661,7 @@ def generate_with_result(
 
     _raise_if_no_brain(provider)
     _reject_local_cloud_model_override(provider, model_override)
+    _raise_if_confidential_unverified()
 
     provider_mod = get_provider_module(provider)
     provider_schema = prepare_provider_schema(json_schema, provider)
@@ -1740,6 +1771,7 @@ async def agenerate(
 
     _raise_if_no_brain(provider)
     _reject_local_cloud_model_override(provider, model_override)
+    _raise_if_confidential_unverified()
 
     # Get provider module via registry (raises ValueError for unknown providers)
     provider_mod = get_provider_module(provider)
@@ -1788,6 +1820,7 @@ __all__ = [
     "TYPE_DEFAULTS",
     "NO_BRAIN_PROVIDER",
     "NoBrainConfiguredError",
+    "AttestationNotVerifiedError",
     "PROMPT_PATHS",
     "get_context_registry",
     # Model constants (used by provider backends for defaults)

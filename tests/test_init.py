@@ -694,7 +694,7 @@ class TestInitFinalize:
         ("payload", "expected_redirect"),
         [
             ({"lane": "local"}, "/app/thinking/#local-setup"),
-            ({"lane": "confidential"}, "/app/thinking/#confidential-setup"),
+            ({"lane": "confidential"}, "/app/thinking/#main"),
             ({"lane": "byo"}, "/app/thinking/#byo-setup"),
             ({}, "/app/thinking/"),
             ({"lane": ""}, "/app/thinking/"),
