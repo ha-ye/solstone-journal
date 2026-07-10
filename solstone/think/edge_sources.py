@@ -5,9 +5,9 @@
 
 An EDGE_SOURCES entry maps a chronicle-free journal-relative glob pattern to an
 extractor function identified by ``(module_path, function_name)``. The indexer
-driver usually loads primary JSONL files and passes their entries to the
-extractor; extractors registered for JSON-object artifacts may read their source
-path directly. Order matters: first match wins.
+driver loads source payloads before dispatch: ``.jsonl`` sources receive
+``list[dict]`` from ``load_jsonl()``, and ``.json`` sources receive the parsed
+JSON payload from ``read_json()``. Order matters: first match wins.
 """
 
 from __future__ import annotations
@@ -26,6 +26,15 @@ class EdgeContext:
     day: str
     facet: str
     resolve: Callable[[str], str | None]
+    drop: Callable[[], None]
+
+
+def segment_ref(path: str) -> tuple[str, str]:
+    """Return (composite segment id, segment key) for a day-rooted segment path."""
+    parts = path.replace("\\", "/").split("/")
+    if len(parts) < 3:
+        raise ValueError(f"invalid day-rooted segment path: {path}")
+    return "/".join(parts[:3]), parts[2]
 
 
 EDGE_SOURCES: dict[str, tuple[str, str]] = {

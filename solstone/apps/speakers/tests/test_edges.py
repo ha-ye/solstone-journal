@@ -38,7 +38,13 @@ def edge_journal(tmp_path, monkeypatch) -> Path:
 
 
 def _ctx(rel: str = LABEL_REL) -> EdgeContext:
-    return EdgeContext(path=rel, day=DAY, facet="", resolve=lambda _name: None)
+    return EdgeContext(
+        path=rel,
+        day=DAY,
+        facet="",
+        resolve=lambda _name: None,
+        drop=lambda: None,
+    )
 
 
 def _segment_dir(journal: Path) -> Path:
@@ -71,7 +77,7 @@ def _write_labels(
     labels: list[dict[str, Any]],
     *,
     skipped: bool = False,
-) -> Path:
+) -> dict[str, Any]:
     payload: dict[str, Any] = {"labels": labels}
     if skipped:
         payload["skipped"] = True
@@ -79,7 +85,7 @@ def _write_labels(
     path = _segment_dir(journal) / "talents" / "speaker_labels.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    return path
+    return payload
 
 
 def _write_transcript(
@@ -101,8 +107,8 @@ def _touch_npz(journal: Path, stem: str) -> None:
 
 
 def _extract(journal: Path, labels: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    _write_labels(journal, labels)
-    return extract_speaker_edges([], _ctx())
+    payload = _write_labels(journal, labels)
+    return extract_speaker_edges(payload, _ctx())
 
 
 def _edge_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -113,6 +119,38 @@ def _edge_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         ORDER BY kind, src, dst, label
         """
     ).fetchall()
+
+
+def test_extract_speaker_edges_uses_payload_without_rereading_labels(edge_journal):
+    _write_labels(edge_journal, [{"sentence_id": 0, "speaker": "file_speaker"}])
+
+    rows = extract_speaker_edges(
+        {
+            "labels": [
+                {"sentence_id": 0, "speaker": "payload_b"},
+                {"sentence_id": 0, "speaker": "payload_a"},
+            ]
+        },
+        _ctx(),
+    )
+
+    assert rows == [
+        {
+            "src": "payload_a",
+            "dst": "payload_b",
+            "kind": "spoke-with",
+            "src_name": None,
+            "dst_name": None,
+            "day": DAY,
+            "facet": "",
+            "source": "speaker",
+            "path": LABEL_REL,
+            "anchor": COMPOSITE_ID,
+            "label": "",
+            "ts": segment_start_ts_ms(DAY, SEGMENT),
+            "weight": 1,
+        }
+    ]
 
 
 def test_ac1_two_speakers_emit_one_stored_spoke_with_row(edge_journal):
@@ -156,9 +194,9 @@ def test_ac2_single_speaker_and_stub_emit_no_spoke_with_or_logs(
 
     caplog.clear()
     caplog.set_level(logging.DEBUG, logger=speaker_edges.__name__)
-    _write_labels(edge_journal, [], skipped=True)
+    payload = _write_labels(edge_journal, [], skipped=True)
 
-    assert extract_speaker_edges([], _ctx()) == []
+    assert extract_speaker_edges(payload, _ctx()) == []
     assert [
         record for record in caplog.records if record.name == speaker_edges.__name__
     ] == []

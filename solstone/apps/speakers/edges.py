@@ -13,9 +13,8 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any
 
-from solstone.think.edge_sources import EdgeContext
+from solstone.think.edge_sources import EdgeContext, segment_ref
 from solstone.think.entities.journal import load_all_journal_entities
-from solstone.think.journal_io import MalformedPolicy, read_json
 from solstone.think.utils import get_journal, resolve_journal_path, segment_start_ts_ms
 
 logger = logging.getLogger(__name__)
@@ -43,17 +42,13 @@ class CandidateIndex:
 _CANDIDATE_CACHE: dict[str, CandidateIndex] = {}
 
 
-def extract_speaker_edges(entries: list[dict], ctx: EdgeContext) -> list[dict]:
+def extract_speaker_edges(payload: dict[str, Any], ctx: EdgeContext) -> list[dict]:
     """Extract spoke-with and mentioned edges from a speaker_labels.json source."""
-    # The driver uses load_jsonl(), which returns [] for pretty JSON object sources.
-    del entries
-
     composite_id, segment_key = _parse_speaker_label_path(ctx.path)
     journal = get_journal()
     segment_dir = resolve_journal_path(journal, composite_id)
-    payload = _load_speaker_labels(segment_dir / "talents" / "speaker_labels.json")
-    if payload is None:
-        return []
+    if not isinstance(payload, dict):
+        raise ValueError(f"speaker labels must be a JSON object: {ctx.path}")
 
     labels = payload.get("labels", [])
     if not isinstance(labels, list):
@@ -101,17 +96,7 @@ def _parse_speaker_label_path(path: str) -> tuple[str, str]:
     parts = Path(path).parts
     if len(parts) != 5 or parts[3] != "talents" or parts[4] != "speaker_labels.json":
         raise ValueError(f"invalid speaker labels path: {path}")
-    return "/".join(parts[:3]), parts[2]
-
-
-def _load_speaker_labels(path: Path) -> dict[str, Any] | None:
-    """Read speaker labels, returning None for missing and raising on malformed."""
-    payload = read_json(path, on_error=MalformedPolicy.RAISE, default=None)
-    if payload is None:
-        return None
-    if not isinstance(payload, dict):
-        raise ValueError(f"speaker labels must be a JSON object: {path}")
-    return payload
+    return segment_ref(path)
 
 
 def _distinct_speaker_ids(labels: list[Any]) -> set[str]:

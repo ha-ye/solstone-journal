@@ -12,6 +12,7 @@ import sqlite3
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from solstone.think.edge_sources import (
@@ -19,9 +20,11 @@ from solstone.think.edge_sources import (
     edge_source_patterns,
     get_edge_source,
 )
+from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.loading import load_entities
 from solstone.think.entities.matching import find_matching_entity
 from solstone.think.formatters import discover_files, extract_path_metadata, load_jsonl
+from solstone.think.journal_io import MalformedPolicy, read_json
 
 logger = logging.getLogger(__name__)
 
@@ -859,20 +862,30 @@ def make_edge_context(
     entity_cache: dict[str, list[dict[str, Any]]],
     drop_counter: dict[str, int],
 ) -> EdgeContext:
-    """Build a context whose resolver targets facet-attached entities."""
+    """Build a context whose resolver targets facet or journal entities."""
     path_meta = extract_path_metadata(rel)
     facet = path_meta["facet"]
 
+    def drop() -> None:
+        drop_counter["drops"] += 1
+
     def resolve(name: str) -> str | None:
         if not isinstance(name, str) or not name.strip():
-            drop_counter["drops"] += 1
+            drop()
             return None
         if facet not in entity_cache:
-            entity_cache[facet] = load_entities(facet, day=None)
+            if facet == "":
+                entity_cache[facet] = [
+                    entity
+                    for entity in load_all_journal_entities().values()
+                    if not entity.get("blocked")
+                ]
+            else:
+                entity_cache[facet] = load_entities(facet, day=None)
         match = find_matching_entity(name, entity_cache[facet])
         entity_id = match.get("id") if match else None
         if not entity_id:
-            drop_counter["drops"] += 1
+            drop()
             return None
         return str(entity_id)
 
@@ -881,6 +894,7 @@ def make_edge_context(
         day=path_meta["day"],
         facet=facet,
         resolve=resolve,
+        drop=drop,
     )
 
 
@@ -898,8 +912,12 @@ def _extract_file_edges(
     drop_counter = {"drops": 0}
     ctx = make_edge_context(rel, entity_cache, drop_counter)
     try:
-        entries = load_jsonl(abs_path)
-        rows = extractor(entries, ctx)
+        payload = (
+            read_json(Path(abs_path), on_error=MalformedPolicy.RAISE)
+            if Path(abs_path).suffix == ".json"
+            else load_jsonl(abs_path)
+        )
+        rows = extractor(payload, ctx)
         inserted = insert_edges(conn, rows)
     except Exception:
         logger.exception("Skipping edge extraction for %s", rel)
