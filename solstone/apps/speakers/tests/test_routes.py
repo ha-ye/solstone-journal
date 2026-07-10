@@ -397,7 +397,7 @@ def test_save_voiceprint(speakers_env):
     import json
 
     from solstone.apps.speakers.routes import _save_voiceprint
-    from solstone.apps.speakers.time import segment_start_ts_ms
+    from solstone.think.utils import segment_start_ts_ms
 
     env = speakers_env()
 

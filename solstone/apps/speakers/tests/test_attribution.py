@@ -675,7 +675,7 @@ def test_owner_correction_output_preserves_public_label_overlay(tmp_path):
 
 def test_accumulate_voiceprints_saves(speakers_env):
     from solstone.apps.speakers.attribution import accumulate_voiceprints
-    from solstone.apps.speakers.time import segment_start_ts_ms
+    from solstone.think.utils import segment_start_ts_ms
 
     env = speakers_env()
     _setup_owner(env)
@@ -1043,7 +1043,7 @@ def test_backfill_resumable(speakers_env):
 
 def test_backfill_last_seen_commit_writes_then_dry_run_reports_zero(speakers_env):
     from solstone.apps.speakers.attribution import backfill_last_seen
-    from solstone.apps.speakers.time import segment_start_ts_ms
+    from solstone.think.utils import segment_start_ts_ms
 
     env = speakers_env()
     entity_dir = env.create_entity(

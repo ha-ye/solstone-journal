@@ -69,7 +69,6 @@ from solstone.apps.speakers.owner import (
 )
 from solstone.apps.speakers.status import get_speakers_status
 from solstone.apps.speakers.suggest import format_suggestions, suggest_opportunities
-from solstone.apps.speakers.time import segment_start_ts_ms
 from solstone.apps.speakers.wipe import wipe_speaker_artifacts
 from solstone.apps.utils import log_app_action
 from solstone.convey.reasons import (
@@ -119,6 +118,7 @@ from solstone.think.utils import (
     iter_segments,
     now_ms,
     segment_parse,
+    segment_start_ts_ms,
 )
 from solstone.think.utils import segment_key as validate_segment_key
 from solstone.think.utils import segment_path as get_segment_path

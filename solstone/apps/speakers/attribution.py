@@ -41,7 +41,6 @@ from solstone.apps.speakers.encoder_config import (
     VP_OUTLIER_MIN_SIMILARITY,
 )
 from solstone.apps.speakers.owner import load_owner_centroid
-from solstone.apps.speakers.time import segment_start_ts_ms
 from solstone.think.entities import find_matching_entity
 from solstone.think.entities.journal import (
     get_journal_principal,
@@ -54,7 +53,7 @@ from solstone.think.journal_io import (
     read_json,
     write_json,
 )
-from solstone.think.utils import day_path, now_ms, segment_path
+from solstone.think.utils import day_path, now_ms, segment_path, segment_start_ts_ms
 
 if TYPE_CHECKING:
     import numpy as np

@@ -15,9 +15,9 @@ import pytest
 
 from solstone.apps.speakers import edges as speaker_edges
 from solstone.apps.speakers.edges import extract_speaker_edges
-from solstone.apps.speakers.time import segment_start_ts_ms
 from solstone.think.edge_sources import EdgeContext
 from solstone.think.indexer.journal import get_journal_index, index_file, scan_journal
+from solstone.think.utils import segment_start_ts_ms
 from tests._sqlite_assertions import edges_content_hash
 
 DAY = "20260430"

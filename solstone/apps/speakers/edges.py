@@ -13,11 +13,10 @@ from itertools import combinations
 from pathlib import Path
 from typing import Any
 
-from solstone.apps.speakers.time import segment_start_ts_ms
 from solstone.think.edge_sources import EdgeContext
 from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.journal_io import MalformedPolicy, read_json
-from solstone.think.utils import get_journal, resolve_journal_path
+from solstone.think.utils import get_journal, resolve_journal_path, segment_start_ts_ms
 
 logger = logging.getLogger(__name__)
 EntityFingerprint = tuple[int, int, int, int]
