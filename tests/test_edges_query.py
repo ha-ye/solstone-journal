@@ -364,6 +364,94 @@ def test_entity_network_ranks_by_weighted_decayed_score(edges_journal):
     assert network["neighbors"][1]["score"] == pytest.approx(2.0)
 
 
+def test_future_scheduled_edges_score_like_reference_day(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_future_self",
+                "edge_future_peer",
+                "scheduled-with",
+                "future/scheduled.jsonl",
+                day="20260601",
+                weight=1,
+            ),
+            _row(
+                "edge_future_self",
+                "edge_reference_peer",
+                "scheduled-with",
+                "future/reference.jsonl",
+                day="20260430",
+                weight=1,
+            ),
+        ],
+    )
+
+    network = load_entity_network(
+        "edge_future_self",
+        kinds=["scheduled-with"],
+        reference_day="20260430",
+    )
+    by_peer = {row["entity_id"]: row for row in network["neighbors"]}
+
+    assert by_peer["edge_future_peer"]["score"] == pytest.approx(
+        by_peer["edge_reference_peer"]["score"]
+    )
+    assert by_peer["edge_future_peer"]["score"] == pytest.approx(2.0)
+
+
+def test_entity_network_ranking_for_semantic_scheduled_and_copresent_kinds(
+    edges_journal,
+):
+    scan_journal(str(edges_journal), full=True)
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_rank_sem_self",
+                "edge_rank_durable",
+                "works-with",
+                "rank-sem/durable.jsonl",
+                day="20260430",
+                weight=1,
+            ),
+            _row(
+                "edge_rank_sem_self",
+                "edge_rank_scheduled",
+                "scheduled-with",
+                "rank-sem/scheduled.jsonl",
+                day="20260430",
+                weight=1,
+            ),
+            _row(
+                "edge_rank_sem_self",
+                "edge_rank_passive",
+                "co-present",
+                "rank-sem/passive.jsonl",
+                day="20260430",
+                weight=1,
+            ),
+        ],
+    )
+
+    network = load_entity_network("edge_rank_sem_self", reference_day="20260430")
+
+    assert [row["entity_id"] for row in network["neighbors"]] == [
+        "edge_rank_durable",
+        "edge_rank_scheduled",
+        "edge_rank_passive",
+    ]
+    by_peer = {row["entity_id"]: row for row in network["neighbors"]}
+    assert by_peer["edge_rank_durable"]["score"] == pytest.approx(4.0)
+    assert by_peer["edge_rank_scheduled"]["score"] == pytest.approx(2.0)
+    assert by_peer["edge_rank_passive"]["score"] == pytest.approx(1.0)
+    assert by_peer["edge_rank_passive"]["kinds"]["co-present"] == {
+        "count": 1,
+        "weighted": 1.0,
+    }
+
+
 def test_edge_evidence_total_pagination_and_stable_newest_order(edges_journal):
     scan_journal(str(edges_journal), full=True)
     _insert(

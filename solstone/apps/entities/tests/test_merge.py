@@ -156,7 +156,8 @@ def _edge_rows_with_kind(env) -> list[dict]:
         return [
             dict(row)
             for row in conn.execute(
-                "SELECT src, dst, kind, path FROM edges ORDER BY kind, path, src, dst"
+                "SELECT src, dst, kind, source, path "
+                "FROM edges ORDER BY kind, path, src, dst"
             ).fetchall()
         ]
     finally:
@@ -566,6 +567,60 @@ def test_merge_then_rebuild_converges_all_edge_source_kinds(speakers_env):
     for entity_id in (source_id, target_id, peer_id, mention_id):
         env.create_facet_relationship("work", entity_id)
 
+    source_obs_path = (
+        env.journal / "facets" / "work" / "entities" / source_id / "observations.jsonl"
+    )
+    source_obs_path.write_text(
+        json.dumps(
+            {
+                "content": "source observation carried forward",
+                "observed_at": 1700000001000,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    target_obs_path = (
+        env.journal / "facets" / "work" / "entities" / target_id / "observations.jsonl"
+    )
+    target_obs_path.write_text(
+        json.dumps(
+            {
+                "content": "target relation to source",
+                "observed_at": 1700000002000,
+                "source_day": day,
+                "relation": {
+                    "kind": "family-of",
+                    "target_entity_id": source_id,
+                    "target_name": "Merge Edge Source",
+                    "note": "Self after merge",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    peer_obs_path = (
+        env.journal / "facets" / "work" / "entities" / peer_id / "observations.jsonl"
+    )
+    peer_obs_path.write_text(
+        json.dumps(
+            {
+                "content": "peer observation relation to source",
+                "observed_at": 1700000003000,
+                "source_day": day,
+                "relation": {
+                    "kind": "knows",
+                    "target_entity_id": source_id,
+                    "target_name": "Merge Edge Source",
+                    "note": "Observation-backed relation",
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
     detected_path = env.journal / "facets" / "work" / "entities" / f"{day}.jsonl"
     detected_path.parent.mkdir(parents=True, exist_ok=True)
     detected_path.write_text(
@@ -600,6 +655,36 @@ def test_merge_then_rebuild_converges_all_edge_source_kinds(speakers_env):
                     {"role": "attendee", "entity_id": source_id},
                     {"role": "attendee", "entity_id": peer_id},
                 ],
+                "relations": [
+                    {
+                        "from": "Merge Edge Source",
+                        "to": "Merge Edge Peer",
+                        "from_entity_id": source_id,
+                        "to_entity_id": peer_id,
+                        "kind": kind,
+                        "note": f"{kind} relation",
+                        "quote": None,
+                    }
+                    for kind in (
+                        "works-with",
+                        "works-at",
+                        "reports-to",
+                        "family-of",
+                        "knows",
+                        "uses",
+                        "created",
+                        "other",
+                    )
+                ],
+                "decisions": [
+                    {
+                        "owner": "Merge Edge Source",
+                        "counterparty": "Merge Edge Peer",
+                        "owner_entity_id": source_id,
+                        "counterparty_entity_id": peer_id,
+                        "action": "Use the merge convergence fixture",
+                    }
+                ],
                 "commitments": [
                     {
                         "owner_entity_id": source_id,
@@ -610,29 +695,155 @@ def test_merge_then_rebuild_converges_all_edge_source_kinds(speakers_env):
             }
         ],
     )
+    segment_dir = env.journal / "chronicle" / day / STREAM / segment_key
+    (segment_dir / "screen.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"raw": "screen.png", "model": "fixture"}),
+                json.dumps(
+                    {
+                        "timestamp": 0,
+                        "content": {
+                            "messaging": {
+                                "view": "conversation",
+                                "app": "Signal",
+                                "thread": "Merge Edge Thread",
+                                "messages": [
+                                    {
+                                        "sender": "Merge Edge Source",
+                                        "timestamp": "2024-01-01T12:00:00Z",
+                                        "subject": "",
+                                        "text": "Can you review this merge?",
+                                    },
+                                    {
+                                        "sender": "Merge Edge Peer",
+                                        "timestamp": "2024-01-01T12:00:30Z",
+                                        "subject": "",
+                                        "text": "Yes, I can.",
+                                    },
+                                ],
+                            },
+                            "calendar": {
+                                "view": "day",
+                                "app": "Calendar",
+                                "events": [
+                                    {
+                                        "title": "Merge Edge Calendar",
+                                        "start": "2024-01-01T12:30:00Z",
+                                        "end": "2024-01-01T13:00:00Z",
+                                        "calendar": "Work",
+                                        "guests": [
+                                            "Merge Edge Source",
+                                            "Merge Edge Peer",
+                                        ],
+                                    }
+                                ],
+                            },
+                        },
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    talents_dir = segment_dir / "talents"
+    talents_dir.mkdir(parents=True, exist_ok=True)
+    (talents_dir / "documents.json").write_text(
+        json.dumps(
+            {
+                "overview": "Merge convergence document.",
+                "parties": [
+                    {"name": "Merge Edge Source", "role": "author"},
+                    {"name": "Merge Edge Peer", "role": "reviewer"},
+                ],
+                "key_provisions": [],
+                "assets": [],
+                "conditions": [],
+                "important_dates": [],
+                "summary": "Merge source and peer are parties.",
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
 
     rebuild_edges(str(env.journal))
     pre_rows = _edge_rows_with_kind(env)
     source_kinds = {
         row["kind"] for row in pre_rows if source_id in {row["src"], row["dst"]}
     }
+    new_kinds = {
+        "works-with",
+        "works-at",
+        "reports-to",
+        "family-of",
+        "knows",
+        "uses",
+        "created",
+        "other",
+        "decided-with",
+        "messaged-with",
+        "scheduled-with",
+        "party-of",
+    }
     assert source_kinds == {
         "attended-with",
         "co-present",
         "committed-to",
+        "decided-with",
+        "family-of",
+        "knows",
         "mentioned",
+        "messaged-with",
+        "party-of",
+        "scheduled-with",
         "spoke-with",
+        "works-at",
+        "works-with",
+        "reports-to",
+        "uses",
+        "created",
+        "other",
     }
+    assert new_kinds <= source_kinds
+    assert any(
+        row["source"] == "observation"
+        and row["kind"] == "knows"
+        and row["dst"] == source_id
+        for row in pre_rows
+    )
 
     result = merge_mod.merge_entity(source_id, target_id, commit=True)
 
     assert result["merged"] is True
-    assert result["activities"]["fields_rewritten"] == 2
+    assert result["facets"]["observations_appended"] == 1
+    assert result["facets"]["observation_relations_rewritten"] == 2
+    assert result["activities"]["fields_rewritten"] == 11
     assert all(
         source_id not in {row["src"], row["dst"]} for row in _edge_rows_with_kind(env)
     )
+    target_observations = [
+        json.loads(line)
+        for line in target_obs_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert {item["content"] for item in target_observations} == {
+        "target relation to source",
+        "source observation carried forward",
+    }
+    assert target_observations[0]["relation"]["target_entity_id"] == target_id
+    peer_observations = [
+        json.loads(line)
+        for line in peer_obs_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert peer_observations[0]["relation"]["target_entity_id"] == target_id
 
+    folded_hash = _edge_hash(env)
     rebuild_edges(str(env.journal))
+    assert _edge_hash(env) == folded_hash
     rebuilt_rows = _edge_rows_with_kind(env)
     assert all(source_id not in {row["src"], row["dst"]} for row in rebuilt_rows)
     target_kinds = {
@@ -642,9 +853,28 @@ def test_merge_then_rebuild_converges_all_edge_source_kinds(speakers_env):
         "attended-with",
         "co-present",
         "committed-to",
+        "decided-with",
+        "family-of",
+        "knows",
         "mentioned",
+        "messaged-with",
+        "party-of",
+        "scheduled-with",
         "spoke-with",
+        "works-at",
+        "works-with",
+        "reports-to",
+        "uses",
+        "created",
+        "other",
     }
+    assert new_kinds <= target_kinds
+    assert any(
+        row["source"] == "observation"
+        and row["kind"] == "knows"
+        and target_id in {row["src"], row["dst"]}
+        for row in rebuilt_rows
+    )
 
     first_hash = _edge_hash(env)
     rebuild_edges(str(env.journal))

@@ -42,6 +42,10 @@ EDGE_SOURCES: dict[str, tuple[str, str]] = {
         "solstone.think.activities",
         "extract_activity_edges",
     ),
+    "facets/*/entities/*/observations.jsonl": (
+        "solstone.think.entities.edges",
+        "extract_observation_edges",
+    ),
     "facets/*/entities/*.jsonl": (
         "solstone.think.entities.edges",
         "extract_copresence_edges",
@@ -49,6 +53,18 @@ EDGE_SOURCES: dict[str, tuple[str, str]] = {
     "facets/*/events/*.jsonl": (
         "solstone.think.event_formatter",
         "extract_event_edges",
+    ),
+    "*/*/*/screen.jsonl": (
+        "solstone.think.screen_edges",
+        "extract_screen_edges",
+    ),
+    "*/*/*/*_screen.jsonl": (
+        "solstone.think.screen_edges",
+        "extract_screen_edges",
+    ),
+    "*/*/*/talents/documents.json": (
+        "solstone.think.document_edges",
+        "extract_document_edges",
     ),
     "*/*/*/talents/speaker_labels.json": (
         "solstone.apps.speakers.edges",

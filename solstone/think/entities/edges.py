@@ -5,10 +5,68 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from itertools import combinations
 from typing import Any
 
 from solstone.think.edge_sources import EdgeContext
+
+
+def _observation_day(value: Any) -> str | None:
+    if not isinstance(value, str) or len(value) != 8 or not value.isdigit():
+        return None
+    try:
+        datetime.strptime(value, "%Y%m%d")
+    except ValueError:
+        return None
+    return value
+
+
+def extract_observation_edges(entries: list[dict], ctx: EdgeContext) -> list[dict]:
+    """Extract explicit relation edges from entity observations."""
+    parts = ctx.path.replace("\\", "/").split("/")
+    if len(parts) < 5:
+        raise ValueError(f"invalid observations path: {ctx.path}")
+    source_id = parts[3]
+
+    rows: list[dict[str, Any]] = []
+    for observation in entries:
+        if not isinstance(observation, dict):
+            continue
+        relation = observation.get("relation")
+        if relation is None:
+            continue
+        if not isinstance(relation, dict):
+            continue
+
+        target_id = relation.get("target_entity_id")
+        if not target_id:
+            ctx.drop()
+            continue
+        if target_id == source_id:
+            continue
+
+        observed_at = observation.get("observed_at")
+        anchor = str(observed_at) if observed_at is not None else None
+        rows.append(
+            {
+                "src": source_id,
+                "dst": target_id,
+                "kind": relation["kind"],
+                "src_name": None,
+                "dst_name": relation.get("target_name"),
+                "day": _observation_day(observation.get("source_day")),
+                "facet": ctx.facet,
+                "source": "observation",
+                "path": ctx.path,
+                "anchor": anchor,
+                "label": relation.get("note"),
+                "ts": observed_at,
+                "weight": 1,
+            }
+        )
+
+    return rows
 
 
 def extract_copresence_edges(entries: list[dict], ctx: EdgeContext) -> list[dict]:
