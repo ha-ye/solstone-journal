@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+from solstone.observe.describe import FRAME_CONTEXT
 from solstone.think.activities import (
     append_activity_record,
     get_activity_output_path,
@@ -39,6 +40,7 @@ from solstone.think.change_detection import detect_segment_change, resolve_prede
 from solstone.think.cluster import cluster_segments, read_segment_data_state
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_THRESHOLD
 from solstone.think.cortex_client import (
+    PATIENT_CLAIM_WINDOWS,
     CortexNotClaimed,
     CortexSpawnUnavailable,
     cortex_request,
@@ -54,6 +56,7 @@ from solstone.think.facets import (
     load_segment_facets,
 )
 from solstone.think.journal_io import atomic_replace
+from solstone.think.models import is_local_provider_needed, resolve_provider
 from solstone.think.pipeline_health import (
     SEGMENT_FLOOR_TALENTS,
     DeterministicFailure,
@@ -67,6 +70,8 @@ from solstone.think.pipeline_health import (
     segment_fully_sensed,
     segment_fully_thought,
 )
+from solstone.think.providers.local_endpoint import resolve_local_endpoint
+from solstone.think.providers.local_server import read_server_parallel_slots
 from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, run_task
 from solstone.think.sense_splitter import (
     write_change_detection,
@@ -472,15 +477,64 @@ def _flush_batch_state_machines(
         )
 
 
+_CAP_LOGGED: set[str] = set()
+
+
+def reset_default_cap_log_state() -> None:
+    """Clear the per-process record of which cap lines have been logged."""
+    _CAP_LOGGED.clear()
+
+
+def _segment_work_uses_bundled_local() -> bool:
+    """Return True when segment-pipeline work can resolve to the bundled server."""
+    return is_local_provider_needed() and resolve_local_endpoint().is_bundled
+
+
+def _describe_uses_bundled_local() -> bool:
+    """Return True when screen-describe resolves to the bundled server."""
+    provider, _ = resolve_provider(FRAME_CONTEXT, "generate")
+    return provider == "local" and resolve_local_endpoint().is_bundled
+
+
+def _cap_default_at_local_slots(formula: int, log_key: str) -> int:
+    """Clamp a CPU-derived default to the bundled server's parallel slots."""
+    slots = read_server_parallel_slots()
+    derived = min(formula, slots)
+    if derived < formula and log_key not in _CAP_LOGGED:
+        _CAP_LOGGED.add(log_key)
+        logging.info(
+            "%s capped provider=local slots=%d formula=%d derived=%d",
+            log_key,
+            slots,
+            formula,
+            derived,
+        )
+    return derived
+
+
 def _default_segment_workers() -> int:
-    """Return the default segment-level worker count for repair mode."""
+    """Return the default segment-level worker count for repair mode.
+
+    Capped at the bundled local server's parallel-slot count when any
+    segment-pipeline work can resolve to that server.
+    """
     cpu_count = os.cpu_count() or 2
-    return max(1, min(8, cpu_count // 2))
+    formula = max(1, min(8, cpu_count // 2))
+    if not _segment_work_uses_bundled_local():
+        return formula
+    return _cap_default_at_local_slots(formula, "default_segment_workers")
 
 
 def _default_describe_jobs() -> int:
-    """Return the default screen-describe worker count for repair mode."""
-    return max(1, min(4, (os.cpu_count() or 2) // 4))
+    """Return the default screen-describe worker count for repair mode.
+
+    Capped at the bundled local server's parallel-slot count when the describe
+    path resolves to that server.
+    """
+    formula = max(1, min(4, (os.cpu_count() or 2) // 4))
+    if not _describe_uses_bundled_local():
+        return formula
+    return _cap_default_at_local_slots(formula, "default_describe_jobs")
 
 
 def _select_segment_repair_targets(
@@ -897,9 +951,14 @@ class _NotClaimed:
 
 
 def _dispatch_cortex_request(**kwargs) -> str | None | _NotClaimed:
-    """Call cortex_request and classify dispatch failures for orchestrators."""
+    """Call cortex_request and classify dispatch failures for orchestrators.
+
+    Orchestrated units are re-walked hours later when a request is lost, so they
+    wait out a broadcast burst on the patient claim schedule rather than
+    fast-failing the way interactive callers do.
+    """
     try:
-        return cortex_request(**kwargs)
+        return cortex_request(**kwargs, claim_windows=PATIENT_CLAIM_WINDOWS)
     except CortexSpawnUnavailable as exc:
         logging.info("cortex_request unavailable: %s", exc.detail or "unknown")
         return None

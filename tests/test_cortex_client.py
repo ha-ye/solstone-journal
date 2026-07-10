@@ -193,7 +193,12 @@ def test_cortex_request_empty_journal(tmp_path, monkeypatch):
     assert len(use_id) > 0
 
 
-def _install_fake_claim_clock(monkeypatch):
+def _install_fake_claim_clock(monkeypatch, poll_interval=0.01, windows=(0.02,) * 3):
+    """Fake the claim loop's clock so schedules run without real sleeps.
+
+    Returns the cortex_client module and the mutable fake-monotonic clock, so
+    tests can read elapsed time and timestamp individual sends.
+    """
     import solstone.think.cortex_client as cc
 
     now = {"value": 0.0}
@@ -203,14 +208,14 @@ def _install_fake_claim_clock(monkeypatch):
         now["value"] += seconds
 
     monkeypatch.setattr(cc.time, "sleep", fake_sleep)
-    monkeypatch.setattr(cc, "_CLAIM_POLL_INTERVAL_S", 0.01)
-    monkeypatch.setattr(cc, "_CLAIM_WINDOW_S", 0.02)
-    return cc
+    monkeypatch.setattr(cc, "_CLAIM_POLL_INTERVAL_S", poll_interval)
+    monkeypatch.setattr(cc, "_DEFAULT_CLAIM_WINDOWS", tuple(windows))
+    return cc, now
 
 
 def test_cortex_request_returns_when_claim_appears_after_poll(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    cc = _install_fake_claim_clock(monkeypatch)
+    cc, _ = _install_fake_claim_clock(monkeypatch)
     monkeypatch.setattr(cc, "callosum_send_classified", lambda *a, **kw: "")
     statuses = iter(["not_found", "running"])
 
@@ -226,7 +231,7 @@ def test_cortex_request_returns_when_claim_appears_after_poll(tmp_path, monkeypa
 
 def test_cortex_request_rebroadcast_reuses_same_use_id(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    cc = _install_fake_claim_clock(monkeypatch)
+    cc, _ = _install_fake_claim_clock(monkeypatch)
     send_calls = []
 
     def fake_send(*args, **kwargs):
@@ -248,8 +253,9 @@ def test_cortex_request_rebroadcast_reuses_same_use_id(tmp_path, monkeypatch):
 
 
 def test_cortex_request_raises_when_not_claimed(tmp_path, monkeypatch):
+    """Default schedule fast-fails: three sends, one window each, then raises."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    cc = _install_fake_claim_clock(monkeypatch)
+    cc, clock = _install_fake_claim_clock(monkeypatch)
     send_calls = []
 
     def fake_send(*args, **kwargs):
@@ -264,6 +270,92 @@ def test_cortex_request_raises_when_not_claimed(tmp_path, monkeypatch):
 
     assert excinfo.value.use_id == "1713629000003"
     assert len(send_calls) == 3
+    assert "after 3 broadcasts" in excinfo.value.detail
+    assert clock["value"] == pytest.approx(sum(cc._DEFAULT_CLAIM_WINDOWS), abs=1e-6)
+
+
+def test_cortex_request_patient_windows_are_non_decreasing(tmp_path, monkeypatch):
+    """An explicit schedule drives send count, gaps, and total budget."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    cc, clock = _install_fake_claim_clock(monkeypatch, poll_interval=0.001)
+    windows = (0.01, 0.02, 0.04, 0.08, 0.15)
+    send_times = []
+
+    def fake_send(*args, **kwargs):
+        send_times.append(clock["value"])
+        return ""
+
+    monkeypatch.setattr(cc, "callosum_send_classified", fake_send)
+    monkeypatch.setattr(cc, "get_use_log_status", lambda use_id: "not_found")
+
+    with pytest.raises(CortexNotClaimed) as excinfo:
+        cortex_request(
+            "test", "chat", "openai", use_id="1713629000005", claim_windows=windows
+        )
+
+    assert len(send_times) == len(windows)
+    assert "after 5 broadcasts" in excinfo.value.detail
+
+    gaps = [b - a for a, b in zip(send_times, send_times[1:])]
+    assert gaps == pytest.approx(list(windows[:-1]), abs=1e-6)
+    assert gaps == sorted(gaps), "rebroadcast windows must be non-decreasing"
+    assert clock["value"] == pytest.approx(sum(windows), abs=1e-6)
+
+
+def test_cortex_request_raises_spawn_unavailable_on_failed_rebroadcast(
+    tmp_path, monkeypatch
+):
+    """A send failure on a rebroadcast is CortexSpawnUnavailable, not NotClaimed."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    cc, _ = _install_fake_claim_clock(monkeypatch)
+    send_calls = []
+
+    def fake_send(*args, **kwargs):
+        send_calls.append(kwargs)
+        return "FileNotFoundError" if len(send_calls) >= 2 else ""
+
+    monkeypatch.setattr(cc, "callosum_send_classified", fake_send)
+    monkeypatch.setattr(cc, "get_use_log_status", lambda use_id: "not_found")
+
+    with pytest.raises(CortexSpawnUnavailable) as excinfo:
+        cortex_request("test", "chat", "openai", use_id="1713629000006")
+
+    assert excinfo.value.detail == "FileNotFoundError"
+    assert len(send_calls) == 2
+
+
+def test_dispatch_cortex_request_patient_schedule_claims_after_default_would_fail(
+    tmp_path, monkeypatch
+):
+    """The orchestrator survives a claim that lands past the fast-fail budget."""
+    import solstone.think.thinking as think
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    default_windows = (0.01, 0.01, 0.01)  # budget 0.03
+    patient_windows = (0.01, 0.02, 0.04, 0.08, 0.15)  # budget 0.30
+    cc, clock = _install_fake_claim_clock(
+        monkeypatch, poll_interval=0.001, windows=default_windows
+    )
+    monkeypatch.setattr(think, "PATIENT_CLAIM_WINDOWS", patient_windows)
+    monkeypatch.setattr(cc, "callosum_send_classified", lambda *a, **kw: "")
+
+    # Claim lands after the default budget expires but well inside the patient one.
+    claim_at = 0.05
+    monkeypatch.setattr(
+        cc,
+        "get_use_log_status",
+        lambda use_id: "running" if clock["value"] >= claim_at else "not_found",
+    )
+
+    with pytest.raises(CortexNotClaimed):
+        cortex_request("test", "chat", "openai", use_id="1713629000007")
+
+    clock["value"] = 0.0
+    result = think._dispatch_cortex_request(
+        prompt="test", name="chat", provider="openai", use_id="1713629000008"
+    )
+
+    assert result == "1713629000008"
 
 
 def test_cortex_request_immediate_claim_does_not_sleep(tmp_path, monkeypatch):

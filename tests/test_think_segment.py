@@ -220,7 +220,9 @@ def _patch_segment_cortex(monkeypatch, think, spawned: list[str]) -> None:
     monkeypatch.setattr(
         think,
         "cortex_request",
-        lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        lambda prompt, name, config=None, **kwargs: (
+            spawned.append(name) or f"agent-{name}"
+        ),
     )
     monkeypatch.setattr(
         think,
@@ -344,7 +346,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(think, "_callosum", None)
         monkeypatch.setattr(think, "_jsonl", writer)
@@ -414,7 +418,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -465,7 +471,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -540,7 +548,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -628,7 +638,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -675,7 +687,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -737,7 +751,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -797,7 +813,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -853,7 +871,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -907,7 +927,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -971,7 +993,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1063,7 +1087,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1131,7 +1157,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1180,7 +1208,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1247,7 +1277,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1300,7 +1332,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1587,7 +1621,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1633,7 +1669,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1678,7 +1716,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1728,7 +1768,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1779,7 +1821,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1825,7 +1869,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1863,7 +1909,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
         monkeypatch.setattr(
             think,
@@ -1904,7 +1952,9 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: (
+                spawned.append(name) or f"agent-{name}"
+            ),
         )
 
         def mock_wait_for_agents(agent_ids, timeout=600):
@@ -1984,7 +2034,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: f"agent-{name}",
         )
         monkeypatch.setattr(
             think,
@@ -2073,7 +2123,7 @@ class TestRunSegmentSense:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: f"agent-{name}",
         )
         monkeypatch.setattr(
             think,
@@ -2114,7 +2164,7 @@ class TestRunSegmentSense:
             },
         )
 
-        def mock_cortex_request(prompt, name, config=None):
+        def mock_cortex_request(prompt, name, config=None, **kwargs):
             calls.append(name)
             if name == "sense":
                 return "agent-sense"
@@ -2163,7 +2213,7 @@ class TestRunSegmentSense:
         jsonl_events = []
         emitted_events = []
 
-        def mock_cortex_request(prompt, name, config=None):
+        def mock_cortex_request(prompt, name, config=None, **kwargs):
             if name == "sense":
                 return "agent-sense"
             raise think.CortexNotClaimed(use_id="lost-1")
@@ -2488,7 +2538,7 @@ class TestThinkJSONLEvents:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: "agent-sense",
+            lambda prompt, name, config=None, **kwargs: "agent-sense",
         )
         monkeypatch.setattr(
             think,
@@ -2551,7 +2601,7 @@ class TestThinkJSONLEvents:
         monkeypatch.setattr(
             think,
             "cortex_request",
-            lambda prompt, name, config=None: f"agent-{name}",
+            lambda prompt, name, config=None, **kwargs: f"agent-{name}",
         )
         monkeypatch.setattr(
             think,

@@ -2193,6 +2193,298 @@ def test_run_gate_tick_deferred_closed_skips_catchup_drain(monkeypatch):
     drain.assert_not_called()
 
 
+def _write_catchup_state(journal: Path, records: dict[str, dict]) -> None:
+    """Write catchup-state.json entries keyed '<day>:<kind>'."""
+    health = journal / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    (health / "catchup-state.json").write_text(
+        json.dumps({"version": 1, "entries": records}), encoding="utf-8"
+    )
+
+
+def _catchup_record(day: str, kind: str, **overrides) -> dict:
+    record = {
+        "day": day,
+        "command_kind": kind,
+        "attempts": 1,
+        "consecutive_non_completion": 1,
+        "last_attempt_at": 0,
+        "last_outcome": "timeout",
+        "next_retry_at": 0,
+        "entered_backoff_at": None,
+        "notified_at": None,
+        "fingerprint": "fp",
+        "active": None,
+        "reason_code": None,
+        "timeout_seconds": None,
+        "bounded": None,
+    }
+    record.update(overrides)
+    return record
+
+
+def _arm_catchup_retry_tick(mod, monkeypatch, *, mode="realtime", remote=False):
+    """Put the tick past its cadence gate with a seeded watermark."""
+    monkeypatch.setattr(
+        mod, "load_processing_settings", lambda: _supervisor_processing_settings(mode)
+    )
+    monkeypatch.setattr(mod, "_is_remote_mode", remote)
+    mod._last_catchup_retry_tick = 0.0
+
+
+def test_read_catchup_retry_expiries_uses_later_of_both_kinds(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_catchup_state(
+        tmp_path,
+        {
+            "20260101:daily-catchup": _catchup_record(
+                "20260101", "daily-catchup", next_retry_at=100.0
+            ),
+            "20260101:segment-repair": _catchup_record(
+                "20260101", "segment-repair", next_retry_at=250.0
+            ),
+        },
+    )
+
+    assert mod._read_catchup_retry_expiries() == [250.0]
+
+
+def test_read_catchup_retry_expiries_skips_active_and_unretried(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_catchup_state(
+        tmp_path,
+        {
+            # Active on one kind: cannot become eligible by expiry alone.
+            "20260101:daily-catchup": _catchup_record(
+                "20260101", "daily-catchup", next_retry_at=100.0, active="pid-1"
+            ),
+            "20260101:segment-repair": _catchup_record(
+                "20260101", "segment-repair", next_retry_at=250.0
+            ),
+            # No backoff: already eligible, so no future crossing to detect.
+            "20260102:daily-catchup": _catchup_record("20260102", "daily-catchup"),
+            # KIND_SEGMENT never carries a meaningful retry and is not gated on.
+            "20260103:segment": _catchup_record(
+                "20260103", "segment", next_retry_at=400.0
+            ),
+        },
+    )
+
+    assert mod._read_catchup_retry_expiries() == []
+
+
+def test_catchup_retry_tick_seeds_watermark_without_draining(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    drain = MagicMock()
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    _arm_catchup_retry_tick(mod, monkeypatch)
+    mod._catchup_retry_watermark = 0.0
+
+    now = time.time()
+    _write_catchup_state(
+        tmp_path,
+        {
+            "20260101:daily-catchup": _catchup_record(
+                "20260101", "daily-catchup", next_retry_at=now - 10
+            )
+        },
+    )
+
+    mod._run_catchup_retry_tick(now)
+
+    # _startup_catchup_drain() already covered days expired before boot.
+    drain.assert_not_called()
+    assert mod._catchup_retry_watermark == now
+
+
+def test_catchup_retry_tick_drains_excluding_today(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    drain = MagicMock()
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    _arm_catchup_retry_tick(mod, monkeypatch)
+
+    now = time.time()
+    mod._catchup_retry_watermark = now - 60
+    _write_catchup_state(
+        tmp_path,
+        {
+            "20260101:daily-catchup": _catchup_record(
+                "20260101", "daily-catchup", next_retry_at=now - 10
+            )
+        },
+    )
+
+    mod._run_catchup_retry_tick(now)
+
+    today_str = date.today().strftime("%Y%m%d")
+    drain.assert_called_once_with(exclude={today_str})
+
+
+def test_catchup_retry_tick_fires_once_per_expiry(tmp_path, monkeypatch):
+    """A day that re-enters backoff waits for its new expiry, not the next tick."""
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    drain = MagicMock()
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    _arm_catchup_retry_tick(mod, monkeypatch)
+
+    now = time.time()
+    mod._catchup_retry_watermark = now - 60
+    _write_catchup_state(
+        tmp_path,
+        {
+            "20260101:daily-catchup": _catchup_record(
+                "20260101", "daily-catchup", next_retry_at=now - 10
+            )
+        },
+    )
+
+    mod._run_catchup_retry_tick(now)
+    mod._last_catchup_retry_tick = 0.0
+    mod._run_catchup_retry_tick(now + 60)
+
+    assert drain.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "mode,remote", [("deferred", False), ("realtime", True), ("deferred", True)]
+)
+def test_catchup_retry_tick_skips_deferred_and_remote(
+    tmp_path, monkeypatch, mode, remote
+):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    drain = MagicMock()
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    _arm_catchup_retry_tick(mod, monkeypatch, mode=mode, remote=remote)
+
+    now = time.time()
+    mod._catchup_retry_watermark = now - 60
+    _write_catchup_state(
+        tmp_path,
+        {
+            "20260101:daily-catchup": _catchup_record(
+                "20260101", "daily-catchup", next_retry_at=now - 10
+            )
+        },
+    )
+
+    mod._run_catchup_retry_tick(now)
+
+    drain.assert_not_called()
+
+
+def test_catchup_retry_tick_without_expiry_does_not_fingerprint(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    drain = MagicMock()
+    monkeypatch.setattr(mod, "run_catchup_drain", drain)
+    monkeypatch.setattr(
+        "solstone.think.catchup_state.read_raw_input_fingerprint",
+        lambda day: pytest.fail("expiry gate must not hash raw input"),
+    )
+    _arm_catchup_retry_tick(mod, monkeypatch)
+
+    now = time.time()
+    mod._catchup_retry_watermark = now - 60
+    _write_catchup_state(
+        tmp_path,
+        {
+            "20260101:daily-catchup": _catchup_record(
+                "20260101", "daily-catchup", next_retry_at=now + 3600
+            )
+        },
+    )
+
+    mod._run_catchup_retry_tick(now)
+
+    drain.assert_not_called()
+    assert mod._catchup_retry_watermark == now
+
+
+def test_catchup_retry_tick_submits_expired_day_through_drain(tmp_path, monkeypatch):
+    """End to end: the real drain submits the expired day and skips the backed-off one."""
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    capture = _CaptureTaskQueue()
+    monkeypatch.setattr(mod, "_task_queue", capture)
+    monkeypatch.setattr(mod, "no_thinking_engine_chosen", lambda: False)
+    monkeypatch.setattr(mod, "updated_days", lambda **_kw: ["20260101", "20260102"])
+    monkeypatch.setattr(
+        "solstone.think.catchup_state.read_raw_input_fingerprint", lambda day: "fp"
+    )
+    _arm_catchup_retry_tick(mod, monkeypatch)
+
+    now = time.time()
+    mod._catchup_retry_watermark = now - 60
+    _write_catchup_state(
+        tmp_path,
+        {
+            "20260101:daily-catchup": _catchup_record(
+                "20260101", "daily-catchup", next_retry_at=now - 10
+            ),
+            # Still inside its backoff window, fingerprint unchanged.
+            "20260102:daily-catchup": _catchup_record(
+                "20260102", "daily-catchup", next_retry_at=now + 3600
+            ),
+        },
+    )
+
+    mod._run_catchup_retry_tick(now)
+
+    assert capture.submissions == [
+        {"cmd": ["journal", "think", "-v", "--day", "20260101"], "day": "20260101"}
+    ]
+
+
+def test_catchup_retry_tick_respects_drain_engine_gate(tmp_path, monkeypatch):
+    """The re-fire routes through run_catchup_drain, so its gates still apply."""
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    capture = _CaptureTaskQueue()
+    monkeypatch.setattr(mod, "_task_queue", capture)
+    monkeypatch.setattr(mod, "no_thinking_engine_chosen", lambda: True)
+    monkeypatch.setattr(
+        mod,
+        "updated_days",
+        lambda **_kw: pytest.fail("drain should not enumerate days"),
+    )
+    _arm_catchup_retry_tick(mod, monkeypatch)
+
+    now = time.time()
+    mod._catchup_retry_watermark = now - 60
+    _write_catchup_state(
+        tmp_path,
+        {
+            "20260101:daily-catchup": _catchup_record(
+                "20260101", "daily-catchup", next_retry_at=now - 10
+            )
+        },
+    )
+
+    mod._run_catchup_retry_tick(now)
+
+    assert capture.submissions == []
+
+
+def test_catchup_retry_tick_throttles_to_cadence(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.supervisor")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    settings = MagicMock(
+        side_effect=AssertionError("cadence gate should short-circuit")
+    )
+    monkeypatch.setattr(mod, "load_processing_settings", settings)
+    mod._last_catchup_retry_tick = 100.0
+
+    mod._run_catchup_retry_tick(100.0 + mod.CATCHUP_RETRY_TICK_INTERVAL_S - 1)
+
+    settings.assert_not_called()
+
+
 def test_run_gate_tick_realtime_skips_catchup_drain(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     drain = MagicMock()

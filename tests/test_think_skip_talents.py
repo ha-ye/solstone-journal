@@ -125,7 +125,9 @@ def _patch_segment_dependencies(
     monkeypatch.setattr(
         think,
         "cortex_request",
-        lambda prompt, name, config=None: spawned.append(name) or f"agent-{name}",
+        lambda prompt, name, config=None, **kwargs: (
+            spawned.append(name) or f"agent-{name}"
+        ),
     )
     monkeypatch.setattr(
         think,
@@ -351,6 +353,13 @@ def test_segments_batch_forwards_live_false(
 
     calls: list[dict] = []
     _patch_main_dependencies(monkeypatch, segment_dir, calls)
+
+    def _unreachable() -> int:
+        raise AssertionError("slot discovery must not run for non-local defaults")
+
+    # A tmp journal carries no local artifacts, so the real predicate resolves
+    # non-local and the default must never probe the server.
+    monkeypatch.setattr(think, "read_server_parallel_slots", _unreachable)
     monkeypatch.setattr(
         "sys.argv",
         [
