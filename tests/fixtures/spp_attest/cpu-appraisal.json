@@ -1,0 +1,93 @@
+{
+  "bundle": "/home/azureuser/b-bundle",
+  "chip_id": null,
+  "cpuid": {
+    "family": 25,
+    "model": 17,
+    "step": 1
+  },
+  "hcla_version": 2,
+  "host_data": null,
+  "measurement": null,
+  "pcr_sha256": "b162f46105c80d3e45028e37cc649404c9d65297ad1cda8f953208582060b0e3",
+  "release_path": "/home/azureuser/b-bundle/release-py/release.json",
+  "report_version": 5,
+  "status": "ok",
+  "steps": [
+    {
+      "detail": "sig=HCLA version=2 request_type=2",
+      "name": "hcla",
+      "status": "ok"
+    },
+    {
+      "detail": "report_data == SHA-256(runtime JSON)",
+      "name": "runtime-binding",
+      "status": "ok"
+    },
+    {
+      "detail": "VCEK chains to pinned SEV-Genoa roots",
+      "name": "amd-chain",
+      "status": "ok"
+    },
+    {
+      "detail": "VCEK signed report bytes 0..0x29f",
+      "name": "amd-report-signature",
+      "status": "ok"
+    },
+    {
+      "detail": "version=5 vmpl=0 debug_allowed=False",
+      "name": "snp-policy",
+      "status": "ok"
+    },
+    {
+      "detail": "bundle AK public key matches AMD-bound HCLAkPub",
+      "name": "ak-binding",
+      "status": "ok"
+    },
+    {
+      "detail": "AK quote signature valid and extraData matches verifier nonce + guest key",
+      "name": "quote",
+      "status": "ok"
+    },
+    {
+      "detail": "record-then-pin v1 fingerprint=b162f46105c80d3e45028e37cc649404c9d65297ad1cda8f953208582060b0e3",
+      "name": "pcr-policy",
+      "status": "ok"
+    },
+    {
+      "detail": "AES-GCM release written to /home/azureuser/b-bundle/release-py/release.json",
+      "name": "key-release",
+      "status": "ok"
+    }
+  ],
+  "tcb": {
+    "committed": {
+      "boot_loader": 10,
+      "fmc": null,
+      "microcode": 88,
+      "snp": 27,
+      "tee": 0
+    },
+    "current": {
+      "boot_loader": 10,
+      "fmc": null,
+      "microcode": 88,
+      "snp": 27,
+      "tee": 0
+    },
+    "launch": {
+      "boot_loader": 10,
+      "fmc": null,
+      "microcode": 88,
+      "snp": 27,
+      "tee": 0
+    },
+    "reported": {
+      "boot_loader": 10,
+      "fmc": null,
+      "microcode": 88,
+      "snp": 27,
+      "tee": 0
+    }
+  }
+}
