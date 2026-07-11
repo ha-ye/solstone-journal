@@ -3,10 +3,34 @@
 
 """Tests for observe/utils.py functions."""
 
+from PIL import Image
+
 from solstone.observe.utils import (
     assign_monitor_positions,
     parse_screen_filename,
+    resize_for_vlm,
 )
+
+
+class TestResizeForVlm:
+    def test_default_caps_longest_side_without_upscaling(self):
+        large = Image.new("RGB", (3440, 1440))
+        small = Image.new("RGB", (800, 600))
+
+        resized = resize_for_vlm(large)
+
+        assert resized.size == (1920, 804)
+        assert resize_for_vlm(small) is small
+
+    def test_image_token_cap_is_area_based_and_never_enlarges(self):
+        large = Image.new("RGB", (1920, 1080))
+        small = Image.new("RGB", (640, 360))
+
+        resized = resize_for_vlm(large, max_image_tokens=1024)
+
+        assert resized.size == (1365, 768)
+        assert resized.width * resized.height <= 1024 * 32 * 32
+        assert resize_for_vlm(small, max_image_tokens=1024) is small
 
 
 class TestAssignMonitorPositions:

@@ -72,6 +72,22 @@ SCENE_CUT_THRESHOLD = 25
 # Minimum wall-clock gap (seconds) between kept frames for non-scene-cut,
 # dHash-qualified frames; closer arrivals are stride-dropped.
 MIN_STRIDE_SECONDS = 5.0
+# Frozen Fedora gate (2026-07-11): 1024 is the lowest conservative image-token
+# ceiling for bundled Linux Qwen categorization. Detail extraction remains at
+# current sizing because 1024 lost fine-text fidelity.
+LOCAL_QWEN_CATEGORIZATION_IMAGE_TOKENS = 1024
+
+
+def _categorization_image_token_budget(provider: str) -> int | None:
+    """Return the proven image cap only for the bundled Linux Qwen path."""
+    if provider != "local" or not sys.platform.startswith("linux"):
+        return None
+
+    from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+    if not resolve_local_endpoint().is_bundled:
+        return None
+    return LOCAL_QWEN_CATEGORIZATION_IMAGE_TOKENS
 
 
 def _winnow_decision(
@@ -753,12 +769,17 @@ class VideoProcessor:
             if frame_provider == NO_BRAIN_PROVIDER:
                 logger.info("No thinking engine selected; deferring frame description")
                 return
+            categorization_image_tokens = _categorization_image_token_budget(
+                frame_provider
+            )
 
             # Create vision requests for all qualified frames
             for frame_data in qualified_frames:
                 # Load frame image from bytes - keep it open until request completes
                 frame_img = Image.open(io.BytesIO(frame_data["frame_bytes"]))
-                frame_img = resize_for_vlm(frame_img)
+                frame_img = resize_for_vlm(
+                    frame_img, max_image_tokens=categorization_image_tokens
+                )
 
                 req = batch.create(
                     contents=self._user_contents(

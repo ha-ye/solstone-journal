@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -11,6 +12,33 @@ from solstone.observe import describe as describe_mod
 from solstone.think.batch import Batch
 
 _SCHEMA = describe_mod._SCHEMA
+
+
+def test_categorization_image_budget_is_linux_bundled_local_only(monkeypatch):
+    from solstone.think.providers import local_endpoint
+
+    monkeypatch.setattr(describe_mod.sys, "platform", "linux")
+    monkeypatch.setattr(
+        local_endpoint,
+        "resolve_local_endpoint",
+        lambda: SimpleNamespace(is_bundled=True),
+    )
+
+    assert (
+        describe_mod._categorization_image_token_budget("local")
+        == describe_mod.LOCAL_QWEN_CATEGORIZATION_IMAGE_TOKENS
+    )
+    assert describe_mod._categorization_image_token_budget("google") is None
+
+    monkeypatch.setattr(
+        local_endpoint,
+        "resolve_local_endpoint",
+        lambda: SimpleNamespace(is_bundled=False),
+    )
+    assert describe_mod._categorization_image_token_budget("local") is None
+
+    monkeypatch.setattr(describe_mod.sys, "platform", "darwin")
+    assert describe_mod._categorization_image_token_budget("local") is None
 
 
 def test_describe_schema_file_is_valid_draft_2020_12():
