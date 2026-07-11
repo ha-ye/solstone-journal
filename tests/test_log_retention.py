@@ -121,6 +121,19 @@ def test_ac3_disabled_config_deletes_nothing_and_writes_no_audit(journal):
     assert not (journal / "chronicle" / old_day / "task_log.txt").exists()
 
 
+def test_local_inference_telemetry_follows_journal_log_retention(journal):
+    old_day = _day(31)
+    recent_day = _day(1)
+    old = _write(journal / "health" / "local-inference" / f"{old_day}.jsonl")
+    recent = _write(journal / "health" / "local-inference" / f"{recent_day}.jsonl")
+
+    result = prune(config=LogRetentionConfig(days=30))
+
+    assert not old.exists()
+    assert recent.exists()
+    assert result.by_class["local_inference"]["files_deleted"] == 1
+
+
 def test_ac4_dry_run_reports_candidates_without_deleting_or_audit(journal):
     old_day = _day(31)
     old_token = _write(journal / "tokens" / f"{old_day}.jsonl", "old")

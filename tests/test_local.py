@@ -27,6 +27,18 @@ from solstone.think.models import (
 from solstone.think.talents import TalentHookError
 
 
+@pytest.fixture(autouse=True)
+def _isolate_local_admission(monkeypatch, tmp_path):
+    from solstone.think.providers import local_admission
+
+    monkeypatch.setattr(
+        local_admission,
+        "_admission_dir",
+        lambda: tmp_path / "local-inference-admission",
+    )
+    monkeypatch.setattr(local_admission, "record_local_inference", lambda _record: None)
+
+
 def _provider():
     providers_pkg = importlib.import_module("solstone.think.providers")
     if hasattr(providers_pkg, "local_budget"):
@@ -1629,9 +1641,12 @@ def test_local_server_connect_linux_health_shape_uses_logical_model(monkeypatch)
 
 
 def _local_journal(monkeypatch, tmp_path: Path) -> Path:
+    from solstone.think.providers import local_server
+
     journal = tmp_path / "journal"
     (journal / "health").mkdir(parents=True)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    local_server.reset_parallel_slots_cache()
     return journal
 
 
@@ -1652,6 +1667,11 @@ def test_read_server_parallel_slots_prefers_live_props(monkeypatch, tmp_path):
 
     # /props is ground truth; it wins over the persisted tier.
     assert local_server.read_server_parallel_slots() == 2
+    assert local_server.read_server_capacity() == local_server.ServerCapacity(
+        parallel_slots=2,
+        source="props",
+        profile="capable",
+    )
 
 
 def test_read_server_parallel_slots_no_port_returns_floor(
@@ -1671,6 +1691,19 @@ def test_read_server_parallel_slots_no_port_returns_floor(
     assert (
         "local_server_parallel_slots fallback slots=1 port=None "
         "context_tokens=None source=default" in caplog.text
+    )
+
+
+def test_server_capacity_uses_explicit_apple_profile(monkeypatch, tmp_path):
+    from solstone.think.providers import local_server
+
+    _local_journal(monkeypatch, tmp_path)
+    monkeypatch.setattr(local_server.sys, "platform", "darwin")
+
+    assert local_server.read_server_capacity() == local_server.ServerCapacity(
+        parallel_slots=1,
+        source="default",
+        profile="apple",
     )
 
 
@@ -1735,3 +1768,50 @@ def test_read_server_parallel_slots_is_memoized_and_resettable(monkeypatch, tmp_
     local_server.reset_parallel_slots_cache()
     assert local_server.read_server_parallel_slots() == 2
     assert len(calls) == 2
+
+
+def test_local_response_telemetry_normalizes_llama_and_mlx_fields():
+    provider = _provider()
+
+    fields = provider._server_response_fields(
+        {
+            "timings": {
+                "cache_n": 236,
+                "prompt_n": 12,
+                "prompt_ms": 30.5,
+                "predicted_n": 35,
+                "predicted_ms": 661.0,
+                "slot_id": 1,
+            },
+            "usage": {
+                "prompt_tokens": 248,
+                "completion_tokens": 35,
+            },
+        }
+    )
+
+    assert fields == {
+        "prompt_eval_ms": 30.5,
+        "generation_ms": 661.0,
+        "server_total_ms": 691.5,
+        "prompt_tokens": 248,
+        "generated_tokens": 35,
+        "prompt_cached_tokens": 236,
+        "selected_slot": 1,
+        "prompt_cache_state": "warm",
+    }
+    assert provider._extract_usage(
+        {
+            "usage": {
+                "prompt_tokens": 248,
+                "completion_tokens": 35,
+                "total_tokens": 283,
+                "prompt_tokens_details": {"cached_tokens": 236},
+            }
+        }
+    ) == {
+        "input_tokens": 248,
+        "output_tokens": 35,
+        "total_tokens": 283,
+        "cached_tokens": 236,
+    }

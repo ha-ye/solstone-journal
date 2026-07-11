@@ -12,7 +12,9 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import time
 import traceback
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -265,11 +267,17 @@ def _extract_usage(data: dict[str, Any]) -> dict[str, int] | None:
     input_tokens = int(usage.get("prompt_tokens") or 0)
     output_tokens = int(usage.get("completion_tokens") or 0)
     total_tokens = int(usage.get("total_tokens") or input_tokens + output_tokens)
-    return {
+    normalized = {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
         "total_tokens": total_tokens,
     }
+    prompt_details = usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict):
+        cached_tokens = int(prompt_details.get("cached_tokens") or 0)
+        if cached_tokens:
+            normalized["cached_tokens"] = cached_tokens
+    return normalized
 
 
 def _parse_response(data: dict[str, Any]) -> GenerateResult:
@@ -293,6 +301,97 @@ def _parse_response(data: dict[str, Any]) -> GenerateResult:
         finish_reason=choice.get("finish_reason"),
         thinking=None,
     )
+
+
+def _number(value: Any) -> int | float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    return value
+
+
+def _server_response_fields(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize content-free timing/cache/slot fields exposed by local servers."""
+    timings = data.get("timings")
+    timings = timings if isinstance(timings, dict) else {}
+    usage = data.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    prompt_details = usage.get("prompt_tokens_details")
+    prompt_details = prompt_details if isinstance(prompt_details, dict) else {}
+
+    cached_tokens = _number(timings.get("cache_n"))
+    if cached_tokens is None:
+        cached_tokens = _number(prompt_details.get("cached_tokens"))
+    slot_id = _number(data.get("id_slot"))
+    if slot_id is None:
+        slot_id = _number(data.get("slot_id"))
+    if slot_id is None:
+        slot_id = _number(timings.get("slot_id"))
+
+    prompt_ms = _number(timings.get("prompt_ms"))
+    generation_ms = _number(timings.get("predicted_ms"))
+    server_total_ms = None
+    if prompt_ms is not None or generation_ms is not None:
+        server_total_ms = float(prompt_ms or 0) + float(generation_ms or 0)
+
+    return {
+        "prompt_eval_ms": prompt_ms,
+        "generation_ms": generation_ms,
+        "server_total_ms": server_total_ms,
+        "prompt_tokens": _number(usage.get("prompt_tokens"))
+        or _number(timings.get("prompt_n")),
+        "generated_tokens": _number(usage.get("completion_tokens"))
+        or _number(timings.get("predicted_n")),
+        "prompt_cached_tokens": cached_tokens,
+        "selected_slot": slot_id,
+        "prompt_cache_state": (
+            "warm"
+            if cached_tokens is not None and cached_tokens > 0
+            else "cold"
+            if cached_tokens is not None
+            else "unknown"
+        ),
+    }
+
+
+def _telemetry_record(
+    *,
+    request_id: str,
+    kind: str,
+    model: str,
+    profile: str,
+    capacity: int,
+    capacity_source: str,
+    started: float,
+    queue_wait_ms: float,
+    admission_slot: int | None,
+    retry_index: int | None,
+    outcome: str,
+    finish_reason: str | None = None,
+    response_data: dict[str, Any] | None = None,
+    reason_code: str | None = None,
+) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "timestamp": time.time(),
+        "request_id": request_id,
+        "kind": kind,
+        "provider": "local",
+        "model": model,
+        "profile": profile,
+        "serving_capacity": capacity,
+        "capacity_source": capacity_source,
+        "admission_slot": admission_slot,
+        "queue_wait_ms": round(queue_wait_ms, 3),
+        "client_total_ms": round((time.monotonic() - started) * 1000.0, 3),
+        "retry_index": retry_index,
+        "outcome": outcome,
+        "finish_reason": finish_reason,
+        "reason_code": reason_code,
+        "timed_out": outcome == "timeout",
+        "cancelled": outcome == "cancelled",
+    }
+    if response_data is not None:
+        record.update(_server_response_fields(response_data))
+    return record
 
 
 def _classify_byo_generate_error(exc: BaseException) -> LocalProviderError:
@@ -320,6 +419,66 @@ def _classify_byo_generate_error(exc: BaseException) -> LocalProviderError:
     )
 
 
+def _remaining_timeout(started: float, timeout_s: float) -> float:
+    remaining = timeout_s - (time.monotonic() - started)
+    if remaining <= 0:
+        from solstone.think.providers.local_admission import LocalAdmissionTimeout
+
+        raise LocalAdmissionTimeout(
+            f"Local inference request exceeded its {timeout_s:.3f}s deadline."
+        )
+    return remaining
+
+
+def _prepare_bundled_request(
+    *,
+    server: Any,
+    contents: str | list[Any],
+    system_instruction: str | None,
+    temperature: float,
+    max_output_tokens: int,
+    json_output: bool,
+    json_schema: dict | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    from solstone.think.providers import local_budget
+
+    def counter(text: str) -> int:
+        return local_budget.count_tokens(text, server.base_url)
+
+    fitted_contents, input_budget = local_budget.fit_contents(
+        contents,
+        system_instruction,
+        max_output_tokens,
+        count=counter,
+    )
+    messages = _build_messages(fitted_contents, system_instruction)
+    return (
+        _build_request_body(
+            server.served_model_id,
+            messages,
+            temperature,
+            max_output_tokens,
+            json_output,
+            json_schema,
+            True,
+        ),
+        input_budget,
+    )
+
+
+def _raise_bundled_status(response: Any) -> None:
+    import httpx
+
+    try:
+        response.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        if _contains_any(response.text.lower(), _CONTEXT_WINDOW_PATTERNS):
+            raise ContextBudgetExceeded(
+                "Local request exceeded the model context window after fitting."
+            ) from exc
+        raise
+
+
 def run_generate(
     contents: str | list[Any],
     model: str,
@@ -332,56 +491,106 @@ def run_generate(
     timeout_s: float | None = None,
     **kwargs: Any,
 ) -> GenerateResult:
-    del thinking_budget, kwargs
+    del thinking_budget
+    retry_index = int(kwargs.pop("inference_retry_index", 0) or 0)
     endpoint = resolve_local_endpoint()
     # Validate the requested logical id; served id comes from the server.
     normalize_model_id(model)
     messages = _build_messages(contents, system_instruction)
     if endpoint.is_bundled:
         from solstone.think.providers import local_server
-
-        server = local_server.connect()
-        from solstone.think.providers import local_budget
-
-        def counter(text: str) -> int:
-            return local_budget.count_tokens(text, server.base_url)
-
-        contents, input_budget = local_budget.fit_contents(
-            contents,
-            system_instruction,
-            max_output_tokens,
-            count=counter,
+        from solstone.think.providers.local_admission import (
+            LocalAdmissionTimeout,
+            acquire_local_slot,
+            record_local_inference,
         )
-        messages = _build_messages(contents, system_instruction)
-        body = _build_request_body(
-            server.served_model_id,
-            messages,
-            temperature,
-            max_output_tokens,
-            json_output,
-            json_schema,
-            endpoint.is_bundled,
+
+        started = time.monotonic()
+        request_id = uuid.uuid4().hex
+        timeout = timeout_s or _DEFAULT_TIMEOUT
+        server = local_server.connect()
+        capacity = local_server.read_server_capacity()
+        body, input_budget = _prepare_bundled_request(
+            server=server,
+            contents=contents,
+            system_instruction=system_instruction,
+            temperature=temperature,
+            max_output_tokens=max_output_tokens,
+            json_output=json_output,
+            json_schema=json_schema,
         )
 
         import httpx
 
-        response = httpx.post(
-            f"{server.base_url}/v1/chat/completions",
-            json=body,
-            timeout=timeout_s or _DEFAULT_TIMEOUT,
-        )
+        permit = None
         try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            if _contains_any(response.text.lower(), _CONTEXT_WINDOW_PATTERNS):
-                raise ContextBudgetExceeded(
-                    "Local request exceeded the model context window after fitting."
-                ) from exc
+            permit = acquire_local_slot(
+                capacity.parallel_slots,
+                _remaining_timeout(started, timeout),
+            )
+            with permit:
+                response = httpx.post(
+                    f"{server.base_url}/v1/chat/completions",
+                    json=body,
+                    timeout=_remaining_timeout(started, timeout),
+                )
+                _raise_bundled_status(response)
+                response_data = response.json()
+            result = _parse_response(response_data)
+            telemetry = _telemetry_record(
+                request_id=request_id,
+                kind="generate",
+                model=LOCAL_MODEL,
+                profile=capacity.profile,
+                capacity=capacity.parallel_slots,
+                capacity_source=capacity.source,
+                started=started,
+                queue_wait_ms=permit.queue_wait_ms,
+                admission_slot=permit.slot_index,
+                retry_index=retry_index,
+                outcome="success",
+                finish_reason=result.get("finish_reason"),
+                response_data=response_data,
+            )
+            record_local_inference(telemetry)
+            result["inference"] = telemetry
+            if input_budget is not None:
+                result["input_budget"] = input_budget
+            return result
+        except BaseException as exc:
+            if isinstance(exc, KeyboardInterrupt | SystemExit):
+                raise
+            if permit is not None:
+                permit.release()
+            outcome = (
+                "timeout"
+                if isinstance(exc, (LocalAdmissionTimeout, httpx.TimeoutException))
+                else "cancelled"
+                if isinstance(exc, asyncio.CancelledError)
+                else "error"
+            )
+            record_local_inference(
+                _telemetry_record(
+                    request_id=request_id,
+                    kind="generate",
+                    model=LOCAL_MODEL,
+                    profile=capacity.profile,
+                    capacity=capacity.parallel_slots,
+                    capacity_source=capacity.source,
+                    started=started,
+                    queue_wait_ms=(
+                        permit.queue_wait_ms
+                        if permit is not None
+                        else (time.monotonic() - started) * 1000.0
+                    ),
+                    admission_slot=permit.slot_index if permit is not None else None,
+                    retry_index=retry_index,
+                    outcome=outcome,
+                    reason_code=getattr(exc, "reason_code", None)
+                    or classify_provider_error(exc, "local"),
+                )
+            )
             raise
-        result = _parse_response(response.json())
-        if input_budget is not None:
-            result["input_budget"] = input_budget
-        return result
 
     body = _build_request_body(
         endpoint.served_model_id,
@@ -424,19 +633,134 @@ async def run_agenerate(
     timeout_s: float | None = None,
     **kwargs: Any,
 ) -> GenerateResult:
-    return await asyncio.to_thread(
-        run_generate,
-        contents,
-        model,
-        temperature,
-        max_output_tokens,
-        system_instruction,
-        json_output,
-        thinking_budget,
-        json_schema,
-        timeout_s,
-        **kwargs,
+    del thinking_budget
+    retry_index = int(kwargs.pop("inference_retry_index", 0) or 0)
+    endpoint = resolve_local_endpoint()
+    normalize_model_id(model)
+    messages = _build_messages(contents, system_instruction)
+
+    import httpx
+
+    if not endpoint.is_bundled:
+        body = _build_request_body(
+            endpoint.served_model_id,
+            messages,
+            temperature,
+            max_output_tokens,
+            json_output,
+            json_schema,
+            False,
+        )
+        post_kwargs: dict[str, Any] = {
+            "json": body,
+            "timeout": timeout_s or _DEFAULT_TIMEOUT,
+        }
+        if endpoint.credential:
+            post_kwargs["headers"] = {"Authorization": f"Bearer {endpoint.credential}"}
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{endpoint.base_url}/v1/chat/completions", **post_kwargs
+                )
+            response.raise_for_status()
+            return _parse_response(response.json())
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise _classify_byo_generate_error(exc) from exc
+
+    from solstone.think.providers import local_server
+    from solstone.think.providers.local_admission import (
+        LocalAdmissionTimeout,
+        acquire_local_slot_async,
+        record_local_inference,
     )
+
+    started = time.monotonic()
+    request_id = uuid.uuid4().hex
+    timeout = timeout_s or _DEFAULT_TIMEOUT
+    server = local_server.connect()
+    capacity = local_server.read_server_capacity()
+    body, input_budget = await asyncio.to_thread(
+        _prepare_bundled_request,
+        server=server,
+        contents=contents,
+        system_instruction=system_instruction,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        json_output=json_output,
+        json_schema=json_schema,
+    )
+    permit = None
+    try:
+        permit = await acquire_local_slot_async(
+            capacity.parallel_slots,
+            _remaining_timeout(started, timeout),
+        )
+        async with permit:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{server.base_url}/v1/chat/completions",
+                    json=body,
+                    timeout=_remaining_timeout(started, timeout),
+                )
+            _raise_bundled_status(response)
+            response_data = response.json()
+        result = _parse_response(response_data)
+        telemetry = _telemetry_record(
+            request_id=request_id,
+            kind="generate",
+            model=LOCAL_MODEL,
+            profile=capacity.profile,
+            capacity=capacity.parallel_slots,
+            capacity_source=capacity.source,
+            started=started,
+            queue_wait_ms=permit.queue_wait_ms,
+            admission_slot=permit.slot_index,
+            retry_index=retry_index,
+            outcome="success",
+            finish_reason=result.get("finish_reason"),
+            response_data=response_data,
+        )
+        record_local_inference(telemetry)
+        result["inference"] = telemetry
+        if input_budget is not None:
+            result["input_budget"] = input_budget
+        return result
+    except BaseException as exc:
+        if isinstance(exc, KeyboardInterrupt | SystemExit):
+            raise
+        if permit is not None:
+            permit.release()
+        outcome = (
+            "cancelled"
+            if isinstance(exc, asyncio.CancelledError)
+            else "timeout"
+            if isinstance(exc, (LocalAdmissionTimeout, httpx.TimeoutException))
+            else "error"
+        )
+        record_local_inference(
+            _telemetry_record(
+                request_id=request_id,
+                kind="generate",
+                model=LOCAL_MODEL,
+                profile=capacity.profile,
+                capacity=capacity.parallel_slots,
+                capacity_source=capacity.source,
+                started=started,
+                queue_wait_ms=(
+                    permit.queue_wait_ms
+                    if permit is not None
+                    else (time.monotonic() - started) * 1000.0
+                ),
+                admission_slot=permit.slot_index if permit is not None else None,
+                retry_index=retry_index,
+                outcome=outcome,
+                reason_code=getattr(exc, "reason_code", None)
+                or classify_provider_error(exc, "local"),
+            )
+        )
+        raise
 
 
 async def run_cogitate(
@@ -444,30 +768,57 @@ async def run_cogitate(
     on_event: Callable[[dict], None] | None = None,
 ) -> str:
     from solstone.think.providers import local_server, openhands
+    from solstone.think.providers.local_admission import (
+        LocalAdmissionTimeout,
+        acquire_local_slot_async,
+        record_local_inference,
+    )
 
     config = {**config, "model": normalize_model_id(config.get("model", LOCAL_MODEL))}
     endpoint = resolve_local_endpoint()
+    started = time.monotonic()
+    request_id = uuid.uuid4().hex
+    server = None
+    capacity = None
+    permit = None
+    outcome = "success"
+    reason_code: str | None = None
     try:
         if endpoint.is_bundled:
-            local_server.connect()
+            server = local_server.connect()
+            capacity = local_server.read_server_capacity()
+            timeout = float(config.get("timeout_seconds", 600) or 600)
+            permit = await acquire_local_slot_async(
+                capacity.parallel_slots,
+                _remaining_timeout(started, timeout),
+            )
         return await openhands.run_cogitate(config, on_event=on_event)
+    except asyncio.CancelledError:
+        outcome = "cancelled"
+        reason_code = "cancelled"
+        raise
     except Exception as exc:
+        outcome = (
+            "timeout"
+            if isinstance(exc, LocalAdmissionTimeout)
+            or getattr(exc, "reason_code", None) == "wall_clock_exceeded"
+            else "error"
+        )
         from solstone.think.talents import TalentHookError
 
         if isinstance(exc, TalentHookError):
             raise
 
-        reason_code = None
         if not endpoint.is_bundled:
             reason_code = classify_byo_cogitate_error(exc) or getattr(
                 exc, "reason_code", None
             )
+        reason_code = (
+            reason_code
+            or getattr(exc, "reason_code", None)
+            or classify_provider_error(exc, "local")
+        )
         if on_event and not getattr(exc, "_evented", False):
-            reason_code = (
-                reason_code
-                or getattr(exc, "reason_code", None)
-                or classify_provider_error(exc, "local")
-            )
             error_text = str(exc)
             trace_text = traceback.format_exc()
             fixed_copy = local_endpoint_reason_copy(reason_code)
@@ -493,6 +844,31 @@ async def run_cogitate(
             setattr(wrapped, "_evented", getattr(exc, "_evented", False))
             raise wrapped from exc
         raise
+    finally:
+        if permit is not None:
+            permit.release()
+        if server is not None and capacity is not None:
+            record_local_inference(
+                _telemetry_record(
+                    request_id=request_id,
+                    kind="cogitate",
+                    model=LOCAL_MODEL,
+                    profile=capacity.profile,
+                    capacity=capacity.parallel_slots,
+                    capacity_source=capacity.source,
+                    started=started,
+                    queue_wait_ms=(
+                        permit.queue_wait_ms
+                        if permit is not None
+                        else (time.monotonic() - started) * 1000.0
+                    ),
+                    admission_slot=permit.slot_index if permit is not None else None,
+                    retry_index=None,
+                    outcome=outcome,
+                    finish_reason="stop" if outcome == "success" else None,
+                    reason_code=reason_code,
+                )
+            )
 
 
 def list_models(provider: str = "local") -> list[dict[str, Any]]:

@@ -27,6 +27,7 @@ CLASS_NAMES = (
     "talent_day_index",
     "cogitate_history_cache",
     "tokens",
+    "local_inference",
     "awareness_logs",
     "config_actions",
     "facet_logs",
@@ -168,6 +169,15 @@ def prune(
         dry_run=dry_run,
         class_name="tokens",
         base=journal_path / "tokens",
+        pattern="*.jsonl",
+    )
+    _scan_dated_files(
+        journal_path,
+        cutoff,
+        result,
+        dry_run=dry_run,
+        class_name="local_inference",
+        base=journal_path / "health" / "local-inference",
         pattern="*.jsonl",
     )
     _scan_dated_files(

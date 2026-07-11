@@ -116,6 +116,8 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/identity.py",
         "solstone/think/journal_config.py",
         "solstone/think/log_retention.py",
+        # Sole writer of content-free bundled-local inference telemetry.
+        "solstone/think/providers/local_admission.py",
         "solstone/think/schedule_config.py",
         "solstone/think/push/devices.py",
         # Backup hosted-tier binding (0600 broker-token cache).

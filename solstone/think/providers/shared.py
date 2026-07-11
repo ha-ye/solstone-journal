@@ -430,6 +430,7 @@ class GenerateResult(TypedDict, total=False):
     input_budget: Optional[
         dict
     ]  # Out-of-band truncation metadata when the bundled-local input was clipped
+    inference: Optional[dict]  # Content-free local inference timing/admission record
 
 
 # ---------------------------------------------------------------------------

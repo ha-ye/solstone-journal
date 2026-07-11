@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -65,6 +66,16 @@ class LocalServerInfo:
     binary_path: str | None = None
     model_path: str | None = None
     served_model_id: str = LOCAL_MODEL
+    parallel_slots: int = 1
+    capacity_source: str = "default"
+    profile: str = "floor"
+
+
+@dataclass(frozen=True)
+class ServerCapacity:
+    parallel_slots: int
+    source: str
+    profile: str
 
 
 def _base_url(port: int) -> str:
@@ -166,7 +177,7 @@ def read_local_context_window() -> int | None:
 # server that never launched has no slots at all.
 _UNKNOWN_SLOTS = 1
 
-_PARALLEL_SLOTS_CACHE: int | None = None
+_SERVER_CAPACITY_CACHE: ServerCapacity | None = None
 
 
 def _extract_total_slots(props: dict[str, Any]) -> int | None:
@@ -186,13 +197,23 @@ def _slots_from_launched_tier(context_tokens: int | None) -> int | None:
     return None
 
 
-def _discover_parallel_slots() -> int:
+def _profile_for_slots(slots: int) -> str:
+    if sys.platform == "darwin":
+        return "apple"
+    if slots == _CAPABLE_TIER.parallel_slots:
+        return _CAPABLE_TIER.name
+    if slots == _FLOOR_TIER.parallel_slots:
+        return _FLOOR_TIER.name
+    return "advertised"
+
+
+def _discover_server_capacity() -> ServerCapacity:
     port = read_service_port(_SERVICE_NAME)
     props = fetch_props(port) if port is not None else None
     if props is not None:
         slots = _extract_total_slots(props)
         if slots is not None:
-            return slots
+            return ServerCapacity(slots, "props", _profile_for_slots(slots))
 
     context_tokens = read_local_context_window()
     slots = _slots_from_launched_tier(context_tokens)
@@ -206,7 +227,15 @@ def _discover_parallel_slots() -> int:
         context_tokens,
         source,
     )
-    return slots
+    return ServerCapacity(slots, source, _profile_for_slots(slots))
+
+
+def read_server_capacity() -> ServerCapacity:
+    """Return the memoized bundled-server capacity and its evidence source."""
+    global _SERVER_CAPACITY_CACHE
+    if _SERVER_CAPACITY_CACHE is None:
+        _SERVER_CAPACITY_CACHE = _discover_server_capacity()
+    return _SERVER_CAPACITY_CACHE
 
 
 def read_server_parallel_slots() -> int:
@@ -216,16 +245,13 @@ def read_server_parallel_slots() -> int:
     the context window persisted at launch, then to ``_UNKNOWN_SLOTS``.
     Discovered once per process. Never raises; always returns >= 1.
     """
-    global _PARALLEL_SLOTS_CACHE
-    if _PARALLEL_SLOTS_CACHE is None:
-        _PARALLEL_SLOTS_CACHE = _discover_parallel_slots()
-    return _PARALLEL_SLOTS_CACHE
+    return read_server_capacity().parallel_slots
 
 
 def reset_parallel_slots_cache() -> None:
     """Clear the per-process slot-discovery memo."""
-    global _PARALLEL_SLOTS_CACHE
-    _PARALLEL_SLOTS_CACHE = None
+    global _SERVER_CAPACITY_CACHE
+    _SERVER_CAPACITY_CACHE = None
 
 
 def _resolve_served_model_id(health_body: dict[str, Any] | None) -> str | None:
@@ -263,12 +289,16 @@ def connect() -> LocalServerInfo:
     served_model_id = _resolve_served_model_id(body)
     if served_model_id is None:
         raise LocalProviderError("local_model_not_ready", LOCAL_MODEL_NOT_READY_COPY)
+    capacity = read_server_capacity()
     return LocalServerInfo(
         model_id=LOCAL_MODEL,
         port=port,
         base_url=_base_url(port),
         state=STATE_READY,
         served_model_id=served_model_id,
+        parallel_slots=capacity.parallel_slots,
+        capacity_source=capacity.source,
+        profile=capacity.profile,
     )
 
 
@@ -276,6 +306,7 @@ __all__ = [
     "LOCAL_MIN_CONTEXT_TOKENS",
     "LOCAL_MODEL_NOT_READY_COPY",
     "LocalServerInfo",
+    "ServerCapacity",
     "ServerTier",
     "STATE_IDLE",
     "STATE_STARTING",
@@ -289,6 +320,7 @@ __all__ = [
     "probe_state",
     "read_local_context_window",
     "read_server_context_window",
+    "read_server_capacity",
     "read_server_parallel_slots",
     "reset_parallel_slots_cache",
     "select_server_tier",

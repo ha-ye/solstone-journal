@@ -224,6 +224,89 @@ usage_dict = {
 - Return usage in `GenerateResult["usage"]` - wrapper handles logging
 - For `run_cogitate()`, include usage in the `finish` event
 
+## Bundled-local admission and inference telemetry
+
+The `local` provider has one shared admission boundary for the supervisor-owned
+Qwen server. It applies only when `providers.local` resolves to the bundled
+loopback runtime. A configured OpenAI-compatible endpoint and every cloud
+provider bypass this boundary.
+
+Capacity remains explicit and intentionally small:
+
+| Runtime profile | Serving capacity | Evidence |
+|---|---:|---|
+| Linux floor | 1 | supervisor `ServerTier`; live `/props.total_slots` wins |
+| Linux capable (at least 16 GiB tiering VRAM) | 2 | supervisor `ServerTier`; live `/props.total_slots` wins |
+| Apple MLX | 1 | conservative explicit fallback because mlx-vlm 0.6.2 does not advertise a slot limit |
+
+The provider memoizes the capacity once per process. It first reads live
+`/props.total_slots`, then the persisted `health/local.ctx` launch tier, then
+falls back to one. The supervisor remains the configuration owner: changing a
+Linux tier's `parallel_slots` changes both `llama-server --parallel` and provider
+admission after the journal processes restart. Apple stays at one until that
+runtime exposes a stable capacity contract and a separate measurement justifies
+raising it.
+
+Admission uses one `flock` file per slot under
+`health/local-inference-admission/`. This coordinates independent journal
+processes without a scheduler service or in-memory queue. Waiting async calls
+are cancellation-safe; exceptions and cancellation release acquired locks;
+process exit releases kernel locks. Queue time consumes the caller's existing
+provider deadline, so waiting cannot silently extend a request beyond its
+configured timeout. Cogitate holds one permit for its run because the OpenHands
+SDK owns its internal multi-turn HTTP calls; this is conservative and avoids an
+uncontrolled second path to the same server.
+
+Every bundled-local attempt appends a content-free JSON record to
+`health/local-inference/YYYYMMDD.jsonl`. These files follow the configured
+`retention.journal_logs.days` policy. Records contain:
+
+- request id, timestamp, generate/cogitate kind, provider, logical model, and
+  runtime profile;
+- serving capacity, evidence source, admission slot, and client queue wait;
+- client wall time plus server prompt-evaluation, generation, and total timing
+  when the response exposes them;
+- prompt/generated token counts, reused prompt tokens, prompt-cache cold/warm
+  state, and selected server slot when exposed;
+- retry index, finish reason, outcome, timeout/cancellation flags, and a safe
+  reason code on failure.
+
+Records never contain prompt text, generated text, messages, schemas, images,
+endpoint URLs, or credentials. A successful `GenerateResult` also carries the
+same record as `inference`; callers that already retain the full result can use
+it without rereading the log. Fields unavailable from a runtime remain null or
+`unknown` rather than being inferred.
+
+Run the synthetic journal-shaped benchmark against an isolated server:
+
+```bash
+python scripts/benchmark_local_inference_admission.py \
+  --endpoint http://127.0.0.1:8080 --slots 2 --concurrency 10 \
+  --requests 30 --mode baseline
+python scripts/benchmark_local_inference_admission.py \
+  --endpoint http://127.0.0.1:8080 --slots 2 --concurrency 10 \
+  --requests 30 --mode admitted
+```
+
+It reports throughput, latency P50/P95/P99, explicit queue wait, residual opaque
+wait, failures, and NVIDIA peak memory/utilization when `nvidia-smi` is present.
+The payloads are fixed synthetic text/JSON requests and never read a journal.
+
+The implementation gate on `fedora.local` used a fresh b9957 server with two
+slots, ten producers, and twelve mixed requests for each side. Baseline versus
+admitted results were 0.1291 versus 0.1296 requests/s, P95 latency 78.71 versus
+77.22 seconds, P99 80.28 versus 77.30 seconds, and identical 4,652 MiB peak GPU
+memory. Most importantly, P95 wait hidden inside the server fell from 65.56
+seconds to 1.22 seconds; the admitted run reported 62.38 seconds as explicit
+client queue wait. The boundary preserved throughput, slightly improved the
+tail, and made the backlog observable without changing model work.
+
+Rollback is one code revert plus a journal-process restart. The lock files hold
+no state and may remain on disk; removing the provider calls to
+`acquire_local_slot*()` immediately restores server-side queueing. Telemetry
+JSONL files are ordinary operational logs and can remain until retention prunes
+them.
+
 ## Context & Routing
 
 Context strings determine provider and model selection. Providers receive already-resolved models, but understanding the system helps:

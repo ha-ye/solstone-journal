@@ -1612,6 +1612,7 @@ async def _execute_generate(
                 timeout_s=timeout_s,
                 provider=config.get("provider"),
                 model=config.get("model"),
+                inference_retry_index=1,
             )
         else:
             if config.get("fallback_from") or not _should_fallback(exc):
