@@ -363,6 +363,71 @@
       font-weight: 700;
     }
 
+    .thinking-workspace .laneslot {
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .thinking-workspace .lane .lanetag {
+      border: 1px solid var(--hairline);
+      color: var(--muted);
+      background: var(--cream);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 0.72rem;
+      font-weight: 650;
+      line-height: 1.3;
+    }
+
+    .thinking-workspace .lanemore {
+      border: 0;
+      background: transparent;
+      color: var(--orange-ink);
+      cursor: pointer;
+      font: inherit;
+      font-size: 0.86rem;
+      font-weight: 650;
+      justify-self: start;
+      padding: 0;
+    }
+
+    .thinking-workspace .lanedetail {
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-sm);
+      background: var(--cream);
+      color: var(--muted);
+      padding: 11px 13px;
+      font-size: 0.86rem;
+      line-height: 1.5;
+    }
+
+    .thinking-workspace .lanedetail[hidden] {
+      display: none;
+    }
+
+    .thinking-workspace .lanedetail-heading {
+      font-family: "Comfortaa", system-ui, sans-serif;
+      font-weight: 700;
+      color: var(--ink);
+      margin-bottom: 2px;
+    }
+
+    .thinking-workspace .lanedetail-sub {
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .thinking-workspace .lanedetail-line {
+      margin-top: 7px;
+    }
+
+    .thinking-workspace .lanedetail-claims {
+      color: var(--ink);
+      font-weight: 650;
+      margin-top: 9px;
+    }
+
     .thinking-workspace .switchflow {
       align-items: center;
       display: grid;
@@ -433,8 +498,8 @@
       </header>
 
       <div class="glance" id="brainGlance" aria-live="polite">
-        <div class="glabel" id="thinkingActiveLane">loading</div>
-        <div class="gval" id="thinkingActiveValue">checking</div>
+        <div class="glabel" id="thinkingActiveLane"></div>
+        <div class="gval" id="thinkingActiveValue"></div>
         <p class="gsub" id="thinkingActiveDetail"></p>
       </div>
 
@@ -446,33 +511,35 @@
       <section class="lanegrid" aria-label="thinking options">
         <article class="lane" id="lane-local" data-lane="local" data-open-view="local-setup" role="button" tabindex="0">
           <div class="lanehead">
-            <h2>local</h2>
+            <h2 id="localLaneTitle"></h2>
             <span class="pill" id="localLanePill">checking</span>
           </div>
-          <p id="localLaneDescription">the bundled model runs right in your journal — your thinking never leaves.</p>
+          <p id="localLaneDescription"></p>
           <span class="activetag" id="localActiveTag" hidden>active</span>
-          <button type="button" class="trail" data-open-view="local-setup" id="localLaneStatus">turn on local →</button>
+          <button type="button" class="trail" data-open-view="local-setup" id="localLaneStatus"></button>
         </article>
 
-        <article class="lane" id="lane-confidential" data-lane="confidential" data-open-view="main" role="button" tabindex="0">
-          <div class="lanehead">
-            <h2>confidential</h2>
-            <span class="pill" id="confidentialLanePill">off</span>
-          </div>
-          <p id="confidentialLaneDescription">send thinking work to confidential hardware only after attestation verifies. today it is not yet verified, so setup can land but thinking stays blocked.</p>
-          <span class="activetag" id="confidentialActiveTag" hidden>active</span>
-          <button type="button" class="trail" id="confidentialLaneStatus">set up confidential →</button>
-          <div class="message" id="confidentialLaneOperation"></div>
-        </article>
+        <div class="laneslot" id="confidentialLaneSlot">
+          <article class="lane" id="lane-confidential">
+            <div class="lanehead">
+              <h2 id="confidentialLaneTitle"></h2>
+              <span class="pill" id="confidentialLanePill"></span>
+            </div>
+            <p id="confidentialLaneDescription"></p>
+            <span class="activetag" id="confidentialActiveTag" hidden>active</span>
+          </article>
+          <button type="button" class="lanemore" id="confidentialLaneMore" aria-controls="lane-detail-confidential" aria-expanded="false"></button>
+          <div class="lanedetail" id="lane-detail-confidential" hidden></div>
+        </div>
 
         <article class="lane" id="lane-byo" data-lane="byo" data-open-view="byo-setup" role="button" tabindex="0">
           <div class="lanehead">
-            <h2>BYO</h2>
+            <h2 id="byoLaneTitle"></h2>
             <span class="pill" id="byoLanePill">off</span>
           </div>
-          <p id="byoLaneDescription">your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.</p>
+          <p id="byoLaneDescription"></p>
           <span class="activetag" id="byoActiveTag" hidden>active</span>
-          <button type="button" class="trail" data-open-view="byo-setup" id="byoLaneStatus">add a key or URL →</button>
+          <button type="button" class="trail" data-open-view="byo-setup" id="byoLaneStatus"></button>
         </article>
       </section>
 
@@ -531,8 +598,8 @@
     <section class="view" data-view="byo-setup" hidden>
       <button type="button" class="backlink" id="byoBackLink">‹ thinking</button>
       <div class="panelbody">
-        <h2>BYO</h2>
-        <p class="intro">use your own key or your own endpoint URL — your billing, your control.</p>
+        <h2 id="byoSetupTitle"></h2>
+        <p class="intro" id="byoIntro"></p>
       </div>
 
       <label class="hidden-select" for="byoProvider">provider</label>
@@ -543,8 +610,12 @@
       </select>
 
       <section class="panelbody" id="byoPickPanel">
-        <h3>pick your provider</h3>
-        <p class="micro">all three work the same in solstone. choose the one you have a key for.</p>
+        <div class="inline-actions" id="byoModeChooser">
+          <button type="button" class="btn" id="byoModeKey"></button>
+          <button type="button" class="btn" id="byoModeEndpoint"></button>
+        </div>
+        <h3 id="byoPickTitle"></h3>
+        <p class="micro" id="byoPickSub"></p>
       </section>
 
       <section class="provgrid" id="byoProviderGrid" aria-label="provider choices">
@@ -556,7 +627,7 @@
           <p>use an Anthropic API key.</p>
           <div class="inline-actions">
             <button type="button" class="btn primary" data-byo-provider="anthropic">choose Claude</button>
-            <a class="textlink" href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer">get a key ↗</a>
+            <a class="textlink" data-byo-key-link href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener noreferrer"></a>
           </div>
         </article>
         <article class="prov" id="prov-google" data-provider-card="google">
@@ -567,7 +638,7 @@
           <p id="prov-google-desc">use a Google AI Studio key.</p>
           <div class="inline-actions">
             <button type="button" class="btn primary" data-byo-provider="google">choose Gemini</button>
-            <a class="textlink" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer">get a key ↗</a>
+            <a class="textlink" data-byo-key-link href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer"></a>
           </div>
         </article>
         <article class="prov" id="prov-openai" data-provider-card="openai">
@@ -578,14 +649,14 @@
           <p>use an OpenAI API key.</p>
           <div class="inline-actions">
             <button type="button" class="btn primary" data-byo-provider="openai">choose GPT</button>
-            <a class="textlink" href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">get a key ↗</a>
+            <a class="textlink" data-byo-key-link href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer"></a>
           </div>
         </article>
       </section>
 
       <section class="panelbody" id="byoEndpointPanel">
-        <h3>use your own endpoint URL</h3>
-        <p class="micro">point local at an OpenAI-compatible endpoint you manage.</p>
+        <h3 id="byoEndpointTitle"></h3>
+        <p class="micro" id="byoEndpointSub"></p>
         <div class="details-grid">
           <div class="field">
             <label for="localEndpointUrl">local endpoint URL</label>
@@ -604,13 +675,14 @@
           <button type="button" class="btn" id="localEndpointSave">save endpoint</button>
           <button type="button" class="btn ghost" id="localEndpointClear">clear endpoint</button>
         </div>
+        <p class="micro" id="byoEndpointHonesty"></p>
         <div class="message" id="localEndpointStatus"></div>
       </section>
 
       <section class="panelbody" id="byoScoutPanel">
-        <h3>scout for Gemini</h3>
-        <p class="micro" id="byoScoutAffordance">a Gemini key we provision on your behalf while you scout for solstone.</p>
-        <p class="micro"><a class="textlink scoutterms" href="https://services.solstone.app/scout/terms" target="_blank" rel="noopener noreferrer">scout program terms ↗</a></p>
+        <h3 id="byoScoutTitle"></h3>
+        <p class="micro" id="byoScoutAffordance"></p>
+        <p class="micro"><a class="textlink scoutterms" id="byoScoutTermsLink" href="https://services.solstone.app/scout/terms" target="_blank" rel="noopener noreferrer"></a></p>
         <div class="app-onoff">
           <div class="cardtop">
             <h3 id="scoutSetupTitle">scout</h3>
@@ -619,6 +691,7 @@
           <p class="gsub" id="scoutSetupSub">checking scout</p>
           <p class="meta" id="scoutSetupMeta"></p>
         </div>
+        <p class="meta" id="scoutProvenanceLine"></p>
 
         <div class="checkstrip" id="scoutCheckstrip" hidden>
           <span id="scoutCheckstripText"></span>
@@ -636,14 +709,14 @@
       </section>
 
       <section class="pastebox" id="byoPastePanel" hidden>
-        <h3 id="byoPasteTitle">paste a key</h3>
+        <h3 id="byoPasteTitle"></h3>
         <div class="field">
           <label for="byoKeyInput" id="byoKeyLabel">key</label>
           <input type="password" id="byoKeyInput" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore="true">
         </div>
         <p class="micro" id="byoKeyHint"></p>
         <p class="micro" id="byoTermsLine"></p>
-        <div class="message" id="byoLaneStatus">key needed</div>
+        <div class="message" id="byoKeyStatus"></div>
         <div class="actions">
           <button type="button" class="btn primary" id="byoSaveKey">use this key</button>
           <button type="button" class="btn ghost" id="byoClearKey">clear key</button>
@@ -680,32 +753,32 @@
       </div>
       <div class="actions">
         <button type="button" class="btn" id="localRefresh">check again</button>
-        <button type="button" class="btn" id="localBootstrap">install local model</button>
+        <button type="button" class="btn" id="localBootstrap"></button>
         <button type="button" class="btn primary" id="localActivate">turn on local</button>
       </div>
       <p class="micro" id="localSetupLinks"></p>
-      <div class="notice" id="localNotice">your data never leaves your journal — the model runs on this computer, offline. no cloud, no key, no billing.</div>
+      <div class="notice" id="localNotice"></div>
     </section>
 
     <section class="view" data-view="lane-switch" hidden>
       <button type="button" class="backlink" data-open-view="main">‹ thinking</button>
       <div class="switchcard">
-        <h2>switch how sol thinks?</h2>
+        <h2 id="switchHeading"></h2>
         <div class="switchflow">
           <div class="switchnode">
-            <p class="micro">now</p>
-            <h3 id="switchCurrentLabel">current lane</h3>
+            <p class="micro" id="switchCurrentNodeLabel"></p>
+            <h3 id="switchCurrentLabel"></h3>
           </div>
           <div class="arrow">→</div>
           <div class="switchnode">
-            <p class="micro">switch to</p>
-            <h3 id="switchTargetLabel">target lane</h3>
+            <p class="micro" id="switchTargetNodeLabel"></p>
+            <h3 id="switchTargetLabel"></h3>
           </div>
         </div>
         <p class="gsub" id="switchNote"></p>
         <div class="actions">
-          <button type="button" class="btn primary" id="switchConfirmPrimary" data-switch-lane="">switch</button>
-          <button type="button" class="btn ghost" id="switchCancel" data-open-view="main">keep using current</button>
+          <button type="button" class="btn primary" id="switchConfirmPrimary" data-switch-lane=""></button>
+          <button type="button" class="btn ghost" id="switchCancel" data-open-view="main"></button>
         </div>
       </div>
     </section>

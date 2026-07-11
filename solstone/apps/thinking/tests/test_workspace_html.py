@@ -64,11 +64,16 @@ def test_workspace_renders_each_lane(settings_env):
         assert f'data-view="{view}"' in html
     assert 'data-view="confidential-setup"' not in html
     assert 'data-open-view="confidential-setup"' not in html
-    assert 'id="confidentialLaneOperation"' in html
-    assert "set up confidential" in html
+    assert 'id="confidentialLaneOperation"' not in html
+    assert 'id="confidentialLaneStatus"' not in html
+    assert 'id="confidentialLaneMore"' in html
+    assert 'id="lane-detail-confidential"' in html
+    assert "set up confidential" not in html
     assert 'data-open-view="byo-setup"' in html
     assert 'data-open-view="local-setup"' in html
     assert "data-switch-lane" in html
+    assert html.count('id="byoLaneStatus"') == 1
+    assert 'id="byoKeyStatus"' in html
     for control_id in (
         "field-generate-provider",
         "field-cogitate-provider",
@@ -146,13 +151,24 @@ def test_scout_consent_static_behavior_is_wired() -> None:
     assert "!!actions.enable && !operationActive" in js
 
 
-def test_confidential_consent_static_behavior_is_wired() -> None:
+def test_confidential_teaser_static_behavior_is_wired() -> None:
+    html = WORKSPACE.read_text(encoding="utf-8")
     js = STATIC.read_text(encoding="utf-8")
+    card = re.search(r'<article class="lane" id="lane-confidential"([^>]*)>', html)
 
-    assert "api/confidential/enable" in js
-    assert "api/confidential/disable" in js
-    assert "openConsentTab(start?.operation)" in js
-    assert "confidential_operation" in js
+    assert card is not None
+    assert 'class="laneslot" id="confidentialLaneSlot"' in html
+    assert 'id="confidentialLaneMore"' in html
+    assert 'aria-controls="lane-detail-confidential"' in html
+    assert 'aria-expanded="false"' in html
+    assert 'id="lane-detail-confidential"' in html
+    assert "data-lane" not in card.group(1)
+    assert 'role="button"' not in card.group(1)
+    assert "tabindex" not in card.group(1)
+    assert "api/confidential" not in js
+    assert "function openConsentTab(operation)" in js
+    assert "confidentialProvenancePresent" in js
+    assert "renderConfidentialDetailPanel" in js
     assert "switchLane('confidential')" not in js
     assert "confidential-setup" not in js
 
@@ -179,12 +195,136 @@ def test_thinking_copy_lanes_use_init_deck() -> None:
     assert [lane["id"] for lane in lanes if "tag" in lane] == ["confidential"]
 
 
+def test_thinking_deck_copy_constants() -> None:
+    assert thinking_copy.ACTIVE_LANE_LABELS == {
+        "none": "not thinking yet",
+        "local": "local",
+        "confidential": "confidential processing",
+        "byo": "your own AI engine",
+        "advanced": "advanced split",
+    }
+    assert thinking_copy.GLANCE == {
+        "lane_label": "sol is thinking with",
+        "local": {
+            "value": "a model on your device",
+            "detail": "runs right on this computer — nothing leaves for sol to think",
+        },
+        "byo_key": {
+            "value": "your own key · {provider}",
+            "detail": "a key you added — stays in your journal, never shared",
+        },
+        "byo_endpoint": {
+            "value": "your own endpoint",
+            "detail": "sol thinks at the endpoint you set — your server, your rules",
+        },
+        "byo_scout": {
+            "value": "scout · we cover it",
+            "detail": (
+                "covered through the scout program while you're in alpha — stays in "
+                "your journal"
+            ),
+        },
+        "none": {
+            "value": "not thinking yet",
+            "detail": (
+                "sol is keeping your journal — but it can't answer you until you "
+                "choose how it thinks below."
+            ),
+        },
+    }
+    assert thinking_copy.BYO_SETUP == {
+        "intro": (
+            "bring your own AI engine. sol pbc is never in the path — it stays in "
+            "your journal."
+        ),
+        "chooser_key": "a key",
+        "chooser_endpoint": "your own endpoint",
+        "key_heading": "pick your provider",
+        "key_sub": (
+            "all three work the same in solstone. choose the one you have a key for."
+        ),
+        "get_key": "get a key ↗",
+        "paste_title": "paste your {provider} key",
+        "key_hint": (
+            "it stays in your journal — sol pbc never sets it up or sees it. paste "
+            "it once; sol uses it from here."
+        ),
+        "terms": (
+            "your questions are processed by {provider}, stored only briefly for "
+            "processing, and never used for training."
+        ),
+        "terms_link": "terms ↗",
+        "endpoint_heading": "point sol at your own endpoint",
+        "endpoint_sub": "any OpenAI-compatible endpoint — your server, your rules.",
+        "endpoint_honesty": (
+            "sol checks the endpoint works before it relies on it. if it can't "
+            "reach it, sol tells you — it never quietly falls back to anyone else."
+        ),
+        "scout_heading": "in the scout program?",
+        "scout_sub": (
+            "be an early tester for solstone — we'll cover your thinking, using Gemini."
+        ),
+        "scout_terms_link": "scout program terms ↗",
+        "scout_provenance": (
+            "covered through the scout program — the key stays in your journal."
+        ),
+    }
+    assert thinking_copy.LANE_SWITCH == {
+        "heading": "switch how sol thinks?",
+        "current_label": "now",
+        "target_label": "switch to",
+        "confirm": "switch",
+        "cancel": "keep using {current}",
+        "to_local_note": (
+            "sol will think right on this computer. your {current} setup stays saved "
+            "— switch back anytime."
+        ),
+        "to_byo_note": "sol will think with your own engine. {setup} is still here.",
+        "setup_key": "a saved key",
+        "setup_endpoint": "your endpoint",
+        "setup_scout": "scout",
+    }
+    assert thinking_copy.LOCAL_INSTALL == {
+        "phases": {
+            "resolving": "resolving",
+            "downloading": "downloading",
+            "verifying": "verifying",
+            "installing": "installing",
+        },
+        "pill_inflight": "setting up",
+        "pill_failed": "couldn't finish",
+        "retry": "try again",
+        "install": "install local model",
+        "notice_inflight": (
+            "local thinking will stay in your journal once setup finishes."
+        ),
+    }
+    assert thinking_copy.CONFIDENTIAL_MORE_LABEL == "how it works →"
+
+
 def test_thinking_copy_payload_carries_confidential_lane_detail() -> None:
     payload = thinking_copy.thinking_copy_payload()
 
     assert payload["confidential"]["lane_detail"] == dict(
         thinking_copy.CONFIDENTIAL_LANE_DETAIL
     )
+    assert (
+        payload["confidential"]["more_label"] == thinking_copy.CONFIDENTIAL_MORE_LABEL
+    )
+
+
+def test_thinking_copy_payload_shape_carries_deck_blocks() -> None:
+    payload = thinking_copy.thinking_copy_payload()
+
+    assert payload["active_lane_labels"] == dict(thinking_copy.ACTIVE_LANE_LABELS)
+    assert payload["glance"] == dict(thinking_copy.GLANCE)
+    assert payload["byo_setup"] == dict(thinking_copy.BYO_SETUP)
+    assert payload["lane_switch"] == dict(thinking_copy.LANE_SWITCH)
+    assert payload["local_install"] == {
+        **thinking_copy.LOCAL_INSTALL,
+        "phases": dict(thinking_copy.LOCAL_INSTALL["phases"]),
+    }
+    assert "byo" not in payload
 
 
 def test_thinking_copy_avoids_forbidden_terms() -> None:

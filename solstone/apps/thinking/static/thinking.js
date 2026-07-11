@@ -8,16 +8,19 @@
     localModels: [],
     localAvailability: null,
     scout: null,
+    install: null,
+    installPollGeneration: 0,
+    confidentialDetailOpen: false,
     selectedByoProvider: '',
     byoMode: 'pick',
     pendingSwitchTarget: '',
   };
   let copy = {};
   let scoutCopy = {};
-  let byoCopy = {};
   const scoutTerminalPhases = new Set(['invited', 'requested', 'ended', 'repair_needed']);
-  const confidentialTerminalPhases = new Set(['not_verified', 'repair_needed']);
-  const scoutPollIntervalMs = 1500;
+  const installInFlightStates = new Set(['resolving', 'downloading', 'verifying', 'installing']);
+  const installTerminalStates = new Set(['idle', 'installed', 'failed']);
+  const pollIntervalMs = 1500;
   const scoutPollMaxMs = 15 * 60 * 1000;
   const views = new Set(['main', 'byo-setup', 'local-setup', 'lane-switch']);
   const providerEnv = {
@@ -80,13 +83,106 @@
     button.disabled = !!disabled;
   }
 
+  function setButtonText(id, text) {
+    const button = $(id);
+    if (!button) return;
+    button.textContent = text || '';
+  }
+
+  function installIsInFlight(status) {
+    return installInFlightStates.has(status?.install_state || '');
+  }
+
+  function installIsTerminal(status) {
+    return installTerminalStates.has(status?.install_state || '');
+  }
+
+  function formatInstallBytes(received, total) {
+    if (received === null || received === undefined || total === null || total === undefined) return '';
+    const gb = 1024 * 1024 * 1024;
+    return `${(Number(received) / gb).toFixed(1)} GB of ${(Number(total) / gb).toFixed(1)} GB`;
+  }
+
+  function installCopyForStatus(status, text) {
+    const phase = status?.install_state || '';
+    const phaseLabel = text?.phases?.[phase] || phase;
+    if (installInFlightStates.has(phase)) {
+      let bytesLine = '';
+      if (
+        status.progress_bytes_received !== null
+        && status.progress_bytes_received !== undefined
+        && status.progress_bytes_total !== null
+        && status.progress_bytes_total !== undefined
+      ) {
+        const gb = 1024 * 1024 * 1024;
+        bytesLine = `${(Number(status.progress_bytes_received) / gb).toFixed(1)} GB of ${(Number(status.progress_bytes_total) / gb).toFixed(1)} GB`;
+      }
+      return {
+        pill: text?.pill_inflight || 'setting up',
+        title: 'local',
+        sub: phaseLabel,
+        message: bytesLine || phaseLabel,
+        notice: text?.notice_inflight || '',
+        activate: false,
+        bootstrap: false,
+        bootstrapLabel: text?.install || '',
+        tone: '',
+      };
+    }
+    if (phase === 'failed') {
+      return {
+        pill: text?.pill_failed || "couldn't finish",
+        title: 'local',
+        sub: text?.pill_failed || '',
+        message: status?.install_error || '',
+        notice: '',
+        activate: false,
+        bootstrap: true,
+        bootstrapLabel: text?.retry || 'try again',
+        tone: 'bad',
+      };
+    }
+    return null;
+  }
+
+  async function pollLocalInstallUntilTerminal({
+    fetchStatus,
+    sleepFn,
+    applyStatus,
+    isCurrent,
+    intervalMs,
+  }) {
+    while (isCurrent()) {
+      const status = await fetchStatus();
+      applyStatus(status);
+      if (installTerminalStates.has(status?.install_state || '')) return status;
+      await sleepFn(intervalMs);
+    }
+    return null;
+  }
+
+  function formatCopy(template, values = {}) {
+    return String(template || '').replace(/\{(\w+)\}/g, (_, key) => values[key] ?? '');
+  }
+
+  function laneCopy(id) {
+    return (copy.lanes || []).find((lane) => lane.id === id) || {};
+  }
+
+  function laneDisplayLabel(lane) {
+    if (lane.id === 'byo') return lane.label || 'byo';
+    return (lane.label || lane.id || '').toLowerCase();
+  }
+
+  function activeLaneLabel(kind) {
+    return copy.active_lane_labels?.[kind] || kind || '';
+  }
+
   function applyCopy(payload) {
     copy = payload || {};
     scoutCopy = copy.scout || {};
-    byoCopy = copy.byo || {};
     providerLabels = copy.provider_labels || fallbackProviderLabels;
     setText('thinkingHeading', copy.heading || 'thinking');
-    setText('byoScoutAffordance', byoCopy.scout_affordance || '');
   }
 
   function renderInitialLoading() {
@@ -157,6 +253,13 @@
 
   function showView(name, options = {}) {
     const target = views.has(name) ? name : 'main';
+    if (target !== 'local-setup') {
+      stopInstallPoll();
+    } else if (state.localModels.length > 0) {
+      refreshInstallStatus({autoResume: true}).catch((err) => {
+        setMessage('localSetupMessage', err.message, 'error');
+      });
+    }
     document.querySelectorAll('#providers [data-view]').forEach((section) => {
       section.hidden = section.dataset.view !== target;
     });
@@ -259,13 +362,10 @@
     return !!activeLanePayload().confidential_provenance_configured;
   }
 
-  function confidentialOperation() {
-    return activeLanePayload().confidential_operation || null;
-  }
-
-  function confidentialOperationActive() {
-    const operation = confidentialOperation();
-    return !!operation && !confidentialTerminalPhases.has(operation.phase);
+  function byoKindForProvider(provider) {
+    if (provider === 'local') return 'endpoint';
+    if (provider === 'google' && state.providers.scout_enabled) return 'scout';
+    return 'key';
   }
 
   function activeBrain() {
@@ -277,7 +377,12 @@
     const advancedUsable = lane === 'advanced' && !!generateProvider && !!cogitateProvider;
 
     if (lane === 'byo' && byoUsable) {
-      return {kind: 'byo', provider: byoProvider, providerLabel: providerLabel(byoProvider)};
+      return {
+        kind: 'byo',
+        byoKind: byoKindForProvider(byoProvider),
+        provider: byoProvider,
+        providerLabel: providerLabel(byoProvider),
+      };
     }
     if (lane === 'local' && localIsReady()) {
       return {kind: 'local', providerLabel: 'Local'};
@@ -299,7 +404,6 @@
   function laneIsUsable(lane) {
     if (lane === 'byo') return byoIsUsable();
     if (lane === 'local') return localIsReady() && !localEndpointConfigured();
-    if (lane === 'confidential') return !confidentialOperationActive();
     return false;
   }
 
@@ -325,16 +429,22 @@
 
   function renderGlance() {
     const brain = activeBrain();
+    const glanceCopy = copy.glance || {};
     const glance = $('brainGlance');
+    const glanceLabel = $('thinkingActiveLane');
     if (glance) glance.classList.toggle('none', brain.kind === 'none');
+    if (glanceLabel) glanceLabel.hidden = brain.kind === 'none';
     if (brain.kind === 'byo') {
-      setText('thinkingActiveLane', 'sol is thinking with');
-      setText('thinkingActiveValue', brain.provider === 'local' ? 'your own endpoint URL' : `BYO · ${brain.providerLabel}`);
-      setText('thinkingActiveDetail', brain.provider === 'local' ? 'an endpoint you added — stays in your journal' : 'a key you added — stays in your journal, never shared');
+      const key = `byo_${brain.byoKind || 'key'}`;
+      const row = glanceCopy[key] || {};
+      setText('thinkingActiveLane', glanceCopy.lane_label || 'sol is thinking with');
+      setText('thinkingActiveValue', formatCopy(row.value, {provider: brain.providerLabel}));
+      setText('thinkingActiveDetail', formatCopy(row.detail, {provider: brain.providerLabel}));
     } else if (brain.kind === 'local') {
-      setText('thinkingActiveLane', 'sol is thinking with');
-      setText('thinkingActiveValue', 'a local model');
-      setText('thinkingActiveDetail', 'runs in your journal — your data never leaves');
+      const row = glanceCopy.local || {};
+      setText('thinkingActiveLane', glanceCopy.lane_label || 'sol is thinking with');
+      setText('thinkingActiveValue', row.value || '');
+      setText('thinkingActiveDetail', row.detail || '');
     } else if (brain.kind === 'confidential') {
       setText('thinkingActiveLane', 'sol is waiting on');
       setText('thinkingActiveValue', 'confidential verification');
@@ -350,12 +460,9 @@
         `generate uses ${providerLabel(brain.generateProvider)}; cogitate uses ${providerLabel(brain.cogitateProvider)}`,
       );
     } else {
-      setText('thinkingActiveLane', "sol can't think yet");
-      setText('thinkingActiveValue', 'no provider chosen');
-      setText(
-        'thinkingActiveDetail',
-        "sol can keep your journal — but it can't answer you until you pick one below.",
-      );
+      const row = glanceCopy.none || {};
+      setText('thinkingActiveValue', row.value || activeLaneLabel('none'));
+      setText('thinkingActiveDetail', row.detail || '');
     }
   }
 
@@ -375,8 +482,57 @@
     pill.classList.toggle('bad', tone === 'bad');
   }
 
+  function renderConfidentialDetailPanel() {
+    const more = $('confidentialLaneMore');
+    const panel = $('lane-detail-confidential');
+    const detail = copy.confidential?.lane_detail || {};
+    if (!more || !panel) return;
+    more.textContent = copy.confidential?.more_label || '';
+    more.setAttribute('aria-expanded', state.confidentialDetailOpen ? 'true' : 'false');
+    panel.hidden = !state.confidentialDetailOpen;
+    panel.textContent = '';
+
+    const heading = document.createElement('div');
+    heading.className = 'lanedetail-heading';
+    heading.textContent = detail.heading || '';
+    const sub = document.createElement('div');
+    sub.className = 'lanedetail-sub';
+    sub.textContent = detail.sub || '';
+    panel.append(heading, sub);
+
+    ['mechanism', 'egress'].forEach((key) => {
+      const line = document.createElement('div');
+      line.className = 'lanedetail-line';
+      line.textContent = detail[key] || '';
+      panel.appendChild(line);
+    });
+
+    const claims = document.createElement('div');
+    claims.className = 'lanedetail-claims';
+    claims.textContent = detail.claims || '';
+    panel.appendChild(claims);
+
+    ['attestation', 'early_access'].forEach((key) => {
+      const line = document.createElement('div');
+      line.className = 'lanedetail-line';
+      line.textContent = detail[key] || '';
+      panel.appendChild(line);
+    });
+
+    more.onclick = () => {
+      state.confidentialDetailOpen = !state.confidentialDetailOpen;
+      renderConfidentialDetailPanel();
+    };
+  }
+
   function renderMainLanes() {
     const brain = activeBrain();
+    const localLane = laneCopy('local');
+    const confidentialLane = laneCopy('confidential');
+    const byoLane = laneCopy('byo');
+    setText('localLaneTitle', laneDisplayLabel(localLane));
+    setText('confidentialLaneTitle', laneDisplayLabel(confidentialLane));
+    setText('byoLaneTitle', laneDisplayLabel(byoLane));
     setText(
       'forkHint',
       brain.kind === 'none'
@@ -396,10 +552,10 @@
     }
     if (localActive) {
       setPill('localLanePill', 'active', 'hot');
-      setText('localLaneDescription', 'the bundled model runs right in your journal — your thinking never leaves.');
+      setText('localLaneDescription', localLane.description || '');
       setText('localLaneStatus', 'manage →');
     } else if (endpointOverride) {
-      setPill('localLanePill', 'BYO URL');
+      setPill('localLanePill', 'endpoint');
       setText('localLaneDescription', "you're pointed at your own URL — clear it to run the bundled model.");
       setText('localLaneStatus', 'clear endpoint →');
     } else if (gpuBlocked) {
@@ -418,7 +574,7 @@
       setText('localLaneStatus', 'not available');
     } else if (local.status === 'ready') {
       setPill('localLanePill', 'off');
-      setText('localLaneDescription', 'the bundled model runs right in your journal — your thinking never leaves.');
+      setText('localLaneDescription', localLane.description || '');
       setText('localLaneStatus', 'turn on local →');
     } else {
       setPill('localLanePill', 'off');
@@ -426,63 +582,30 @@
       setText('localLaneStatus', 'set up →');
     }
 
-    const confidentialActive = brain.kind === 'confidential';
-    const confidentialConfigured = confidentialProvenancePresent();
-    const confidentialOp = confidentialOperation();
-    const confidentialOpActive = confidentialOperationActive();
-    setCardActive('confidential', confidentialActive);
-    if (confidentialOpActive) {
-      setPill('confidentialLanePill', 'verifying');
-      setText(
-        'confidentialLaneDescription',
-        'finish the portal step. thinking stays blocked until hardware attestation verifies.',
-      );
-      setText('confidentialLaneStatus', confidentialOp.portal_url ? 'continue →' : 'verifying');
-    } else if (confidentialConfigured) {
-      setPill('confidentialLanePill', 'not verified', 'bad');
-      setText(
-        'confidentialLaneDescription',
-        'credentials landed, but hardware attestation is not yet verified. thinking stays blocked before anything leaves your journal.',
-      );
-      setText('confidentialLaneStatus', 'turn off confidential →');
-    } else {
-      setPill('confidentialLanePill', 'off');
-      setText(
-        'confidentialLaneDescription',
-        'send thinking work to confidential hardware only after attestation verifies. today it is not yet verified, so setup can land but thinking stays blocked.',
-      );
-      setText('confidentialLaneStatus', 'set up confidential →');
-    }
-    if (confidentialOp) {
-      const phase = confidentialOp.phase || '';
-      const fallback = phase === 'repair_needed'
-        ? 'confidential setup needs repair. try again from Thinking.'
-        : confidentialOp.guidance || phase;
-      setMessage(
-        'confidentialLaneOperation',
-        confidentialOp.guidance || fallback,
-        phase === 'repair_needed' ? 'error' : '',
-      );
-    } else {
-      setMessage('confidentialLaneOperation', '');
-    }
+    setCardActive('confidential', brain.kind === 'confidential');
+    setPill('confidentialLanePill', confidentialLane.tag || '');
+    setText('confidentialLaneDescription', confidentialLane.description || '');
+    renderConfidentialDetailPanel();
 
     const configured = configuredProviders();
     const activeByo = brain.kind === 'byo';
     const byoProvider = activeByo ? brain.provider : configured[0] || defaultByoProvider();
     setCardActive('byo', activeByo);
     setPill('byoLanePill', activeByo ? 'active' : 'off', activeByo ? 'hot' : '');
+    setText('byoLaneDescription', byoLane.description || '');
     if (activeByo) {
-      setText('byoLaneDescription', 'your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.');
-      setText('byoLaneStatus', byoProvider === 'local' ? 'using endpoint URL · manage →' : `using ${providerLabel(byoProvider)} · manage →`);
+      if (brain.byoKind === 'endpoint') {
+        setText('byoLaneStatus', 'using endpoint · manage →');
+      } else if (brain.byoKind === 'scout') {
+        setText('byoLaneStatus', 'using scout · manage →');
+      } else {
+        setText('byoLaneStatus', `using ${providerLabel(byoProvider)} key · manage →`);
+      }
     } else if (endpointOverride) {
-      setText('byoLaneDescription', 'your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.');
-      setText('byoLaneStatus', 'manage endpoint URL →');
+      setText('byoLaneStatus', 'manage endpoint →');
     } else if (configured.length > 0) {
-      setText('byoLaneDescription', 'your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.');
       setText('byoLaneStatus', `manage ${providerLabel(byoProvider)} key →`);
     } else {
-      setText('byoLaneDescription', 'your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.');
       setText('byoLaneStatus', 'add a key or URL →');
     }
   }
@@ -573,9 +696,10 @@
     const scout = state.scout;
     if (!scout) {
       setPill('scoutSetupPill', 'checking');
-      setText('scoutSetupSub', 'checking scout');
-      setText('scoutSetupMeta', '');
-      setMessage('scoutLaneOperation', '');
+        setText('scoutSetupSub', 'checking scout');
+        setText('scoutSetupMeta', '');
+        setText('scoutProvenanceLine', '');
+        setMessage('scoutLaneOperation', '');
       setLink('scoutLaneOperationLink', '', '');
       setHidden('scoutCheckstrip', true);
       setButtonState('scoutEnable', false, true);
@@ -603,12 +727,16 @@
 
     const provenance = scout.provenance || {};
     const setupDate = shortDate(provenance.key_created_at || provenance.enabled_at);
-    setText(
-      'scoutSetupMeta',
-      scoutState === 'on'
-        ? `token set up in your journal${setupDate ? ` · ${setupDate}` : ''}`
-        : '',
-    );
+      setText(
+        'scoutSetupMeta',
+        scoutState === 'on'
+          ? `token set up in your journal${setupDate ? ` · ${setupDate}` : ''}`
+          : '',
+      );
+      setText(
+        'scoutProvenanceLine',
+        scoutState === 'on' ? copy.byo_setup?.scout_provenance || '' : '',
+      );
 
     renderScoutCheckstrip(scout);
     renderScoutNotice(scoutState);
@@ -678,18 +806,47 @@
 
   function renderByo() {
     if (!state.selectedByoProvider) setSelectedByoProvider(defaultByoProvider());
+    const byoText = copy.byo_setup || {};
     const provider = selectedByoProvider();
     const validation = state.keys.key_validation?.[provider];
     const configured = !!state.keys.api_keys?.[provider];
-    const endpointMode = provider === 'local' || state.byoMode === 'endpoint';
+    const endpointMode = state.byoMode === 'endpoint';
     const pickMode = state.byoMode === 'pick';
-    const pasteMode = state.byoMode === 'paste' && !endpointMode;
+    const pasteMode = state.byoMode === 'paste';
 
-    setHidden('byoPickPanel', !pickMode);
+    setText('byoSetupTitle', activeLaneLabel('byo'));
+    setText('byoIntro', byoText.intro || '');
+    setText('byoModeKey', byoText.chooser_key || '');
+    setText('byoModeEndpoint', byoText.chooser_endpoint || '');
+    setText('byoPickTitle', byoText.key_heading || '');
+    setText('byoPickSub', byoText.key_sub || '');
+    setText('byoEndpointTitle', byoText.endpoint_heading || '');
+    setText('byoEndpointSub', byoText.endpoint_sub || '');
+    setText('byoEndpointHonesty', byoText.endpoint_honesty || '');
+    setText('byoScoutTitle', byoText.scout_heading || '');
+    setText('byoScoutAffordance', byoText.scout_sub || '');
+    setText('byoScoutTermsLink', byoText.scout_terms_link || '');
+    document.querySelectorAll('[data-byo-key-link]').forEach((link) => {
+      link.textContent = byoText.get_key || '';
+    });
+    const keyModeButton = $('byoModeKey');
+    const endpointModeButton = $('byoModeEndpoint');
+    if (keyModeButton) {
+      keyModeButton.classList.toggle('primary', !endpointMode);
+      keyModeButton.setAttribute('aria-pressed', endpointMode ? 'false' : 'true');
+    }
+    if (endpointModeButton) {
+      endpointModeButton.classList.toggle('primary', endpointMode);
+      endpointModeButton.setAttribute('aria-pressed', endpointMode ? 'true' : 'false');
+    }
+
+    setHidden('byoPickPanel', !(pickMode || endpointMode));
     setHidden('byoProviderGrid', !pickMode);
-    setHidden('byoEndpointPanel', !(pickMode || endpointMode));
+    setHidden('byoPickTitle', !pickMode);
+    setHidden('byoPickSub', !pickMode);
+    setHidden('byoEndpointPanel', !endpointMode);
     setHidden('byoPastePanel', !pasteMode);
-    setText('byoBackLink', pickMode ? '‹ thinking' : '‹ pick a different provider');
+    setText('byoBackLink', pasteMode ? '‹ pick a different provider' : '‹ thinking');
 
     document.querySelectorAll('[data-provider-card]').forEach((card) => {
       const cardProvider = card.dataset.providerCard;
@@ -705,21 +862,18 @@
 
     setText('prov-google-desc', 'use a Google AI Studio key.');
     if (providerEnv[provider]) {
-      setText('byoPasteTitle', `paste your ${providerLabel(provider)} key`);
+      setText('byoPasteTitle', formatCopy(byoText.paste_title, {provider: providerLabel(provider)}));
       setText('byoKeyLabel', `your ${providerLabel(provider)} key`);
-      setText(
-        'byoKeyHint',
-        'it stays in your journal. paste it once; sol uses it from here.',
-      );
+      setText('byoKeyHint', byoText.key_hint || '');
       const terms = $('byoTermsLine');
       if (terms) {
-        terms.textContent = `your questions will be processed by ${providerLabel(provider)}, stored only temporarily for processing, and never used for training. `;
+        terms.textContent = `${formatCopy(byoText.terms, {provider: providerLabel(provider)})} `;
         const link = document.createElement('a');
         link.className = 'textlink';
         link.href = providerTerms[provider] || providerTerms.anthropic;
         link.target = '_blank';
         link.rel = 'noopener noreferrer';
-        link.textContent = 'terms ↗';
+        link.textContent = byoText.terms_link || '';
         terms.appendChild(link);
       }
     }
@@ -728,13 +882,13 @@
     $('byoClearKey').disabled = !configured;
     if (validation && validation.valid === false) {
       setMessage(
-        'byoLaneStatus',
+        'byoKeyStatus',
         `${providerLabel(provider)}: ${validation.reason_code || validation.error || 'invalid'}`,
         'error',
       );
     } else {
       setMessage(
-        'byoLaneStatus',
+        'byoKeyStatus',
         configured ? `${providerLabel(provider)} key saved — replace, clear, or validate it here` : 'paste a key to use this provider',
         configured ? 'ok' : '',
       );
@@ -742,11 +896,13 @@
   }
 
   function localCopy() {
+    const installOverride = installCopyForStatus(state.install, copy.local_install || {});
+    if (installOverride) return installOverride;
     const local = localReadiness();
     const reason = local.reason;
     if (localEndpointConfigured()) {
       return {
-        pill: 'BYO URL',
+        pill: 'endpoint',
         title: 'local',
         sub: "you're pointed at your own URL",
         message: '',
@@ -763,7 +919,7 @@
         title: 'local',
         sub: 'this computer can run a local model',
         message: '',
-        notice: 'your data never leaves your journal — the model runs on this computer, offline. no cloud, no key, no billing.',
+        notice: copy.glance?.local?.detail || '',
         activate: true,
         bootstrap: false,
         tone: '',
@@ -775,7 +931,7 @@
         title: 'local',
         sub: "this computer can't run one yet",
         message: '',
-        notice: "this computer doesn't have a supported GPU, so a local model would be too slow to use. sol can still think with BYO.",
+        notice: `this computer doesn't have a supported GPU, so a local model would be too slow to use. sol can still think with ${activeLaneLabel('byo')}.`,
         activate: false,
         bootstrap: false,
         tone: 'bad',
@@ -787,7 +943,7 @@
         title: 'local',
         sub: "this computer can't run one yet",
         message: '',
-        notice: "couldn't check this computer's GPU. sol can still think with BYO.",
+        notice: `couldn't check this computer's GPU. sol can still think with ${activeLaneLabel('byo')}.`,
         activate: false,
         bootstrap: false,
         tone: 'bad',
@@ -826,6 +982,7 @@
         notice: 'install the selected model before turning on local thinking.',
         activate: false,
         bootstrap: true,
+        bootstrapLabel: copy.local_install?.install || 'install local model',
         tone: '',
       };
     }
@@ -835,7 +992,7 @@
         title: 'local',
         sub: "your local endpoint didn't answer",
         message: local.detail || local.summary || '',
-        notice: 'check the endpoint in BYO, then try again.',
+        notice: `check the endpoint in ${activeLaneLabel('byo')}, then try again.`,
         activate: false,
         bootstrap: false,
         tone: 'bad',
@@ -859,7 +1016,7 @@
         title: 'local',
         sub: 'this computer needs more memory for local thinking',
         message: '',
-        notice: 'sol can still think with BYO.',
+        notice: `sol can still think with ${activeLaneLabel('byo')}.`,
         activate: false,
         bootstrap: false,
         tone: 'bad',
@@ -886,12 +1043,13 @@
     setText('localNotice', local.notice);
     setHidden('localOverrideNotice', !local.endpointOverride);
     setButtonState('localBootstrap', local.bootstrap, !local.bootstrap);
+    setButtonText('localBootstrap', local.bootstrapLabel || copy.local_install?.install || 'install local model');
     setButtonState('localActivate', local.activate, !local.activate);
     setButtonState('localRefresh', true, false);
     const links = $('localSetupLinks');
     if (links) {
       links.textContent = '';
-      if (local.tone === 'bad') {
+      if (local.tone === 'bad' && state.install?.install_state !== 'failed') {
         const requirements = document.createElement('a');
         requirements.className = 'textlink';
         requirements.href = 'https://support.solstone.app/kb/solstone-memory-and-local-models';
@@ -902,7 +1060,7 @@
         byo.type = 'button';
         byo.className = 'textlink';
         byo.dataset.openView = 'byo-setup';
-        byo.textContent = 'BYO';
+        byo.textContent = activeLaneLabel('byo');
         byo.addEventListener('click', () => showView('byo-setup'));
         links.append(requirements, document.createTextNode(' or use '), byo);
       }
@@ -927,39 +1085,54 @@
     }
   }
 
+  function byoSetupLabel(brain) {
+    if (brain.kind !== 'byo') return activeLaneLabel(brain.kind);
+    if (brain.byoKind === 'endpoint') return copy.lane_switch?.setup_endpoint || 'endpoint';
+    if (brain.byoKind === 'scout') return copy.lane_switch?.setup_scout || 'scout';
+    return brain.providerLabel || activeLaneLabel('byo');
+  }
+
+  function byoSavedSetupLabel(provider) {
+    if (provider === 'local') return copy.lane_switch?.setup_endpoint || 'your endpoint';
+    if (provider === 'google' && state.providers.scout_enabled) return copy.lane_switch?.setup_scout || 'scout';
+    return copy.lane_switch?.setup_key || 'a saved key';
+  }
+
   function renderLaneSwitch() {
     const brain = activeBrain();
+    const switchCopy = copy.lane_switch || {};
     const target = state.pendingSwitchTarget || '';
     const targetProvider = target === 'byo' ? selectedByoProvider() : laneProvider(target);
-    const currentLabel = brain.kind === 'none' ? 'no provider chosen' : brain.providerLabel || brain.kind;
+    const currentLabel = brain.kind === 'none' ? activeLaneLabel('none') : activeLaneLabel(brain.kind);
     const targetLabel = target === 'byo'
-      ? targetProvider === 'local'
-        ? 'your own endpoint URL'
-        : `BYO · ${providerLabel(targetProvider)}`
-      : target === 'confidential'
-        ? 'confidential processing'
-        : target === 'local'
-          ? 'local'
-          : target;
+      ? activeLaneLabel('byo')
+      : activeLaneLabel(target);
+    setText('switchHeading', switchCopy.heading || '');
+    setText('switchCurrentNodeLabel', switchCopy.current_label || '');
+    setText('switchTargetNodeLabel', switchCopy.target_label || '');
     setText('switchCurrentLabel', currentLabel);
     setText('switchTargetLabel', targetLabel);
-    if (target === 'byo' && targetProvider === 'local') {
-      setText('switchNote', 'sol will think with your own endpoint URL from now on. the endpoint stays saved in your journal — switch back anytime.');
-    } else if (target === 'byo') {
-      setText('switchNote', `sol will think with ${targetLabel} from now on. your ${providerLabel(targetProvider)} key stays saved in your journal — switch back anytime without re-pasting it.`);
+    if (target === 'byo') {
+      setText(
+        'switchNote',
+        formatCopy(switchCopy.to_byo_note, {setup: byoSavedSetupLabel(targetProvider)}),
+      );
     } else if (target === 'local') {
-      setText('switchNote', 'sol will think with local from now on. local setup stays saved in your journal — switch back anytime.');
+      setText(
+        'switchNote',
+        formatCopy(switchCopy.to_local_note, {current: byoSetupLabel(brain)}),
+      );
     } else {
       setText('switchNote', 'you can switch back anytime.');
     }
     const primary = $('switchConfirmPrimary');
     if (primary) {
       primary.dataset.switchLane = target;
-      primary.textContent = `switch to ${targetLabel || 'lane'}`;
+      primary.textContent = switchCopy.confirm || '';
     }
     const cancel = $('switchCancel');
     if (cancel) {
-      cancel.textContent = `keep using ${currentLabel}`;
+      cancel.textContent = formatCopy(switchCopy.cancel, {current: currentLabel});
     }
   }
 
@@ -998,22 +1171,10 @@
       await refreshScout();
       const operation = state.scout?.operation;
       if (!operation || scoutTerminalPhases.has(operation.phase)) return operation || null;
-      await sleep(scoutPollIntervalMs);
+      await sleep(pollIntervalMs);
     }
     await refreshScout();
     return state.scout?.operation || null;
-  }
-
-  async function pollConfidentialUntilTerminal() {
-    const started = Date.now();
-    while (Date.now() - started < scoutPollMaxMs) {
-      await refreshProviders();
-      const operation = confidentialOperation();
-      if (!operation || confidentialTerminalPhases.has(operation.phase)) return operation || null;
-      await sleep(scoutPollIntervalMs);
-    }
-    await refreshProviders();
-    return confidentialOperation();
   }
 
   function openConsentTab(operation) {
@@ -1033,6 +1194,67 @@
     renderAll();
   }
 
+  function selectedLocalModelId() {
+    return $('localModelSelect')?.value || state.localModels[0]?.name || '';
+  }
+
+  function stopInstallPoll() {
+    state.installPollGeneration += 1;
+  }
+
+  async function fetchInstallStatus(model = selectedLocalModelId()) {
+    if (!model) return null;
+    return api(`api/local/bootstrap/status?model=${encodeURIComponent(model)}`);
+  }
+
+  function applyLocalInstallStatus(status, generation) {
+    if (generation !== undefined && generation !== state.installPollGeneration) return false;
+    state.install = status || null;
+    renderAll();
+    return true;
+  }
+
+  function startInstallPoll() {
+    const model = selectedLocalModelId();
+    if (!model) return;
+    stopInstallPoll();
+    const generation = state.installPollGeneration;
+    pollLocalInstallUntilTerminal({
+      fetchStatus: () => fetchInstallStatus(model),
+      sleepFn: sleep,
+      applyStatus: (status) => applyLocalInstallStatus(status, generation),
+      isCurrent: () => generation === state.installPollGeneration,
+      intervalMs: pollIntervalMs,
+    })
+      .then((status) => {
+        if (generation !== state.installPollGeneration) return;
+        if (installIsTerminal(status)) {
+          stopInstallPoll();
+          if (status?.install_state === 'installed') {
+            Promise.all([refreshProviders(), refreshLocalAvailability()]).catch((err) => {
+              setMessage('localSetupMessage', err.message, 'error');
+            });
+          }
+        }
+      })
+      .catch((err) => {
+        if (generation === state.installPollGeneration) {
+          setMessage('localSetupMessage', err.message, 'error');
+        }
+      });
+  }
+
+  async function refreshInstallStatus({autoResume = false} = {}) {
+    const status = await fetchInstallStatus();
+    applyLocalInstallStatus(status);
+    if (installIsInFlight(status) && autoResume) {
+      startInstallPoll();
+    } else if (installIsTerminal(status)) {
+      stopInstallPoll();
+    }
+    return status;
+  }
+
   async function switchLane(lane) {
     const payload = {lane};
     if (lane === 'byo') {
@@ -1046,15 +1268,6 @@
   }
 
   async function activateLane(target) {
-    if (target === 'confidential') {
-      if (confidentialOperationActive()) {
-        openConsentTab(confidentialOperation());
-      } else if (!confidentialProvenancePresent()) {
-        await enableConfidential();
-      }
-      showView('main');
-      return;
-    }
     const brain = activeBrain();
     if (brain.kind !== 'none' && brain.kind !== target && laneIsUsable(target)) {
       state.pendingSwitchTarget = target;
@@ -1103,42 +1316,6 @@
     }
   }
 
-  async function enableConfidential() {
-    const activeOperation = confidentialOperation();
-    if (confidentialOperationActive()) {
-      openConsentTab(activeOperation);
-      return;
-    }
-    setMessage('confidentialLaneOperation', '');
-    let start;
-    try {
-      start = await api('api/confidential/enable', {method: 'POST'});
-    } catch (err) {
-      setMessage(
-        'confidentialLaneOperation',
-        err.message || 'confidential setup could not start.',
-        'error',
-      );
-      return;
-    }
-    openConsentTab(start?.operation);
-
-    const operation = await pollConfidentialUntilTerminal();
-    await refreshProviders();
-    if (operation?.phase === 'repair_needed') {
-      setMessage(
-        'confidentialLaneOperation',
-        operation?.guidance || 'confidential setup needs repair. try again from Thinking.',
-        'error',
-      );
-      return;
-    }
-    if (operation?.guidance) {
-      setMessage('confidentialLaneOperation', operation.guidance);
-    }
-    showView('main');
-  }
-
   async function refreshScoutOp() {
     const start = await api('api/scout/refresh', {method: 'POST'});
     openConsentTab(start?.operation);
@@ -1160,12 +1337,6 @@
     const result = await api('api/scout/disable', {method: 'POST'});
     state.scout = result.status || state.scout;
     await Promise.all([refreshScout(), refreshProviders(), refreshKeys()]);
-    showView('main');
-  }
-
-  async function disableConfidential() {
-    await api('api/confidential/disable', {method: 'POST'});
-    await refreshProviders();
     showView('main');
   }
 
@@ -1272,15 +1443,18 @@
 
   async function startLocalBootstrap() {
     const model = $('localModelSelect')?.value || '';
-    await api(`api/local/bootstrap?model=${encodeURIComponent(model)}`, {method: 'POST'});
+    const status = await api(`api/local/bootstrap?model=${encodeURIComponent(model)}`, {method: 'POST'});
+    state.install = status || null;
+    renderAll();
+    if (installIsInFlight(status)) {
+      startInstallPoll();
+    } else {
+      await refreshInstallStatus({autoResume: true});
+    }
     await Promise.all([refreshProviders(), refreshLocalAvailability()]);
   }
 
   function openLane(lane) {
-    if (lane === 'confidential') {
-      activateLane('confidential').catch((err) => setMessage('confidentialLaneOperation', err.message, 'error'));
-      return;
-    }
     if (laneIsUsable(lane) && activeBrain().kind !== lane) {
       activateLane(lane).catch((err) => setMessage(`${lane}LaneStatus`, err.message, 'error'));
       return;
@@ -1323,18 +1497,19 @@
 
   function bind() {
     document.querySelectorAll('[data-open-view]').forEach(bindOpenView);
-    $('confidentialLaneStatus')?.addEventListener('click', (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      if (confidentialOperationActive()) {
-        openConsentTab(confidentialOperation());
-        return;
+    $('byoModeKey')?.addEventListener('click', () => {
+      if (selectedByoProvider() === 'local') {
+        setSelectedByoProvider(configuredProviders()[0] || 'anthropic');
       }
-      if (confidentialProvenancePresent()) {
-        disableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error'));
-        return;
-      }
-      enableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error'));
+      state.byoMode = 'pick';
+      renderByo();
+      renderMainLanes();
+    });
+    $('byoModeEndpoint')?.addEventListener('click', () => {
+      setSelectedByoProvider('local');
+      state.byoMode = 'endpoint';
+      renderByo();
+      renderMainLanes();
     });
     document.querySelectorAll('[data-byo-provider]').forEach((button) => {
       button.addEventListener('click', () => {
@@ -1366,23 +1541,33 @@
       }
       showView('main');
     });
-    $('byoSaveKey')?.addEventListener('click', () => saveByoKey().catch((err) => setMessage('byoLaneStatus', err.message, 'error')));
-    $('byoClearKey')?.addEventListener('click', () => clearByoKey().catch((err) => setMessage('byoLaneStatus', err.message, 'error')));
-    $('byoValidateKey')?.addEventListener('click', () => validateKeys().catch((err) => setMessage('byoLaneStatus', err.message, 'error')));
+    $('byoSaveKey')?.addEventListener('click', () => saveByoKey().catch((err) => setMessage('byoKeyStatus', err.message, 'error')));
+    $('byoClearKey')?.addEventListener('click', () => clearByoKey().catch((err) => setMessage('byoKeyStatus', err.message, 'error')));
+    $('byoValidateKey')?.addEventListener('click', () => validateKeys().catch((err) => setMessage('byoKeyStatus', err.message, 'error')));
     $('scoutEnable')?.addEventListener('click', () => enableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('scoutRefresh')?.addEventListener('click', () => refreshScoutOp().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('scoutDisable')?.addEventListener('click', () => disableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('scoutCheck')?.addEventListener('click', () => checkScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
-    $('localRefresh')?.addEventListener('click', () => Promise.all([
-      refreshProviders(),
-      refreshLocalAvailability(),
-    ]).catch((err) => setMessage('localSetupMessage', err.message, 'error')));
+    $('localRefresh')?.addEventListener('click', () => {
+      stopInstallPoll();
+      Promise.all([
+        refreshProviders(),
+        refreshLocalAvailability(),
+        refreshInstallStatus({autoResume: true}),
+      ]).catch((err) => setMessage('localSetupMessage', err.message, 'error'));
+    });
     $('localBootstrap')?.addEventListener('click', () => startLocalBootstrap().catch((err) => setMessage('localSetupMessage', err.message, 'error')));
     $('localActivate')?.addEventListener('click', () => activateLane('local').catch((err) => setMessage('localSetupMessage', err.message, 'error')));
-    $('localModelSelect')?.addEventListener('change', () => Promise.all([
-      refreshLocalAvailability(),
-      refreshProviders(),
-    ]).catch((err) => setMessage('localSetupMessage', err.message, 'error')));
+    $('localModelSelect')?.addEventListener('change', () => {
+      stopInstallPoll();
+      state.install = null;
+      renderAll();
+      Promise.all([
+        refreshLocalAvailability(),
+        refreshProviders(),
+        refreshInstallStatus({autoResume: true}),
+      ]).catch((err) => setMessage('localSetupMessage', err.message, 'error'));
+    });
     $('field-generate-provider')?.addEventListener('change', (event) => saveAdvanced('generate', 'provider', event.target.value).catch((err) => setMessage('advancedStatus', err.message, 'error')));
     $('field-cogitate-provider')?.addEventListener('change', (event) => saveAdvanced('cogitate', 'provider', event.target.value).catch((err) => setMessage('advancedStatus', err.message, 'error')));
     $('field-generate-tier')?.addEventListener('change', (event) => saveAdvanced('generate', 'tier', event.target.value).catch((err) => setMessage('advancedStatus', err.message, 'error')));
@@ -1405,6 +1590,7 @@
     showView(viewFromHash(), {replace: true});
     try {
       await refreshLocalModels();
+      await refreshInstallStatus({autoResume: true});
       await refreshLocalAvailability();
       await Promise.all([refreshProviders(), refreshKeys(), refreshScout()]);
     } catch (err) {
