@@ -42,7 +42,8 @@ files. Pick the right one; don't ask which.
 |----------|-----|
 | journal entries, agent output, news | `sol call journal search` / `read` / `news` |
 | transcripts (what was said) | `sol call transcripts read` / `scan` / `segments` |
-| people, projects, relationships | `sol call entities search` / `list` / `observations` |
+| people, projects, entities | `sol call entities search` / `list` / `observations` |
+| relationships and connection history | `sol call entities network` / `history` / `overview` |
 | what's scheduled or happened | `sol call activities list` (add `--source anticipated` for calendar-derived items) / `get` |
 | identity & current state | `journal identity partner` / `briefing` |
 | speaker library | `sol call speakers status` / `suggest` |
@@ -61,9 +62,11 @@ files. Pick the right one; don't ask which.
   period → read across the top days → name the through-line and the moments
   that mark it. Stop when the pattern is clear.
 - **"Brief me before <meeting>"** — `activities list --source anticipated` for
-  the event + participants → `entities search` each participant → a concise
-  briefing: who, your relationship, recent context. (Read-only: you assemble
-  the briefing, you don't create or modify the event.)
+  the event + participants → `entities search` to resolve each attendee →
+  `entities network` for the relationship map and `entities history` for the
+  strongest attendee/owner pairs → answer with evidence and recency, naming the
+  specific moments you drew from. (Read-only: you assemble the briefing, you
+  don't create or modify the event.)
 
 ## Investigation Depth
 

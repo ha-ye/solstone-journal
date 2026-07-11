@@ -209,6 +209,11 @@ ENTITY_OPERATION_FAILED = Reason(
     "I couldn't finish that entity change.",
     500,
 )
+EDGE_INDEX_UNAVAILABLE = Reason(
+    "edge_index_unavailable",
+    "I couldn't read your connections because the index hasn't been built yet. Run `journal indexer --rescan` to build it.",
+    503,
+)
 
 # facets/activities
 FACET_NOT_FOUND = Reason("facet_not_found", "I couldn't find that facet.", 404)

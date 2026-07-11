@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import sqlite3
 import time
 import uuid
 from datetime import datetime
@@ -24,6 +25,7 @@ from solstone.apps.utils import log_app_action
 from solstone.convey import state
 from solstone.convey.reasons import (
     AGENT_UNAVAILABLE,
+    EDGE_INDEX_UNAVAILABLE,
     ENTITY_ALIAS_CONFLICT,
     ENTITY_ALREADY_EXISTS,
     ENTITY_BLOCKED,
@@ -76,6 +78,7 @@ from solstone.think.entities import (
     load_observations,
     merge_entity,
     resolve_entity,
+    resolve_journal_entity,
     save_detected_entity,
     save_journal_entity,
     unblock_journal_entity,
@@ -83,7 +86,11 @@ from solstone.think.entities import (
     update_facet_entity_description,
     update_facet_entity_identity,
 )
-from solstone.think.entities.journal import delete_journal_entity, load_journal_entity
+from solstone.think.entities.journal import (
+    delete_journal_entity,
+    get_journal_principal,
+    load_journal_entity,
+)
 from solstone.think.entities.relationships import move_facet_entity
 from solstone.think.entities.review_candidates import (
     load_candidates,
@@ -92,6 +99,11 @@ from solstone.think.entities.review_candidates import (
     record_merge_candidate as record_entity_merge_candidate,
 )
 from solstone.think.facets import get_facets, log_call_action
+from solstone.think.indexer.edges import (
+    load_edge_evidence,
+    load_entity_network,
+    load_network_overview,
+)
 from solstone.think.indexer.journal import search_entities
 from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import now_ms
@@ -209,6 +221,224 @@ def _body_int_or_none(payload: dict[str, Any], name: str) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _query_str(name: str) -> str | None:
+    value = request.args.get(name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _query_int(name: str, default: int) -> int:
+    value = request.args.get(name)
+    if value in (None, ""):
+        return default
+    try:
+        return int(str(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{name} must be an integer") from exc
+
+
+def _query_bool(name: str, *, default: bool = False) -> bool:
+    value = request.args.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _query_kinds() -> list[str] | None:
+    kinds: list[str] = []
+    for raw in request.args.getlist("kinds"):
+        for item in raw.split(","):
+            kind = item.strip()
+            if kind:
+                kinds.append(kind)
+    return kinds or None
+
+
+def _edge_filters() -> dict[str, Any]:
+    return {
+        "kinds": _query_kinds(),
+        "facet": _query_str("facet"),
+        "day_from": _query_str("day_from"),
+        "day_to": _query_str("day_to"),
+    }
+
+
+def _candidate_payload(entity: EntityDict) -> dict[str, Any]:
+    return {
+        "name": entity.get("name"),
+        "id": entity.get("id"),
+        "type": entity.get("type"),
+    }
+
+
+def _candidate_score(query: str, entity: EntityDict) -> float:
+    try:
+        from rapidfuzz import fuzz
+    except ImportError:
+        return 100.0
+
+    choices = [str(entity.get("name") or ""), str(entity.get("id") or "")]
+    aka = entity.get("aka")
+    if isinstance(aka, list):
+        choices.extend(str(item) for item in aka if item)
+    return max((fuzz.token_sort_ratio(query, choice) for choice in choices), default=0)
+
+
+def _candidate_payloads(
+    query: str, candidates: list[EntityDict] | None
+) -> list[dict[str, Any]]:
+    return [
+        _candidate_payload(candidate)
+        for candidate in candidates or []
+        if _candidate_score(query, candidate) >= 50
+    ]
+
+
+def _resolution_payload(query: str, candidates: list[EntityDict] | None) -> Any:
+    return jsonify(
+        {
+            "resolved": None,
+            "query": query,
+            "candidates": _candidate_payloads(query, candidates),
+        }
+    )
+
+
+def _resolve_edge_entity(
+    query: str, facet: str | None
+) -> tuple[str | None, Any | None]:
+    query = query.strip()
+    if not query:
+        return None, _resolution_payload(query, [])
+
+    exact = load_journal_entity(query)
+    if exact is not None:
+        return str(exact.get("id") or query), None
+
+    if facet:
+        resolved, candidates = resolve_entity(facet, query)
+    else:
+        resolved, candidates = resolve_journal_entity(query)
+
+    if resolved is None:
+        return None, _resolution_payload(query, candidates)
+
+    entity_id = str(resolved.get("id") or "")
+    if entity_id and load_journal_entity(entity_id) is not None:
+        return entity_id, None
+
+    logger.warning("resolved entity outside journal identity space: %r", resolved)
+    return None, error_response(
+        ENTITY_OPERATION_FAILED,
+        detail=f"Resolved entity '{query}' is not a journal entity.",
+    )
+
+
+def _edge_loader_error(exc: Exception) -> Any | None:
+    if isinstance(exc, FileNotFoundError):
+        return error_response(EDGE_INDEX_UNAVAILABLE)
+    if isinstance(exc, sqlite3.OperationalError):
+        if "no such table: edges" in str(exc):
+            return error_response(EDGE_INDEX_UNAVAILABLE)
+        return None
+    if isinstance(exc, ValueError):
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    return None
+
+
+@entities_bp.route("/api/network")
+def get_entity_network() -> Any:
+    """Return one-hop derived edge neighbors for one journal entity."""
+    entity_query = _query_str("entity")
+    if not entity_query:
+        return error_response(MISSING_REQUIRED_FIELD, detail="entity is required")
+
+    try:
+        filters = _edge_filters()
+        entity_id, resolution = _resolve_edge_entity(entity_query, filters["facet"])
+        if resolution is not None:
+            return resolution
+        assert entity_id is not None
+        return jsonify(
+            load_entity_network(
+                entity_id,
+                **filters,
+                include_principal=_query_bool("include_principal"),
+                limit=_query_int("limit", 25),
+                evidence_limit=_query_int("evidence_limit", 5),
+            )
+        )
+    except (FileNotFoundError, sqlite3.OperationalError, ValueError) as exc:
+        response = _edge_loader_error(exc)
+        if response is not None:
+            return response
+        raise
+
+
+@entities_bp.route("/api/history")
+def get_entity_history() -> Any:
+    """Return newest-first derived edge evidence for one entity pair."""
+    entity_query = _query_str("entity")
+    if not entity_query:
+        return error_response(MISSING_REQUIRED_FIELD, detail="entity is required")
+
+    try:
+        filters = _edge_filters()
+        entity_id, resolution = _resolve_edge_entity(entity_query, filters["facet"])
+        if resolution is not None:
+            return resolution
+        assert entity_id is not None
+
+        peer_query = _query_str("peer")
+        if peer_query:
+            peer_id, resolution = _resolve_edge_entity(peer_query, filters["facet"])
+            if resolution is not None:
+                return resolution
+            assert peer_id is not None
+        else:
+            principal = get_journal_principal()
+            peer_id = str(principal.get("id") or "") if principal else ""
+            if not peer_id:
+                return error_response(
+                    INVALID_REQUEST_VALUE,
+                    detail="history requires PEER because no principal entity is configured",
+                )
+
+        return jsonify(
+            load_edge_evidence(
+                entity_id,
+                peer_id,
+                **filters,
+                limit=_query_int("limit", 50),
+                offset=_query_int("offset", 0),
+            )
+        )
+    except (FileNotFoundError, sqlite3.OperationalError, ValueError) as exc:
+        response = _edge_loader_error(exc)
+        if response is not None:
+            return response
+        raise
+
+
+@entities_bp.route("/api/overview")
+def get_network_overview() -> Any:
+    """Return a global derived edge network summary."""
+    try:
+        return jsonify(
+            load_network_overview(
+                **_edge_filters(),
+                limit=_query_int("limit", 25),
+            )
+        )
+    except (FileNotFoundError, sqlite3.OperationalError, ValueError) as exc:
+        response = _edge_loader_error(exc)
+        if response is not None:
+            return response
+        raise
 
 
 @entities_bp.route("/api/<facet_name>")

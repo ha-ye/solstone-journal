@@ -51,6 +51,7 @@
               "convey_operation_failed",
               "corrupt_config",
               "cross_origin_blocked",
+              "edge_index_unavailable",
               "entity_alias_conflict",
               "entity_already_exists",
               "entity_blocked",

@@ -90,6 +90,7 @@ from solstone.think.entities.matching import (
     find_matching_entity,
     is_name_variant_match,
     resolve_entity,
+    resolve_journal_entity,
     validate_aka_uniqueness,
 )
 from solstone.think.entities.merge import merge_entity
@@ -207,6 +208,7 @@ __all__ = [
     "find_matching_entity",
     "is_name_variant_match",
     "resolve_entity",
+    "resolve_journal_entity",
     "validate_aka_uniqueness",
     # Activity
     "iter_detected_entity_names_since",

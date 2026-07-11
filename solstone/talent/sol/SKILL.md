@@ -52,6 +52,8 @@ Look up what the journal knows about a person, company, or project.
 ```bash
 sol call entities search --query "<query>"
 sol call entities observations "<entity_name>" --facet "<facet>"
+sol call entities network "<entity_name>" --limit 10
+sol call entities history "<entity_name>"
 ```
 
 ### today — what's happening now

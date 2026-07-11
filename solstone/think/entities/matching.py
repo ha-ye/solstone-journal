@@ -14,6 +14,7 @@ import logging
 from enum import IntEnum
 
 from solstone.think.entities.core import EntityDict, entity_slug
+from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.loading import load_entities
 
 logger = logging.getLogger(__name__)
@@ -531,6 +532,46 @@ def find_entity_by_email(
     return None
 
 
+def _closest_candidates(
+    query: str,
+    entities: list[EntityDict],
+    limit: int = 3,
+) -> list[EntityDict]:
+    candidates: list[EntityDict] = []
+
+    try:
+        from rapidfuzz import fuzz, process
+
+        fuzzy_candidates: dict[str, EntityDict] = {}
+        for entity in entities:
+            name = entity.get("name", "")
+            if name:
+                fuzzy_candidates[name] = entity
+            aka_list = entity.get("aka", [])
+            if isinstance(aka_list, list):
+                for aka in aka_list:
+                    if aka:
+                        fuzzy_candidates[aka] = entity
+
+        results = process.extract(
+            query,
+            fuzzy_candidates.keys(),
+            scorer=fuzz.token_sort_ratio,
+            limit=limit,
+        )
+        seen_names: set[str] = set()
+        for matched_str, _score, _index in results:
+            entity = fuzzy_candidates[matched_str]
+            name = entity.get("name", "")
+            if name and name not in seen_names:
+                seen_names.add(name)
+                candidates.append(entity)
+    except ImportError:
+        candidates = entities[:limit]
+
+    return candidates
+
+
 def resolve_entity(
     facet: str,
     query: str,
@@ -588,41 +629,23 @@ def resolve_entity(
     if match:
         return match, None
 
-    # No match found - find closest candidates for error message
-    # Get top fuzzy matches as suggestions
-    candidates: list[EntityDict] = []
+    return None, _closest_candidates(query, entities)
 
-    try:
-        from rapidfuzz import fuzz, process
 
-        # Build candidate strings
-        fuzzy_candidates: dict[str, EntityDict] = {}
-        for entity in entities:
-            name = entity.get("name", "")
-            if name:
-                fuzzy_candidates[name] = entity
-            aka_list = entity.get("aka", [])
-            if isinstance(aka_list, list):
-                for aka in aka_list:
-                    if aka:
-                        fuzzy_candidates[aka] = entity
+def resolve_journal_entity(
+    query: str,
+    fuzzy_threshold: int = 90,
+) -> tuple[EntityDict | None, list[EntityDict] | None]:
+    """Resolve an entity query against journal-level identities."""
+    if not query or not query.strip():
+        return None, []
 
-        # Get top 3 matches regardless of threshold
-        results = process.extract(
-            query,
-            fuzzy_candidates.keys(),
-            scorer=fuzz.token_sort_ratio,
-            limit=3,
-        )
-        seen_names: set[str] = set()
-        for matched_str, _score, _index in results:
-            entity = fuzzy_candidates[matched_str]
-            name = entity.get("name", "")
-            if name and name not in seen_names:
-                seen_names.add(name)
-                candidates.append(entity)
-    except ImportError:
-        # rapidfuzz not available, return first few entities as candidates
-        candidates = entities[:3]
+    entities = list(load_all_journal_entities().values())
+    if not entities:
+        return None, []
 
-    return None, candidates
+    match = find_matching_entity(query, entities, fuzzy_threshold)
+    if match:
+        return match, None
+
+    return None, _closest_candidates(query, entities)

@@ -15,6 +15,7 @@ import re
 import typer
 
 from solstone.convey.reasons import (
+    EDGE_INDEX_UNAVAILABLE,
     ENTITY_ALIAS_CONFLICT,
     ENTITY_ALREADY_EXISTS,
     ENTITY_BLOCKED,
@@ -91,6 +92,8 @@ def _handle_entity_error(
     if err.reason_code == ENTITY_NOT_FOUND.code:
         name = detail or entity or "entity"
         _exit_with(f"Error: Entity '{name}' not found.")
+    if err.reason_code == EDGE_INDEX_UNAVAILABLE.code:
+        _exit_with(EDGE_INDEX_UNAVAILABLE.message)
     if err.reason_code == ENTITY_ALIAS_CONFLICT.code and detail:
         _exit_with(f"Error: {detail}")
     if err.reason_code in {
@@ -103,6 +106,236 @@ def _handle_entity_error(
 
     typer.echo(err.error, err=True)
     raise typer.Exit(1)
+
+
+def _plural(value: int, singular: str, plural: str | None = None) -> str:
+    noun = singular if value == 1 else plural or f"{singular}s"
+    return f"{value} {noun}"
+
+
+def _normalize_kinds(values: list[str] | None) -> list[str] | None:
+    kinds: list[str] = []
+    for raw in values or []:
+        for item in raw.split(","):
+            kind = item.strip()
+            if kind:
+                kinds.append(kind)
+    return kinds or None
+
+
+def _edge_filter_params(
+    *,
+    kinds: list[str] | None,
+    facet: str | None,
+    day_from: str | None,
+    day_to: str | None,
+) -> dict[str, object]:
+    return _params(
+        kinds=_normalize_kinds(kinds),
+        facet=facet,
+        day_from=day_from,
+        day_to=day_to,
+    )
+
+
+def _display_entity(entity_id: object, name: object = None) -> str:
+    entity_id_text = str(entity_id or "")
+    name_text = str(name or "")
+    if name_text and name_text != entity_id_text:
+        return f"{name_text} ({entity_id_text})"
+    return entity_id_text
+
+
+def _candidate_display(candidate: dict) -> str:
+    return _display_entity(candidate.get("id"), candidate.get("name"))
+
+
+def _render_edge_resolution_error(body: dict, *, json_output: bool) -> None:
+    if json_output:
+        typer.echo(json.dumps(body, indent=2, ensure_ascii=False), err=True)
+        raise typer.Exit(1)
+
+    query = str(body.get("query") or "entity")
+    candidates = body.get("candidates") or []
+    if candidates:
+        labels = ", ".join(
+            _candidate_display(candidate) for candidate in candidates[:3]
+        )
+        _exit_with(f"Error: Entity '{query}' not found. Did you mean: {labels}")
+    _exit_with(f"Error: Entity '{query}' not found.")
+
+
+def _edge_body_or_exit(
+    path: str,
+    *,
+    params: dict[str, object],
+    json_output: bool,
+) -> dict:
+    try:
+        body = _request("GET", path, params=params)
+    except ConveyClientError as err:
+        _handle_entity_error(err)
+    if not isinstance(body, dict):
+        _exit_with("I couldn't read the journal response.")
+    if body.get("resolved") is None and "query" in body and "candidates" in body:
+        _render_edge_resolution_error(body, json_output=json_output)
+    return body
+
+
+def _echo_json(body: dict) -> None:
+    typer.echo(json.dumps(body, indent=2, ensure_ascii=False))
+
+
+def _format_kinds(kinds: object) -> str:
+    if not isinstance(kinds, dict):
+        return ""
+    parts = []
+    for kind in sorted(kinds):
+        info = kinds.get(kind)
+        count = info.get("count") if isinstance(info, dict) else None
+        if count:
+            parts.append(f"{kind}:{count}")
+    return ",".join(parts)
+
+
+def _format_seen(item: dict) -> str:
+    first_seen = item.get("first_seen")
+    last_seen = item.get("last_seen")
+    if first_seen and last_seen and first_seen != last_seen:
+        return f"seen={first_seen}..{last_seen}"
+    if first_seen or last_seen:
+        return f"seen={first_seen or last_seen}"
+    return ""
+
+
+def _format_directed(item: dict) -> str:
+    directed = item.get("directed")
+    if not isinstance(directed, dict):
+        return ""
+    parts = []
+    out_count = int(directed.get("out") or 0)
+    in_count = int(directed.get("in") or 0)
+    if out_count:
+        parts.append(f"out:{out_count}")
+    if in_count:
+        parts.append(f"in:{in_count}")
+    return f"directed={','.join(parts)}" if parts else ""
+
+
+def _format_evidence(row: dict, *, include_source: bool = False) -> str:
+    parts = [str(row.get("day") or "unknown-day"), str(row.get("kind") or "unknown")]
+    label = str(row.get("label") or "")
+    anchor = str(row.get("anchor") or "")
+    text = " ".join(parts)
+    if label:
+        text += f" - {label}"
+    if anchor:
+        text += f" ({anchor})"
+    if include_source:
+        source = str(row.get("source") or "")
+        path = str(row.get("path") or "")
+        source_parts = []
+        if source:
+            source_parts.append(f"[{source}]")
+        if path:
+            source_parts.append(path)
+        if source_parts:
+            text += " " + " ".join(source_parts)
+    return text
+
+
+def _render_neighbor(index: int, neighbor: dict) -> None:
+    parts = [
+        _display_entity(neighbor.get("entity_id"), neighbor.get("name")),
+        f"score={float(neighbor.get('score') or 0):.2f}",
+        f"count={int(neighbor.get('count') or 0)}",
+    ]
+    kinds = _format_kinds(neighbor.get("kinds"))
+    if kinds:
+        parts.append(f"kinds={kinds}")
+    seen = _format_seen(neighbor)
+    if seen:
+        parts.append(seen)
+    directed = _format_directed(neighbor)
+    if directed:
+        parts.append(directed)
+    typer.echo(f"  {index}. {' '.join(parts)}")
+    for row in neighbor.get("evidence") or []:
+        if isinstance(row, dict):
+            typer.echo(f"     - {_format_evidence(row)}")
+
+
+def _render_network(body: dict) -> None:
+    neighbors = body.get("neighbors") if isinstance(body.get("neighbors"), list) else []
+    total = int(body.get("total_neighbors") or 0)
+    entity_id = str(body.get("entity_id") or "")
+    if total == 0:
+        typer.echo(f"No recorded connections for {entity_id}.")
+        return
+
+    label = _plural(total, "recorded connection")
+    if len(neighbors) < total:
+        typer.echo(f"{label} for {entity_id} (showing {len(neighbors)}):")
+    else:
+        typer.echo(f"{label} for {entity_id}:")
+    for index, neighbor in enumerate(neighbors, 1):
+        if isinstance(neighbor, dict):
+            _render_neighbor(index, neighbor)
+
+
+def _render_history(body: dict) -> None:
+    evidence = body.get("evidence") if isinstance(body.get("evidence"), list) else []
+    total = int(body.get("total") or 0)
+    entity_id = str(body.get("entity_id") or "")
+    peer = _display_entity(body.get("peer_id"), body.get("peer_name"))
+    if total == 0:
+        typer.echo(f"No recorded connection history between {entity_id} and {peer}.")
+        return
+
+    label = _plural(total, "evidence row")
+    offset = int(body.get("offset") or 0)
+    suffix = ""
+    if offset or len(evidence) < total:
+        if evidence:
+            suffix = f" (showing {offset + 1}-{offset + len(evidence)})"
+        else:
+            suffix = " (showing 0)"
+    typer.echo(f"{label} for {entity_id} <-> {peer}{suffix}:")
+    for row in evidence:
+        if isinstance(row, dict):
+            typer.echo(f"  - {_format_evidence(row, include_source=True)}")
+
+
+def _render_overview(body: dict) -> None:
+    entities = body.get("entities") if isinstance(body.get("entities"), list) else []
+    totals = body.get("totals") if isinstance(body.get("totals"), dict) else {}
+    total_edges = int(totals.get("edges") or 0)
+    total_entities = int(totals.get("entities") or 0)
+    if total_edges == 0 or total_entities == 0:
+        typer.echo("No recorded connections in the edge index.")
+        return
+
+    edge_label = _plural(total_edges, "edge")
+    entity_label = _plural(total_entities, "entity", "entities")
+    suffix = f" (showing {len(entities)})" if len(entities) < total_entities else ""
+    typer.echo(f"Network overview: {edge_label} across {entity_label}{suffix}:")
+    kinds = _format_kinds(body.get("kinds"))
+    if kinds:
+        typer.echo(f"Kinds: {kinds}")
+    for index, entity in enumerate(entities, 1):
+        if isinstance(entity, dict):
+            parts = [
+                _display_entity(entity.get("entity_id"), entity.get("name")),
+                f"score={float(entity.get('score') or 0):.2f}",
+                f"count={int(entity.get('count') or 0)}",
+            ]
+            entity_kinds = _format_kinds(entity.get("kinds"))
+            if entity_kinds:
+                parts.append(f"kinds={entity_kinds}")
+            seen = _format_seen(entity)
+            if seen:
+                parts.append(seen)
+            typer.echo(f"  {index}. {' '.join(parts)}")
 
 
 def _render_resolve_error(facet: str, entity: str, body: dict) -> None:
@@ -634,6 +867,133 @@ def merge(
         typer.echo(output, err=True)
         raise typer.Exit(1)
     typer.echo(output)
+
+
+@app.command("network")
+def entity_network(
+    entity: str = typer.Argument(help="Entity name or identifier."),
+    kinds: list[str] = typer.Option(
+        [],
+        "--kinds",
+        help="Edge kind filter. Repeat or comma-separate for multiple kinds.",
+    ),
+    facet: str | None = typer.Option(None, "--facet", "-f", help="Facet filter."),
+    day_from: str | None = typer.Option(None, "--day-from", help="Start day YYYYMMDD."),
+    day_to: str | None = typer.Option(None, "--day-to", help="End day YYYYMMDD."),
+    limit: int = typer.Option(25, "--limit", "-n", help="Max neighbors."),
+    evidence_limit: int = typer.Option(
+        5,
+        "--evidence-limit",
+        help="Evidence rows per neighbor.",
+    ),
+    include_principal: bool = typer.Option(
+        False,
+        "--include-principal",
+        help="Include the principal entity in neighbors.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Show one-hop recorded connections for an entity."""
+    params = _edge_filter_params(
+        kinds=kinds,
+        facet=facet,
+        day_from=day_from,
+        day_to=day_to,
+    )
+    params.update(
+        {
+            "entity": entity,
+            "limit": limit,
+            "evidence_limit": evidence_limit,
+            "include_principal": include_principal,
+        }
+    )
+    body = _edge_body_or_exit(
+        "/app/entities/api/network",
+        params=params,
+        json_output=json_output,
+    )
+    if json_output:
+        _echo_json(body)
+        return
+    _render_network(body)
+
+
+@app.command("history")
+def entity_history(
+    entity: str = typer.Argument(help="Entity name or identifier."),
+    peer: str | None = typer.Argument(
+        None,
+        help="Peer entity name or identifier. Defaults to the principal entity.",
+    ),
+    kinds: list[str] = typer.Option(
+        [],
+        "--kinds",
+        help="Edge kind filter. Repeat or comma-separate for multiple kinds.",
+    ),
+    facet: str | None = typer.Option(None, "--facet", "-f", help="Facet filter."),
+    day_from: str | None = typer.Option(None, "--day-from", help="Start day YYYYMMDD."),
+    day_to: str | None = typer.Option(None, "--day-to", help="End day YYYYMMDD."),
+    limit: int = typer.Option(50, "--limit", "-n", help="Max evidence rows."),
+    offset: int = typer.Option(0, "--offset", help="Evidence row offset."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Show recorded connection evidence for an entity pair."""
+    params = _edge_filter_params(
+        kinds=kinds,
+        facet=facet,
+        day_from=day_from,
+        day_to=day_to,
+    )
+    params.update(
+        _params(
+            entity=entity,
+            peer=peer,
+            limit=limit,
+            offset=offset,
+        )
+    )
+    body = _edge_body_or_exit(
+        "/app/entities/api/history",
+        params=params,
+        json_output=json_output,
+    )
+    if json_output:
+        _echo_json(body)
+        return
+    _render_history(body)
+
+
+@app.command("overview")
+def entity_overview(
+    kinds: list[str] = typer.Option(
+        [],
+        "--kinds",
+        help="Edge kind filter. Repeat or comma-separate for multiple kinds.",
+    ),
+    facet: str | None = typer.Option(None, "--facet", "-f", help="Facet filter."),
+    day_from: str | None = typer.Option(None, "--day-from", help="Start day YYYYMMDD."),
+    day_to: str | None = typer.Option(None, "--day-to", help="End day YYYYMMDD."),
+    limit: int = typer.Option(25, "--limit", "-n", help="Max entities."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Show a global recorded-connections overview."""
+    params = _edge_filter_params(
+        kinds=kinds,
+        facet=facet,
+        day_from=day_from,
+        day_to=day_to,
+    )
+    params["limit"] = limit
+    body = _edge_body_or_exit(
+        "/app/entities/api/overview",
+        params=params,
+        json_output=json_output,
+    )
+    if json_output:
+        _echo_json(body)
+        return
+    _render_overview(body)
 
 
 @app.command("observations")

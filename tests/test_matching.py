@@ -8,6 +8,7 @@ from solstone.think.entities.matching import (
     build_name_resolution_map,
     find_matching_entity,
     is_name_variant_match,
+    resolve_journal_entity,
 )
 
 
@@ -451,3 +452,19 @@ class TestHighConfidence:
         assert MatchTier.EXACT < MatchTier.FUZZY
         assert MatchTier.SLUG <= MatchTier.SLUG
         assert MatchTier.FIRST_WORD > MatchTier.SLUG
+
+
+class TestResolveJournalEntity:
+    def test_resolves_journal_entity_by_name(self):
+        entity, candidates = resolve_journal_entity("Juliet Capulet")
+
+        assert candidates is None
+        assert entity is not None
+        assert entity["id"] == "juliet_capulet"
+
+    def test_returns_candidates_on_miss(self):
+        entity, candidates = resolve_journal_entity("Jliet")
+
+        assert entity is None
+        assert candidates
+        assert any(candidate["id"] == "juliet_capulet" for candidate in candidates)

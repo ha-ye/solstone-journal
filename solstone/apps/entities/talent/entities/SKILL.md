@@ -256,6 +256,89 @@ sol call entities search --type Person --facet work
 sol call entities search --since 20260115
 ```
 
+## network
+
+```bash
+sol call entities network ENTITY [--kinds KIND] [--facet FACET] [--day-from YYYYMMDD] [--day-to YYYYMMDD] [--limit N] [--evidence-limit N] [--include-principal] [--json]
+```
+
+Show one-hop recorded connections for a journal entity.
+
+- `ENTITY`: entity id, name, or alias. Output uses the journal entity id slug.
+- `--kinds`: optional edge kind filter; repeat the flag or comma-separate values.
+- `--facet`: optional facet filter and resolution scope.
+- `--day-from`, `--day-to`: optional evidence day bounds.
+- `--limit`: maximum neighbors to show.
+- `--evidence-limit`: evidence rows per neighbor.
+- `--include-principal`: include the owner/principal entity when it would otherwise be hidden.
+- `--json`: return the raw route payload.
+
+Behavior notes:
+
+- Empty output means the edge table exists but this entity has no recorded connections under the filters.
+- If the edge index has not been built, the command tells the owner to run `journal indexer --rescan`.
+
+Examples:
+
+```bash
+sol call entities network "Alicia Chen" --facet work
+sol call entities network romeo_montague --limit 10 --evidence-limit 2
+```
+
+## history
+
+```bash
+sol call entities history ENTITY [PEER] [--kinds KIND] [--facet FACET] [--day-from YYYYMMDD] [--day-to YYYYMMDD] [--limit N] [--offset N] [--json]
+```
+
+Show newest-first evidence rows for one entity pair.
+
+- `ENTITY`: entity id, name, or alias.
+- `PEER`: optional peer entity. If omitted, defaults to the principal entity.
+- `--kinds`: optional edge kind filter; repeat the flag or comma-separate values.
+- `--facet`: optional facet filter and resolution scope.
+- `--day-from`, `--day-to`: optional evidence day bounds.
+- `--limit`: maximum evidence rows.
+- `--offset`: pagination offset.
+- `--json`: return the raw route payload.
+
+Behavior notes:
+
+- Evidence rows include day, edge kind, available label/anchor, source, and path.
+- If no principal entity exists and `PEER` is omitted, the command fails and asks for `PEER`.
+
+Examples:
+
+```bash
+sol call entities history "Alicia Chen"
+sol call entities history "Alicia Chen" "Sam Rivera" --day-from 20260601
+```
+
+## overview
+
+```bash
+sol call entities overview [--kinds KIND] [--facet FACET] [--day-from YYYYMMDD] [--day-to YYYYMMDD] [--limit N] [--json]
+```
+
+Show the global recorded-connections overview.
+
+- `--kinds`: optional edge kind filter; repeat the flag or comma-separate values.
+- `--facet`: optional facet filter.
+- `--day-from`, `--day-to`: optional evidence day bounds.
+- `--limit`: maximum connected entities to show.
+- `--json`: return the raw route payload.
+
+Behavior notes:
+
+- Use this before `network` when you need to know which entities are most connected.
+- The header reports total entities and whether the displayed list is truncated.
+
+Example:
+
+```bash
+sol call entities overview --facet work --limit 20
+```
+
 ## merge
 
 ```bash
