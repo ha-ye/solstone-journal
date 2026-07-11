@@ -9,6 +9,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import multiprocessing
 import os
 import random
@@ -41,18 +42,43 @@ PDF_EXTENSIONS = tuple(_PDF_EXTENSIONS)
 # Pre-resize images to this max longest-side before VLM analysis. Images already
 # at or below this dimension pass through unchanged.
 _MAX_VLM_DIM = 1920
+# Qwen's llama.cpp vision path emits one image token per 32x32 pixel region.
+_QWEN_IMAGE_TOKEN_EDGE_PX = 32
 
 
 class AudioDecodeError(RuntimeError):
     """Audio decode failed in the isolated PyAV worker."""
 
 
-def resize_for_vlm(img: "Image.Image") -> "Image.Image":
-    if max(img.size) <= _MAX_VLM_DIM:
+def resize_for_vlm(
+    img: "Image.Image", *, max_image_tokens: int | None = None
+) -> "Image.Image":
+    """Downsize a VLM input without ever enlarging it.
+
+    ``max_image_tokens`` is the Qwen/llama.cpp image-token area ceiling. The
+    server rounds dimensions to its patch grid, so observed counts can differ
+    slightly; this client-side cap remains conservative and phase-specific.
+    """
+    if max_image_tokens is None:
+        if max(img.size) <= _MAX_VLM_DIM:
+            return img
+        resized = img.copy()
+        resized.thumbnail((_MAX_VLM_DIM, _MAX_VLM_DIM))
+        return resized
+
+    from PIL import Image
+
+    width, height = img.size
+    scale = min(1.0, _MAX_VLM_DIM / max(width, height))
+    max_pixels = max_image_tokens * _QWEN_IMAGE_TOKEN_EDGE_PX**2
+    scale = min(scale, math.sqrt(max_pixels / (width * height)))
+    if scale >= 1.0:
         return img
-    resized = img.copy()
-    resized.thumbnail((_MAX_VLM_DIM, _MAX_VLM_DIM))
-    return resized
+    target = (
+        max(1, math.floor(width * scale)),
+        max(1, math.floor(height * scale)),
+    )
+    return img.resize(target, Image.Resampling.LANCZOS)
 
 
 def audio_to_flac_bytes(audio: np.ndarray, sample_rate: int) -> bytes:

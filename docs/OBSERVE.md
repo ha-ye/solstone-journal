@@ -64,8 +64,26 @@ What remains in this package is the home-side ingest-and-processing pipeline:
 
 - **sense.py** — File watcher that dispatches transcription and description jobs
 - **transcribe/** — Audio transcription with sentence-level embeddings
-- **describe.py** — Vision analysis with Gemini, category-based prompts
+- **describe.py** — Provider-routed vision analysis with category-based prompts
 - **categories/** — Category-specific prompts for screen content (see [SCREEN_CATEGORIES.md](SCREEN_CATEGORIES.md))
+
+### Vision input sizing
+
+Image sizing is phase- and runtime-specific. The application never enlarges an
+input image.
+
+| Path | Bundled Linux Qwen sizing | Other providers/platforms |
+|---|---|---|
+| Frame categorization (`observe.describe.frame`) | 1024 image-token area ceiling, with the standing 1920px longest-side ceiling | standing 1920px ceiling |
+| Category extraction (`observe.describe.<category>`) | standing 1920px ceiling | standing 1920px ceiling |
+| Still depiction (`observe.depict`) | standing 1920px ceiling | standing 1920px ceiling |
+| Image/document import vision | model preprocessor defaults | model preprocessor defaults |
+
+The 1024 categorization ceiling is intentionally limited to the bundled Linux
+Qwen/llama.cpp path. Apple MLX and configured BYO OpenAI-compatible endpoints
+retain their existing preprocessing. Detailed extraction also retains current
+sizing: the 2026-07-11 frozen fidelity gate found that 1024 reduced fine-text
+fact recall even though it passed categorization.
 
 ## Standalone Observers
 
