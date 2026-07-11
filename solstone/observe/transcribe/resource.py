@@ -40,8 +40,12 @@ def select_stt_backend(
     google_key_present: bool,
     floor_bytes: int | None,
     local_backend: str | None,
+    confidential_lane_active: bool,
 ) -> str:
     """Resolve the unset/default STT backend without reading machine state."""
+    if confidential_lane_active:
+        return local_backend if local_backend is not None else STT_SURFACE
+
     local_fits = (
         floor_bytes is not None
         and available_bytes is not None

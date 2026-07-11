@@ -590,9 +590,13 @@ def get_transcribe() -> Any:
         google_key_present = bool(api_keys.get("gemini"))
         configured_backend = transcribe_config.get("backend")
         try:
+            from solstone.think.services import spp
+
+            confidential_lane_active = spp.confidential_provenance() is not None
             resource = transcribe_resource.get_transcribe_resource_payload(
                 google_key_present=google_key_present,
                 configured_backend=configured_backend,
+                confidential_lane_active=confidential_lane_active,
             )
         except Exception:
             logger.exception("error loading transcribe resource payload")

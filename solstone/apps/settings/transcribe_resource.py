@@ -24,7 +24,10 @@ from solstone.think.providers.memory import gb, read_available_bytes
 
 
 def get_transcribe_resource_payload(
-    *, google_key_present: bool, configured_backend: str | None
+    *,
+    google_key_present: bool,
+    configured_backend: str | None,
+    confidential_lane_active: bool,
 ) -> dict[str, bool | float | int | str | None]:
     """Return the resource display payload for Settings transcription."""
     available_bytes = read_available_bytes()
@@ -37,6 +40,7 @@ def get_transcribe_resource_payload(
             google_key_present=google_key_present,
             floor_bytes=floor_bytes,
             local_backend=local_backend,
+            confidential_lane_active=confidential_lane_active,
         )
     auto_switched = selected_backend == "gemini"
     needs_setup = selected_backend == STT_SURFACE

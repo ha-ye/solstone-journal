@@ -58,6 +58,26 @@ def test_process_audio_parakeet_server_not_ready_is_clean_retry(
     mock_send.assert_not_called()
 
 
+def test_process_audio_confidential_cloud_refusal_is_clean_retry(
+    raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
+) -> None:
+    from solstone.observe.transcribe import ConfidentialAudioEgressError
+    from solstone.observe.transcribe.main import process_audio
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe",
+            side_effect=ConfidentialAudioEgressError("blocked"),
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="gemini")
+
+    assert raw_path.exists()
+    assert not raw_path.with_suffix(".jsonl").exists()
+    mock_send.assert_not_called()
+
+
 def test_process_audio_parakeet_provider_error_uses_existing_failure_path(
     raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
 ) -> None:

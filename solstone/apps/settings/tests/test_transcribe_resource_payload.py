@@ -27,7 +27,15 @@ RESOURCE_KEYS = {
 }
 
 
-def _payload(monkeypatch, *, available_bytes, floor_bytes, google_key, configured):
+def _payload(
+    monkeypatch,
+    *,
+    available_bytes,
+    floor_bytes,
+    google_key,
+    configured,
+    confidential=False,
+):
     monkeypatch.setattr(
         transcribe_resource, "read_available_bytes", lambda: available_bytes
     )
@@ -38,6 +46,7 @@ def _payload(monkeypatch, *, available_bytes, floor_bytes, google_key, configure
     return transcribe_resource.get_transcribe_resource_payload(
         google_key_present=google_key,
         configured_backend=configured,
+        confidential_lane_active=confidential,
     )
 
 
@@ -64,6 +73,7 @@ def test_transcribe_resource_payload_shape(monkeypatch):
         floor_bytes=4 * 1024**3,
         google_key=False,
         configured=None,
+        confidential=False,
     )
 
     assert set(payload) == RESOURCE_KEYS
@@ -80,6 +90,7 @@ def test_transcribe_resource_unknown_memory(monkeypatch):
         floor_bytes=4 * 1024**3,
         google_key=True,
         configured=None,
+        confidential=False,
     )
 
     assert payload["available_memory_gb"] is None
@@ -94,6 +105,7 @@ def test_transcribe_resource_auto_switch_notice(monkeypatch):
         floor_bytes=4 * 1024**3,
         google_key=True,
         configured=None,
+        confidential=False,
     )
 
     assert payload["auto_switched"] is True
@@ -109,6 +121,7 @@ def test_transcribe_resource_no_key_recovery(monkeypatch):
         floor_bytes=4 * 1024**3,
         google_key=False,
         configured=None,
+        confidential=False,
     )
 
     assert payload["auto_switched"] is False
@@ -124,6 +137,7 @@ def test_transcribe_resource_configured_backend_has_no_auto_flags(monkeypatch):
         floor_bytes=4 * 1024**3,
         google_key=True,
         configured="parakeet",
+        confidential=False,
     )
 
     assert payload["auto_switched"] is False
@@ -139,11 +153,28 @@ def test_transcribe_resource_unsupported_platform(monkeypatch):
         floor_bytes=None,
         google_key=False,
         configured=None,
+        confidential=False,
     )
 
     assert payload["min_ram_gb"] is None
     assert payload["requirement"] == STT_LOCAL_UNSUPPORTED
     assert payload["needs_setup"] is True
+
+
+def test_transcribe_resource_confidential_low_memory_stays_local(monkeypatch):
+    payload = _payload(
+        monkeypatch,
+        available_bytes=2 * 1024**3,
+        floor_bytes=4 * 1024**3,
+        google_key=True,
+        configured=None,
+        confidential=True,
+    )
+
+    assert payload["auto_switched"] is False
+    assert payload["needs_setup"] is False
+    assert payload["notice"] == ""
+    assert payload["force_local_hint"] == ""
 
 
 def test_transcribe_route_includes_resource_block(settings_env, monkeypatch):
@@ -160,6 +191,35 @@ def test_transcribe_route_includes_resource_block(settings_env, monkeypatch):
     assert response.status_code == 200
     payload = response.get_json()
     assert set(payload["resource"]) == RESOURCE_KEYS
+
+
+def test_transcribe_route_passes_confidential_lane_flag(settings_env, monkeypatch):
+    journal_path, config = settings_env()
+    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config.setdefault("services", {})["confidential"] = {
+        "enabled_at": "2026-05-24T00:00:00Z"
+    }
+    (journal_path / "config" / "journal.json").write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def capture_payload(**kwargs):
+        captured.update(kwargs)
+        return transcribe_resource.fallback_transcribe_resource_payload()
+
+    monkeypatch.setattr(
+        routes.transcribe_resource,
+        "get_transcribe_resource_payload",
+        capture_payload,
+    )
+    client = _client(journal_path)
+
+    response = client.get("/app/settings/api/transcribe")
+
+    assert response.status_code == 200
+    assert captured["confidential_lane_active"] is True
 
 
 def test_transcribe_route_uses_resource_fallback_on_assembly_error(

@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from unittest.mock import Mock
 
+import numpy as np
 import pytest
 
 from solstone.think import models, talents
@@ -253,6 +254,45 @@ def test_confidential_gate_keys_on_provenance_not_provider_resolution(
     for mock in mocks:
         mock.assert_not_called()
     httpx_post.assert_not_called()
+
+
+def test_confidential_stt_chokepoint_blocks_cloud_audio_egress(
+    tmp_path,
+    monkeypatch,
+):
+    _empty_journal(tmp_path, monkeypatch)
+    _write_journal_config(tmp_path, _confidential_config(provider_pins=False))
+    audio = np.zeros(16000, dtype=np.float32)
+    gemini_transcribe = Mock(side_effect=AssertionError("audio egress attempted"))
+    revai_transcribe = Mock(side_effect=AssertionError("audio egress attempted"))
+    parakeet_transcribe = Mock(return_value=[])
+    monkeypatch.setattr(
+        "solstone.observe.transcribe.gemini.transcribe",
+        gemini_transcribe,
+    )
+    monkeypatch.setattr(
+        "solstone.observe.transcribe.revai.transcribe",
+        revai_transcribe,
+    )
+    monkeypatch.setattr(
+        "solstone.observe.transcribe.parakeet.transcribe",
+        parakeet_transcribe,
+    )
+
+    from solstone.observe.transcribe import (
+        ConfidentialAudioEgressError,
+        transcribe,
+    )
+
+    with pytest.raises(ConfidentialAudioEgressError):
+        transcribe("gemini", audio, 16000, {})
+    with pytest.raises(ConfidentialAudioEgressError):
+        transcribe("revai", audio, 16000, {})
+
+    gemini_transcribe.assert_not_called()
+    revai_transcribe.assert_not_called()
+    assert transcribe("parakeet", audio, 16000, {}) == []
+    parakeet_transcribe.assert_called_once()
 
 
 def test_none_provider_module_and_backup_fail_closed(tmp_path, monkeypatch):
