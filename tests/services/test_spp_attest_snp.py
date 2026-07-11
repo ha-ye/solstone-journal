@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import shutil
 from pathlib import Path
 
 import pytest
-from cryptography.hazmat.primitives import serialization
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from solstone.think.services.spp_attest import (
@@ -102,6 +104,27 @@ def _mutate_tlv_field_one_nonce(tlv: bytes) -> bytes:
     return bytes(data)
 
 
+def _load_cert(path: Path) -> x509.Certificate:
+    return x509.load_pem_x509_certificate(path.read_bytes())
+
+
+def _generated_cert_with_subject(subject: x509.Name, *, ca: bool) -> bytes:
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = dt.datetime.now(dt.UTC)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+        .sign(private_key=key, algorithm=hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM)
+
+
 def test_appraise_cpu_leg_positive_matches_captured_cpu_appraisal() -> None:
     result = _appraise()
 
@@ -175,6 +198,41 @@ def test_appraise_cpu_leg_rejects_broken_amd_chain(
 
     with pytest.raises(VerificationError, match="certificate signature invalid"):
         _appraise(roots_dir=roots_dir)
+
+
+@pytest.mark.parametrize(
+    ("root_file", "error_label"),
+    [("ark.pem", "ARK"), ("ask.pem", "ASK")],
+)
+def test_appraise_cpu_leg_rejects_non_ca_pinned_root(
+    tmp_path: Path,
+    root_file: str,
+    error_label: str,
+) -> None:
+    roots_dir = tmp_path / "roots"
+    genoa_dir = roots_dir / "Genoa"
+    shutil.copytree(snp_module.DEFAULT_ROOTS_DIR / "Genoa", genoa_dir)
+    original = _load_cert(genoa_dir / root_file)
+    (genoa_dir / root_file).write_bytes(
+        _generated_cert_with_subject(original.subject, ca=False)
+    )
+
+    with pytest.raises(VerificationError, match=f"{error_label} is not a CA"):
+        _appraise(roots_dir=roots_dir)
+
+
+@pytest.mark.parametrize("bundle_ca_file", ["ark.pem", "ask.pem"])
+def test_appraise_cpu_leg_rejects_bundle_ca_override_same_cn(
+    tmp_path: Path,
+    bundle_ca_file: str,
+) -> None:
+    bundle = _copy_bundle(tmp_path)
+    bundle_ca_path = bundle / "certs" / bundle_ca_file
+    original = _load_cert(bundle_ca_path)
+    bundle_ca_path.write_bytes(_generated_cert_with_subject(original.subject, ca=True))
+
+    with pytest.raises(VerificationError, match="does not match pinned root material"):
+        _appraise(bundle)
 
 
 def test_appraise_cpu_leg_rejects_foreign_ak_public_key(

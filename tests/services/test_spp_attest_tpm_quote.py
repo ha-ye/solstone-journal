@@ -74,14 +74,60 @@ def _mutate_first_digest_buffer(pcrs: bytes) -> bytes:
     return bytes(data)
 
 
-def _mutate_first_selection_byte(pcrs: bytes) -> bytes:
+def _mutate_first_selection_byte_preserving_popcount(pcrs: bytes) -> bytes:
     data = bytearray(pcrs)
     selection_count_size = 4
     hash_alg_size = 2
     sizeof_select_size = 1
     pcr_select_start = selection_count_size + hash_alg_size + sizeof_select_size
-    data[pcr_select_start] ^= 0x01
+    original = data[pcr_select_start]
+    assert original & 0x01
+    assert not original & 0x02
+    data[pcr_select_start] = (original & ~0x01) | 0x02
     return bytes(data)
+
+
+def _quote_msg_with_selection(sizeof_select: int, pcr_select: bytes) -> bytes:
+    return b"".join(
+        [
+            (0xFF544347).to_bytes(4, "big"),
+            (0x8018).to_bytes(2, "big"),
+            (0).to_bytes(2, "big"),
+            len(_binding()).to_bytes(2, "big"),
+            _binding(),
+            (0).to_bytes(8, "big"),
+            (0).to_bytes(4, "big"),
+            (0).to_bytes(4, "big"),
+            b"\x01",
+            (0).to_bytes(8, "big"),
+            (1).to_bytes(4, "big"),
+            (0x000B).to_bytes(2, "big"),
+            sizeof_select.to_bytes(1, "big"),
+            pcr_select,
+            (32).to_bytes(2, "big"),
+            hashlib.sha256(b"").digest(),
+        ]
+    )
+
+
+def _pcrs_with_selection(sizeof_select: int, pcr_select_slot: bytes) -> bytes:
+    assert len(pcr_select_slot) == 8
+    active_slot = b"".join(
+        [
+            (0x000B).to_bytes(2, "little"),
+            sizeof_select.to_bytes(1, "little"),
+            pcr_select_slot,
+            b"\x00" * 5,
+        ]
+    )
+    return b"".join(
+        [
+            (1).to_bytes(4, "little"),
+            active_slot,
+            b"\x00" * 16 * 7,
+            (0).to_bytes(4, "little"),
+        ]
+    )
 
 
 def test_verify_quote_accepts_fixture_bytes_and_vectors() -> None:
@@ -133,10 +179,32 @@ def test_verify_quote_rejects_mutated_pcr_value() -> None:
 
 
 def test_verify_quote_rejects_pcr_selection_mismatch() -> None:
-    quote_pcrs = _mutate_first_selection_byte((FIXTURE_DIR / "quote.pcrs").read_bytes())
+    quote_pcrs = _mutate_first_selection_byte_preserving_popcount(
+        (FIXTURE_DIR / "quote.pcrs").read_bytes()
+    )
 
     with pytest.raises(VerificationError, match="selection"):
         _verify_quote(quote_pcrs=quote_pcrs)
+
+
+def test_parse_quote_msg_rejects_empty_pcr_selection_size() -> None:
+    with pytest.raises(VerificationError, match="sizeofSelect 0 is empty"):
+        _parse_quote_msg(_quote_msg_with_selection(0, b""), _binding())
+
+
+def test_parse_quote_msg_rejects_zero_pcr_selection_bitmap() -> None:
+    with pytest.raises(VerificationError, match="selects no PCRs"):
+        _parse_quote_msg(_quote_msg_with_selection(3, b"\x00\x00\x00"), _binding())
+
+
+def test_parse_pcrs_rejects_empty_pcr_selection_size() -> None:
+    with pytest.raises(VerificationError, match="sizeofSelect is empty"):
+        _parse_pcrs(_pcrs_with_selection(0, b"\x00" * 8))
+
+
+def test_parse_pcrs_rejects_zero_pcr_selection_bitmap() -> None:
+    with pytest.raises(VerificationError, match="selects no PCRs"):
+        _parse_pcrs(_pcrs_with_selection(3, b"\x00" * 8))
 
 
 def test_verify_quote_rejects_unsupported_signature_algorithm() -> None:

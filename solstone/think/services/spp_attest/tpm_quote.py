@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,9 +23,7 @@ TPM_ALG_RSASSA = 0x0014
 TPM_ALG_RSAPSS = 0x0016
 SHA256_DIGEST_SIZE = 32
 PCR_SELECTION_SLOT_COUNT = 8
-PCR_SELECTION_SLOT_SIZE = 16
 PCR_DIGEST_SLOT_COUNT = 8
-PCR_DIGEST_SLOT_SIZE = 66
 PCR_DIGEST_BUFFER_SIZE = 64
 
 
@@ -164,7 +163,7 @@ def _parse_quote_msg(quote_msg: bytes, expected_binding: bytes) -> _QuoteInfo:
 
     extra_data_size = reader.u16be("extraData.size")
     extra_data = reader.read(extra_data_size, "extraData.buffer")
-    if extra_data != expected_binding:
+    if not hmac.compare_digest(extra_data, expected_binding):
         raise VerificationError(
             "TPM quote extraData mismatch: "
             f"quote={extra_data.hex()} expected={expected_binding.hex()}"
@@ -190,6 +189,10 @@ def _parse_quote_msg(quote_msg: bytes, expected_binding: bytes) -> _QuoteInfo:
                 f"TPM quote PCR hashAlg 0x{hash_alg:04x} unsupported"
             )
         sizeof_select = reader.u8(f"attested.quote.pcrSelect[{index}].sizeofSelect")
+        if sizeof_select < 1:
+            raise VerificationError(
+                f"TPM quote PCR sizeofSelect {sizeof_select} is empty"
+            )
         if sizeof_select > PCR_SELECTION_SLOT_COUNT:
             raise VerificationError(
                 f"TPM quote PCR sizeofSelect {sizeof_select} exceeds 8"
@@ -198,13 +201,14 @@ def _parse_quote_msg(quote_msg: bytes, expected_binding: bytes) -> _QuoteInfo:
             sizeof_select,
             f"attested.quote.pcrSelect[{index}].pcrSelect",
         )
-        selections.append(
-            _PcrSelection(
-                hash_alg=hash_alg,
-                sizeof_select=sizeof_select,
-                pcr_select=pcr_select,
-            )
+        selection = _PcrSelection(
+            hash_alg=hash_alg,
+            sizeof_select=sizeof_select,
+            pcr_select=pcr_select,
         )
+        if not selection.selected_pcrs():
+            raise VerificationError("TPM quote PCR selection selects no PCRs")
+        selections.append(selection)
 
     pcr_digest_size = reader.u16be("attested.quote.pcrDigest.size")
     if pcr_digest_size != SHA256_DIGEST_SIZE:
@@ -292,6 +296,8 @@ def _parse_pcrs(
 ) -> tuple[tuple[_PcrSelection, ...], tuple[bytes, ...]]:
     reader = _Reader(quote_pcrs, "quote.pcrs")
     selection_count = reader.u32le("selection_count")
+    if selection_count < 1:
+        raise VerificationError("quote.pcrs selection_count is empty")
     if selection_count > PCR_SELECTION_SLOT_COUNT:
         raise VerificationError(
             f"quote.pcrs selection_count {selection_count} exceeds 8"
@@ -308,9 +314,17 @@ def _parse_pcrs(
                 f"quote.pcrs selection[{index}] pad bytes are nonzero"
             )
         if index >= selection_count:
+            if hash_alg != 0 or sizeof_select != 0 or any(pcr_select_slot):
+                raise VerificationError(
+                    f"quote.pcrs inactive selection[{index}] is nonzero"
+                )
             continue
         if hash_alg != TPM_ALG_SHA256:
             raise VerificationError(f"quote.pcrs hashAlg 0x{hash_alg:04x} unsupported")
+        if sizeof_select < 1:
+            raise VerificationError(
+                f"quote.pcrs selection[{index}] sizeofSelect is empty"
+            )
         if sizeof_select > PCR_SELECTION_SLOT_COUNT:
             raise VerificationError(
                 f"quote.pcrs selection[{index}] sizeofSelect {sizeof_select} exceeds 8"
@@ -319,13 +333,14 @@ def _parse_pcrs(
             raise VerificationError(
                 f"quote.pcrs selection[{index}] has nonzero bytes after sizeofSelect"
             )
-        selections.append(
-            _PcrSelection(
-                hash_alg=hash_alg,
-                sizeof_select=sizeof_select,
-                pcr_select=pcr_select_slot[:sizeof_select],
-            )
+        selection = _PcrSelection(
+            hash_alg=hash_alg,
+            sizeof_select=sizeof_select,
+            pcr_select=pcr_select_slot[:sizeof_select],
         )
+        if not selection.selected_pcrs():
+            raise VerificationError(f"quote.pcrs selection[{index}] selects no PCRs")
+        selections.append(selection)
 
     digest_list_count = reader.u32le("digest_list_count")
     digest_buffers: list[bytes] = []

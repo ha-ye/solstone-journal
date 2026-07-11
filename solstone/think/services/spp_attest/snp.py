@@ -247,8 +247,6 @@ class _AmdRootSet:
     product: str
     ark: x509.Certificate
     ask: x509.Certificate
-    ark_path: Path
-    ask_path: Path
 
 
 def appraise_cpu_leg(
@@ -474,13 +472,15 @@ def _load_root_sets(roots_dir: Path) -> list[_AmdRootSet]:
             raise VerificationError(
                 f"AMD root set did not parse: {product_dir}"
             ) from exc
+        if not _is_ca(ark):
+            raise VerificationError(f"AMD root set {product_dir.name} ARK is not a CA")
+        if not _is_ca(ask):
+            raise VerificationError(f"AMD root set {product_dir.name} ASK is not a CA")
         root_sets.append(
             _AmdRootSet(
                 product=product_dir.name,
                 ark=ark,
                 ask=ask,
-                ark_path=ark_path,
-                ask_path=ask_path,
             )
         )
     if not root_sets:

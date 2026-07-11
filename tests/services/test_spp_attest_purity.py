@@ -13,7 +13,7 @@ PACKAGE_DIR = (
     / "services"
     / "spp_attest"
 )
-BANNED_IMPORT_ROOTS = {"subprocess", "socket", "urllib", "requests"}
+BANNED_IMPORT_ROOTS = {"subprocess", "socket", "urllib", "requests", "shutil"}
 BANNED_WRITE_ATTRS = {
     "write_text",
     "write_bytes",
@@ -42,6 +42,17 @@ def test_spp_attest_package_stays_pure_python_read_only() -> None:
     assert findings == []
 
 
+def test_purity_scanner_bans_aliased_shutil_import() -> None:
+    tree = ast.parse("import shutil as sh\nsh.which('tpm2_checkquote')\n")
+    findings = [
+        finding
+        for node in ast.walk(tree)
+        for finding in _scan_node(Path("snippet.py"), node)
+    ]
+
+    assert findings == ["snippet.py:1: banned import shutil"]
+
+
 def _scan_node(path: Path, node: ast.AST) -> list[str]:
     if isinstance(node, ast.Import):
         return _scan_import(path, node)
@@ -67,10 +78,6 @@ def _scan_import_from(path: Path, node: ast.ImportFrom) -> list[str]:
     root = module.split(".", maxsplit=1)[0]
     if root in BANNED_IMPORT_ROOTS:
         findings.append(f"{path}:{node.lineno}: banned import from {module}")
-    if module == "shutil":
-        for alias in node.names:
-            if alias.name == "which":
-                findings.append(f"{path}:{node.lineno}: banned import shutil.which")
     for alias in node.names:
         if alias.name in BANNED_WRITE_NAMES:
             findings.append(f"{path}:{node.lineno}: banned write helper {alias.name}")
