@@ -7,9 +7,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
+import solstone.think.curation as curation
 from solstone.apps.curation.copy import CUR_EMPTY_STATE, CUR_HEADING
 from solstone.think.entities.journal import load_journal_entity, save_journal_entity
 from solstone.think.entities.review_candidates import (
@@ -22,6 +24,7 @@ from solstone.think.facet_review_candidates import (
     load_candidates as load_facet_candidates,
 )
 from solstone.think.facet_review_candidates import record_facet_candidate
+from solstone.think.journal_io import LockTimeout
 from solstone.think.speaker_review_candidates import (
     candidate_key as speaker_candidate_key,
 )
@@ -61,25 +64,70 @@ def _seed_entities() -> None:
     )
 
 
+def _entity_candidate_row(
+    source_slug: str = "kognova_inc",
+    target_slug: str = "kognova",
+    *,
+    source: str = "Kognova Inc",
+    target: str = "Kognova",
+    status: str = "open",
+    detection_count: int = 4,
+) -> dict[str, Any]:
+    return {
+        "facet": "work",
+        "source": source,
+        "source_slug": source_slug,
+        "target": target,
+        "target_slug": target_slug,
+        "status": status,
+        "evidence": {
+            "basis": "name-variant",
+            "summary": f"{source} / {target}",
+            "detection_count": detection_count,
+            "needs": 0,
+        },
+    }
+
+
+def _seed_entity_candidates(rows: list[dict[str, Any]]) -> None:
+    save_entity_candidates(rows)
+
+
 def _seed_entity_candidate(status: str = "open", detection_count: int = 4) -> None:
-    save_entity_candidates(
-        [
-            {
-                "facet": "work",
-                "source": "Kognova Inc",
-                "source_slug": "kognova_inc",
-                "target": "Kognova",
-                "target_slug": "kognova",
-                "status": status,
-                "evidence": {
-                    "basis": "name-variant",
-                    "summary": "Kognova Inc / Kognova",
-                    "detection_count": detection_count,
-                    "needs": 0,
-                },
-            }
-        ]
+    _seed_entity_candidates(
+        [_entity_candidate_row(status=status, detection_count=detection_count)]
     )
+
+
+def _seed_entity_pair(
+    source_slug: str,
+    source_name: str,
+    target_slug: str,
+    target_name: str,
+) -> None:
+    save_journal_entity(
+        {
+            "id": source_slug,
+            "name": source_name,
+            "type": "Company",
+            "aka": [],
+        }
+    )
+    save_journal_entity(
+        {
+            "id": target_slug,
+            "name": target_name,
+            "type": "Company",
+            "aka": [],
+        }
+    )
+
+
+def _assert_folded(source_slug: str, target_slug: str, source_name: str) -> None:
+    assert load_journal_entity(source_slug) is None
+    target = load_journal_entity(target_slug)
+    assert target is not None
+    assert source_name in target["aka"]
 
 
 def _entity_payload() -> dict[str, str]:
@@ -319,6 +367,279 @@ def test_entity_dismiss_sets_watermark(curation_env):
     row = load_entity_candidates()[0]
     assert row["status"] == "dismissed"
     assert row["dismissed_detection_count"] == 6
+
+
+def test_entity_accept_batch_merges_all(curation_env):
+    env = curation_env()
+    _seed_entity_pair("kognova_inc", "Kognova Inc", "kognova", "Kognova")
+    _seed_entity_pair("octo_labs_inc", "Octo Labs Inc", "octo_labs", "Octo Labs")
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(),
+            _entity_candidate_row(
+                "octo_labs_inc",
+                "octo_labs",
+                source="Octo Labs Inc",
+                target="Octo Labs",
+            ),
+        ]
+    )
+
+    resp = env.client.post(
+        "/app/curation/api/entity/accept-batch",
+        json={
+            "items": [
+                _entity_payload(),
+                {
+                    "facet": "work",
+                    "source_slug": "octo_labs_inc",
+                    "target_slug": "octo_labs",
+                },
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["accepted"] == 2
+    assert data["failed"] == 0
+    assert len(data["results"]) == 2
+    _assert_folded("kognova_inc", "kognova", "Kognova Inc")
+    _assert_folded("octo_labs_inc", "octo_labs", "Octo Labs Inc")
+
+
+def test_entity_accept_batch_partial_failure_first_still_merges_later(curation_env):
+    env = curation_env()
+    _seed_entities()
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                "missing_inc",
+                "missing",
+                source="Missing Inc",
+                target="Missing",
+            ),
+            _entity_candidate_row(),
+        ]
+    )
+
+    resp = env.client.post(
+        "/app/curation/api/entity/accept-batch",
+        json={
+            "items": [
+                {
+                    "facet": "work",
+                    "source_slug": "missing_inc",
+                    "target_slug": "missing",
+                },
+                _entity_payload(),
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data["results"]) == 2
+    assert data["results"][0]["status"] == "error"
+    assert data["results"][0]["error"]
+    assert data["failed"] == 1
+    assert data["accepted"] == 1
+    _assert_folded("kognova_inc", "kognova", "Kognova Inc")
+
+
+def test_entity_accept_batch_counts_already_accepted(curation_env):
+    env = curation_env()
+    _seed_entities()
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                "accepted_inc",
+                "accepted",
+                source="Accepted Inc",
+                target="Accepted",
+                status="accepted",
+            ),
+            _entity_candidate_row(),
+        ]
+    )
+
+    resp = env.client.post(
+        "/app/curation/api/entity/accept-batch",
+        json={
+            "items": [
+                {
+                    "facet": "work",
+                    "source_slug": "accepted_inc",
+                    "target_slug": "accepted",
+                },
+                _entity_payload(),
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["accepted"] == 2
+    assert data["failed"] == 0
+    assert data["results"][0]["status"] == "already_accepted"
+    _assert_folded("kognova_inc", "kognova", "Kognova Inc")
+
+
+def test_entity_accept_batch_lock_timeout_is_per_item(curation_env, monkeypatch):
+    env = curation_env()
+    _seed_entities()
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                "busy_inc",
+                "busy",
+                source="Busy Inc",
+                target="Busy",
+            ),
+            _entity_candidate_row(),
+        ]
+    )
+    real_merge = curation.merge_entity
+
+    def raise_busy_for_one(source_id: str, target_id: str, **kwargs):
+        if source_id == "busy_inc":
+            raise LockTimeout(env.journal / "busy.lock", 0.01)
+        return real_merge(source_id, target_id, **kwargs)
+
+    monkeypatch.setattr(curation, "merge_entity", raise_busy_for_one)
+
+    resp = env.client.post(
+        "/app/curation/api/entity/accept-batch",
+        json={
+            "items": [
+                {"facet": "work", "source_slug": "busy_inc", "target_slug": "busy"},
+                _entity_payload(),
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["accepted"] == 1
+    assert data["failed"] == 1
+    assert data["results"][0]["status"] == "error"
+    assert data["results"][0]["error"] == "entity merge candidates are busy; try again"
+    _assert_folded("kognova_inc", "kognova", "Kognova Inc")
+
+
+def test_entity_dismiss_batch_dismisses_all(curation_env):
+    env = curation_env()
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(),
+            _entity_candidate_row(
+                "octo_labs_inc",
+                "octo_labs",
+                source="Octo Labs Inc",
+                target="Octo Labs",
+            ),
+        ]
+    )
+
+    resp = env.client.post(
+        "/app/curation/api/entity/dismiss-batch",
+        json={
+            "items": [
+                _entity_payload(),
+                {
+                    "facet": "work",
+                    "source_slug": "octo_labs_inc",
+                    "target_slug": "octo_labs",
+                },
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["dismissed"] == 2
+    assert data["failed"] == 0
+    assert [row["status"] for row in load_entity_candidates()] == [
+        "dismissed",
+        "dismissed",
+    ]
+
+
+def test_entity_dismiss_batch_partial_failure_first_still_dismisses_later(curation_env):
+    env = curation_env()
+    _seed_entity_candidates([_entity_candidate_row()])
+
+    resp = env.client.post(
+        "/app/curation/api/entity/dismiss-batch",
+        json={
+            "items": [
+                {
+                    "facet": "work",
+                    "source_slug": "missing_inc",
+                    "target_slug": "missing",
+                },
+                _entity_payload(),
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data["results"]) == 2
+    assert data["results"][0]["status"] == "error"
+    assert data["results"][0]["error"]
+    assert data["failed"] == 1
+    assert data["dismissed"] == 1
+    assert load_entity_candidates()[0]["status"] == "dismissed"
+
+
+def test_entity_dismiss_batch_counts_already_dismissed(curation_env):
+    env = curation_env()
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                "dismissed_inc",
+                "dismissed",
+                source="Dismissed Inc",
+                target="Dismissed",
+                status="dismissed",
+            ),
+            _entity_candidate_row(),
+        ]
+    )
+
+    resp = env.client.post(
+        "/app/curation/api/entity/dismiss-batch",
+        json={
+            "items": [
+                {
+                    "facet": "work",
+                    "source_slug": "dismissed_inc",
+                    "target_slug": "dismissed",
+                },
+                _entity_payload(),
+            ]
+        },
+    )
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["dismissed"] == 2
+    assert data["failed"] == 0
+    assert data["results"][0]["status"] == "already_dismissed"
+
+
+def test_entity_batch_routes_reject_missing_invalid_or_empty_items(curation_env):
+    env = curation_env()
+
+    for path in (
+        "/app/curation/api/entity/accept-batch",
+        "/app/curation/api/entity/dismiss-batch",
+    ):
+        for payload in ({}, {"items": "not-list"}, {"items": []}):
+            resp = env.client.post(path, json=payload)
+            assert resp.status_code == 400
+            assert resp.get_json()["reason_code"] == "missing_required_field"
 
 
 def test_missing_required_field_returns_standard_error(curation_env):

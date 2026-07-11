@@ -22,9 +22,11 @@ from solstone.think.curation import (
     KIND_FACET_CANDIDATE,
     KIND_SPEAKER_NAME_VARIANT,
     accept_entity_candidate,
+    accept_entity_candidate_batch,
     accept_facet_candidate,
     accept_speaker_candidate,
     dismiss_entity_candidate,
+    dismiss_entity_candidate_batch,
     dismiss_facet_candidate,
     dismiss_speaker_candidate,
     load_open_items,
@@ -249,3 +251,19 @@ def dismiss_entity() -> Response | tuple[Response, int]:
             ENTITY_BUSY, detail="entity merge candidates are busy; try again"
         )
     return _result_response(result)
+
+
+@curation_bp.post("/api/entity/accept-batch")
+def accept_entity_batch() -> Response | tuple[Response, int]:
+    items = _json_body().get("items")
+    if not isinstance(items, list) or not items:
+        return _missing_field("items")
+    return jsonify(accept_entity_candidate_batch(items))
+
+
+@curation_bp.post("/api/entity/dismiss-batch")
+def dismiss_entity_batch() -> Response | tuple[Response, int]:
+    items = _json_body().get("items")
+    if not isinstance(items, list) or not items:
+        return _missing_field("items")
+    return jsonify(dismiss_entity_candidate_batch(items))

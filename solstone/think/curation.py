@@ -5,17 +5,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 import solstone.think.facet_review_candidates as facet_store
 from solstone.think import speaker_review_candidates as speaker_store
 from solstone.think.entities import review_candidates as entity_store
 from solstone.think.entities.merge import merge_entity
 from solstone.think.facets import create_facet
+from solstone.think.journal_io import LockTimeout
 
 KIND_FACET_CANDIDATE = "facet_candidate"
 KIND_ENTITY_MERGE = "entity_merge"
 KIND_SPEAKER_NAME_VARIANT = "speaker_name_variant"
+_BATCH_BUSY_ERROR = "entity merge candidates are busy; try again"
+_BATCH_MALFORMED_ERROR = "candidate is missing facet, source_slug, or target_slug"
 
 
 @dataclass(frozen=True)
@@ -395,6 +398,77 @@ def dismiss_entity_candidate(
         "key": key,
         "candidate": dismissed,
     }
+
+
+def _run_entity_batch(
+    items: list[dict[str, Any]],
+    apply: Callable[[str, str, str], dict[str, Any]],
+    success_statuses: frozenset[str],
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Apply one entity-candidate action per item, sequentially, never aborting."""
+    results: list[dict[str, Any]] = []
+    ok = 0
+    failed = 0
+
+    for item in items:
+        if isinstance(item, dict):
+            facet = str(item.get("facet") or "")
+            source_slug = str(item.get("source_slug") or "")
+            target_slug = str(item.get("target_slug") or "")
+        else:
+            facet = ""
+            source_slug = ""
+            target_slug = ""
+
+        if not facet or not source_slug or not target_slug:
+            status = "error"
+            error = _BATCH_MALFORMED_ERROR
+        else:
+            try:
+                result = apply(facet, source_slug, target_slug)
+            except LockTimeout:
+                status = "error"
+                error = _BATCH_BUSY_ERROR
+            else:
+                status = str(result.get("status") or "")
+                error = result.get("error") or None
+
+        if status in success_statuses:
+            ok += 1
+        else:
+            failed += 1
+
+        results.append(
+            {
+                "facet": facet,
+                "source_slug": source_slug,
+                "target_slug": target_slug,
+                "status": status,
+                "error": error,
+            }
+        )
+
+    return results, ok, failed
+
+
+def accept_entity_candidate_batch(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Accept many open entity merge candidates, one at a time."""
+    results, ok, failed = _run_entity_batch(
+        items,
+        lambda f, s, t: accept_entity_candidate(f, s, t, commit=True),
+        frozenset({"accepted", "already_accepted"}),
+    )
+    return {"results": results, "accepted": ok, "failed": failed}
+
+
+def dismiss_entity_candidate_batch(items: list[dict[str, Any]]) -> dict[str, Any]:
+    """Dismiss many open entity merge candidates, one at a time."""
+    results, ok, failed = _run_entity_batch(
+        items,
+        dismiss_entity_candidate,
+        frozenset({"dismissed", "already_dismissed"}),
+    )
+    return {"results": results, "dismissed": ok, "failed": failed}
 
 
 def accept_speaker_candidate(

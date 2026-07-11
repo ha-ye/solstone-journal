@@ -4,19 +4,23 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+import solstone.think.curation as curation
 from solstone.think.curation import (
     KIND_SPEAKER_NAME_VARIANT,
     accept_entity_candidate,
+    accept_entity_candidate_batch,
     accept_facet_candidate,
     dismiss_entity_candidate,
+    dismiss_entity_candidate_batch,
     dismiss_facet_candidate,
     load_open_items,
     merge_preview_fields,
 )
-from solstone.think.entities.journal import save_journal_entity
+from solstone.think.entities.journal import load_journal_entity, save_journal_entity
 from solstone.think.entities.review_candidates import (
     load_candidates as load_entity_candidates,
 )
@@ -29,6 +33,7 @@ from solstone.think.facet_review_candidates import (
 from solstone.think.facet_review_candidates import (
     save_candidates as save_facet_candidates,
 )
+from solstone.think.journal_io import LockTimeout
 from solstone.think.speaker_review_candidates import record_name_variant_candidate
 
 
@@ -60,25 +65,70 @@ def _seed_entities() -> None:
     )
 
 
+def _entity_candidate_row(
+    source_slug: str = "kognova_inc",
+    target_slug: str = "kognova",
+    *,
+    source: str = "Kognova Inc",
+    target: str = "Kognova",
+    status: str = "open",
+    detection_count: int = 4,
+) -> dict[str, Any]:
+    return {
+        "facet": "work",
+        "source": source,
+        "source_slug": source_slug,
+        "target": target,
+        "target_slug": target_slug,
+        "status": status,
+        "evidence": {
+            "basis": "name-variant",
+            "summary": f"{source} / {target}",
+            "detection_count": detection_count,
+            "needs": 0,
+        },
+    }
+
+
+def _seed_entity_candidates(rows: list[dict[str, Any]]) -> None:
+    save_entity_candidates(rows)
+
+
 def _seed_entity_candidate(status: str = "open", detection_count: int = 4) -> None:
-    save_entity_candidates(
-        [
-            {
-                "facet": "work",
-                "source": "Kognova Inc",
-                "source_slug": "kognova_inc",
-                "target": "Kognova",
-                "target_slug": "kognova",
-                "status": status,
-                "evidence": {
-                    "basis": "name-variant",
-                    "summary": "Kognova Inc / Kognova",
-                    "detection_count": detection_count,
-                    "needs": 0,
-                },
-            }
-        ]
+    _seed_entity_candidates(
+        [_entity_candidate_row(status=status, detection_count=detection_count)]
     )
+
+
+def _seed_entity_pair(
+    source_slug: str,
+    source_name: str,
+    target_slug: str,
+    target_name: str,
+) -> None:
+    save_journal_entity(
+        {
+            "id": source_slug,
+            "name": source_name,
+            "type": "Company",
+            "aka": [],
+        }
+    )
+    save_journal_entity(
+        {
+            "id": target_slug,
+            "name": target_name,
+            "type": "Company",
+            "aka": [],
+        }
+    )
+
+
+def _assert_folded(source_slug: str, target_slug: str, source_name: str) -> None:
+    assert load_journal_entity(source_slug) is None
+    target = load_journal_entity(target_slug)
+    assert target is not None
+    assert source_name in target["aka"]
 
 
 def test_load_open_items_normalizes_and_orders(curation_journal):
@@ -285,6 +335,240 @@ def test_dismiss_entity_candidate_sets_watermark_and_is_idempotent(curation_jour
     assert first["status"] == "dismissed"
     assert second["status"] == "already_dismissed"
     assert load_entity_candidates()[0]["dismissed_detection_count"] == 4
+
+
+def test_accept_entity_candidate_batch_accepts_many_in_order(curation_journal):
+    _seed_entity_pair("kognova_inc", "Kognova Inc", "kognova", "Kognova")
+    _seed_entity_pair("octo_labs_inc", "Octo Labs Inc", "octo_labs", "Octo Labs")
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(),
+            _entity_candidate_row(
+                "octo_labs_inc",
+                "octo_labs",
+                source="Octo Labs Inc",
+                target="Octo Labs",
+                detection_count=3,
+            ),
+        ]
+    )
+
+    result = accept_entity_candidate_batch(
+        [
+            {"facet": "work", "source_slug": "kognova_inc", "target_slug": "kognova"},
+            {
+                "facet": "work",
+                "source_slug": "octo_labs_inc",
+                "target_slug": "octo_labs",
+            },
+        ]
+    )
+
+    assert result["accepted"] == 2
+    assert result["failed"] == 0
+    assert len(result["results"]) == 2
+    assert [row["source_slug"] for row in result["results"]] == [
+        "kognova_inc",
+        "octo_labs_inc",
+    ]
+    assert all(
+        set(row) == {"facet", "source_slug", "target_slug", "status", "error"}
+        for row in result["results"]
+    )
+    assert all(
+        "merge" not in row and "candidate" not in row for row in result["results"]
+    )
+    _assert_folded("kognova_inc", "kognova", "Kognova Inc")
+    _assert_folded("octo_labs_inc", "octo_labs", "Octo Labs Inc")
+
+
+def test_accept_entity_candidate_batch_malformed_first_continues(curation_journal):
+    _seed_entities()
+    _seed_entity_candidate()
+
+    result = accept_entity_candidate_batch(
+        [
+            {"facet": "work", "source_slug": "missing_target"},
+            {"facet": "work", "source_slug": "kognova_inc", "target_slug": "kognova"},
+        ]
+    )
+
+    assert result["accepted"] == 1
+    assert result["failed"] == 1
+    assert len(result["results"]) == 2
+    assert result["results"][0] == {
+        "facet": "work",
+        "source_slug": "missing_target",
+        "target_slug": "",
+        "status": "error",
+        "error": "candidate is missing facet, source_slug, or target_slug",
+    }
+    _assert_folded("kognova_inc", "kognova", "Kognova Inc")
+
+
+def test_accept_entity_candidate_batch_lock_timeout_continues(
+    curation_journal,
+    monkeypatch,
+):
+    _seed_entities()
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                "busy_inc",
+                "busy",
+                source="Busy Inc",
+                target="Busy",
+            ),
+            _entity_candidate_row(),
+        ]
+    )
+    real_merge = curation.merge_entity
+
+    def raise_busy_for_one(source_id: str, target_id: str, **kwargs):
+        if source_id == "busy_inc":
+            raise LockTimeout(Path("busy"), 0.01)
+        return real_merge(source_id, target_id, **kwargs)
+
+    monkeypatch.setattr(curation, "merge_entity", raise_busy_for_one)
+
+    result = accept_entity_candidate_batch(
+        [
+            {"facet": "work", "source_slug": "busy_inc", "target_slug": "busy"},
+            {"facet": "work", "source_slug": "kognova_inc", "target_slug": "kognova"},
+        ]
+    )
+
+    assert result["accepted"] == 1
+    assert result["failed"] == 1
+    assert result["results"][0]["status"] == "error"
+    assert (
+        result["results"][0]["error"] == "entity merge candidates are busy; try again"
+    )
+    _assert_folded("kognova_inc", "kognova", "Kognova Inc")
+
+
+def test_accept_entity_candidate_batch_counts_already_accepted(curation_journal):
+    _seed_entities()
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                "accepted_inc",
+                "accepted",
+                source="Accepted Inc",
+                target="Accepted",
+                status="accepted",
+            ),
+            _entity_candidate_row(),
+        ]
+    )
+
+    result = accept_entity_candidate_batch(
+        [
+            {
+                "facet": "work",
+                "source_slug": "accepted_inc",
+                "target_slug": "accepted",
+            },
+            {"facet": "work", "source_slug": "kognova_inc", "target_slug": "kognova"},
+        ]
+    )
+
+    assert result["accepted"] == 2
+    assert result["failed"] == 0
+    assert [row["status"] for row in result["results"]] == [
+        "already_accepted",
+        "accepted",
+    ]
+    _assert_folded("kognova_inc", "kognova", "Kognova Inc")
+
+
+def test_dismiss_entity_candidate_batch_dismisses_many(curation_journal):
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(),
+            _entity_candidate_row(
+                "octo_labs_inc",
+                "octo_labs",
+                source="Octo Labs Inc",
+                target="Octo Labs",
+            ),
+        ]
+    )
+
+    result = dismiss_entity_candidate_batch(
+        [
+            {"facet": "work", "source_slug": "kognova_inc", "target_slug": "kognova"},
+            {
+                "facet": "work",
+                "source_slug": "octo_labs_inc",
+                "target_slug": "octo_labs",
+            },
+        ]
+    )
+
+    assert result["dismissed"] == 2
+    assert result["failed"] == 0
+    assert len(result["results"]) == 2
+    assert all(
+        set(row) == {"facet", "source_slug", "target_slug", "status", "error"}
+        for row in result["results"]
+    )
+    assert [row["status"] for row in load_entity_candidates()] == [
+        "dismissed",
+        "dismissed",
+    ]
+
+
+def test_dismiss_entity_candidate_batch_malformed_first_continues(curation_journal):
+    _seed_entity_candidate()
+
+    result = dismiss_entity_candidate_batch(
+        [
+            {"facet": "work", "source_slug": "missing_target"},
+            {"facet": "work", "source_slug": "kognova_inc", "target_slug": "kognova"},
+        ]
+    )
+
+    assert result["dismissed"] == 1
+    assert result["failed"] == 1
+    assert result["results"][0]["status"] == "error"
+    assert result["results"][0]["error"] == (
+        "candidate is missing facet, source_slug, or target_slug"
+    )
+    assert load_entity_candidates()[0]["status"] == "dismissed"
+
+
+def test_dismiss_entity_candidate_batch_counts_already_dismissed(curation_journal):
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                "dismissed_inc",
+                "dismissed",
+                source="Dismissed Inc",
+                target="Dismissed",
+                status="dismissed",
+            ),
+            _entity_candidate_row(),
+        ]
+    )
+
+    result = dismiss_entity_candidate_batch(
+        [
+            {
+                "facet": "work",
+                "source_slug": "dismissed_inc",
+                "target_slug": "dismissed",
+            },
+            {"facet": "work", "source_slug": "kognova_inc", "target_slug": "kognova"},
+        ]
+    )
+
+    assert result["dismissed"] == 2
+    assert result["failed"] == 0
+    assert [row["status"] for row in result["results"]] == [
+        "already_dismissed",
+        "dismissed",
+    ]
 
 
 def test_merge_preview_fields_returns_compact_summary():
