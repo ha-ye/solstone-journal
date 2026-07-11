@@ -72,7 +72,7 @@ journal setup
 
 this runs the setup readiness doctor battery, confirms the journal directory at `~/journal`, installs the local transcription model (~2.5 GB on linux), installs the `sol` skill for claude code, codex, and gemini, installs the journal-side `sol` and `journal` router skills so sol can tend the journal, and starts a background service (systemd on linux, launchd on macOS) listening on http://localhost:5015.
 
-let your human know: **open http://localhost:5015 in a browser**. the first-run wizard walks them through setting their identity and connecting a gemini API key.
+let your human know: **open http://localhost:5015 in a browser**. the first-run wizard walks them through setting their identity and choosing how sol thinks — local by default (the bundled model runs right in the journal), or their own provider key if the machine can't run a local model.
 
 a `solstone-journal` install bundles everything a journal host needs — PDF rendering, whisper, and the default CPU transcription stack are all included; `journal setup` downloads the transcription model. there are no separate à-la-carte extras to add. if the readiness doctor step (`journal doctor --readiness`) finds missing system libraries, it will tell you the exact install command to run for your platform.
 
@@ -84,15 +84,12 @@ if the service fails to start, check `journal service logs`.
 
 ## choosing how to power sol
 
-sol is powered by an AI model, and you choose which. the choice has real privacy and hardware trade-offs worth understanding before you invest time in a path.
+sol is powered by an AI model, and it runs **locally by default** — on every device. the bundled model runs right in your journal, so your thinking never leaves the machine. a cloud lane is an option, not the default; you choose in settings → providers (or the thinking app).
 
-- **a hosted provider key is the recommended way to start.** point solstone at Google (Gemini), OpenAI, or Anthropic with **your own developer API key**, created in that provider's developer console — *not* the consumer chat product (gemini.google.com / chatgpt.com / claude.ai). this is the fastest path to a working sol and what the first-run wizard sets up. cogitate (sol's tool-calling agent loop, used by chat/digest/morning_briefing/etc.) works out of the box as soon as you set a provider key — no extra install step.
-- **a local model via the local provider is a real, supported goal, but not the default daily experience yet.** running sol fully locally means nothing leaves your machine. it's the maximum-privacy path, but it needs capable hardware and a local model with strong "thinking" support; smaller models on constrained machines (for example a base Mac mini) struggle on the reasoning-heavy work. treat local as a goal to grow into, not the recommended starting point.
-- **on Apple Silicon, you can run sol's screen analysis on-device today.** macs with Apple Silicon and at least 16 GB of memory can turn on the local provider in settings → providers; journal downloads a local model once, then does the work of making sense of your screen entirely on your machine, with nothing sent to a cloud provider. it's opt-in and covers screen analysis for now; the rest of sol stays on whichever provider you chose above.
+- **local is the default.** on a capable machine sol thinks locally with nothing extra to set up — the bundled model handles both the reasoning over your journal and screen analysis, and nothing is sent to a cloud provider. the practical floor is about **8 GB**: an 8 GB GPU, or 8 GB of free memory on Apple Silicon (the model is ~2.74 GB on disk, plus the ~2.5 GB transcription model). solstone checks first and won't activate a local model that won't fit; on Linux it needs a supported hardware GPU (AMD, NVIDIA, or Intel via Vulkan).
+- **a cloud lane, if your machine can't clear that bar — or you'd rather not spend its power.** point solstone at Google (Gemini), OpenAI, or Anthropic with **your own developer API key**, created in that provider's developer console — *not* the consumer chat product (gemini.google.com / chatgpt.com / claude.ai). you can switch any time in settings → providers.
 
-a hardware heads-up: local transcription alone installs a ~2.5 GB model, and a capable local *thinking* model needs meaningfully more memory and compute on top of that. if your machine is constrained, start with a hosted key and revisit local later; you can switch any time in settings → providers.
-
-what actually leaves your machine differs sharply between these paths: with a local model, nothing leaves; with a hosted provider, only that task's prompt plus the relevant journal context goes, directly to that provider under your own key. solstone is never a proxy, and sol pbc is never in that path and never sees it. for the full picture of what's sent, to whom, and under whose terms, see [what solstone sends](DATA-FLOW.md).
+what actually leaves your machine differs sharply between these paths: with the local model, nothing leaves; with a hosted provider, only that task's prompt plus the relevant journal context goes, directly to that provider under your own key. solstone is never a proxy, and sol pbc is never in that path and never sees it. for the full picture of what's sent, to whom, and under whose terms, see [what solstone sends](DATA-FLOW.md).
 
 ## install sol on your devices
 
