@@ -521,4 +521,8 @@ def test_backend_raise_propagates(raw_path, audio_buffer, vad_result):
     assert (
         mock_send.call_args.kwargs["input"] == "20260416/default/120000_300/audio.m4a"
     )
-    assert mock_send.call_args.kwargs["error"] == "RuntimeError: rev.ai 502"
+    # The event carries the exception TYPE, never its message: messages can embed
+    # model output (see _failure_label). The message stays in the handler log.
+    assert mock_send.call_args.kwargs["error"] == "RuntimeError"
+    assert mock_send.call_args.kwargs["reason"] == "RuntimeError"
+    assert "rev.ai 502" not in json.dumps(mock_send.call_args.kwargs, default=str)

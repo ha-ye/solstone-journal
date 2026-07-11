@@ -40,6 +40,11 @@ picked up again on the next pass.
 This is why a deferral must not write a placeholder or an empty output — doing so would
 mark the segment done and the audio would never be retried.
 
+`journal transcribe --all` absorbs a deferral per file and moves on to the next one,
+reporting the count in its summary. (`SystemExit` is a `BaseException`, so the batch
+loop has to catch it explicitly — a plain `except Exception` would let one deferred clip
+abort the entire batch.)
+
 ## Defer vs. fail
 
 | Condition | Classified as | Why |
@@ -47,6 +52,7 @@ mark the segment done and the audio would never be retried.
 | Parakeet server unreachable, warming, or **dead mid-request** | Defer (`69`) | The server is a supervised process. It comes back. |
 | Confidential lane refuses cloud egress | Defer (`69`) | The lane may permit a local backend later; the audio must not be lost. |
 | HTTP 5xx from a live server, malformed JSON, contract violation | Fail (`1`) | The server answered — it is broken, not absent. Retrying the same request reproduces it. |
+| Malformed request or bad URL scheme (`LocalProtocolError`, `UnsupportedProtocol`) | Fail (`1`) | These are transport errors, but the bug is on *our* side of the wire. A retry cannot fix them, and deferring would hide the bug behind a daily retry forever. |
 | Anything else unexpected | Fail (`1`) | Surface it. |
 
 Server-death-mid-request is the subtle one. When the parakeet.cpp server is OOM-killed
@@ -93,7 +99,7 @@ One event name, five outcomes. Every attempt emits exactly one event.
 | `input` | journal-relative path of the audio | always |
 | `output` | journal-relative path of the `.jsonl` | success |
 | `reason` | machine reason (table above) | deferred, failed |
-| `error` | human-readable exception message | failed |
+| `error` | exception **type name** — never the message (see below) | failed |
 | `backend` | STT backend name (`parakeet-cpp`, `gemini`, …) | whenever resolved |
 | `device` | resolved device (`auto` / `cpu`) | whenever known (see below) |
 | `model` | model filename | success, and failures after the backend reported it |
@@ -113,7 +119,7 @@ the jsonl and the npz) reports its total.
 
 | Key | Stage |
 |-----|-------|
-| `queue_wait_ms` | Time the file sat in the sense queue. Measured by `sense.py` and passed in via `SOL_QUEUE_WAIT_MS`; the handler cannot compute it itself. Absent when not supplied. |
+| `queue_wait_ms` | Enqueue-to-spawn latency, so it *includes* any memory-gate throttle wait. Measured by `sense.py` and passed in via `SOL_QUEUE_WAIT_MS`; the handler cannot compute it itself. Absent when not supplied. |
 | `decode_ms` | `load_audio` |
 | `vad_ms` | `run_vad` |
 | `reduce_ms` | `reduce_audio` (absent when reduction was skipped) |
@@ -132,10 +138,19 @@ Deferred and failed events carry whatever completed before the failure — typic
 No transcript text, word list, topic, setting, or emotion appears in any event field.
 The event carries numbers, paths, and labels only. `tests/test_transcribe_telemetry.py`
 enforces this by seeding the mocked STT with a sentinel string and asserting it appears
-nowhere in the serialized event payload.
+nowhere in the serialized event payload — on the success path *and* the failed path.
 
-`error` on the failed path carries an exception message, which is provider-generated
-diagnostic text, not transcript content.
+**`error` is the exception's type name, never its message.** This is the load-bearing
+detail, and it is structural rather than a matter of care: exception *messages* can
+embed model output. `SchemaValidationError` (`think/models.py`) builds its message with
+a ~197-character preview of the raw response, and `transcribe/gemini.py` interpolates
+that into a `RuntimeError` of its own. Putting `str(e)` on the bus would therefore
+publish transcript text whenever a Gemini response failed schema validation.
+
+Carrying only `type(e).__name__` makes the guarantee hold by construction, so a new
+provider exception cannot quietly reintroduce the leak. The full message and traceback
+go to the handler log — which is where they belong, and where the health UI already
+deep-links from the failure notification.
 
 ## Intentionally not measured
 

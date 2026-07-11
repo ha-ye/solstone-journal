@@ -48,20 +48,36 @@ def _audio_to_wav_bytes(audio_array: np.ndarray, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
+def _is_retryable_transport_error(exc: Exception) -> bool:
+    """Whether a transport failure is worth deferring for, or is a bug to surface.
+
+    LocalProtocolError (we built a malformed request) and UnsupportedProtocol (the
+    URL scheme is wrong) are defects on our side of the wire: no amount of retrying
+    fixes them, and deferring on them would hide the bug behind a daily retry
+    forever -- exactly the silent failure this module exists to prevent.
+    """
+    import httpx
+
+    return not isinstance(exc, (httpx.LocalProtocolError, httpx.UnsupportedProtocol))
+
+
 def _transport_retry_reason(exc: Exception) -> str:
-    """Classify an httpx transport failure into a machine-readable retry reason.
+    """Classify a retryable httpx transport failure into a machine-readable reason.
 
     This function is the single source of truth for the transport reason strings.
     Checks run subclass-before-base per the httpx hierarchy: every class below is a
     TransportError, ConnectError is a NetworkError, and RemoteProtocolError is a
     ProtocolError (server death mid-response) but *not* a NetworkError -- which is
     why catching NetworkError alone used to miss a crashed server entirely.
+
+    "read_timeout" covers every TimeoutException, including ConnectTimeout and
+    PoolTimeout (which are timeouts, not connect/network errors, in httpx's tree).
     """
     import httpx
 
     if isinstance(exc, httpx.TimeoutException):
         return "read_timeout"
-    if isinstance(exc, httpx.ProtocolError):
+    if isinstance(exc, httpx.RemoteProtocolError):
         return "server_disconnected"
     if isinstance(exc, httpx.ConnectError):
         return "connect_error"
@@ -150,6 +166,8 @@ def transcribe(audio: np.ndarray, sample_rate: int, config: dict) -> list[dict]:
         # the base class is what makes that death a retryable deferral rather than
         # a hard failure.  DecodingError/TooManyRedirects/HTTPStatusError are not
         # TransportErrors and deliberately stay uncaught here.
+        if not _is_retryable_transport_error(exc):
+            raise
         raise ParakeetServerNotReady(
             f"parakeet-server unreachable during transcription: {exc}",
             retry_reason=_transport_retry_reason(exc),

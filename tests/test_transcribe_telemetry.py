@@ -8,6 +8,7 @@ See solstone/observe/transcribe/failure-and-telemetry.md for the field contract.
 
 from __future__ import annotations
 
+import importlib
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -130,6 +131,40 @@ def test_success_event_is_content_free(
         assert banned not in kwargs
 
 
+def test_failed_event_is_content_free_even_when_the_exception_message_is_not(
+    raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
+) -> None:
+    """The failed path must not put an exception *message* on the bus.
+
+    Real exception messages can embed model output: SchemaValidationError carries a
+    preview of the raw response, and transcribe/gemini.py interpolates it into its
+    own message. So the event carries the exception *type*, never the message.
+    """
+    from solstone.observe.transcribe.main import process_audio
+
+    leaky = RuntimeError(
+        f"Gemini response failed schema validation: preview={TRANSCRIPT_SENTINEL!r}"
+    )
+
+    with (
+        patch("solstone.observe.transcribe.main.stt_transcribe", side_effect=leaky),
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            process_audio(raw_path, audio_buffer, vad_result, {}, backend="gemini")
+
+    assert exc_info.value.code == 1
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["outcome"] == "failed"
+    assert kwargs["reason"] == "RuntimeError"
+    assert kwargs["error"] == "RuntimeError"
+    assert TRANSCRIPT_SENTINEL not in json.dumps(kwargs, default=str)
+
+
 def test_rtfx_derived_from_asr_time(
     raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
 ) -> None:
@@ -161,18 +196,39 @@ def test_queue_wait_is_read_from_env(
     assert _read_queue_wait_ms() is None
 
 
-def test_stage_timings_accumulate_repeated_stages() -> None:
+def test_stage_timings_accumulate_repeated_stages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """write_ms covers the jsonl AND the npz, so a second entry must sum, not clobber."""
+    # NB: `solstone.observe.transcribe.main` as an attribute path resolves to the
+    # re-exported main() *function*, not the module -- import it explicitly.
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+
+    # Drive perf_counter so the two blocks have distinct, known durations.
+    # Values are binary-exact so the int() truncation is not off by a millisecond.
+    ticks = iter([0.0, 0.25, 1.0, 1.5])
+    monkeypatch.setattr(transcribe_main.time, "perf_counter", lambda: next(ticks))
+
+    timings = transcribe_main._StageTimings()
+    assert timings.as_dict() == {}
+
+    with timings.time("write"):  # 250 ms
+        pass
+    assert timings.get_ms("write") == 250
+
+    with timings.time("write"):  # 500 ms
+        pass
+    assert timings.get_ms("write") == 750  # summed, not clobbered to 500
+    assert set(timings.as_dict()) == {"write_ms"}
+
+
+def test_stage_timing_recorded_even_when_the_stage_raises() -> None:
+    """A server that dies mid-ASR must still report how long ASR ran before dying."""
     from solstone.observe.transcribe.main import _StageTimings
 
     timings = _StageTimings()
-    assert timings.as_dict() == {}
+    with pytest.raises(RuntimeError):
+        with timings.time("asr"):
+            raise RuntimeError("server died")
 
-    with timings.time("write"):
-        pass
-    first = timings.get_ms("write")
-    with timings.time("write"):
-        pass
-
-    # write covers both the jsonl and the npz, so a second entry must sum, not clobber.
-    assert timings.get_ms("write") >= first
-    assert set(timings.as_dict()) == {"write_ms"}
+    assert timings.get_ms("asr") is not None

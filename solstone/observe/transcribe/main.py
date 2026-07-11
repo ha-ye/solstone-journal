@@ -466,11 +466,24 @@ def _failure_reason(exc: Exception) -> str:
     """Machine-readable classification for a hard transcription failure.
 
     Provider errors already carry a reason code; anything else is labelled by its
-    exception type.  Both are content-free -- the human-readable message stays in
-    the separate ``error`` field.
+    exception type.
     """
     if isinstance(exc, ParakeetProviderError):
         return exc.reason_code
+    return type(exc).__name__
+
+
+def _failure_label(exc: Exception) -> str:
+    """The exception's type name -- the only part of it safe to put on the bus.
+
+    Exception *messages* are not safe: SchemaValidationError embeds a preview of the
+    raw model output (think/models.py), and transcribe/gemini.py interpolates that
+    into its own message, so a message could carry transcript text onto the event.
+    The full message and traceback go to the handler log, which is where the health
+    UI already deep-links.  Keeping only the type name makes the content-free
+    guarantee structural instead of a per-exception audit that any new provider
+    error could quietly break.
+    """
     return type(exc).__name__
 
 
@@ -1224,7 +1237,7 @@ def process_audio(
                 audio_seconds=audio_seconds,
                 reduced_seconds=reduced_seconds,
                 reason=_failure_reason(e),
-                error=f"{type(e).__name__}: {e}",
+                error=_failure_label(e),
             )
         except Exception:
             logging.exception("Failed to emit transcription failure event")
@@ -1281,11 +1294,7 @@ def _process_one(
                 rel_input = journal_relative_path(journal_path, audio_path)
             except ValueError:
                 rel_input = audio_path
-            event = {
-                "input": str(rel_input),
-                "outcome": "failed",
-                "error": f"{type(e).__name__}: {e}",
-            }
+            event = {"input": str(rel_input)}
             segment = get_segment_key(audio_path)
             day = day_from_path(audio_path)
             observer = os.getenv("OBSERVER_NAME")
@@ -1295,7 +1304,13 @@ def _process_one(
                 event["segment"] = segment
             if observer:
                 event["observer"] = observer
-            callosum_send("observe", "transcribed", **event)
+            _emit_transcribed(
+                event,
+                outcome="failed",
+                timings=timings,
+                reason=_failure_reason(e),
+                error=_failure_label(e),
+            )
         except Exception:
             logging.exception("Failed to emit decode failure event")
         return
@@ -1536,6 +1551,7 @@ def main():
         processed = 0
         skipped = 0
         failed = 0
+        deferred = 0
 
         for day_name, _day_path_str in sorted(day_dirs().items()):
             for _stream_name, _seg_key, seg_path in iter_segments(day_name):
@@ -1557,6 +1573,15 @@ def main():
                             entity_names,
                         )
                         processed += 1
+                    except SystemExit as exit_signal:
+                        # A provider deferral is per-file, not per-batch: the audio is
+                        # preserved for the next run and the batch moves on. SystemExit
+                        # is a BaseException, so the `except Exception` below cannot
+                        # see it -- without this, one deferred clip aborts everything.
+                        if exit_signal.code != EXIT_PROVIDER_BLOCKED:
+                            raise
+                        logging.info("Deferred (provider not ready): %s", audio_file)
+                        deferred += 1
                     except Exception:
                         logging.error(
                             f"Failed to transcribe {audio_file}", exc_info=True
@@ -1564,6 +1589,8 @@ def main():
                         failed += 1
 
         summary = f"{processed} processed, {skipped} skipped (already transcribed)"
+        if deferred:
+            summary += f", {deferred} deferred (provider not ready, will retry)"
         if failed:
             summary += f", {failed} failed"
         print(summary)

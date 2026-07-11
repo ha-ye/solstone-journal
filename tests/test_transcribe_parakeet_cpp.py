@@ -206,12 +206,20 @@ def test_post_transport_errors_map_to_not_ready_with_reason(
 
 @pytest.mark.parametrize(
     "error",
-    [httpx.DecodingError("bad encoding"), httpx.TooManyRedirects("loop")],
+    [
+        httpx.DecodingError("bad encoding"),
+        httpx.TooManyRedirects("loop"),
+        # These two ARE TransportErrors, but they are bugs on our side of the wire:
+        # a malformed request, or a wrong URL scheme. Retrying cannot fix either, so
+        # deferring on them would hide the bug behind a daily retry forever.
+        httpx.LocalProtocolError("we built a bad request"),
+        httpx.UnsupportedProtocol("bad scheme"),
+    ],
 )
-def test_post_non_transport_errors_are_not_swallowed_as_deferrals(
+def test_post_non_retryable_errors_are_not_swallowed_as_deferrals(
     monkeypatch: pytest.MonkeyPatch, error: Exception
 ) -> None:
-    """Broadening the catch to TransportError must not capture non-transport errors."""
+    """Broadening the catch to TransportError must not turn bugs into deferrals."""
     monkeypatch.setattr(parakeet_cpp.parakeet_server, "connect", lambda: _server())
     monkeypatch.setattr(
         httpx, "post", lambda *_args, **_kwargs: (_ for _ in ()).throw(error)

@@ -508,7 +508,9 @@ class FileSensor:
                 queued_item.observer,
                 queued_item.meta,
                 day,
-                queue_wait_ms=int((time.time() - queued_item.queued_at) * 1000),
+                # Enqueue -> spawn latency, so it includes any memory-gate throttle
+                # wait above. Clamped: queued_at is wall-clock and can skew.
+                queue_wait_ms=max(0, int((time.time() - queued_item.queued_at) * 1000)),
             )
             if managed is None:
                 self._check_segment_observed(

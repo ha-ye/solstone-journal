@@ -162,6 +162,56 @@ def test_process_audio_parakeet_provider_error_uses_existing_failure_path(
     assert "ParakeetProviderError" in mock_send.call_args.kwargs["error"]
 
 
+def test_batch_all_continues_past_a_deferred_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One deferred clip must not abort the whole --all batch.
+
+    SystemExit is a BaseException, so the batch loop's `except Exception` cannot
+    see it; a provider deferral has to be absorbed explicitly.
+    """
+    from solstone.observe.transcribe.main import main
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    seg = tmp_path / "chronicle" / "20260416" / "default" / "120000_300"
+    seg.mkdir(parents=True)
+    first, second = seg / "a_audio.flac", seg / "b_audio.flac"
+    for path in (first, second):
+        path.write_bytes(b"audio")
+
+    seen: list[Path] = []
+
+    def fake_process_one(audio_path, *_args, **_kwargs):
+        seen.append(audio_path)
+        if audio_path == first:
+            raise SystemExit(EXIT_PROVIDER_BLOCKED)
+
+    monkeypatch.setattr("sys.argv", ["journal transcribe", "--all"])
+
+    # NB: `solstone.observe.transcribe.main` as an attribute path resolves to the
+    # re-exported main() *function*, so monkeypatch.setattr cannot walk it; patch()
+    # resolves the module correctly.
+    with (
+        patch(
+            "solstone.observe.transcribe.main._process_one",
+            side_effect=fake_process_one,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.resolve_default_backend",
+            return_value="parakeet-cpp",
+        ),
+        patch(
+            "solstone.think.entities.load_recent_entity_names",
+            return_value=[],
+        ),
+    ):
+        main()
+
+    # The deferral did not eat the rest of the batch.
+    assert seen == [first, second]
+    assert not first.with_suffix(".jsonl").exists()
+
+
 @pytest.mark.parametrize(
     ("transcribe_config", "expected_backend_config"),
     [
