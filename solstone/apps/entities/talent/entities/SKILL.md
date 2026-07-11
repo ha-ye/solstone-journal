@@ -2,9 +2,9 @@
 name: entities
 description: >
   Tracked entities — people, companies, projects, tools — within facets.
-  Detect, attach, move, merge, update, alias, search.
+  Detect, attach, move, merge, update, alias, search, network, history, overview.
   TRIGGER: entity, person, company, relationship, who is, contact, sol call
-  entities detect/attach/merge/search.
+  entities detect/attach/merge/search/network/history/overview.
 ---
 
 # Entities CLI Skill

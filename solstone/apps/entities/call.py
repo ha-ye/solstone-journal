@@ -152,7 +152,7 @@ def _candidate_display(candidate: dict) -> str:
 
 def _render_edge_resolution_error(body: dict, *, json_output: bool) -> None:
     if json_output:
-        typer.echo(json.dumps(body, indent=2, ensure_ascii=False), err=True)
+        typer.echo(json.dumps(body, indent=2, ensure_ascii=False))
         raise typer.Exit(1)
 
     query = str(body.get("query") or "entity")
@@ -195,7 +195,7 @@ def _format_kinds(kinds: object) -> str:
         count = info.get("count") if isinstance(info, dict) else None
         if count:
             parts.append(f"{kind}:{count}")
-    return ",".join(parts)
+    return ", ".join(parts)
 
 
 def _format_seen(item: dict) -> str:
@@ -219,7 +219,7 @@ def _format_directed(item: dict) -> str:
         parts.append(f"out:{out_count}")
     if in_count:
         parts.append(f"in:{in_count}")
-    return f"directed={','.join(parts)}" if parts else ""
+    return f"directed={', '.join(parts)}" if parts else ""
 
 
 def _format_evidence(row: dict, *, include_source: bool = False) -> str:

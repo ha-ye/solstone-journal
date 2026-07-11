@@ -120,7 +120,7 @@ def test_resolution_failure_returns_200_query_and_candidates(indexed_client):
     assert {"name", "id", "type"} <= set(data["candidates"][0])
 
 
-def test_resolution_failure_can_return_empty_candidates(indexed_client):
+def test_resolution_failure_empty_candidates_on_full_miss(indexed_client):
     response = indexed_client.get(
         "/app/entities/api/network",
         query_string={"entity": "zzzznotreal"},
@@ -157,12 +157,12 @@ def test_missing_index_maps_to_edge_index_unavailable(journal_copy: Path):
     assert "journal indexer --rescan" in data["error"]
 
 
-def test_pre_edges_index_maps_to_edge_index_unavailable(journal_copy: Path):
+def test_malformed_edges_schema_maps_to_edge_index_unavailable(journal_copy: Path):
     db_path = _index_db(journal_copy)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute("CREATE TABLE chunks(id TEXT)")
+        conn.execute("CREATE TABLE edges(src TEXT)")
         conn.commit()
     finally:
         conn.close()

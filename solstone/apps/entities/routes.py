@@ -275,27 +275,8 @@ def _candidate_payload(entity: EntityDict) -> dict[str, Any]:
     }
 
 
-def _candidate_score(query: str, entity: EntityDict) -> float:
-    try:
-        from rapidfuzz import fuzz
-    except ImportError:
-        return 100.0
-
-    choices = [str(entity.get("name") or ""), str(entity.get("id") or "")]
-    aka = entity.get("aka")
-    if isinstance(aka, list):
-        choices.extend(str(item) for item in aka if item)
-    return max((fuzz.token_sort_ratio(query, choice) for choice in choices), default=0)
-
-
-def _candidate_payloads(
-    query: str, candidates: list[EntityDict] | None
-) -> list[dict[str, Any]]:
-    return [
-        _candidate_payload(candidate)
-        for candidate in candidates or []
-        if _candidate_score(query, candidate) >= 50
-    ]
+def _candidate_payloads(candidates: list[EntityDict] | None) -> list[dict[str, Any]]:
+    return [_candidate_payload(candidate) for candidate in candidates or []]
 
 
 def _resolution_payload(query: str, candidates: list[EntityDict] | None) -> Any:
@@ -303,21 +284,25 @@ def _resolution_payload(query: str, candidates: list[EntityDict] | None) -> Any:
         {
             "resolved": None,
             "query": query,
-            "candidates": _candidate_payloads(query, candidates),
+            "candidates": _candidate_payloads(candidates),
         }
     )
 
 
-def _resolve_edge_entity(
-    query: str, facet: str | None
-) -> tuple[str | None, Any | None]:
+class _EdgeResolutionFailed(Exception):
+    def __init__(self, response: Any) -> None:
+        super().__init__("edge entity resolution failed")
+        self.response = response
+
+
+def _resolve_edge_entity(query: str, facet: str | None) -> str:
     query = query.strip()
     if not query:
-        return None, _resolution_payload(query, [])
+        raise _EdgeResolutionFailed(_resolution_payload(query, []))
 
     exact = load_journal_entity(query)
     if exact is not None:
-        return str(exact.get("id") or query), None
+        return str(exact.get("id") or query)
 
     if facet:
         resolved, candidates = resolve_entity(facet, query)
@@ -325,29 +310,30 @@ def _resolve_edge_entity(
         resolved, candidates = resolve_journal_entity(query)
 
     if resolved is None:
-        return None, _resolution_payload(query, candidates)
+        raise _EdgeResolutionFailed(_resolution_payload(query, candidates))
 
     entity_id = str(resolved.get("id") or "")
     if entity_id and load_journal_entity(entity_id) is not None:
-        return entity_id, None
+        return entity_id
 
     logger.warning("resolved entity outside journal identity space: %r", resolved)
-    return None, error_response(
-        ENTITY_OPERATION_FAILED,
-        detail=f"Resolved entity '{query}' is not a journal entity.",
+    raise _EdgeResolutionFailed(
+        error_response(
+            ENTITY_OPERATION_FAILED,
+            detail=f"Resolved entity '{query}' is not a journal entity.",
+        )
     )
 
 
-def _edge_loader_error(exc: Exception) -> Any | None:
+def _edge_loader_error(exc: Exception) -> Any:
     if isinstance(exc, FileNotFoundError):
         return error_response(EDGE_INDEX_UNAVAILABLE)
     if isinstance(exc, sqlite3.OperationalError):
-        if "no such table: edges" in str(exc):
-            return error_response(EDGE_INDEX_UNAVAILABLE)
-        return None
+        logger.exception("edge index sqlite error")
+        return error_response(EDGE_INDEX_UNAVAILABLE)
     if isinstance(exc, ValueError):
         return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
-    return None
+    raise exc
 
 
 @entities_bp.route("/api/network")
@@ -359,10 +345,7 @@ def get_entity_network() -> Any:
 
     try:
         filters = _edge_filters()
-        entity_id, resolution = _resolve_edge_entity(entity_query, filters["facet"])
-        if resolution is not None:
-            return resolution
-        assert entity_id is not None
+        entity_id = _resolve_edge_entity(entity_query, filters["facet"])
         return jsonify(
             load_entity_network(
                 entity_id,
@@ -372,11 +355,10 @@ def get_entity_network() -> Any:
                 evidence_limit=_query_int("evidence_limit", 5),
             )
         )
+    except _EdgeResolutionFailed as exc:
+        return exc.response
     except (FileNotFoundError, sqlite3.OperationalError, ValueError) as exc:
-        response = _edge_loader_error(exc)
-        if response is not None:
-            return response
-        raise
+        return _edge_loader_error(exc)
 
 
 @entities_bp.route("/api/history")
@@ -388,17 +370,11 @@ def get_entity_history() -> Any:
 
     try:
         filters = _edge_filters()
-        entity_id, resolution = _resolve_edge_entity(entity_query, filters["facet"])
-        if resolution is not None:
-            return resolution
-        assert entity_id is not None
+        entity_id = _resolve_edge_entity(entity_query, filters["facet"])
 
         peer_query = _query_str("peer")
         if peer_query:
-            peer_id, resolution = _resolve_edge_entity(peer_query, filters["facet"])
-            if resolution is not None:
-                return resolution
-            assert peer_id is not None
+            peer_id = _resolve_edge_entity(peer_query, filters["facet"])
         else:
             principal = get_journal_principal()
             peer_id = str(principal.get("id") or "") if principal else ""
@@ -417,11 +393,10 @@ def get_entity_history() -> Any:
                 offset=_query_int("offset", 0),
             )
         )
+    except _EdgeResolutionFailed as exc:
+        return exc.response
     except (FileNotFoundError, sqlite3.OperationalError, ValueError) as exc:
-        response = _edge_loader_error(exc)
-        if response is not None:
-            return response
-        raise
+        return _edge_loader_error(exc)
 
 
 @entities_bp.route("/api/overview")
@@ -435,10 +410,7 @@ def get_network_overview() -> Any:
             )
         )
     except (FileNotFoundError, sqlite3.OperationalError, ValueError) as exc:
-        response = _edge_loader_error(exc)
-        if response is not None:
-            return response
-        raise
+        return _edge_loader_error(exc)
 
 
 @entities_bp.route("/api/<facet_name>")

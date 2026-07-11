@@ -536,6 +536,7 @@ def _closest_candidates(
     query: str,
     entities: list[EntityDict],
     limit: int = 3,
+    min_score: float | None = None,
 ) -> list[EntityDict]:
     candidates: list[EntityDict] = []
 
@@ -560,13 +561,17 @@ def _closest_candidates(
             limit=limit,
         )
         seen_names: set[str] = set()
-        for matched_str, _score, _index in results:
+        for matched_str, score, _index in results:
+            if min_score is not None and score < min_score:
+                continue
             entity = fuzzy_candidates[matched_str]
             name = entity.get("name", "")
             if name and name not in seen_names:
                 seen_names.add(name)
                 candidates.append(entity)
     except ImportError:
+        if min_score is not None:
+            return []
         candidates = entities[:limit]
 
     return candidates
@@ -648,4 +653,4 @@ def resolve_journal_entity(
     if match:
         return match, None
 
-    return None, _closest_candidates(query, entities)
+    return None, _closest_candidates(query, entities, min_score=50)

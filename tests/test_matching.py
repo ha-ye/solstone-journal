@@ -3,11 +3,14 @@
 
 """Tests for entity matching and name variant resolution."""
 
+import json
+
 from solstone.think.entities.matching import (
     MatchTier,
     build_name_resolution_map,
     find_matching_entity,
     is_name_variant_match,
+    resolve_entity,
     resolve_journal_entity,
 )
 
@@ -468,3 +471,42 @@ class TestResolveJournalEntity:
         assert entity is None
         assert candidates
         assert any(candidate["id"] == "juliet_capulet" for candidate in candidates)
+
+    def test_returns_empty_candidates_on_full_miss(self):
+        entity, candidates = resolve_journal_entity("zzzznotreal")
+
+        assert entity is None
+        assert candidates == []
+
+
+class TestResolveEntity:
+    def test_returns_closest_candidates_on_miss(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        entities = [
+            ("alice_johnson", "Alice Johnson"),
+            ("benvolio_montague", "Benvolio Montague"),
+            ("charlie_brown", "Charlie Brown"),
+            ("juliet_capulet", "Juliet Capulet"),
+            ("mercutio", "Mercutio"),
+            ("romeo_montague", "Romeo Montague"),
+        ]
+        for entity_id, name in entities:
+            entity_dir = tmp_path / "entities" / entity_id
+            entity_dir.mkdir(parents=True)
+            (entity_dir / "entity.json").write_text(
+                json.dumps({"id": entity_id, "name": name, "type": "Person"})
+            )
+            relationship_dir = tmp_path / "facets" / "work" / "entities" / entity_id
+            relationship_dir.mkdir(parents=True)
+            (relationship_dir / "entity.json").write_text(
+                json.dumps({"entity_id": entity_id, "description": name})
+            )
+
+        entity, candidates = resolve_entity("work", "Jliet")
+
+        assert entity is None
+        assert [candidate["id"] for candidate in candidates] == [
+            "juliet_capulet",
+            "alice_johnson",
+            "charlie_brown",
+        ]
