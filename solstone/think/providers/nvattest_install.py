@@ -112,7 +112,7 @@ def install_nvattest(
     """Download, verify, and install nvattest into the journal provider cache."""
 
     root = cache_root(journal_path)
-    if not force and _installed(root):
+    if not force and _installed(root, spec):
         return root
 
     archive = _archive_path(spec, journal_path)
@@ -137,8 +137,23 @@ def install_nvattest(
         archive.unlink(missing_ok=True)
 
 
-def _installed(root: Path) -> bool:
+def _has_runtime_layout(root: Path) -> bool:
     return (root / "bin" / "nvattest").is_file() and (root / "lib").is_dir()
+
+
+def _installed(root: Path, spec: NvattestArchiveSpec) -> bool:
+    if not _has_runtime_layout(root):
+        return False
+    try:
+        data = json.loads((root / SIDECAR_NAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+    return (
+        data.get("archive_sha256") == spec.sha256
+        and data.get("version") == spec.version
+    )
 
 
 def _archive_path(
@@ -212,7 +227,7 @@ def _safe_extract_nvattest_tarball(tarball: Path, dest: Path) -> None:
 
 
 def _find_extracted_root(extract_dir: Path) -> Path:
-    if _installed(extract_dir):
+    if _has_runtime_layout(extract_dir):
         return extract_dir
     matches = [
         path
@@ -264,6 +279,6 @@ def _write_sidecar(path: Path, record: NvattestInstallRecord) -> None:
     with tempfile.NamedTemporaryFile(
         "w", dir=path.parent, delete=False, encoding="utf-8"
     ) as handle:
-        handle.write(record.to_json())
         tmp_path = Path(handle.name)
+        handle.write(record.to_json())
     tmp_path.replace(path)

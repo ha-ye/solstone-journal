@@ -84,13 +84,3 @@ def build_nvattest_attest_command(
     return NvattestCommand(
         argv=argv, env={**os.environ, "LD_LIBRARY_PATH": str(lib_dir)}
     )
-
-
-def build_nvattest_version_command(*, nvattest_dir: Path) -> NvattestCommand:
-    """Build the nvattest version command."""
-
-    binary, lib_dir = locate_nvattest(nvattest_dir)
-    return NvattestCommand(
-        argv=[str(binary), "version"],
-        env={**os.environ, "LD_LIBRARY_PATH": str(lib_dir)},
-    )

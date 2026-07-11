@@ -376,7 +376,24 @@ def _safe_extract_tarball(tarball: Path, dest: Path) -> None:
                     "archive_path_traversal",
                     f"Unsafe tar member path: {member.name}",
                 )
-        archive.extractall(dest)
+            if member.issym() or member.islnk():
+                linkname = Path(member.linkname)
+                if linkname.is_absolute():
+                    raise LocalProviderError(
+                        "archive_path_traversal",
+                        f"Unsafe tar link target: {member.name} -> {member.linkname}",
+                    )
+                link_base = target.parent if member.issym() else dest_resolved
+                link_target = (link_base / linkname).resolve()
+                if (
+                    link_target != dest_resolved
+                    and dest_resolved not in link_target.parents
+                ):
+                    raise LocalProviderError(
+                        "archive_path_traversal",
+                        f"Unsafe tar link target: {member.name} -> {member.linkname}",
+                    )
+        archive.extractall(dest, filter="data")
 
 
 def _find_extracted_binary(dest: Path, binary_name: str) -> Path:

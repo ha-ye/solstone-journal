@@ -66,6 +66,18 @@ BANNED_WRITE_ATTRS = {
     "atomic_replace",
 }
 BANNED_WRITE_NAMES = {"atomic_write", "atomic_replace"}
+BANNED_OS_ATTRS = {
+    "makedirs",
+    "mkdir",
+    "popen",
+    "remove",
+    "rename",
+    "replace",
+    "rmdir",
+    "system",
+    "unlink",
+}
+BANNED_OS_ATTR_PREFIXES = ("exec", "spawn")
 WRITE_MODE_CHARS = frozenset({"w", "a", "x", "+"})
 
 
@@ -83,8 +95,9 @@ def test_spp_attest_package_stays_pure_python_read_only_except_nvgpu_appraise() 
     findings: list[str] = []
     for path in files:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        os_names = _imported_module_names(tree, "os")
         for node in ast.walk(tree):
-            findings.extend(_scan_node(path, node))
+            findings.extend(_scan_node(path, node, os_names=os_names))
 
     assert findings == []
 
@@ -98,6 +111,7 @@ def test_nvgpu_appraise_impurity_is_narrow() -> None:
     assert "tempfile" in imports
 
     findings: list[str] = []
+    os_names = _imported_module_names(tree, "os")
     for node in ast.walk(tree):
         findings.extend(
             _scan_node(
@@ -106,6 +120,7 @@ def test_nvgpu_appraise_impurity_is_narrow() -> None:
                 banned_import_roots=APPRAISE_BANNED_IMPORT_ROOTS,
                 banned_write_attrs=BANNED_WRITE_ATTRS - {"unlink"},
                 ban_solstone_utils=True,
+                os_names=os_names,
             )
         )
 
@@ -197,6 +212,18 @@ def test_purity_scanner_bans_aliased_shutil_import() -> None:
     assert findings == ["snippet.py:1: banned import shutil"]
 
 
+def test_purity_scanner_bans_aliased_os_system_call() -> None:
+    tree = ast.parse("import os as operating_system\noperating_system.system('x')\n")
+    os_names = _imported_module_names(tree, "os")
+    findings = [
+        finding
+        for node in ast.walk(tree)
+        for finding in _scan_node(Path("snippet.py"), node, os_names=os_names)
+    ]
+
+    assert findings == ["snippet.py:2: banned os.system call"]
+
+
 def _scan_node(
     path: Path,
     node: ast.AST,
@@ -204,7 +231,9 @@ def _scan_node(
     banned_import_roots: set[str] = BANNED_IMPORT_ROOTS,
     banned_write_attrs: set[str] = BANNED_WRITE_ATTRS,
     ban_solstone_utils: bool = False,
+    os_names: set[str] | None = None,
 ) -> list[str]:
+    os_names = os_names or set()
     if isinstance(node, ast.Import):
         return _scan_import(path, node, banned_import_roots)
     if isinstance(node, ast.ImportFrom):
@@ -215,7 +244,7 @@ def _scan_node(
             ban_solstone_utils,
         )
     if isinstance(node, ast.Call):
-        return _scan_call(path, node, banned_write_attrs)
+        return _scan_call(path, node, banned_write_attrs, os_names)
     return []
 
 
@@ -248,6 +277,8 @@ def _scan_import_from(
     ):
         findings.append(f"{path}:{node.lineno}: banned import from {module}")
     for alias in node.names:
+        if module == "os" and _is_banned_os_attr(alias.name):
+            findings.append(f"{path}:{node.lineno}: banned import from os {alias.name}")
         if alias.name in BANNED_WRITE_NAMES:
             findings.append(f"{path}:{node.lineno}: banned write helper {alias.name}")
     return findings
@@ -257,9 +288,12 @@ def _scan_call(
     path: Path,
     node: ast.Call,
     banned_write_attrs: set[str],
+    os_names: set[str],
 ) -> list[str]:
     func = node.func
     if isinstance(func, ast.Attribute):
+        if _is_banned_os_call(func, os_names):
+            return [f"{path}:{node.lineno}: banned os.{func.attr} call"]
         if _is_shutil_which(func):
             return [f"{path}:{node.lineno}: banned shutil.which call"]
         if _is_json_dump(func):
@@ -272,6 +306,18 @@ def _scan_call(
         if func.id == "open" and _open_uses_write_mode(node):
             return [f"{path}:{node.lineno}: banned write-mode open call"]
     return []
+
+
+def _is_banned_os_attr(attr: str) -> bool:
+    return attr in BANNED_OS_ATTRS or attr.startswith(BANNED_OS_ATTR_PREFIXES)
+
+
+def _is_banned_os_call(func: ast.Attribute, os_names: set[str]) -> bool:
+    return (
+        _is_banned_os_attr(func.attr)
+        and isinstance(func.value, ast.Name)
+        and func.value.id in os_names
+    )
 
 
 def _is_shutil_which(func: ast.Attribute) -> bool:
@@ -298,6 +344,16 @@ def _import_roots(tree: ast.AST) -> set[str]:
         elif isinstance(node, ast.ImportFrom) and node.module:
             roots.add(node.module.split(".", maxsplit=1)[0])
     return roots
+
+
+def _imported_module_names(tree: ast.AST, module: str) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == module:
+                    names.add(alias.asname or module)
+    return names
 
 
 def _open_uses_write_mode(node: ast.Call) -> bool:

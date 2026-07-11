@@ -345,6 +345,21 @@ def test_stderr_does_not_influence_acceptance(
     assert result.driver_version == "595.71.05"
 
 
+def test_bool_false_returncode_rejects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(GpuAppraisalError) as exc_info:
+        _run_appraisal_with_stdout(
+            monkeypatch,
+            tmp_path,
+            _stdout("positive"),
+            returncode=False,
+        )
+
+    assert exc_info.value.reason == "gpu_appraisal_failed"
+
+
 def test_nonce_is_written_to_evidence_and_argv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

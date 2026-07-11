@@ -39,9 +39,7 @@ class GpuAppraisal:
 
 @dataclass(frozen=True, slots=True)
 class NvattestAcceptance:
-    stdout: dict[str, Any]
     claim: dict[str, Any]
-    overall_payload: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,13 +106,22 @@ def classify_nvattest_result(
         result_message = _required_stdout(stdout_obj, "result_message")
     except _ClaimReject as exc:
         return NvattestRejection("gpu_appraisal_failed", str(exc))
+    returncode_is_green = (
+        isinstance(returncode, int)
+        and not isinstance(returncode, bool)
+        and returncode == 0
+    )
     result_code_is_green = (
         isinstance(result_code, int)
         and not isinstance(result_code, bool)
         and result_code == 0
     )
     result_message_is_green = isinstance(result_message, str) and result_message == "Ok"
-    if returncode != 0 or not result_code_is_green or not result_message_is_green:
+    if (
+        not returncode_is_green
+        or not result_code_is_green
+        or not result_message_is_green
+    ):
         return NvattestRejection(
             _reason_for_result_code(result_code),
             (
@@ -140,17 +147,11 @@ def classify_nvattest_result(
         )
 
     try:
-        overall_payload = _parse_overall_eat(
-            _required_stdout(stdout_obj, "detached_eat")
-        )
+        _parse_overall_eat(_required_stdout(stdout_obj, "detached_eat"))
         _check_claim(claim, owner_nonce.hex())
     except _ClaimReject as exc:
         return NvattestRejection("gpu_appraisal_failed", str(exc))
-    return NvattestAcceptance(
-        stdout=stdout_obj,
-        claim=claim,
-        overall_payload=overall_payload,
-    )
+    return NvattestAcceptance(claim=claim)
 
 
 def build_gpu_appraisal(
