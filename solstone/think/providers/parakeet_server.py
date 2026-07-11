@@ -19,10 +19,16 @@ _SERVICE_NAME = "parakeet-cpp"
 
 
 class ParakeetServerNotReady(ParakeetProviderError):
-    """The supervised Parakeet STT service is not ready for retryable work."""
+    """The supervised Parakeet STT service is not ready for retryable work.
 
-    def __init__(self, message: str) -> None:
+    ``reason_code`` (inherited) classifies this as a provider error; ``retry_reason``
+    says *why* the server was unreachable so the deferral is machine-readable at the
+    point it is surfaced.  See ``solstone/observe/transcribe/failure-and-telemetry.md``.
+    """
+
+    def __init__(self, message: str, *, retry_reason: str) -> None:
         super().__init__("parakeet_server_not_ready", message)
+        self.retry_reason = retry_reason
 
 
 @dataclass(frozen=True)
@@ -59,11 +65,16 @@ def probe_state() -> tuple[str, str | None]:
 def connect() -> ParakeetServerInfo:
     port = read_service_port(_SERVICE_NAME)
     if port is None:
-        raise ParakeetServerNotReady("Parakeet server is not ready yet.")
+        raise ParakeetServerNotReady(
+            "Parakeet server is not ready yet.", retry_reason="no_port"
+        )
     state, error = _probe_health(port)
     if state != STATE_READY:
         detail = f": {error}" if error else ""
-        raise ParakeetServerNotReady(f"Parakeet server is not ready yet{detail}")
+        raise ParakeetServerNotReady(
+            f"Parakeet server is not ready yet{detail}",
+            retry_reason="server_not_ready",
+        )
     return ParakeetServerInfo(
         model_id=parakeet_readiness.PARAKEET_CPP_MODEL_FILENAME,
         port=port,

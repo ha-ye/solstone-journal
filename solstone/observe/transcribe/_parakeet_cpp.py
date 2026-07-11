@@ -48,6 +48,28 @@ def _audio_to_wav_bytes(audio_array: np.ndarray, sample_rate: int) -> bytes:
     return buf.getvalue()
 
 
+def _transport_retry_reason(exc: Exception) -> str:
+    """Classify an httpx transport failure into a machine-readable retry reason.
+
+    This function is the single source of truth for the transport reason strings.
+    Checks run subclass-before-base per the httpx hierarchy: every class below is a
+    TransportError, ConnectError is a NetworkError, and RemoteProtocolError is a
+    ProtocolError (server death mid-response) but *not* a NetworkError -- which is
+    why catching NetworkError alone used to miss a crashed server entirely.
+    """
+    import httpx
+
+    if isinstance(exc, httpx.TimeoutException):
+        return "read_timeout"
+    if isinstance(exc, httpx.ProtocolError):
+        return "server_disconnected"
+    if isinstance(exc, httpx.ConnectError):
+        return "connect_error"
+    if isinstance(exc, httpx.NetworkError):
+        return "network_error"
+    return "transport_error"
+
+
 def _invalid_contract(message: str) -> ParakeetProviderError:
     return ParakeetProviderError("contract_violation", message)
 
@@ -121,16 +143,16 @@ def transcribe(audio: np.ndarray, sample_rate: int, config: dict) -> list[dict]:
             data=data,
             timeout=_DEFAULT_TIMEOUT_SEC,
         )
-    except (
-        httpx.ConnectError,
-        httpx.ConnectTimeout,
-        httpx.ReadTimeout,
-        httpx.PoolTimeout,
-        httpx.TimeoutException,
-        httpx.NetworkError,
-    ) as exc:
+    except httpx.TransportError as exc:
+        # TransportError is the common base for connect/timeout/network *and*
+        # protocol failures.  A server that dies mid-request drops the connection
+        # and raises RemoteProtocolError, which is not a NetworkError -- catching
+        # the base class is what makes that death a retryable deferral rather than
+        # a hard failure.  DecodingError/TooManyRedirects/HTTPStatusError are not
+        # TransportErrors and deliberately stay uncaught here.
         raise ParakeetServerNotReady(
-            f"parakeet-server unreachable during transcription: {exc}"
+            f"parakeet-server unreachable during transcription: {exc}",
+            retry_reason=_transport_retry_reason(exc),
         ) from exc
 
     if response.status_code != 200:

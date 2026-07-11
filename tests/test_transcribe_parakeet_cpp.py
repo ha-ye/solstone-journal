@@ -160,7 +160,7 @@ def test_real_multipart_encoder_encodes_form_fields(
 
 
 def test_connect_not_ready_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
-    error = ParakeetServerNotReady("warming")
+    error = ParakeetServerNotReady("warming", retry_reason="server_not_ready")
     monkeypatch.setattr(
         parakeet_cpp.parakeet_server,
         "connect",
@@ -174,11 +174,23 @@ def test_connect_not_ready_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    "error",
-    [httpx.ConnectError("refused"), httpx.TimeoutException("slow")],
+    ("error", "expected_reason"),
+    [
+        # A server that dies mid-request (the 6 GiB Vulkan OOM) drops the connection
+        # without sending a response. RemoteProtocolError is a TransportError but NOT
+        # a NetworkError, so it used to escape as a hard failure.
+        (httpx.RemoteProtocolError("Server disconnected"), "server_disconnected"),
+        (httpx.ReadTimeout("slow"), "read_timeout"),
+        (httpx.ConnectTimeout("slow connect"), "read_timeout"),
+        (httpx.TimeoutException("slow"), "read_timeout"),
+        (httpx.PoolTimeout("no pool slot"), "read_timeout"),
+        (httpx.ConnectError("refused"), "connect_error"),
+        (httpx.ReadError("reset"), "network_error"),
+        (httpx.ProxyError("bad proxy"), "transport_error"),
+    ],
 )
-def test_post_connection_errors_map_to_not_ready(
-    monkeypatch: pytest.MonkeyPatch, error: Exception
+def test_post_transport_errors_map_to_not_ready_with_reason(
+    monkeypatch: pytest.MonkeyPatch, error: Exception, expected_reason: str
 ) -> None:
     monkeypatch.setattr(parakeet_cpp.parakeet_server, "connect", lambda: _server())
     monkeypatch.setattr(
@@ -189,6 +201,24 @@ def test_post_connection_errors_map_to_not_ready(
         parakeet_cpp.transcribe(np.zeros(100, dtype=np.float32), 16000, {})
 
     assert exc_info.value.reason_code == "parakeet_server_not_ready"
+    assert exc_info.value.retry_reason == expected_reason
+
+
+@pytest.mark.parametrize(
+    "error",
+    [httpx.DecodingError("bad encoding"), httpx.TooManyRedirects("loop")],
+)
+def test_post_non_transport_errors_are_not_swallowed_as_deferrals(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """Broadening the catch to TransportError must not capture non-transport errors."""
+    monkeypatch.setattr(parakeet_cpp.parakeet_server, "connect", lambda: _server())
+    monkeypatch.setattr(
+        httpx, "post", lambda *_args, **_kwargs: (_ for _ in ()).throw(error)
+    )
+
+    with pytest.raises(type(error)):
+        parakeet_cpp.transcribe(np.zeros(100, dtype=np.float32), 16000, {})
 
 
 def test_http_non_200_is_visible_provider_error(

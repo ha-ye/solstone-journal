@@ -39,18 +39,28 @@ Gemini backend settings (transcribe.gemini):
 Platform optimizations:
 - Apple Silicon hosts use the CoreML Parakeet helper.
 - Linux hosts use a supervised parakeet.cpp server.
+
+Failure semantics & telemetry:
+- Exit 0 = output written or silence-filtered; EXIT_PROVIDER_BLOCKED (69) = honest
+  deferral with the input preserved for the daily retry; 1 = hard failure.
+- Every attempt emits one content-free observe.transcribed event carrying per-stage
+  timings and a machine-readable reason.
+- Full contract: solstone/observe/transcribe/failure-and-telemetry.md
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import datetime
 import json
 import logging
 import os
 import platform
+import resource
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -66,6 +76,7 @@ from solstone.apps.speakers.encoder_config import (
     OVERLAP_DETECTOR_ID,
     OVERLAP_DETECTOR_SHA256,
 )
+from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
 from solstone.observe.model_assets import resolve_wespeaker_model
 from solstone.observe.processing_record import (
     HANDLER_TRANSCRIBE,
@@ -101,6 +112,7 @@ from solstone.think.journal_io import write_text
 from solstone.think.journal_io.npz import write_npz
 from solstone.think.media import AUDIO_EXTENSIONS as SUPPORTED_AUDIO_FORMATS
 from solstone.think.providers.memory import gb, read_available_bytes
+from solstone.think.providers.parakeet_install import ParakeetProviderError
 from solstone.think.providers.parakeet_server import ParakeetServerNotReady
 from solstone.think.utils import (
     day_dirs,
@@ -299,6 +311,167 @@ def _get_jsonl_path(audio_path: Path) -> Path:
 def _get_embeddings_path(audio_path: Path) -> Path:
     """Generate the corresponding embeddings path."""
     return audio_path.with_suffix(".npz")
+
+
+class _StageTimings:
+    """Content-free per-stage wall-clock accumulator for observe.transcribed.
+
+    Records only stages that actually ran, as integer milliseconds under a
+    ``<stage>_ms`` key.  Holds no audio, no transcript, and no file content.
+    """
+
+    def __init__(self) -> None:
+        self._stages: dict[str, int] = {}
+
+    @contextlib.contextmanager
+    def time(self, stage: str) -> Iterator[None]:
+        """Time a pipeline stage, recording it as ``<stage>_ms``.
+
+        Repeat entries for one stage accumulate, so a stage split across several
+        calls (``write`` covers the jsonl and the npz) reports its total.
+        """
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            key = f"{stage}_ms"
+            elapsed_ms = int((time.perf_counter() - started) * 1000)
+            self._stages[key] = self._stages.get(key, 0) + elapsed_ms
+
+    def set_ms(self, stage: str, value: int) -> None:
+        """Record a stage duration measured outside this process."""
+        self._stages[f"{stage}_ms"] = value
+
+    def get_ms(self, stage: str) -> int | None:
+        return self._stages.get(f"{stage}_ms")
+
+    def as_dict(self) -> dict[str, int]:
+        return dict(self._stages)
+
+
+def _read_queue_wait_ms() -> int | None:
+    """Read the queue wait sense.py measured for this file, if it set one."""
+    raw = os.getenv("SOL_QUEUE_WAIT_MS")
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        logging.warning("Invalid SOL_QUEUE_WAIT_MS: %s", raw[:50])
+        return None
+
+
+def _peak_rss_mib() -> int:
+    """Peak resident set size of this process, in MiB.
+
+    ``ru_maxrss`` is KiB on Linux and bytes on macOS.  ``resource`` here is the
+    stdlib module, not the sibling ``transcribe/resource.py`` (absolute imports).
+    """
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    divisor = 1024 * 1024 if sys.platform == "darwin" else 1024
+    return int(peak / divisor)
+
+
+def _emit_transcribed(
+    event: dict,
+    *,
+    outcome: str,
+    timings: _StageTimings | None = None,
+    backend: str | None = None,
+    model_info: dict | None = None,
+    backend_config: dict | None = None,
+    audio_seconds: float | None = None,
+    reduced_seconds: float | None = None,
+    reason: str | None = None,
+    error: str | None = None,
+) -> None:
+    """Attach the content-free envelope to ``event`` and emit observe.transcribed.
+
+    Every outcome (transcribed / deferred / failed / filtered / preserved) flows
+    through here so the envelope is built exactly once.  Fields are attached only
+    when they are actually known; nothing is fabricated.  No transcript text,
+    words, topics, setting, or emotion is ever carried.
+    """
+    event["outcome"] = outcome
+    if backend:
+        event["backend"] = backend
+
+    # device: resolved value when the backend told us, else the configured value.
+    # Deferred events run before get_model_info(), and probing for it costs a
+    # helper subprocess on the CoreML backend -- so it is omitted, not guessed.
+    device = (model_info or {}).get("device") or (backend_config or {}).get("device")
+    if device:
+        event["device"] = device
+    model = (model_info or {}).get("model")
+    if model:
+        event["model"] = model
+
+    if audio_seconds is not None:
+        event["audio_seconds"] = round(audio_seconds, 1)
+    if reduced_seconds is not None:
+        event["reduced_seconds"] = round(reduced_seconds, 1)
+    if reason:
+        event["reason"] = reason
+    if error:
+        event["error"] = error
+
+    if timings is not None:
+        stages = timings.as_dict()
+        if stages:
+            event["timings"] = stages
+        asr_ms = timings.get_ms("asr")
+        if outcome == "transcribed" and audio_seconds is not None and asr_ms:
+            event["rtfx"] = round(audio_seconds / (asr_ms / 1000), 2)
+
+    event["peak_rss_mib"] = _peak_rss_mib()
+    callosum_send("observe", "transcribed", **event)
+
+
+def _emit_deferred(
+    raw_path: Path,
+    vad_result: VadResult,
+    segment: str | None,
+    observer: str | None,
+    *,
+    reason: str,
+    timings: _StageTimings,
+    backend: str | None,
+    backend_config: dict | None,
+    audio_seconds: float | None,
+    reduced_seconds: float | None,
+) -> None:
+    """Emit the honest-deferral event for a provider that could not do the work.
+
+    Deliberately swallows its own failure: the caller must still exit
+    EXIT_PROVIDER_BLOCKED so the input is preserved for retry even if the bus is
+    down.  ``model`` is not carried -- see the note in _emit_transcribed.
+    """
+    try:
+        event = _build_base_event(raw_path, vad_result, segment, observer)
+        _emit_transcribed(
+            event,
+            outcome="deferred",
+            timings=timings,
+            backend=backend,
+            backend_config=backend_config,
+            audio_seconds=audio_seconds,
+            reduced_seconds=reduced_seconds,
+            reason=reason,
+        )
+    except Exception:
+        logging.exception("Failed to emit transcription deferral event")
+
+
+def _failure_reason(exc: Exception) -> str:
+    """Machine-readable classification for a hard transcription failure.
+
+    Provider errors already carry a reason code; anything else is labelled by its
+    exception type.  Both are content-free -- the human-readable message stays in
+    the separate ``error`` field.
+    """
+    if isinstance(exc, ParakeetProviderError):
+        return exc.reason_code
+    return type(exc).__name__
 
 
 def _build_base_event(
@@ -660,6 +833,7 @@ def process_audio(
     entity_names: list[str] | None = None,
     *,
     sound_tags: dict | None = None,
+    timings: _StageTimings | None = None,
 ) -> None:
     """Process a raw audio file with pre-computed VAD.
 
@@ -681,9 +855,24 @@ def process_audio(
         backend: STT backend name. If omitted, uses DEFAULT_BACKEND.
         entity_names: Optional list of entity names for STT and enrichment context
         sound_tags: Optional ambient sound-tag metadata computed from full audio
+        timings: Stage-timing accumulator carrying the pre-STT stages measured by
+            _process_one. A fresh one is created when called without it.
+
+    Raises:
+        SystemExit: EXIT_PROVIDER_BLOCKED when the STT provider is not ready or the
+            confidential lane refuses egress -- an honest deferral that preserves the
+            input for the next run. 1 on hard failure.
     """
     start_time = time.time()
     resolved_backend = backend or DEFAULT_BACKEND
+    if timings is None:
+        timings = _StageTimings()
+
+    audio_seconds = len(audio_buffer) / SAMPLE_RATE
+    reduced_seconds = (
+        len(reduced_audio) / SAMPLE_RATE if reduced_audio is not None else None
+    )
+    model_info: dict = {}
 
     # Derive segment from path
     segment = get_segment_key(raw_path)
@@ -721,19 +910,20 @@ def process_audio(
 
     try:
         # Dispatch to STT backend
-        if use_gemini_chunks:
-            # Pass VAD segments to Gemini for chunk-based transcription
-            statements = stt_transcribe(
-                resolved_backend,
-                stt_buffer,
-                SAMPLE_RATE,
-                backend_config,
-                speech_segments=vad_result.speech_segments,
-            )
-        else:
-            statements = stt_transcribe(
-                resolved_backend, stt_buffer, SAMPLE_RATE, backend_config
-            )
+        with timings.time("asr"):
+            if use_gemini_chunks:
+                # Pass VAD segments to Gemini for chunk-based transcription
+                statements = stt_transcribe(
+                    resolved_backend,
+                    stt_buffer,
+                    SAMPLE_RATE,
+                    backend_config,
+                    speech_segments=vad_result.speech_segments,
+                )
+            else:
+                statements = stt_transcribe(
+                    resolved_backend, stt_buffer, SAMPLE_RATE, backend_config
+                )
 
         # Get model info for metadata (dynamic import based on backend)
         backend_module = get_backend(resolved_backend)
@@ -755,7 +945,7 @@ def process_audio(
                 vad_result.duration,
             )
             if preserve_all:
-                event["outcome"] = "preserved"
+                outcome = "preserved"
                 _write_empty_processing_jsonl(
                     raw_path,
                     jsonl_path,
@@ -772,7 +962,7 @@ def process_audio(
                     f"of {vad_result.duration:.1f}s)"
                 )
             elif sound_tags is not None and is_salient(sound_tags["tags"]):
-                event["outcome"] = "filtered"
+                outcome = "filtered"
                 _write_empty_processing_jsonl(
                     raw_path,
                     jsonl_path,
@@ -789,11 +979,20 @@ def process_audio(
                 )
                 raw_path.unlink()
             else:
-                event["outcome"] = "filtered"
+                outcome = "filtered"
                 logging.info(f"No speech detected in {raw_path}, removing file")
                 raw_path.unlink()
 
-            callosum_send("observe", "transcribed", **event)
+            _emit_transcribed(
+                event,
+                outcome=outcome,
+                timings=timings,
+                backend=resolved_backend,
+                model_info=model_info,
+                backend_config=backend_config,
+                audio_seconds=audio_seconds,
+                reduced_seconds=reduced_seconds,
+            )
             return
 
         # Extract date and time from path structure
@@ -819,18 +1018,21 @@ def process_audio(
         if enrich_enabled:
             from solstone.observe.enrich import enrich_transcript
 
-            enrichment = enrich_transcript(
-                stt_buffer, SAMPLE_RATE, statements, entity_names=entity_names
-            )
+            with timings.time("enrich"):
+                enrichment = enrich_transcript(
+                    stt_buffer, SAMPLE_RATE, statements, entity_names=entity_names
+                )
 
         # Generate embeddings before timestamp restoration
         # Use reduced audio buffer if available for consistent timestamps
-        embeddings_data = _embed_statements(stt_buffer, statements, SAMPLE_RATE)
+        with timings.time("embed"):
+            embeddings_data = _embed_statements(stt_buffer, statements, SAMPLE_RATE)
         from solstone.observe.transcribe.overlap import compute_overlap_and_logprobs
 
-        overlap_fraction_value, pyannote_logprobs = compute_overlap_and_logprobs(
-            audio_buffer
-        )
+        with timings.time("overlap"):
+            overlap_fraction_value, pyannote_logprobs = compute_overlap_and_logprobs(
+                audio_buffer
+            )
 
         # Restore original timestamps if audio was reduced (non-Gemini backends only)
         # Gemini with chunks already has timestamps in original audio time
@@ -859,12 +1061,13 @@ def process_audio(
                 try:
                     from solstone.observe.transcribe.diarize import diarize_auto_k
 
-                    labels = diarize_auto_k(
-                        raw_path,
-                        statements,
-                        avg_log_probs=pyannote_logprobs,
-                        audio=audio_buffer,
-                    )
+                    with timings.time("diarize"):
+                        labels = diarize_auto_k(
+                            raw_path,
+                            statements,
+                            avg_log_probs=pyannote_logprobs,
+                            audio=audio_buffer,
+                        )
                     assigned = 0
                     for stmt, lbl in zip(statements, labels):
                         if lbl is not None:
@@ -907,17 +1110,19 @@ def process_audio(
         )
 
         # Write JSONL
-        write_text(jsonl_path, "\n".join(jsonl_lines) + "\n")
+        with timings.time("write"):
+            write_text(jsonl_path, "\n".join(jsonl_lines) + "\n")
         logging.info(f"Transcribed {raw_path} -> {jsonl_path}")
 
         # Save embeddings
         if embeddings_data:
             embeddings_path = _get_embeddings_path(raw_path)
-            write_npz(
-                embeddings_path,
-                embeddings_data,
-                expected_keys=tuple(embeddings_data.keys()),
-            )
+            with timings.time("write"):
+                write_npz(
+                    embeddings_path,
+                    embeddings_data,
+                    expected_keys=tuple(embeddings_data.keys()),
+                )
             logging.info(f"Saved embeddings: {embeddings_path}")
             try:
                 from solstone.apps.speakers.candidate_tracker import CandidateTracker
@@ -943,7 +1148,6 @@ def process_audio(
             logging.warning(f"No embeddings generated for {raw_path}")
 
         # Add completion fields and emit event
-        event["outcome"] = "transcribed"
         event["duration_ms"] = int((time.time() - start_time) * 1000)
         try:
             rel_output = journal_relative_path(journal_path, jsonl_path)
@@ -951,32 +1155,77 @@ def process_audio(
             rel_output = jsonl_path
         event["output"] = rel_output
 
-        callosum_send("observe", "transcribed", **event)
+        _emit_transcribed(
+            event,
+            outcome="transcribed",
+            timings=timings,
+            backend=resolved_backend,
+            model_info=model_info,
+            backend_config=backend_config,
+            audio_seconds=audio_seconds,
+            reduced_seconds=reduced_seconds,
+        )
 
     except ParakeetServerNotReady as e:
+        # The STT provider is unreachable -- a deferral, not a failure.  Nothing has
+        # been written, so the audio stays on disk and the next sense scan re-picks
+        # it.  Exit blocked so sense records neither a success nor a failure.
         logging.info(
-            "Parakeet server not ready for %s; leaving audio for retry: %s",
+            "Parakeet server not ready for %s (%s); deferring for retry: %s",
             raw_path,
+            e.retry_reason,
             e,
         )
-        return
+        _emit_deferred(
+            raw_path,
+            vad_result,
+            segment,
+            observer,
+            reason=e.retry_reason,
+            timings=timings,
+            backend=resolved_backend,
+            backend_config=backend_config,
+            audio_seconds=audio_seconds,
+            reduced_seconds=reduced_seconds,
+        )
+        raise SystemExit(EXIT_PROVIDER_BLOCKED) from e
 
     except ConfidentialAudioEgressError as e:
         logging.warning(
-            "Confidential lane refused cloud STT for %s; holding audio for retry: %s",
+            "Confidential lane refused cloud STT for %s; deferring for retry: %s",
             raw_path,
             e,
         )
-        return
+        _emit_deferred(
+            raw_path,
+            vad_result,
+            segment,
+            observer,
+            reason="confidential_egress_blocked",
+            timings=timings,
+            backend=resolved_backend,
+            backend_config=backend_config,
+            audio_seconds=audio_seconds,
+            reduced_seconds=reduced_seconds,
+        )
+        raise SystemExit(EXIT_PROVIDER_BLOCKED) from e
 
     except Exception as e:
         logging.error(f"Failed to transcribe {raw_path}: {e}", exc_info=True)
         try:
             event = _build_base_event(raw_path, vad_result, segment, observer)
-            event["outcome"] = "failed"
-            event["backend"] = resolved_backend
-            event["error"] = f"{type(e).__name__}: {e}"
-            callosum_send("observe", "transcribed", **event)
+            _emit_transcribed(
+                event,
+                outcome="failed",
+                timings=timings,
+                backend=resolved_backend,
+                model_info=model_info,
+                backend_config=backend_config,
+                audio_seconds=audio_seconds,
+                reduced_seconds=reduced_seconds,
+                reason=_failure_reason(e),
+                error=f"{type(e).__name__}: {e}",
+            )
         except Exception:
             logging.exception("Failed to emit transcription failure event")
         from solstone.think.models import IncompleteJSONError
@@ -1010,9 +1259,15 @@ def _process_one(
 
     from solstone.observe.vad import reduce_audio, run_vad
 
+    timings = _StageTimings()
+    queue_wait_ms = _read_queue_wait_ms()
+    if queue_wait_ms is not None:
+        timings.set_ms("queue_wait", queue_wait_ms)
+
     # Load audio once - handles M4A multi-stream mixing
     try:
-        audio_buffer = load_audio(audio_path)
+        with timings.time("decode"):
+            audio_buffer = load_audio(audio_path)
     except AudioDecodeError as e:
         logging.error("Failed to decode %s: %s", audio_path, e)
         _write_failed_processing_jsonl(
@@ -1046,7 +1301,8 @@ def _process_one(
         return
 
     # Stage 1: Run VAD to detect speech (lightweight, before loading STT model)
-    vad_result = run_vad(audio_buffer, min_speech_seconds=min_speech_seconds)
+    with timings.time("vad"):
+        vad_result = run_vad(audio_buffer, min_speech_seconds=min_speech_seconds)
     try:
         sound_tags = tag_audio(audio_buffer, SAMPLE_RATE)
     except Exception as exc:
@@ -1065,7 +1321,7 @@ def _process_one(
         event = _build_base_event(audio_path, vad_result, segment, observer)
 
         if preserve_all:
-            event["outcome"] = "preserved"
+            outcome = "preserved"
             _write_empty_processing_jsonl(
                 audio_path,
                 _get_jsonl_path(audio_path),
@@ -1082,7 +1338,7 @@ def _process_one(
                 f"of {vad_result.duration:.1f}s, threshold: {min_speech_seconds:.1f}s)"
             )
         elif sound_tags is not None and is_salient(sound_tags["tags"]):
-            event["outcome"] = "filtered"
+            outcome = "filtered"
             _write_empty_processing_jsonl(
                 audio_path,
                 _get_jsonl_path(audio_path),
@@ -1099,7 +1355,7 @@ def _process_one(
             )
             audio_path.unlink()
         else:
-            event["outcome"] = "filtered"
+            outcome = "filtered"
             logging.info(
                 f"Insufficient speech in {audio_path}, removing file "
                 f"(VAD: {vad_result.speech_duration:.1f}s of {vad_result.duration:.1f}s, "
@@ -1107,7 +1363,12 @@ def _process_one(
             )
             audio_path.unlink()
 
-        callosum_send("observe", "transcribed", **event)
+        _emit_transcribed(
+            event,
+            outcome=outcome,
+            timings=timings,
+            audio_seconds=len(audio_buffer) / SAMPLE_RATE,
+        )
         return
 
     # Stage 2: Reduce audio by trimming long silence gaps (>2s)
@@ -1120,7 +1381,8 @@ def _process_one(
         )
         reduced_audio, reduction = None, None
     else:
-        reduced_audio, reduction = reduce_audio(audio_buffer, vad_result)
+        with timings.time("reduce"):
+            reduced_audio, reduction = reduce_audio(audio_buffer, vad_result)
 
     # Stage 3: Determine backend and build backend config
     # CLI --backend flag overrides the invocation-level default
@@ -1221,6 +1483,7 @@ def _process_one(
         backend=backend,
         entity_names=entity_names,
         sound_tags=sound_tags,
+        timings=timings,
     )
 
 

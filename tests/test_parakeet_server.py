@@ -32,6 +32,7 @@ def test_no_port_probe_failed_and_connect_not_ready(monkeypatch: pytest.MonkeyPa
         parakeet_server.connect()
 
     assert exc_info.value.reason_code == "parakeet_server_not_ready"
+    assert exc_info.value.retry_reason == "no_port"
 
 
 def test_connect_returns_info_when_health_ready(monkeypatch: pytest.MonkeyPatch):
@@ -76,6 +77,7 @@ def test_non_200_health_is_failed_not_loading(
         parakeet_server.connect()
 
     assert exc_info.value.reason_code == "parakeet_server_not_ready"
+    assert exc_info.value.retry_reason == "server_not_ready"
 
 
 @pytest.mark.parametrize("error", [ConnectionError("refused"), TimeoutError("slow")])
@@ -91,5 +93,7 @@ def test_connection_errors_are_not_ready(
     state, detail = parakeet_server.probe_state()
     assert state == parakeet_server.STATE_FAILED
     assert detail == str(error)
-    with pytest.raises(parakeet_server.ParakeetServerNotReady):
+    with pytest.raises(parakeet_server.ParakeetServerNotReady) as exc_info:
         parakeet_server.connect()
+
+    assert exc_info.value.retry_reason == "server_not_ready"

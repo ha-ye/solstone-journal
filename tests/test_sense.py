@@ -803,7 +803,7 @@ def test_file_sensor_spawn_handler(tmp_path, monkeypatch):
     test_file = make_segment_file(tmp_path, "screen.webm")
     log_path = tmp_path / "chronicle" / "20250101" / "health" / "test_echo.log"
 
-    def fake_spawn(cmd, *_args):
+    def fake_spawn(cmd, *_args, **_kwargs):
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_path.write_text("")
         return FakeManaged(FakeProcess(0), log_path=log_path)
@@ -875,7 +875,7 @@ def test_describe_transcribe_depict_enter_memory_gate(
     def fake_wait(stage, **kwargs):
         calls.append((stage, kwargs["should_stop"]()))
 
-    def fake_spawn(*_args):
+    def fake_spawn(*_args, **_kwargs):
         spawns.append(handler_name)
         return FakeManaged(FakeProcess(0))
 
@@ -909,7 +909,7 @@ def test_extract_handler_never_enters_memory_gate(tmp_path, monkeypatch):
     def fail_wait(*_args, **_kwargs):
         raise AssertionError("extract must not enter the memory gate")
 
-    def fake_spawn(*_args):
+    def fake_spawn(*_args, **_kwargs):
         spawns.append("extract")
         return FakeManaged(FakeProcess(0))
 
@@ -950,7 +950,7 @@ def test_duplicate_observing_during_memory_throttle_does_not_spawn_twice(
         entered_gate.set()
         assert release_gate.wait(timeout=5)
 
-    def fake_spawn(*_args):
+    def fake_spawn(*_args, **_kwargs):
         spawn_calls.append(test_file)
         return FakeManaged(FakeProcess(0))
 
@@ -1111,7 +1111,7 @@ def test_handler_watchdog_timeout_terminates_and_surfaces(
     monkeypatch.setattr(
         sensor,
         "_spawn_managed_process",
-        lambda *_args: FakeManaged(process, log_path=log_path),
+        lambda *_args, **_kwargs: FakeManaged(process, log_path=log_path),
     )
 
     original_check = sensor._check_segment_observed
@@ -1259,7 +1259,7 @@ def test_memory_throttle_beacon_uses_count_until_last_waiter_finishes(
     monkeypatch.setattr(
         sensor,
         "_spawn_managed_process",
-        lambda *_args: FakeManaged(FakeProcess(0)),
+        lambda *_args, **_kwargs: FakeManaged(FakeProcess(0)),
     )
 
     try:
@@ -1322,7 +1322,7 @@ def test_stop_returns_promptly_with_two_workers_mid_memory_wait_and_spawns_nothi
     monkeypatch.setattr(
         sensor,
         "_spawn_managed_process",
-        lambda *_args: spawns.append("spawn") or FakeManaged(FakeProcess(0)),
+        lambda *_args, **_kwargs: spawns.append("spawn") or FakeManaged(FakeProcess(0)),
     )
 
     try:
@@ -1391,7 +1391,7 @@ def test_handler_failure_count_reason_cap_and_provider_blocked_exclusion(
     monkeypatch.setattr(
         provider_sensor,
         "_spawn_managed_process",
-        lambda *_args: FakeManaged(
+        lambda *_args, **_kwargs: FakeManaged(
             FakeProcess(EXIT_PROVIDER_BLOCKED),
             log_path=log_path,
         ),
@@ -1421,7 +1421,7 @@ def test_watchdog_timeout_counts_path_free_reason(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sensor,
         "_spawn_managed_process",
-        lambda *_args: FakeManaged(process),
+        lambda *_args, **_kwargs: FakeManaged(process),
     )
 
     sensor._handle_file(test_file)
@@ -1495,7 +1495,7 @@ def test_healthy_job_under_cap_not_killed(tmp_path, monkeypatch):
     monkeypatch.setattr(
         sensor,
         "_spawn_managed_process",
-        lambda *_args: FakeManaged(process),
+        lambda *_args, **_kwargs: FakeManaged(process),
     )
 
     original_check = sensor._check_segment_observed
@@ -2065,7 +2065,7 @@ def test_file_sensor_queued_describes_complete_on_long_lived_worker(
     sensor.callosum.start(callback=lambda msg: emitted_events.append(msg))
     terminated = []
 
-    def fake_spawn(cmd, file_path, ref, segment, observer, meta, day):
+    def fake_spawn(cmd, file_path, ref, segment, observer, meta, day, **_kwargs):
         process = FakeProcess(0, delay=0.02)
 
         def terminate():
@@ -2144,7 +2144,7 @@ def test_handler_watchdog_timeout_drains_queue(tmp_path, monkeypatch, mock_callo
 
     timeout_process = TimeoutProcess()
 
-    def fake_spawn(cmd, file_path, ref, segment, observer, meta, day):
+    def fake_spawn(cmd, file_path, ref, segment, observer, meta, day, **_kwargs):
         if file_path == files[0]:
             process = timeout_process
         else:
@@ -2200,7 +2200,7 @@ def test_run_handler_uses_handler_thread_name_prefix(tmp_path, monkeypatch):
     test_file = make_segment_file(tmp_path, "screen.webm")
     thread_names = []
 
-    def fake_spawn(*_args):
+    def fake_spawn(*_args, **_kwargs):
         thread_names.append(threading.current_thread().name)
         return FakeManaged(FakeProcess(0))
 
@@ -2223,7 +2223,7 @@ def test_file_sensor_stop_during_spawn_gap_drains_worker(tmp_path, monkeypatch):
     release_spawn = threading.Event()
     process = FakeProcess(0)
 
-    def fake_spawn(*_args):
+    def fake_spawn(*_args, **_kwargs):
         spawn_started.set()
         assert release_spawn.wait(timeout=5)
         return FakeManaged(process)
@@ -2380,70 +2380,78 @@ def test_main_reprocess_all_keeps_modality_filter_unset(tmp_path, monkeypatch):
     assert calls[0][1]["modality_filter"] is None
 
 
-def test_transcribe_cpu_fallback_stays_in_same_worker_thread(tmp_path, monkeypatch):
-    """The exit-134 retry is spawned by the same worker thread."""
+def test_queue_wait_ms_reaches_child_env(tmp_path, monkeypatch):
+    """The handler needs the queue wait sense measured; it cannot compute it itself."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    sensor = FileSensor(tmp_path)
+    test_file = make_segment_file(tmp_path, "audio.flac")
+    captured = {}
+
+    def fake_runner_spawn(cmd, ref, callosum, env, day):
+        captured["env"] = env
+        return FakeManaged(FakeProcess(0), ref=ref)
+
+    monkeypatch.setattr(
+        "solstone.observe.sense.RunnerManagedProcess.spawn", fake_runner_spawn
+    )
+
+    sensor._spawn_managed_process(
+        ["journal", "transcribe", str(test_file)],
+        test_file,
+        "ref",
+        "143022_300",
+        None,
+        None,
+        "20250101",
+        queue_wait_ms=4200,
+    )
+    assert captured["env"]["SOL_QUEUE_WAIT_MS"] == "4200"
+
+    sensor._spawn_managed_process(
+        ["journal", "transcribe", str(test_file)],
+        test_file,
+        "ref",
+        "143022_300",
+        None,
+        None,
+        "20250101",
+    )
+    assert "SOL_QUEUE_WAIT_MS" not in captured["env"]
+
+
+def test_run_handler_passes_queue_wait_from_queued_at(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     sensor = FileSensor(tmp_path)
     sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
     test_file = make_segment_file(tmp_path, "audio.flac")
-    first_started = threading.Event()
-    first_release = threading.Event()
-    second_started = threading.Event()
-    second_release = threading.Event()
-    idents = []
-    cmds = []
+    # queued_at is time.time()-based, so the wait must be measured with time.time().
+    queued_item = QueuedItem(test_file, queued_at=time.time() - 2.0)
+    sensor.queued_handlers["transcribe"].append(queued_item)
+    captured = {}
 
-    class ControlledProcess(FakeProcess):
-        def __init__(self, exit_code, started, release):
-            super().__init__(exit_code)
-            self.started = started
-            self.release = release
-
-        def wait(self, timeout=None):
-            self.started.set()
-            assert self.release.wait(timeout=5)
-            self.returncode = self.exit_code
-            return self.exit_code
-
-    processes = [
-        ControlledProcess(134, first_started, first_release),
-        ControlledProcess(0, second_started, second_release),
-    ]
-
-    def fake_spawn(cmd, *_args):
-        cmds.append(cmd)
-        idents.append(threading.current_thread().ident)
-        return FakeManaged(processes.pop(0))
-
-    original_check = sensor._check_segment_observed
-    checks = []
-
-    def record_check(file_path, error=None):
-        checks.append((file_path, error))
-        return original_check(file_path, error=error)
+    def fake_spawn(cmd, *_args, **kwargs):
+        captured.update(kwargs)
+        return FakeManaged(FakeProcess(0))
 
     monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
-    monkeypatch.setattr(sensor, "_check_segment_observed", record_check)
 
-    sensor._handle_file(test_file)
-    assert first_started.wait(timeout=5)
-    assert len(sensor.running_handlers["transcribe"]) == 1
-    first_release.set()
-    assert second_started.wait(timeout=5)
-    assert len(sensor.running_handlers["transcribe"]) == 1
-    second_release.set()
-    sensor.handler_pools["transcribe"].shutdown(wait=True)
+    sensor._run_handler(
+        queued_item,
+        "transcribe",
+        ["journal", "transcribe", "{file}"],
+        "143022_300",
+        "20250101",
+        False,
+    )
 
-    assert idents[0] == idents[1]
-    assert "--cpu" not in cmds[0]
-    assert "--cpu" in cmds[1]
-    assert checks == [(test_file, None)]
+    assert 1900 <= captured["queue_wait_ms"] <= 3000
 
 
-def test_memory_gate_wait_does_not_consume_handler_cap_or_repeat_on_cpu_fallback(
+def test_memory_gate_wait_does_not_consume_handler_cap(
     tmp_path,
     monkeypatch,
 ):
+    """The memory gate fires once and its wait does not eat into the handler cap."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     sensor = FileSensor(tmp_path)
     sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
@@ -2460,15 +2468,13 @@ def test_memory_gate_wait_does_not_consume_handler_cap_or_repeat_on_cpu_fallback
             wait_timeouts.append(timeout)
             return super().wait(timeout=timeout)
 
-    processes = [RecordingProcess(134), RecordingProcess(0)]
-
     def fake_gate(stage, **_kwargs):
         gate_calls.append(stage)
         monotonic_now["value"] += 100.0
 
-    def fake_spawn(cmd, *_args):
+    def fake_spawn(cmd, *_args, **_kwargs):
         cmds.append(cmd)
-        return FakeManaged(processes.pop(0))
+        return FakeManaged(RecordingProcess(0))
 
     monkeypatch.setattr(
         "solstone.observe.sense.admission.wait_for_memory_headroom",
@@ -2490,55 +2496,11 @@ def test_memory_gate_wait_does_not_consume_handler_cap_or_repeat_on_cpu_fallback
     )
 
     assert gate_calls == ["transcribe"]
-    assert wait_timeouts == [30.0, 30.0]
-    assert "--cpu" not in cmds[0]
-    assert "--cpu" in cmds[1]
-
-
-def test_watchdog_deadline_not_reset_across_cpu_fallback(tmp_path, monkeypatch):
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-
-    sensor = FileSensor(tmp_path)
-    sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
-    sensor.callosum = MagicMock()
-    test_file = make_segment_file(tmp_path, "audio.flac")
-    wait_timeouts = []
-    cmds = []
-
-    class RecordingDelayProcess(FakeProcess):
-        def wait(self, timeout=None):
-            if self.returncode is None:
-                wait_timeouts.append(timeout)
-            return super().wait(timeout=timeout)
-
-    class RecordingTimeoutProcess(TimeoutProcess):
-        def wait(self, timeout=None):
-            if self.returncode is None:
-                wait_timeouts.append(timeout)
-            return super().wait(timeout=timeout)
-
-    timeout_process = RecordingTimeoutProcess()
-    processes = [
-        RecordingDelayProcess(134, delay=0.2),
-        timeout_process,
-    ]
-
-    def fake_spawn(cmd, *_args):
-        cmds.append(cmd)
-        return FakeManaged(processes.pop(0))
-
-    monkeypatch.setattr(sensor, "_resolve_max_runtime", lambda _handler: 5)
-    monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
-
-    sensor._handle_file(test_file)
-    sensor.handler_pools["transcribe"].shutdown(wait=True)
-
-    first_timeout, second_timeout = wait_timeouts[:2]
-    assert "--cpu" not in cmds[0]
-    assert "--cpu" in cmds[1]
-    assert timeout_process.terminated is True
-    assert second_timeout < 5
-    assert second_timeout < first_timeout - 0.1
+    # One attempt, one wait, at the full cap: the deadline is set after the gate.
+    assert wait_timeouts == [30.0]
+    assert len(cmds) == 1
+    # The exit-134 --cpu fallback is gone; journal transcribe has no such flag.
+    assert not any("--cpu" in cmd for cmd in cmds)
 
 
 def test_delete_outputs_screen(tmp_path):

@@ -10,6 +10,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
+from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
 from solstone.think.providers.parakeet_install import ParakeetProviderError
@@ -39,26 +40,42 @@ def vad_result() -> VadResult:
     )
 
 
-def test_process_audio_parakeet_server_not_ready_is_clean_retry(
+def test_process_audio_parakeet_server_not_ready_defers_honestly(
     raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
 ) -> None:
+    """A dead/unready server must defer explicitly, never report silent success."""
     from solstone.observe.transcribe.main import process_audio
 
     with (
         patch(
             "solstone.observe.transcribe.main.stt_transcribe",
-            side_effect=ParakeetServerNotReady("no port"),
+            side_effect=ParakeetServerNotReady(
+                "server died", retry_reason="server_disconnected"
+            ),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
-        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet-cpp")
+        with pytest.raises(SystemExit) as exc_info:
+            process_audio(
+                raw_path, audio_buffer, vad_result, {}, backend="parakeet-cpp"
+            )
 
+    assert exc_info.value.code == EXIT_PROVIDER_BLOCKED
+    # Input preserved, no output written: the next scan re-picks the file.
     assert raw_path.exists()
     assert not raw_path.with_suffix(".jsonl").exists()
-    mock_send.assert_not_called()
+
+    assert mock_send.call_args.args[:2] == ("observe", "transcribed")
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["outcome"] == "deferred"
+    assert kwargs["reason"] == "server_disconnected"
+    assert kwargs["backend"] == "parakeet-cpp"
+    # model is not carried on the deferred path -- probing for it costs a helper
+    # subprocess on the CoreML backend.
+    assert "model" not in kwargs
 
 
-def test_process_audio_confidential_cloud_refusal_is_clean_retry(
+def test_process_audio_confidential_cloud_refusal_defers_honestly(
     raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
 ) -> None:
     from solstone.observe.transcribe import ConfidentialAudioEgressError
@@ -71,11 +88,45 @@ def test_process_audio_confidential_cloud_refusal_is_clean_retry(
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
-        process_audio(raw_path, audio_buffer, vad_result, {}, backend="gemini")
+        with pytest.raises(SystemExit) as exc_info:
+            process_audio(raw_path, audio_buffer, vad_result, {}, backend="gemini")
 
+    assert exc_info.value.code == EXIT_PROVIDER_BLOCKED
     assert raw_path.exists()
     assert not raw_path.with_suffix(".jsonl").exists()
-    mock_send.assert_not_called()
+
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["outcome"] == "deferred"
+    assert kwargs["reason"] == "confidential_egress_blocked"
+    assert kwargs["backend"] == "gemini"
+
+
+def test_deferred_event_fires_on_every_attempt(
+    raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
+) -> None:
+    """Retry count is derivable only if each attempt emits its own reasoned event."""
+    from solstone.observe.transcribe.main import process_audio
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe",
+            side_effect=ParakeetServerNotReady("warming", retry_reason="no_port"),
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        for _ in range(3):
+            with pytest.raises(SystemExit):
+                process_audio(
+                    raw_path, audio_buffer, vad_result, {}, backend="parakeet-cpp"
+                )
+
+    deferrals = [
+        call
+        for call in mock_send.call_args_list
+        if call.kwargs.get("outcome") == "deferred"
+    ]
+    assert len(deferrals) == 3
+    assert {call.kwargs["reason"] for call in deferrals} == {"no_port"}
 
 
 def test_process_audio_parakeet_provider_error_uses_existing_failure_path(
@@ -107,6 +158,7 @@ def test_process_audio_parakeet_provider_error_uses_existing_failure_path(
     assert mock_send.call_args.args[:2] == ("observe", "transcribed")
     assert mock_send.call_args.kwargs["outcome"] == "failed"
     assert mock_send.call_args.kwargs["backend"] == "parakeet-cpp"
+    assert mock_send.call_args.kwargs["reason"] == "transcription_http_error"
     assert "ParakeetProviderError" in mock_send.call_args.kwargs["error"]
 
 

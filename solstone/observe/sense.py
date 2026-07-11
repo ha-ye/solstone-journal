@@ -325,9 +325,11 @@ class FileSensor:
         observer: Optional[str],
         meta: Optional[Dict[str, Any]],
         day: Optional[str] = None,
+        *,
+        queue_wait_ms: Optional[int] = None,
     ) -> RunnerManagedProcess | None:
         """Spawn the managed process for a handler invocation."""
-        if self.callosum and "--cpu" not in cmd:
+        if self.callosum:
             try:
                 rel_file = file_path.relative_to(self.journal_dir)
             except ValueError:
@@ -360,6 +362,8 @@ class FileSensor:
             env["OBSERVER_NAME"] = observer
         if meta:
             env["SEGMENT_META"] = json.dumps(meta)
+        if queue_wait_ms is not None:
+            env["SOL_QUEUE_WAIT_MS"] = str(queue_wait_ms)
 
         try:
             managed = RunnerManagedProcess.spawn(
@@ -482,135 +486,120 @@ class FileSensor:
                 if queued and queued_item in queued:
                     queued.remove(queued_item)
 
-            cpu_fallback = False
             cap = self._resolve_max_runtime(handler_name)
             job_deadline = time.monotonic() + cap
 
-            while True:
-                ref = str(now_ms())
-                cmd = [str(file_path) if arg == "{file}" else arg for arg in command]
-                if cpu_fallback and handler_name == "transcribe":
-                    cmd.append("--cpu")
-                if self.debug:
-                    cmd.append("-d")
-                elif self.verbose:
-                    cmd.append("-v")
+            ref = str(now_ms())
+            cmd = [str(file_path) if arg == "{file}" else arg for arg in command]
+            if self.debug:
+                cmd.append("-d")
+            elif self.verbose:
+                cmd.append("-v")
 
-                fallback_note = " with CPU fallback" if cpu_fallback else ""
-                logger.info(
-                    f"Spawning {handler_name}{fallback_note} for {file_path.name}: {' '.join(cmd)}"
-                )
+            logger.info(
+                f"Spawning {handler_name} for {file_path.name}: {' '.join(cmd)}"
+            )
 
-                managed = self._spawn_managed_process(
-                    cmd,
-                    file_path,
-                    ref,
-                    segment,
-                    queued_item.observer,
-                    queued_item.meta,
-                    day,
-                )
-                if managed is None:
-                    self._check_segment_observed(
-                        file_path, error=f"{handler_name} spawn failed"
-                    )
-                    return
-
-                handler_proc = HandlerProcess(file_path, managed, handler_name)
-                with self.lock:
-                    self.running_handlers[handler_name].append(handler_proc)
-                    terminate_due_to_stop = self._stopping.is_set()
-
-                if terminate_due_to_stop:
-                    self._terminate_handler_process(handler_proc)
-                    self._remove_running_handler(handler_name, handler_proc)
-                    return
-
-                try:
-                    exit_code = managed.process.wait(
-                        timeout=max(0.0, job_deadline - time.monotonic())
-                    )
-                except subprocess.TimeoutExpired:
-                    self._on_handler_timeout(handler_proc, file_path, handler_name, cap)
-                    return
-                except Exception:
-                    handler_proc.cleanup()
-                    self._remove_running_handler(handler_name, handler_proc)
-                    raise
-
-                elapsed = time.time() - handler_proc.started_at
-
-                if (
-                    exit_code == 134
-                    and handler_name == "transcribe"
-                    and not cpu_fallback
-                ):
-                    logger.warning(
-                        f"Transcribe crashed (exit 134, likely GPU/cuDNN issue) for "
-                        f"{file_path.name}, retrying with --cpu"
-                    )
-                    handler_proc.cleanup()
-                    self._remove_running_handler(handler_name, handler_proc)
-                    cpu_fallback = True
-                    continue
-
-                if exit_code == EXIT_PROVIDER_BLOCKED:
-                    logger.info(
-                        f"Handler {handler_name} blocked on provider readiness for "
-                        f"{file_path.name}; will retry when ready"
-                    )
-                    self._check_segment_observed(file_path)
-                    handler_proc.cleanup()
-                    self._remove_running_handler(handler_name, handler_proc)
-                    return
-
-                if exit_code == 0:
-                    logger.info(
-                        f"Handler completed successfully for {file_path.name} "
-                        f"({elapsed:.1f}s)"
-                    )
-                    self._check_segment_observed(file_path)
-                    self._record_successful_contact()
-                    handler_proc.cleanup()
-                    self._remove_running_handler(handler_name, handler_proc)
-                    return
-
-                try:
-                    log_rel = handler_proc.managed.log_writer.path.relative_to(
-                        self.journal_dir
-                    )
-                except ValueError:
-                    log_rel = handler_proc.managed.log_writer.path
-
-                error_msg = f"{handler_name} failed with exit {exit_code}"
-                logger.error(
-                    f"{error_msg} for {file_path.name} ({elapsed:.1f}s) - see log {log_rel}"
-                )
-
-                if self.callosum:
-                    icon = "🤖"
-                    if handler_name == "transcribe":
-                        icon = "🎙️"
-                    elif handler_name == "describe":
-                        icon = "👁️"
-                    self.callosum.emit(
-                        "notification",
-                        "show",
-                        message=f"{handler_name.capitalize()} failed for {file_path.name}",
-                        title=f"{handler_name.capitalize()} Error",
-                        icon=icon,
-                        app="sense",
-                        action=f"/app/health?log={log_rel}",
-                    )
-
+            managed = self._spawn_managed_process(
+                cmd,
+                file_path,
+                ref,
+                segment,
+                queued_item.observer,
+                queued_item.meta,
+                day,
+                queue_wait_ms=int((time.time() - queued_item.queued_at) * 1000),
+            )
+            if managed is None:
                 self._check_segment_observed(
-                    file_path,
-                    error=f"{handler_name} exit {exit_code}",
+                    file_path, error=f"{handler_name} spawn failed"
                 )
-                self._record_handler_failure(f"{handler_name} exit {exit_code}")
+                return
+
+            handler_proc = HandlerProcess(file_path, managed, handler_name)
+            with self.lock:
+                self.running_handlers[handler_name].append(handler_proc)
+                terminate_due_to_stop = self._stopping.is_set()
+
+            if terminate_due_to_stop:
+                self._terminate_handler_process(handler_proc)
+                self._remove_running_handler(handler_name, handler_proc)
+                return
+
+            try:
+                exit_code = managed.process.wait(
+                    timeout=max(0.0, job_deadline - time.monotonic())
+                )
+            except subprocess.TimeoutExpired:
+                self._on_handler_timeout(handler_proc, file_path, handler_name, cap)
+                return
+            except Exception:
+                handler_proc.cleanup()
+                self._remove_running_handler(handler_name, handler_proc)
+                raise
+
+            elapsed = time.time() - handler_proc.started_at
+
+            if exit_code == EXIT_PROVIDER_BLOCKED:
+                # An honest deferral: the handler wrote no output and left its input
+                # in place. Record neither success nor failure -- the next scan
+                # re-picks the file.
+                logger.info(
+                    f"{handler_name} deferred for {file_path.name}: "
+                    f"provider not ready; will retry"
+                )
+                self._check_segment_observed(file_path)
                 handler_proc.cleanup()
                 self._remove_running_handler(handler_name, handler_proc)
                 return
+
+            if exit_code == 0:
+                logger.info(
+                    f"Handler completed successfully for {file_path.name} "
+                    f"({elapsed:.1f}s)"
+                )
+                self._check_segment_observed(file_path)
+                self._record_successful_contact()
+                handler_proc.cleanup()
+                self._remove_running_handler(handler_name, handler_proc)
+                return
+
+            try:
+                log_rel = handler_proc.managed.log_writer.path.relative_to(
+                    self.journal_dir
+                )
+            except ValueError:
+                log_rel = handler_proc.managed.log_writer.path
+
+            error_msg = f"{handler_name} failed with exit {exit_code}"
+            logger.error(
+                f"{error_msg} for {file_path.name} ({elapsed:.1f}s) - see log {log_rel}"
+            )
+
+            if self.callosum:
+                icon = "🤖"
+                if handler_name == "transcribe":
+                    icon = "🎙️"
+                elif handler_name == "describe":
+                    icon = "👁️"
+                self.callosum.emit(
+                    "notification",
+                    "show",
+                    message=f"{handler_name.capitalize()} failed for {file_path.name}",
+                    title=f"{handler_name.capitalize()} Error",
+                    icon=icon,
+                    app="sense",
+                    action=f"/app/health?log={log_rel}",
+                )
+
+            self._check_segment_observed(
+                file_path,
+                error=f"{handler_name} exit {exit_code}",
+            )
+            self._record_handler_failure(f"{handler_name} exit {exit_code}")
+            handler_proc.cleanup()
+            self._remove_running_handler(handler_name, handler_proc)
+            return
         except Exception:
             logger.exception(
                 f"Unhandled exception in handler worker for {queued_item.file_path}"
