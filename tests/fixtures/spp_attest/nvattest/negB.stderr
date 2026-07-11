@@ -1,0 +1,5 @@
+2026-07-11 12:02:02.712 [gpu/evidence.cpp:663 get_evidence] [error] Nonce from GPU evidence does not match the nonce used for attestation.
+2026-07-11 12:02:02.712 [gpu/evidence.cpp:664 get_evidence] [error] Nonce from GPU evidence: 0000000000000000000000000000000000000000000000000000000000000000 Nonce used for attestation: a892c0c66c8a5abf562b00223099061ae2c789673515554ccee5ea276a377ef1
+2026-07-11 12:02:02.712 [gpu/evidence.cpp:665 get_evidence] [error] Does the nonce from serialized evidence JSON file match the nonce used for attestation?
+2026-07-11 12:02:02.712 [attestation.cpp:318 attest_gpus] [error] Failed to collect GPU evidence
+2026-07-11 12:02:02.712 [nvat.cpp:668 nvat_attest_device] [error] Error while performing device attestation

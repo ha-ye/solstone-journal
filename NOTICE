@@ -1,0 +1,8 @@
+solstone nvattest runtime notice
+
+The NVIDIA nvattest runtime is provided by NVIDIA/attestation-sdk under the
+Apache License 2.0.
+
+solstone fetches nvattest setup artifacts into a local runtime cache when the
+GPU attestation provider is installed. nvattest is not bundled in the solstone
+wheel or source distribution.
