@@ -5,77 +5,74 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>create your journal — solstone</title>
   <link rel="icon" href="/favicon.ico">
+  <link rel="stylesheet" href="/static/tokens.css">
   <style>
-    @font-face {
-      font-family: 'Comfortaa';
-      src: url('/static/Comfortaa-Variable.woff2') format('woff2');
-      font-display: swap;
-    }
     body {
       min-height: 100vh; display: flex; align-items: center; justify-content: center;
-      font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 1em; background: #fff; color: #555;
+      font-family: var(--font-body); margin: 0; padding: 1em; background: var(--paper); color: var(--ink-soft-paper);
     }
     svg[aria-label="sol logo"] { width: 140px; height: 140px; margin: 0 auto 1rem; display: block; }
     .init-container { max-width: 520px; width: 90vw; }
-    .config-path { font-size: 0.8rem; color: #767676; text-align: center; margin: 0 0 1.5rem; word-break: break-all; }
-    h1 { text-align: center; font-family: 'Comfortaa', system-ui, sans-serif; font-weight: 700; letter-spacing: 0.1em; color: #222; font-size: 2.5rem; text-transform: lowercase; margin-bottom: 0.5rem; }
-    .product-tagline { text-align: center; font-family: 'Comfortaa', system-ui, sans-serif; color: #888; text-transform: lowercase; margin: 0 0 2rem; font-size: 0.95rem; }
+    .config-path { font-size: 0.8rem; color: var(--ink-faint-paper); text-align: center; margin: 0 0 1.5rem; word-break: break-all; }
+    h1 { text-align: center; font-family: var(--font-display); font-weight: 700; letter-spacing: 0.1em; color: var(--ink); font-size: 2.5rem; text-transform: lowercase; margin-bottom: 0.5rem; }
+    .product-tagline { text-align: center; font-family: var(--font-display); color: var(--ink-faint-paper); text-transform: lowercase; margin: 0 0 2rem; font-size: 0.95rem; }
     .init-section { margin-bottom: 2rem; }
-    .init-section h3 { font-size: 1.25rem; font-weight: 600; border-bottom: 1px solid #eee; padding-bottom: 0.5rem; margin-bottom: 0.75rem; }
-    .section-hint { font-size: 0.85rem; color: #666; margin: 0 0 0.75rem; }
-    .section-hint a { color: #b06a1a; }
+    .init-section h3 { font-size: 1.25rem; font-weight: 600; border-bottom: 1px solid var(--hairline); padding-bottom: 0.5rem; margin-bottom: 0.75rem; }
+    .section-hint { font-size: 0.85rem; color: var(--ink-soft-paper); margin: 0 0 0.75rem; }
+    .section-hint a { color: var(--orange-ink); }
     .machine-card {
       margin-bottom: 2rem;
       padding: 1rem;
-      border: 1px solid #eadfce;
+      border: 1px solid var(--hairline-2);
       border-radius: 8px;
-      background: #fff8ef;
-      color: #555;
+      background: var(--cream-bright);
+      color: var(--ink-soft-paper);
     }
     .machine-card-headline {
       margin: 0 0 0.75rem;
-      color: #222;
+      color: var(--ink);
       font-size: 1.25rem;
       font-weight: 600;
-      font-family: 'Comfortaa', system-ui, sans-serif;
+      font-family: var(--font-display);
     }
     .machine-card p { margin: 0; font-size: 0.9rem; line-height: 1.5; }
     .field-group { margin-bottom: 0.75rem; }
-    .field-group label { display: block; font-size: 0.85rem; color: #444; margin-bottom: 0.25rem; }
+    .field-group label { display: block; font-size: 0.85rem; color: var(--ink-soft-paper); margin-bottom: 0.25rem; }
     .field-group input:not([type="checkbox"]):not([type="radio"]) {
-      width: 100%; padding: 10px 12px; border: 2px solid #ddd; border-radius: 8px;
+      width: 100%; padding: 10px 12px; border: 2px solid var(--hairline-2); border-radius: 8px;
       font-size: 0.95rem; box-sizing: border-box;
     }
-    .field-group input:not([type="checkbox"]):not([type="radio"]):focus { outline: none; border-color: #E8923A; }
-    .field-group input:not([type="checkbox"]):not([type="radio"]):disabled { background: #f5f5f5; color: #999; }
+    .field-group input:not([type="checkbox"]):not([type="radio"]):focus { outline: none; border-color: var(--orange); }
+    .field-group input:not([type="checkbox"]):not([type="radio"]):disabled { background: var(--cream); color: var(--ink-faint-paper); }
     .field-status { display: block; font-size: 0.8rem; min-height: 1.2em; margin-top: 0.25rem; }
     p.field-status { margin-bottom: 0; }
-    .status-saved { color: #22c55e; }
-    .status-error { color: #ef4444; }
+    .status-saved { color: var(--success-ink); }
+    .status-error { color: var(--danger); }
     .status-fade { opacity: 0; transition: opacity 0.3s; }
     .error-message {
       margin-top: 0.75rem;
       padding: 0.75rem 0.9rem;
-      border: 1px solid #fecaca;
+      border: 1px solid var(--danger);
       border-radius: 8px;
-      background: #fef2f2;
-      color: #991b1b;
+      background: var(--danger-wash);
+      color: var(--danger);
       font-size: 0.85rem;
       line-height: 1.4;
     }
     .cta-button {
-      display: inline-block; margin-top: 1rem; padding: 12px 24px; background: #E8923A;
-      color: #fff; border: none; border-radius: 8px; font-size: 0.95rem; cursor: pointer;
-      font-family: 'Comfortaa', system-ui, sans-serif; text-transform: lowercase;
+      display: inline-block; margin-top: 1rem; padding: 12px 24px; background: var(--orange);
+      color: var(--ink); border: none; border-radius: 8px; font-size: 0.95rem; cursor: pointer;
+      font-family: var(--font-display); text-transform: lowercase;
     }
-    .cta-button:hover { background: #d17e2e; }
+    .cta-button:hover { filter: brightness(0.94); }
     .cta-button[hidden] { display: none; }
     .lanes { display: grid; grid-template-columns: 1fr; gap: 10px; }
+    .laneslot { min-width: 0; }
     .lane {
-      border: 1.5px solid #E2D7BF;
+      border: 1.5px solid var(--hairline-2);
       border-radius: 9px;
       padding: 15px 16px;
-      background: #FEFCF8;
+      background: var(--cream-bright);
       cursor: pointer;
       display: flex;
       gap: 14px;
@@ -91,11 +88,11 @@
       appearance: none;
       -webkit-appearance: none;
     }
-    .lane:hover { background: #fff; }
+    .lane:hover { background: var(--paper); }
     .lane.active {
-      border-color: #E8923A;
-      background: #FFF;
-      box-shadow: 0 0 0 3px rgba(232,146,58,.14);
+      border-color: var(--orange);
+      background: var(--paper);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--orange) 14%, transparent);
     }
     .lane .laneic {
       width: 30px;
@@ -105,60 +102,102 @@
       align-items: center;
       justify-content: center;
       font-size: 19px;
-      color: #5B5246;
+      color: var(--ink-soft);
       margin-top: 1px;
     }
     .lane .lanebody { flex: 1 1 auto; min-width: 0; }
     .lane .lanetop { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .lane .lanename { font-weight: 700; font-size: 1.02rem; color: #222; }
-    .lane .lanedesc { font-size: .86rem; color: #6E6453; margin-top: 3px; line-height: 1.45; }
-    .lane.greyed { background: #F4F1E9; border-color: #ECE3D0; cursor: default; }
-    .lane.greyed .lanename { color: #6E6453; }
-    .lane.greyed .laneic { color: #B8AC8E; }
-    .lane .laneverdict { font-size: .82rem; color: #6E6453; margin-top: 7px; line-height: 1.45; }
-    .lane .reqlink { color: #B06A1A; font-weight: 600; text-decoration: none; }
+    .lane .lanename { font-weight: 700; font-size: 1.02rem; color: var(--ink); }
+    .lane .lanesub { font-size: .82rem; color: var(--ink-faint); margin-top: 2px; }
+    .lane .lanedesc { font-size: .86rem; color: var(--ink-faint); margin-top: 3px; line-height: 1.45; }
+    .lane.greyed { background: var(--cream); border-color: var(--hairline); cursor: default; }
+    .lane.greyed .lanename { color: var(--ink-faint); }
+    .lane.greyed .laneic { color: var(--ink-faint); }
+    .lane .laneverdict { font-size: .82rem; color: var(--ink-faint); margin-top: 7px; line-height: 1.45; }
+    .lane .reqlink { color: var(--orange-ink); font-weight: 600; text-decoration: none; }
+    .lane .lanetag {
+      border: 1px solid var(--hairline);
+      color: var(--ink-faint);
+      background: var(--cream-bright);
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: .72rem;
+      font-weight: 600;
+      line-height: 1.3;
+    }
+    .lanemore {
+      background: none;
+      border: none;
+      padding: 0;
+      cursor: pointer;
+      font: inherit;
+      font-size: .84rem;
+      font-weight: 600;
+      color: var(--orange-ink);
+      margin: 7px 0 0 60px;
+    }
+    .lanedetail {
+      margin: 8px 0 0 60px;
+      border: 1px solid var(--hairline);
+      border-radius: 9px;
+      background: var(--cream-bright);
+      color: var(--ink-faint);
+      padding: 11px 13px;
+      font-size: .84rem;
+      line-height: 1.5;
+    }
+    .lanedetail[hidden] { display: none; }
+    .lanedetail-heading {
+      font-family: var(--font-display);
+      font-weight: 700;
+      color: var(--ink);
+      margin-bottom: 2px;
+    }
+    .lanedetail-sub { color: var(--ink-soft); margin-bottom: 8px; }
+    .lanedetail-line { margin-top: 7px; }
+    .lanedetail-claims { color: var(--ink-soft); font-weight: 600; margin-top: 9px; }
     .routenote {
       font-size: .84rem;
-      color: #6E6453;
-      background: #FEFCF8;
-      border: 1px dashed #E2D7BF;
+      color: var(--ink-faint);
+      background: var(--cream-bright);
+      border: 1px dashed var(--hairline-2);
       border-radius: 9px;
       padding: 11px 13px;
       margin-top: 16px;
       line-height: 1.5;
     }
-    .routenote b { color: #5B5246; }
-    .skip { font-size: .86rem; color: #6E6453; margin-top: 16px; }
-    .skip a { color: #B06A1A; font-weight: 600; text-decoration: none; }
-    .footer-note { font-size: 0.8rem; color: #767676; margin-top: 1.5rem; text-align: center; }
+    .routenote b { color: var(--ink-soft); }
+    .deferlink { font-size: .86rem; color: var(--ink-faint); margin-top: 16px; }
+    .deferlink a { color: var(--orange-ink); font-weight: 600; text-decoration: none; }
+    .footer-note { font-size: 0.8rem; color: var(--ink-faint-paper); margin-top: 1.5rem; text-align: center; }
     .settings-preset-btn {
-      padding: 0.5em 0.9em; border: 1px solid #ccc; border-radius: 4px;
-      background: #fff; color: #555; cursor: pointer; font-size: 0.85rem;
+      padding: 0.5em 0.9em; border: 1px solid var(--hairline-2); border-radius: 4px;
+      background: var(--paper); color: var(--ink-soft-paper); cursor: pointer; font-size: 0.85rem;
     }
-    .settings-preset-btn:hover { border-color: #999; }
-    .settings-preset-btn.active { border-color: #E8923A; color: #E8923A; }
+    .settings-preset-btn:hover { border-color: var(--ink-faint-paper); }
+    .settings-preset-btn.active { border-color: var(--orange); color: var(--orange-ink); }
     .retention-options { display: flex; flex-direction: column; gap: 0.5rem; }
     .retention-option { display: flex; flex-direction: column; gap: 0.4rem; cursor: pointer; }
     .retention-option-label { font-size: 0.95rem; }
     .retention-days-row { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
     .retention-days-row input[type="number"] {
-      width: 5em; padding: 0.35em 0.5em; border: 2px solid #ddd; border-radius: 8px;
+      width: 5em; padding: 0.35em 0.5em; border: 2px solid var(--hairline-2); border-radius: 8px;
       font-size: 0.95rem; box-sizing: border-box;
     }
-    .retention-days-row input[type="number"]:focus { outline: none; border-color: #E8923A; }
+    .retention-days-row input[type="number"]:focus { outline: none; border-color: var(--orange); }
     .retention-days-row.is-disabled { opacity: 0.5; cursor: not-allowed; }
-    .retention-days-suffix { font-size: 0.85rem; color: #666; }
+    .retention-days-suffix { font-size: 0.85rem; color: var(--ink-soft-paper); }
     .mark-display { display: flex; justify-content: center; min-height: 64px; margin: 0 0 0.85rem; }
-    .mark-card { display: inline-flex; flex-direction: column; align-items: center; gap: 0.55rem; background: #fffdf9; border: 1px solid #e7d8c6; border-radius: 12px; padding: 1.15rem 1.4rem; }
-    .mark-card.locked { border-color: #cfe3d3; box-shadow: 0 0 0 3px rgba(63,157,106,0.08); }
+    .mark-card { display: inline-flex; flex-direction: column; align-items: center; gap: 0.55rem; background: var(--cream-bright); border: 1px solid var(--hairline-2); border-radius: 12px; padding: 1.15rem 1.4rem; }
+    .mark-card.locked { border-color: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 8%, transparent); }
     .mark-chips { display: flex; gap: 0.7rem; }
-    .mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid #ccc; border-radius: 12px; box-sizing: border-box; }
+    .mark-chip { width: 48px; height: 48px; display: flex; align-items: center; justify-content: center; border: 2px solid var(--hairline-2); border-radius: 12px; box-sizing: border-box; }
     .mark-chip svg { width: 28px; height: 28px; display: block; }
-    .mark-words { display: flex; align-items: center; gap: 0.5rem; font-family: 'Comfortaa', system-ui, sans-serif; font-size: 1.1rem; letter-spacing: .3px; color: #222; }
-    .mark-words .mark-sep { color: #c2b9a6; }
+    .mark-words { display: flex; align-items: center; gap: 0.5rem; font-family: var(--font-display); font-size: 1.1rem; letter-spacing: .3px; color: var(--ink); }
+    .mark-words .mark-sep { color: var(--ink-faint); }
     .mark-actions { display: flex; align-items: center; justify-content: center; gap: 0.75rem; margin-top: 0.25rem; }
     .mark-permanence { text-align: center; }
-    .mark-locked { display: flex; align-items: center; justify-content: center; gap: 0.4rem; color: #166534; font-size: 0.92rem; margin-top: 0.5rem; font-weight: 600; }
+    .mark-locked { display: flex; align-items: center; justify-content: center; gap: 0.4rem; color: var(--success-ink); font-size: 0.92rem; margin-top: 0.5rem; font-weight: 600; }
     .mark-locked svg { width: 16px; height: 16px; flex: none; }
     @media (prefers-reduced-motion: no-preference) {
       .mark-card.pop { animation: mark-pop .26s ease-out; }
@@ -222,10 +261,10 @@
 
     <section class="init-section" id="section-provider">
       <h3>how should sol think?</h3>
-      <p class="section-hint">sol needs a way to reason about your journal and answer you. pick one now — you can change it anytime in <b>thinking</b>.</p>
+      <p class="section-hint">sol reasons about your journal and answers you. it thinks the way you choose here — and you can change it anytime in <b>thinking</b>.</p>
       <div class="lanes" id="provider-lanes" aria-live="polite"></div>
-      <div class="routenote">init only opens the right next step. when you finish setup, <b>thinking</b> opens to the lane you picked. save keys, join scout, or turn on local there.</div>
-      <p class="skip"><a href="#" id="provider-skip">skip for now</a> — sol will keep your journal; choose how it thinks whenever you're ready.</p>
+      <div class="routenote">when you finish, <b>thinking</b> opens to the lane you picked. the fork lives in thinking from here on — switch anytime.</div>
+      <p class="deferlink"><a href="#" id="provider-skip">not thinking yet — set this up later in thinking</a> — sol will keep your journal from day one. choose how it thinks whenever you're ready — nothing is lost.</p>
     </section>
 
     <section class="init-section" id="section-observed-media">
@@ -271,6 +310,8 @@
     const LOCAL_REQUIREMENTS_URL = 'https://github.com/solpbc/solstone-journal/blob/main/INSTALL.md#choosing-how-to-power-sol';
     const SEVERITY_RANK = { ok: 0, unknown: 1, warning: 2, blocked: 3 };
     let selectedLane = null;
+    let confidentialDetailOpen = false;
+    let confidentialDetail = null;
     let laneData = [];
     let localCapability = { overall: 'pending', checks: [] };
 
@@ -325,6 +366,42 @@
       parent.appendChild(verdict);
     }
 
+    function buildConfidentialDetailPanel(detail) {
+      const panel = document.createElement('div');
+      panel.className = 'lanedetail';
+      panel.id = 'lane-detail-confidential';
+      panel.hidden = !confidentialDetailOpen;
+
+      const heading = document.createElement('div');
+      heading.className = 'lanedetail-heading';
+      heading.textContent = detail.heading || '';
+      const sub = document.createElement('div');
+      sub.className = 'lanedetail-sub';
+      sub.textContent = detail.sub || '';
+      panel.append(heading, sub);
+
+      ['mechanism', 'egress'].forEach(key => {
+        const line = document.createElement('div');
+        line.className = 'lanedetail-line';
+        line.textContent = detail[key] || '';
+        panel.appendChild(line);
+      });
+
+      const claims = document.createElement('div');
+      claims.className = 'lanedetail-claims';
+      claims.textContent = detail.claims || '';
+      panel.appendChild(claims);
+
+      ['attestation', 'early_access'].forEach(key => {
+        const line = document.createElement('div');
+        line.className = 'lanedetail-line';
+        line.textContent = detail[key] || '';
+        panel.appendChild(line);
+      });
+
+      return panel;
+    }
+
     function renderProviderLanes() {
       const container = document.getElementById('provider-lanes');
       if (!container || !laneData.length) return;
@@ -335,6 +412,7 @@
         const localState = lane.id === 'local' ? localCapabilityState() : null;
         const blocked = lane.id === 'local' && localState === 'incapable';
         const active = selectedLane === lane.id && !blocked;
+        const hasConfidentialDetail = lane.id === 'confidential' && confidentialDetail && Object.keys(confidentialDetail).length > 0;
         const button = document.createElement('button');
         button.type = 'button';
         button.id = `provider-lane-${lane.id}`;
@@ -356,14 +434,44 @@
         name.className = 'lanename';
         name.textContent = laneDisplayLabel(lane);
         top.appendChild(name);
+        if (lane.tag) {
+          const tag = document.createElement('span');
+          tag.className = 'lanetag';
+          tag.textContent = lane.tag;
+          top.appendChild(tag);
+        }
+        const sub = document.createElement('div');
+        sub.className = 'lanesub';
+        sub.textContent = lane.sub || '';
         const desc = document.createElement('div');
         desc.className = 'lanedesc';
         desc.textContent = lane.description || '';
 
-        body.append(top, desc);
+        body.appendChild(top);
+        if (lane.sub) body.appendChild(sub);
+        body.appendChild(desc);
         if (lane.id === 'local') renderLocalVerdict(body);
         button.append(icon, body);
-        container.appendChild(button);
+        if (hasConfidentialDetail) {
+          const slot = document.createElement('div');
+          slot.className = 'laneslot';
+          const more = document.createElement('button');
+          more.type = 'button';
+          more.className = 'lanemore';
+          more.textContent = 'how it works →';
+          more.setAttribute('aria-controls', 'lane-detail-confidential');
+          more.setAttribute('aria-expanded', confidentialDetailOpen ? 'true' : 'false');
+          const panel = buildConfidentialDetailPanel(confidentialDetail);
+          more.addEventListener('click', () => {
+            confidentialDetailOpen = !confidentialDetailOpen;
+            panel.hidden = !confidentialDetailOpen;
+            more.setAttribute('aria-expanded', confidentialDetailOpen ? 'true' : 'false');
+          });
+          slot.append(button, more, panel);
+          container.appendChild(slot);
+        } else {
+          container.appendChild(button);
+        }
       });
       if (focusedLaneId) {
         const focusedLane = document.getElementById(focusedLaneId);
@@ -409,6 +517,7 @@
       const modeInput = document.querySelector(`input[name="retention_mode"][value="${mode}"]`);
       if (modeInput) modeInput.checked = true;
       document.getElementById('retention-days-input').value = state.retention_days || 30;
+      confidentialDetail = (state.confidential && state.confidential.lane_detail) || null;
       laneData = Array.isArray(state.lanes) ? state.lanes : [];
       renderProviderLanes();
     }
@@ -492,9 +601,9 @@
         });
       });
 
-      const skipProvider = document.getElementById('provider-skip');
+      const deferProvider = document.getElementById('provider-skip');
 
-      skipProvider.addEventListener('click', e => {
+      deferProvider.addEventListener('click', e => {
         e.preventDefault();
         selectedLane = 'defer';
         renderProviderLanes();

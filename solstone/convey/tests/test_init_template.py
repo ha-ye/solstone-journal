@@ -71,11 +71,11 @@ def test_init_provider_section_is_basics_only(convey_env_setup_pending) -> None:
     assert "LANE_GLYPHS = { local: '⌂', confidential: '◎', byo: '⚿' }" in html
     assert "how should sol think?" in html
     assert (
-        "init only opens the right next step. when you finish setup, "
-        "<b>thinking</b> opens to the lane you picked." in html
+        "when you finish, <b>thinking</b> opens to the lane you picked. "
+        "the fork lives in thinking from here on — switch anytime." in html
     )
-    assert "save keys, join scout, or turn on local there." in html
-    assert "skip for now" in html
+    assert "skip for now" not in html
+    assert "not thinking yet — set this up later in thinking" in html
     assert "LOCAL_REQUIREMENTS_URL" in html
     assert "gemini-key" not in html
     assert "gemini-validate" not in html
@@ -89,6 +89,18 @@ def test_init_provider_section_is_basics_only(convey_env_setup_pending) -> None:
     assert "/init/services/scout" not in html
     assert ".portal-unreachable" not in html
     assert "portal-unreachable" not in html
+
+
+def test_init_template_style_uses_tokens() -> None:
+    raw_template = INIT_HTML.read_text(encoding="utf-8")
+    style_start = raw_template.index("<style>")
+    style_end = raw_template.index("</style>", style_start)
+    style_slice = raw_template[style_start:style_end]
+
+    assert '<link rel="stylesheet" href="/static/tokens.css">' in raw_template
+    assert "@font-face" not in raw_template
+    assert re.search(r"#[0-9a-fA-F]{3,8}", style_slice) is None
+    assert "rgba(" not in style_slice
 
 
 def test_init_scout_stubs_removed(convey_env_setup_pending) -> None:

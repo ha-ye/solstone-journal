@@ -40,5 +40,6 @@ def test_scout_setup_deep_link_removed():
 def test_wizard_self_contained():
     text = _init_text()
 
-    assert text.count('<link rel="stylesheet"') == 0
+    assert text.count('<link rel="stylesheet"') == 1
+    assert '<link rel="stylesheet" href="/static/tokens.css">' in text
     assert text.count("<script src=") == 2

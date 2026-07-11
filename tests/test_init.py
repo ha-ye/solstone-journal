@@ -11,7 +11,7 @@ import pytest
 
 from solstone.apps.observer.routes import ACTIVE_THRESHOLD_MS, STALE_THRESHOLD_MS
 from solstone.apps.observer.utils import save_observer
-from solstone.apps.thinking.copy import LANES
+from solstone.apps.thinking.copy import CONFIDENTIAL_LANE_DETAIL, LANES
 from solstone.convey import create_app
 from solstone.think.utils import get_journal, now_ms
 
@@ -131,6 +131,16 @@ class TestInitDetection:
         state = _read_init_state(fresh_client)
 
         assert state["lanes"] == [dict(lane) for lane in LANES]
+        assert state["confidential"]["lane_detail"] == dict(CONFIDENTIAL_LANE_DETAIL)
+        assert set(state["confidential"]["lane_detail"]) == {
+            "heading",
+            "sub",
+            "mechanism",
+            "egress",
+            "claims",
+            "attestation",
+            "early_access",
+        }
 
     def test_init_renders_journal_path_in_welcome(self, fresh_client):
         journal_path = str(Path(get_journal()))
@@ -155,10 +165,14 @@ class TestInitDetection:
     def test_init_sol_agent_paragraphs(self, fresh_client):
         resp = fresh_client.get("/init")
         assert (
-            b"init only opens the right next step. when you finish setup, "
-            b"<b>thinking</b> opens to the lane you picked."
+            b"sol reasons about your journal and answers you. it thinks the way "
+            b"you choose here \xe2\x80\x94 and you can change it anytime in "
+            b"<b>thinking</b>."
         ) in resp.data
-        assert b"save keys, join scout, or turn on local there." in resp.data
+        assert (
+            b"when you finish, <b>thinking</b> opens to the lane you picked. "
+            b"the fork lives in thinking from here on \xe2\x80\x94 switch anytime."
+        ) in resp.data
         assert b"apply to scout" not in resp.data
 
     def test_init_no_legacy_trust_note(self, fresh_client):

@@ -266,7 +266,7 @@ def callosum_sse() -> Response:
 
 
 def _build_init_state() -> dict[str, Any]:
-    from solstone.apps.thinking.copy import LANES
+    from solstone.apps.thinking.copy import CONFIDENTIAL_LANE_DETAIL, LANES
 
     config = ensure_journal_config()
     identity = config.get("identity", {})
@@ -288,6 +288,7 @@ def _build_init_state() -> dict[str, Any]:
         "retention_mode": retention_mode,
         "retention_days": retention_days,
         "lanes": [dict(lane) for lane in LANES],
+        "confidential": {"lane_detail": dict(CONFIDENTIAL_LANE_DETAIL)},
     }
 
 

@@ -19,23 +19,48 @@ LANES = [
     {
         "id": "local",
         "label": "Local",
-        "description": "the bundled model runs right in your journal — your thinking never leaves.",
+        "sub": "on your device",
+        "description": (
+            "a model runs right on this computer — nothing leaves for sol to think."
+        ),
     },
     {
         "id": "confidential",
         "label": "Confidential processing",
-        "description": (
-            "send thinking work to confidential hardware only after attestation "
-            "verifies. today it is not yet verified, so setup can land but "
-            "thinking stays blocked."
-        ),
+        "sub": "operated by sol pbc",
+        "tag": "not open yet",
+        "description": "coming — scouts get it first.",
     },
     {
         "id": "byo",
-        "label": "BYO",
-        "description": "your own key from Claude, Gemini, or GPT, or your own endpoint URL — your billing, your control. stays in your journal.",
+        "label": "your own AI engine",
+        "sub": "your key, or your own endpoint",
+        "description": (
+            "bring a provider key — Claude, Gemini, or GPT — or point sol at your "
+            "own endpoint. it stays in your journal; sol pbc is never in the path."
+        ),
     },
 ]
+CONFIDENTIAL_LANE_DETAIL = {
+    "heading": "confidential processing",
+    "sub": "operated by sol pbc · not open yet",
+    "mechanism": (
+        "let sol "
+        "think off your device — on confidential hardware sol pbc runs "
+        "that keeps nothing."
+    ),
+    "egress": (
+        "when it opens, sol will send only the thinking off your device — never "
+        "your journal, which stays here on this computer. it runs on confidential "
+        "hardware sol pbc operates."
+    ),
+    "claims": "no content is retained · no human reviews it · nothing is used to train",
+    "attestation": "your journal checks the hardware before it sends anything.",
+    "early_access": (
+        "scouts get confidential processing first. it isn't open yet — when it "
+        "is, the scout program is the way in."
+    ),
+}
 PROVIDER_LABELS = {
     "anthropic": "Claude",
     "google": "Gemini",
@@ -110,6 +135,7 @@ def thinking_copy_payload() -> dict[str, Any]:
         "key_labels": dict(KEY_LABELS),
         "state_labels": dict(STATE_LABELS),
         "action_labels": dict(ACTION_LABELS),
+        "confidential": {"lane_detail": dict(CONFIDENTIAL_LANE_DETAIL)},
         "byo": {
             "scout_affordance": BYO_SCOUT_AFFORDANCE_COPY,
         },

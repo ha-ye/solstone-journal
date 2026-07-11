@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from solstone.apps import AppRegistry
-from solstone.apps.thinking.copy import LANES
+from solstone.apps.thinking.copy import CONFIDENTIAL_LANE_DETAIL, LANES
 from solstone.convey import create_app
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -181,6 +181,7 @@ def test_init_template_construct_free_and_state_matches(client, journal_copy):
         "raw_media", "keep"
     )
     assert payload["lanes"] == [dict(lane) for lane in LANES]
+    assert payload["confidential"] == {"lane_detail": dict(CONFIDENTIAL_LANE_DETAIL)}
     assert set(payload) == {
         "version",
         "journal_path",
@@ -189,6 +190,7 @@ def test_init_template_construct_free_and_state_matches(client, journal_copy):
         "retention_mode",
         "retention_days",
         "lanes",
+        "confidential",
     }
 
 

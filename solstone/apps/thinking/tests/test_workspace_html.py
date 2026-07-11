@@ -165,6 +165,28 @@ def test_copy_payload_round_trips_apostrophes() -> None:
     assert decoded == payload
 
 
+def test_thinking_copy_lanes_use_init_deck() -> None:
+    lanes = thinking_copy.LANES
+    by_id = {lane["id"]: lane for lane in lanes}
+
+    assert [lane["id"] for lane in lanes] == ["local", "confidential", "byo"]
+    for lane in lanes:
+        assert lane.get("sub")
+        assert lane.get("description")
+    assert by_id["byo"]["label"] == "your own AI engine"
+    assert by_id["confidential"]["description"] == "coming — scouts get it first."
+    assert by_id["confidential"]["tag"] == "not open yet"
+    assert [lane["id"] for lane in lanes if "tag" in lane] == ["confidential"]
+
+
+def test_thinking_copy_payload_carries_confidential_lane_detail() -> None:
+    payload = thinking_copy.thinking_copy_payload()
+
+    assert payload["confidential"]["lane_detail"] == dict(
+        thinking_copy.CONFIDENTIAL_LANE_DETAIL
+    )
+
+
 def test_thinking_copy_avoids_forbidden_terms() -> None:
     def owner_surface_text(path: Path) -> str:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -196,7 +218,7 @@ def test_thinking_copy_avoids_forbidden_terms() -> None:
     ):
         assert re.search(rf"\b{re.escape(term)}\b", combined, re.IGNORECASE) is None
 
-    for phrase in ("sol pbc", "this machine", "this device"):
+    for phrase in ("this machine", "this device"):
         assert re.search(rf"\b{re.escape(phrase)}\b", combined, re.IGNORECASE) is None
 
 
