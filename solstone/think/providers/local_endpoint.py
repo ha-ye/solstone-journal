@@ -72,6 +72,13 @@ def probe_local_endpoint(
 ) -> tuple[bool, str | None]:
     """Run a shallow reachability probe against the configured endpoint root."""
 
+    from solstone.think.models import confidential_egress_blocked
+
+    if confidential_egress_blocked():
+        # Fail closed: never touch the confidential endpoint before attestation
+        # verifies. No request reaches unattested hardware.
+        return False, "attestation_not_yet_verified"
+
     import httpx
 
     try:

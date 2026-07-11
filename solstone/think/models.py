@@ -1001,6 +1001,22 @@ def _raise_if_confidential_unverified() -> None:
     raise AttestationNotVerifiedError()
 
 
+def confidential_egress_blocked() -> bool:
+    """Return whether confidential egress is currently gated closed.
+
+    Boolean twin of _raise_if_confidential_unverified(): True when a
+    services.confidential block is present and attestation has not verified
+    (this lode: verifier unwired -> always blocked). Callers that must not
+    reach the confidential endpoint (readiness probes) consult this.
+    """
+
+    try:
+        _raise_if_confidential_unverified()
+        return False
+    except AttestationNotVerifiedError:
+        return True
+
+
 def get_model_provider(model: str) -> str:
     """Get the provider name from a model identifier.
 
@@ -1821,6 +1837,7 @@ __all__ = [
     "NO_BRAIN_PROVIDER",
     "NoBrainConfiguredError",
     "AttestationNotVerifiedError",
+    "confidential_egress_blocked",
     "PROMPT_PATHS",
     "get_context_registry",
     # Model constants (used by provider backends for defaults)

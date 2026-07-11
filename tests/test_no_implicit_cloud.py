@@ -128,7 +128,9 @@ def test_confidential_generate_stops_before_any_provider_dispatch(
     monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
     mocks = _cloud_call_mocks(monkeypatch)
     httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
+    httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
     monkeypatch.setattr("httpx.post", httpx_post)
+    monkeypatch.setattr("httpx.get", httpx_get)
 
     with pytest.raises(AttestationNotVerifiedError) as generate_exc:
         models.generate("hello", "any.context")
@@ -145,6 +147,7 @@ def test_confidential_generate_stops_before_any_provider_dispatch(
     for mock in mocks:
         mock.assert_not_called()
     httpx_post.assert_not_called()
+    httpx_get.assert_not_called()
 
 
 def test_confidential_cogitate_stops_before_any_provider_dispatch(
@@ -158,7 +161,9 @@ def test_confidential_cogitate_stops_before_any_provider_dispatch(
     build_llm = Mock(side_effect=AssertionError("llm build attempted"))
     monkeypatch.setattr("solstone.think.providers.openhands._build_llm", build_llm)
     httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
+    httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
     monkeypatch.setattr("httpx.post", httpx_post)
+    monkeypatch.setattr("httpx.get", httpx_get)
 
     with pytest.raises(AttestationNotVerifiedError) as exc_info:
         asyncio.run(
@@ -173,6 +178,39 @@ def test_confidential_cogitate_stops_before_any_provider_dispatch(
     for mock in mocks:
         mock.assert_not_called()
     httpx_post.assert_not_called()
+    httpx_get.assert_not_called()
+
+
+def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think.providers import state
+
+    _empty_journal(tmp_path, monkeypatch)
+    config = _confidential_config()
+    config.setdefault("providers", {})["local"] = {
+        "endpoint_url": "https://spp.example.test/v1",
+        "served_model_id": "confidential-model",
+        "credential": "confidential-credential",
+    }
+    _write_journal_config(tmp_path, config)
+    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
+    monkeypatch.setattr("httpx.get", httpx_get)
+
+    assert models.confidential_egress_blocked() is True
+    status = state.local_status_dict()
+
+    assert status["configured"] is True
+    assert status["generate_ready"] is False
+    assert status["cogitate_ready"] is False
+    assert status["issues"] == ["local_endpoint_unreachable"]
+    httpx_get.assert_not_called()
+
+    config.pop("services", None)
+    _write_journal_config(tmp_path, config)
+    assert models.confidential_egress_blocked() is False
 
 
 def test_confidential_attestation_error_is_non_retryable(tmp_path, monkeypatch):

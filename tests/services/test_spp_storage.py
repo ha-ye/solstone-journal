@@ -245,6 +245,31 @@ def test_disable_confidential_preserves_local_endpoint_when_fingerprint_mismatch
     assert "confidential" not in saved["services"]
 
 
+@pytest.mark.parametrize("credential_state", ["missing", "none"])
+def test_disable_confidential_preserves_local_endpoint_when_current_credential_missing(
+    journal_copy: Path,
+    credential_state: str,
+) -> None:
+    provision_confidential_handoff(_payload("removed"))
+    config = _read_config(journal_copy)
+    local = dict(config["providers"]["local"])
+    if credential_state == "missing":
+        local.pop("credential", None)
+    else:
+        local["credential"] = None
+    config["providers"]["local"] = local
+    _write_config(journal_copy, config)
+
+    outcome = disable_confidential()
+
+    assert outcome == DisableOutcome(was_enabled=True, credential_preserved=True)
+    saved = _read_config(journal_copy)
+    assert saved["providers"]["generate"]["provider"] == "google"
+    assert saved["providers"]["cogitate"]["provider"] == "openai"
+    assert saved["providers"]["local"] == local
+    assert "confidential" not in saved["services"]
+
+
 def test_disable_confidential_when_not_enabled_returns_was_enabled_false(
     journal_copy: Path,
 ) -> None:
