@@ -72,6 +72,9 @@ def _node_script(body: str) -> str:
         _extract_js_function(source, "formatInstallBytes"),
         _extract_js_function(source, "installCopyForStatus"),
         _extract_js_function(source, "pollLocalInstallUntilTerminal"),
+        _extract_js_function(source, "handleInstallPollError"),
+        "const pollIntervalMs = 1500;",
+        _extract_js_function(source, "startInstallPoll"),
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         f"const text = {json.dumps(thinking_copy.LOCAL_INSTALL)};",
         f"const installFailedNoProgress = {json.dumps(INSTALL_FAILED_NO_PROGRESS)};",
@@ -149,6 +152,171 @@ async function main() {
   assert(applied[1].rendered.sub === 'installing', 'install phase should render');
   assert(applied[1].rendered.message === 'installing', 'phase should render when bytes are absent');
   assert(applied[2].rendered === null, 'installed should leave the normal local render path');
+  console.log('PASS');
+}
+main().catch((error) => { console.error(error.stack || error); process.exit(1); });
+"""
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "PASS" in result.stdout
+
+
+def test_install_poll_with_primed_status_sleeps_before_next_fetch() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    script = _node_script(
+        """
+async function main() {
+  const statuses = [
+    {
+      install_state: 'installing',
+      progress_bytes_received: null,
+      progress_bytes_total: null,
+      install_error: null,
+    },
+    {
+      install_state: 'installed',
+      progress_bytes_received: null,
+      progress_bytes_total: null,
+      install_error: null,
+    },
+  ];
+  let fetchCalls = 0;
+  const events = [];
+  async function fetchStatus() {
+    events.push(`fetch:${fetchCalls}`);
+    return statuses[fetchCalls++];
+  }
+  async function sleepFn(ms) {
+    events.push(`sleep:${ms}`);
+  }
+  function applyStatus(status) {
+    events.push(`apply:${status.install_state}`);
+  }
+  const result = await pollLocalInstallUntilTerminal({
+    fetchStatus,
+    sleepFn,
+    applyStatus,
+    isCurrent: () => true,
+    intervalMs: 1500,
+    initialStatus: {
+      install_state: 'downloading',
+      progress_bytes_received: null,
+      progress_bytes_total: null,
+      install_error: null,
+    },
+  });
+
+  assert(result.install_state === 'installed', 'terminal status should be returned');
+  assert(fetchCalls === 2, 'primed poll should fetch only after sleeping');
+  assert(
+    JSON.stringify(events) === JSON.stringify([
+      'sleep:1500',
+      'fetch:0',
+      'apply:installing',
+      'sleep:1500',
+      'fetch:1',
+      'apply:installed',
+    ]),
+    `primed poll should sleep before first fetch, got ${JSON.stringify(events)}`,
+  );
+  console.log('PASS');
+}
+main().catch((error) => { console.error(error.stack || error); process.exit(1); });
+"""
+    )
+
+    result = subprocess.run(
+        [node, "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert "PASS" in result.stdout
+
+
+def test_install_poll_error_clears_inflight_phase() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+
+    script = _node_script(
+        """
+const state = {
+  install: null,
+  installPollGeneration: 0,
+};
+let fetchCalls = 0;
+let shownError = '';
+const sleeps = [];
+const rendered = [];
+
+function selectedLocalModelId() {
+  return 'local/qwen3.5-4b';
+}
+
+function stopInstallPoll() {
+  state.installPollGeneration += 1;
+}
+
+async function fetchInstallStatus() {
+  fetchCalls += 1;
+  if (fetchCalls === 1) {
+    return {
+      install_state: 'installing',
+      progress_bytes_received: null,
+      progress_bytes_total: null,
+      install_error: null,
+    };
+  }
+  throw new Error('status unavailable');
+}
+
+async function sleep(ms) {
+  sleeps.push(ms);
+}
+
+function applyLocalInstallStatus(status, generation) {
+  if (generation !== undefined && generation !== state.installPollGeneration) return false;
+  state.install = status || null;
+  rendered.push(installCopyForStatus(state.install, text));
+  return true;
+}
+
+async function refreshProviders() {
+  throw new Error('refreshProviders should not run');
+}
+
+async function refreshLocalAvailability() {
+  throw new Error('refreshLocalAvailability should not run');
+}
+
+function setMessage(id, message, tone) {
+  shownError = `${id}:${tone}:${message}`;
+}
+
+async function main() {
+  await startInstallPoll();
+
+  assert(fetchCalls === 2, 'poll should reject on the second fetch');
+  assert(sleeps.length === 1 && sleeps[0] === 1500, 'poll should sleep once before the rejected fetch');
+  assert(state.install === null, 'install status should be cleared after poll error');
+  assert(rendered.length === 2, 'poll should render the in-flight phase and then the cleared state');
+  assert(rendered[0].sub === 'installing', 'first render should show the in-flight phase');
+  assert(rendered[1] === null, 'cleared status should not render an in-flight phase');
+  assert(state.installPollGeneration === 2, 'poll generation should be stopped after error');
+  assert(
+    shownError === 'localSetupMessage:error:status unavailable',
+    'poll error should surface to the owner',
+  );
   console.log('PASS');
 }
 main().catch((error) => { console.error(error.stack || error); process.exit(1); });

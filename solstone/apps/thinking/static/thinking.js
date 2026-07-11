@@ -107,18 +107,9 @@
     const phase = status?.install_state || '';
     const phaseLabel = text?.phases?.[phase] || phase;
     if (installInFlightStates.has(phase)) {
-      let bytesLine = '';
-      if (
-        status.progress_bytes_received !== null
-        && status.progress_bytes_received !== undefined
-        && status.progress_bytes_total !== null
-        && status.progress_bytes_total !== undefined
-      ) {
-        const gb = 1024 * 1024 * 1024;
-        bytesLine = `${(Number(status.progress_bytes_received) / gb).toFixed(1)} GB of ${(Number(status.progress_bytes_total) / gb).toFixed(1)} GB`;
-      }
+      const bytesLine = formatInstallBytes(status.progress_bytes_received, status.progress_bytes_total);
       return {
-        pill: text?.pill_inflight || 'setting up',
+        pill: text?.pill_inflight || '',
         title: 'local',
         sub: phaseLabel,
         message: bytesLine || phaseLabel,
@@ -131,14 +122,14 @@
     }
     if (phase === 'failed') {
       return {
-        pill: text?.pill_failed || "couldn't finish",
+        pill: text?.pill_failed || '',
         title: 'local',
         sub: text?.pill_failed || '',
         message: status?.install_error || '',
         notice: '',
         activate: false,
         bootstrap: true,
-        bootstrapLabel: text?.retry || 'try again',
+        bootstrapLabel: text?.retry || '',
         tone: 'bad',
       };
     }
@@ -151,7 +142,13 @@
     applyStatus,
     isCurrent,
     intervalMs,
+    initialStatus = null,
   }) {
+    if (installTerminalStates.has(initialStatus?.install_state || '')) return initialStatus;
+    if (installInFlightStates.has(initialStatus?.install_state || '')) {
+      if (!isCurrent()) return null;
+      await sleepFn(intervalMs);
+    }
     while (isCurrent()) {
       const status = await fetchStatus();
       applyStatus(status);
@@ -159,6 +156,21 @@
       await sleepFn(intervalMs);
     }
     return null;
+  }
+
+  function handleInstallPollError({
+    generation,
+    currentGeneration,
+    clearInstallStatus,
+    stopPoll,
+    showError,
+    error,
+  }) {
+    if (generation !== currentGeneration()) return false;
+    clearInstallStatus();
+    stopPoll();
+    showError(error?.message || '');
+    return true;
   }
 
   function formatCopy(template, values = {}) {
@@ -252,7 +264,10 @@
   }
 
   function showView(name, options = {}) {
-    const target = views.has(name) ? name : 'main';
+    let target = views.has(name) ? name : 'main';
+    if (target === 'lane-switch' && !state.pendingSwitchTarget) {
+      target = 'main';
+    }
     if (target !== 'local-setup') {
       stopInstallPoll();
     } else if (state.localModels.length > 0) {
@@ -951,11 +966,11 @@
     }
     if (reason === 'local_model_installing') {
       return {
-        pill: 'setting up',
+        pill: copy.local_install?.pill_inflight || '',
         title: 'local',
         sub: 'setting up a local model…',
         message: local.detail || local.summary || '',
-        notice: 'local thinking will stay in your journal once setup finishes.',
+        notice: copy.local_install?.notice_inflight || '',
         activate: false,
         bootstrap: false,
         tone: '',
@@ -982,7 +997,7 @@
         notice: 'install the selected model before turning on local thinking.',
         activate: false,
         bootstrap: true,
-        bootstrapLabel: copy.local_install?.install || 'install local model',
+        bootstrapLabel: copy.local_install?.install || '',
         tone: '',
       };
     }
@@ -1043,7 +1058,7 @@
     setText('localNotice', local.notice);
     setHidden('localOverrideNotice', !local.endpointOverride);
     setButtonState('localBootstrap', local.bootstrap, !local.bootstrap);
-    setButtonText('localBootstrap', local.bootstrapLabel || copy.local_install?.install || 'install local model');
+    setButtonText('localBootstrap', local.bootstrapLabel || copy.local_install?.install || '');
     setButtonState('localActivate', local.activate, !local.activate);
     setButtonState('localRefresh', true, false);
     const links = $('localSetupLinks');
@@ -1214,17 +1229,18 @@
     return true;
   }
 
-  function startInstallPoll() {
+  function startInstallPoll(initialStatus = null) {
     const model = selectedLocalModelId();
-    if (!model) return;
+    if (!model) return null;
     stopInstallPoll();
     const generation = state.installPollGeneration;
-    pollLocalInstallUntilTerminal({
+    return pollLocalInstallUntilTerminal({
       fetchStatus: () => fetchInstallStatus(model),
       sleepFn: sleep,
       applyStatus: (status) => applyLocalInstallStatus(status, generation),
       isCurrent: () => generation === state.installPollGeneration,
       intervalMs: pollIntervalMs,
+      initialStatus,
     })
       .then((status) => {
         if (generation !== state.installPollGeneration) return;
@@ -1238,9 +1254,14 @@
         }
       })
       .catch((err) => {
-        if (generation === state.installPollGeneration) {
-          setMessage('localSetupMessage', err.message, 'error');
-        }
+        handleInstallPollError({
+          generation,
+          currentGeneration: () => state.installPollGeneration,
+          clearInstallStatus: () => applyLocalInstallStatus(null, generation),
+          stopPoll: stopInstallPoll,
+          showError: (message) => setMessage('localSetupMessage', message, 'error'),
+          error: err,
+        });
       });
   }
 
@@ -1248,7 +1269,7 @@
     const status = await fetchInstallStatus();
     applyLocalInstallStatus(status);
     if (installIsInFlight(status) && autoResume) {
-      startInstallPoll();
+      startInstallPoll(status);
     } else if (installIsTerminal(status)) {
       stopInstallPoll();
     }
@@ -1447,7 +1468,7 @@
     state.install = status || null;
     renderAll();
     if (installIsInFlight(status)) {
-      startInstallPoll();
+      startInstallPoll(status);
     } else {
       await refreshInstallStatus({autoResume: true});
     }
