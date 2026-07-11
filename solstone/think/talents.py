@@ -1607,20 +1607,24 @@ async def _execute_generate(
                 exc.reason,
             )
             retries = 1
-            gen_result = generate_with_result(
-                contents=contents,
-                context=context,
-                temperature=max(temperature, _LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR),
-                max_output_tokens=max_output_tokens,
-                thinking_budget=thinking_budget,
-                system_instruction=system_instruction,
-                json_output=is_json_output,
-                json_schema=runtime_json_schema,
-                timeout_s=timeout_s,
-                provider=config.get("provider"),
-                model=config.get("model"),
-                inference_retry_index=1,
-            )
+            try:
+                gen_result = generate_with_result(
+                    contents=contents,
+                    context=context,
+                    temperature=max(temperature, _LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR),
+                    max_output_tokens=max_output_tokens,
+                    thinking_budget=thinking_budget,
+                    system_instruction=system_instruction,
+                    json_output=is_json_output,
+                    json_schema=runtime_json_schema,
+                    timeout_s=timeout_s,
+                    provider=config.get("provider"),
+                    model=config.get("model"),
+                    inference_retry_index=1,
+                )
+            except Exception as retry_exc:
+                retry_exc.retries = retries
+                raise
         else:
             if config.get("fallback_from") or not _should_fallback(exc):
                 raise
@@ -2024,6 +2028,9 @@ async def main_async() -> None:
                     event["partial_text_tail"] = e.partial_text[-500:]
                     name = config.get("name", "unknown") if config else "unknown"
                     log_extraction_failure(e, name)
+                retries = getattr(e, "retries", None)
+                if retries:
+                    event["retries"] = retries
                 emit_event(event)
 
     except Exception as exc:

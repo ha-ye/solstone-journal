@@ -148,6 +148,7 @@ def test_blocking_reason_classification():
         "chat_timeout",
         "network_unreachable",
         "provider_response_invalid",
+        "incomplete_text_length",
         "no_output",
         "unknown",
         "ready",

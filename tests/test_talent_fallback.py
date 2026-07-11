@@ -772,6 +772,70 @@ def test_execute_generate_local_length_retry_succeeds(
     assert events[-1]["retries"] == 1
 
 
+def test_execute_generate_local_length_retry_success_writes_once_and_runs_hook_once(
+    tmp_path, monkeypatch
+):
+    from solstone.think import models, talents
+    from solstone.think.talents import _execute_generate
+
+    output_path = tmp_path / "out.json"
+    events = []
+    generate_calls = []
+    hook_calls = []
+
+    def mock_generate_with_result(**kwargs):
+        generate_calls.append(kwargs)
+        if len(generate_calls) == 1:
+            raise IncompleteJSONError("length", '{"partial":')
+        return {
+            "text": '{"summary": "ok"}',
+            "usage": {"input_tokens": 1, "output_tokens": 2},
+        }
+
+    def post_hook(result, config):
+        hook_calls.append((result, config["name"]))
+        return result
+
+    def fail_backup(_agent_type):
+        raise AssertionError("local retry must not consult cloud backup")
+
+    monkeypatch.setattr(
+        "solstone.think.talent.key_to_context", lambda _name: "talent.system.default"
+    )
+    monkeypatch.setattr(models, "generate_with_result", mock_generate_with_result)
+    monkeypatch.setattr(models, "get_backup_provider", fail_backup)
+    monkeypatch.setattr(talents, "load_post_hook", lambda _config: post_hook)
+
+    asyncio.run(
+        _execute_generate(
+            {
+                "name": "chat",
+                "provider": "local",
+                "model": LOCAL_MODEL,
+                "prompt": "hello",
+                "health_stale": False,
+                "output": "json",
+                "output_path": str(output_path),
+                "hook": {"post": "test"},
+                "json_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["summary"],
+                    "properties": {"summary": {"type": "string"}},
+                },
+            },
+            events.append,
+        )
+    )
+
+    assert len(generate_calls) == 2
+    assert hook_calls == [('{"summary": "ok"}', "chat")]
+    assert output_path.read_text(encoding="utf-8") == '{"summary": "ok"}'
+    assert [path.name for path in tmp_path.iterdir()] == ["out.json"]
+    assert events[-1]["event"] == "finish"
+    assert events[-1]["retries"] == 1
+
+
 def test_main_async_local_length_retry_second_failure_emits_one_error(
     monkeypatch, capsys
 ):
@@ -830,8 +894,8 @@ def test_main_async_local_length_retry_second_failure_emits_one_error(
     assert calls["count"] == 2
     assert len(error_events) == 1
     assert error_events[0]["reason_code"] == "incomplete_json_length"
+    assert error_events[0]["retries"] == 1
     assert finish_events == []
-    assert all("retries" not in event for event in events)
 
 
 @pytest.mark.parametrize(

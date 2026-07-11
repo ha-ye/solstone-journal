@@ -6,7 +6,7 @@ Async batch processing for LLM API requests.
 
 Provides Batch for concurrent execution of multiple LLM API calls
 with dynamic request queuing and result streaming via async iterator.
-Routes requests to providers based on context via the unified agenerate() API.
+Routes requests to providers based on context via the unified async generate API.
 
 Example:
     batch = Batch(max_concurrent=5)
@@ -26,7 +26,12 @@ import asyncio
 import time
 from typing import Any, List, Optional, Union
 
-from solstone.think.models import agenerate, resolve_provider
+from solstone.think.models import (
+    SchemaValidationError,
+    agenerate_with_result,
+    finish_reason_error,
+    resolve_provider,
+)
 from solstone.think.providers.shared import classify_provider_error
 
 
@@ -34,7 +39,7 @@ class BatchRequest:
     """
     Mutable request object for a single LLM API call.
 
-    Core attributes are passed to agenerate(). Callers can add
+    Core attributes are passed to agenerate_with_result(). Callers can add
     arbitrary attributes for tracking (e.g., frame_id, stage, etc).
 
     After execution, these attributes are populated:
@@ -83,7 +88,7 @@ class Batch:
     Async batch processor for LLM API requests.
 
     Manages concurrent execution with dynamic request queuing and result
-    streaming via async iterator pattern. Routes to providers via agenerate().
+    streaming via async iterator pattern. Routes to providers via async generation.
 
     Example:
         batch = Batch(max_concurrent=5)
@@ -265,7 +270,7 @@ class Batch:
                 if request.model is not None:
                     kwargs["model"] = request.model
 
-                response = await agenerate(
+                result = await agenerate_with_result(
                     contents=request.contents,
                     context=request.context,
                     temperature=request.temperature,
@@ -277,8 +282,20 @@ class Batch:
                     timeout_s=request.timeout_s,
                     **kwargs,
                 )
+                error = finish_reason_error(
+                    result,
+                    json_output=request.json_output,
+                )
+                if error is not None:
+                    raise error
+                validation = result.get("schema_validation")
+                if isinstance(validation, dict) and validation.get("valid") is False:
+                    raise SchemaValidationError(
+                        validation.get("errors") or [],
+                        result.get("text", ""),
+                    )
                 request.duration = time.time() - start_time
-                request.response = response
+                request.response = result["text"]
                 request.error = None
 
                 # Track which model was actually used

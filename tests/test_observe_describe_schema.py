@@ -138,12 +138,15 @@ def test_describe_schema_accepts_and_rejects_expected_values():
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_describe_batch_call_passes_schema(mock_agenerate):
-    mock_agenerate.return_value = (
-        '{"visual_description":"A code editor is visible.","primary":"code",'
-        '"secondary":"none","overlap":false}'
-    )
+    mock_agenerate.return_value = {
+        "text": (
+            '{"visual_description":"A code editor is visible.","primary":"code",'
+            '"secondary":"none","overlap":false}'
+        ),
+        "finish_reason": "stop",
+    }
 
     batch = Batch(max_concurrent=1)
     req = batch.create(

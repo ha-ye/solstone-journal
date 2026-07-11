@@ -127,12 +127,15 @@ def test_discover_categories_attaches_meeting_schema():
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_meeting_extract_batch_call_passes_schema(mock_agenerate):
-    mock_agenerate.return_value = (
-        '{"platform":"zoom","participants":[{"name":"Alice","status":"active",'
-        '"video":true}],"screen_share":null}'
-    )
+    mock_agenerate.return_value = {
+        "text": (
+            '{"platform":"zoom","participants":[{"name":"Alice","status":"active",'
+            '"video":true}],"screen_share":null}'
+        ),
+        "finish_reason": "stop",
+    }
 
     cat_meta = describe_mod.CATEGORIES["meeting"]
     batch = Batch(max_concurrent=1)

@@ -54,6 +54,10 @@ SEGMENT = "120000_300"
 FIXED_NOW = "2026-06-30T12:00:00Z"
 
 
+def _generate_result(text: str, finish_reason: str = "stop") -> dict[str, Any]:
+    return {"text": text, "finish_reason": finish_reason}
+
+
 @pytest.fixture
 def observer_env(tmp_path, monkeypatch):
     """Temp journal + Flask test client factory.
@@ -244,11 +248,14 @@ def _drive_describe(
     output_path: Path,
     *,
     agenerate_response: str = "{}",
+    agenerate_finish_reason: str = "stop",
     expect_runtime_error: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any], AsyncMock]:
     from solstone.observe import describe, processing_record
 
-    agenerate = AsyncMock(return_value=agenerate_response)
+    agenerate = AsyncMock(
+        return_value=_generate_result(agenerate_response, agenerate_finish_reason)
+    )
     monkeypatch.setattr(
         "solstone.think.models.resolve_provider",
         lambda _context, _interface: ("google", "gemini-test"),
@@ -256,7 +263,7 @@ def _drive_describe(
     monkeypatch.setattr(describe, "callosum_send", lambda *args, **kwargs: None)
     monkeypatch.setattr(describe, "select_frames_for_extraction", lambda *a, **k: [])
     monkeypatch.setattr(processing_record, "now_iso_utc", lambda: FIXED_NOW)
-    monkeypatch.setattr("solstone.think.batch.agenerate", agenerate)
+    monkeypatch.setattr("solstone.think.batch.agenerate_with_result", agenerate)
 
     processor = describe.VideoProcessor(video_path)
     if expect_runtime_error:
@@ -366,7 +373,7 @@ def _run_idle_gate(
     spawned: list[str] = []
     writer_path = journal / "chronicle" / day / "health" / f"idle_{segment}.jsonl"
     writer = ThinkingJSONLWriter(str(writer_path))
-    agenerate = agenerate_spy or AsyncMock(return_value="{}")
+    agenerate = agenerate_spy or AsyncMock(return_value=_generate_result("{}"))
     original_callosum = think._callosum
     original_jsonl = think._jsonl
     try:
@@ -387,7 +394,7 @@ def _run_idle_gate(
             "wait_for_uses",
             lambda agent_ids, timeout=600: ({aid: "finish" for aid in agent_ids}, []),
         )
-        monkeypatch.setattr("solstone.think.batch.agenerate", agenerate)
+        monkeypatch.setattr("solstone.think.batch.agenerate_with_result", agenerate)
         think._callosum = None
         think._jsonl = writer
         result = think.run_segment_sense(
@@ -647,6 +654,34 @@ def test_ac5_all_frames_fail_is_analysis_failed_distinct(
     # Both corrupt_input and analysis_failed derive DataState.FAILED; the
     # distinction survives only in the processing-record reason_code.
     assert read_segment_data_state(DAY, SEGMENT) == {"screen": DataState.FAILED.value}
+
+
+def test_truncated_frame_categorization_retries_and_promotes_no_frame_artifact(
+    segment_journal,
+    monkeypatch,
+):
+    segment = _segment_dir(segment_journal)
+    video_path = segment / "screen.mp4"
+    output_path = segment / "screen.jsonl"
+    _build_one_frame_mp4(video_path)
+
+    _header, record, agenerate = _drive_describe(
+        monkeypatch,
+        video_path,
+        output_path,
+        agenerate_response='{"visual_description":"partial"',
+        agenerate_finish_reason="max_tokens",
+        expect_runtime_error=True,
+    )
+
+    _assert_processing_record(
+        record,
+        state=STATE_FAILED,
+        reason_code=REASON_ANALYSIS_FAILED,
+        handler=HANDLER_DESCRIBE,
+    )
+    assert agenerate.call_count == 5
+    assert len(_read_jsonl(output_path)) == 1
 
 
 def test_ac6_no_model_calls_on_all_empty_segment(segment_journal, monkeypatch):

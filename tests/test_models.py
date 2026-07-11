@@ -35,7 +35,9 @@ from solstone.think.models import (
     TIER_PRO,
     TYPE_DEFAULTS,
     IncompleteJSONError,
+    IncompleteTextError,
     NoBrainConfiguredError,
+    ProviderResponseInvalidError,
     SchemaValidationError,
     _Family,
     _find_pricing_fallback,
@@ -44,8 +46,10 @@ from solstone.think.models import (
     _parse_family_openai,
     _validate_schema,
     agenerate,
+    agenerate_with_result,
     calc_agent_cost,
     calc_token_cost,
+    finish_reason_error,
     generate,
     generate_with_result,
     get_context_registry,
@@ -1573,6 +1577,38 @@ class TestValidateSchema:
 
 
 class TestGenerateJsonSchemaPlumbing:
+    def test_finish_reason_predicate_json_rejects_any_non_stop(self):
+        error = finish_reason_error(
+            {"text": "{}", "finish_reason": "content_filter"},
+            json_output=True,
+        )
+
+        assert isinstance(error, IncompleteJSONError)
+
+    def test_finish_reason_predicate_plain_text_rejects_length(self):
+        error = finish_reason_error(
+            {"text": "partial", "finish_reason": "max_tokens"},
+            json_output=False,
+        )
+
+        assert isinstance(error, IncompleteTextError)
+        assert error.reason_code == "incomplete_text_length"
+
+    def test_finish_reason_predicate_plain_text_rejects_non_length(self):
+        error = finish_reason_error(
+            {"text": "", "finish_reason": "content_filter"},
+            json_output=False,
+        )
+
+        assert isinstance(error, ProviderResponseInvalidError)
+        assert error.reason_code == "provider_response_invalid"
+
+    def test_validate_json_response_plain_text_leniency_is_unchanged(self):
+        models_module._validate_json_response(
+            {"text": "partial", "finish_reason": "max_tokens"},
+            json_output=False,
+        )
+
     def test_generate_forces_json_output_with_schema(self):
         schema = {"type": "object"}
         provider_module = SimpleNamespace(
@@ -1639,6 +1675,34 @@ class TestGenerateJsonSchemaPlumbing:
                 "hello",
                 "test.context",
                 json_schema={"type": "object"},
+            )
+
+        assert result["schema_validation"] == validation
+
+    def test_agenerate_with_result_adds_schema_validation(self):
+        provider_module = SimpleNamespace(
+            run_agenerate=AsyncMock(
+                return_value={"text": "{}", "finish_reason": "stop"}
+            )
+        )
+        validation = {"valid": True, "errors": []}
+
+        with (
+            patch(
+                "solstone.think.models.resolve_provider", return_value=("fake", "model")
+            ),
+            patch(
+                "solstone.think.providers.get_provider_module",
+                return_value=provider_module,
+            ),
+            patch("solstone.think.models._validate_schema", return_value=validation),
+        ):
+            result = asyncio.run(
+                agenerate_with_result(
+                    "hello",
+                    "test.context",
+                    json_schema={"type": "object"},
+                )
             )
 
         assert result["schema_validation"] == validation

@@ -222,6 +222,7 @@ RUNTIME_REASON_CODES = frozenset(
         "provider_unavailable",
         "provider_response_invalid",
         "incomplete_json_length",
+        "incomplete_text_length",
         "unknown",
     }
 )

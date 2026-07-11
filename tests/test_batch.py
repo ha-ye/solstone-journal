@@ -12,6 +12,10 @@ from solstone.think.batch import Batch, BatchRequest
 from solstone.think.models import GEMINI_FLASH, GEMINI_LITE, SchemaValidationError
 
 
+def _result(text: str = "Response", finish_reason: str = "stop", **extra):
+    return {"text": text, "finish_reason": finish_reason, **extra}
+
+
 def test_batch_request_creation():
     """Test BatchRequest can be created with required and custom params."""
     # Required params only
@@ -50,10 +54,10 @@ def test_batch_request_custom_attributes():
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_basic(mock_agenerate):
     """Test basic batch execution with single request."""
-    mock_agenerate.return_value = "Response 1"
+    mock_agenerate.return_value = _result("Response 1")
 
     # Create batch and add request
     batch = Batch(max_concurrent=5)
@@ -80,10 +84,10 @@ async def test_batch_basic(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_with_model_override(mock_agenerate):
     """Test batch with explicit model override."""
-    mock_agenerate.return_value = "Response"
+    mock_agenerate.return_value = _result("Response")
 
     batch = Batch(max_concurrent=5)
     req = batch.create(contents="Test", context="test.context", model=GEMINI_FLASH)
@@ -102,10 +106,14 @@ async def test_batch_with_model_override(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_multiple_requests(mock_agenerate):
     """Test batch with multiple requests."""
-    mock_agenerate.side_effect = ["Response 1", "Response 2", "Response 3"]
+    mock_agenerate.side_effect = [
+        _result("Response 1"),
+        _result("Response 2"),
+        _result("Response 3"),
+    ]
 
     batch = Batch(max_concurrent=2)
 
@@ -141,7 +149,7 @@ async def test_batch_multiple_requests(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_error_handling(mock_agenerate):
     """Test that errors are captured in request.error."""
     mock_agenerate.side_effect = ValueError("API error")
@@ -165,7 +173,7 @@ async def test_batch_error_handling(mock_agenerate):
 
 @pytest.mark.asyncio
 @patch("solstone.think.batch.resolve_provider")
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_preserves_exception_metadata(
     mock_agenerate, mock_resolve_provider
 ):
@@ -197,7 +205,7 @@ async def test_batch_preserves_exception_metadata(
 
 @pytest.mark.asyncio
 @patch("solstone.think.batch.resolve_provider")
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_classifies_exception_metadata_when_attrs_missing(
     mock_agenerate, mock_resolve_provider
 ):
@@ -238,10 +246,10 @@ def test_batch_update_clears_error_metadata():
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_dynamic_adding(mock_agenerate):
     """Test adding requests dynamically during iteration."""
-    mock_agenerate.return_value = "Response"
+    mock_agenerate.return_value = _result("Response")
 
     batch = Batch(max_concurrent=5)
 
@@ -271,7 +279,7 @@ async def test_batch_dynamic_adding(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_retry_pattern(mock_agenerate):
     """Test retry pattern - add failed request back with different model."""
     # First call fails, second succeeds
@@ -282,7 +290,7 @@ async def test_batch_retry_pattern(mock_agenerate):
         call_count += 1
         if call_count == 1:
             raise ValueError("Transient error")
-        return "Success on retry"
+        return _result("Success on retry")
 
     mock_agenerate.side_effect = mock_response
 
@@ -314,10 +322,10 @@ async def test_batch_retry_pattern(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_factory_method(mock_agenerate):
     """Test that batch.create() factory method works correctly."""
-    mock_agenerate.return_value = "Response"
+    mock_agenerate.return_value = _result("Response")
 
     batch = Batch()
 
@@ -339,10 +347,10 @@ async def test_batch_factory_method(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_can_add_after_draining(mock_agenerate):
     """Test that adding after draining works (reusable batch)."""
-    mock_agenerate.side_effect = ["Response 1", "Response 2"]
+    mock_agenerate.side_effect = [_result("Response 1"), _result("Response 2")]
 
     batch = Batch()
 
@@ -372,7 +380,7 @@ async def test_batch_can_add_after_draining(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_empty_batch(mock_agenerate):
     """Test that empty batch (no requests) completes immediately."""
     batch = Batch()
@@ -385,7 +393,7 @@ async def test_batch_empty_batch(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_concurrency_limit(mock_agenerate):
     """Test that semaphore limits concurrent requests."""
     # Track concurrent calls
@@ -404,7 +412,7 @@ async def test_batch_concurrency_limit(mock_agenerate):
         async with lock:
             concurrent_calls -= 1
 
-        return "Response"
+        return _result("Response")
 
     mock_agenerate.side_effect = mock_with_tracking
 
@@ -426,7 +434,7 @@ async def test_batch_concurrency_limit(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_update_method(mock_agenerate):
     """Test batch.update() method for modifying and re-adding requests."""
     # Track which model was used in each call
@@ -434,7 +442,7 @@ async def test_batch_update_method(mock_agenerate):
 
     async def mock_track_model(*args, **kwargs):
         call_models.append(kwargs.get("model", "unknown"))
-        return f"Response from {kwargs.get('model', 'unknown')}"
+        return _result(f"Response from {kwargs.get('model', 'unknown')}")
 
     mock_agenerate.side_effect = mock_track_model
 
@@ -494,10 +502,10 @@ def test_batch_request_with_timeout():
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_timeout_passthrough(mock_agenerate):
-    """Test that timeout_s is passed through to agenerate."""
-    mock_agenerate.return_value = "Response"
+    """Test that timeout_s is passed through to agenerate_with_result."""
+    mock_agenerate.return_value = _result("Response")
 
     batch = Batch(max_concurrent=5)
 
@@ -511,17 +519,17 @@ async def test_batch_timeout_passthrough(mock_agenerate):
 
     assert len(results) == 1
 
-    # Verify timeout_s was passed to agenerate
+    # Verify timeout_s was passed to agenerate_with_result
     mock_agenerate.assert_called_once()
     call_kwargs = mock_agenerate.call_args[1]
     assert call_kwargs["timeout_s"] == 45
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_client_passthrough(mock_agenerate):
-    """Test that client is passed through to agenerate for Google connection reuse."""
-    mock_agenerate.return_value = "Response"
+    """Test that client is passed through for Google connection reuse."""
+    mock_agenerate.return_value = _result("Response")
 
     # Create a mock client (would be genai.Client for Google)
     mock_client = object()
@@ -542,10 +550,10 @@ async def test_batch_client_passthrough(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_passes_json_schema_to_agenerate(mock_agenerate):
-    """Test that json_schema is passed through to agenerate."""
-    mock_agenerate.return_value = "Response"
+    """Test that json_schema is passed through to agenerate_with_result."""
+    mock_agenerate.return_value = _result("Response")
 
     batch = Batch(max_concurrent=5)
     req = batch.create(
@@ -566,11 +574,101 @@ async def test_batch_passes_json_schema_to_agenerate(mock_agenerate):
 
 
 @pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate", new_callable=AsyncMock)
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_schema_validation_error_populates_request_error(mock_agenerate):
     mock_agenerate.side_effect = SchemaValidationError(
         [{"path": "", "constraint": "json_parse", "message": "empty"}],
         "",
+    )
+
+    batch = Batch(max_concurrent=5)
+    req = batch.create(
+        contents="Test prompt",
+        context="test.context",
+        json_schema={"type": "object"},
+    )
+    batch.add(req)
+
+    results = []
+    async for completed_req in batch.drain_batch():
+        results.append(completed_req)
+
+    assert len(results) == 1
+    assert results[0].response is None
+    assert "schema validation" in results[0].error
+
+
+@pytest.mark.asyncio
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
+async def test_batch_non_json_length_finish_populates_text_length_error(mock_agenerate):
+    mock_agenerate.return_value = _result("partial text", finish_reason="max_tokens")
+
+    batch = Batch(max_concurrent=5)
+    req = batch.create(contents="Test prompt", context="test.context")
+    batch.add(req)
+
+    results = []
+    async for completed_req in batch.drain_batch():
+        results.append(completed_req)
+
+    assert len(results) == 1
+    assert results[0].response is None
+    assert results[0].reason_code == "incomplete_text_length"
+    assert "Text response incomplete" in results[0].error
+
+
+@pytest.mark.asyncio
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
+async def test_batch_non_json_stop_finish_succeeds(mock_agenerate):
+    mock_agenerate.return_value = _result("complete text", finish_reason="stop")
+
+    batch = Batch(max_concurrent=1)
+    req = batch.create(
+        contents="Test",
+        context="test.context",
+        json_output=False,
+    )
+    batch.add(req)
+
+    results = []
+    async for completed_req in batch.drain_batch():
+        results.append(completed_req)
+
+    assert len(results) == 1
+    assert req.response == "complete text"
+    assert req.error is None
+    assert req.reason_code is None
+
+
+@pytest.mark.asyncio
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
+async def test_batch_non_json_non_length_finish_is_provider_response_invalid(
+    mock_agenerate,
+):
+    mock_agenerate.return_value = _result("", finish_reason="content_filter")
+
+    batch = Batch(max_concurrent=5)
+    req = batch.create(contents="Test prompt", context="test.context")
+    batch.add(req)
+
+    results = []
+    async for completed_req in batch.drain_batch():
+        results.append(completed_req)
+
+    assert len(results) == 1
+    assert results[0].response is None
+    assert results[0].reason_code == "provider_response_invalid"
+
+
+@pytest.mark.asyncio
+@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
+async def test_batch_full_result_schema_invalid_stays_hard_failure(mock_agenerate):
+    mock_agenerate.return_value = _result(
+        '{"field": "bad"}',
+        schema_validation={
+            "valid": False,
+            "errors": [{"path": "/field", "constraint": "type", "message": "bad"}],
+        },
     )
 
     batch = Batch(max_concurrent=5)

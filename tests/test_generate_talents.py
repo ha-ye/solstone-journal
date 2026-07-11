@@ -48,20 +48,28 @@ def test_json_extraction_talents_pin_output_cap_and_timeout():
 
     largest_observed_legitimate_completion = 3560
 
-    for name in ("sense", "participation"):
-        config = get_talent(name)
-        params = _generation_params(config)
-        max_output_tokens = params["max_output_tokens"]
-        # Mirror talents.py's resolution: frontmatter timeout_s short-circuits
-        # the derivation.
-        resolved = config.get("timeout_s") or min(
-            480,
-            max(120, (max_output_tokens + params["thinking_budget"]) // 100),
-        )
+    sense_config = get_talent("sense")
+    sense_params = _generation_params(sense_config)
+    assert sense_params["max_output_tokens"] == 6144
+    assert sense_config.get("timeout_s") == 480
+    assert "temperature" not in sense_config
 
-        assert max_output_tokens >= 2 * largest_observed_legitimate_completion
-        assert max_output_tokens < 8192 * 6
-        assert config.get("timeout_s") == 480
-        assert resolved == config["timeout_s"]
-        assert resolved >= 480
-        assert "temperature" not in config
+    participation_config = get_talent("participation")
+    participation_params = _generation_params(participation_config)
+    participation_tokens = participation_params["max_output_tokens"]
+    # Participation did not change and still keeps 2x headroom over the
+    # largest legitimate completion observed when this guard was added.
+    assert participation_tokens == 12288
+    assert participation_tokens >= 2 * largest_observed_legitimate_completion
+    assert participation_tokens < 8192 * 6
+    assert participation_config.get("timeout_s") == 480
+    resolved = participation_config.get("timeout_s") or min(
+        480,
+        max(
+            120,
+            (participation_tokens + participation_params["thinking_budget"]) // 100,
+        ),
+    )
+    assert resolved == participation_config["timeout_s"]
+    assert resolved >= 480
+    assert "temperature" not in participation_config

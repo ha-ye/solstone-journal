@@ -60,6 +60,13 @@ _QWEN_TOP_P = 0.8
 _QWEN_TOP_K = 20
 _QWEN_MIN_P = 0.0
 _QWEN_PRESENCE_PENALTY = 1.5
+_LOCAL_FINISH_REASON_MAP = {
+    "stop": "stop",
+    "length": "max_tokens",
+    "max_tokens": "max_tokens",
+    "content_filter": "content_filter",
+}
+_LOCAL_UNSUPPORTED_FINISH_REASONS = frozenset({"tool_calls", "function_call"})
 
 
 @dataclass(frozen=True)
@@ -280,6 +287,27 @@ def _extract_usage(data: dict[str, Any]) -> dict[str, int] | None:
     return normalized
 
 
+def _normalize_finish_reason(raw: Any) -> str:
+    if not isinstance(raw, str) or not raw.strip():
+        raise LocalProviderError(
+            "provider_response_invalid",
+            "Local model response did not include a finish reason.",
+        )
+    reason = raw.strip().lower()
+    normalized = _LOCAL_FINISH_REASON_MAP.get(reason)
+    if normalized is not None:
+        return normalized
+    if reason in _LOCAL_UNSUPPORTED_FINISH_REASONS:
+        raise LocalProviderError(
+            "provider_response_invalid",
+            f"Local model returned unsupported finish reason: {reason}",
+        )
+    raise LocalProviderError(
+        "provider_response_invalid",
+        f"Local model returned unknown finish reason: {reason}",
+    )
+
+
 def _parse_response(data: dict[str, Any]) -> GenerateResult:
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices:
@@ -298,7 +326,7 @@ def _parse_response(data: dict[str, Any]) -> GenerateResult:
         text=text,
         model=LOCAL_MODEL,
         usage=_extract_usage(data),
-        finish_reason=choice.get("finish_reason"),
+        finish_reason=_normalize_finish_reason(choice.get("finish_reason")),
         thinking=None,
     )
 

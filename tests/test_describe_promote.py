@@ -6,6 +6,7 @@ import json
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from PIL import Image
@@ -63,6 +64,10 @@ def _jsonl_rows(path: Path) -> list[dict]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line
     ]
+
+
+def _generate_result(text: str, finish_reason: str = "stop") -> dict:
+    return {"text": text, "finish_reason": finish_reason}
 
 
 def _canned_detection() -> dict:
@@ -280,6 +285,101 @@ async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
     assert output_path.read_text() == expected
     assert output_path.name in [path.name for path in output_path.parent.iterdir()]
     _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_browsing_truncation_does_not_promote_category_content(
+    tmp_path, monkeypatch
+):
+    from solstone.think import batch as batch_module
+    from solstone.think import models
+
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(
+        video_path,
+        [_frame(1, 0.0, frame_bytes)],
+        monkeypatch,
+    )
+    completed = []
+    real_batch = batch_module.Batch
+
+    class SpyBatch(real_batch):
+        async def drain_batch(self):
+            async for request in super().drain_batch():
+                completed.append(
+                    {
+                        "request_type": getattr(request, "request_type", None),
+                        "reason_code": getattr(request, "reason_code", None),
+                        "retry_count": getattr(request, "retry_count", None),
+                        "extraction_category": getattr(
+                            request, "extraction_category", None
+                        ),
+                    }
+                )
+                yield request
+
+    categorize = _generate_result(
+        json.dumps(
+            {
+                "visual_description": "A browser page is open.",
+                "primary": "browsing",
+                "secondary": "none",
+                "overlap": True,
+            }
+        )
+    )
+    truncated = _generate_result("partial browsing notes", "max_tokens")
+    agenerate = AsyncMock(return_value=truncated)
+    agenerate.side_effect = [categorize, *[truncated for _ in range(5)]]
+
+    monkeypatch.setattr(batch_module, "Batch", SpyBatch)
+    monkeypatch.setattr(batch_module, "agenerate_with_result", agenerate)
+    monkeypatch.setattr(
+        batch_module,
+        "resolve_provider",
+        lambda _context, _interface: ("google", "gemini-test"),
+    )
+    monkeypatch.setattr(
+        models,
+        "resolve_provider",
+        lambda _context, _interface: ("google", "gemini-test"),
+    )
+    monkeypatch.setattr(
+        processing_record_module, "now_iso_utc", lambda: "2026-06-30T12:00:00Z"
+    )
+    monkeypatch.setattr(describe_module, "callosum_send", lambda *a, **k: None)
+    monkeypatch.setattr(describe_module, "get_config", lambda: {"describe": {}})
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [1],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    rows = _jsonl_rows(output_path)
+    result = rows[1]
+    category_requests = [
+        request
+        for request in completed
+        if request["request_type"] == describe_module.RequestType.CATEGORY
+    ]
+
+    assert agenerate.call_count == 6
+    assert len(category_requests) == 5
+    assert category_requests[-1]["reason_code"] == "incomplete_text_length"
+    assert result["enhanced"] is True
+    assert result["content"] == {}
+    assert "browsing" not in result["content"]
+    assert result["error"] == "Text response incomplete (reason: max_tokens)"
+    assert result["requests"][-1]["category"] == "browsing"
+    assert result["requests"][-1]["retries"] == 4
 
 
 @pytest.mark.asyncio

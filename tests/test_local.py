@@ -65,6 +65,17 @@ def _schema_keyword_paths(schema, keywords):
     return found
 
 
+def _local_response(finish_reason):
+    return {
+        "choices": [
+            {
+                "message": {"content": "ok"},
+                "finish_reason": finish_reason,
+            }
+        ]
+    }
+
+
 def test_local_model_prefix_maps_to_provider():
     assert get_model_provider(LOCAL_MODEL) == "local"
 
@@ -112,6 +123,33 @@ def test_context_budget_exceeded_classifies_by_reason_code():
         )
         == "context_budget_exceeded"
     )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("stop", "stop"),
+        ("length", "max_tokens"),
+        ("max_tokens", "max_tokens"),
+        ("content_filter", "content_filter"),
+    ],
+)
+def test_parse_response_normalizes_known_finish_reasons(raw, expected):
+    provider = _provider()
+
+    result = provider._parse_response(_local_response(raw))
+
+    assert result["finish_reason"] == expected
+
+
+@pytest.mark.parametrize("raw", [None, "", "weird", "tool_calls", "function_call"])
+def test_parse_response_fails_closed_on_bad_finish_reasons(raw):
+    provider = _provider()
+
+    with pytest.raises(provider.LocalProviderError) as exc_info:
+        provider._parse_response(_local_response(raw))
+
+    assert exc_info.value.reason_code == "provider_response_invalid"
 
 
 def test_cloud_generate_providers_do_not_reference_local_budget():
@@ -839,7 +877,9 @@ def test_run_generate_byo_omits_auth_header_without_credential(monkeypatch):
             return None
 
         def json(self):
-            return {"choices": [{"message": {"content": "ok"}}]}
+            return {
+                "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]
+            }
 
     def fake_post(url, **kwargs):
         captured.update({"url": url, **kwargs})
@@ -854,7 +894,20 @@ def test_run_generate_byo_omits_auth_header_without_credential(monkeypatch):
     assert "headers" not in captured
 
 
-def test_generate_schema_files_do_not_declare_bounds():
+def _load_schema(path: str) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _sense_collection_bounds(schema: dict) -> dict[str, int]:
+    properties = schema["properties"]
+    return {
+        "entities": properties["entities"]["maxItems"],
+        "facets": properties["facets"]["maxItems"],
+        "speakers": properties["speakers"]["maxItems"],
+    }
+
+
+def test_generate_schema_files_declare_only_safe_sense_collection_bounds():
     bounded_keys = {
         "minItems",
         "maxItems",
@@ -863,29 +916,60 @@ def test_generate_schema_files_do_not_declare_bounds():
         "minimum",
         "maximum",
     }
-    paths = [
-        Path("solstone/talent/sense.schema.json"),
-        Path("solstone/talent/participation.schema.json"),
-        Path("solstone/talent/participation_entry.schema.json"),
+    sense = _load_schema("solstone/talent/sense.schema.json")
+
+    assert _sense_collection_bounds(sense) == {
+        "entities": 96,
+        "facets": 16,
+        "speakers": 16,
+    }
+    assert _schema_keyword_paths(sense, {"maxItems"}) == [
+        "$/properties/entities/maxItems",
+        "$/properties/facets/maxItems",
+        "$/properties/speakers/maxItems",
     ]
-    found = {}
+    assert _schema_keyword_paths(sense, {"pattern", "minLength", "maxLength"}) == []
 
-    def walk(node, keys):
-        if isinstance(node, dict):
-            keys.update(bounded_keys & node.keys())
-            for value in node.values():
-                walk(value, keys)
-        elif isinstance(node, list):
-            for item in node:
-                walk(item, keys)
+    for path in (
+        "solstone/talent/participation.schema.json",
+        "solstone/talent/participation_entry.schema.json",
+    ):
+        assert _schema_keyword_paths(_load_schema(path), bounded_keys) == []
 
-    for path in paths:
-        keys = set()
-        walk(json.loads(path.read_text(encoding="utf-8")), keys)
-        if keys:
-            found[str(path)] = sorted(keys)
 
-    assert found == {}
+def test_sense_collection_bounds_survive_runtime_and_local_schema_prep():
+    from solstone.think.talent import hydrate_runtime_enums
+
+    provider = _provider()
+    sense = _load_schema("solstone/talent/sense.schema.json")
+
+    hydrated = hydrate_runtime_enums(sense)
+    prepared = provider._prepare_local_schema(hydrated)
+
+    assert _sense_collection_bounds(hydrated) == {
+        "entities": 96,
+        "facets": 16,
+        "speakers": 16,
+    }
+    assert _sense_collection_bounds(prepared) == {
+        "entities": 96,
+        "facets": 16,
+        "speakers": 16,
+    }
+
+
+def test_local_input_budget_reserve_for_changed_caps():
+    from solstone.think.providers.local_budget import compute_input_budget
+
+    floor = 16384
+    capable = 32768
+
+    assert compute_input_budget(512, floor) - compute_input_budget(1024, floor) == 512
+    assert compute_input_budget(2048, floor) - compute_input_budget(4096, floor) == 2048
+    assert compute_input_budget(12288, floor) == compute_input_budget(6144, floor)
+    assert compute_input_budget(12288, floor) == floor - 4096 - 256
+    assert compute_input_budget(12288, capable) == capable - 8192 - 256
+    assert compute_input_budget(6144, capable) == capable - 6144 - 256
 
 
 def test_run_generate_byo_network_error_maps_to_unreachable(monkeypatch):

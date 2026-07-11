@@ -49,6 +49,7 @@
     },
     "entities": {
       "type": "array",
+      "maxItems": 96,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -106,6 +107,7 @@
     },
     "facets": {
       "type": "array",
+      "maxItems": 16,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -146,6 +148,7 @@
     },
     "speakers": {
       "type": "array",
+      "maxItems": 16,
       "items": {
         "type": "string"
       }

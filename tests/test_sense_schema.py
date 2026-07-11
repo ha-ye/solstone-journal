@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import frontmatter
+import pytest
 from jsonschema import Draft202012Validator
 
 from solstone.think.activities import DEFAULT_ACTIVITIES
@@ -37,6 +38,49 @@ def _section(text: str, start: str, end: str | None = None) -> str:
 
 def _facet_naming_template() -> str:
     return FACET_NAMING_PATH.read_text(encoding="utf-8").strip()
+
+
+def _valid_sense_payload() -> dict:
+    return {
+        "density": "active",
+        "content_type": "coding",
+        "activity_summary": "Writing tests.",
+        "entities": [],
+        "facets": [
+            {
+                "facet": RUNTIME_FACETS_SENTINEL,
+                "activity": "Writing tests.",
+                "level": "low",
+            }
+        ],
+        "speculative_facet": "test-planning",
+        "meeting_detected": False,
+        "speakers": [],
+        "recommend": {
+            "screen_record": False,
+            "speaker_attribution": False,
+        },
+        "emotional_register": "focused",
+    }
+
+
+def _sense_entity(index: int) -> dict:
+    return {
+        "type": "Person",
+        "name": f"Person {index}",
+        "role": "mentioned",
+        "source": "screen",
+        "context": "visible in the workspace",
+        "level": "low",
+    }
+
+
+def _sense_facet(index: int) -> dict:
+    return {
+        "facet": RUNTIME_FACETS_SENTINEL,
+        "activity": f"Activity {index}",
+        "level": "low",
+    }
 
 
 def _write_prompt_journal(tmp_path: Path, *, with_facet: bool) -> None:
@@ -119,27 +163,7 @@ def test_sense_schema_facet_uses_runtime_sentinel_constant():
 def test_sense_schema_speculative_facet_nullable_and_required():
     schema = json.loads(SENSE_SCHEMA_PATH.read_text(encoding="utf-8"))
     validator = Draft202012Validator(schema)
-    valid = {
-        "density": "active",
-        "content_type": "coding",
-        "activity_summary": "Writing tests.",
-        "entities": [],
-        "facets": [
-            {
-                "facet": RUNTIME_FACETS_SENTINEL,
-                "activity": "Writing tests.",
-                "level": "low",
-            }
-        ],
-        "speculative_facet": "test-planning",
-        "meeting_detected": False,
-        "speakers": [],
-        "recommend": {
-            "screen_record": False,
-            "speaker_attribution": False,
-        },
-        "emotional_register": "focused",
-    }
+    valid = _valid_sense_payload()
 
     assert schema["properties"]["speculative_facet"] == {"type": ["string", "null"]}
     assert "speculative_facet" in schema["required"]
@@ -152,6 +176,36 @@ def test_sense_schema_speculative_facet_nullable_and_required():
     missing = dict(valid)
     del missing["speculative_facet"]
     assert list(validator.iter_errors(missing))
+
+
+@pytest.mark.parametrize(
+    ("collection", "ok_count", "bad_count", "factory"),
+    [
+        ("entities", 96, 97, _sense_entity),
+        ("facets", 16, 17, _sense_facet),
+        ("speakers", 16, 17, lambda index: f"Speaker {index}"),
+    ],
+)
+def test_sense_schema_collection_bounds_independently(
+    collection,
+    ok_count,
+    bad_count,
+    factory,
+):
+    schema = json.loads(SENSE_SCHEMA_PATH.read_text(encoding="utf-8"))
+    validator = Draft202012Validator(schema)
+    payload = _valid_sense_payload()
+
+    payload[collection] = [factory(index) for index in range(ok_count)]
+    assert list(validator.iter_errors(payload)) == []
+
+    payload[collection] = [factory(index) for index in range(bad_count)]
+    errors = list(validator.iter_errors(payload))
+
+    assert any(
+        error.validator == "maxItems" and list(error.path) == [collection]
+        for error in errors
+    )
 
 
 def test_sense_prompt_renders_speculative_facet_instruction_in_steady_state(

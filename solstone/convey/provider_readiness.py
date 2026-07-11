@@ -274,6 +274,15 @@ _ENTRIES: dict[str, _Entry] = {
         ),
         recovery_action=None,
     ),
+    "incomplete_text_length": _Entry(
+        klass="generic",
+        summary="the answer ran out of room before it finished",
+        detail=(
+            "The reply hit its length limit before it could finish. Try again "
+            "with less at once or choose another provider."
+        ),
+        recovery_action=None,
+    ),
     "max_turns_exhausted": _Entry(
         klass="generic",
         summary="this took too many steps to finish",

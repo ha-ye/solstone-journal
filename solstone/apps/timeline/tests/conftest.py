@@ -113,14 +113,17 @@ def mock_agenerate(monkeypatch):
 
         async def _fake_agenerate(**kwargs):
             if not responses:
-                return json.dumps({"picks": [0], "rationale": "default"})
+                return {
+                    "text": json.dumps({"picks": [0], "rationale": "default"}),
+                    "finish_reason": "stop",
+                }
             item = responses.pop(0)
             if isinstance(item, Exception):
                 raise item
-            return json.dumps(item)
+            return {"text": json.dumps(item), "finish_reason": "stop"}
 
         mock = AsyncMock(side_effect=_fake_agenerate)
-        monkeypatch.setattr("solstone.think.batch.agenerate", mock)
+        monkeypatch.setattr("solstone.think.batch.agenerate_with_result", mock)
         return mock
 
     return _install

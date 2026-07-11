@@ -9,7 +9,7 @@
   "tier": 3,
   "output": "json",
   "schema": "sense.schema.json",
-  "max_output_tokens": 12288,
+  "max_output_tokens": 6144,
   "timeout_s": 480,
   "load": {"transcripts": true, "percepts": true, "talents": false}
 }

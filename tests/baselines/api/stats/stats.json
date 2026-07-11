@@ -365,7 +365,7 @@
         "talents": false,
         "transcripts": true
       },
-      "max_output_tokens": 12288,
+      "max_output_tokens": 6144,
       "mtime": 0,
       "output": "json",
       "path": "<PROJECT>/solstone/talent/sense.md",

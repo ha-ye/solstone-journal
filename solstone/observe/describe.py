@@ -792,7 +792,7 @@ class VideoProcessor:
                     json_output=True,
                     json_schema=_SCHEMA,
                     temperature=0.7,
-                    max_output_tokens=1024,
+                    max_output_tokens=512,
                     thinking_budget=1024,
                 )
 

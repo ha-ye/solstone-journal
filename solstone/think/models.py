@@ -232,6 +232,26 @@ class IncompleteJSONError(ValueError):
         super().__init__(f"JSON response incomplete (reason: {reason})")
 
 
+class IncompleteTextError(ValueError):
+    """Raised when a non-JSON response is truncated due to token limits."""
+
+    def __init__(self, reason: str, partial_text: str):
+        self.reason = reason
+        self.partial_text = partial_text
+        self.reason_code = "incomplete_text_length"
+        super().__init__(f"Text response incomplete (reason: {reason})")
+
+
+class ProviderResponseInvalidError(ValueError):
+    """Raised when a provider reports a non-success finish for plain text."""
+
+    reason_code = "provider_response_invalid"
+
+    def __init__(self, reason: str):
+        self.reason = reason
+        super().__init__(f"Provider response did not finish cleanly (reason: {reason})")
+
+
 class SchemaValidationError(ValueError):
     """Raised when JSON response text fails local schema validation.
 
@@ -1293,20 +1313,42 @@ def get_usage_cost(
 # ---------------------------------------------------------------------------
 
 
-def _validate_json_response(result: Dict[str, Any], json_output: bool) -> None:
-    """Validate response for JSON output mode.
-
-    Raises IncompleteJSONError if finish_reason indicates truncation.
-    """
-    if not json_output:
-        return
-
+def finish_reason_error(
+    result: Dict[str, Any],
+    *,
+    json_output: bool,
+) -> Exception | None:
+    """Map a finish reason to the error it should raise, or None if acceptable."""
     finish_reason = result.get("finish_reason")
-    if finish_reason and finish_reason != "stop":
-        raise IncompleteJSONError(
+    if not finish_reason or finish_reason == "stop":
+        return None
+
+    if json_output:
+        return IncompleteJSONError(
             reason=finish_reason,
             partial_text=result.get("text", ""),
         )
+
+    if str(finish_reason).strip().lower() in _LENGTH_FINISH_REASONS:
+        return IncompleteTextError(
+            reason=finish_reason,
+            partial_text=result.get("text", ""),
+        )
+    return ProviderResponseInvalidError(reason=finish_reason)
+
+
+def _validate_json_response(result: Dict[str, Any], json_output: bool) -> None:
+    """Validate response for JSON output mode.
+
+    Raises IncompleteJSONError if finish_reason is a present non-stop value.
+    """
+    # Non-JSON generate() callers (planner, depict, importers, enrich, extract,
+    # transcribe, detect_*) keep today's leniency; the Batch boundary is strict.
+    if not json_output:
+        return
+    error = finish_reason_error(result, json_output=True)
+    if error is not None:
+        raise error
 
 
 def _validate_schema(text: str, schema: dict) -> dict:
@@ -1717,6 +1759,75 @@ def generate_with_result(
     return result
 
 
+async def agenerate_with_result(
+    contents: Union[str, List[Any]],
+    context: str,
+    temperature: float = 0.3,
+    max_output_tokens: int = 8192 * 2,
+    system_instruction: Optional[str] = None,
+    json_output: bool = False,
+    *,
+    json_schema: dict | None = None,
+    thinking_budget: Optional[int] = None,
+    timeout_s: Optional[float] = None,
+    **kwargs: Any,
+) -> dict:
+    """Async generate text and return the full GenerateResult dict."""
+    from solstone.think.providers import get_provider_module
+
+    if json_schema is not None:
+        json_output = True
+
+    model_override = kwargs.pop("model", None)
+    provider_override = kwargs.pop("provider", None)
+
+    provider, model = resolve_provider(context, "generate")
+    if provider_override:
+        provider = provider_override
+        if not model_override:
+            model = resolve_model_for_provider(context, provider, "generate")
+    if model_override:
+        model = model_override
+
+    _raise_if_no_brain(provider)
+    _reject_local_cloud_model_override(provider, model_override)
+    _raise_if_confidential_unverified()
+
+    provider_mod = get_provider_module(provider)
+    provider_schema = prepare_provider_schema(json_schema, provider)
+
+    timeout_s = DEFAULT_PROVIDER_TIMEOUT_S if timeout_s is None else timeout_s
+
+    result = await provider_mod.run_agenerate(
+        contents=contents,
+        model=model,
+        provider=provider,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        system_instruction=system_instruction,
+        json_output=json_output,
+        json_schema=provider_schema,
+        thinking_budget=thinking_budget,
+        timeout_s=timeout_s,
+        **kwargs,
+    )
+
+    if result.get("usage"):
+        log_token_usage(
+            model=result.get("model") or model,
+            usage=result["usage"],
+            context=context,
+            type="generate",
+        )
+
+    _validate_json_response(result, json_output)
+
+    if json_schema is not None:
+        result["schema_validation"] = _validate_schema(result["text"], json_schema)
+
+    return result
+
+
 async def agenerate(
     contents: Union[str, List[Any]],
     context: str,
@@ -1855,6 +1966,10 @@ __all__ = [
     "generate",
     "generate_with_result",
     "agenerate",
+    "agenerate_with_result",
+    "finish_reason_error",
+    "IncompleteTextError",
+    "ProviderResponseInvalidError",
     "resolve_provider",
     "resolve_effective_route",
     "is_local_provider_needed",
