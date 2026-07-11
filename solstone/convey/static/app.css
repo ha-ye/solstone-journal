@@ -3155,6 +3155,8 @@ body.has-date-nav .chat-app {
   margin-bottom: 0;
 }
 
+.chat-bubble-text--markdown pre { max-width: 100%; overflow-x: auto; }
+
 .chat-time-sep,
 .chat-empty {
   text-align: center;

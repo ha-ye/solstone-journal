@@ -167,6 +167,23 @@ def test_chat_day_serves_shell_with_chat_bar(journal_copy, monkeypatch):
         assert html.count('id="chatBarForm"') == 1
 
 
+def _css_declaration_block(css: str, selector: str) -> str:
+    start = css.index(f"{selector} {{") + len(f"{selector} {{")
+    end = css.index("}", start)
+    return css[start:end]
+
+
+def test_chat_bubble_markdown_css_is_wired():
+    css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
+
+    markdown_block = _css_declaration_block(css, ".chat-bubble-text--markdown")
+    pre_block = _css_declaration_block(css, ".chat-bubble-text--markdown pre")
+
+    assert "white-space: normal" in markdown_block
+    assert "max-width: 100%" in pre_block
+    assert "overflow-x: auto" in pre_block
+
+
 def test_chat_thinking_css_selector_is_wired():
     css = Path("solstone/convey/static/app.css").read_text(encoding="utf-8")
 
