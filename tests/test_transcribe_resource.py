@@ -63,19 +63,37 @@ def test_local_stt_backend_platform_mapping(
         "google_key_present",
         "floor_bytes",
         "local_backend",
+        "confidential_lane_active",
         "expected",
     ),
     [
-        (4 * 1024**3, False, 4 * 1024**3, "parakeet", "parakeet"),
-        (5 * 1024**3, True, 4 * 1024**3, "parakeet", "parakeet"),
-        (3 * 1024**3, True, 4 * 1024**3, "parakeet", "gemini"),
-        (None, True, 4 * 1024**3, "parakeet", "gemini"),
-        (3 * 1024**3, True, None, None, "gemini"),
-        (3 * 1024**3, False, 4 * 1024**3, "parakeet", resource.STT_SURFACE),
-        (None, False, 4 * 1024**3, "parakeet", resource.STT_SURFACE),
-        (3 * 1024**3, False, None, None, resource.STT_SURFACE),
-        (4 * 1024**3, False, 4 * 1024**3, "parakeet", "parakeet"),
-        (3 * 1024**3, True, 4 * 1024**3, "parakeet", "gemini"),
+        (4 * 1024**3, False, 4 * 1024**3, "parakeet", False, "parakeet"),
+        (5 * 1024**3, True, 4 * 1024**3, "parakeet", False, "parakeet"),
+        (3 * 1024**3, True, 4 * 1024**3, "parakeet", False, "gemini"),
+        (None, True, 4 * 1024**3, "parakeet", False, "gemini"),
+        (3 * 1024**3, True, None, None, False, "gemini"),
+        (
+            3 * 1024**3,
+            False,
+            4 * 1024**3,
+            "parakeet",
+            False,
+            resource.STT_SURFACE,
+        ),
+        (
+            None,
+            False,
+            4 * 1024**3,
+            "parakeet",
+            False,
+            resource.STT_SURFACE,
+        ),
+        (3 * 1024**3, False, None, None, False, resource.STT_SURFACE),
+        (4 * 1024**3, False, 4 * 1024**3, "parakeet", False, "parakeet"),
+        (3 * 1024**3, True, 4 * 1024**3, "parakeet", False, "gemini"),
+        (3 * 1024**3, True, 4 * 1024**3, "parakeet", True, "parakeet"),
+        (3 * 1024**3, True, 4 * 1024**3, None, True, resource.STT_SURFACE),
+        (5 * 1024**3, True, 4 * 1024**3, "parakeet", True, "parakeet"),
     ],
 )
 def test_select_stt_backend_matrix(
@@ -83,6 +101,7 @@ def test_select_stt_backend_matrix(
     google_key_present: bool,
     floor_bytes: int | None,
     local_backend: str | None,
+    confidential_lane_active: bool,
     expected: str,
 ) -> None:
     assert (
@@ -91,6 +110,7 @@ def test_select_stt_backend_matrix(
             google_key_present=google_key_present,
             floor_bytes=floor_bytes,
             local_backend=local_backend,
+            confidential_lane_active=confidential_lane_active,
         )
         == expected
     )
@@ -102,6 +122,7 @@ def test_select_stt_backend_is_deterministic() -> None:
         "google_key_present": True,
         "floor_bytes": 4 * 1024**3,
         "local_backend": "parakeet",
+        "confidential_lane_active": False,
     }
 
     assert resource.select_stt_backend(**args) == resource.select_stt_backend(**args)

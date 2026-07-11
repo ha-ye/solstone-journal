@@ -271,6 +271,49 @@ class TestNoiseUpgradeGate:
 
         assert mock_process_audio.call_args.kwargs["backend"] == "revai"
 
+    def test_confidential_lane_blocks_revai_upgrade(
+        self, audio_path, args, audio_buffer
+    ):
+        from solstone.observe.transcribe.main import _process_one
+
+        vad = VadResult(
+            duration=10.0,
+            speech_duration=5.0,
+            has_speech=True,
+            speech_segments=[(1.0, 6.0)],
+            noisy_rms=0.02,
+            noisy_s=3.0,
+            loud_windows=100,
+            speech_loud_windows=90,
+        )
+        transcribe_config = {
+            "noise_upgrade": True,
+            "noise_upgrade_min_speech_ratio": 0.3,
+            "parakeet": {},
+        }
+
+        with (
+            patch(
+                "solstone.observe.transcribe.main.load_audio", return_value=audio_buffer
+            ),
+            patch("solstone.observe.vad.run_vad", return_value=vad),
+            patch(
+                "solstone.observe.vad.reduce_audio",
+                return_value=(None, None),
+            ),
+            patch(
+                "solstone.observe.transcribe.main.process_audio"
+            ) as mock_process_audio,
+            patch("solstone.observe.transcribe.revai.has_token", return_value=True),
+            patch(
+                "solstone.think.services.spp.confidential_provenance",
+                return_value={"enabled_at": "2026-05-24T00:00:00Z"},
+            ),
+        ):
+            _process_one(audio_path, args, transcribe_config, "parakeet", [])
+
+        assert mock_process_audio.call_args.kwargs["backend"] == "parakeet"
+
     def test_gate_fallback_when_ratio_none(self, audio_path, args, audio_buffer):
         from solstone.observe.transcribe.main import _process_one
 

@@ -62,7 +62,8 @@ from solstone.think.providers.local_endpoint import (
     normalize_local_endpoint_url,
     resolve_local_endpoint,
 )
-from solstone.think.services import operations, scout, scout_handoff
+from solstone.think.services import operations, scout, scout_handoff, spp, spp_handoff
+from solstone.think.services.constants import SERVICE_SPP
 from solstone.think.utils import CorruptConfigError, get_journal
 from solstone.think.utils import get_config as get_journal_config
 
@@ -98,6 +99,23 @@ def _thinking_operation_failed(detail: str = GENERIC_THINKING_ERROR) -> Any:
     return error_response(SETTINGS_OPERATION_FAILED, detail=detail)
 
 
+_CONFIDENTIAL_PHASE_TO_PRODUCT = {
+    "starting": "starting",
+    "waiting": "waiting",
+    "enabled": "not_verified",
+    "error": "repair_needed",
+}
+
+
+def _remap_confidential_operation(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    if raw is None:
+        return None
+    payload = dict(raw)
+    phase = str(payload.get("phase") or "")
+    payload["phase"] = _CONFIDENTIAL_PHASE_TO_PRODUCT.get(phase, phase)
+    return payload
+
+
 def _start_scout_operation(
     kind: str,
     portal_url: str | None,
@@ -113,6 +131,27 @@ def _start_scout_operation(
                 "success": True,
                 "service": "scout",
                 "operation": scout_lane.remap_operation(payload),
+            }
+        ),
+        202,
+    )
+
+
+def _start_confidential_operation(
+    kind: str,
+    portal_url: str | None,
+    flow: Callable[[], operations.HandoffResult],
+) -> Any:
+    try:
+        payload = operations.start_operation(SERVICE_SPP, kind, portal_url, flow)
+    except operations.OperationBusyError:
+        return error_response(SERVICE_BUSY, detail="operation already running")
+    return (
+        jsonify(
+            {
+                "success": True,
+                "service": SERVICE_SPP,
+                "operation": _remap_confidential_operation(payload),
             }
         ),
         202,
@@ -217,11 +256,18 @@ def _type_settings(providers_config: dict[str, Any]) -> dict[str, dict[str, Any]
     return settings
 
 
-def _lane_for_provider(provider: str, *, local_endpoint_configured: bool) -> str:
+def _lane_for_provider(
+    provider: str,
+    *,
+    local_endpoint_configured: bool,
+    confidential_provenance_present: bool,
+) -> str:
     if provider == NO_BRAIN_PROVIDER:
         return "none"
     if provider == "local":
-        return "byo" if local_endpoint_configured else "local"
+        if local_endpoint_configured:
+            return "confidential" if confidential_provenance_present else "byo"
+        return "local"
     return "byo"
 
 
@@ -230,10 +276,12 @@ def _active_lane_payload(
 ) -> dict[str, Any]:
     endpoint = resolve_local_endpoint()
     local_endpoint_configured = not endpoint.is_bundled
+    confidential_provenance_present = spp.confidential_provenance() is not None
     per_type = {
         agent_type: _lane_for_provider(
             str(settings.get("provider") or ""),
             local_endpoint_configured=local_endpoint_configured,
+            confidential_provenance_present=confidential_provenance_present,
         )
         for agent_type, settings in type_settings.items()
     }
@@ -246,6 +294,11 @@ def _active_lane_payload(
         "split": active == "advanced",
         "scout_enabled": scout.is_scout_enabled(),
         "scout_provenance_configured": scout.scout_provenance() is not None,
+        "confidential_enabled": spp.is_confidential_enabled(),
+        "confidential_provenance_configured": confidential_provenance_present,
+        "confidential_operation": _remap_confidential_operation(
+            operations.operation_for_service(SERVICE_SPP)
+        ),
     }
 
 
@@ -544,6 +597,48 @@ def scout_disable() -> Any:
         )
     except Exception:
         logger.exception("error disabling scout")
+        return _thinking_operation_failed()
+
+
+@thinking_bp.route("/api/confidential/enable", methods=["POST"])
+def confidential_enable() -> Any:
+    try:
+        if spp.confidential_provenance() is not None:
+            return error_response(
+                INVALID_OPERATION_FOR_STATE,
+                detail="confidential processing is already set up.",
+            )
+        consent_url, nonce, base_url = spp_handoff.build_confidential_handoff_url()
+        return _start_confidential_operation(
+            "enable",
+            consent_url,
+            lambda: spp_handoff.run_confidential_handoff(
+                refresh=False,
+                nonce=nonce,
+                base_url=base_url,
+            ),
+        )
+    except Exception:
+        logger.exception("error enabling confidential processing")
+        return _thinking_operation_failed()
+
+
+@thinking_bp.route("/api/confidential/disable", methods=["POST"])
+def confidential_disable() -> Any:
+    try:
+        outcome = spp.disable_confidential()
+        return jsonify(
+            {
+                "success": True,
+                "service": SERVICE_SPP,
+                "result": {
+                    "was_enabled": outcome.was_enabled,
+                    "credential_preserved": outcome.credential_preserved,
+                },
+            }
+        )
+    except Exception:
+        logger.exception("error disabling confidential processing")
         return _thinking_operation_failed()
 
 
@@ -896,10 +991,7 @@ def _lane_provider(request_data: dict[str, Any]) -> str | Any:
     if lane == "confidential":
         return error_response(
             INVALID_OPERATION_FOR_STATE,
-            detail=(
-                "confidential processing isn't open yet — scouts get first access. "
-                "keep using local or byo for now."
-            ),
+            detail="confidential lane activation must use the confidential enable flow.",
         )
     if lane == "local":
         if local_endpoint_configured:

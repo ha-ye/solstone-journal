@@ -79,6 +79,7 @@ from solstone.observe.processing_record import (
 )
 from solstone.observe.transcribe import (
     BACKEND_REGISTRY,
+    ConfidentialAudioEgressError,
     get_backend,
 )
 from solstone.observe.transcribe import transcribe as stt_transcribe
@@ -169,11 +170,15 @@ def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -
             explicit_backend = DEFAULT_BACKEND
         _warn_if_local_below_floor(explicit_backend, available_bytes, floor_bytes)
         return explicit_backend
+    from solstone.think.services import spp
+
+    confidential_lane_active = spp.confidential_provenance() is not None
     backend = select_stt_backend(
         available_bytes,
         google_key_present=google_key_present,
         floor_bytes=floor_bytes,
         local_backend=local_backend,
+        confidential_lane_active=confidential_lane_active,
     )
     if backend == STT_SURFACE:
         _surface_stt_requirement(available_bytes, floor_bytes)
@@ -956,6 +961,14 @@ def process_audio(
         )
         return
 
+    except ConfidentialAudioEgressError as e:
+        logging.warning(
+            "Confidential lane refused cloud STT for %s; holding audio for retry: %s",
+            raw_path,
+            e,
+        )
+        return
+
     except Exception as e:
         logging.error(f"Failed to transcribe {raw_path}: {e}", exc_info=True)
         try:
@@ -1122,9 +1135,13 @@ def _process_one(
     # - Rev.ai token is available
     noise_upgrade = transcribe_config.get("noise_upgrade", True)
     min_ratio = transcribe_config.get("noise_upgrade_min_speech_ratio", 0.3)
+    from solstone.think.services import spp
+
+    confidential_lane_active = spp.confidential_provenance() is not None
     if (
         not args.backend
         and noise_upgrade
+        and not confidential_lane_active
         and backend != "revai"
         and vad_result.is_noisy()
     ):

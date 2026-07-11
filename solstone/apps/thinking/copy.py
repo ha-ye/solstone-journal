@@ -25,8 +25,9 @@ LANES = [
         "id": "confidential",
         "label": "Confidential processing",
         "description": (
-            "let sol "
-            "think without using your device's power — on confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. not open yet; scouts get first access."
+            "send thinking work to confidential hardware only after attestation "
+            "verifies. today it is not yet verified, so setup can land but "
+            "thinking stays blocked."
         ),
     },
     {
@@ -91,7 +92,6 @@ SCOUT_RESTING_GUIDANCE = {
     SCOUT_STATE_ENDED: "Scout has ended.",
     SCOUT_STATE_MANUAL_KEY_PRESENT: "A Gemini key you manage is already set.",
 }
-CONFIDENTIAL_SETUP_BODY = "not open yet — scouts get first access. when it opens, the parts of your journal sol is thinking about go to confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. your journal stays on your device."
 BYO_SCOUT_AFFORDANCE_COPY = (
     "a Gemini key we provision on your behalf while you scout for solstone."
 )
@@ -110,9 +110,6 @@ def thinking_copy_payload() -> dict[str, Any]:
         "key_labels": dict(KEY_LABELS),
         "state_labels": dict(STATE_LABELS),
         "action_labels": dict(ACTION_LABELS),
-        "confidential": {
-            "setup_body": CONFIDENTIAL_SETUP_BODY,
-        },
         "byo": {
             "scout_affordance": BYO_SCOUT_AFFORDANCE_COPY,
         },

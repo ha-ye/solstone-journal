@@ -278,6 +278,10 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "scout-account-secret",
         "dispatch-token-secret",
         "fingerprint-secret",
+        "confidential-account-secret",
+        "confidential-credential-secret",
+        "confidential-fingerprint-secret",
+        "2026-05-24T00:00:00Z",
         "2026-05-23T00:00:00Z",
     }
     config.setdefault("env", {}).update(
@@ -294,6 +298,20 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "key_fingerprint_sha256": "fingerprint-secret",
         "key_created_at": "2026-05-23T00:00:00Z",
     }
+    config.setdefault("services", {})["confidential"] = {
+        "enabled_at": "2026-05-24T00:00:00Z",
+        "account_id": "confidential-account-secret",
+        "endpoint_url": "https://spp.example.test",
+        "served_model_id": "confidential-model",
+        "credential_created_at": "2026-05-24T00:00:00Z",
+        "credential_fingerprint_sha256": "confidential-fingerprint-secret",
+        "prior_generate_provider": "google",
+        "prior_cogitate_provider": "openai",
+        "prior_local_endpoint": None,
+    }
+    config.setdefault("providers", {}).setdefault("local", {})["credential"] = (
+        "confidential-credential-secret"
+    )
     config["providers"]["generate"]["provider"] = "google"
     config["providers"]["cogitate"]["provider"] = "google"
     _write_config(journal_path, config)
@@ -322,6 +340,8 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
             "dispatch_token",
             "key_fingerprint_sha256",
             "key_created_at",
+            "credential_fingerprint_sha256",
+            "credential_created_at",
         }:
             assert forbidden not in body
 
@@ -333,6 +353,9 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "split": False,
         "scout_enabled": True,
         "scout_provenance_configured": True,
+        "confidential_enabled": True,
+        "confidential_provenance_configured": True,
+        "confidential_operation": None,
     }
 
 
@@ -429,6 +452,59 @@ def test_local_endpoint_override_derives_byo_and_bundled_derives_local(
     assert payload["active_lane"]["cogitate"] == "byo"
 
 
+def test_local_endpoint_override_derives_confidential_only_with_provenance(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["generate"]["provider"] = "local"
+    config["providers"]["cogitate"]["provider"] = "local"
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/v1",
+        "served_model_id": "served-model",
+        "credential": "endpoint-credential",
+    }
+    _write_config(journal_path, config)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.probe_local_endpoint",
+        lambda _endpoint, timeout_s=1.0: (True, None),
+    )
+
+    response = client.get("/app/thinking/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["active_lane"]["lane"] == "byo"
+    assert payload["active_lane"]["generate"] == "byo"
+    assert payload["active_lane"]["cogitate"] == "byo"
+    assert payload["active_lane"]["confidential_provenance_configured"] is False
+
+    config.setdefault("services", {})["confidential"] = {
+        "enabled_at": "2026-05-24T00:00:00Z",
+        "account_id": "acct-confidential",
+        "endpoint_url": "http://host.test:8080",
+        "served_model_id": "served-model",
+        "credential_created_at": "2026-05-24T00:00:00Z",
+        "credential_fingerprint_sha256": "fingerprint",
+        "prior_generate_provider": "google",
+        "prior_cogitate_provider": "openai",
+        "prior_local_endpoint": None,
+    }
+    _write_config(journal_path, config)
+
+    response = client.get("/app/thinking/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["active_lane"]["lane"] == "confidential"
+    assert payload["active_lane"]["generate"] == "confidential"
+    assert payload["active_lane"]["cogitate"] == "confidential"
+    assert payload["active_lane"]["confidential_enabled"] is True
+    assert payload["active_lane"]["confidential_provenance_configured"] is True
+
+
 def test_lane_switch_to_local_with_override_rejects_without_config_write(
     settings_client_with_journal,
 ):
@@ -518,30 +594,54 @@ def test_lane_switch_to_confidential_rejects_without_config_write(
     assert response.status_code == 400
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_operation_for_state"
-    assert payload["detail"] == (
-        "confidential processing isn't open yet — scouts get first access. "
-        "keep using local or byo for now."
+    assert (
+        payload["detail"]
+        == "confidential lane activation must use the confidential enable flow."
     )
     assert config_path.read_bytes() == before
 
 
-def test_lane_for_provider_never_returns_confidential():
-    for provider in (
-        NO_BRAIN_PROVIDER,
-        "local",
-        "anthropic",
-        "google",
-        "openai",
-        "unknown",
-    ):
-        for local_endpoint_configured in (False, True):
-            assert (
-                routes._lane_for_provider(
-                    provider,
-                    local_endpoint_configured=local_endpoint_configured,
-                )
-                != "confidential"
-            )
+def test_lane_for_provider_derives_confidential_from_local_endpoint_provenance():
+    assert (
+        routes._lane_for_provider(
+            NO_BRAIN_PROVIDER,
+            local_endpoint_configured=True,
+            confidential_provenance_present=True,
+        )
+        == "none"
+    )
+    assert (
+        routes._lane_for_provider(
+            "local",
+            local_endpoint_configured=False,
+            confidential_provenance_present=True,
+        )
+        == "local"
+    )
+    assert (
+        routes._lane_for_provider(
+            "local",
+            local_endpoint_configured=True,
+            confidential_provenance_present=False,
+        )
+        == "byo"
+    )
+    assert (
+        routes._lane_for_provider(
+            "local",
+            local_endpoint_configured=True,
+            confidential_provenance_present=True,
+        )
+        == "confidential"
+    )
+    assert (
+        routes._lane_for_provider(
+            "google",
+            local_endpoint_configured=True,
+            confidential_provenance_present=True,
+        )
+        == "byo"
+    )
 
 
 def test_get_providers_scout_google_grandfather_is_zero_touch(

@@ -77,6 +77,8 @@ def _check_generate(
     try:
         module = get_provider_module(provider_name)
         model = PROVIDER_DEFAULTS[provider_name][tier]
+        # Connectivity probe with canned content; deliberately outside the
+        # confidential attestation gate so diagnostics can always run.
         result = module.run_generate(
             contents="Say OK",
             model=model,
@@ -176,6 +178,8 @@ async def _check_cogitate(
         module = get_provider_module(provider_name)
         model = PROVIDER_DEFAULTS[provider_name][tier]
         config = {"prompt": "Say OK", "model": model, "provider": provider_name}
+        # Connectivity probe with canned content; deliberately outside the
+        # confidential attestation gate so diagnostics can always run.
         result = await asyncio.wait_for(
             module.run_cogitate(config=config, on_event=None),
             timeout=timeout,

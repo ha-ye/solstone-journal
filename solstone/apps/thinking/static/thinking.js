@@ -15,11 +15,11 @@
   let copy = {};
   let scoutCopy = {};
   let byoCopy = {};
-  let confidentialCopy = {};
   const scoutTerminalPhases = new Set(['invited', 'requested', 'ended', 'repair_needed']);
+  const confidentialTerminalPhases = new Set(['not_verified', 'repair_needed']);
   const scoutPollIntervalMs = 1500;
   const scoutPollMaxMs = 15 * 60 * 1000;
-  const views = new Set(['main', 'byo-setup', 'local-setup', 'confidential-setup', 'lane-switch']);
+  const views = new Set(['main', 'byo-setup', 'local-setup', 'lane-switch']);
   const providerEnv = {
     anthropic: 'ANTHROPIC_API_KEY',
     google: 'GOOGLE_API_KEY',
@@ -84,10 +84,8 @@
     copy = payload || {};
     scoutCopy = copy.scout || {};
     byoCopy = copy.byo || {};
-    confidentialCopy = copy.confidential || {};
     providerLabels = copy.provider_labels || fallbackProviderLabels;
     setText('thinkingHeading', copy.heading || 'thinking');
-    setText('confidentialSetupBody', confidentialCopy.setup_body || '');
     setText('byoScoutAffordance', byoCopy.scout_affordance || '');
   }
 
@@ -253,6 +251,23 @@
     return reason === 'gpu_unavailable' || reason === 'gpu_probe_failed';
   }
 
+  function activeLanePayload() {
+    return state.providers.active_lane || {};
+  }
+
+  function confidentialProvenancePresent() {
+    return !!activeLanePayload().confidential_provenance_configured;
+  }
+
+  function confidentialOperation() {
+    return activeLanePayload().confidential_operation || null;
+  }
+
+  function confidentialOperationActive() {
+    const operation = confidentialOperation();
+    return !!operation && !confidentialTerminalPhases.has(operation.phase);
+  }
+
   function activeBrain() {
     const lane = state.providers.active_lane?.lane || 'advanced';
     const generateProvider = state.providers.generate?.provider || '';
@@ -266,6 +281,9 @@
     }
     if (lane === 'local' && localIsReady()) {
       return {kind: 'local', providerLabel: 'Local'};
+    }
+    if (lane === 'confidential' && confidentialProvenancePresent()) {
+      return {kind: 'confidential', providerLabel: 'Confidential processing'};
     }
     if (advancedUsable) {
       return {
@@ -281,7 +299,7 @@
   function laneIsUsable(lane) {
     if (lane === 'byo') return byoIsUsable();
     if (lane === 'local') return localIsReady() && !localEndpointConfigured();
-    if (lane === 'confidential') return false;
+    if (lane === 'confidential') return !confidentialOperationActive();
     return false;
   }
 
@@ -317,6 +335,13 @@
       setText('thinkingActiveLane', 'sol is thinking with');
       setText('thinkingActiveValue', 'a local model');
       setText('thinkingActiveDetail', 'runs in your journal — your data never leaves');
+    } else if (brain.kind === 'confidential') {
+      setText('thinkingActiveLane', 'sol is waiting on');
+      setText('thinkingActiveValue', 'confidential verification');
+      setText(
+        'thinkingActiveDetail',
+        'hardware attestation is not yet verified, so thinking is blocked before anything leaves your journal.',
+      );
     } else if (brain.kind === 'advanced') {
       setText('thinkingActiveLane', 'sol is thinking with');
       setText('thinkingActiveValue', 'an advanced split');
@@ -401,14 +426,46 @@
       setText('localLaneStatus', 'set up →');
     }
 
-    setCardActive('confidential', false);
-    setPill('confidentialLanePill', 'not open yet');
-    setText(
-      'confidentialLaneDescription',
-      "let sol " +
-        "think without using your device's power — on confidential hardware we run that keeps nothing: no content retained, no human review, nothing used to train. not open yet; scouts get first access.",
-    );
-    setText('confidentialLaneStatus', 'not open yet →');
+    const confidentialActive = brain.kind === 'confidential';
+    const confidentialConfigured = confidentialProvenancePresent();
+    const confidentialOp = confidentialOperation();
+    const confidentialOpActive = confidentialOperationActive();
+    setCardActive('confidential', confidentialActive);
+    if (confidentialOpActive) {
+      setPill('confidentialLanePill', 'verifying');
+      setText(
+        'confidentialLaneDescription',
+        'finish the portal step. thinking stays blocked until hardware attestation verifies.',
+      );
+      setText('confidentialLaneStatus', confidentialOp.portal_url ? 'continue →' : 'verifying');
+    } else if (confidentialConfigured) {
+      setPill('confidentialLanePill', 'not verified', 'bad');
+      setText(
+        'confidentialLaneDescription',
+        'credentials landed, but hardware attestation is not yet verified. thinking stays blocked before anything leaves your journal.',
+      );
+      setText('confidentialLaneStatus', 'turn off confidential →');
+    } else {
+      setPill('confidentialLanePill', 'off');
+      setText(
+        'confidentialLaneDescription',
+        'send thinking work to confidential hardware only after attestation verifies. today it is not yet verified, so setup can land but thinking stays blocked.',
+      );
+      setText('confidentialLaneStatus', 'set up confidential →');
+    }
+    if (confidentialOp) {
+      const phase = confidentialOp.phase || '';
+      const fallback = phase === 'repair_needed'
+        ? 'confidential setup needs repair. try again from Thinking.'
+        : confidentialOp.guidance || phase;
+      setMessage(
+        'confidentialLaneOperation',
+        confidentialOp.guidance || fallback,
+        phase === 'repair_needed' ? 'error' : '',
+      );
+    } else {
+      setMessage('confidentialLaneOperation', '');
+    }
 
     const configured = configuredProviders();
     const activeByo = brain.kind === 'byo';
@@ -892,8 +949,6 @@
       setText('switchNote', `sol will think with ${targetLabel} from now on. your ${providerLabel(targetProvider)} key stays saved in your journal — switch back anytime without re-pasting it.`);
     } else if (target === 'local') {
       setText('switchNote', 'sol will think with local from now on. local setup stays saved in your journal — switch back anytime.');
-    } else if (target === 'confidential') {
-      setText('switchNote', "confidential processing isn't open yet.");
     } else {
       setText('switchNote', 'you can switch back anytime.');
     }
@@ -949,6 +1004,18 @@
     return state.scout?.operation || null;
   }
 
+  async function pollConfidentialUntilTerminal() {
+    const started = Date.now();
+    while (Date.now() - started < scoutPollMaxMs) {
+      await refreshProviders();
+      const operation = confidentialOperation();
+      if (!operation || confidentialTerminalPhases.has(operation.phase)) return operation || null;
+      await sleep(scoutPollIntervalMs);
+    }
+    await refreshProviders();
+    return confidentialOperation();
+  }
+
   function openConsentTab(operation) {
     const url = operation?.portal_url;
     if (url) window.open(url, '_blank', 'noopener');
@@ -979,6 +1046,15 @@
   }
 
   async function activateLane(target) {
+    if (target === 'confidential') {
+      if (confidentialOperationActive()) {
+        openConsentTab(confidentialOperation());
+      } else if (!confidentialProvenancePresent()) {
+        await enableConfidential();
+      }
+      showView('main');
+      return;
+    }
     const brain = activeBrain();
     if (brain.kind !== 'none' && brain.kind !== target && laneIsUsable(target)) {
       state.pendingSwitchTarget = target;
@@ -1027,6 +1103,42 @@
     }
   }
 
+  async function enableConfidential() {
+    const activeOperation = confidentialOperation();
+    if (confidentialOperationActive()) {
+      openConsentTab(activeOperation);
+      return;
+    }
+    setMessage('confidentialLaneOperation', '');
+    let start;
+    try {
+      start = await api('api/confidential/enable', {method: 'POST'});
+    } catch (err) {
+      setMessage(
+        'confidentialLaneOperation',
+        err.message || 'confidential setup could not start.',
+        'error',
+      );
+      return;
+    }
+    openConsentTab(start?.operation);
+
+    const operation = await pollConfidentialUntilTerminal();
+    await refreshProviders();
+    if (operation?.phase === 'repair_needed') {
+      setMessage(
+        'confidentialLaneOperation',
+        operation?.guidance || 'confidential setup needs repair. try again from Thinking.',
+        'error',
+      );
+      return;
+    }
+    if (operation?.guidance) {
+      setMessage('confidentialLaneOperation', operation.guidance);
+    }
+    showView('main');
+  }
+
   async function refreshScoutOp() {
     const start = await api('api/scout/refresh', {method: 'POST'});
     openConsentTab(start?.operation);
@@ -1048,6 +1160,12 @@
     const result = await api('api/scout/disable', {method: 'POST'});
     state.scout = result.status || state.scout;
     await Promise.all([refreshScout(), refreshProviders(), refreshKeys()]);
+    showView('main');
+  }
+
+  async function disableConfidential() {
+    await api('api/confidential/disable', {method: 'POST'});
+    await refreshProviders();
     showView('main');
   }
 
@@ -1159,6 +1277,10 @@
   }
 
   function openLane(lane) {
+    if (lane === 'confidential') {
+      activateLane('confidential').catch((err) => setMessage('confidentialLaneOperation', err.message, 'error'));
+      return;
+    }
     if (laneIsUsable(lane) && activeBrain().kind !== lane) {
       activateLane(lane).catch((err) => setMessage(`${lane}LaneStatus`, err.message, 'error'));
       return;
@@ -1201,6 +1323,19 @@
 
   function bind() {
     document.querySelectorAll('[data-open-view]').forEach(bindOpenView);
+    $('confidentialLaneStatus')?.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (confidentialOperationActive()) {
+        openConsentTab(confidentialOperation());
+        return;
+      }
+      if (confidentialProvenancePresent()) {
+        disableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error'));
+        return;
+      }
+      enableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error'));
+    });
     document.querySelectorAll('[data-byo-provider]').forEach((button) => {
       button.addEventListener('click', () => {
         setSelectedByoProvider(button.dataset.byoProvider);

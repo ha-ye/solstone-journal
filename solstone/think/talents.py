@@ -1308,13 +1308,19 @@ def _emit_terminal_hook_error(
     )
 
 
-from solstone.think.models import NO_BRAIN_PROVIDER, NoBrainConfiguredError
+from solstone.think.models import (
+    NO_BRAIN_PROVIDER,
+    AttestationNotVerifiedError,
+    NoBrainConfiguredError,
+    _raise_if_confidential_unverified,
+)
 
 _NON_RETRYABLE_ERRORS = (
     TalentHookError,
     # No implicit cloud fallback: a journal with no thinking engine selected
     # must stop here rather than retrying on any cloud provider.
     NoBrainConfiguredError,
+    AttestationNotVerifiedError,
     ValueError,
     json.JSONDecodeError,
     KeyError,
@@ -1378,6 +1384,7 @@ async def _execute_with_tools(
         valid = ", ".join(sorted(PROVIDER_REGISTRY.keys()))
         raise ValueError(f"Unknown provider: {provider!r}. Valid providers: {valid}")
 
+    _raise_if_confidential_unverified()
     provider_mod = get_provider_module(provider)
 
     # Wrapper to intercept finish event for post-processing

@@ -145,10 +145,13 @@ def linux_stt_uses_parakeet_cpp() -> bool:
     except RuntimeError:
         return False
 
+    from solstone.think.services import spp
+
+    confidential = spp.confidential_provenance() is not None
     config = read_journal_config()
     transcribe = config.get("transcribe", {})
     backend = transcribe.get("backend") if isinstance(transcribe, dict) else None
-    if isinstance(backend, str):
+    if not confidential and isinstance(backend, str):
         return backend not in {"revai", "gemini"}
 
     selected = select_stt_backend(
@@ -156,6 +159,7 @@ def linux_stt_uses_parakeet_cpp() -> bool:
         google_key_present=bool(os.getenv("GOOGLE_API_KEY")),
         floor_bytes=stt_local_floor_bytes(),
         local_backend=local_stt_backend(),
+        confidential_lane_active=confidential,
     )
     return selected in {"parakeet", "parakeet-cpp"}
 

@@ -59,11 +59,13 @@ def test_workspace_renders_each_lane(settings_env):
         "main",
         "byo-setup",
         "local-setup",
-        "confidential-setup",
         "lane-switch",
     ):
         assert f'data-view="{view}"' in html
-    assert 'data-open-view="confidential-setup"' in html
+    assert 'data-view="confidential-setup"' not in html
+    assert 'data-open-view="confidential-setup"' not in html
+    assert 'id="confidentialLaneOperation"' in html
+    assert "set up confidential" in html
     assert 'data-open-view="byo-setup"' in html
     assert 'data-open-view="local-setup"' in html
     assert "data-switch-lane" in html
@@ -142,6 +144,17 @@ def test_scout_consent_static_behavior_is_wired() -> None:
     assert "scoutLaneOperationLink" in js
     assert "operation.portal_url || ''" in js
     assert "!!actions.enable && !operationActive" in js
+
+
+def test_confidential_consent_static_behavior_is_wired() -> None:
+    js = STATIC.read_text(encoding="utf-8")
+
+    assert "api/confidential/enable" in js
+    assert "api/confidential/disable" in js
+    assert "openConsentTab(start?.operation)" in js
+    assert "confidential_operation" in js
+    assert "switchLane('confidential')" not in js
+    assert "confidential-setup" not in js
 
 
 def test_copy_payload_round_trips_apostrophes() -> None:

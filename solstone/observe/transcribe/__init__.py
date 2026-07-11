@@ -48,6 +48,7 @@ Backend Interface:
 
 from __future__ import annotations
 
+import logging
 from importlib import import_module
 from types import ModuleType
 from typing import TYPE_CHECKING
@@ -137,6 +138,10 @@ def get_backend_list() -> list[dict]:
     ]
 
 
+class ConfidentialAudioEgressError(Exception):
+    """Raised when confidential processing refuses a cloud STT backend."""
+
+
 def transcribe(
     backend: str,
     audio: "np.ndarray",
@@ -157,6 +162,18 @@ def transcribe(
     Returns:
         List of statement dicts with id, start, end, text, and optionally words
     """
+    from solstone.think.services import spp
+
+    if spp.confidential_provenance() is not None and backend in {"gemini", "revai"}:
+        logging.warning(
+            "Confidential lane refused cloud STT backend %s; raw audio must stay local",
+            backend,
+        )
+        raise ConfidentialAudioEgressError(
+            f"confidential lane blocks cloud STT backend {backend!r}; "
+            "raw audio must stay local"
+        )
+
     backend_mod = get_backend(backend)
 
     # Pass speech_segments to backends that support it (currently only Gemini)
@@ -189,6 +206,7 @@ __all__ = [
     "BACKEND_METADATA",
     "get_backend",
     "get_backend_list",
+    "ConfidentialAudioEgressError",
     "transcribe",
     # Utilities
     "SENTENCE_ENDINGS",

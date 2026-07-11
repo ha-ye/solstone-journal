@@ -221,18 +221,40 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
 
 
 @pytest.mark.parametrize(
-    ("sys_platform", "machine", "backend", "available_bytes", "google_key", "expected"),
+    (
+        "sys_platform",
+        "machine",
+        "backend",
+        "available_bytes",
+        "google_key",
+        "confidential",
+        "local_backend",
+        "expected",
+    ),
     [
-        ("linux", "x86_64", None, 5 * 1024**3, False, True),
-        ("linux", "x86_64", None, 3 * 1024**3, False, False),
-        ("linux", "x86_64", None, 3 * 1024**3, True, False),
-        ("linux", "x86_64", "parakeet", 3 * 1024**3, False, True),
-        ("linux", "x86_64", "parakeet-cpp", 3 * 1024**3, False, True),
-        ("linux", "x86_64", "revai", 5 * 1024**3, False, False),
-        ("linux", "x86_64", "gemini", 5 * 1024**3, False, False),
-        ("linux", "aarch64", None, 5 * 1024**3, False, True),
-        ("linux", "aarch64", "parakeet", 3 * 1024**3, False, True),
-        ("darwin", "arm64", None, 5 * 1024**3, False, False),
+        ("linux", "x86_64", None, 5 * 1024**3, False, False, "parakeet", True),
+        ("linux", "x86_64", None, 3 * 1024**3, False, False, "parakeet", False),
+        ("linux", "x86_64", None, 3 * 1024**3, True, False, "parakeet", False),
+        ("linux", "x86_64", "parakeet", 3 * 1024**3, False, False, "parakeet", True),
+        (
+            "linux",
+            "x86_64",
+            "parakeet-cpp",
+            3 * 1024**3,
+            False,
+            False,
+            "parakeet",
+            True,
+        ),
+        ("linux", "x86_64", "revai", 5 * 1024**3, False, False, "parakeet", False),
+        ("linux", "x86_64", "gemini", 5 * 1024**3, False, False, "parakeet", False),
+        ("linux", "aarch64", None, 5 * 1024**3, False, False, "parakeet", True),
+        ("linux", "aarch64", "parakeet", 3 * 1024**3, False, False, "parakeet", True),
+        ("darwin", "arm64", None, 5 * 1024**3, False, False, "parakeet", False),
+        ("linux", "x86_64", "gemini", 3 * 1024**3, True, True, "parakeet", True),
+        ("linux", "x86_64", "revai", 3 * 1024**3, False, True, "parakeet", True),
+        ("linux", "x86_64", None, 3 * 1024**3, True, True, "parakeet", True),
+        ("linux", "x86_64", None, 3 * 1024**3, True, True, None, False),
     ],
 )
 def test_linux_stt_uses_parakeet_cpp_truth_table(
@@ -242,6 +264,8 @@ def test_linux_stt_uses_parakeet_cpp_truth_table(
     backend: str | None,
     available_bytes: int,
     google_key: bool,
+    confidential: bool,
+    local_backend: str | None,
     expected: bool,
 ):
     monkeypatch.setattr(supervisor.sys, "platform", sys_platform)
@@ -250,7 +274,11 @@ def test_linux_stt_uses_parakeet_cpp_truth_table(
     monkeypatch.setattr(supervisor, "read_journal_config", lambda: config)
     monkeypatch.setattr(supervisor, "read_available_bytes", lambda: available_bytes)
     monkeypatch.setattr(supervisor, "stt_local_floor_bytes", lambda: 4 * 1024**3)
-    monkeypatch.setattr(supervisor, "local_stt_backend", lambda: "parakeet")
+    monkeypatch.setattr(supervisor, "local_stt_backend", lambda: local_backend)
+    monkeypatch.setattr(
+        "solstone.think.services.spp.confidential_provenance",
+        lambda: {"enabled_at": "2026-05-24T00:00:00Z"} if confidential else None,
+    )
     if google_key:
         monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
     else:

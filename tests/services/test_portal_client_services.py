@@ -30,6 +30,17 @@ def test_spl_handoff_urls_are_supported() -> None:
     )
 
 
+def test_spp_handoff_urls_are_supported() -> None:
+    assert (
+        portal_client.browser_url("https://services.test", "NONCE", service="spp")
+        == "https://services.test/enable/spp?nonce=NONCE"
+    )
+    assert (
+        portal_client.poll_url("https://services.test", "NONCE", service="spp")
+        == "https://services.test/handoff/spp?nonce=NONCE"
+    )
+
+
 def test_spl_browser_url_includes_instance_when_provided() -> None:
     instance = "00000000-0000-4000-8000-000000000000"
 
@@ -69,6 +80,11 @@ def test_browser_url_omits_instance_when_not_provided() -> None:
         "https://services.test",
         "NONCE",
         service="scout",
+    )
+    assert "instance=" not in portal_client.browser_url(
+        "https://services.test",
+        "NONCE",
+        service="spp",
     )
 
 

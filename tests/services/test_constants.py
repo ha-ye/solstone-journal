@@ -10,6 +10,7 @@ from solstone.think.services.constants import (
     SERVICE_BACKUP,
     SERVICE_SCOUT,
     SERVICE_SPL,
+    SERVICE_SPP,
     SUPPORTED_SERVICES,
 )
 from solstone.think.services.portal_client import mint_nonce
@@ -33,4 +34,5 @@ def test_supported_services_are_explicit_allow_list() -> None:
     assert SERVICE_SCOUT == "scout"
     assert SERVICE_SPL == "spl"
     assert SERVICE_BACKUP == "backup"
-    assert SUPPORTED_SERVICES == frozenset({"scout", "spl", "backup"})
+    assert SERVICE_SPP == "spp"
+    assert SUPPORTED_SERVICES == frozenset({"scout", "spl", "backup", "spp"})

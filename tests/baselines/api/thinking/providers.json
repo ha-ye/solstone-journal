@@ -1,6 +1,9 @@
 {
   "active_lane": {
     "cogitate": "byo",
+    "confidential_enabled": false,
+    "confidential_operation": null,
+    "confidential_provenance_configured": false,
     "generate": "byo",
     "lane": "byo",
     "scout_enabled": false,
