@@ -43,7 +43,7 @@
       {
         kind: 'owner_message',
         ts: BASE_TS,
-        text: 'owner hello',
+        text: 'owner hello **literal**',
         app: 'chat',
         path: '/app/chat/20990102',
         facet: 'work'
@@ -64,7 +64,7 @@
         kind: 'sol_message',
         ts: BASE_TS + 120000,
         use_id: 'use-prov',
-        text: 'sol with provenance',
+        text: 'sol with provenance **bold**',
         notes: 'notes here',
         requested_target: null,
         requested_task: null
@@ -265,6 +265,10 @@
 
       assert('AC5 owner bubble renders', !!transcript.querySelector('#event-0 .chat-bubble--owner') && text().includes('owner hello'));
       assert('AC5 sol bubble renders', !!transcript.querySelector('#event-2 .chat-bubble--sol') && text().includes('sol with provenance'));
+      const ownerBody = transcript.querySelector('#event-0 .chat-bubble--owner .chat-bubble-text');
+      const solBody = transcript.querySelector('#event-2 .chat-bubble--sol .chat-bubble-text');
+      assert('AC5 owner bubble keeps markdown literal', ownerBody?.textContent.includes('**literal**') && !ownerBody.classList.contains('chat-bubble-text--markdown'));
+      assert('AC5 sol bubble renders markdown body', solBody?.classList.contains('chat-bubble-text--markdown') && solBody.innerHTML.includes('<strong>bold</strong>'));
       assert('AC5 provenance label uses server time', text().includes('sol noticed (from reflection) at 9:01 AM'));
       assert('AC5 superseded suffix renders', text().includes('(superseded by 9:03 AM)'));
       assert('AC5 provenance detail values render', text().includes('trigger talent reflection') && text().includes('dedupe notice-key') && text().includes('since 123'));

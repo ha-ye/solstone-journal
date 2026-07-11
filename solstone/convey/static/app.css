@@ -3143,6 +3143,18 @@ body.has-date-nav .chat-app {
   line-height: 1.5;
 }
 
+.chat-bubble-text--markdown {
+  white-space: normal;
+}
+
+.chat-bubble-text--markdown > :first-child {
+  margin-top: 0;
+}
+
+.chat-bubble-text--markdown > :last-child {
+  margin-bottom: 0;
+}
+
 .chat-time-sep,
 .chat-empty {
   text-align: center;

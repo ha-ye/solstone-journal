@@ -170,9 +170,14 @@
     authorNode.className = 'chat-bubble-author';
     authorNode.textContent = author;
 
-    const textNode = document.createElement('span');
-    textNode.className = 'chat-bubble-text';
-    textNode.textContent = text;
+    const textNode = document.createElement(side === 'sol' ? 'div' : 'span');
+    if (side === 'sol') {
+      textNode.className = 'chat-bubble-text chat-bubble-text--markdown';
+      renderMarkdownInto(textNode, text);
+    } else {
+      textNode.className = 'chat-bubble-text';
+      textNode.textContent = text;
+    }
 
     bubble.appendChild(authorNode);
     bubble.appendChild(textNode);
@@ -216,7 +221,7 @@
       if (status === 'finished' || status === 'errored') {
         const detailNode = document.createElement('div');
         detailNode.className = 'chat-talent-card-detail chat-talent-card-detail--markdown';
-        renderTalentMarkdownInto(detailNode, detail || '');
+        renderMarkdownInto(detailNode, detail || '');
         card.appendChild(detailNode);
       } else {
         const detailNode = document.createElement('span');
@@ -329,13 +334,12 @@
     return tag;
   }
 
-  function renderTalentMarkdownInto(node, source) {
-    // Single path from markdown source to rendered HTML for talent card details.
+  function renderMarkdownInto(node, source) {
+    // Single path from markdown source to rendered HTML.
     if (!window.AppServices || typeof window.AppServices.renderMarkdown !== 'function') {
-      throw new Error('talent markdown renderer is unavailable');
+      throw new Error('markdown renderer is unavailable');
     }
     node.innerHTML = window.AppServices.renderMarkdown(source || '');
-    node.removeAttribute('data-markdown');
   }
 
   function findDispatchOriginTarget(transcript, logicalUseId) {
