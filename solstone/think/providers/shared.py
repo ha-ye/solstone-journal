@@ -214,9 +214,11 @@ def _exception_name_matches(
 RUNTIME_REASON_CODES = frozenset(
     {
         "context_window_exceeded",
+        "context_budget_exceeded",
         "provider_quota_exceeded",
         "provider_key_invalid",
         "chat_timeout",
+        "local_queue_timeout",
         "max_turns_exhausted",
         "network_unreachable",
         "provider_unavailable",

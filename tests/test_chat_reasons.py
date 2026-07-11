@@ -37,7 +37,9 @@ EXPECTED_CODES = {
     "provider_unavailable",
     "chat_pipeline_unavailable",
     "chat_timeout",
+    "local_queue_timeout",
     "context_window_exceeded",
+    "context_budget_exceeded",
     "incomplete_json_length",
     "incomplete_text_length",
     "max_turns_exhausted",
@@ -173,6 +175,17 @@ def test_render_empty_provider():
         "message": "I couldn't reach the network",
         "action": None,
     }
+
+
+def test_render_local_runtime_codes():
+    expected = {
+        "local_queue_timeout": "the local model was busy and couldn't start in time",
+        "context_budget_exceeded": "the request was too long for the local model",
+    }
+    for code, message in expected.items():
+        rendered = chat_view(code, "local")
+        assert rendered == {"code": code, "message": message, "action": None}
+        assert rendered["message"] != code
 
 
 def test_render_no_placeholder_artifacts_for_all_providers():

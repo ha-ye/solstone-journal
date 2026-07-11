@@ -15,6 +15,8 @@ from solstone.convey.provider_readiness import (
     semantic_key_for,
 )
 from solstone.think.providers import shared, state
+from solstone.think.providers.local import ContextBudgetExceeded
+from solstone.think.providers.local_admission import LocalAdmissionTimeout
 from solstone.think.providers.state import ProviderState
 
 
@@ -69,6 +71,16 @@ def test_explicit_extra_codes_are_mapped():
     mapped = mapped_reason_codes()
     assert "chat_pipeline_unavailable" in mapped
     assert "no_output" in mapped
+
+
+def test_local_runtime_exception_codes_are_registered():
+    mapped = mapped_reason_codes()
+    for code in (
+        LocalAdmissionTimeout.reason_code,
+        ContextBudgetExceeded("x").reason_code,
+    ):
+        assert code in shared.RUNTIME_REASON_CODES
+        assert code in mapped
 
 
 def test_backlog_reason_category_derives_from_taxonomy():

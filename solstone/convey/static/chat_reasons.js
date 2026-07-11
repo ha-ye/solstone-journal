@@ -114,8 +114,16 @@
       "template": "chat took too long",
       "action": null
     },
+    "local_queue_timeout": {
+      "template": "the local model was busy and couldn't start in time",
+      "action": null
+    },
     "context_window_exceeded": {
       "template": "the conversation grew too long to finish",
+      "action": null
+    },
+    "context_budget_exceeded": {
+      "template": "the request was too long for the local model",
       "action": null
     },
     "incomplete_json_length": {

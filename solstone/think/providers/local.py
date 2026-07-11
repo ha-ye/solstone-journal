@@ -645,6 +645,8 @@ def run_generate(
         )
         response.raise_for_status()
         return _parse_response(response.json())
+    except LocalProviderError:
+        raise
     except Exception as exc:
         raise _classify_byo_generate_error(exc) from exc
 
@@ -693,6 +695,8 @@ async def run_agenerate(
             response.raise_for_status()
             return _parse_response(response.json())
         except asyncio.CancelledError:
+            raise
+        except LocalProviderError:
             raise
         except Exception as exc:
             raise _classify_byo_generate_error(exc) from exc

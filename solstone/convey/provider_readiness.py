@@ -258,10 +258,28 @@ _ENTRIES: dict[str, _Entry] = {
         detail="Try again with a shorter request.",
         recovery_action=None,
     ),
+    "local_queue_timeout": _Entry(
+        klass="generic",
+        summary="the local model was busy and couldn't start in time",
+        detail=(
+            "Your computer was already running as many local requests as it can "
+            "at once. Try again in a moment."
+        ),
+        recovery_action=None,
+    ),
     "context_window_exceeded": _Entry(
         klass="generic",
         summary="the conversation grew too long to finish",
         detail="Try a shorter or more focused request.",
+        recovery_action=None,
+    ),
+    "context_budget_exceeded": _Entry(
+        klass="generic",
+        summary="the request was too long for the local model",
+        detail=(
+            "The request didn't fit the local model's context window. Try a "
+            "shorter or more focused request, or choose another provider."
+        ),
         recovery_action=None,
     ),
     "incomplete_json_length": _Entry(

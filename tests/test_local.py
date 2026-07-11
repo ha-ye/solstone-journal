@@ -744,6 +744,29 @@ def _byo_endpoint(credential: str | None = "test-token-PLACEHOLDER"):
     )
 
 
+def _bundled_endpoint():
+    from solstone.think.providers.local_endpoint import LocalEndpoint
+
+    return LocalEndpoint("", "", None, is_bundled=True)
+
+
+def _patch_bundled_server(monkeypatch):
+    from solstone.think.providers import local_server
+
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.read_server_capacity",
+        lambda: local_server.ServerCapacity(1, "test", "floor"),
+    )
+
+
 def test_run_generate_byo_posts_to_normalized_endpoint_and_skips_connect(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
@@ -1018,7 +1041,7 @@ def test_run_generate_byo_http_status_maps_to_contract_failed(monkeypatch):
     assert str(exc.value) == provider.LOCAL_ENDPOINT_CONTRACT_COPY
 
 
-def test_run_generate_byo_invalid_shape_maps_to_contract_failed(monkeypatch):
+def test_run_generate_byo_invalid_shape_maps_to_response_invalid(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
 
@@ -1036,8 +1059,40 @@ def test_run_generate_byo_invalid_shape_maps_to_contract_failed(monkeypatch):
     with pytest.raises(provider.LocalProviderError) as exc:
         provider.run_generate("hello", model=LOCAL_MODEL)
 
-    assert exc.value.reason_code == "local_endpoint_contract_failed"
-    assert str(exc.value) == provider.LOCAL_ENDPOINT_CONTRACT_COPY
+    assert exc.value.reason_code == "provider_response_invalid"
+    assert str(exc.value) == "No response from model."
+
+
+def test_run_agenerate_byo_invalid_shape_maps_to_response_invalid(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": []}
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        asyncio.run(provider.run_agenerate("hello", model=LOCAL_MODEL))
+
+    assert exc.value.reason_code == "provider_response_invalid"
+    assert str(exc.value) == "No response from model."
 
 
 def test_run_generate_byo_json_decode_maps_to_contract_failed(monkeypatch):
@@ -1060,6 +1115,85 @@ def test_run_generate_byo_json_decode_maps_to_contract_failed(monkeypatch):
 
     assert exc.value.reason_code == "local_endpoint_contract_failed"
     assert str(exc.value) == provider.LOCAL_ENDPOINT_CONTRACT_COPY
+
+
+def test_run_generate_malformed_response_matches_bundled_and_byo(monkeypatch):
+    provider = _provider()
+    malformed = {"choices": []}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return malformed
+
+    def fake_post(*_args, **_kwargs):
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
+    with pytest.raises(provider.LocalProviderError) as byo_exc:
+        provider.run_generate("hello", model=LOCAL_MODEL)
+
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
+    _patch_bundled_server(monkeypatch)
+    with pytest.raises(provider.LocalProviderError) as bundled_exc:
+        provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert byo_exc.value.reason_code == bundled_exc.value.reason_code
+    assert byo_exc.value.reason_code == "provider_response_invalid"
+    assert str(byo_exc.value) == str(bundled_exc.value)
+
+
+def test_bundled_local_admission_timeout_reason_code_escapes(monkeypatch):
+    provider = _provider()
+    _patch_bundled_server(monkeypatch)
+
+    from solstone.think.providers import local_admission
+
+    def raise_timeout(*_args, **_kwargs):
+        raise local_admission.LocalAdmissionTimeout("busy")
+
+    async def raise_timeout_async(*_args, **_kwargs):
+        raise local_admission.LocalAdmissionTimeout("busy")
+
+    monkeypatch.setattr(local_admission, "acquire_local_slot", raise_timeout)
+    monkeypatch.setattr(
+        local_admission, "acquire_local_slot_async", raise_timeout_async
+    )
+
+    with pytest.raises(local_admission.LocalAdmissionTimeout) as sync_exc:
+        provider.run_generate("hello", model=LOCAL_MODEL)
+    assert sync_exc.value.reason_code == "local_queue_timeout"
+
+    with pytest.raises(local_admission.LocalAdmissionTimeout) as async_exc:
+        asyncio.run(provider.run_agenerate("hello", model=LOCAL_MODEL))
+    assert async_exc.value.reason_code == "local_queue_timeout"
+
+    with pytest.raises(local_admission.LocalAdmissionTimeout) as cogitate_exc:
+        asyncio.run(provider.run_cogitate({"model": LOCAL_MODEL}))
+    assert cogitate_exc.value.reason_code == "local_queue_timeout"
+
+
+def test_run_generate_bundled_context_budget_exceeded_reason_code_escapes(
+    monkeypatch,
+):
+    provider = _provider()
+    _patch_bundled_server(monkeypatch)
+
+    def raise_context_budget(**_kwargs):
+        raise provider.ContextBudgetExceeded("too large")
+
+    monkeypatch.setattr(provider, "_prepare_bundled_request", raise_context_budget)
+
+    with pytest.raises(provider.ContextBudgetExceeded) as exc:
+        provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert exc.value.reason_code == "context_budget_exceeded"
 
 
 def test_run_cogitate_byo_classified_error_uses_fixed_copy_and_redacts(
