@@ -379,8 +379,8 @@ def test_providers_show_human_and_set_errors(
         thinking_call.app,
         ["providers", "set-generate", "--tier", "9"],
     )
-    assert bad_tier.exit_code == 1
-    assert bad_tier.stderr == "Invalid tier: 9. Must be one of: 1, 2, 3\n"
+    assert bad_tier.exit_code != 0
+    assert "No such option: --tier" in bad_tier.stderr
 
 
 def test_local_endpoint_verbs_use_http_shapes(

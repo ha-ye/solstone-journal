@@ -1,6 +1,5 @@
 ---
 context: observe.transcribe.gemini
-tier: 2
 label: Audio Transcription (Gemini)
 group: Observe
 ---

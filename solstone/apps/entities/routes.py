@@ -1301,10 +1301,8 @@ def generate_description(facet_name: str) -> Any:
 def _entity_describe_generate_readiness_error() -> Any | None:
     from solstone.think.models import resolve_provider
     from solstone.think.providers.state import readiness_for_provider
-    from solstone.think.talent import key_to_context
 
-    context = key_to_context("entities:entity_describe")
-    provider, model = resolve_provider(context, "generate")
+    provider, model = resolve_provider("generate")
     readiness = readiness_for_provider(provider, "generate", model)
     if readiness.status not in {"blocked", "unhealthy"}:
         return None

@@ -126,17 +126,6 @@ class TextDeltaEvent(TypedDict, total=False):
     raw: Optional[list[dict[str, Any]]]  # Original provider JSON event(s)
 
 
-class FallbackEvent(TypedDict, total=False):
-    """Event emitted when provider fallback occurs."""
-
-    event: Required[Literal["fallback"]]
-    ts: Required[int]
-    original_provider: Required[str]
-    backup_provider: Required[str]
-    reason: Required[str]  # "preflight" or "on_failure"
-    error: Optional[str]  # Error message for on_failure case
-
-
 Event = Union[
     ToolStartEvent,
     ToolEndEvent,
@@ -146,7 +135,6 @@ Event = Union[
     ThinkingEvent,
     TextDeltaEvent,
     TalentUpdatedEvent,
-    FallbackEvent,
 ]
 
 

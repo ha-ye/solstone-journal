@@ -1,6 +1,5 @@
 ---
 context: observe.enrich
-tier: 2
 label: Audio Enrichment
 group: Observe
 ---

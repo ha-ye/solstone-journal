@@ -7,11 +7,6 @@ from __future__ import annotations
 
 import json
 
-from solstone.think.models import GEMINI_FLASH
-
-# Use the full flash, not lite — qualitative ranking benefits from headroom.
-MODEL = GEMINI_FLASH
-
 
 # Schema: a list of indices into the candidate array. We don't ask the model
 # to re-emit titles/descriptions because (a) we want lossless preservation of
@@ -104,7 +99,6 @@ async def pick_top_events_async(
     req = batch.create(
         contents=build_user_prompt(events),
         context="timeline.scratch.rollup",
-        model=MODEL,
         system_instruction=build_system_instruction(scope_label, n),
         json_output=True,
         json_schema=build_rollup_schema(n),
@@ -177,7 +171,6 @@ async def pick_top_events_batch(
         req = batch.create(
             contents=build_user_prompt(events),
             context="timeline.scratch.rollup",
-            model=MODEL,
             system_instruction=build_system_instruction(scope_label, n),
             json_output=True,
             json_schema=build_rollup_schema(n),

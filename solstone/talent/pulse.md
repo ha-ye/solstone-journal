@@ -5,7 +5,6 @@
   "schedule": "cadence",
   "cadence_minutes": 5,
   "priority": 50,
-  "tier": 3,
   "hook": {"pre": "pulse", "post": "pulse"},
   "output": "json",
   "schema": "pulse.schema.json",

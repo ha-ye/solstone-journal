@@ -258,7 +258,7 @@ def _drive_describe(
     )
     monkeypatch.setattr(
         "solstone.think.models.resolve_provider",
-        lambda _context, _interface: ("google", "gemini-test"),
+        lambda _interface: ("google", "gemini-test"),
     )
     monkeypatch.setattr(describe, "callosum_send", lambda *args, **kwargs: None)
     monkeypatch.setattr(describe, "select_frames_for_extraction", lambda *a, **k: [])

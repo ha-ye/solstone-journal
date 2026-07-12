@@ -14,26 +14,17 @@ import pytest
 
 import solstone.think.models as models_module
 from solstone.think.models import (
-    CLAUDE_HAIKU_4,
     CLAUDE_OPUS_4,
     CLAUDE_SONNET_4,
+    DEFAULT_MODEL_BY_PROVIDER,
     DEFAULT_PROVIDER_TIMEOUT_S,
     GEMINI_FLASH,
-    GEMINI_LITE,
-    GEMINI_PRO,
     GEMMA4_26B_A4B_4BIT,
-    GPT_5,
     GPT_5_MINI,
-    GPT_5_NANO,
     LOCAL_MODEL,
     NO_BRAIN_PROVIDER,
     PROMPT_PATHS,
-    PROVIDER_DEFAULTS,
     QWEN_35_9B,
-    TIER_FLASH,
-    TIER_LITE,
-    TIER_PRO,
-    TYPE_DEFAULTS,
     IncompleteJSONError,
     IncompleteTextError,
     NoBrainConfiguredError,
@@ -49,6 +40,7 @@ from solstone.think.models import (
     agenerate_with_result,
     calc_agent_cost,
     calc_token_cost,
+    default_model_for_provider,
     finish_reason_error,
     generate,
     generate_with_result,
@@ -58,7 +50,6 @@ from solstone.think.models import (
     is_local_provider_needed,
     iter_token_log,
     model_supports,
-    request_health_recheck,
     resolve_provider,
 )
 
@@ -246,54 +237,71 @@ def _write_tmp_journal_config(
 
 
 def test_resolve_provider_default_generate(use_fixtures_journal):
-    """Test that generate default provider is returned for unknown context."""
-    provider, model = resolve_provider("unknown.context", "generate")
+    """Generate resolves the configured active provider/model."""
+    provider, model = resolve_provider("generate")
     assert provider == "google"
-    # Default tier is 2, which is overridden in fixture config to custom model
     assert model == "gemini-custom-flash-test"
 
 
 def test_resolve_provider_default_cogitate(use_fixtures_journal):
-    """Test that cogitate default provider is returned for unknown context."""
-    provider, model = resolve_provider("unknown.context", "cogitate")
+    """Cogitate resolves the configured active provider/model."""
+    provider, model = resolve_provider("cogitate")
     assert provider == "openai"
     assert model == GPT_5_MINI
 
 
-def test_resolve_provider_exact_match(use_fixtures_journal):
-    """Test that exact context match works."""
-    provider, model = resolve_provider("test.openai", "generate")
-    assert provider == "openai"
-    assert model == "gpt-5-mini"
+def test_resolve_provider_contexts_are_inert(monkeypatch, tmp_path):
+    """Legacy exact/glob contexts cannot influence active route resolution."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {
+                    "provider": "google",
+                    "model": "gemini-flash-latest",
+                },
+                "contexts": {
+                    "test.openai": {
+                        "provider": "openai",
+                        "model": "gpt-5-mini",
+                    },
+                    "observe.*": {
+                        "provider": "anthropic",
+                        "model": "claude-haiku-4-5",
+                    },
+                },
+            }
+        },
+    )
 
-
-def test_resolve_provider_glob_match(use_fixtures_journal):
-    """Test that glob pattern matching works."""
-    # observe.* pattern should match
-    provider, model = resolve_provider("observe.describe.frame", "generate")
+    provider, model = resolve_provider("generate")
     assert provider == "google"
-    assert model == GEMINI_LITE
-
-    # Also matches with other suffixes
-    provider, model = resolve_provider("observe.enrich", "generate")
-    assert provider == "google"
-    assert model == GEMINI_LITE
+    assert model == GEMINI_FLASH
 
 
-def test_resolve_provider_anthropic(use_fixtures_journal):
-    """Test anthropic provider routing."""
-    provider, model = resolve_provider("test.anthropic", "generate")
-    assert provider == "anthropic"
-    # Explicit per-context model override in the fixture config wins over
-    # the PROVIDER_DEFAULTS tier constant — this asserts override behavior,
-    # not the default Sonnet pin, so it stays literal by design.
-    assert model == "claude-sonnet-4-5"
+def test_resolve_provider_ordering_witness(monkeypatch, tmp_path):
+    """Explicit provider/model wins over key-presence fallback."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {
+                    "provider": "anthropic",
+                    "model": "claude-haiku-4-5",
+                }
+            }
+        },
+    )
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+
+    assert resolve_provider("generate") == ("anthropic", "claude-haiku-4-5")
 
 
 def test_resolve_provider_empty_context(use_fixtures_journal):
-    """Test that empty context returns default."""
-    provider, model = resolve_provider("", "generate")
-    assert provider == "google"
+    """The resolver takes only an interface, not a context."""
+    assert resolve_provider("generate") == ("google", "gemini-custom-flash-test")
 
 
 def test_resolve_provider_no_config(monkeypatch, tmp_path):
@@ -309,42 +317,15 @@ def test_resolve_provider_no_config(monkeypatch, tmp_path):
         "solstone.think.providers.state.local_runtime_ready", lambda: False
     )
 
-    provider, model = resolve_provider("anything", "generate")
+    provider, model = resolve_provider("generate")
     assert provider == NO_BRAIN_PROVIDER
     assert provider != "google"
     assert model == ""
 
-    provider, model = resolve_provider("anything", "cogitate")
+    provider, model = resolve_provider("cogitate")
     assert provider == NO_BRAIN_PROVIDER
     assert provider != "google"
     assert model == ""
-
-
-# ---------------------------------------------------------------------------
-# Tier system tests
-# ---------------------------------------------------------------------------
-
-
-def test_tier_constants():
-    """Test tier constant values."""
-    assert TIER_PRO == 1
-    assert TIER_FLASH == 2
-    assert TIER_LITE == 3
-
-
-def test_type_defaults():
-    """Test TYPE_DEFAULTS structure for generate and cogitate."""
-    assert "generate" in TYPE_DEFAULTS
-    assert "cogitate" in TYPE_DEFAULTS
-
-    for agent_type in ("generate", "cogitate"):
-        defaults = TYPE_DEFAULTS[agent_type]
-        assert "provider" not in defaults
-        assert "tier" in defaults
-        assert "backup" in defaults
-
-    assert TYPE_DEFAULTS["generate"]["backup"] == "anthropic"
-    assert TYPE_DEFAULTS["cogitate"]["backup"] == "anthropic"
 
 
 def test_prompt_paths_exist():
@@ -354,7 +335,7 @@ def test_prompt_paths_exist():
     import frontmatter
 
     base_dir = Path(__file__).parent.parent / "solstone"  # Package root
-    required_keys = {"context", "tier", "label", "group"}
+    required_keys = {"context", "label", "group"}
 
     for rel_path in PROMPT_PATHS:
         path = base_dir / rel_path
@@ -366,11 +347,6 @@ def test_prompt_paths_exist():
         assert required_keys <= set(meta.keys()), (
             f"{rel_path} missing keys: {required_keys - set(meta.keys())}"
         )
-        assert meta["tier"] in (
-            TIER_PRO,
-            TIER_FLASH,
-            TIER_LITE,
-        ), f"{rel_path} has invalid tier: {meta['tier']}"
         assert isinstance(meta["label"], str) and meta["label"], (
             f"{rel_path} has invalid label: {meta['label']}"
         )
@@ -385,45 +361,22 @@ def test_prompt_contexts_in_registry():
 
     # Verify known prompt contexts exist with correct values
     assert "observe.describe.frame" in registry
-    assert registry["observe.describe.frame"]["tier"] == TIER_LITE
     assert registry["observe.describe.frame"]["group"] == "Observe"
 
     assert "observe.enrich" in registry
-    assert registry["observe.enrich"]["tier"] == TIER_FLASH
 
     assert "detect.created" in registry
-    assert registry["detect.created"]["tier"] == TIER_LITE
 
 
-def test_provider_defaults_structure():
-    """Test PROVIDER_DEFAULTS contains all providers and tiers."""
-    assert "google" in PROVIDER_DEFAULTS
-    assert "openai" in PROVIDER_DEFAULTS
-    assert "anthropic" in PROVIDER_DEFAULTS
-
-    for provider in PROVIDER_DEFAULTS:
-        assert TIER_PRO in PROVIDER_DEFAULTS[provider]
-        assert TIER_FLASH in PROVIDER_DEFAULTS[provider]
-        assert TIER_LITE in PROVIDER_DEFAULTS[provider]
-
-
-def test_provider_defaults_models():
-    """Test PROVIDER_DEFAULTS maps to correct model constants."""
-    assert PROVIDER_DEFAULTS["google"][TIER_PRO] == GEMINI_PRO
-    assert PROVIDER_DEFAULTS["google"][TIER_FLASH] == GEMINI_FLASH
-    assert PROVIDER_DEFAULTS["google"][TIER_LITE] == GEMINI_LITE
-
-    assert PROVIDER_DEFAULTS["openai"][TIER_PRO] == GPT_5
-    assert PROVIDER_DEFAULTS["openai"][TIER_FLASH] == GPT_5_MINI
-    assert PROVIDER_DEFAULTS["openai"][TIER_LITE] == GPT_5_NANO
-
-    assert PROVIDER_DEFAULTS["anthropic"][TIER_PRO] == CLAUDE_OPUS_4
-    assert PROVIDER_DEFAULTS["anthropic"][TIER_FLASH] == CLAUDE_SONNET_4
-    assert PROVIDER_DEFAULTS["anthropic"][TIER_LITE] == CLAUDE_HAIKU_4
-
-    assert PROVIDER_DEFAULTS["local"][TIER_PRO] == LOCAL_MODEL
-    assert PROVIDER_DEFAULTS["local"][TIER_FLASH] == LOCAL_MODEL
-    assert PROVIDER_DEFAULTS["local"][TIER_LITE] == LOCAL_MODEL
+def test_default_model_by_provider():
+    assert DEFAULT_MODEL_BY_PROVIDER == {
+        "google": GEMINI_FLASH,
+        "openai": GPT_5_MINI,
+        "anthropic": CLAUDE_SONNET_4,
+        "local": LOCAL_MODEL,
+    }
+    for provider, model in DEFAULT_MODEL_BY_PROVIDER.items():
+        assert default_model_for_provider(provider) == model
 
 
 @pytest.mark.parametrize(
@@ -431,7 +384,6 @@ def test_provider_defaults_models():
     [
         {"providers": {"generate": {"provider": "local"}}},
         {"providers": {"cogitate": {"provider": "local"}}},
-        {"providers": {"contexts": {"talent.*": {"provider": "local"}}}},
     ],
 )
 def test_is_local_provider_needed_true_for_selected_surfaces(config):
@@ -444,6 +396,7 @@ def test_is_local_provider_needed_true_for_selected_surfaces(config):
         {},
         {"providers": {"generate": {"provider": "google"}}},
         {"providers": {"contexts": {"talent.*": {"provider": "anthropic"}}}},
+        {"providers": {"contexts": {"talent.*": {"provider": "local"}}}},
         {"providers": []},
     ],
 )
@@ -465,110 +418,61 @@ def test_is_local_provider_needed_true_for_implicit_local(monkeypatch):
     assert is_local_provider_needed({}) is True
 
 
-def test_resolve_provider_tier_based(use_fixtures_journal):
-    """Test tier-based resolution."""
-    # test.tier has tier: 1 (pro)
-    provider, model = resolve_provider("test.tier", "generate")
-    assert provider == "google"
-    assert model == GEMINI_PRO
-
-
-def test_resolve_provider_tier_inherit_provider(use_fixtures_journal):
-    """Test tier with inherited provider from type default."""
-    # test.tier.inherit has tier: 3 only, should inherit google from generate default
-    provider, model = resolve_provider("test.tier.inherit", "generate")
-    assert provider == "google"
-    assert model == GEMINI_LITE
-
-    # Same context with cogitate should inherit openai
-    provider, model = resolve_provider("test.tier.inherit", "cogitate")
-    assert provider == "openai"
-    assert model == GPT_5_NANO
-
-
-def test_resolve_provider_tier_with_provider(use_fixtures_journal):
-    """Test tier with explicit provider."""
-    # test.tier.override has provider: openai, tier: 2
-    provider, model = resolve_provider("test.tier.override", "generate")
-    assert provider == "openai"
-    assert model == GPT_5_MINI
-
-
-def test_resolve_provider_tier_glob(use_fixtures_journal):
-    """Test tier-based glob pattern matching."""
-    # observe.* now uses tier: 3 instead of explicit model
-    provider, model = resolve_provider("observe.describe.frame", "generate")
-    assert provider == "google"
-    assert model == GEMINI_LITE
-
-
-def test_resolve_provider_model_overrides_tier(use_fixtures_journal):
-    """Test that explicit model takes precedence over tier."""
-    # test.openai has explicit model, not tier
-    provider, model = resolve_provider("test.openai", "generate")
-    assert provider == "openai"
-    assert model == "gpt-5-mini"
-
-
-def test_resolve_provider_default_tier(use_fixtures_journal):
-    """Test default uses tier-based resolution with config override."""
-    # Generate default is tier: 2, which is overridden in config to custom model
-    provider, model = resolve_provider("unknown.context", "generate")
-    assert provider == "google"
-    assert model == "gemini-custom-flash-test"
-
-
-def test_resolve_provider_config_model_override(use_fixtures_journal):
-    """Test that config models section overrides system defaults."""
-    # test.config.override uses tier: 2, which is overridden in config
-    provider, model = resolve_provider("test.config.override", "generate")
-    assert provider == "google"
-    # Should use the custom model from config, not system default GEMINI_FLASH
-    assert model == "gemini-custom-flash-test"
-    assert model != GEMINI_FLASH
-
-
-def test_resolve_provider_tier_fallback_to_system_default(use_fixtures_journal):
-    """Test that tiers not in config fall back to system defaults."""
-    # test.tier uses tier: 1 (pro), which is NOT overridden in config
-    # Should fall back to system default GEMINI_PRO
-    provider, model = resolve_provider("test.tier", "generate")
-    assert provider == "google"
-    assert model == GEMINI_PRO
-
-
-def test_resolve_provider_invalid_tier(use_fixtures_journal, monkeypatch, tmp_path):
-    """Test that invalid tier values fall back to default tier."""
-    # Create a config with an invalid tier
-    config_dir = tmp_path / "config"
-    config_dir.mkdir()
-    config = {
-        "providers": {
-            "generate": {"provider": "google", "tier": 2},
-            "contexts": {
-                "test.invalid": {"provider": "google", "tier": 99},
-                "test.string": {"provider": "google", "tier": "flash"},
-            },
-        }
-    }
-    (config_dir / "journal.json").write_text(json.dumps(config))
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-
-    # Invalid tier 99 should fall back to generate default tier (2)
-    provider, model = resolve_provider("test.invalid", "generate")
-    assert provider == "google"
-    assert model == GEMINI_FLASH  # tier 2 system default
-
-    # String tier should also fall back
-    provider, model = resolve_provider("test.string", "generate")
-    assert provider == "google"
-    assert model == GEMINI_FLASH
-
-
-def test_resolve_provider_local_type_default_neutralizes_cloud_context_pin(
+def test_resolve_provider_legacy_keys_are_inert(
     use_fixtures_journal, monkeypatch, tmp_path
 ):
-    """A cloud context provider/model pin cannot override an explicit local lane."""
+    """Tier/backup/contexts/models legacy keys do not affect active routing."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {
+                    "provider": "google",
+                    "model": "gemini-flash-latest",
+                    "tier": 1,
+                    "backup": "anthropic",
+                },
+                "contexts": {
+                    "talent.timeline.segment_summary": {"provider": "local"},
+                    "observe.*": {"provider": "anthropic", "tier": 3},
+                },
+                "models": {
+                    "google": {"1": "gemini-pro-latest"},
+                    "anthropic": {"3": "claude-haiku-4-5"},
+                },
+            }
+        },
+    )
+
+    assert resolve_provider("generate") == ("google", GEMINI_FLASH)
+
+
+def test_resolve_provider_model_key_wins_even_when_tier_present(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """The retired AC3a quirk is gone: model is honored even with tier present."""
+    _write_tmp_journal_config(
+        tmp_path,
+        monkeypatch,
+        {
+            "providers": {
+                "generate": {
+                    "provider": "google",
+                    "tier": 1,
+                    "model": "gemini-custom-flash-test",
+                }
+            }
+        },
+    )
+
+    assert resolve_provider("generate") == ("google", "gemini-custom-flash-test")
+
+
+def test_resolve_provider_local_type_default_ignores_context_pins(
+    use_fixtures_journal, monkeypatch, tmp_path
+):
+    """Context pins cannot push a local active interface onto cloud."""
     _write_tmp_journal_config(
         tmp_path,
         monkeypatch,
@@ -579,124 +483,28 @@ def test_resolve_provider_local_type_default_neutralizes_cloud_context_pin(
                     "talent.timeline.segment_summary": {
                         "provider": "google",
                         "model": "gemini-flash-lite-latest",
-                    }
-                },
-            }
-        },
-    )
-
-    provider, model = resolve_provider("talent.timeline.segment_summary", "generate")
-
-    assert provider == "local"
-    assert model == LOCAL_MODEL
-    assert model != "gemini-flash-lite-latest"
-
-
-def test_resolve_provider_local_context_model_pin_is_honored(
-    use_fixtures_journal, monkeypatch, tmp_path
-):
-    """An explicit local context pin (provider: local + model) keeps its model."""
-    _write_tmp_journal_config(
-        tmp_path,
-        monkeypatch,
-        {
-            "providers": {
-                "generate": {"provider": "local"},
-                "contexts": {
-                    "talent.timeline.segment_summary": {
-                        "provider": "local",
-                        "model": "local/custom-7b",
-                    }
-                },
-            }
-        },
-    )
-
-    provider, model = resolve_provider("talent.timeline.segment_summary", "generate")
-
-    assert provider == "local"
-    assert model == "local/custom-7b"
-    assert model != LOCAL_MODEL
-
-
-def test_resolve_provider_local_context_blank_pin_uses_context_tier(
-    use_fixtures_journal, monkeypatch, tmp_path
-):
-    """Blank local context model pins fall through to tier-based local routing."""
-    _write_tmp_journal_config(
-        tmp_path,
-        monkeypatch,
-        {
-            "providers": {
-                "generate": {"provider": "local"},
-                "models": {"local": {"3": "local/lite-test"}},
-                "contexts": {
-                    "talent.blank": {
-                        "provider": "local",
-                        "model": "",
-                        "tier": 3,
-                    }
-                },
-            }
-        },
-    )
-
-    provider, model = resolve_provider("talent.blank", "generate")
-
-    assert provider == "local"
-    assert model == "local/lite-test"
-    assert model != ""
-
-
-def test_resolve_provider_local_context_malformed_pin_uses_type_default_tier(
-    use_fixtures_journal, monkeypatch, tmp_path
-):
-    """Malformed local model pins fall through without crashing."""
-    _write_tmp_journal_config(
-        tmp_path,
-        monkeypatch,
-        {
-            "providers": {
-                "generate": {"provider": "local", "tier": 2},
-                "models": {"local": {"2": "local/default-test"}},
-                "contexts": {
-                    "talent.blank.no_tier": {
-                        "provider": "local",
-                        "model": "",
-                    },
-                    "talent.numeric.invalid_tier": {
-                        "provider": "local",
-                        "model": 123,
-                        "tier": 99,
                     },
                 },
             }
         },
     )
 
-    assert resolve_provider("talent.blank.no_tier", "generate") == (
-        "local",
-        "local/default-test",
-    )
-    assert resolve_provider("talent.numeric.invalid_tier", "generate") == (
-        "local",
-        "local/default-test",
-    )
+    assert resolve_provider("generate") == ("local", LOCAL_MODEL)
 
 
-def test_resolve_provider_local_honors_context_tier_and_models_override(
+def test_legacy_context_toggles_remain_on_disk_but_not_routing(
     use_fixtures_journal, monkeypatch, tmp_path
 ):
-    """Tier-only context config inherits the local type default."""
+    """Grandfathered context keys stay inert next to disabled/extract toggles."""
     _write_tmp_journal_config(
         tmp_path,
         monkeypatch,
         {
             "providers": {
-                "generate": {"provider": "local"},
-                "models": {"local": {"3": "local/lite-test"}},
+                "generate": {"provider": "google", "model": GEMINI_FLASH},
                 "contexts": {
                     "talent.x": {
+                        "provider": "local",
                         "tier": 3,
                         "disabled": True,
                         "extract": "foo",
@@ -706,13 +514,64 @@ def test_resolve_provider_local_honors_context_tier_and_models_override(
         },
     )
 
-    assert resolve_provider("talent.x", "generate") == ("local", "local/lite-test")
+    assert resolve_provider("generate") == ("google", GEMINI_FLASH)
 
     stored = json.loads((tmp_path / "config" / "journal.json").read_text())
     context = stored["providers"]["contexts"]["talent.x"]
+    assert context["provider"] == "local"
     assert context["disabled"] is True
     assert context["extract"] == "foo"
     assert context["tier"] == 3
+
+
+def test_prepare_config_legacy_context_routing_keys_are_inert(
+    journal_copy: Path,
+) -> None:
+    """Legacy contexts survive on disk but cannot change prepared identity."""
+    from solstone.think.talents import prepare_config
+
+    config_path = journal_copy / "config" / "journal.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["providers"] = {
+        "generate": {"provider": "anthropic", "model": CLAUDE_SONNET_4},
+        "contexts": {
+            "talent.timeline.segment_summary": {
+                "provider": "google",
+                "model": "gemini-flash-lite-latest",
+                "tier": 3,
+                "backup": "openai",
+            }
+        },
+    }
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    prepared = prepare_config({"name": "timeline:segment_summary"})
+
+    assert prepared["provider"] == "anthropic"
+    assert prepared["model"] == CLAUDE_SONNET_4
+
+
+def test_prepare_config_frontmatter_provider_pin_is_dead_through_dispatch_identity(
+    journal_copy: Path,
+) -> None:
+    """Removed google frontmatter pins do not override the active brain."""
+    from solstone.think.talents import prepare_config
+
+    config_path = journal_copy / "config" / "journal.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["env"] = {"GOOGLE_API_KEY": "test-google-key"}
+    config["providers"] = {
+        "generate": {"provider": "anthropic", "model": CLAUDE_SONNET_4}
+    }
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    segment = prepare_config({"name": "timeline:segment_summary"})
+    detection = prepare_config({"name": "entities:detection"})
+
+    assert segment["provider"] == "anthropic"
+    assert segment["model"] == CLAUDE_SONNET_4
+    assert detection["provider"] == "anthropic"
+    assert detection["model"] == CLAUDE_SONNET_4
 
 
 def test_resolve_provider_cogitate_system_talents_stay_local(
@@ -725,11 +584,7 @@ def test_resolve_provider_cogitate_system_talents_stay_local(
         {"providers": {"cogitate": {"provider": "local"}}},
     )
 
-    weekly_provider, _ = resolve_provider("talent.system.weekly_reflection", "cogitate")
-    partner_provider, _ = resolve_provider("talent.system.partner", "cogitate")
-
-    assert weekly_provider == "local"
-    assert partner_provider == "local"
+    assert resolve_provider("cogitate") == ("local", LOCAL_MODEL)
 
 
 def test_resolve_provider_split_lane_other_type_stays_cloud(
@@ -742,24 +597,13 @@ def test_resolve_provider_split_lane_other_type_stays_cloud(
         {
             "providers": {
                 "generate": {"provider": "local"},
-                "cogitate": {"provider": "openai", "tier": 2},
-                "contexts": {
-                    "talent.timeline.segment_summary": {
-                        "provider": "google",
-                        "model": "gemini-flash-lite-latest",
-                    }
-                },
+                "cogitate": {"provider": "openai"},
             }
         },
     )
 
-    generate_provider, _ = resolve_provider(
-        "talent.timeline.segment_summary", "generate"
-    )
-    cogitate_provider, _ = resolve_provider("talent.system.partner", "cogitate")
-
-    assert generate_provider == "local"
-    assert cogitate_provider == "openai"
+    assert resolve_provider("generate") == ("local", LOCAL_MODEL)
+    assert resolve_provider("cogitate") == ("openai", GPT_5_MINI)
 
 
 def test_generate_rejects_cloud_model_override_for_local_provider():
@@ -900,7 +744,7 @@ def test_context_registry_includes_prompt_contexts():
     registry = get_context_registry()
     base_dir = Path(__file__).parent.parent / "solstone"
 
-    # All prompt contexts should be in registry with correct tier
+    # All prompt contexts should be in registry with matching metadata
     for rel_path in PROMPT_PATHS:
         path = base_dir / rel_path
         post = frontmatter.load(path)
@@ -908,7 +752,8 @@ def test_context_registry_includes_prompt_contexts():
         context = meta.get("context")
 
         assert context in registry, f"Prompt context {context} not in registry"
-        assert registry[context]["tier"] == meta["tier"]
+        assert registry[context]["label"] == meta["label"]
+        assert registry[context]["group"] == meta["group"]
 
 
 def test_context_registry_includes_categories():
@@ -923,10 +768,8 @@ def test_context_registry_includes_categories():
 
     # Each category context should have required fields
     for context in category_contexts:
-        assert "tier" in registry[context]
         assert "label" in registry[context]
         assert "group" in registry[context]
-        assert registry[context]["tier"] in (TIER_PRO, TIER_FLASH, TIER_LITE)
 
 
 def test_context_registry_includes_talent_configs():
@@ -959,18 +802,13 @@ def test_context_registry_includes_talent_configs():
 def test_context_registry_structure():
     """Test that all registry entries have required fields."""
     registry = get_context_registry()
-    required_keys = {"tier", "label", "group"}
+    required_keys = {"label", "group"}
 
     for context, config in registry.items():
         assert isinstance(config, dict), f"{context} should be a dict"
         assert required_keys <= set(config.keys()), (
             f"{context} missing keys: {required_keys - set(config.keys())}"
         )
-        assert config["tier"] in (
-            TIER_PRO,
-            TIER_FLASH,
-            TIER_LITE,
-        ), f"{context} has invalid tier: {config['tier']}"
 
 
 def test_context_registry_is_cached():
@@ -988,7 +826,7 @@ def test_context_registry_is_cached():
 
 
 def test_all_default_models_have_pricing():
-    """Verify all models in PROVIDER_DEFAULTS have genai-prices support.
+    """Verify all default provider models have genai-prices support.
 
     This test ensures that when default models are updated, we catch any
     missing pricing data early. If this test fails:
@@ -999,25 +837,8 @@ def test_all_default_models_have_pricing():
 
     See think/models.py model constants section for more details.
     """
-    # Collect all unique models from PROVIDER_DEFAULTS
-    all_models = set()
-    for provider_models in PROVIDER_DEFAULTS.values():
-        all_models.update(provider_models.values())
-
-    # Also include the named constants directly (in case they differ)
-    all_models.update(
-        [
-            GEMINI_PRO,
-            GEMINI_FLASH,
-            GEMINI_LITE,
-            GPT_5,
-            GPT_5_MINI,
-            GPT_5_NANO,
-            CLAUDE_OPUS_4,
-            CLAUDE_SONNET_4,
-            CLAUDE_HAIKU_4,
-        ]
-    )
+    all_models = set(DEFAULT_MODEL_BY_PROVIDER.values())
+    all_models.add(CLAUDE_OPUS_4)
 
     missing_pricing = []
     for model in sorted(all_models):
@@ -1978,10 +1799,12 @@ class TestDefaultProviderTimeout:
 
 
 def test_request_health_recheck_emits_callosum_request():
+    from solstone.think.providers.state import request_recheck
+
     with patch(
         "solstone.think.providers.state.callosum_send", return_value=True
     ) as send:
-        request_health_recheck()
+        request_recheck()
 
     send.assert_called_once_with(
         "supervisor",
@@ -1991,13 +1814,15 @@ def test_request_health_recheck_emits_callosum_request():
 
 
 def test_request_health_recheck_does_not_raise_on_send_failure(caplog):
+    from solstone.think.providers.state import request_recheck
+
     with (
         patch(
             "solstone.think.providers.state.callosum_send", return_value=False
         ) as send,
         caplog.at_level(logging.WARNING),
     ):
-        request_health_recheck()
+        request_recheck()
 
     send.assert_called_once()
     assert "request_health_recheck: callosum_send returned false" in caplog.text

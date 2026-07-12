@@ -6,7 +6,6 @@
   "schedule": "cadence",
   "cadence_minutes": 30,
   "priority": 45,
-  "tier": 3,
   "hook": {"pre": "steward", "post": "steward"},
   "output": "json",
   "schema": "steward.schema.json",

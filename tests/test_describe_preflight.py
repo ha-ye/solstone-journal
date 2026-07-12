@@ -137,17 +137,13 @@ def test_blocked_then_ready_leaves_media_reeligible(tmp_path, monkeypatch):
     ]
 
 
-def test_preflight_dedups_contexts_by_resolved_provider_model(monkeypatch):
+def test_preflight_dedups_contexts_by_active_generate_route(monkeypatch):
     from solstone.think import models
 
     monkeypatch.setattr(
         models,
         "resolve_provider",
-        lambda context, _interface: {
-            "observe.describe.frame": ("google", "gemini-test"),
-            "observe.describe.meeting": ("google", "gemini-test"),
-            "observe.describe.terminal": ("anthropic", "claude-test"),
-        }[context],
+        lambda _interface: ("google", "gemini-test"),
     )
 
     assert describe_module._dedup_readiness_contexts(
@@ -156,7 +152,7 @@ def test_preflight_dedups_contexts_by_resolved_provider_model(monkeypatch):
             "observe.describe.meeting",
             "observe.describe.terminal",
         ]
-    ) == ["observe.describe.frame", "observe.describe.terminal"]
+    ) == ["observe.describe.frame"]
 
 
 @pytest.mark.asyncio
@@ -234,7 +230,7 @@ async def test_mid_run_blocker_unlinks_partial_output_and_does_not_retry(
     monkeypatch.setattr(
         models,
         "resolve_provider",
-        lambda _context, _interface: ("google", "gemini-test"),
+        lambda _interface: ("google", "gemini-test"),
     )
     monkeypatch.setattr(
         describe_module,

@@ -1,6 +1,5 @@
 ---
 context: observe.detect.json
-tier: 2
 label: Normalization
 group: Import
 ---

@@ -11,12 +11,9 @@ import time
 from pathlib import Path
 
 from solstone.think.journal_io import atomic_replace
-from solstone.think.models import GEMINI_LITE
 from solstone.think.utils import day_path, iter_segments, segment_path
 
 logger = logging.getLogger(__name__)
-
-MODEL = GEMINI_LITE
 
 SYSTEM_INSTRUCTION = (
     "Pick the SINGLE MOST IMPORTANT EVENT from this ~5-minute slice of a "
@@ -201,7 +198,7 @@ def post_process(result: str, context: dict) -> str | None:
         "title": parsed.get("title", ""),
         "description": parsed.get("description", ""),
         "origin": origin_for_segment(seg_dir),
-        "model": context.get("model", MODEL),
+        "model": context["model"],
         "generated_at": int(time.time()),
     }
     atomic_replace(

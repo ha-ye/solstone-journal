@@ -6,7 +6,6 @@
   "color": "#9c27b0",
   "schedule": "segment",
   "priority": 10,
-  "tier": 3,
   "output": "json",
   "schema": "screen.schema.json",
   "max_output_tokens": 12288,

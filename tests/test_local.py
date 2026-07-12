@@ -17,11 +17,8 @@ from types import SimpleNamespace
 import pytest
 
 from solstone.think.models import (
+    DEFAULT_MODEL_BY_PROVIDER,
     LOCAL_MODEL,
-    PROVIDER_DEFAULTS,
-    TIER_FLASH,
-    TIER_LITE,
-    TIER_PRO,
     get_model_provider,
 )
 from solstone.think.talents import TalentHookError
@@ -122,9 +119,7 @@ def test_local_model_specs():
 def test_local_provider_defaults_and_registry():
     from solstone.think.providers import PROVIDER_METADATA, PROVIDER_REGISTRY
 
-    assert PROVIDER_DEFAULTS["local"][TIER_PRO] == LOCAL_MODEL
-    assert PROVIDER_DEFAULTS["local"][TIER_FLASH] == LOCAL_MODEL
-    assert PROVIDER_DEFAULTS["local"][TIER_LITE] == LOCAL_MODEL
+    assert DEFAULT_MODEL_BY_PROVIDER["local"] == LOCAL_MODEL
     assert PROVIDER_REGISTRY["local"] == "solstone.think.providers.local"
     assert PROVIDER_METADATA["local"] == {
         "label": "Local (on-device)",

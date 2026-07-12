@@ -5,7 +5,8 @@ import json
 
 import pytest
 
-from solstone.think.models import GEMINI_FLASH, record_provider_failure
+from solstone.think.models import GEMINI_FLASH
+from solstone.think.providers.state import record_quota_failure
 
 
 def _read_health(tmp_path):
@@ -15,9 +16,8 @@ def _read_health(tmp_path):
 def test_record_provider_failure_appends_new_row(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
-    record_provider_failure(
+    record_quota_failure(
         "google",
-        "flash",
         GEMINI_FLASH,
         "cogitate",
         12345,
@@ -27,7 +27,7 @@ def test_record_provider_failure_appends_new_row(monkeypatch, tmp_path):
     assert payload["summary"] == {"total": 1, "passed": 0, "skipped": 0, "failed": 1}
     row = payload["results"][0]
     assert row["provider"] == "google"
-    assert row["tier"] == "flash"
+    assert "tier" not in row
     assert row["model"] == GEMINI_FLASH
     assert row["interface"] == "cogitate"
     assert row["ok"] is False
@@ -42,8 +42,8 @@ def test_record_provider_failure_appends_new_row(monkeypatch, tmp_path):
 def test_record_provider_failure_updates_duplicate_key(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
-    record_provider_failure("google", "flash", "gemini", "cogitate", 100)
-    record_provider_failure("google", "flash", "gemini", "cogitate", 200)
+    record_quota_failure("google", "gemini", "cogitate", 100)
+    record_quota_failure("google", "gemini", "cogitate", 200)
 
     payload = _read_health(tmp_path)
     assert len(payload["results"]) == 1
@@ -73,7 +73,7 @@ def test_record_provider_failure_recomputes_summary(monkeypatch, tmp_path):
         )
     )
 
-    record_provider_failure("google", "flash", "gemini", "cogitate", 300)
+    record_quota_failure("google", "gemini", "cogitate", 300)
 
     payload = _read_health(tmp_path)
     assert payload["summary"] == {"total": 3, "passed": 1, "skipped": 1, "failed": 1}
@@ -100,6 +100,6 @@ def test_record_provider_failure_atomic_replace_failure_preserves_file(
     monkeypatch.setattr("solstone.think.providers.state.os.replace", fail_replace)
 
     with pytest.raises(OSError, match="replace failed"):
-        record_provider_failure("google", "flash", "gemini", "cogitate", 400)
+        record_quota_failure("google", "gemini", "cogitate", 400)
 
     assert json.loads(health_path.read_text()) == original

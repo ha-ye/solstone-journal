@@ -1,19 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Tests for timeline segment-summary provider context registration."""
+"""Tests for retired timeline segment-summary provider context registration."""
 
 from __future__ import annotations
 
 import importlib
-import json
 import sys
 
-import pytest
-
 from solstone.apps.timeline.tests.conftest import write_json
-from solstone.think.models import resolve_provider
-from solstone.think.utils import CorruptConfigError
 
 mod = importlib.import_module(
     "solstone.apps.timeline.maint.002_register_segment_summary_model"
@@ -24,79 +19,40 @@ def _journal_config_path(journal):
     return journal / "config" / "journal.json"
 
 
-def test_adds_providers_contexts_entry_when_missing(timeline_journal):
-    write_json(_journal_config_path(timeline_journal), {"providers": {"contexts": {}}})
-
-    summary = mod.run_registration(timeline_journal)
-
-    data = json.loads(_journal_config_path(timeline_journal).read_text())
-    assert summary.added == 1
-    assert data["providers"]["contexts"][mod.CONTEXT_NAME] == mod.EXPECTED_CONTEXT
-
-
-def test_idempotent_when_present_and_matches(timeline_journal, monkeypatch):
+def test_registration_is_retired_noop(timeline_journal):
+    path = _journal_config_path(timeline_journal)
     write_json(
-        _journal_config_path(timeline_journal),
-        {"providers": {"contexts": {mod.CONTEXT_NAME: mod.EXPECTED_CONTEXT}}},
-    )
-    monkeypatch.setattr(
-        mod, "write_journal_config", lambda *args, **kwargs: pytest.fail("rewrite")
-    )
-
-    summary = mod.run_registration(timeline_journal)
-
-    assert summary.preserved == 1
-
-
-def test_warns_and_preserves_divergent_model(timeline_journal, monkeypatch):
-    data = {
-        "providers": {
-            "contexts": {
-                mod.CONTEXT_NAME: {"provider": "google", "model": "different-model"}
+        path,
+        {
+            "providers": {
+                "contexts": {
+                    "talent.timeline.segment_summary": {
+                        "provider": "google",
+                        "model": "legacy-model",
+                    }
+                }
             }
-        }
-    }
-    write_json(_journal_config_path(timeline_journal), data)
-    monkeypatch.setattr(
-        mod, "write_journal_config", lambda *args, **kwargs: pytest.fail("rewrite")
+        },
     )
+    before = path.read_bytes()
 
     summary = mod.run_registration(timeline_journal)
 
-    assert summary.warnings == 1
-    assert json.loads(_journal_config_path(timeline_journal).read_text()) == data
+    assert summary.added == 0
+    assert summary.preserved == 0
+    assert summary.warnings == 0
+    assert summary.errors == 0
+    assert path.read_bytes() == before
 
 
-def test_creates_providers_contexts_when_missing_section(timeline_journal):
-    write_json(_journal_config_path(timeline_journal), {"identity": {"name": "Test"}})
-
-    summary = mod.run_registration(timeline_journal)
-
-    data = json.loads(_journal_config_path(timeline_journal).read_text())
-    assert summary.added == 1
-    assert data["providers"]["contexts"][mod.CONTEXT_NAME] == mod.EXPECTED_CONTEXT
-
-
-def test_local_generate_default_wins_over_registered_cloud_context(timeline_journal):
-    write_json(
-        _journal_config_path(timeline_journal),
-        {"providers": {"generate": {"provider": "local"}}},
-    )
-
-    summary = mod.run_registration(timeline_journal)
-    provider, _ = resolve_provider(mod.CONTEXT_NAME, "generate")
-
-    assert summary.added == 1
-    assert provider == "local"
-
-
-def test_malformed_json_fails_loud(timeline_journal, monkeypatch):
-    config_path = _journal_config_path(timeline_journal)
-    config_path.write_text("{bad", encoding="utf-8")
-    before = config_path.read_bytes()
+def test_registration_main_succeeds_without_reading_malformed_config(
+    timeline_journal, monkeypatch
+):
+    path = _journal_config_path(timeline_journal)
+    path.write_text("{bad", encoding="utf-8")
+    before = path.read_bytes()
     monkeypatch.setattr(sys, "argv", ["register-segment-summary-model"])
 
-    with pytest.raises(CorruptConfigError):
-        mod.main()
+    mod.main()
 
-    assert config_path.read_bytes() == before
+    assert path.read_bytes() == before

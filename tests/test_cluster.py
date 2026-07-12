@@ -18,26 +18,12 @@ SEGMENT = "120000_300"
 
 
 def _patch_prepare_config_model_deps(monkeypatch) -> None:
-    from solstone.think.models import TIER_LITE
-
     monkeypatch.setattr(
         "solstone.think.models.resolve_provider",
-        lambda _context, _type: ("google", "gemini-test"),
+        lambda _type: ("google", "gemini-test"),
     )
     monkeypatch.setattr(
         "solstone.think.models.type_default_is_local", lambda _type: False
-    )
-    monkeypatch.setattr(
-        "solstone.think.models._resolve_tier",
-        lambda _context, _type: TIER_LITE,
-    )
-    monkeypatch.setattr("solstone.think.models.load_health_status", lambda: {})
-    monkeypatch.setattr(
-        "solstone.think.models.should_recheck_health", lambda _health: False
-    )
-    monkeypatch.setattr(
-        "solstone.think.models.is_provider_model_interface_healthy",
-        lambda _provider, _model, _type, _health: True,
     )
 
 

@@ -48,7 +48,6 @@ from solstone.think.journal_config import (
 from solstone.think.models import (
     LOCAL_MODEL,
     NO_BRAIN_PROVIDER,
-    TYPE_DEFAULTS,
     resolve_provider,
 )
 from solstone.think.providers import (
@@ -96,7 +95,6 @@ AI_ENV_TO_PROVIDER = {
     "OPENAI_API_KEY": "openai",
 }
 AI_PROVIDERS = frozenset(AI_ENV_TO_PROVIDER.values())
-VALID_TIERS = {1, 2, 3}
 LANES = {"byo", "confidential", "local"}
 GENERIC_THINKING_ERROR = (
     "something went wrong - try again, and if it persists, check the health dashboard"
@@ -335,15 +333,13 @@ def _validate_local_endpoint_url(endpoint_url: str) -> str | Any:
 def _type_settings(providers_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
     settings: dict[str, dict[str, Any]] = {}
     for agent_type in ("generate", "cogitate"):
-        defaults = TYPE_DEFAULTS[agent_type]
         type_config = providers_config.get(agent_type, {})
         if not isinstance(type_config, dict):
             type_config = {}
-        provider, _ = resolve_provider("", agent_type)
+        provider, model = resolve_provider(agent_type)
         settings[agent_type] = {
             "provider": provider,
-            "tier": type_config.get("tier", defaults["tier"]),
-            "backup": type_config.get("backup", defaults["backup"]),
+            "model": type_config.get("model") or model,
         }
     return settings
 
@@ -461,35 +457,11 @@ def _compute_ai_key_validation(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, Any]:
-    from solstone.think.models import get_context_registry, resolve_effective_route
-    from solstone.think.talent import get_talent_configs, key_to_context
-
     providers_config = config.get("providers", {})
     if not isinstance(providers_config, dict):
         providers_config = {}
 
     type_settings = _type_settings(providers_config)
-    contexts = providers_config.get("contexts", {})
-    if not isinstance(contexts, dict):
-        contexts = {}
-
-    context_defaults: dict[str, dict[str, Any]] = {}
-    for pattern, ctx_config in get_context_registry().items():
-        context_defaults[pattern] = {
-            "tier": ctx_config["tier"],
-            "label": ctx_config["label"],
-            "group": ctx_config["group"],
-        }
-        if "type" in ctx_config:
-            context_defaults[pattern]["type"] = ctx_config["type"]
-
-    talent_configs = get_talent_configs(include_disabled=True)
-    for key, info in talent_configs.items():
-        context_key = key_to_context(key)
-        if context_key in context_defaults:
-            if "schedule" in info:
-                context_defaults[context_key]["schedule"] = info["schedule"]
-            context_defaults[context_key]["disabled"] = info.get("disabled", False)
 
     providers_list = get_provider_list()
     vertex_creds_path = providers_config.get("vertex_credentials")
@@ -508,26 +480,6 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         local_model_id=local_model_id,
         include_local=True,
     )
-    effective_contexts: dict[str, dict[str, Any]] = {}
-    for pattern, raw_ctx in contexts.items():
-        try:
-            interface, provider, model = resolve_effective_route(pattern)
-            raw_provider = (
-                raw_ctx.get("provider") if isinstance(raw_ctx, dict) else None
-            )
-            raw_model = raw_ctx.get("model") if isinstance(raw_ctx, dict) else None
-            effective_contexts[pattern] = {
-                "interface": interface,
-                "provider": provider,
-                "model": model,
-                "differs_from_raw": (
-                    (raw_provider is not None and raw_provider != provider)
-                    or (raw_model is not None and raw_model != model)
-                ),
-            }
-        except Exception:
-            logger.exception("error resolving effective route for context %s", pattern)
-            effective_contexts[pattern] = {"unavailable": True}
 
     return {
         "providers": providers_list,
@@ -539,9 +491,6 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         "active_lane": _active_lane_payload(type_settings),
         "generate": type_settings["generate"],
         "cogitate": type_settings["cogitate"],
-        "contexts": contexts,
-        "effective_contexts": effective_contexts,
-        "context_defaults": context_defaults,
         "api_keys": _api_key_status(config),
         "key_validation": _filtered_ai_key_validation(config),
         "local": local_status,
@@ -1069,29 +1018,31 @@ def _apply_type_update(
         config["providers"][agent_type]["provider"] = provider
 
     if "tier" in type_data:
-        tier = type_data["tier"]
-        if tier not in VALID_TIERS:
-            return error_response(
-                INVALID_CONFIG_VALUE,
-                detail=f"Invalid tier: {tier}. Must be 1, 2, or 3.",
-            )
-        if old_type.get("tier") != tier:
-            changed_fields[f"{agent_type}.tier"] = {
-                "old": old_type.get("tier"),
-                "new": tier,
-            }
-        config["providers"][agent_type]["tier"] = tier
+        return error_response(
+            INVALID_CONFIG_VALUE,
+            detail=f"{agent_type}.tier is retired; set provider/model instead.",
+        )
 
     if "backup" in type_data:
-        backup = _validate_provider(type_data["backup"], "backup provider")
-        if not isinstance(backup, str):
-            return backup
-        if old_type.get("backup") != backup:
-            changed_fields[f"{agent_type}.backup"] = {
-                "old": old_type.get("backup"),
-                "new": backup,
+        return error_response(
+            INVALID_CONFIG_VALUE,
+            detail=f"{agent_type}.backup is retired; automatic provider switching is disabled.",
+        )
+
+    if "model" in type_data:
+        model = type_data["model"]
+        if not isinstance(model, str) or not model.strip():
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail=f"{agent_type}.model must be a non-empty string.",
+            )
+        model = model.strip()
+        if old_type.get("model") != model:
+            changed_fields[f"{agent_type}.model"] = {
+                "old": old_type.get("model"),
+                "new": model,
             }
-        config["providers"][agent_type]["backup"] = backup
+        config["providers"][agent_type]["model"] = model
 
     return None
 
@@ -1150,14 +1101,29 @@ def update_providers() -> Any:
         config.setdefault("providers", {})
         changed_fields: dict[str, Any] = {}
 
+        for legacy_key in ("tier", "backup"):
+            if legacy_key in request_data:
+                return error_response(
+                    INVALID_CONFIG_VALUE,
+                    detail=(
+                        f"{legacy_key} is retired; configure generate/cogitate "
+                        "provider/model instead."
+                    ),
+                )
+        if "contexts" in request_data:
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail=(
+                    "providers.contexts routing is retired; use /api/generators "
+                    "for disabled/extract toggles."
+                ),
+            )
+
         if "lane" in request_data:
             provider = _lane_provider(request_data)
             if not isinstance(provider, str):
                 return provider
             lane_update = {"provider": provider}
-            for optional in ("tier", "backup"):
-                if optional in request_data:
-                    lane_update[optional] = request_data[optional]
             for agent_type in ("generate", "cogitate"):
                 error = _apply_type_update(
                     config,
@@ -1184,71 +1150,6 @@ def update_providers() -> Any:
             )
             if error is not None:
                 return error
-
-        if "contexts" in request_data:
-            contexts_data = request_data["contexts"]
-            if not isinstance(contexts_data, dict):
-                return error_response(INVALID_REQUEST_VALUE, detail="contexts")
-            config["providers"].setdefault("contexts", {})
-            old_contexts = old_providers.get("contexts", {})
-            for pattern, ctx_config in contexts_data.items():
-                old_ctx = old_contexts.get(pattern)
-                if ctx_config is None:
-                    if pattern in config["providers"]["contexts"]:
-                        changed_fields[f"contexts.{pattern}"] = {
-                            "old": old_ctx,
-                            "new": None,
-                        }
-                        del config["providers"]["contexts"][pattern]
-                    continue
-                if not isinstance(ctx_config, dict):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"context for {pattern} must be an object or null",
-                    )
-                if "provider" in ctx_config:
-                    provider = _validate_provider(
-                        ctx_config["provider"],
-                        f"provider for {pattern}",
-                    )
-                    if not isinstance(provider, str):
-                        return provider
-                if "tier" in ctx_config and ctx_config["tier"] not in VALID_TIERS:
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"Invalid tier for {pattern}: {ctx_config['tier']}",
-                    )
-                if "disabled" in ctx_config and not isinstance(
-                    ctx_config["disabled"],
-                    bool,
-                ):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"disabled for {pattern} must be a boolean",
-                    )
-                if "extract" in ctx_config and not isinstance(
-                    ctx_config["extract"],
-                    bool,
-                ):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"extract for {pattern} must be a boolean",
-                    )
-                if "model" in ctx_config:
-                    model_value = ctx_config["model"]
-                    if not isinstance(model_value, str) or not model_value.strip():
-                        return error_response(
-                            INVALID_CONFIG_VALUE,
-                            detail=f"model for {pattern} must be a non-empty string",
-                        )
-                    ctx_config["model"] = model_value.strip()
-                if ctx_config:
-                    if old_ctx != ctx_config:
-                        changed_fields[f"contexts.{pattern}"] = {
-                            "old": old_ctx,
-                            "new": ctx_config,
-                        }
-                    config["providers"]["contexts"][pattern] = ctx_config
 
         if "google_backend" in request_data:
             backend = request_data["google_backend"]

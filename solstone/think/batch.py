@@ -316,7 +316,7 @@ class Batch:
             request.provider = getattr(e, "provider", None)
             if request.provider is None:
                 try:
-                    request.provider = resolve_provider(request.context, "generate")[0]
+                    request.provider = resolve_provider("generate")[0]
                 except (KeyError, TypeError, ValueError):
                     request.provider = None
 

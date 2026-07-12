@@ -12,7 +12,9 @@ import pytest
 
 from solstone.apps.timeline.maintenance import _rollup_master, run_rollup_master
 from solstone.apps.timeline.tests.conftest import write_json
-from solstone.think.models import GEMINI_FLASH, SchemaValidationError
+from solstone.think.models import SchemaValidationError
+
+ROLLUP_MODEL = "resolved-rollup-model"
 
 
 def _write_day(journal, day, titles):
@@ -20,7 +22,7 @@ def _write_day(journal, day, titles):
         journal / "chronicle" / day / "timeline.json",
         {
             "day": day,
-            "model": GEMINI_FLASH,
+            "model": "day-rollup-model",
             "generated_at": 1770000000,
             "segment_count": len(titles),
             "hour_count": 1,
@@ -104,8 +106,12 @@ def test_rollup_master_empty_input_exits_empty_sentinel(timeline_journal):
     assert not (timeline_journal / "timeline.json").exists()
 
 
-def test_rollup_master_writes_seed_shape(timeline_journal, mock_agenerate):
+def test_rollup_master_writes_seed_shape(timeline_journal, mock_agenerate, monkeypatch):
     """AC#9, AC#10."""
+    monkeypatch.setattr(
+        "solstone.apps.timeline.maintenance.resolve_provider",
+        lambda _interface: ("google", ROLLUP_MODEL),
+    )
     _write_day(timeline_journal, "20260510", ["A", "B", "C"])
     _write_day(timeline_journal, "20260511", ["D", "Café E"])
     mock = mock_agenerate({"picks": [4, 0, 1, 2], "rationale": "monthly consequence"})
@@ -123,13 +129,13 @@ def test_rollup_master_writes_seed_shape(timeline_journal, mock_agenerate):
 
     timeline_path = timeline_journal / "timeline.json"
     payload = json.loads(timeline_path.read_text())
-    assert payload["model"] == GEMINI_FLASH
+    assert payload["model"] == ROLLUP_MODEL
     assert payload["top_n"] == 4
     assert list(payload["months"]) == ["202605"]
     assert payload["months"]["202605"]["day_count"] == 2
     assert payload["months"]["202605"]["month_top"][0]["title"] == "Café E"
     assert payload["year_top"][0]["month"] == "202605"
-    assert mock.call_args.kwargs["model"] == GEMINI_FLASH
+    assert "model" not in mock.call_args.kwargs
     raw = timeline_path.read_bytes()
     assert b"Caf\xc3\xa9 E" in raw
     assert b"\\u00e9" not in raw

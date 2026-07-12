@@ -334,10 +334,6 @@ def get_talent_configs(
                 info["disabled"] = override["disabled"]
             if "extract" in override:
                 info["extract"] = override["extract"]
-            if "tier" in override:
-                info["tier"] = override["tier"]
-            if "provider" in override:
-                info["provider"] = override["provider"]
 
     # Validate: scheduled prompts must have explicit priority
     for key, info in configs.items():

@@ -136,11 +136,6 @@ def _validate_provider_or_exit(provider: str, *, cloud_only: bool = False) -> No
         _exit_with(f"Invalid provider: {provider}. Must be one of: {', '.join(valid)}")
 
 
-def _validate_tier_or_exit(tier: int | None) -> None:
-    if tier is not None and tier not in {1, 2, 3}:
-        _exit_with(f"Invalid tier: {tier}. Must be one of: 1, 2, 3")
-
-
 def _get_providers() -> dict[str, Any]:
     return _request("GET", "/app/thinking/api/providers")
 
@@ -420,20 +415,15 @@ def providers_show(
 def _set_provider_type(
     agent_type: str,
     provider: str | None,
-    tier: int | None,
-    backup: str | None,
+    model: str | None,
 ) -> dict[str, Any]:
     if provider is not None:
         _validate_provider_or_exit(provider)
-    if backup is not None:
-        _validate_provider_or_exit(backup)
-    _validate_tier_or_exit(tier)
     payload = {
         key: value
         for key, value in {
             "provider": provider,
-            "tier": tier,
-            "backup": backup,
+            "model": model,
         }.items()
         if value is not None
     }
@@ -454,24 +444,22 @@ def _set_provider_type(
 @convey_cli
 def providers_set_generate(
     provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
-    tier: int | None = typer.Option(None, "--tier", help="Tier (1, 2, or 3)."),
-    backup: str | None = typer.Option(None, "--backup", help="Backup provider."),
+    model: str | None = typer.Option(None, "--model", help="Model override."),
 ) -> None:
     """Set generate provider defaults."""
 
-    _echo_json(_set_provider_type("generate", provider, tier, backup))
+    _echo_json(_set_provider_type("generate", provider, model))
 
 
 @providers_app.command("set-cogitate")
 @convey_cli
 def providers_set_cogitate(
     provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
-    tier: int | None = typer.Option(None, "--tier", help="Tier (1, 2, or 3)."),
-    backup: str | None = typer.Option(None, "--backup", help="Backup provider."),
+    model: str | None = typer.Option(None, "--model", help="Model override."),
 ) -> None:
     """Set cogitate provider defaults."""
 
-    _echo_json(_set_provider_type("cogitate", provider, tier, backup))
+    _echo_json(_set_provider_type("cogitate", provider, model))
 
 
 @app.command("set-local-endpoint")

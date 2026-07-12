@@ -41,11 +41,10 @@ def _provider_status(provider_name: str) -> dict[str, object]:
 
 def _check_generate(
     provider_name: str,
-    tier: int,
+    model: str,
     timeout: int,
 ) -> tuple[str, str, str | None]:
     """Check generate interface for a provider."""
-    from solstone.think.models import PROVIDER_DEFAULTS
     from solstone.think.providers import PROVIDER_METADATA, get_provider_module
 
     env_key = PROVIDER_METADATA[provider_name]["env_key"]
@@ -76,7 +75,6 @@ def _check_generate(
 
     try:
         module = get_provider_module(provider_name)
-        model = PROVIDER_DEFAULTS[provider_name][tier]
         # Connectivity probe with canned content; deliberately outside the
         # confidential attestation gate so diagnostics can always run.
         result = module.run_generate(
@@ -97,7 +95,7 @@ def _check_generate(
                 from solstone.think.models import log_token_usage
 
                 log_token_usage(
-                    model=PROVIDER_DEFAULTS[provider_name][tier],
+                    model=model,
                     usage=usage,
                     context="health.check.generate",
                     type="generate",
@@ -111,10 +109,9 @@ def _check_generate(
 
 
 async def _check_cogitate(
-    provider_name: str, tier: int, timeout: int
+    provider_name: str, model: str, timeout: int
 ) -> tuple[str, str, str | None]:
     """Check cogitate interface for a provider by running a real prompt."""
-    from solstone.think.models import PROVIDER_DEFAULTS
     from solstone.think.providers import PROVIDER_METADATA, get_provider_module
 
     env_key = PROVIDER_METADATA[provider_name]["env_key"]
@@ -176,7 +173,6 @@ async def _check_cogitate(
 
     try:
         module = get_provider_module(provider_name)
-        model = PROVIDER_DEFAULTS[provider_name][tier]
         config = {"prompt": "Say OK", "model": model, "provider": provider_name}
         # Connectivity probe with canned content; deliberately outside the
         # confidential attestation gate so diagnostics can always run.
@@ -197,46 +193,29 @@ async def _check_cogitate(
 
 async def _run_check(args: argparse.Namespace) -> None:
     """Run connectivity checks against AI providers."""
-    from solstone.think.models import PROVIDER_DEFAULTS, TIER_FLASH, TIER_LITE, TIER_PRO
+    from solstone.think.models import (
+        NO_BRAIN_PROVIDER,
+        default_model_for_provider,
+        resolve_provider,
+    )
     from solstone.think.providers import PROVIDER_REGISTRY
 
-    targeted_pairs = None
-    if args.targeted and not args.provider and not args.tier:
+    lock_fd = None
+    if args.targeted and not args.provider:
         import fcntl
-
-        from solstone.think.models import (
-            NO_BRAIN_PROVIDER,
-            TYPE_DEFAULTS,
-            get_backup_provider,
-            resolve_provider,
-        )
-        from solstone.think.utils import get_config
-
-        targeted_pairs = set()
-        config = get_config()
-        providers_config = config.get("providers", {})
-        if not isinstance(providers_config, dict):
-            providers_config = {}
-        for talent_type, defaults in TYPE_DEFAULTS.items():
-            type_config = providers_config.get(talent_type, {})
-            if not isinstance(type_config, dict):
-                type_config = {}
-            provider, _ = resolve_provider("", talent_type)
-            tier = type_config.get("tier", defaults["tier"])
-            if provider != NO_BRAIN_PROVIDER:
-                targeted_pairs.add((provider, tier))
-            backup = get_backup_provider(talent_type)
-            if backup:
-                targeted_pairs.add((backup, tier))
 
         lock_dir = Path(get_journal()) / "health"
         lock_dir.mkdir(parents=True, exist_ok=True)
-        lock_fd = open(lock_dir / "recheck.lock", "w")
+        lock_fd = open(lock_dir / "recheck.lock", "w", encoding="utf-8")
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             lock_fd.close()
             return
+
+    if args.model and not args.provider:
+        print("--model requires --provider", file=sys.stderr)
+        sys.exit(1)
 
     if args.provider:
         providers = args.provider
@@ -252,13 +231,21 @@ async def _run_check(args: argparse.Namespace) -> None:
         providers = list(PROVIDER_REGISTRY.keys())
 
     interfaces = [args.interface] if args.interface else ["generate", "cogitate"]
-    tier_names = {1: "pro", 2: "flash", 3: "lite"}
-    tiers = [args.tier] if args.tier else [TIER_PRO, TIER_FLASH, TIER_LITE]
 
-    provider_width = max(len(n) for n in providers) if providers else 0
-    tier_width = max(len(tier_names[t]) for t in tiers)
-    model_names = {PROVIDER_DEFAULTS[p][t] for p in providers for t in tiers}
-    model_width = max(len(m) for m in model_names) if model_names else 0
+    probes: list[tuple[str, str, str]] = []
+    if args.targeted and not args.provider:
+        for interface_name in interfaces:
+            provider, model = resolve_provider(interface_name)
+            if provider != NO_BRAIN_PROVIDER:
+                probes.append((provider, model, interface_name))
+    else:
+        for provider_name in providers:
+            model = args.model or default_model_for_provider(provider_name)
+            for interface_name in interfaces:
+                probes.append((provider_name, model, interface_name))
+
+    provider_width = max((len(provider) for provider, _, _ in probes), default=0)
+    model_width = max((len(model) for _, model, _ in probes), default=0)
     interface_width = max(len(n) for n in interfaces) if interfaces else 0
 
     total = 0
@@ -266,86 +253,54 @@ async def _run_check(args: argparse.Namespace) -> None:
     failed = 0
     skipped = 0
     results: list[dict[str, object]] = []
-    cache: dict[tuple[str, str, str], tuple[str, str, str | None, str]] = {}
 
-    for provider_name in providers:
-        for tier in tiers:
-            if (
-                targeted_pairs is not None
-                and (provider_name, tier) not in targeted_pairs
-            ):
-                continue
-            model = PROVIDER_DEFAULTS[provider_name][tier]
-            for interface_name in interfaces:
-                cache_key = (provider_name, model, interface_name)
-                if cache_key in cache:
-                    status, message, reason_code, source_tier = cache[cache_key]
-                    elapsed_s = 0.0
-                    elapsed_s_rounded = 0.0
-                    reused_from = source_tier
-                else:
-                    start = time.perf_counter()
-                    if interface_name == "generate":
-                        status, message, reason_code = _check_generate(
-                            provider_name, tier, args.timeout
-                        )
-                    else:
-                        status, message, reason_code = await _check_cogitate(
-                            provider_name, tier, args.timeout
-                        )
-                    elapsed_s = time.perf_counter() - start
-                    elapsed_s_rounded = round(elapsed_s, 1)
-                    cache[cache_key] = (
-                        status,
-                        message,
-                        reason_code,
-                        tier_names[tier],
-                    )
-                    reused_from = None
+    for provider_name, model, interface_name in probes:
+        start = time.perf_counter()
+        if interface_name == "generate":
+            status, message, reason_code = _check_generate(
+                provider_name, model, args.timeout
+            )
+        else:
+            status, message, reason_code = await _check_cogitate(
+                provider_name, model, args.timeout
+            )
+        elapsed_s = time.perf_counter() - start
+        elapsed_s_rounded = round(elapsed_s, 1)
 
-                result: dict[str, object] = {
-                    "provider": provider_name,
-                    "tier": tier_names[tier],
-                    "model": model,
-                    "interface": interface_name,
-                    "ok": status != "fail",
-                    "status": status,
-                    "reason_code": reason_code,
-                    "message": str(message),
-                    "elapsed_s": elapsed_s_rounded,
-                }
-                if reused_from:
-                    result["reused_from"] = reused_from
-                results.append(result)
+        result: dict[str, object] = {
+            "provider": provider_name,
+            "model": model,
+            "interface": interface_name,
+            "ok": status != "fail",
+            "status": status,
+            "reason_code": reason_code,
+            "message": str(message),
+            "elapsed_s": elapsed_s_rounded,
+        }
+        results.append(result)
 
-                if not args.json:
-                    if reused_from:
-                        mark = "="
-                        display_message = f"{message} (={reused_from})"
-                    else:
-                        if status == "ok":
-                            mark = "✓"
-                        elif status == "skip":
-                            mark = "-"
-                        else:
-                            mark = "✗"
-                        display_message = str(message)
-                    print(
-                        f"{mark} "
-                        f"{provider_name:<{provider_width}}  "
-                        f"{tier_names[tier]:<{tier_width}}  "
-                        f"{model:<{model_width}}  "
-                        f"{interface_name:<{interface_width}}  "
-                        f"{display_message} ({elapsed_s:.1f}s)"
-                    )
+        if not args.json:
+            if status == "ok":
+                mark = "✓"
+            elif status == "skip":
+                mark = "-"
+            else:
+                mark = "✗"
+            print(
+                f"{mark} "
+                f"{provider_name:<{provider_width}}  "
+                f"{model:<{model_width}}  "
+                f"{interface_name:<{interface_width}}  "
+                f"{message} ({elapsed_s:.1f}s)"
+            )
 
-                total += 1
-                if status == "ok":
-                    passed += 1
-                elif status == "skip":
-                    skipped += 1
-                else:
-                    failed += 1
+        total += 1
+        if status == "ok":
+            passed += 1
+        elif status == "skip":
+            skipped += 1
+        else:
+            failed += 1
 
     any_failed = any(r["status"] == "fail" for r in results)
 
@@ -373,6 +328,8 @@ async def _run_check(args: argparse.Namespace) -> None:
         )
     else:
         print(f"{total} checks: {passed} passed, {skipped} skipped, {failed} failed")
+    if lock_fd is not None:
+        lock_fd.close()
     sys.exit(1 if any_failed else 0)
 
 
@@ -401,11 +358,9 @@ async def main_async() -> None:
         help="Timeout in seconds for generate checks (default: 30)",
     )
     check_parser.add_argument(
-        "--tier",
-        type=int,
-        choices=[1, 2, 3],
+        "--model",
         default=None,
-        help="Tier to check (1=pro, 2=flash, 3=lite; default: all)",
+        help="Model to check with --provider (default: provider default model)",
     )
     check_parser.add_argument(
         "--json", action="store_true", help="Output results as JSON"
@@ -413,7 +368,7 @@ async def main_async() -> None:
     check_parser.add_argument(
         "--targeted",
         action="store_true",
-        help="Only check configured provider+tier pairs (used by automated rechecks)",
+        help="Only check configured active routes (used by automated rechecks)",
     )
 
     args = setup_cli(parser)

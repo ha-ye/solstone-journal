@@ -66,7 +66,7 @@ def _assert_install_status(payload: dict) -> None:
 def _patch_selected_providers(monkeypatch, *, provider: str = "google") -> None:
     monkeypatch.setattr(
         "solstone.think.models.resolve_provider",
-        lambda _context, _interface: (provider, f"{provider}-model"),
+        lambda _interface: (provider, f"{provider}-model"),
     )
 
 
@@ -104,7 +104,7 @@ def _assert_ai_readiness_shape(payload: dict) -> None:
         "recovery_action",
         "operator_detail",
     }
-    assert set(ai_readiness) >= {"summary", "interfaces", "context_routes", "groups"}
+    assert set(ai_readiness) >= {"summary", "interfaces", "groups"}
     assert set(ai_readiness["summary"]) == {
         "status",
         "severity",
@@ -112,10 +112,7 @@ def _assert_ai_readiness_shape(payload: dict) -> None:
         "blocked_count",
     }
     assert set(ai_readiness["interfaces"]) == {"generate", "cogitate"}
-    assert isinstance(ai_readiness["context_routes"], list)
     for view in ai_readiness["interfaces"].values():
-        assert set(view) == expected_view_keys
-    for view in ai_readiness["context_routes"]:
         assert set(view) == expected_view_keys
     if ai_readiness.get("local") is not None:
         assert set(ai_readiness["local"]) == expected_view_keys
@@ -194,21 +191,44 @@ def test_get_providers_reports_advanced_when_generate_and_cogitate_lanes_split(
     assert payload["active_lane"]["split"] is True
 
 
-@pytest.mark.parametrize("model_value", [""])
-def test_context_update_rejects_invalid_model_value(
-    settings_client_with_journal, model_value
-):
+def test_provider_update_rejects_context_payload(settings_client_with_journal):
     client, _journal_path = settings_client_with_journal
 
     response = client.put(
         "/app/thinking/api/providers",
-        json={"contexts": {"talent.x": {"provider": "local", "model": model_value}}},
+        json={"contexts": {"talent.x": {"provider": "local", "model": ""}}},
     )
 
     assert response.status_code != 200
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
-    assert "talent.x" in payload["detail"]
+    assert "providers.contexts routing is retired" in payload["detail"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"tier": 2},
+        {"backup": "anthropic"},
+        {"generate": {"tier": 2}},
+        {"cogitate": {"backup": "anthropic"}},
+    ],
+)
+def test_provider_update_rejects_retired_routing_keys(
+    settings_client_with_journal,
+    payload,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    before = config_path.read_bytes()
+
+    response = client.put("/app/thinking/api/providers", json=payload)
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["reason_code"] == "invalid_config_value"
+    assert "retired" in body["detail"]
+    assert config_path.read_bytes() == before
 
 
 def test_scout_enabled_google_provider_derives_byo_with_provenance(
@@ -793,91 +813,6 @@ def test_get_providers_ai_readiness_shape(settings_client):
     _assert_ai_readiness_shape(payload)
     assert payload["local_backend"] == "local"
     assert payload["ai_readiness"]["local"]["provider"] == "local"
-
-
-def test_providers_payload_includes_effective_contexts(settings_client):
-    response = settings_client.get("/app/thinking/api/providers")
-
-    assert response.status_code == 200
-    payload = response.get_json()
-    effective_contexts = payload["effective_contexts"]
-    assert isinstance(effective_contexts, dict)
-    for pattern in payload["contexts"]:
-        entry = effective_contexts[pattern]
-        assert set(entry) == {
-            "interface",
-            "provider",
-            "model",
-            "differs_from_raw",
-        }
-
-
-def test_effective_contexts_show_local_resolution_differences(
-    settings_client_with_journal,
-):
-    client, journal_path = settings_client_with_journal
-    config = json.loads((journal_path / "config" / "journal.json").read_text())
-    config["providers"]["generate"]["provider"] = "local"
-    config["providers"]["contexts"]["talent.cloud.pin"] = {
-        "provider": "google",
-        "model": "gemini-flash-lite-latest",
-    }
-    config["providers"]["contexts"]["talent.local.blank"] = {
-        "provider": "local",
-        "model": "",
-    }
-    _write_config(journal_path, config)
-
-    response = client.get("/app/thinking/api/providers")
-
-    assert response.status_code == 200
-    effective_contexts = response.get_json()["effective_contexts"]
-    cloud_pin = effective_contexts["talent.cloud.pin"]
-    assert cloud_pin["interface"] == "generate"
-    assert cloud_pin["provider"] == "local"
-    assert cloud_pin["model"] == LOCAL_MODEL
-    assert cloud_pin["differs_from_raw"] is True
-    blank_pin = effective_contexts["talent.local.blank"]
-    assert blank_pin["provider"] == "local"
-    assert blank_pin["model"]
-    assert blank_pin["model"] != ""
-    assert blank_pin["differs_from_raw"] is True
-
-
-def test_ai_readiness_context_routes_use_effective_local_route(
-    settings_client_with_journal, monkeypatch
-):
-    client, journal_path = settings_client_with_journal
-    config = json.loads((journal_path / "config" / "journal.json").read_text())
-    config["providers"]["generate"]["provider"] = "local"
-    config["providers"]["contexts"]["talent.cloud.pin"] = {
-        "provider": "google",
-        "model": "gemini-flash-lite-latest",
-    }
-    config["providers"]["contexts"]["talent.local.blank"] = {
-        "provider": "local",
-        "model": "",
-    }
-    _write_config(journal_path, config)
-
-    def fake_readiness(provider: str, interface: str, model: str):
-        return ProviderState(
-            provider=provider,
-            interface=interface,
-            status="ready",
-            model=model,
-        )
-
-    monkeypatch.setattr(
-        "solstone.think.providers.state.readiness_for_provider",
-        fake_readiness,
-    )
-
-    response = client.get("/app/thinking/api/providers")
-
-    assert response.status_code == 200
-    context_routes = response.get_json()["ai_readiness"]["context_routes"]
-    assert {route["provider"] for route in context_routes} == {"local"}
 
 
 def test_get_providers_ai_readiness_surfaces_gpu_probe_failed_from_inspect(

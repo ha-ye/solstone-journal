@@ -1003,7 +1003,6 @@ def test_json_cache_reuse_requires_current_schema_validation(
         output_size=output_size,
         provider="google",
         model="x",
-        fallback_from=None,
         generation_params=talents._generation_params(config),
         completed_at_ms=100,
         use_id="seed",

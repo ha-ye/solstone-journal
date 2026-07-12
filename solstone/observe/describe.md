@@ -1,6 +1,5 @@
 ---
 context: observe.describe.frame
-tier: 3
 label: Screen Categorization
 group: Observe
 ---

@@ -95,16 +95,8 @@ def test_default_segment_workers_nonlocal_cpu_formula(monkeypatch):
 # --- AC4 -------------------------------------------------------------------
 
 
-def test_default_segment_workers_mixed_segment_context_local_caps(
-    monkeypatch, tmp_path
-):
-    """A cloud default plus one segment talent pinned local still caps the fan-out.
-
-    Resolution runs for real here — no monkeypatched predicate. Under
-    default-provider-only semantics the default provider is google, so this
-    would return the CPU formula (6) instead of the floor tier's 1. That
-    difference is the point of the test.
-    """
+def test_default_segment_workers_ignores_context_local_pin(monkeypatch, tmp_path):
+    """A retired context-local pin does not cap segment fan-out."""
     _write_journal_config(
         monkeypatch,
         tmp_path,
@@ -116,7 +108,7 @@ def test_default_segment_workers_mixed_segment_context_local_caps(
     _pin_cpu_count(monkeypatch, 12)
     _pin_slots(monkeypatch, FLOOR_SLOTS)
 
-    assert think._default_segment_workers() == FLOOR_SLOTS == 1
+    assert think._default_segment_workers() == 6
 
 
 # --- AC6 -------------------------------------------------------------------
@@ -250,8 +242,7 @@ def test_describe_default_byo_endpoint_uses_configured_slot_cap_and_does_not_pro
         monkeypatch,
         tmp_path,
         {
-            "generate": {"provider": "google"},
-            "contexts": {think.FRAME_CONTEXT: {"provider": "local"}},
+            "generate": {"provider": "local"},
             "local": {
                 "endpoint_url": "https://example.invalid/v1",
                 "served_model_id": "some-model",
@@ -273,8 +264,7 @@ def test_describe_default_confidential_endpoint_uses_cpu_formula_and_does_not_pr
         monkeypatch,
         tmp_path,
         {
-            "generate": {"provider": "google"},
-            "contexts": {think.FRAME_CONTEXT: {"provider": "local"}},
+            "generate": {"provider": "local"},
             "local": {
                 "endpoint_url": "https://example.invalid/v1",
                 "served_model_id": "some-model",

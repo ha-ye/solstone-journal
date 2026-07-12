@@ -6,7 +6,6 @@
   "schedule": "activity",
   "activities": ["meeting", "call", "messaging", "email"],
   "priority": 20,
-  "tier": 3,
   "output": "json",
   "max_output_tokens": 12288,
   "schema": "story.schema.json",

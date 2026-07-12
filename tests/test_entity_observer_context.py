@@ -1048,7 +1048,7 @@ def test_entity_observer_agent_config(monkeypatch):
 
     assert config["type"] == "generate"
     assert config.get("output") == "json"
-    assert config.get("tier") == 2
+    assert "tier" not in config
     assert config.get("thinking_budget") == 2048
     assert config.get("hook", {}).get("pre") == "entities:entity_observer"
     assert config.get("hook", {}).get("post") == "entities:entity_observer"

@@ -897,7 +897,7 @@ def test_local_status_dict_darwin(monkeypatch):
 def test_readiness_for_context_routes_to_resolved_local_provider(monkeypatch):
     monkeypatch.setattr(
         "solstone.think.models.resolve_provider",
-        lambda _context, _interface: ("local", LOCAL_MODEL),
+        lambda _interface: ("local", LOCAL_MODEL),
     )
     monkeypatch.setattr(
         local_install,
@@ -917,7 +917,7 @@ def test_readiness_for_context_routes_to_resolved_local_provider(monkeypatch):
 def test_readiness_for_context_routes_to_resolved_cloud_provider(monkeypatch):
     monkeypatch.setattr(
         "solstone.think.models.resolve_provider",
-        lambda _context, _interface: ("google", "gemini"),
+        lambda _interface: ("google", "gemini"),
     )
     monkeypatch.setattr(state, "cloud_key_configured", lambda _env_key: True)
     monkeypatch.setattr(
@@ -947,7 +947,12 @@ def test_readiness_for_context_routes_to_resolved_cloud_provider(monkeypatch):
 def test_record_quota_failure_writes_reason_code(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
-    state.record_quota_failure("google", "flash", "gemini", "cogitate", 12345)
+    state.record_quota_failure("google", "gemini", "cogitate", 12345)
 
     payload = json.loads((tmp_path / "health" / "talents.json").read_text())
-    assert payload["results"][0]["reason_code"] == "provider_quota_exceeded"
+    row = payload["results"][0]
+    assert row["provider"] == "google"
+    assert row["model"] == "gemini"
+    assert row["interface"] == "cogitate"
+    assert "tier" not in row
+    assert row["reason_code"] == "provider_quota_exceeded"

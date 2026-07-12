@@ -338,8 +338,6 @@ def providers_clear_local_endpoint() -> None:
 @providers_app.command("set-generate")
 def providers_set_generate(
     provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
-    tier: int | None = typer.Option(None, "--tier", help="Tier (1, 2, or 3)."),
-    backup: str | None = typer.Option(None, "--backup", help="Backup provider."),
 ) -> None:
     """Moved to ``sol call thinking providers set-generate``."""
 
@@ -349,8 +347,6 @@ def providers_set_generate(
 @providers_app.command("set-cogitate")
 def providers_set_cogitate(
     provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
-    tier: int | None = typer.Option(None, "--tier", help="Tier (1, 2, or 3)."),
-    backup: str | None = typer.Option(None, "--backup", help="Backup provider."),
 ) -> None:
     """Moved to ``sol call thinking providers set-cogitate``."""
 

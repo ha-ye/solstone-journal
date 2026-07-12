@@ -159,7 +159,6 @@ def _summarize_health_results(results: list[dict[str, Any]]) -> dict[str, int]:
 
 def record_quota_failure(
     provider: str,
-    tier: str,
     model: str,
     interface: str,
     reset_at_ms: int,
@@ -187,7 +186,6 @@ def record_quota_failure(
                 results = []
             failure_row = {
                 "provider": provider,
-                "tier": tier,
                 "model": model,
                 "interface": interface,
                 "ok": False,
@@ -749,7 +747,7 @@ def readiness_for_context(context: str, interface: str) -> ProviderState:
     """Resolve a context then return passive readiness for its provider."""
     from solstone.think.models import resolve_provider
 
-    provider, model = resolve_provider(context, interface)
+    provider, model = resolve_provider(interface)
     provider_state = readiness_for_provider(provider, interface, model)
     return replace(provider_state, context=context)
 

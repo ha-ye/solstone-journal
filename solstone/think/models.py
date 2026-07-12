@@ -1,7 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-import fnmatch
 import functools
 import inspect
 import json
@@ -19,14 +18,6 @@ from solstone.think.schema_prep import prepare_provider_schema
 from solstone.think.utils import get_config, get_journal
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Tier constants
-# ---------------------------------------------------------------------------
-
-TIER_PRO = 1
-TIER_FLASH = 2
-TIER_LITE = 3
 
 # ---------------------------------------------------------------------------
 # Model constants
@@ -151,9 +142,6 @@ LOCAL_MODEL = "local/qwen3.5-4b"
 
 QWEN_35_9B = "qwen3.5:9b"
 GEMMA4_26B_A4B_4BIT = "gemma-4-26b-a4b-it-mlx-4bit"
-MLX_PRO = QWEN_35_9B
-MLX_FLASH = QWEN_35_9B
-MLX_LITE = QWEN_35_9B
 
 
 # Per-model request parameter capability overrides.
@@ -169,40 +157,14 @@ def model_supports(model: str, param: str) -> bool:
     return MODEL_CAPABILITIES.get(model, {}).get(param) is not False
 
 
-# ---------------------------------------------------------------------------
-# System defaults: provider -> tier -> model
-# ---------------------------------------------------------------------------
-
-PROVIDER_DEFAULTS: Dict[str, Dict[int, str]] = {
-    "google": {
-        TIER_PRO: GEMINI_PRO,
-        TIER_FLASH: GEMINI_FLASH,
-        TIER_LITE: GEMINI_LITE,
-    },
-    "openai": {
-        TIER_PRO: GPT_5,
-        TIER_FLASH: GPT_5_MINI,
-        TIER_LITE: GPT_5_NANO,
-    },
-    "anthropic": {
-        TIER_PRO: CLAUDE_OPUS_4,
-        TIER_FLASH: CLAUDE_SONNET_4,
-        TIER_LITE: CLAUDE_HAIKU_4,
-    },
-    "local": {
-        TIER_PRO: LOCAL_MODEL,
-        TIER_FLASH: LOCAL_MODEL,
-        TIER_LITE: LOCAL_MODEL,
-    },
-}
-
-TYPE_DEFAULTS: Dict[str, Dict[str, Any]] = {
-    "generate": {"tier": TIER_FLASH, "backup": "anthropic"},
-    "cogitate": {"tier": TIER_FLASH, "backup": "anthropic"},
-}
-
 NO_BRAIN_PROVIDER = "none"
 IMPLICIT_CLOUD_PROVIDER_ORDER = ("google", "anthropic", "openai")
+DEFAULT_MODEL_BY_PROVIDER: dict[str, str] = {
+    "google": GEMINI_FLASH,
+    "openai": GPT_5_MINI,
+    "anthropic": CLAUDE_SONNET_4,
+    "local": LOCAL_MODEL,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -333,7 +295,7 @@ def _confidential_attestation_verifier() -> Callable[[dict[str, Any]], None]:
 # ---------------------------------------------------------------------------
 # Prompt context discovery
 #
-# Context metadata (tier, label, group) is defined in prompt .md files via
+# Context metadata (label, group, type) is defined in prompt .md files via
 # YAML frontmatter. This eliminates duplication between code and config.
 #
 # NAMING CONVENTION:
@@ -348,18 +310,17 @@ def _confidential_attestation_verifier() -> Callable[[dict[str, Any]], None]:
 #
 # DISCOVERY SOURCES:
 #   1. Prompt files listed in PROMPT_PATHS (with context in frontmatter)
-#   2. Categories from observe/categories/*.md (tier/label/group in frontmatter)
+#   2. Categories from observe/categories/*.md (label/group in frontmatter)
 #   3. Talent configs from talent/*.md and apps/*/talent/*.md
 #
 # When adding new contexts:
 #   1. Create a .md prompt file with YAML frontmatter containing:
-#      context, tier, label, group
+#      context, label, group
 #   2. Add the path to PROMPT_PATHS
-#   3. If not listed, context falls back to the type's default tier
 # ---------------------------------------------------------------------------
 
 # Flat list of prompt files that define context metadata in frontmatter.
-# Each must have: context, tier, label, group in YAML frontmatter.
+# Each must have: context, label, group in YAML frontmatter.
 PROMPT_PATHS: List[str] = [
     "observe/describe.md",
     "observe/enrich.md",
@@ -387,14 +348,13 @@ def _discover_prompt_contexts() -> Dict[str, Dict[str, Any]]:
 
     Each file must have YAML frontmatter with:
     - context: The context string (e.g., "observe.enrich")
-    - tier: Tier number (1=pro, 2=flash, 3=lite)
     - label: Human-readable name
     - group: Settings UI category
 
     Returns
     -------
     Dict[str, Dict[str, Any]]
-        Mapping of context patterns to {tier, label, group} dicts.
+        Mapping of context patterns to {label, group} dicts.
     """
     contexts = {}
     base_dir = Path(__file__).parent.parent  # Package root
@@ -415,7 +375,6 @@ def _discover_prompt_contexts() -> Dict[str, Dict[str, Any]]:
                 continue
 
             contexts[context] = {
-                "tier": meta.get("tier", TIER_FLASH),
                 "label": meta.get("label", context),
                 "group": meta.get("group", "Other"),
             }
@@ -428,13 +387,14 @@ def _discover_prompt_contexts() -> Dict[str, Dict[str, Any]]:
 def _discover_talent_contexts() -> Dict[str, Dict[str, Any]]:
     """Discover talent context defaults from talent/*.md config files.
 
-    Uses get_talent_configs() from solstone.think.talent to load all talent configurations
-    and converts them to context patterns with tier/label/group metadata.
+    Uses get_talent_configs() from solstone.think.talent to load all talent
+    configurations and converts them to context patterns with label/group/type
+    metadata.
 
     Returns
     -------
     Dict[str, Dict[str, Any]]
-        Mapping of context patterns to {tier, label, group, type} dicts.
+        Mapping of context patterns to {label, group, type} dicts.
         Context patterns are: talent.system.{name} or talent.{app}.{name}
     """
     from solstone.think.talent import get_talent_configs, key_to_context
@@ -447,7 +407,6 @@ def _discover_talent_contexts() -> Dict[str, Dict[str, Any]]:
     for key, config in all_configs.items():
         context = key_to_context(key)
         contexts[context] = {
-            "tier": config.get("tier", TIER_FLASH),
             "label": config.get("label", config.get("title", key)),
             "group": config.get("group", "Think"),
             "type": config.get("type"),
@@ -467,7 +426,7 @@ def _build_context_registry() -> Dict[str, Dict[str, Any]]:
     Returns
     -------
     Dict[str, Dict[str, Any]]
-        Complete context registry mapping patterns to {tier, label, group}.
+        Complete context registry mapping patterns to {label, group, type?}.
     """
     # Start with prompt contexts (from PROMPT_PATHS)
     registry = _discover_prompt_contexts()
@@ -479,7 +438,6 @@ def _build_context_registry() -> Dict[str, Dict[str, Any]]:
         for category, metadata in CATEGORIES.items():
             context = metadata.get("context", f"observe.describe.{category}")
             registry[context] = {
-                "tier": metadata.get("tier", TIER_FLASH),
                 "label": metadata.get("label", category.replace("_", " ").title()),
                 "group": metadata.get("group", "Screen Analysis"),
             }
@@ -499,60 +457,12 @@ def get_context_registry() -> Dict[str, Dict[str, Any]]:
     Returns
     -------
     Dict[str, Dict[str, Any]]
-        Complete context registry mapping patterns to {tier, label, group}.
+        Complete context registry mapping patterns to {label, group, type?}.
     """
     global _context_registry
     if _context_registry is None:
         _context_registry = _build_context_registry()
     return _context_registry
-
-
-def _resolve_tier(context: str, agent_type: str) -> int:
-    """Resolve context to tier number.
-
-    Checks journal config contexts first, then dynamic context registry with glob matching.
-
-    Parameters
-    ----------
-    context
-        Context string (e.g., "talent.system.default", "observe.describe.frame").
-    agent_type
-        Agent type ("generate" or "cogitate").
-
-    Returns
-    -------
-    int
-        Tier number (1=pro, 2=flash, 3=lite).
-    """
-    from solstone.think.utils import get_config
-
-    default_tier = TYPE_DEFAULTS[agent_type]["tier"]
-
-    journal_config = get_config()
-    providers_config = journal_config.get("providers", {})
-    contexts = providers_config.get("contexts", {})
-
-    # Get dynamic context registry (discovered prompts, categories, talent configs)
-    registry = get_context_registry()
-
-    # Check journal config contexts first (exact match)
-    if context in contexts:
-        return contexts[context].get("tier", default_tier)
-
-    # Check context registry (exact match)
-    if context in registry:
-        return registry[context]["tier"]
-
-    # Check glob patterns in both
-    for pattern, ctx_config in contexts.items():
-        if fnmatch.fnmatch(context, pattern):
-            return ctx_config.get("tier", default_tier)
-
-    for pattern, ctx_default in registry.items():
-        if fnmatch.fnmatch(context, pattern):
-            return ctx_default["tier"]
-
-    return default_tier
 
 
 def _resolve_default_provider(
@@ -587,253 +497,41 @@ def _resolve_default_provider(
     return NO_BRAIN_PROVIDER
 
 
-def _resolve_model(provider: str, tier: int, config_models: Dict[str, Any]) -> str:
-    """Resolve tier to model string for a given provider.
-
-    Checks config overrides first, then falls back to system defaults.
-    If requested tier is unavailable, falls back to more capable tiers
-    (3→2→1, i.e., lite→flash→pro).
-
-    Parameters
-    ----------
-    provider
-        Provider name ("google", "openai", "anthropic").
-    tier
-        Tier number (1=pro, 2=flash, 3=lite).
-    config_models
-        The "models" section from providers config, mapping provider to tier overrides.
-
-    Returns
-    -------
-    str
-        Model identifier string.
-    """
-    # Check config overrides first
-    provider_overrides = config_models.get(provider, {})
-
-    # Try requested tier, then fall back to more capable tiers (lower numbers)
-    for t in [tier, tier - 1, tier - 2] if tier > 1 else [tier]:
-        if t < 1:
-            continue
-
-        # Check config override (tier as string key in JSON)
-        tier_key = str(t)
-        if tier_key in provider_overrides:
-            return provider_overrides[tier_key]
-
-        # Check system defaults
-        provider_defaults = PROVIDER_DEFAULTS.get(provider, {})
-        if t in provider_defaults:
-            return provider_defaults[t]
-
+def default_model_for_provider(provider: str) -> str:
+    """Return the single default model for a provider."""
     if provider == NO_BRAIN_PROVIDER:
-        raise NoBrainConfiguredError()
-    provider_defaults = PROVIDER_DEFAULTS.get(provider)
-    if provider_defaults is None:
-        raise ValueError(f"Unknown provider: {provider!r}")
-    if TIER_FLASH in provider_defaults:
-        return provider_defaults[TIER_FLASH]
-    raise ValueError(f"Unknown provider: {provider!r}")
+        return ""
+    try:
+        return DEFAULT_MODEL_BY_PROVIDER[provider]
+    except KeyError as exc:
+        raise ValueError(f"Unknown provider: {provider!r}") from exc
 
 
-def resolve_model_for_provider(
-    context: str, provider: str, agent_type: str = "generate"
-) -> str:
-    """Resolve model for a specific provider based on context tier.
+def resolve_provider(agent_type: str) -> tuple[str, str]:
+    """Resolve the active provider and model for an interface.
 
-    Use this when provider is overridden from the default - resolves the
-    appropriate model for the given provider at the context's tier.
-
-    Parameters
-    ----------
-    context
-        Context string (e.g., "talent.system.default").
-    provider
-        Provider name ("google", "openai", "anthropic").
-    agent_type
-        Agent type ("generate" or "cogitate").
-
-    Returns
-    -------
-    str
-        Model identifier string for the provider at the context's tier.
-    """
-    from solstone.think.utils import get_config
-
-    tier = _resolve_tier(context, agent_type)
-    journal_config = get_config()
-    providers_config = journal_config.get("providers", {})
-    config_models = providers_config.get("models", {})
-
-    return _resolve_model(provider, tier, config_models)
-
-
-def resolve_provider(context: str, agent_type: str) -> tuple[str, str]:
-    """Resolve context to provider and model based on configuration.
-
-    Matches context against configured contexts using exact match first,
-    then glob patterns (via fnmatch), falling back to type-specific defaults.
-
-    Provider precedence:
-
-    0. If ``type_default_is_local(agent_type)``: resolve to local. A cloud
-       context / frontmatter / request pin may NOT override an explicit local
-       type default — its cloud model string is neutralized. An explicit local
-       context pin (provider: local + model) is honored verbatim. (D8 hard
-       promise; predates this lode and is load-bearing for privacy.)
-    1. Explicit ``providers.contexts.<match>.provider``.
-    2. Explicit ``providers.<agent_type>.provider``.
-    3. Key-presence fallback: first of google -> anthropic -> openai with
-       cloud_key_configured(...). This order equals today's TYPE_DEFAULTS
-       provider -> backup -> remainder, so every existing keyed install resolves
-       to exactly the provider it does today. That IS the grandfather guarantee.
-    4. ``local``, if bundled artifacts are present.
-    5. NO_BRAIN_PROVIDER.
-
-    The key-presence order is ``google -> anthropic -> openai`` because that is
-    exactly today's provider -> backup -> remainder order. This is the
-    grandfather guarantee: every existing keyed install with no explicit
-    provider resolves to the same provider it does today.
-
-    Supports both explicit model strings and tier-based routing:
-    - {"provider": "google", "model": "gemini-flash-latest"} - explicit model
-    - {"provider": "google", "tier": 2} - tier-based (2=flash)
-    - {"tier": 1} - tier only, inherits the resolved default provider
-
-    The "models" section in providers config allows overriding which model
-    is used for each tier per provider.
-
-    Parameters
-    ----------
-    context
-        Context string (e.g., "observe.describe.frame", "talent.system.meetings").
-    agent_type
-        Agent type ("generate" or "cogitate").
-
-    Returns
-    -------
-    tuple[str, str]
-        (provider_name, model) tuple. Provider is one of "google", "openai",
-        "anthropic", "local", or NO_BRAIN_PROVIDER. Model is the full model
-        identifier string, or "" for NO_BRAIN_PROVIDER.
+    Precedence is explicit per-interface provider, configured cloud-key
+    presence in the grandfathered google -> anthropic -> openai order, local
+    runtime readiness, then NO_BRAIN_PROVIDER. Contexts, tiers, backups, and
+    providers.models overrides are intentionally ignored.
     """
     config = get_config()
     providers = config.get("providers", {})
     if not isinstance(providers, dict):
         providers = {}
-    config_models = providers.get("models", {})
-    if not isinstance(config_models, dict):
-        config_models = {}
 
-    # Get type-specific defaults from config, falling back to system constants
-    type_defaults = TYPE_DEFAULTS[agent_type]
     type_config = providers.get(agent_type, {})
     if not isinstance(type_config, dict):
         type_config = {}
-    default_provider = _resolve_default_provider(providers, agent_type)
-    default_tier = type_config.get("tier", type_defaults["tier"])
 
-    # Handle explicit "model" key in type config (overrides tier-based resolution)
-    if default_provider == NO_BRAIN_PROVIDER:
-        default_model = ""
-    elif "model" in type_config and "tier" not in type_config:
-        default_model = type_config["model"]
-    else:
-        default_model = _resolve_model(default_provider, default_tier, config_models)
-
-    contexts = providers.get("contexts", {})
-    if not isinstance(contexts, dict):
-        contexts = {}
-
-    # Find matching context config
-    match_config: Optional[Dict[str, Any]] = None
-
-    if context and contexts:
-        # Check for exact match first
-        if context in contexts:
-            match_config = contexts[context]
-        else:
-            # Check glob patterns - most specific (longest non-wildcard prefix) wins
-            matches = []
-            for pattern, ctx_config in contexts.items():
-                if fnmatch.fnmatch(context, pattern):
-                    specificity = len(pattern.split("*")[0])
-                    matches.append((specificity, pattern, ctx_config))
-
-            if matches:
-                matches.sort(key=lambda x: x[0], reverse=True)
-                _, _, match_config = matches[0]
-
-    # No context match - check dynamic context registry for this context
-    if match_config is None:
-        # Get dynamic context registry (discovered prompts, categories, talent configs)
-        registry = get_context_registry()
-
-        # Check for matching context default (exact match first, then glob)
-        context_tier = None
-        if context:
-            if context in registry:
-                context_tier = registry[context]["tier"]
-            else:
-                # Check glob patterns
-                matches = []
-                for pattern, ctx_default in registry.items():
-                    if fnmatch.fnmatch(context, pattern):
-                        specificity = len(pattern.split("*")[0])
-                        matches.append((specificity, ctx_default["tier"]))
-                if matches:
-                    matches.sort(key=lambda x: x[0], reverse=True)
-                    context_tier = matches[0][1]
-
-        if context_tier is not None:
-            if default_provider == NO_BRAIN_PROVIDER:
-                return (NO_BRAIN_PROVIDER, "")
-            model = _resolve_model(default_provider, context_tier, config_models)
-            return (default_provider, model)
-
-        return (default_provider, default_model)
-
-    # Resolve provider (from match or default)
-    provider = match_config.get("provider", default_provider)
-
-    # Local type-default is a hard promise: a cloud context provider pin cannot
-    # override it -- its cloud model string is neutralized. An explicit local
-    # context pin (provider: local + model) is honored verbatim; otherwise only
-    # the context's tier feeds local model selection.
-    if type_default_is_local(agent_type, config):
-        pinned = match_config.get("model")
-        if (
-            match_config.get("provider") == "local"
-            and isinstance(pinned, str)
-            and pinned.strip()
-        ):
-            return ("local", pinned)
-        tier = match_config.get("tier", default_tier)
-        if not isinstance(tier, int) or tier < 1 or tier > 3:
-            tier = default_tier
-        return ("local", _resolve_model("local", tier, config_models))
-
+    provider = _resolve_default_provider(providers, agent_type)
     if provider == NO_BRAIN_PROVIDER:
         return (NO_BRAIN_PROVIDER, "")
 
-    # Resolve model: explicit non-empty model takes precedence over tier
-    explicit_model = match_config.get("model")
+    explicit_model = type_config.get("model")
     if isinstance(explicit_model, str) and explicit_model.strip():
-        model = explicit_model
-    elif "tier" in match_config:
-        tier = match_config["tier"]
-        # Validate tier
-        if not isinstance(tier, int) or tier < 1 or tier > 3:
-            logging.getLogger(__name__).warning(
-                "Invalid tier %r in context %r, using default", tier, context
-            )
-            tier = default_tier
-        model = _resolve_model(provider, tier, config_models)
-    else:
-        # No model or tier specified - use default tier
-        model = _resolve_model(provider, default_tier, config_models)
-
-    return (provider, model)
+        return (provider, explicit_model.strip())
+    return (provider, default_model_for_provider(provider))
 
 
 def resolve_effective_route(context: str) -> tuple[str, str, str]:
@@ -841,7 +539,7 @@ def resolve_effective_route(context: str) -> tuple[str, str, str]:
 
     Interface is the talent context's registry ``type`` when it is one of
     generate/cogitate, else "generate" — never pass any other value to
-    resolve_provider (TYPE_DEFAULTS is keyed only on generate/cogitate).
+    resolve_provider.
     """
     registry_entry = get_context_registry().get(context)
     interface = (
@@ -849,7 +547,7 @@ def resolve_effective_route(context: str) -> tuple[str, str, str]:
         if registry_entry and registry_entry.get("type") in ("generate", "cogitate")
         else "generate"
     )
-    provider, model = resolve_provider(context, interface)
+    provider, model = resolve_provider(interface)
     return (interface, provider, model)
 
 
@@ -864,15 +562,6 @@ def is_local_provider_needed(config: dict[str, Any] | None = None) -> bool:
         type_config = providers.get(agent_type, {})
         if isinstance(type_config, dict) and type_config.get("provider") == "local":
             return True
-
-    contexts = providers.get("contexts", {})
-    if not isinstance(contexts, dict):
-        return False
-    if any(
-        isinstance(context_config, dict) and context_config.get("provider") == "local"
-        for context_config in contexts.values()
-    ):
-        return True
 
     from solstone.think.providers.state import local_runtime_ready
 
@@ -1452,18 +1141,14 @@ def generate(
     timeout_s: Optional[float] = None,
     **kwargs: Any,
 ) -> str:
-    """Generate text using the configured provider for the given context.
-
-    Routes the request to the appropriate backend (Google, OpenAI, or Anthropic)
-    based on the providers configuration in journal.json.
+    """Generate text using the configured generate provider.
 
     Parameters
     ----------
     contents : str or List
         The content to send to the model.
     context : str
-        Context string for routing and token logging (e.g., "talent.system.meetings").
-        This is required and determines which provider/model to use.
+        Context string for token logging and telemetry.
     temperature : float
         Temperature for generation (default: 0.3).
     max_output_tokens : int
@@ -1503,7 +1188,7 @@ def generate(
     # Allow model override via kwargs (used by callers with explicit model selection)
     model_override = kwargs.pop("model", None)
 
-    provider, model = resolve_provider(context, "generate")
+    provider, model = resolve_provider("generate")
     if model_override:
         model = model_override
 
@@ -1551,114 +1236,6 @@ def generate(
             raise SchemaValidationError(validation["errors"], result["text"])
 
     return result["text"]
-
-
-# ---------------------------------------------------------------------------
-# Provider Health & Fallback Helpers
-# ---------------------------------------------------------------------------
-
-
-def get_backup_provider(agent_type: str) -> Optional[str]:
-    """Get the backup provider for the given agent type.
-
-    Reads from the type-specific section in journal config, falling back
-    to TYPE_DEFAULTS.
-
-    Returns None if backup would be the same as the primary provider.
-    """
-    type_defaults = TYPE_DEFAULTS[agent_type]
-    config = get_config()
-    providers_config = config.get("providers", {})
-    if not isinstance(providers_config, dict):
-        providers_config = {}
-    type_config = providers_config.get(agent_type, {})
-    if not isinstance(type_config, dict):
-        type_config = {}
-    primary_provider = _resolve_default_provider(providers_config, agent_type)
-    backup = type_config.get("backup", type_defaults["backup"])
-    if primary_provider in {"local", NO_BRAIN_PROVIDER}:
-        return None
-    if backup == primary_provider:
-        return None
-    return backup
-
-
-def load_health_status() -> Optional[dict]:
-    """Load health status from journal/health/talents.json.
-
-    Returns parsed dict or None if file is missing/unreadable.
-    """
-    # Delegating wrapper -> providers.state (see lode contract).
-    from solstone.think.providers import state
-
-    return state.read_health_status()
-
-
-def is_provider_healthy(provider: str, health_data: Optional[dict]) -> bool:
-    """Check if a provider is healthy based on health data.
-
-    Returns True (assume healthy) when:
-    - health_data is None (no data available)
-    - No results exist for the provider
-    - Any result for the provider has ok=True
-
-    Returns False only when all results for the provider have ok=False.
-    """
-    # Delegating wrapper -> providers.state (see lode contract).
-    from solstone.think.providers import state
-
-    return state.is_provider_healthy(provider, health_data)
-
-
-def is_provider_model_interface_healthy(
-    provider: str,
-    model: str,
-    interface: str,
-    health_data: Optional[dict],
-) -> bool:
-    """Check health for a specific provider/model/interface row."""
-    # Delegating wrapper -> providers.state (see lode contract).
-    from solstone.think.providers import state
-
-    return state.is_provider_model_interface_healthy(
-        provider,
-        model,
-        interface,
-        health_data,
-    )
-
-
-def record_provider_failure(
-    provider: str,
-    tier: str,
-    model: str,
-    interface: str,
-    reset_at_ms: int,
-) -> None:
-    """Record a provider/model/interface quota failure in health status."""
-    # Delegating wrapper -> providers.state (see lode contract).
-    from solstone.think.providers import state
-
-    state.record_quota_failure(provider, tier, model, interface, reset_at_ms)
-
-
-def should_recheck_health(health_data: Optional[dict]) -> bool:
-    """Check if health data should be rechecked.
-
-    Returns False when health_data is None or on parse errors.
-    """
-    # Delegating wrapper -> providers.state (see lode contract).
-    from solstone.think.providers import state
-
-    return state.should_recheck_health(health_data)
-
-
-def request_health_recheck() -> None:
-    """Request a health re-check through the supervisor."""
-    # Delegating wrapper -> providers.state (see lode contract).
-    from solstone.think.providers import state
-
-    state.request_recheck()
 
 
 def generate_with_result(
@@ -1720,11 +1297,11 @@ def generate_with_result(
     model_override = kwargs.pop("model", None)
     provider_override = kwargs.pop("provider", None)
 
-    provider, model = resolve_provider(context, "generate")
+    provider, model = resolve_provider("generate")
     if provider_override:
         provider = provider_override
         if not model_override:
-            model = resolve_model_for_provider(context, provider, "generate")
+            model = default_model_for_provider(provider)
     if model_override:
         model = model_override
 
@@ -1792,11 +1369,11 @@ async def agenerate_with_result(
     model_override = kwargs.pop("model", None)
     provider_override = kwargs.pop("provider", None)
 
-    provider, model = resolve_provider(context, "generate")
+    provider, model = resolve_provider("generate")
     if provider_override:
         provider = provider_override
         if not model_override:
-            model = resolve_model_for_provider(context, provider, "generate")
+            model = default_model_for_provider(provider)
     if model_override:
         model = model_override
 
@@ -1852,18 +1429,14 @@ async def agenerate(
     timeout_s: Optional[float] = None,
     **kwargs: Any,
 ) -> str:
-    """Async generate text using the configured provider for the given context.
-
-    Routes the request to the appropriate backend (Google, OpenAI, or Anthropic)
-    based on the providers configuration in journal.json.
+    """Async generate text using the configured generate provider.
 
     Parameters
     ----------
     contents : str or List
         The content to send to the model.
     context : str
-        Context string for routing and token logging (e.g., "talent.system.meetings").
-        This is required and determines which provider/model to use.
+        Context string for token logging and telemetry.
     temperature : float
         Temperature for generation (default: 0.3).
     max_output_tokens : int
@@ -1903,7 +1476,7 @@ async def agenerate(
     # Allow model override via kwargs (used by Batch for explicit model selection)
     model_override = kwargs.pop("model", None)
 
-    provider, model = resolve_provider(context, "generate")
+    provider, model = resolve_provider("generate")
     if model_override:
         model = model_override
 
@@ -1955,7 +1528,7 @@ async def agenerate(
 
 __all__ = [
     # Provider configuration
-    "TYPE_DEFAULTS",
+    "DEFAULT_MODEL_BY_PROVIDER",
     "NO_BRAIN_PROVIDER",
     "NoBrainConfiguredError",
     "AttestationFailedError",
@@ -1965,13 +1538,12 @@ __all__ = [
     "get_context_registry",
     # Model constants (used by provider backends for defaults)
     "GEMINI_FLASH",
-    "GPT_5",
+    "GPT_5_MINI",
     "CLAUDE_SONNET_4",
     "DEFAULT_PROVIDER_TIMEOUT_S",
     "QWEN_35_9B",
     "GEMMA4_26B_A4B_4BIT",
     "LOCAL_MODEL",
-    "MLX_FLASH",
     # Model capability helpers
     "model_supports",
     # Unified API
@@ -1982,6 +1554,7 @@ __all__ = [
     "finish_reason_error",
     "IncompleteTextError",
     "ProviderResponseInvalidError",
+    "default_model_for_provider",
     "resolve_provider",
     "resolve_effective_route",
     "is_local_provider_needed",

@@ -38,8 +38,8 @@ def _settings_config() -> dict:
     return {
         "setup": {"completed_at": "2026-05-09T00:00:00Z"},
         "providers": {
-            "generate": {"provider": "google", "tier": 2, "backup": "anthropic"},
-            "cogitate": {"provider": "openai", "tier": 2, "backup": "anthropic"},
+            "generate": {"provider": "google", "model": "gemini-flash-latest"},
+            "cogitate": {"provider": "openai", "model": "gpt-5.4-mini"},
             "auth": {"google": "api_key", "openai": "api_key"},
         },
     }

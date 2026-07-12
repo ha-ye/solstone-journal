@@ -1,6 +1,5 @@
 ---
 context: observe.detect.segment
-tier: 2
 label: Segmentation
 group: Import
 ---

@@ -10,9 +10,11 @@ import json
 
 from solstone.apps.timeline.maintenance import _rollup_day, run_rollup_day
 from solstone.apps.timeline.tests.conftest import write_json
-from solstone.think.models import GEMINI_FLASH, GEMINI_LITE, SchemaValidationError
+from solstone.think.models import SchemaValidationError
 
 DAY = "20260512"
+SEGMENT_MODEL = "segment-test-model"
+ROLLUP_MODEL = "resolved-rollup-model"
 
 
 def _write_segment(journal, day, segment, title, hour_stream="archon"):
@@ -22,7 +24,7 @@ def _write_segment(journal, day, segment, title, hour_stream="archon"):
             "title": title,
             "description": f"{title} description.",
             "origin": f"{day}/{hour_stream}/{segment}",
-            "model": GEMINI_LITE,
+            "model": SEGMENT_MODEL,
             "generated_at": 1770000000,
         },
     )
@@ -85,8 +87,12 @@ def test_rollup_day_dry_run_no_llm_calls(timeline_journal, mock_agenerate):
     assert mock.call_count == 0
 
 
-def test_rollup_day_writes_seed_shape(timeline_journal, mock_agenerate):
+def test_rollup_day_writes_seed_shape(timeline_journal, mock_agenerate, monkeypatch):
     """AC#6."""
+    monkeypatch.setattr(
+        "solstone.apps.timeline.maintenance.resolve_provider",
+        lambda _interface: ("google", ROLLUP_MODEL),
+    )
     for i in range(5):
         title = "Café Event" if i == 0 else f"Event {i}"
         _write_segment(timeline_journal, DAY, f"12000{i}_60", title)
@@ -99,12 +105,12 @@ def test_rollup_day_writes_seed_shape(timeline_journal, mock_agenerate):
     timeline_path = timeline_journal / "chronicle" / DAY / "timeline.json"
     payload = json.loads(timeline_path.read_text())
     assert payload["day"] == DAY
-    assert payload["model"] == GEMINI_FLASH
+    assert payload["model"] == ROLLUP_MODEL
     assert payload["segment_count"] == 5
     assert payload["hour_count"] == 1
     assert len(payload["day_top"]) == 4
     assert payload["hours"]["12"]["rationale"] == "highest consequence"
-    assert mock.call_args.kwargs["model"] == GEMINI_FLASH
+    assert "model" not in mock.call_args.kwargs
     raw = timeline_path.read_bytes()
     assert b"Caf\xc3\xa9 Event" in raw
     assert b"\\u00e9" not in raw

@@ -1,25 +1,17 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Rename legacy unified and triage provider contexts for the chat refactor."""
+"""Retired provider-context rename for the chat refactor."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from solstone.think.journal_config import write_journal_config
-from solstone.think.utils import get_journal, setup_cli
-
 logger = logging.getLogger(__name__)
-
-_UNIFIED_CONTEXT = "talent.system.unified"
-_CHAT_CONTEXT = "talent.system.chat"
-_TRIAGE_CONTEXT = "talent.system.triage"
 
 
 @dataclass
@@ -32,73 +24,8 @@ class MigrationSummary:
 
 
 def run_migration(journal_path: Path, *, dry_run: bool) -> MigrationSummary:
-    summary = MigrationSummary()
-    config_path = journal_path / "config" / "journal.json"
-
-    if not config_path.exists():
-        summary.skipped_reason = "no file"
-        return summary
-
-    try:
-        raw_bytes = config_path.read_bytes()
-    except OSError:
-        logger.exception("Failed to read %s", config_path)
-        summary.errors += 1
-        return summary
-
-    if not raw_bytes.strip():
-        summary.skipped_reason = "empty file"
-        return summary
-
-    try:
-        raw = json.loads(raw_bytes)
-    except json.JSONDecodeError:
-        summary.skipped_reason = "unparseable"
-        return summary
-
-    if not isinstance(raw, dict):
-        summary.skipped_reason = "unparseable"
-        return summary
-
-    providers = raw.get("providers")
-    if not isinstance(providers, dict):
-        summary.skipped_reason = "no providers"
-        return summary
-
-    contexts = providers.get("contexts")
-    if not isinstance(contexts, dict):
-        summary.skipped_reason = "no contexts"
-        return summary
-
-    changed = False
-    if _UNIFIED_CONTEXT in contexts:
-        legacy_chat = contexts[_UNIFIED_CONTEXT]
-        if _CHAT_CONTEXT not in contexts:
-            contexts[_CHAT_CONTEXT] = legacy_chat
-            summary.renamed += 1
-        else:
-            summary.preserved += 1
-        del contexts[_UNIFIED_CONTEXT]
-        changed = True
-
-    if _TRIAGE_CONTEXT in contexts:
-        del contexts[_TRIAGE_CONTEXT]
-        summary.removed += 1
-        changed = True
-
-    if not changed:
-        return summary
-
-    if dry_run:
-        return summary
-
-    try:
-        write_journal_config(raw)
-    except OSError:
-        logger.exception("Failed to write %s", config_path)
-        summary.errors += 1
-
-    return summary
+    _ = (journal_path, dry_run)
+    return MigrationSummary(skipped_reason="retired")
 
 
 def _print_summary(summary: MigrationSummary) -> None:
@@ -118,10 +45,10 @@ def main() -> None:
         action="store_true",
         help="Preview the provider-context rename without writing files.",
     )
-    args = setup_cli(parser)
+    args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    journal_path = Path(get_journal())
+    journal_path = Path.cwd()
     summary = run_migration(journal_path, dry_run=args.dry_run)
 
     _print_summary(summary)

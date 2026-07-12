@@ -1,9 +1,7 @@
 {
   "type": "generate",
-  "tier": 3,
   "schedule": "segment",
   "priority": 41,
-  "provider": "google",
   "output": "json",
   "schema": "segment_summary.schema.json",
   "hook": {"pre": "timeline:segment_summary", "post": "timeline:segment_summary"},

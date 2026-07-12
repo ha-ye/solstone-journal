@@ -553,12 +553,8 @@ def prepare_config(request: dict) -> dict:
     """
     from solstone.think.models import (
         NO_BRAIN_PROVIDER,
-        TIER_FLASH,
-        TIER_LITE,
-        TIER_PRO,
         NoBrainConfiguredError,
-        _resolve_tier,
-        resolve_model_for_provider,
+        default_model_for_provider,
         resolve_provider,
         type_default_is_local,
     )
@@ -655,15 +651,13 @@ def prepare_config(request: dict) -> dict:
     # Resolve provider and model from context
     context = key_to_context(name)
     talent_type = config["type"]
-    default_provider, default_model = resolve_provider(context, talent_type)
+    default_provider, default_model = resolve_provider(talent_type)
 
     if type_default_is_local(talent_type):
         # Local type-default is a hard runtime promise: a frontmatter/request
-        # cloud provider pin may not force a local-lane talent onto cloud. An
-        # explicit local pin (provider: local + model) at the talent/request
-        # level is honored verbatim; otherwise the local model comes from
-        # resolve_provider (which already carries any context-level local pin).
-        provider = default_provider  # "local" (resolve_provider already forced it)
+        # cloud provider pin may not force a local-lane talent onto cloud.
+        # An explicit local request pin with a model is honored verbatim.
+        provider = default_provider
         if config.get("provider") == "local" and config.get("model"):
             model = config["model"]
         else:
@@ -673,7 +667,7 @@ def prepare_config(request: dict) -> dict:
         model = config.get("model")
         if not model:
             if provider != default_provider:
-                model = resolve_model_for_provider(context, provider, talent_type)
+                model = default_model_for_provider(provider)
             else:
                 model = default_model
 
@@ -682,37 +676,6 @@ def prepare_config(request: dict) -> dict:
     config["context"] = context
     if provider == NO_BRAIN_PROVIDER:
         raise NoBrainConfiguredError()
-    tier = _resolve_tier(context, talent_type)
-    config["tier"] = {
-        TIER_PRO: "pro",
-        TIER_FLASH: "flash",
-        TIER_LITE: "lite",
-    }.get(tier, str(tier))
-
-    # --- Provider fallback: preflight swap if primary is unhealthy ---
-    from solstone.think.models import (
-        get_backup_provider,
-        is_provider_model_interface_healthy,
-        load_health_status,
-        should_recheck_health,
-    )
-    from solstone.think.providers import PROVIDER_METADATA
-
-    health_data = load_health_status()
-    config["health_stale"] = should_recheck_health(health_data)
-
-    if provider != "local" and not is_provider_model_interface_healthy(
-        provider, model, talent_type, health_data
-    ):
-        backup = get_backup_provider(talent_type)
-        if backup and backup != provider:
-            env_key = PROVIDER_METADATA.get(backup, {}).get("env_key")
-            if not env_key or os.getenv(env_key):
-                config["fallback_from"] = provider
-                config["provider"] = backup
-                config["model"] = resolve_model_for_provider(
-                    context, backup, talent_type
-                )
 
     # Check if disabled
     if config.get("disabled"):
@@ -1031,7 +994,6 @@ def _runtime_identity(config: dict, runtime_json_schema: Any) -> dict[str, Any]:
         "sources": _normalized_sources(config),
         "provider": config.get("provider"),
         "model": config.get("model"),
-        "fallback_from": config.get("fallback_from"),
         "generation_params": _generation_params(config),
         "runtime": {
             "day": config.get("day"),
@@ -1221,7 +1183,6 @@ def _write_clean_provenance(
             output_size=output_size,
             provider=config.get("provider"),
             model=config.get("model"),
-            fallback_from=config.get("fallback_from"),
             generation_params=_generation_params(config),
             completed_at_ms=completed_at_ms,
             use_id=config.get("use_id"),
@@ -1310,40 +1271,8 @@ def _emit_terminal_hook_error(
 
 from solstone.think.models import (
     NO_BRAIN_PROVIDER,
-    AttestationNotVerifiedError,
-    NoBrainConfiguredError,
     _raise_if_confidential_unverified,
 )
-
-_NON_RETRYABLE_ERRORS = (
-    TalentHookError,
-    # No implicit cloud fallback: a journal with no thinking engine selected
-    # must stop here rather than retrying on any cloud provider.
-    NoBrainConfiguredError,
-    AttestationNotVerifiedError,
-    ValueError,
-    json.JSONDecodeError,
-    KeyError,
-    TypeError,
-    AttributeError,
-    FileNotFoundError,
-    PermissionError,
-    NotImplementedError,
-    QuotaExhaustedError,
-)
-
-
-def _is_retryable_error(exc: Exception) -> bool:
-    """Check if an exception is likely a provider error worth retrying.
-
-    Returns False for local/code errors (ValueError, KeyError, etc.).
-    Returns True for everything else (SDK connection, timeout, server errors).
-    """
-    return not isinstance(exc, _NON_RETRYABLE_ERRORS)
-
-
-def _should_fallback(exc: Exception) -> bool:
-    return _is_retryable_error(exc) or isinstance(exc, QuotaExhaustedError)
 
 
 def _classify_degraded(usage: dict | None, config: dict) -> dict | None:
@@ -1363,6 +1292,20 @@ def _classify_degraded(usage: dict | None, config: dict) -> dict | None:
     if tokens < MIN_OUTPUT_TOKENS:
         return {"reason": "near_empty", "output_tokens": int(tokens)}
     return None
+
+
+def _record_quota_failure(config: dict, exc: QuotaExhaustedError) -> int:
+    """Persist a quota failure row and return its reset time."""
+    reset_at_ms = now_ms() + (exc.retry_delay_ms or 0)
+    from solstone.think.providers import state
+
+    state.record_quota_failure(
+        str(config.get("provider") or ""),
+        str(config.get("model") or ""),
+        str(config.get("type") or ""),
+        reset_at_ms,
+    )
+    return reset_at_ms
 
 
 async def _execute_with_tools(
@@ -1454,12 +1397,8 @@ async def _execute_with_tools(
         _emit_terminal_hook_error(config, emit_event, exc)
         return
     except Exception as exc:
-        if provider in {"local", NO_BRAIN_PROVIDER}:
-            raise
-        if config.get("fallback_from") or not _should_fallback(exc):
-            raise
         if isinstance(exc, QuotaExhaustedError):
-            reset_at_ms = now_ms() + (exc.retry_delay_ms or 0)
+            reset_at_ms = _record_quota_failure(config, exc)
             emit_event(
                 {
                     "event": "error",
@@ -1472,73 +1411,7 @@ async def _execute_with_tools(
                     "terminal": False,
                 }
             )
-            from solstone.think.models import record_provider_failure
-
-            record_provider_failure(
-                provider,
-                config["tier"],
-                config["model"],
-                config["type"],
-                reset_at_ms,
-            )
-        from solstone.think.models import (
-            get_backup_provider,
-            resolve_model_for_provider,
-        )
-        from solstone.think.providers import PROVIDER_METADATA
-
-        backup = get_backup_provider("cogitate")
-        if not backup or backup == provider:
-            raise
-        env_key = PROVIDER_METADATA.get(backup, {}).get("env_key")
-        if env_key and not os.getenv(env_key):
-            raise
-
-        context = config.get("context")
-        if not context:
-            from solstone.think.talent import key_to_context
-
-            context = key_to_context(config["name"])
-        backup_model = resolve_model_for_provider(context, backup, "cogitate")
-
-        emit_event(
-            {
-                "event": "fallback",
-                "ts": now_ms(),
-                "original_provider": provider,
-                "backup_provider": backup,
-                "reason": "on_failure",
-                "error": str(exc),
-            }
-        )
-
-        config["fallback_from"] = provider
-        config["provider"] = backup
-        config["model"] = backup_model
-
-        backup_mod = get_provider_module(backup)
-
-        # Suppress error events from backup provider — if backup also fails
-        # we report the original error, not the backup's error.
-        def backup_emit(data: Event) -> None:
-            if data.get("event") == "error":
-                return
-            talent_emit_event(data)
-
-        try:
-            await backup_mod.run_cogitate(config=config, on_event=backup_emit)
-        except Exception:
-            # Ensure the original error is reported by the caller even if the
-            # primary provider already emitted its own error event (_evented).
-            if hasattr(exc, "_evented"):
-                delattr(exc, "_evented")
-            raise exc
-    finally:
-        if config.get("health_stale"):
-            from solstone.think.models import request_health_recheck
-
-            request_health_recheck()
-            config["health_stale"] = False
+        raise
 
 
 async def _execute_generate(
@@ -1592,6 +1465,8 @@ async def _execute_generate(
         )
     except Exception as exc:
         provider = config.get("provider", "google")
+        if isinstance(exc, QuotaExhaustedError):
+            _record_quota_failure(config, exc)
         if provider == NO_BRAIN_PROVIDER:
             raise
         if provider == "local":
@@ -1641,60 +1516,7 @@ async def _execute_generate(
                 retry_exc.retries = retries
                 raise
         else:
-            if config.get("fallback_from") or not _should_fallback(exc):
-                raise
-            from solstone.think.models import (
-                get_backup_provider,
-                resolve_model_for_provider,
-            )
-            from solstone.think.providers import PROVIDER_METADATA
-
-            backup = get_backup_provider("generate")
-            if not backup or backup == provider:
-                raise
-            env_key = PROVIDER_METADATA.get(backup, {}).get("env_key")
-            if env_key and not os.getenv(env_key):
-                raise
-
-            backup_model = resolve_model_for_provider(context, backup, "generate")
-
-            emit_event(
-                {
-                    "event": "fallback",
-                    "ts": now_ms(),
-                    "original_provider": provider,
-                    "backup_provider": backup,
-                    "reason": "on_failure",
-                    "error": str(exc),
-                }
-            )
-
-            config["fallback_from"] = provider
-            config["provider"] = backup
-            config["model"] = backup_model
-
-            try:
-                gen_result = generate_with_result(
-                    contents=contents,
-                    context=context,
-                    temperature=temperature,
-                    max_output_tokens=max_output_tokens,
-                    thinking_budget=thinking_budget,
-                    system_instruction=system_instruction,
-                    json_output=is_json_output,
-                    json_schema=runtime_json_schema,
-                    timeout_s=timeout_s,
-                    provider=backup,
-                    model=backup_model,
-                )
-            except Exception:
-                raise exc
-    finally:
-        if config.get("health_stale"):
-            from solstone.think.models import request_health_recheck
-
-            request_health_recheck()
-            config["health_stale"] = False
+            raise
 
     raw_result = gen_result["text"]
     if output_format == "md":
@@ -1843,18 +1665,6 @@ async def _run_talent(
     if config.get("chat_id"):
         start_event["chat_id"] = config["chat_id"]
     emit_event(start_event)
-
-    # Emit preflight fallback event if provider was swapped
-    if config.get("fallback_from"):
-        emit_event(
-            {
-                "event": "fallback",
-                "ts": now_ms(),
-                "original_provider": config["fallback_from"],
-                "backup_provider": config["provider"],
-                "reason": "preflight",
-            }
-        )
 
     # Handle skip conditions
     skip_reason = config.get("skip_reason")

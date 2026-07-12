@@ -1,6 +1,5 @@
 ---
 context: planner.generate
-tier: 2
 label: Agent Prompt Generation
 group: Think
 ---

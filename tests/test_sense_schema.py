@@ -111,7 +111,7 @@ def _render_sense_for_tmp_journal(
 def test_sense_prompt_parses_and_documents_role_and_source():
     post = frontmatter.load(SENSE_PATH)
 
-    assert post.metadata["tier"] == 3
+    assert "tier" not in post.metadata
 
     output_schema = _section(
         post.content, "## Output Schema", "## Field-by-Field Instructions"

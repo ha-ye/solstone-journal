@@ -225,6 +225,7 @@ async def test_batch_classifies_exception_metadata_when_attrs_missing(
     assert results[0].reason_code == "network_unreachable"
     assert results[0].reset_at_ms is None
     assert results[0].provider == "google"
+    mock_resolve_provider.assert_called_once_with("generate")
 
 
 def test_batch_update_clears_error_metadata():

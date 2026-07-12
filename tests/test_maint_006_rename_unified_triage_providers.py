@@ -18,7 +18,9 @@ def _write_journal_config(journal: Path, data: object) -> Path:
     return config_path
 
 
-def test_rename_unified_and_remove_triage_idempotent(tmp_path, monkeypatch):
+def test_rename_unified_and_triage_provider_contexts_is_retired_noop(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     config_path = _write_journal_config(
         tmp_path,
@@ -32,73 +34,6 @@ def test_rename_unified_and_remove_triage_idempotent(tmp_path, monkeypatch):
             }
         },
     )
-
-    summary = mod.run_migration(tmp_path, dry_run=False)
-
-    assert summary.renamed == 1
-    assert summary.removed == 1
-    assert summary.preserved == 0
-    assert summary.errors == 0
-    data = json.loads(config_path.read_text(encoding="utf-8"))
-    assert "talent.system.unified" not in data["providers"]["contexts"]
-    assert "talent.system.triage" not in data["providers"]["contexts"]
-    assert data["providers"]["contexts"]["talent.system.chat"] == {"provider": "openai"}
-    assert data["providers"]["contexts"]["talent.system.morning_briefing"] == {
-        "provider": "google"
-    }
-
-    before_bytes = config_path.read_bytes()
-    before_mtime_ns = config_path.stat().st_mtime_ns
-
-    rerun = mod.run_migration(tmp_path, dry_run=False)
-
-    assert rerun.renamed == 0
-    assert rerun.removed == 0
-    assert rerun.preserved == 0
-    assert rerun.errors == 0
-    assert rerun.skipped_reason is None
-    assert config_path.read_bytes() == before_bytes
-    assert config_path.stat().st_mtime_ns == before_mtime_ns
-
-
-def test_preserves_existing_chat_context_when_unified_exists(tmp_path, monkeypatch):
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    config_path = _write_journal_config(
-        tmp_path,
-        {
-            "providers": {
-                "contexts": {
-                    "talent.system.unified": {"provider": "openai"},
-                    "talent.system.chat": {"provider": "google"},
-                }
-            }
-        },
-    )
-
-    summary = mod.run_migration(tmp_path, dry_run=False)
-
-    assert summary.renamed == 0
-    assert summary.removed == 0
-    assert summary.preserved == 1
-    assert summary.errors == 0
-    data = json.loads(config_path.read_text(encoding="utf-8"))
-    assert "talent.system.unified" not in data["providers"]["contexts"]
-    assert data["providers"]["contexts"]["talent.system.chat"] == {"provider": "google"}
-
-
-def test_noop_when_no_legacy_provider_contexts_present(tmp_path, monkeypatch):
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    config_path = _write_journal_config(
-        tmp_path,
-        {
-            "providers": {
-                "contexts": {
-                    "talent.system.chat": {"provider": "openai"},
-                    "talent.system.morning_briefing": {"provider": "google"},
-                }
-            }
-        },
-    )
     before_bytes = config_path.read_bytes()
     before_mtime_ns = config_path.stat().st_mtime_ns
 
@@ -108,6 +43,20 @@ def test_noop_when_no_legacy_provider_contexts_present(tmp_path, monkeypatch):
     assert summary.removed == 0
     assert summary.preserved == 0
     assert summary.errors == 0
-    assert summary.skipped_reason is None
+    assert summary.skipped_reason == "retired"
     assert config_path.read_bytes() == before_bytes
     assert config_path.stat().st_mtime_ns == before_mtime_ns
+
+
+def test_retired_migration_dry_run_is_also_noop(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config_path = _write_journal_config(
+        tmp_path,
+        {"providers": {"contexts": {"talent.system.unified": {"provider": "openai"}}}},
+    )
+    before = config_path.read_bytes()
+
+    summary = mod.run_migration(tmp_path, dry_run=True)
+
+    assert summary.skipped_reason == "retired"
+    assert config_path.read_bytes() == before

@@ -144,7 +144,6 @@ def _discover_categories() -> dict[str, dict]:
     Each category is a .md file with JSON frontmatter containing:
     - description (required): Single-line description for categorization prompt
     - output (optional, default: "markdown"): Response format for extraction
-    - tier (optional, default: 2): Model tier for this category (1=pro, 2=flash, 3=lite)
     - label (optional): Human-readable name for settings UI
     - group (optional, default: "Screen Analysis"): Category for grouping in settings UI
 
@@ -177,9 +176,6 @@ def _discover_categories() -> dict[str, dict]:
             # Apply defaults for observation settings
             metadata.setdefault("output", "markdown")
 
-            # Apply defaults for tier routing
-            # tier: 1=pro, 2=flash, 3=lite (default: flash)
-            metadata.setdefault("tier", 2)
             metadata.setdefault("max_output_tokens", 4096)
             # label: Human-readable name (default: title-cased category name)
             metadata.setdefault("label", category.replace("_", " ").title())
@@ -287,7 +283,7 @@ def _dedup_readiness_contexts(contexts: list[str]) -> list[str]:
     selected: list[str] = []
     seen: set[tuple[str, str]] = set()
     for context in contexts:
-        key = resolve_provider(context, "generate")
+        key = resolve_provider("generate")
         if key in seen:
             continue
         seen.add(key)
@@ -764,8 +760,7 @@ class VideoProcessor:
                 promoted = True
 
         try:
-            # Resolve model for frame description (tier from describe.md frontmatter)
-            frame_provider, frame_model = resolve_provider(FRAME_CONTEXT, "generate")
+            frame_provider, frame_model = resolve_provider("generate")
             if frame_provider == NO_BRAIN_PROVIDER:
                 logger.info("No thinking engine selected; deferring frame description")
                 return
@@ -1092,10 +1087,7 @@ class VideoProcessor:
                     # Determine output format from metadata
                     is_json = cat_meta.get("output") == "json"
 
-                    # Resolve model for this category context
-                    cat_provider, cat_model = resolve_provider(
-                        cat_meta["context"], "generate"
-                    )
+                    cat_provider, cat_model = resolve_provider("generate")
                     if cat_provider == NO_BRAIN_PROVIDER:
                         logger.info(
                             "No thinking engine selected; deferring %s extraction",

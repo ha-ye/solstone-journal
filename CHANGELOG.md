@@ -4,6 +4,18 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [Unreleased]
+
+### Changed
+
+- sol now keeps one active brain for each lane instead of switching providers behind the scenes. old tier, context-routing, and backup keys are left in your config untouched, but they no longer steer model choice.
+- paths that used to be pinned to lite-class models now use the single model chosen for that lane. for byo-token owners this can raise per-token cost on those paths; local-lane installs are unaffected.
+- a legacy config with both `tier` and `model` now honors the model you named instead of ignoring it.
+
+### Fixed
+
+- timeline rollups now work on local-lane installs. they used to pin a cloud model internally, which made local setups fail before the rollup could run.
+
 ## [0.8.4] - 2026-07-12
 
 ### Added

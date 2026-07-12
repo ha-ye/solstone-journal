@@ -96,7 +96,7 @@ def _install_fakes(monkeypatch, outcomes: dict[int, dict]) -> list[tuple]:
     monkeypatch.setattr(
         models,
         "resolve_provider",
-        lambda _context, _interface: ("google", "gemini-test"),
+        lambda _interface: ("google", "gemini-test"),
     )
     monkeypatch.setattr(
         processing_record_module, "now_iso_utc", lambda: "2026-06-30T12:00:00Z"
@@ -339,12 +339,12 @@ async def test_browsing_truncation_does_not_promote_category_content(
     monkeypatch.setattr(
         batch_module,
         "resolve_provider",
-        lambda _context, _interface: ("google", "gemini-test"),
+        lambda _interface: ("google", "gemini-test"),
     )
     monkeypatch.setattr(
         models,
         "resolve_provider",
-        lambda _context, _interface: ("google", "gemini-test"),
+        lambda _interface: ("google", "gemini-test"),
     )
     monkeypatch.setattr(
         processing_record_module, "now_iso_utc", lambda: "2026-06-30T12:00:00Z"

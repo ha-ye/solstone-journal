@@ -1,6 +1,5 @@
 ---
 context: detect.created
-tier: 3
 label: Date Detection
 group: Import
 ---

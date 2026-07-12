@@ -1073,12 +1073,6 @@
   function renderAdvanced() {
     populateProviderSelect($('field-generate-provider'), state.providers.generate?.provider);
     populateProviderSelect($('field-cogitate-provider'), state.providers.cogitate?.provider);
-    if ($('field-generate-tier')) {
-      $('field-generate-tier').value = String(state.providers.generate?.tier || 2);
-    }
-    if ($('field-cogitate-tier')) {
-      $('field-cogitate-tier').value = String(state.providers.cogitate?.tier || 2);
-    }
     if ($('field-google-backend')) {
       $('field-google-backend').value = state.providers.google_backend || 'auto';
     }
@@ -1749,7 +1743,7 @@
   }
 
   async function saveAdvanced(agentType, field, value) {
-    const payload = {[agentType]: {[field]: field === 'tier' ? Number(value) : value}};
+    const payload = {[agentType]: {[field]: value}};
     state.providers = await api('api/providers', {
       method: 'PUT',
       body: JSON.stringify(payload),
@@ -1957,8 +1951,6 @@
     });
     $('field-generate-provider')?.addEventListener('change', (event) => saveAdvanced('generate', 'provider', event.target.value).catch((err) => setMessage('advancedStatus', err.message, 'error')));
     $('field-cogitate-provider')?.addEventListener('change', (event) => saveAdvanced('cogitate', 'provider', event.target.value).catch((err) => setMessage('advancedStatus', err.message, 'error')));
-    $('field-generate-tier')?.addEventListener('change', (event) => saveAdvanced('generate', 'tier', event.target.value).catch((err) => setMessage('advancedStatus', err.message, 'error')));
-    $('field-cogitate-tier')?.addEventListener('change', (event) => saveAdvanced('cogitate', 'tier', event.target.value).catch((err) => setMessage('advancedStatus', err.message, 'error')));
     $('field-google-backend')?.addEventListener('change', () => saveGoogleBackend().catch((err) => setMessage('vertexStatus', err.message, 'error')));
     $('vertexSave')?.addEventListener('click', () => saveVertexCredentials().catch((err) => setMessage('vertexStatus', err.message, 'error')));
     $('vertexClear')?.addEventListener('click', () => clearVertexCredentials().catch((err) => setMessage('vertexStatus', err.message, 'error')));

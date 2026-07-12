@@ -63,22 +63,11 @@ def settings_env(tmp_path, monkeypatch):
                 "providers": {
                     "generate": {
                         "provider": "google",
-                        "tier": 2,
-                        "backup": "anthropic",
+                        "model": "gemini-flash-latest",
                     },
                     "cogitate": {
                         "provider": "openai",
-                        "tier": 2,
-                        "backup": "anthropic",
-                    },
-                    "contexts": {
-                        "work": {
-                            "provider": "google",
-                            "tier": 2,
-                        }
-                    },
-                    "models": {
-                        "generate": "gemini-2.5-pro",
+                        "model": "gpt-5.4-mini",
                     },
                     "auth": {
                         "google": "api_key",

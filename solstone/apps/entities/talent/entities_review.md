@@ -1,6 +1,5 @@
 {
   "type": "generate",
-  "tier": 2,
   "title": "Entity Reviewer",
   "description": "Reviews detected entities and promotes recurring ones to attached status",
   "color": "#00796b",

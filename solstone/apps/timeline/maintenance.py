@@ -15,12 +15,12 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from solstone.apps.timeline.rollup import (
-    MODEL,
     pick_top_events_async,
     pick_top_events_batch,
 )
 from solstone.think.journal_io import atomic_replace
 from solstone.think.maintenance import MaintenanceRoutine
+from solstone.think.models import resolve_provider
 from solstone.think.utils import (
     EXIT_EMPTY,
     get_journal,
@@ -32,6 +32,10 @@ logger = logging.getLogger(__name__)
 
 SEGMENT_RE = re.compile(r"^(\d{2})(\d{2})(\d{2})_\d{1,6}$")
 DAY_RE = re.compile(r"^\d{8}$")
+
+
+def _resolved_generate_model() -> str:
+    return resolve_provider("generate")[1]
 
 
 def _default_day() -> str:
@@ -233,9 +237,10 @@ async def _rollup_day(
         day_rationale = day_result["rationale"]
 
     t_total = time.time() - t0
+    model = _resolved_generate_model()
     payload = {
         "day": day,
-        "model": MODEL,
+        "model": model,
         "generated_at": int(time.time()),
         "segment_count": len(segments),
         "hour_count": len(hours_out),
@@ -352,8 +357,9 @@ async def _rollup_master(
         print("  [empty] no month candidates found")
         return 0
 
+    model = _resolved_generate_model()
     print(
-        f"rolling up {len(jobs_in)} month(s) with model={MODEL} top={top} jobs={jobs}"
+        f"rolling up {len(jobs_in)} month(s) with model={model} top={top} jobs={jobs}"
     )
     t0 = time.time()
     try:
@@ -408,7 +414,7 @@ async def _rollup_master(
 
     payload = {
         "generated_at": int(time.time()),
-        "model": MODEL,
+        "model": model,
         "top_n": top,
         "year_top": year_top,
         "months": months_out,

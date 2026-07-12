@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 
 from solstone.apps.timeline.talent import segment_summary
-from solstone.think.models import GEMINI_LITE
 
 DAY = "20260512"
 SEGMENT = "120000_60"
+TEST_MODEL = "test-dispatched-model"
 
 
 def _make_activity(
@@ -111,7 +111,7 @@ def test_post_process_writes_augmented_timeline_atomically(
 
     returned = segment_summary.post_process(
         json.dumps({"title": "Café Reset", "description": "Restarts café display."}),
-        {"day": DAY, "segment": SEGMENT, "stream": "archon"},
+        {"day": DAY, "segment": SEGMENT, "stream": "archon", "model": TEST_MODEL},
     )
 
     assert returned is None
@@ -123,7 +123,7 @@ def test_post_process_writes_augmented_timeline_atomically(
         "title": "Café Reset",
         "description": "Restarts café display.",
         "origin": f"{DAY}/archon/{SEGMENT}",
-        "model": GEMINI_LITE,
+        "model": TEST_MODEL,
         "generated_at": 1770000000,
     }
     raw = timeline.read_bytes()
@@ -139,11 +139,11 @@ def test_post_process_records_literal_model(timeline_journal):
 
     segment_summary.post_process(
         json.dumps({"title": "Short Title", "description": "Brief description here"}),
-        {"day": DAY, "segment": SEGMENT, "stream": ""},
+        {"day": DAY, "segment": SEGMENT, "stream": "", "model": TEST_MODEL},
     )
 
     timeline = timeline_journal / "chronicle" / DAY / SEGMENT / "timeline.json"
-    assert json.loads(timeline.read_text(encoding="utf-8"))["model"] == GEMINI_LITE
+    assert json.loads(timeline.read_text(encoding="utf-8"))["model"] == TEST_MODEL
 
 
 @pytest.mark.parametrize(
@@ -170,7 +170,7 @@ def test_post_process_origin_matches_seed_for_all_4_layouts(
 
     segment_summary.post_process(
         json.dumps({"title": "Short Title", "description": "Brief description here"}),
-        {"day": DAY, "segment": SEGMENT, "stream": stream},
+        {"day": DAY, "segment": SEGMENT, "stream": stream, "model": TEST_MODEL},
     )
 
     timeline = timeline_journal / "chronicle" / expected_origin / "timeline.json"

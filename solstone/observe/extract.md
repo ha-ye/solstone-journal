@@ -1,6 +1,5 @@
 ---
 context: observe.extract.selection
-tier: 2
 label: Frame Selection
 group: Observe
 ---

@@ -88,8 +88,6 @@ def test_workspace_renders_each_lane(settings_env):
     for control_id in (
         "field-generate-provider",
         "field-cogitate-provider",
-        "field-generate-tier",
-        "field-cogitate-tier",
         "field-google-backend",
         "vertexSave",
         "vertexClear",

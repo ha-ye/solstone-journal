@@ -24,7 +24,6 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from solstone.observe.describe import FRAME_CONTEXT
 from solstone.think import admission
 from solstone.think.activities import (
     append_activity_record,
@@ -510,7 +509,7 @@ def _segment_work_uses_local() -> bool:
 
 def _describe_uses_local() -> bool:
     """Return True when screen-describe resolves to the local provider."""
-    provider, _ = resolve_provider(FRAME_CONTEXT, "generate")
+    provider, _ = resolve_provider("generate")
     return provider == "local"
 
 

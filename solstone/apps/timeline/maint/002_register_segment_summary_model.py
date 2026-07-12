@@ -1,24 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Register timeline segment summary provider context."""
+"""Retired provider-context registration for timeline segment summary."""
 
 from __future__ import annotations
 
 import argparse
-import json
-import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-
-from solstone.think.journal_config import write_journal_config
-from solstone.think.utils import get_journal, setup_cli
-
-logger = logging.getLogger(__name__)
-
-CONTEXT_NAME = "talent.timeline.segment_summary"
-EXPECTED_CONTEXT = {"provider": "google", "model": "gemini-flash-lite-latest"}
 
 
 @dataclass
@@ -32,71 +22,8 @@ class RegistrationSummary:
 def run_registration(
     journal_path: Path, *, dry_run: bool = False
 ) -> RegistrationSummary:
-    summary = RegistrationSummary()
-    config_path = journal_path / "config" / "journal.json"
-
-    if config_path.exists():
-        try:
-            raw_bytes = config_path.read_bytes()
-        except OSError as exc:
-            logger.warning("Failed to read %s: %s", config_path, exc)
-            summary.errors += 1
-            return summary
-
-        if raw_bytes.strip():
-            try:
-                raw = json.loads(raw_bytes)
-            except json.JSONDecodeError as exc:
-                logger.warning("Malformed JSON in %s: %s", config_path, exc)
-                summary.errors += 1
-                return summary
-            if not isinstance(raw, dict):
-                logger.warning(
-                    "Malformed journal config in %s: expected object", config_path
-                )
-                summary.errors += 1
-                return summary
-        else:
-            raw = {}
-    else:
-        raw = {}
-
-    providers = raw.setdefault("providers", {})
-    if not isinstance(providers, dict):
-        logger.warning("Preserving divergent providers config in %s", config_path)
-        summary.warnings += 1
-        return summary
-
-    contexts = providers.setdefault("contexts", {})
-    if not isinstance(contexts, dict):
-        logger.warning(
-            "Preserving divergent providers.contexts config in %s", config_path
-        )
-        summary.warnings += 1
-        return summary
-
-    existing = contexts.get(CONTEXT_NAME)
-    if existing == EXPECTED_CONTEXT:
-        summary.preserved += 1
-        return summary
-    if existing is not None:
-        logger.warning("Preserving divergent provider context %s", CONTEXT_NAME)
-        summary.warnings += 1
-        return summary
-
-    contexts[CONTEXT_NAME] = dict(EXPECTED_CONTEXT)
-    summary.added += 1
-
-    if dry_run:
-        return summary
-
-    try:
-        write_journal_config(raw)
-    except OSError as exc:
-        logger.warning("Failed to write %s: %s", config_path, exc)
-        summary.errors += 1
-
-    return summary
+    _ = (journal_path, dry_run)
+    return RegistrationSummary()
 
 
 def _print_summary(summary: RegistrationSummary) -> None:
@@ -105,6 +32,7 @@ def _print_summary(summary: RegistrationSummary) -> None:
     print(f"  preserved: {summary.preserved}")
     print(f"  warnings:  {summary.warnings}")
     print(f"  errors:    {summary.errors}")
+    print("  retired:   provider context registration is no longer needed")
 
 
 def main() -> None:
@@ -114,9 +42,9 @@ def main() -> None:
         action="store_true",
         help="Preview provider context registration without writing files.",
     )
-    args = setup_cli(parser)
+    args = parser.parse_args()
 
-    summary = run_registration(Path(get_journal()), dry_run=args.dry_run)
+    summary = run_registration(Path.cwd(), dry_run=args.dry_run)
     _print_summary(summary)
     if summary.errors:
         sys.exit(1)

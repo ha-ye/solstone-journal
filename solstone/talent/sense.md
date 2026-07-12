@@ -6,7 +6,6 @@
   "color": "#ff6f00",
   "schedule": "segment",
   "priority": 5,
-  "tier": 3,
   "output": "json",
   "schema": "sense.schema.json",
   "max_output_tokens": 6144,

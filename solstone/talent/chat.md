@@ -2,7 +2,6 @@
   "type": "generate",
   "title": "Chat",
   "description": "Structured conversational reply planner for the chat backend rewrite",
-  "tier": 2,
   "thinking_budget": 4096,
   "max_output_tokens": 2048,
   "output": "json",
