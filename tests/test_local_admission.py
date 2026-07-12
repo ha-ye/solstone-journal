@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import threading
 import time
@@ -113,6 +114,31 @@ def test_exclusive_timeout_does_not_strand_partial_locks(monkeypatch, tmp_path):
             assert permit.slot_index == 0
     finally:
         slot_one.release()
+
+
+def test_exclusive_flock_error_releases_partial_slot_set(monkeypatch, tmp_path):
+    _isolated_journal(monkeypatch, tmp_path)
+
+    from solstone.think.providers import local_admission
+
+    real_flock = local_admission.fcntl.flock
+
+    def fail_second_slot(lock_file, operation):
+        if (
+            str(lock_file.name).endswith("slot-1.lock")
+            and operation & local_admission.fcntl.LOCK_EX
+            and operation & local_admission.fcntl.LOCK_NB
+        ):
+            raise OSError(errno.EIO, "simulated flock failure")
+        return real_flock(lock_file, operation)
+
+    monkeypatch.setattr(local_admission.fcntl, "flock", fail_second_slot)
+
+    with pytest.raises(OSError):
+        acquire_local_slot(2, 0.1, exclusive=True)
+
+    with acquire_local_slot(1, 0.1) as permit:
+        assert permit.slot_index == 0
 
 
 def test_exclusive_failure_releases_all_slots(monkeypatch, tmp_path):

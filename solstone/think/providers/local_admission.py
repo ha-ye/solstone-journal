@@ -121,8 +121,16 @@ def _release_files(files: list[IO[str]]) -> None:
             continue
         try:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
-        finally:
-            lock_file.close()
+        except Exception:
+            LOG.warning("failed to unlock local inference slot lock", exc_info=True)
+        _close_file(lock_file)
+
+
+def _close_file(lock_file: IO[str]) -> None:
+    try:
+        lock_file.close()
+    except Exception:
+        LOG.warning("failed to close local inference slot lock", exc_info=True)
 
 
 def _try_acquire(capacity: int, started: float, root: Path) -> LocalPermit | None:
@@ -157,8 +165,10 @@ def _try_acquire_exclusive(
         try:
             fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError as exc:
-            lock_file.close()
-            _release_files(lock_files)
+            try:
+                _close_file(lock_file)
+            finally:
+                _release_files(lock_files)
             if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
                 return None
             raise

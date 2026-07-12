@@ -198,20 +198,21 @@ emit fallback events. Cloud fallback behavior stays in the non-local branch.
 
 - Update `test_run_generate_bundled_context_rejection_backstop` to use the
   authoritative 400 body with `error.type == "exceed_context_size_error"`,
-  `n_prompt_tokens`, and `n_ctx`; expect `ContextBudgetExceeded`. This passes
-  on HEAD and pins preserved behavior.
+  `n_prompt_tokens`, and `n_ctx`; expect `ContextBudgetExceeded`. This passed
+  on the pre-fix tree too and pins preserved behavior.
 - Repoint the alt-phrasing test to the 500 `server_error` body with
   `Context size has been exceeded.`; expect `LocalCapacityExhausted` and
-  `local_capacity_exhausted`. Fails on HEAD because HEAD raises
+  `local_capacity_exhausted`. Failed on the pre-fix tree because it raised
   `ContextBudgetExceeded`.
 - Add a fallback case for a context-pattern body that is missing authoritative
-  structure; expect `LocalCapacityExhausted`. Fails on HEAD for the same reason.
+  structure; expect `LocalCapacityExhausted`. Failed on the pre-fix tree for
+  the same reason.
 - Add async parity for the 500 capacity body through fake `httpx.AsyncClient`;
-  expect `LocalCapacityExhausted`. Fails on HEAD because the shared helper
-  misclassifies it.
+  expect `LocalCapacityExhausted`. Failed on the pre-fix tree because the
+  shared helper misclassified it.
 - Add telemetry assertion for bundled generate failure: captured
   `record_local_inference` row has `reason_code == "local_capacity_exhausted"`.
-  Fails on HEAD with `context_budget_exceeded`.
+  Failed on the pre-fix tree with `context_budget_exceeded`.
 - Keep the no-POST fitter rejection test as-is: `local_budget.fit_contents()`
   still raises `ContextBudgetExceeded` before any HTTP request when preserved
   content cannot fit.
@@ -219,24 +220,25 @@ emit fallback events. Cloud fallback behavior stays in the non-local branch.
 ### `tests/test_local_admission.py`
 
 - Exclusive acquisition blocks while a normal single-slot holder is active, then
-  succeeds after release. Fails on HEAD because no exclusive mode exists.
+  succeeds after release. Failed on the pre-fix tree because no exclusive mode
+  existed.
 - Exclusive acquisition with `capacity == 1` behaves like normal one-slot
-  acquisition. Fails on HEAD because no exclusive mode exists.
+  acquisition. Failed on the pre-fix tree because no exclusive mode existed.
 - Exclusive timeout releases any partially acquired locks before sleeping or
   timing out. Drive this by holding slot 1, leaving slot 0 free, then attempting
   exclusive acquire; after timeout, a normal waiter must be able to acquire
-  slot 0. Fails on HEAD because no all-slot primitive exists.
+  slot 0. Failed on the pre-fix tree because no all-slot primitive existed.
 - Exclusive permit releases all locks on exception. Acquire exclusive, raise
   inside the context manager, then acquire two normal permits at capacity 2.
-  Fails on HEAD because `LocalPermit` only represents one file.
+  Failed on the pre-fix tree because `LocalPermit` only represented one file.
 
 ### `tests/test_talent_fallback.py`
 
 - Add local capacity retry test where both first and retry calls raise
   `LocalCapacityExhausted`; assert exactly two calls, second call has
   `inference_retry_index=1` and `local_exclusive_admission=True`, no fallback is
-  consulted, and the emitted error event has `retries == 1`. Fails on HEAD
-  because local non-length errors re-raise without retry.
+  consulted, and the emitted error event has `retries == 1`. Failed on the
+  pre-fix tree because local non-length errors re-raised without retry.
 - Update existing incomplete-JSON retry assertions to prove the retry has
   `inference_retry_index=1` but no `local_exclusive_admission`. This guards
   against inferring exclusivity from retry index.

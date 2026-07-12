@@ -777,7 +777,7 @@ def test_run_agenerate_bundled_capacity_rejection_matches_sync(monkeypatch):
     assert exc.value.reason_code == "local_capacity_exhausted"
 
 
-def test_run_generate_bundled_capacity_rejection_records_telemetry(monkeypatch):
+def test_run_generate_bundled_capacity_rejection_records_retry_telemetry(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
     _patch_bundled_server(monkeypatch)
@@ -806,10 +806,29 @@ def test_run_generate_bundled_capacity_rejection_records_telemetry(monkeypatch):
     monkeypatch.setattr(httpx, "post", fake_post)
 
     with pytest.raises(provider.LocalProviderError):
-        provider.run_generate("hello", model=LOCAL_MODEL, max_output_tokens=16)
+        provider.run_generate(
+            "private prompt text",
+            model=LOCAL_MODEL,
+            max_output_tokens=16,
+        )
+    with pytest.raises(provider.LocalProviderError):
+        provider.run_generate(
+            "private prompt text",
+            model=LOCAL_MODEL,
+            max_output_tokens=16,
+            inference_retry_index=1,
+            local_exclusive_admission=True,
+        )
 
-    assert records
-    assert records[-1]["reason_code"] == "local_capacity_exhausted"
+    assert len(records) == 2
+    assert [record["retry_index"] for record in records] == [0, 1]
+    for record in records:
+        assert record["reason_code"] == "local_capacity_exhausted"
+        assert record["outcome"] == "error"
+        serialized = json.dumps(record, sort_keys=True)
+        assert "private prompt text" not in serialized
+        assert "Context size has been exceeded." not in serialized
+        assert "server_error" not in serialized
 
 
 def test_openhands_local_llm_kwargs(monkeypatch):
