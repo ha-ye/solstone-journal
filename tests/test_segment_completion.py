@@ -430,7 +430,7 @@ def test_stream_lookup_does_not_borrow_from_other_stream(segment_journal):
     assert completion.total == 2
 
 
-def test_markdown_only_import_segment_has_no_completion_blocker(segment_journal):
+def test_markdown_only_health_segment_has_no_completion_blocker(segment_journal):
     day = "20990412"
     stream = "import.apple_health"
     _seed_markdown_import_segment(segment_journal, day, SEGMENT, stream=stream)
@@ -454,7 +454,7 @@ def test_markdown_only_import_segment_has_no_completion_blocker(segment_journal)
     assert completion.total == 1
 
 
-def test_markdown_only_import_segment_is_not_selected_for_repair(segment_journal):
+def test_markdown_only_health_segment_is_not_selected_for_repair(segment_journal):
     day = "20990413"
     stream = "import.apple_health"
     _seed_markdown_import_segment(segment_journal, day, SEGMENT, stream=stream)

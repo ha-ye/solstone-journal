@@ -1412,7 +1412,7 @@ def test_scan_day_marks_text_transcript_audio_analyzed(tmp_path, monkeypatch, fi
     assert segments[0]["data_state"] == {"audio": "analyzed"}
 
 
-def test_scan_day_marks_markdown_only_import_segment_as_markdown(tmp_path, monkeypatch):
+def test_scan_day_marks_markdown_only_health_segment_as_markdown(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     day_dir = day_path("20240101")
 
