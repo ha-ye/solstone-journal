@@ -30,6 +30,7 @@ from solstone.think.pipeline_health import (
     read_segment_progress,
     segment_fully_sensed,
     segment_fully_thought,
+    segment_requires_processing,
 )
 from solstone.think.utils import updated_days
 
@@ -470,6 +471,31 @@ def test_markdown_only_import_segment_is_not_selected_for_repair(segment_journal
         "total": 1,
         "selected": 0,
         "complete": 1,
+        "raw_blocked": 0,
+    }
+
+
+def test_markdown_only_owner_import_segment_is_selected_for_repair(segment_journal):
+    day = "20990414"
+    stream = "import.obsidian"
+    _seed_markdown_import_segment(segment_journal, day, SEGMENT, stream=stream)
+    thinking = importlib.import_module("solstone.think.thinking")
+
+    segments = cluster_segments(day)
+    selected, counts = thinking._select_segment_repair_targets(
+        day,
+        segments,
+        force_all=False,
+    )
+
+    # Derived health cards stay out of think, but owner note imports are real
+    # source content that must produce sense/entities/facets.
+    assert segment_requires_processing(segments[0]) is True
+    assert selected == segments
+    assert counts == {
+        "total": 1,
+        "selected": 1,
+        "complete": 0,
         "raw_blocked": 0,
     }
 

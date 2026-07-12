@@ -1441,6 +1441,37 @@ def test_scan_day_marks_markdown_only_import_segment_as_markdown(tmp_path, monke
     ) == {"markdown": "analyzed"}
 
 
+def test_scan_day_marks_markdown_only_owner_import_as_audio(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    segment = day_dir / "import.obsidian" / "090000_300"
+    segment.mkdir(parents=True)
+    (segment / "note_transcript.md").write_text("owner note\n")
+
+    audio_ranges, screen_ranges, segments = mod.scan_day("20240101")
+
+    # Health day cards are derived summaries; owner note imports are source
+    # content that must still produce sense/entities/facets.
+    assert audio_ranges == [("09:00", "09:15")]
+    assert screen_ranges == []
+    assert segments == [
+        {
+            "key": "090000_300",
+            "start": "09:00",
+            "end": "09:05",
+            "types": ["audio"],
+            "stream": "import.obsidian",
+            "data_state": {"audio": "analyzed"},
+        }
+    ]
+    assert mod.read_segment_data_state("20240101", "090000_300", "import.obsidian") == {
+        "audio": "analyzed"
+    }
+
+
 def test_day_path_create_false(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
