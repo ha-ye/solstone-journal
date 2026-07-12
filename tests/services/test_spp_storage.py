@@ -87,14 +87,10 @@ def test_provision_confidential_handoff_round_trip_writes_single_state(
     }
     assert saved["providers"]["generate"] == {
         "provider": "local",
-        "tier": 2,
-        "backup": "anthropic",
         "model": "keep-generate-model",
     }
     assert saved["providers"]["cogitate"] == {
         "provider": "local",
-        "tier": 2,
-        "backup": "anthropic",
         "model": "keep-cogitate-model",
     }
     block = saved["services"]["confidential"]

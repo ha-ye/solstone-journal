@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from solstone.think.batch import Batch, BatchRequest
-from solstone.think.models import GEMINI_FLASH, GEMINI_LITE, SchemaValidationError
+from solstone.think.models import GEMINI_FLASH, SchemaValidationError
 
 
 def _result(text: str = "Response", finish_reason: str = "stop", **extra):
@@ -31,12 +31,12 @@ def test_batch_request_creation():
     req2 = BatchRequest(
         contents=["Part 1", "Part 2"],
         context="test.context",
-        model=GEMINI_LITE,
+        model="gemini-flash-lite-latest",
         temperature=0.7,
         json_output=True,
     )
     assert req2.contents == ["Part 1", "Part 2"]
-    assert req2.model == GEMINI_LITE
+    assert req2.model == "gemini-flash-lite-latest"
     assert req2.temperature == 0.7
     assert req2.json_output is True
 
@@ -309,7 +309,9 @@ async def test_batch_retry_pattern(mock_agenerate):
         # If error, retry with different model
         if req.error and req.attempt == 1:
             retry = batch.create(
-                contents=req.contents, context="test.context", model=GEMINI_LITE
+                contents=req.contents,
+                context="test.context",
+                model="gemini-flash-lite-latest",
             )
             retry.attempt = 2
             batch.add(retry)
@@ -334,7 +336,7 @@ async def test_batch_factory_method(mock_agenerate):
     req = batch.create(
         contents="Test",
         context="test.context",
-        model=GEMINI_LITE,
+        model="gemini-flash-lite-latest",
         temperature=0.8,
         json_output=True,
     )
@@ -342,7 +344,7 @@ async def test_batch_factory_method(mock_agenerate):
     assert isinstance(req, BatchRequest)
     assert req.contents == "Test"
     assert req.context == "test.context"
-    assert req.model == GEMINI_LITE
+    assert req.model == "gemini-flash-lite-latest"
     assert req.temperature == 0.8
     assert req.json_output is True
 
@@ -468,7 +470,7 @@ async def test_batch_update_method(mock_agenerate):
             batch.update(
                 completed_req,
                 contents="Updated prompt",
-                model=GEMINI_LITE,
+                model="gemini-flash-lite-latest",
                 stage="updated",  # Update custom attribute too
                 custom_field="test_value",  # Add new custom attribute
             )
@@ -479,11 +481,11 @@ async def test_batch_update_method(mock_agenerate):
     assert results[1][2] == "updated"  # Second result was updated stage
 
     # Verify models used
-    assert call_models == [GEMINI_FLASH, GEMINI_LITE]
+    assert call_models == [GEMINI_FLASH, "gemini-flash-lite-latest"]
 
     # Verify correct responses at each stage
     assert results[0][1] == f"Response from {GEMINI_FLASH}"
-    assert results[1][1] == f"Response from {GEMINI_LITE}"
+    assert results[1][1] == "Response from gemini-flash-lite-latest"
 
     # Verify custom attribute was set
     assert req.custom_field == "test_value"

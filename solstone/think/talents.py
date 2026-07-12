@@ -538,7 +538,7 @@ def prepare_config(request: dict) -> dict:
 
     Config fields produced:
     - name: Talent name
-    - provider, model: Resolved from context/request
+    - provider, model: Resolved from interface defaults/request
     - user_instruction: Talent instruction from .md file
     - prompt: User's runtime query/request
     - transcript: Clustered transcript (if day provided)
@@ -648,7 +648,7 @@ def prepare_config(request: dict) -> dict:
     config["span_mode"] = bool(span)
     config["source_counts"] = {}
 
-    # Resolve provider and model from context
+    # Resolve provider and model for the talent's interface
     context = key_to_context(name)
     talent_type = config["type"]
     default_provider, default_model = resolve_provider(talent_type)
@@ -1403,7 +1403,7 @@ async def _execute_with_tools(
                 {
                     "event": "error",
                     "reason": "quota_exhausted",
-                    # reason_code is the chat-side carrier; reason is the cortex/talent fallback signal.
+                    # reason_code is the chat-side carrier; reason is the quota label.
                     "reason_code": "provider_quota_exceeded",
                     "provider": provider,
                     "error": str(exc),

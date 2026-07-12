@@ -40,8 +40,8 @@
         "context": null,
         "detail": "Open provider setup and add credentials, then try again.",
         "interface": "generate",
-        "model": "gemini-flash-latest",
-        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-flash-latest; interface=generate; message=GOOGLE_API_KEY not set",
+        "model": "gemini-custom-flash-test",
+        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-custom-flash-test; interface=generate; message=GOOGLE_API_KEY not set",
         "provider": "google",
         "reason_code": "provider_key_missing",
         "recovery_action": {
@@ -78,8 +78,8 @@
         "context": null,
         "detail": "Open provider setup and add credentials, then try again.",
         "interface": "generate",
-        "model": "gemini-flash-latest",
-        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-flash-latest; interface=generate; message=GOOGLE_API_KEY not set",
+        "model": "gemini-custom-flash-test",
+        "operator_detail": "reason_code=provider_key_missing; provider=google; status=blocked; model=gemini-custom-flash-test; interface=generate; message=GOOGLE_API_KEY not set",
         "provider": "google",
         "reason_code": "provider_key_missing",
         "recovery_action": {
@@ -128,7 +128,7 @@
     "provider": "openai"
   },
   "generate": {
-    "model": "gemini-flash-latest",
+    "model": "gemini-custom-flash-test",
     "provider": "google"
   },
   "google_backend": "auto",

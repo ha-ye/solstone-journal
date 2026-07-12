@@ -1101,7 +1101,7 @@ def update_providers() -> Any:
         config.setdefault("providers", {})
         changed_fields: dict[str, Any] = {}
 
-        for legacy_key in ("tier", "backup"):
+        for legacy_key in ("tier", "backup", "models"):
             if legacy_key in request_data:
                 return error_response(
                     INVALID_CONFIG_VALUE,

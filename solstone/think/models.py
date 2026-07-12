@@ -126,17 +126,13 @@ def _find_pricing_fallback(model: str, provider_id: str) -> str | None:
     return best[1] if best else None
 
 
-GEMINI_PRO = "gemini-pro-latest"
 GEMINI_FLASH = "gemini-flash-latest"
-GEMINI_LITE = "gemini-flash-lite-latest"
 
 GPT_5 = "gpt-5.5"
 GPT_5_MINI = "gpt-5.4-mini"
-GPT_5_NANO = "gpt-5.4-nano"
 
 CLAUDE_OPUS_4 = "claude-opus-4-7"
 CLAUDE_SONNET_4 = "claude-sonnet-4-6"
-CLAUDE_HAIKU_4 = "claude-haiku-4-5"
 
 LOCAL_MODEL = "local/qwen3.5-4b"
 
@@ -1009,7 +1005,7 @@ def get_usage_cost(
 
 
 # ---------------------------------------------------------------------------
-# Unified generate/agenerate with provider routing
+# Unified generate/agenerate active-provider dispatch
 # ---------------------------------------------------------------------------
 
 
@@ -1262,7 +1258,7 @@ def generate_with_result(
     contents : str or List
         The content to send to the model.
     context : str
-        Context string for routing and token logging.
+        Context string for token logging and telemetry.
     temperature : float
         Temperature for generation (default: 0.3).
     max_output_tokens : int

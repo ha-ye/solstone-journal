@@ -166,7 +166,11 @@ def test_run_check_targeted_empty_journal_uses_real_resolution(
     payload = json.loads((tmp_path / "health" / "talents.json").read_text())
     assert payload["results"] == []
     assert payload["summary"] == {"total": 0, "passed": 0, "skipped": 0, "failed": 0}
-    assert '"results": []' in capsys.readouterr().out
+    stdout = capsys.readouterr().out
+    assert json.loads(stdout) == {
+        "results": [],
+        "summary": {"total": 0, "passed": 0, "skipped": 0, "failed": 0},
+    }
 
 
 def test_run_check_targeted_flock_dedup(tmp_path, monkeypatch):

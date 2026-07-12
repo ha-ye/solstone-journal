@@ -355,7 +355,7 @@ async def main_async() -> None:
         "--timeout",
         type=int,
         default=30,
-        help="Timeout in seconds for generate checks (default: 30)",
+        help="Timeout in seconds for provider checks (default: 30)",
     )
     check_parser.add_argument(
         "--model",

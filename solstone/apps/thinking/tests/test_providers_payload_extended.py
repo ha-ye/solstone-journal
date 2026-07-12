@@ -210,6 +210,7 @@ def test_provider_update_rejects_context_payload(settings_client_with_journal):
     [
         {"tier": 2},
         {"backup": "anthropic"},
+        {"models": {"google": {"3": "gemini-flash-lite-latest"}}},
         {"generate": {"tier": 2}},
         {"cogitate": {"backup": "anthropic"}},
     ],
@@ -229,6 +230,40 @@ def test_provider_update_rejects_retired_routing_keys(
     assert body["reason_code"] == "invalid_config_value"
     assert "retired" in body["detail"]
     assert config_path.read_bytes() == before
+
+
+def test_provider_update_preserves_legacy_models_on_success(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    legacy_models = {
+        "google": {
+            "2": "legacy-flash",
+            "3": "legacy-lite",
+        },
+    }
+    config["providers"]["models"] = legacy_models.copy()
+    _write_config(journal_path, config)
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={
+            "generate": {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    stored = json.loads(config_path.read_text(encoding="utf-8"))
+    assert stored["providers"]["models"] == legacy_models
+    assert stored["providers"]["generate"] == {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+    }
 
 
 def test_scout_enabled_google_provider_derives_byo_with_provenance(
