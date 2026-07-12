@@ -343,17 +343,21 @@ def test_stderr_does_not_influence_acceptance(
     assert result.driver_version == "595.71.05"
 
 
-def test_gpu_appraisal_error_message_omits_vendor_stderr_marker() -> None:
+def test_gpu_appraisal_error_message_omits_vendor_stderr_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     marker = "vendor-stderr-marker-nonce_from_ar"
-    exc = GpuAppraisalError(
-        "gpu_appraisal_failed",
-        "nvattest failed with stderr",
-        stderr=f"collector detail {marker}",
-    )
+    with pytest.raises(GpuAppraisalError) as exc_info:
+        _run_appraisal_with_stdout(
+            monkeypatch,
+            tmp_path,
+            "not json",
+            stderr=f"collector detail {marker}",
+        )
 
-    assert str(exc) == "gpu_appraisal_failed"
-    assert marker not in str(exc)
-    assert "nvattest failed" not in str(exc)
+    assert str(exc_info.value) == "gpu_appraisal_failed"
+    assert marker not in str(exc_info.value)
 
 
 def test_bool_false_returncode_rejects(

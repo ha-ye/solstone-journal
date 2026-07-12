@@ -21,13 +21,6 @@ class GpuAppraisalError(VerificationError):
 
     reason: GpuAppraisalReason
 
-    def __init__(
-        self,
-        reason: GpuAppraisalReason,
-        message: str,
-        *,
-        stderr: str = "",
-    ) -> None:
-        _ = (message, stderr)
+    def __init__(self, reason: GpuAppraisalReason) -> None:
         self.reason = reason
         super().__init__(reason)

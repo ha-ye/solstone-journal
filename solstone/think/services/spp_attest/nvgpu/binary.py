@@ -25,20 +25,11 @@ def locate_nvattest(nvattest_dir: Path) -> tuple[Path, Path]:
     binary = nvattest_dir / "bin" / "nvattest"
     lib_dir = nvattest_dir / "lib"
     if not nvattest_dir.is_dir():
-        raise GpuAppraisalError(
-            "nvattest_unavailable",
-            f"nvattest directory is missing: {nvattest_dir}",
-        )
+        raise GpuAppraisalError("nvattest_unavailable")
     if not binary.is_file():
-        raise GpuAppraisalError(
-            "nvattest_unavailable",
-            f"nvattest binary is missing: {binary}",
-        )
+        raise GpuAppraisalError("nvattest_unavailable")
     if not lib_dir.is_dir():
-        raise GpuAppraisalError(
-            "nvattest_unavailable",
-            f"nvattest lib directory is missing: {lib_dir}",
-        )
+        raise GpuAppraisalError("nvattest_unavailable")
     return binary, lib_dir
 
 

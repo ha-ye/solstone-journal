@@ -281,16 +281,12 @@ def test_verify_composite_maps_gpu_nonce_mismatch_without_leak(
 ) -> None:
     def rejecting_gpu_appraiser(
         _envelope: GpuEnvelope,
-        owner_nonce: bytes,
+        _owner_nonce: bytes,
         *,
         nvattest_dir: Path,
     ) -> GpuAppraisal:
         assert nvattest_dir
-        raise GpuAppraisalError(
-            "gpu_nonce_mismatch",
-            f"raw nonce {owner_nonce.hex()}",
-            stderr=f"nonce_from_ar: {owner_nonce.hex()}",
-        )
+        raise GpuAppraisalError("gpu_nonce_mismatch")
 
     with caplog.at_level(
         logging.WARNING,
@@ -329,11 +325,7 @@ def test_verify_composite_bounds_out_of_band_gpu_reason_without_leak(
         nvattest_dir: Path,
     ) -> GpuAppraisal:
         assert nvattest_dir
-        raise GpuAppraisalError(
-            unsafe_reason,
-            "raw diagnostic",
-            stderr=f"nonce_from_ar: {unsafe_reason}",
-        )
+        raise GpuAppraisalError(unsafe_reason)
 
     with pytest.raises(AttestationFailedError) as exc_info:
         verify_composite(
@@ -363,7 +355,7 @@ def test_verify_composite_rejects_gpu_unavailable_without_cpu_only_pass(
         nvattest_dir: Path,
     ) -> GpuAppraisal:
         assert nvattest_dir
-        raise GpuAppraisalError("nvattest_unavailable", "missing nvattest")
+        raise GpuAppraisalError("nvattest_unavailable")
 
     with pytest.raises(AttestationFailedError) as exc_info:
         verify_composite(

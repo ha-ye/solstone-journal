@@ -75,19 +75,12 @@ def appraise_gpu_leg(
                 check=False,
             )
         except OSError as exc:
-            raise GpuAppraisalError(
-                "nvattest_unavailable",
-                f"failed to execute nvattest: {exc}",
-            ) from exc
+            raise GpuAppraisalError("nvattest_unavailable") from exc
 
         try:
             stdout_obj = parse_nvattest_stdout(completed.stdout)
         except ValueError as exc:
-            raise GpuAppraisalError(
-                "gpu_appraisal_failed",
-                str(exc),
-                stderr=completed.stderr,
-            ) from exc
+            raise GpuAppraisalError("gpu_appraisal_failed") from exc
 
         decision = classify_nvattest_result(
             completed.returncode,
@@ -95,11 +88,7 @@ def appraise_gpu_leg(
             owner_nonce=owner_nonce,
         )
         if not isinstance(decision, NvattestAcceptance):
-            raise GpuAppraisalError(
-                decision.reason,
-                decision.detail,
-                stderr=completed.stderr,
-            )
+            raise GpuAppraisalError(decision.reason)
 
         steps = [
             _ok(
@@ -122,11 +111,7 @@ def appraise_gpu_leg(
                 steps=steps,
             )
         except ValueError as exc:
-            raise GpuAppraisalError(
-                "gpu_appraisal_failed",
-                str(exc),
-                stderr=completed.stderr,
-            ) from exc
+            raise GpuAppraisalError("gpu_appraisal_failed") from exc
     finally:
         if evidence_path is not None:
             evidence_path.unlink(missing_ok=True)
