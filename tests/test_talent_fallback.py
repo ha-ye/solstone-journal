@@ -767,9 +767,90 @@ def test_execute_generate_local_length_retry_succeeds(
     assert len(calls) == 2
     assert calls[0]["temperature"] == (base_temperature or 0.3)
     assert calls[1]["temperature"] == expected_retry_temperature
+    assert calls[1]["inference_retry_index"] == 1
+    assert "local_exclusive_admission" not in calls[1]
     assert not any(e.get("event") == "fallback" for e in events)
     assert events[-1]["event"] == "finish"
     assert events[-1]["retries"] == 1
+
+
+def test_main_async_local_capacity_retry_second_failure_emits_one_error(
+    monkeypatch,
+    capsys,
+):
+    from solstone.think import talents
+
+    class LocalCapacityError(RuntimeError):
+        reason_code = "local_capacity_exhausted"
+
+    ndjson_input = json.dumps({"name": "chat", "prompt": "hello"})
+    calls = []
+
+    def mock_generate_with_result(**kwargs):
+        calls.append(kwargs)
+        raise LocalCapacityError(
+            "The local model was busy and could not finish this request. "
+            "Try again in a moment."
+        )
+
+    def fail_backup(_agent_type):
+        raise AssertionError("local capacity retry must not consult cloud backup")
+
+    mock_args = MagicMock()
+    mock_args.verbose = False
+    mock_args.dry_run = False
+    mock_args.subcommand = None
+
+    config = {
+        "type": "generate",
+        "name": "chat",
+        "provider": "local",
+        "model": LOCAL_MODEL,
+        "prompt": "hello",
+        "health_stale": False,
+    }
+
+    monkeypatch.setattr("sys.stdin", StringIO(ndjson_input))
+    monkeypatch.setattr("solstone.think.talents.setup_cli", lambda _parser: mock_args)
+    monkeypatch.setattr(
+        "solstone.think.talents.setup_logging",
+        lambda _verbose=False: MagicMock(),
+    )
+    monkeypatch.setattr(
+        "solstone.think.talents.prepare_config", lambda _request: config
+    )
+    monkeypatch.setattr("solstone.think.talents.validate_config", lambda _config: None)
+    monkeypatch.setattr("solstone.think.talents._run_pre_hooks", lambda _config: {})
+    monkeypatch.setattr(
+        "solstone.think.talent.key_to_context", lambda _name: "talent.system.default"
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result", mock_generate_with_result
+    )
+    monkeypatch.setattr("solstone.think.models.get_backup_provider", fail_backup)
+    monkeypatch.setattr(
+        "solstone.think._extraction_utils.log_extraction_failure",
+        lambda _exc, _name: None,
+    )
+
+    asyncio.run(talents.main_async())
+
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.strip()]
+    events = [json.loads(line) for line in lines]
+    error_events = [event for event in events if event.get("event") == "error"]
+    finish_events = [event for event in events if event.get("event") == "finish"]
+
+    assert len(calls) == 2
+    assert "inference_retry_index" not in calls[0]
+    assert "local_exclusive_admission" not in calls[0]
+    assert calls[1]["inference_retry_index"] == 1
+    assert calls[1]["local_exclusive_admission"] is True
+    assert calls[1]["temperature"] == calls[0]["temperature"]
+    assert not any(e.get("event") == "fallback" for e in events)
+    assert len(error_events) == 1
+    assert error_events[0]["reason_code"] == "local_capacity_exhausted"
+    assert error_events[0]["retries"] == 1
+    assert finish_events == []
 
 
 def test_execute_generate_local_length_retry_success_writes_once_and_runs_hook_once(

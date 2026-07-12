@@ -267,6 +267,12 @@ _ENTRIES: dict[str, _Entry] = {
         ),
         recovery_action=None,
     ),
+    "local_capacity_exhausted": _Entry(
+        klass="generic",
+        summary="the local model was busy and could not finish this request",
+        detail="Try again in a moment.",
+        recovery_action=None,
+    ),
     "context_window_exceeded": _Entry(
         klass="generic",
         summary="the conversation grew too long to finish",

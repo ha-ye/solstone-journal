@@ -37,15 +37,14 @@ class LocalPermit:
     slot_index: int
     capacity: int
     queue_wait_ms: float
-    _file: IO[str]
+    _files: list[IO[str]]
 
     def release(self) -> None:
-        if self._file.closed:
+        if not self._files:
             return
-        try:
-            fcntl.flock(self._file, fcntl.LOCK_UN)
-        finally:
-            self._file.close()
+        files = self._files
+        self._files = []
+        _release_files(files)
 
     def __enter__(self) -> LocalPermit:
         return self
@@ -116,6 +115,16 @@ def _ticket_has_turn(root: Path, ticket: _WaitTicket) -> bool:
             stale_file.close()
 
 
+def _release_files(files: list[IO[str]]) -> None:
+    for lock_file in files:
+        if lock_file.closed:
+            continue
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_UN)
+        finally:
+            lock_file.close()
+
+
 def _try_acquire(capacity: int, started: float, root: Path) -> LocalPermit | None:
     for slot_index in range(capacity):
         lock_file = open(root / f"slot-{slot_index}.lock", "a+", encoding="utf-8")
@@ -130,9 +139,37 @@ def _try_acquire(capacity: int, started: float, root: Path) -> LocalPermit | Non
             slot_index=slot_index,
             capacity=capacity,
             queue_wait_ms=(time.monotonic() - started) * 1000.0,
-            _file=lock_file,
+            _files=[lock_file],
         )
     return None
+
+
+def _try_acquire_exclusive(
+    capacity: int, started: float, root: Path
+) -> LocalPermit | None:
+    lock_files: list[IO[str]] = []
+    for slot_index in range(capacity):
+        try:
+            lock_file = open(root / f"slot-{slot_index}.lock", "a+", encoding="utf-8")
+        except OSError:
+            _release_files(lock_files)
+            raise
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            lock_file.close()
+            _release_files(lock_files)
+            if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK):
+                return None
+            raise
+        lock_files.append(lock_file)
+
+    return LocalPermit(
+        slot_index=0,
+        capacity=capacity,
+        queue_wait_ms=(time.monotonic() - started) * 1000.0,
+        _files=lock_files,
+    )
 
 
 def _deadline(started: float, timeout_s: float | None) -> float | None:
@@ -141,8 +178,10 @@ def _deadline(started: float, timeout_s: float | None) -> float | None:
     return started + max(0.0, timeout_s)
 
 
-def acquire_local_slot(capacity: int, timeout_s: float | None) -> LocalPermit:
-    """Wait synchronously for one bundled-local serving slot."""
+def acquire_local_slot(
+    capacity: int, timeout_s: float | None, *, exclusive: bool = False
+) -> LocalPermit:
+    """Wait synchronously for bundled-local serving capacity."""
     if capacity < 1:
         raise ValueError("local inference capacity must be at least one")
     started = time.monotonic()
@@ -152,7 +191,11 @@ def acquire_local_slot(capacity: int, timeout_s: float | None) -> LocalPermit:
     try:
         while True:
             if _ticket_has_turn(root, ticket):
-                permit = _try_acquire(capacity, started, root)
+                permit = (
+                    _try_acquire_exclusive(capacity, started, root)
+                    if exclusive
+                    else _try_acquire(capacity, started, root)
+                )
                 if permit is not None:
                     return permit
             now = time.monotonic()
@@ -169,9 +212,9 @@ def acquire_local_slot(capacity: int, timeout_s: float | None) -> LocalPermit:
 
 
 async def acquire_local_slot_async(
-    capacity: int, timeout_s: float | None
+    capacity: int, timeout_s: float | None, *, exclusive: bool = False
 ) -> LocalPermit:
-    """Wait cancellation-safely for one bundled-local serving slot."""
+    """Wait cancellation-safely for bundled-local serving capacity."""
     if capacity < 1:
         raise ValueError("local inference capacity must be at least one")
     started = time.monotonic()
@@ -181,7 +224,11 @@ async def acquire_local_slot_async(
     try:
         while True:
             if _ticket_has_turn(root, ticket):
-                permit = _try_acquire(capacity, started, root)
+                permit = (
+                    _try_acquire_exclusive(capacity, started, root)
+                    if exclusive
+                    else _try_acquire(capacity, started, root)
+                )
                 if permit is not None:
                     return permit
             now = time.monotonic()

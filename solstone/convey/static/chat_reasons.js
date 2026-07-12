@@ -118,6 +118,10 @@
       "template": "the local model was busy and couldn't start in time",
       "action": null
     },
+    "local_capacity_exhausted": {
+      "template": "the local model was busy and could not finish this request",
+      "action": null
+    },
     "context_window_exceeded": {
       "template": "the conversation grew too long to finish",
       "action": null

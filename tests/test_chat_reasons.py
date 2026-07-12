@@ -38,6 +38,7 @@ EXPECTED_CODES = {
     "chat_pipeline_unavailable",
     "chat_timeout",
     "local_queue_timeout",
+    "local_capacity_exhausted",
     "context_window_exceeded",
     "context_budget_exceeded",
     "incomplete_json_length",
@@ -180,6 +181,9 @@ def test_render_empty_provider():
 def test_render_local_runtime_codes():
     expected = {
         "local_queue_timeout": "the local model was busy and couldn't start in time",
+        "local_capacity_exhausted": (
+            "the local model was busy and could not finish this request"
+        ),
         "context_budget_exceeded": "the request was too long for the local model",
     }
     for code, message in expected.items():

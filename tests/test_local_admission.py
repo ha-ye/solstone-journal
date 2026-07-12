@@ -71,6 +71,68 @@ def test_sync_queue_timeout(monkeypatch, tmp_path):
         first.release()
 
 
+def test_exclusive_waits_for_single_slot_holder(monkeypatch, tmp_path):
+    _isolated_journal(monkeypatch, tmp_path)
+    holder = acquire_local_slot(2, 0.1)
+    acquired: list[int] = []
+
+    def wait_exclusive() -> None:
+        with acquire_local_slot(2, 1.0, exclusive=True) as permit:
+            acquired.append(permit.slot_index)
+
+    thread = threading.Thread(target=wait_exclusive)
+    thread.start()
+    time.sleep(0.05)
+    assert acquired == []
+
+    holder.release()
+    thread.join(timeout=1.0)
+
+    assert not thread.is_alive()
+    assert acquired == [0]
+
+
+def test_exclusive_capacity_one_degenerates_to_single_slot(monkeypatch, tmp_path):
+    _isolated_journal(monkeypatch, tmp_path)
+
+    with acquire_local_slot(1, 0.1, exclusive=True) as permit:
+        assert permit.slot_index == 0
+        assert permit.capacity == 1
+
+
+def test_exclusive_timeout_does_not_strand_partial_locks(monkeypatch, tmp_path):
+    _isolated_journal(monkeypatch, tmp_path)
+    slot_zero = acquire_local_slot(2, 0.1)
+    slot_one = acquire_local_slot(2, 0.1)
+    slot_zero.release()
+    try:
+        with pytest.raises(LocalAdmissionTimeout):
+            acquire_local_slot(2, 0.03, exclusive=True)
+
+        with acquire_local_slot(2, 0.1) as permit:
+            assert permit.slot_index == 0
+    finally:
+        slot_one.release()
+
+
+def test_exclusive_failure_releases_all_slots(monkeypatch, tmp_path):
+    _isolated_journal(monkeypatch, tmp_path)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with acquire_local_slot(2, 0.5, exclusive=True):
+            raise RuntimeError("boom")
+
+    first = acquire_local_slot(2, 0.1)
+    try:
+        second = acquire_local_slot(2, 0.1)
+        try:
+            assert {first.slot_index, second.slot_index} == {0, 1}
+        finally:
+            second.release()
+    finally:
+        first.release()
+
+
 def test_async_queued_cancellation_does_not_leak(monkeypatch, tmp_path):
     _isolated_journal(monkeypatch, tmp_path)
 

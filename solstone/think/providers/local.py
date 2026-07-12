@@ -67,6 +67,9 @@ _LOCAL_FINISH_REASON_MAP = {
     "content_filter": "content_filter",
 }
 _LOCAL_UNSUPPORTED_FINISH_REASONS = frozenset({"tool_calls", "function_call"})
+_LOCAL_CAPACITY_EXHAUSTED_MESSAGE = (
+    "The local model was busy and could not finish this request. Try again in a moment."
+)
 
 
 @dataclass(frozen=True)
@@ -112,6 +115,13 @@ class ContextBudgetExceeded(LocalProviderError):
 
     def __init__(self, message: str) -> None:
         super().__init__("context_budget_exceeded", message)
+
+
+class LocalCapacityExhausted(LocalProviderError):
+    """Bundled local server ran out of serving capacity after admission."""
+
+    def __init__(self) -> None:
+        super().__init__("local_capacity_exhausted", _LOCAL_CAPACITY_EXHAUSTED_MESSAGE)
 
 
 def normalize_model_id(model: str | None) -> str:
@@ -501,10 +511,28 @@ def _raise_bundled_status(response: Any) -> None:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         if _contains_any(response.text.lower(), _CONTEXT_WINDOW_PATTERNS):
-            raise ContextBudgetExceeded(
-                "Local request exceeded the model context window after fitting."
-            ) from exc
+            if _bundled_error_type(response) == "exceed_context_size_error":
+                raise ContextBudgetExceeded(
+                    "Local request exceeded the model context window after fitting."
+                ) from exc
+            raise LocalCapacityExhausted() from exc
         raise
+
+
+def _bundled_error_type(response: Any) -> str | None:
+    try:
+        data = response.json()
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    error = data.get("error")
+    if not isinstance(error, dict):
+        return None
+    error_type = error.get("type")
+    if isinstance(error_type, str):
+        return error_type
+    return None
 
 
 def run_generate(
@@ -521,6 +549,7 @@ def run_generate(
 ) -> GenerateResult:
     del thinking_budget
     retry_index = int(kwargs.pop("inference_retry_index", 0) or 0)
+    local_exclusive_admission = bool(kwargs.pop("local_exclusive_admission", False))
     endpoint = resolve_local_endpoint()
     # Validate the requested logical id; served id comes from the server.
     normalize_model_id(model)
@@ -555,6 +584,7 @@ def run_generate(
             permit = acquire_local_slot(
                 capacity.parallel_slots,
                 _remaining_timeout(started, timeout),
+                exclusive=local_exclusive_admission,
             )
             with permit:
                 response = httpx.post(
@@ -668,6 +698,7 @@ async def run_agenerate(
 ) -> GenerateResult:
     del thinking_budget
     retry_index = int(kwargs.pop("inference_retry_index", 0) or 0)
+    local_exclusive_admission = bool(kwargs.pop("local_exclusive_admission", False))
     endpoint = resolve_local_endpoint()
     normalize_model_id(model)
     messages = _build_messages(contents, system_instruction)
@@ -736,6 +767,7 @@ async def run_agenerate(
         permit = await acquire_local_slot_async(
             capacity.parallel_slots,
             _remaining_timeout(started, timeout),
+            exclusive=local_exclusive_admission,
         )
         async with permit:
             async with httpx.AsyncClient() as client:
@@ -949,6 +981,7 @@ def validate_key(provider: str = "local", api_key: str = "") -> dict[str, Any]:
 __all__ = [
     "LOCAL_MODEL_SPECS",
     "ContextBudgetExceeded",
+    "LocalCapacityExhausted",
     "LocalModelSpec",
     "LocalProviderError",
     "normalize_model_id",

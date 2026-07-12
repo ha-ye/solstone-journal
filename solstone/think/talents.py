@@ -1595,23 +1595,38 @@ async def _execute_generate(
         if provider == NO_BRAIN_PROVIDER:
             raise
         if provider == "local":
-            if (
-                not isinstance(exc, IncompleteJSONError)
-                or getattr(exc, "reason_code", None) != "incomplete_json_length"
-            ):
-                raise
-            LOG.warning(
-                "Retrying local talent %s after incomplete JSON length limit "
-                "(reason=%s)",
-                name,
-                exc.reason,
+            reason_code = getattr(exc, "reason_code", None)
+            length_retry = (
+                isinstance(exc, IncompleteJSONError)
+                and reason_code == "incomplete_json_length"
             )
+            capacity_retry = reason_code == "local_capacity_exhausted"
+            if not length_retry and not capacity_retry:
+                raise
             retries = 1
+            retry_temperature = temperature
+            retry_kwargs: dict[str, Any] = {"inference_retry_index": 1}
+            if length_retry:
+                LOG.warning(
+                    "Retrying local talent %s after incomplete JSON length limit "
+                    "(reason=%s)",
+                    name,
+                    exc.reason,
+                )
+                retry_temperature = max(
+                    temperature, _LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR
+                )
+            else:
+                LOG.warning(
+                    "Retrying local talent %s after local capacity exhaustion",
+                    name,
+                )
+                retry_kwargs["local_exclusive_admission"] = True
             try:
                 gen_result = generate_with_result(
                     contents=contents,
                     context=context,
-                    temperature=max(temperature, _LOCAL_LENGTH_RETRY_TEMPERATURE_FLOOR),
+                    temperature=retry_temperature,
                     max_output_tokens=max_output_tokens,
                     thinking_budget=thinking_budget,
                     system_instruction=system_instruction,
@@ -1620,7 +1635,7 @@ async def _execute_generate(
                     timeout_s=timeout_s,
                     provider=config.get("provider"),
                     model=config.get("model"),
-                    inference_retry_index=1,
+                    **retry_kwargs,
                 )
             except Exception as retry_exc:
                 retry_exc.retries = retries

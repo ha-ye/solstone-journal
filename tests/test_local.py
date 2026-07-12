@@ -636,7 +636,17 @@ def test_run_generate_bundled_context_rejection_backstop(monkeypatch):
         return httpx.Response(
             400,
             request=request,
-            text='{"error":{"message":"the request exceeds the available context size"}}',
+            json={
+                "error": {
+                    "type": "exceed_context_size_error",
+                    "message": (
+                        "request (17 tokens) exceeds the available context size "
+                        "(16 tokens), try increasing it"
+                    ),
+                    "n_prompt_tokens": 17,
+                    "n_ctx": 16,
+                }
+            },
         )
 
     import httpx
@@ -650,9 +660,8 @@ def test_run_generate_bundled_context_rejection_backstop(monkeypatch):
 
 
 def test_run_generate_bundled_context_rejection_backstop_alt_phrasing(monkeypatch):
-    # llama-server emits a second context-overflow phrasing observed in the
-    # field ("Context size has been exceeded.") distinct from the token-count
-    # form; the backstop must convert both to a clean ContextBudgetExceeded.
+    # llama-server emits this after post-admission unified-KV exhaustion; the
+    # fitted prompt is not proven too long, so this is transient capacity.
     provider = _provider()
     monkeypatch.setattr(
         "solstone.think.providers.local_server.connect",
@@ -670,19 +679,137 @@ def test_run_generate_bundled_context_rejection_backstop_alt_phrasing(monkeypatc
         del json, timeout
         request = httpx.Request("POST", url)
         return httpx.Response(
-            400,
+            500,
             request=request,
-            text='{"error":{"message":"Context size has been exceeded."}}',
+            json={
+                "error": {
+                    "type": "server_error",
+                    "message": "Context size has been exceeded.",
+                }
+            },
         )
 
     import httpx
 
     monkeypatch.setattr(httpx, "post", fake_post)
 
-    with pytest.raises(provider.ContextBudgetExceeded) as exc:
+    with pytest.raises(provider.LocalProviderError) as exc:
         provider.run_generate("hello", model=LOCAL_MODEL, max_output_tokens=16)
 
-    assert exc.value.reason_code == "context_budget_exceeded"
+    assert type(exc.value).__name__ == "LocalCapacityExhausted"
+    assert exc.value.reason_code == "local_capacity_exhausted"
+
+
+def test_run_generate_bundled_context_rejection_missing_type_is_capacity(
+    monkeypatch,
+):
+    provider = _provider()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: SimpleNamespace(
+            port=4321,
+            base_url="http://127.0.0.1:4321",
+            served_model_id=LOCAL_MODEL,
+        ),
+    )
+    from solstone.think.providers import local_budget
+
+    monkeypatch.setattr(local_budget, "count_tokens", lambda text, _base_url: len(text))
+
+    def fake_post(url, json, timeout):
+        del json, timeout
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            500,
+            request=request,
+            json={"error": {"message": "Context size has been exceeded."}},
+        )
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        provider.run_generate("hello", model=LOCAL_MODEL, max_output_tokens=16)
+
+    assert type(exc.value).__name__ == "LocalCapacityExhausted"
+    assert exc.value.reason_code == "local_capacity_exhausted"
+
+
+def test_run_agenerate_bundled_capacity_rejection_matches_sync(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
+    _patch_bundled_server(monkeypatch)
+
+    class Response:
+        text = '{"error":{"type":"server_error","message":"Context size has been exceeded."}}'
+
+        def raise_for_status(self):
+            request = httpx.Request(
+                "POST",
+                "http://127.0.0.1:4321/v1/chat/completions",
+            )
+            response = httpx.Response(500, request=request, text=self.text)
+            raise httpx.HTTPStatusError(
+                "server error",
+                request=request,
+                response=response,
+            )
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    with pytest.raises(provider.LocalProviderError) as exc:
+        asyncio.run(provider.run_agenerate("hello", model=LOCAL_MODEL))
+
+    assert type(exc.value).__name__ == "LocalCapacityExhausted"
+    assert exc.value.reason_code == "local_capacity_exhausted"
+
+
+def test_run_generate_bundled_capacity_rejection_records_telemetry(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(provider, "resolve_local_endpoint", _bundled_endpoint)
+    _patch_bundled_server(monkeypatch)
+
+    from solstone.think.providers import local_admission
+
+    records: list[dict] = []
+    monkeypatch.setattr(local_admission, "record_local_inference", records.append)
+
+    def fake_post(url, json, timeout):
+        del json, timeout
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            500,
+            request=request,
+            json={
+                "error": {
+                    "type": "server_error",
+                    "message": "Context size has been exceeded.",
+                }
+            },
+        )
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    with pytest.raises(provider.LocalProviderError):
+        provider.run_generate("hello", model=LOCAL_MODEL, max_output_tokens=16)
+
+    assert records
+    assert records[-1]["reason_code"] == "local_capacity_exhausted"
 
 
 def test_openhands_local_llm_kwargs(monkeypatch):

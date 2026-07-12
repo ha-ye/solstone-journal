@@ -215,6 +215,7 @@ RUNTIME_REASON_CODES = frozenset(
     {
         "context_window_exceeded",
         "context_budget_exceeded",
+        "local_capacity_exhausted",
         "provider_quota_exceeded",
         "provider_key_invalid",
         "chat_timeout",

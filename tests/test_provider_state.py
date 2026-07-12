@@ -131,6 +131,7 @@ def test_runtime_reason_codes_are_state_reason_codes():
         "provider_response_invalid",
         "context_window_exceeded",
         "context_budget_exceeded",
+        "local_capacity_exhausted",
         "incomplete_json_length",
         "incomplete_text_length",
         "max_turns_exhausted",
