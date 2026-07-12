@@ -11,12 +11,14 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 
 import av
 import pytest
 
+import solstone.apps.transcripts.routes as routes
 from solstone.apps.transcripts.routes import (
     _attach_streams_to_ranges,
     _segment_modality_signals,
@@ -37,6 +39,39 @@ from solstone.think.data_state import ANALYZING_STALE_SECONDS
 FIXTURE_DAY = "20260304"
 FIXTURE_STREAM = "default"
 FIXTURE_SEGMENT = "090000_300"
+
+
+class _FakeDeferredDeletes:
+    def __init__(self) -> None:
+        self.scheduled: list[tuple[str, Callable[[], None], float]] = []
+        self._pending: dict[str, tuple[Callable[[], None], float]] = {}
+
+    def schedule_with_id(
+        self,
+        pending_id: str,
+        commit_fn: Callable[[], None],
+        ttl_seconds: float = 10.0,
+    ) -> str:
+        self.scheduled.append((pending_id, commit_fn, ttl_seconds))
+        self._pending[pending_id] = (commit_fn, ttl_seconds)
+        return pending_id
+
+    def cancel(self, pending_id: str) -> bool:
+        if pending_id not in self._pending:
+            return False
+        self._pending.pop(pending_id)
+        return True
+
+    def fire(self, pending_id: str) -> None:
+        commit_fn, _ttl_seconds = self._pending.pop(pending_id)
+        commit_fn()
+
+
+@pytest.fixture
+def fake_deferred_deletes(monkeypatch):
+    fake = _FakeDeferredDeletes()
+    monkeypatch.setattr(routes, "deferred_deletes", fake)
+    return fake
 
 
 def _assert_reason(response, *, error: str, reason_code: str, detail: str) -> None:
@@ -1853,12 +1888,15 @@ def test_reprocess_segment_isolates_streams(client, journal_copy, monkeypatch):
 
 
 def test_delete_segment_happy_path_removes_segment_directory(
-    client, journal_copy, monkeypatch
+    client, journal_copy, monkeypatch, fake_deferred_deletes
 ):
+    monkeypatch.setattr(routes, "is_supervisor_up", lambda: True)
+    emit_calls = []
     monkeypatch.setattr(
-        "solstone.apps.transcripts.routes.is_supervisor_up", lambda: True
+        routes,
+        "emit",
+        lambda tract, event, **payload: emit_calls.append((tract, event, payload)),
     )
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 0.05)
     segment_dir = (
         journal_copy / "chronicle" / FIXTURE_DAY / FIXTURE_STREAM / FIXTURE_SEGMENT
     )
@@ -1868,15 +1906,18 @@ def test_delete_segment_happy_path_removes_segment_directory(
     )
 
     assert response.status_code == 200
+    pending_id = response.get_json()["pending"]
     assert response.get_json()["deleted"] == FIXTURE_SEGMENT
-    time.sleep(0.2)
+    fake_deferred_deletes.fire(pending_id)
     assert not segment_dir.exists()
+    assert emit_calls == [
+        ("supervisor", "request", {"cmd": ["journal", "indexer", "--rescan-full"]})
+    ]
 
 
 def test_delete_segment_includes_search_index_warning_when_supervisor_is_down(
-    client, monkeypatch
+    client, fake_deferred_deletes
 ):
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 0.05)
     response = client.delete(
         f"/app/transcripts/api/segment/{FIXTURE_DAY}/{FIXTURE_STREAM}/{FIXTURE_SEGMENT}"
     )
@@ -1886,31 +1927,29 @@ def test_delete_segment_includes_search_index_warning_when_supervisor_is_down(
     assert data["success"] is True
     assert data["deleted"] == FIXTURE_SEGMENT
     assert data["search_index_warning"] is True
-    time.sleep(0.2)
+    assert fake_deferred_deletes.scheduled[0][0] == data["pending"]
 
 
 def test_delete_segment_omits_search_index_warning_when_supervisor_is_up(
-    client, monkeypatch
+    client, monkeypatch, fake_deferred_deletes
 ):
-    monkeypatch.setattr(
-        "solstone.apps.transcripts.routes.is_supervisor_up", lambda: True
-    )
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 0.05)
+    monkeypatch.setattr(routes, "is_supervisor_up", lambda: True)
 
     response = client.delete(
         f"/app/transcripts/api/segment/{FIXTURE_DAY}/{FIXTURE_STREAM}/{FIXTURE_SEGMENT}"
     )
 
     assert response.status_code == 200
-    assert response.get_json()["deleted"] == FIXTURE_SEGMENT
-    time.sleep(0.2)
+    data = response.get_json()
+    assert data["deleted"] == FIXTURE_SEGMENT
+    assert "search_index_warning" not in data
+    assert fake_deferred_deletes.scheduled[0][0] == data["pending"]
 
 
-def test_delete_segment_returns_pending_response_shape(client, monkeypatch):
-    monkeypatch.setattr(
-        "solstone.apps.transcripts.routes.is_supervisor_up", lambda: True
-    )
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 0.05)
+def test_delete_segment_returns_pending_response_shape(
+    client, monkeypatch, fake_deferred_deletes
+):
+    monkeypatch.setattr(routes, "is_supervisor_up", lambda: True)
     before_ms = int(time.time() * 1000)
 
     response = client.delete(
@@ -1922,15 +1961,17 @@ def test_delete_segment_returns_pending_response_shape(client, monkeypatch):
     assert data["success"] is True
     assert data["deleted"] == FIXTURE_SEGMENT
     assert re.fullmatch(r"[0-9a-f]{32}", data["pending"])
-    assert data["ttl_seconds"] == 0.05
+    assert data["ttl_seconds"] == routes.SEGMENT_DELETE_TTL
     assert data["commit_at_ms"] >= before_ms
-    time.sleep(0.2)
+    scheduled_id, commit_fn, ttl_seconds = fake_deferred_deletes.scheduled[0]
+    assert scheduled_id == data["pending"]
+    assert callable(commit_fn)
+    assert ttl_seconds == routes.SEGMENT_DELETE_TTL
 
 
 def test_cancel_delete_segment_within_window_keeps_directory(
-    client, journal_copy, monkeypatch
+    client, journal_copy, fake_deferred_deletes
 ):
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 5.0)
     segment_dir = (
         journal_copy / "chronicle" / FIXTURE_DAY / FIXTURE_STREAM / FIXTURE_SEGMENT
     )
@@ -1944,12 +1985,13 @@ def test_cancel_delete_segment_within_window_keeps_directory(
 
     assert cancel_response.status_code == 200
     assert cancel_response.get_json() == {"cancelled": pending_id}
-    time.sleep(0.3)
     assert segment_dir.exists()
+    assert fake_deferred_deletes.cancel(pending_id) is False
 
 
-def test_cancel_delete_segment_too_late_after_commit(client, journal_copy, monkeypatch):
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 0.05)
+def test_cancel_delete_segment_too_late_after_commit(
+    client, journal_copy, fake_deferred_deletes
+):
     segment_dir = (
         journal_copy / "chronicle" / FIXTURE_DAY / FIXTURE_STREAM / FIXTURE_SEGMENT
     )
@@ -1959,7 +2001,7 @@ def test_cancel_delete_segment_too_late_after_commit(client, journal_copy, monke
     )
     pending_id = delete_response.get_json()["pending"]
 
-    time.sleep(0.2)
+    fake_deferred_deletes.fire(pending_id)
     cancel_response = client.post(f"/app/transcripts/api/cancel-delete/{pending_id}")
 
     assert cancel_response.status_code == 410
@@ -1997,12 +2039,9 @@ def test_cancel_delete_segment_malformed_pending_id_returns_410(client):
 
 
 def test_delete_segment_writes_pending_and_committed_audit_rows(
-    client, journal_copy, monkeypatch
+    client, journal_copy, monkeypatch, fake_deferred_deletes
 ):
-    monkeypatch.setattr(
-        "solstone.apps.transcripts.routes.is_supervisor_up", lambda: True
-    )
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 0.05)
+    monkeypatch.setattr(routes, "is_supervisor_up", lambda: True)
 
     delete_response = client.delete(
         f"/app/transcripts/api/segment/{FIXTURE_DAY}/{FIXTURE_STREAM}/{FIXTURE_SEGMENT}"
@@ -2017,7 +2056,7 @@ def test_delete_segment_writes_pending_and_committed_audit_rows(
         for row in day_rows
     )
 
-    time.sleep(0.2)
+    fake_deferred_deletes.fire(pending_id)
     day_rows = _action_log_rows(journal_copy, FIXTURE_DAY)
     assert any(
         row["action"] == "segment_delete"
@@ -2028,9 +2067,8 @@ def test_delete_segment_writes_pending_and_committed_audit_rows(
 
 
 def test_cancel_delete_segment_writes_cancelled_audit_row(
-    client, journal_copy, monkeypatch
+    client, journal_copy, fake_deferred_deletes
 ):
-    monkeypatch.setattr("solstone.apps.transcripts.routes.SEGMENT_DELETE_TTL", 5.0)
     cancel_response = client.delete(
         f"/app/transcripts/api/segment/{FIXTURE_DAY}/{FIXTURE_STREAM}/{FIXTURE_SEGMENT}"
     )
@@ -2048,3 +2086,4 @@ def test_cancel_delete_segment_writes_cancelled_audit_row(
         and row["params"].get("phase") == "cancelled"
         for row in cancel_rows
     )
+    assert fake_deferred_deletes.cancel(cancel_pending_id) is False

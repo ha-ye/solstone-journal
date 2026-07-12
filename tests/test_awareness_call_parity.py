@@ -13,7 +13,7 @@ from solstone.apps.awareness.call import app
 from solstone.convey.reasons import AWARENESS_BUSY
 from solstone.think.convey_client import ConveyClient
 from solstone.think.journal_io import LockTimeout
-from tests._baseline_harness import make_test_client, mark_setup_complete
+from tests._awareness_harness import make_awareness_test_client
 
 FROZEN_MS = 1700000000000
 FROZEN_ISO = "20260415T12:00:00"
@@ -25,13 +25,12 @@ def journal(tmp_path, monkeypatch):
     # Env must point at the tmp journal so BOTH the seed helpers (append_log/
     # update_state) and the in-process route handlers resolve get_journal() to it.
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    mark_setup_complete(tmp_path)
     return tmp_path
 
 
 @pytest.fixture
 def runner(journal, monkeypatch):
-    client = ConveyClient(session=make_test_client(journal), base_url="")
+    client = ConveyClient(session=make_awareness_test_client(), base_url="")
     monkeypatch.setattr("solstone.apps.awareness.call.get_client", lambda: client)
     return CliRunner()
 
@@ -49,6 +48,19 @@ def _write_current(journal, state):
     awareness_dir = journal / "awareness"
     awareness_dir.mkdir(exist_ok=True)
     (awareness_dir / "current.json").write_text(json.dumps(state), encoding="utf-8")
+
+
+def _write_awareness_log(journal: Path, day: str, count: int) -> None:
+    awareness_dir = journal / "awareness"
+    awareness_dir.mkdir(exist_ok=True)
+    entries = [
+        json.dumps({"ts": FROZEN_MS + i, "kind": "observation", "message": f"m{i}"})
+        for i in range(count)
+    ]
+    (awareness_dir / f"{day}.jsonl").write_text(
+        "\n".join(entries) + "\n",
+        encoding="utf-8",
+    )
 
 
 def test_status_full_state_json(runner):
@@ -166,11 +178,11 @@ def test_log_read_empty_journal_human_line(runner):
     assert result.stdout == "No entries found.\n"
 
 
-def test_log_read_fetches_all_entries_past_default_cap_and_page_boundary(runner):
-    for i in range(25):
-        awareness_mod.append_log("observation", message=f"m{i}", day="20260101")
-    for i in range(150):
-        awareness_mod.append_log("observation", message=f"m{i}", day="20260102")
+def test_log_read_fetches_all_entries_past_default_cap_and_page_boundary(
+    runner, journal
+):
+    _write_awareness_log(journal, "20260101", 25)
+    _write_awareness_log(journal, "20260102", 150)
 
     capped = runner.invoke(app, ["log-read", "20260101"])
     paged = runner.invoke(app, ["log-read", "20260102"])

@@ -141,6 +141,47 @@ class TestDailyLog:
         assert entries[0]["detail"] == "meeting detected"
 
 
+class TestImportTracking:
+    def test_record_import_persists_state(self):
+        from solstone.think.awareness import get_imports, record_import
+
+        record_import("chatgpt")
+
+        imports = get_imports()
+        assert imports["has_imported"] is True
+        assert imports["import_count"] == 1
+        assert imports["sources_used"] == ["chatgpt"]
+        assert imports["offer_declined"] is None
+        assert imports["last_nudge"] is None
+
+    def test_record_import_offer_declined_persists_state(self):
+        from solstone.think.awareness import (
+            get_imports,
+            record_import_offer_declined,
+        )
+
+        record_import_offer_declined()
+
+        imports = get_imports()
+        assert imports["has_imported"] is False
+        assert imports["import_count"] == 0
+        assert imports["sources_used"] == []
+        assert re.fullmatch(r"\d{8}T\d{2}:\d{2}:\d{2}", imports["offer_declined"])
+        assert imports["last_nudge"] is None
+
+    def test_record_import_nudge_persists_state(self):
+        from solstone.think.awareness import get_imports, record_import_nudge
+
+        record_import_nudge()
+
+        imports = get_imports()
+        assert imports["has_imported"] is False
+        assert imports["import_count"] == 0
+        assert imports["sources_used"] == []
+        assert imports["offer_declined"] is None
+        assert re.fullmatch(r"\d{8}T\d{2}:\d{2}:\d{2}", imports["last_nudge"])
+
+
 class TestJournalState:
     def test_first_daily_ready_via_update_state(self):
         from solstone.think.awareness import get_current, update_state
