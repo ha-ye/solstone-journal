@@ -10,7 +10,7 @@ Implementation note: update `solstone/think/providers/__init__.py`. `build_provi
 
 ## BYO OpenAI-compatible endpoint override
 
-Decision: `providers.local` may also carry a power-user endpoint override with non-secret `endpoint_url` and `served_model_id` fields plus secret `credential`. The override is active only when both non-secret fields are non-empty; otherwise `local` uses the bundled llama-server path described below.
+Decision: `providers.local` may also carry a power-user endpoint override with non-secret `endpoint_url` and `served_model_id` fields plus secret `credential`. The override is active only when both non-secret fields are non-empty; otherwise `local` uses the bundled llama-server path described below. Non-confidential BYO overrides are governed by `providers.local.parallel_slots`, an integer at least 1 that defaults to 2 when absent or invalid. Bundled local ignores this key because bundled capacity is live server state. Confidential BYO overrides, identified by a present `services.confidential` block, also ignore this key and remain ungoverned.
 
 Justification: this keeps the owner-facing provider identity as `local` while allowing an explicitly configured OpenAI-compatible endpoint to receive local generate and cogitate requests. The top-level `env` subtree remains reserved for cloud provider API keys keyed by environment variable name.
 

@@ -10,6 +10,7 @@ Network clients and daemon startup are created only inside provider functions.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import copy
 import logging
 import time
@@ -662,22 +663,39 @@ def run_generate(
 
     import httpx
 
+    from solstone.think.providers.local_admission import (
+        LocalAdmissionTimeout,
+        acquire_local_slot,
+    )
     from solstone.think.services.spp_transport import confidential_egress_base_url
 
     post_kwargs: dict[str, Any] = {
         "json": body,
-        "timeout": timeout_s or _DEFAULT_TIMEOUT,
     }
     if endpoint.credential:
         post_kwargs["headers"] = {"Authorization": f"Bearer {endpoint.credential}"}
-    try:
-        base_url = confidential_egress_base_url(endpoint.base_url)
-        response = httpx.post(
-            f"{base_url}/v1/chat/completions",
-            **post_kwargs,
+    started = time.monotonic()
+    timeout = timeout_s or _DEFAULT_TIMEOUT
+    admission = (
+        contextlib.nullcontext()
+        if endpoint.parallel_slots is None
+        else acquire_local_slot(
+            endpoint.parallel_slots,
+            _remaining_timeout(started, timeout),
         )
-        response.raise_for_status()
-        return _parse_response(response.json())
+    )
+    try:
+        with admission:
+            base_url = confidential_egress_base_url(endpoint.base_url)
+            response = httpx.post(
+                f"{base_url}/v1/chat/completions",
+                timeout=_remaining_timeout(started, timeout),
+                **post_kwargs,
+            )
+            response.raise_for_status()
+            return _parse_response(response.json())
+    except LocalAdmissionTimeout:
+        raise
     except LocalProviderError:
         raise
     except Exception as exc:
@@ -706,6 +724,14 @@ async def run_agenerate(
     import httpx
 
     if not endpoint.is_bundled:
+        from solstone.think.providers.local_admission import (
+            LocalAdmissionTimeout,
+            acquire_local_slot_async,
+        )
+        from solstone.think.services.spp_transport import (
+            confidential_egress_base_url,
+        )
+
         body = _build_request_body(
             endpoint.served_model_id,
             messages,
@@ -717,23 +743,33 @@ async def run_agenerate(
         )
         post_kwargs: dict[str, Any] = {
             "json": body,
-            "timeout": timeout_s or _DEFAULT_TIMEOUT,
         }
         if endpoint.credential:
             post_kwargs["headers"] = {"Authorization": f"Bearer {endpoint.credential}"}
-        try:
-            from solstone.think.services.spp_transport import (
-                confidential_egress_base_url,
+        started = time.monotonic()
+        timeout = timeout_s or _DEFAULT_TIMEOUT
+        admission = (
+            contextlib.nullcontext()
+            if endpoint.parallel_slots is None
+            else await acquire_local_slot_async(
+                endpoint.parallel_slots,
+                _remaining_timeout(started, timeout),
             )
-
-            base_url = confidential_egress_base_url(endpoint.base_url)
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{base_url}/v1/chat/completions", **post_kwargs
-                )
-            response.raise_for_status()
-            return _parse_response(response.json())
+        )
+        try:
+            async with admission:
+                base_url = confidential_egress_base_url(endpoint.base_url)
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{base_url}/v1/chat/completions",
+                        timeout=_remaining_timeout(started, timeout),
+                        **post_kwargs,
+                    )
+                response.raise_for_status()
+                return _parse_response(response.json())
         except asyncio.CancelledError:
+            raise
+        except LocalAdmissionTimeout:
             raise
         except LocalProviderError:
             raise
@@ -850,6 +886,7 @@ async def run_cogitate(
     endpoint = resolve_local_endpoint()
     started = time.monotonic()
     request_id = uuid.uuid4().hex
+    timeout = float(config.get("timeout_seconds", 600) or 600)
     server = None
     capacity = None
     permit = None
@@ -859,9 +896,13 @@ async def run_cogitate(
         if endpoint.is_bundled:
             server = local_server.connect()
             capacity = local_server.read_server_capacity()
-            timeout = float(config.get("timeout_seconds", 600) or 600)
             permit = await acquire_local_slot_async(
                 capacity.parallel_slots,
+                _remaining_timeout(started, timeout),
+            )
+        elif endpoint.parallel_slots is not None:
+            permit = await acquire_local_slot_async(
+                endpoint.parallel_slots,
                 _remaining_timeout(started, timeout),
             )
         return await openhands.run_cogitate(config, on_event=on_event)

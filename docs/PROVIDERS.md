@@ -224,12 +224,13 @@ usage_dict = {
 - Return usage in `GenerateResult["usage"]` - wrapper handles logging
 - For `run_cogitate()`, include usage in the `finish` event
 
-## Bundled-local admission and inference telemetry
+## Local admission and bundled inference telemetry
 
-The `local` provider has one shared admission boundary for the supervisor-owned
-Qwen server. It applies only when `providers.local` resolves to the bundled
-loopback runtime. A configured OpenAI-compatible endpoint and every cloud
-provider bypass this boundary.
+The `local` provider has one shared admission boundary for governed local
+lanes: the supervisor-owned Qwen server and non-confidential
+OpenAI-compatible endpoint overrides. The confidential-processing lane
+(`services.confidential` present) and every cloud provider bypass this
+boundary. Bundled-local inference telemetry remains bundled-only.
 
 Capacity remains explicit and intentionally small:
 
@@ -238,14 +239,15 @@ Capacity remains explicit and intentionally small:
 | Linux floor | 1 | supervisor `ServerTier`; live `/props.total_slots` wins |
 | Linux capable (at least 16 GiB tiering VRAM) | 2 | supervisor `ServerTier`; live `/props.total_slots` wins |
 | Apple MLX | 1 | conservative explicit fallback because mlx-vlm 0.6.2 does not advertise a slot limit |
+| Non-confidential BYO endpoint | configured | journal config `providers.local.parallel_slots`; see `docs/design/local-provider.md` for resolution and defaults |
 
-The provider memoizes the capacity once per process. It first reads live
-`/props.total_slots`, then the persisted `health/local.ctx` launch tier, then
-falls back to one. The supervisor remains the configuration owner: changing a
-Linux tier's `parallel_slots` changes both `llama-server --parallel` and provider
-admission after the journal processes restart. Apple stays at one until that
-runtime exposes a stable capacity contract and a separate measurement justifies
-raising it.
+For bundled local, the provider memoizes the capacity once per process. It
+first reads live `/props.total_slots`, then the persisted `health/local.ctx`
+launch tier, then falls back to one. The supervisor remains the configuration
+owner: changing a Linux tier's `parallel_slots` changes both
+`llama-server --parallel` and provider admission after the journal processes
+restart. Apple stays at one until that runtime exposes a stable capacity
+contract and a separate measurement justifies raising it.
 
 Admission uses one `flock` file per slot under
 `health/local-inference-admission/`. This coordinates independent journal

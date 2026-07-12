@@ -193,7 +193,7 @@ def _pin_describe_non_local(monkeypatch, mod):
     The fixture journal resolves observe.* to google, but these tests assert an
     exact -j value; stub the predicate so they do not silently depend on that.
     """
-    monkeypatch.setattr(mod, "_describe_uses_bundled_local", lambda: False)
+    monkeypatch.setattr(mod, "_describe_uses_local", lambda: False)
     _forbid_slot_discovery(monkeypatch, mod)
 
 
@@ -1431,7 +1431,7 @@ def test_segments_default_local_slot_fallback_logs_once_across_call_sites(
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     _patch_segment_run(monkeypatch, think, journal)
-    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "_segment_work_uses_local", lambda: True)
     monkeypatch.setattr(think.os, "cpu_count", lambda: 12)
     monkeypatch.setattr("sys.argv", ["sol think", "--segments", "--day", DAY])
 
@@ -1479,7 +1479,7 @@ def test_segments_explicit_segment_workers_bypasses_local_default_at_call_site(
     _patch_segment_run(monkeypatch, think, journal)
 
     # The derived default would be 1; the CLI asks for 6.
-    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "_segment_work_uses_local", lambda: True)
     monkeypatch.setattr(think, "read_server_parallel_slots", lambda: 1)
     monkeypatch.setattr(think.os, "cpu_count", lambda: 12)
     assert think._default_segment_workers() == 1
