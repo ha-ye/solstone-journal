@@ -17,6 +17,7 @@ from solstone.think.services.spp_attest import (
     Policy,
     VerificationError,
     appraise_cpu_leg,
+    load_cpu_bundle,
 )
 from solstone.think.services.spp_attest import snp as snp_module
 
@@ -61,7 +62,7 @@ def _appraise(
         kwargs["roots_dir"] = roots_dir
     if policy is not None:
         kwargs["policy"] = policy
-    return appraise_cpu_leg(bundle_dir, **kwargs)
+    return appraise_cpu_leg(load_cpu_bundle(bundle_dir), **kwargs)
 
 
 def _copy_bundle(tmp_path: Path) -> Path:

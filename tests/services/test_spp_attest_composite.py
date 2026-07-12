@@ -15,7 +15,11 @@ from solstone.think.services.spp_attest import snp as snp_module
 from solstone.think.services.spp_attest.composite import verify_composite
 from solstone.think.services.spp_attest.nvgpu.claims import GpuAppraisal
 from solstone.think.services.spp_attest.nvgpu.errors import GpuAppraisalError
-from solstone.think.services.spp_attest.snp import AppraisalStep
+from solstone.think.services.spp_attest.snp import (
+    AppraisalStep,
+    CpuBundle,
+    load_cpu_bundle,
+)
 from solstone.think.services.spp_attest.tlv import GpuEnvelope
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "spp_attest"
@@ -40,6 +44,23 @@ def _copy_bundle(tmp_path: Path) -> Path:
     bundle = tmp_path / "bundle"
     shutil.copytree(FIXTURE_DIR, bundle)
     return bundle
+
+
+def _cpu_bundle(bundle_dir: Path = FIXTURE_DIR):
+    return load_cpu_bundle(bundle_dir)
+
+
+def _nonce_only_bundle() -> CpuBundle:
+    return CpuBundle(
+        hcl_report=b"",
+        standalone_report=None,
+        cert_pems=(),
+        ak_public_key_pem=b"",
+        nonce=_owner_nonce(),
+        quote_message=b"",
+        quote_signature=b"",
+        quote_pcrs=b"",
+    )
 
 
 def _fake_nvattest_dir(tmp_path: Path) -> Path:
@@ -102,7 +123,7 @@ def test_verify_composite_positive_fixture_with_injected_gpu_appraiser(
     tmp_path: Path,
 ) -> None:
     verdict = verify_composite(
-        FIXTURE_DIR,
+        _cpu_bundle(),
         envelope_tlv=_envelope_tlv(),
         channel_binding=_channel_binding(),
         owner_nonce=_owner_nonce(),
@@ -142,7 +163,7 @@ def test_verify_composite_positive_fixture_through_real_gpu_appraiser(
     )
 
     verdict = verify_composite(
-        FIXTURE_DIR,
+        _cpu_bundle(),
         envelope_tlv=_envelope_tlv(),
         channel_binding=_channel_binding(),
         owner_nonce=_owner_nonce(),
@@ -170,7 +191,7 @@ def test_verify_composite_substrate_uses_attested_hwmodel_not_envelope_arch(
         return _gpu_appraisal(envelope, arch=HOSTILE_ARCH)
 
     verdict = verify_composite(
-        FIXTURE_DIR,
+        _cpu_bundle(),
         envelope_tlv=_envelope_tlv(),
         channel_binding=_channel_binding(),
         owner_nonce=_owner_nonce(),
@@ -195,7 +216,7 @@ def test_verify_composite_rejects_tampered_embedded_cpu_report_without_leak(
 
     with pytest.raises(AttestationFailedError) as exc_info:
         verify_composite(
-            bundle,
+            _cpu_bundle(bundle),
             envelope_tlv=_envelope_tlv(),
             channel_binding=_channel_binding(),
             owner_nonce=_owner_nonce(),
@@ -213,13 +234,9 @@ def test_verify_composite_rejects_tampered_embedded_cpu_report_without_leak(
 def test_verify_composite_rejects_foreign_owner_nonce_before_legs_without_leak(
     tmp_path: Path,
 ) -> None:
-    bundle = tmp_path / "bundle"
-    bundle.mkdir()
-    shutil.copy2(FIXTURE_DIR / "nonce.hex", bundle / "nonce.hex")
-
     with pytest.raises(AttestationFailedError) as exc_info:
         verify_composite(
-            bundle,
+            _nonce_only_bundle(),
             envelope_tlv=_envelope_tlv(),
             channel_binding=_channel_binding(),
             owner_nonce=b"\x00" * 32,
@@ -242,7 +259,7 @@ def test_verify_composite_rejects_mutated_channel_binding_without_leak(
 
     with pytest.raises(AttestationFailedError) as exc_info:
         verify_composite(
-            FIXTURE_DIR,
+            _cpu_bundle(),
             envelope_tlv=_envelope_tlv(),
             channel_binding=bytes(channel_binding),
             owner_nonce=_owner_nonce(),
@@ -275,7 +292,7 @@ def test_verify_composite_maps_gpu_nonce_mismatch_without_leak(
 
     with pytest.raises(AttestationFailedError) as exc_info:
         verify_composite(
-            FIXTURE_DIR,
+            _cpu_bundle(),
             envelope_tlv=_envelope_tlv(),
             channel_binding=_channel_binding(),
             owner_nonce=_owner_nonce(),
@@ -311,7 +328,7 @@ def test_verify_composite_bounds_out_of_band_gpu_reason_without_leak(
 
     with pytest.raises(AttestationFailedError) as exc_info:
         verify_composite(
-            FIXTURE_DIR,
+            _cpu_bundle(),
             envelope_tlv=_envelope_tlv(),
             channel_binding=_channel_binding(),
             owner_nonce=_owner_nonce(),
@@ -341,7 +358,7 @@ def test_verify_composite_rejects_gpu_unavailable_without_cpu_only_pass(
 
     with pytest.raises(AttestationFailedError) as exc_info:
         verify_composite(
-            FIXTURE_DIR,
+            _cpu_bundle(),
             envelope_tlv=_envelope_tlv(),
             channel_binding=_channel_binding(),
             owner_nonce=_owner_nonce(),

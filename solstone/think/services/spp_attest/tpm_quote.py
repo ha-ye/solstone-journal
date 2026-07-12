@@ -8,7 +8,6 @@ from __future__ import annotations
 import hashlib
 import hmac
 from dataclasses import dataclass
-from pathlib import Path
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, serialization
@@ -110,28 +109,6 @@ def verify_quote(
     _check_pcrs(quote_pcrs, quote)
     signature = _parse_quote_sig(quote_sig, public_key.key_size // 8)
     _verify_signature(public_key, quote_msg, signature)
-
-
-class TpmQuoteVerifier:
-    def verify(
-        self,
-        ak_pub: Path,
-        quote_msg: Path,
-        quote_sig: Path,
-        quote_pcrs: Path,
-        binding_hex: str,
-    ) -> None:
-        try:
-            binding = bytes.fromhex(binding_hex)
-        except ValueError as exc:
-            raise VerificationError("TPM quote binding_hex is not valid hex") from exc
-        verify_quote(
-            ak_pub_pem=ak_pub.read_bytes(),
-            quote_msg=quote_msg.read_bytes(),
-            quote_sig=quote_sig.read_bytes(),
-            quote_pcrs=quote_pcrs.read_bytes(),
-            expected_binding=binding,
-        )
 
 
 def _load_ak_public_key(ak_pub_pem: bytes) -> rsa.RSAPublicKey:

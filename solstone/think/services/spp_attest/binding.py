@@ -14,7 +14,7 @@ from solstone.think.services.spp_attest.tlv import (
     extract_spdm_nonce,
 )
 
-BINDING_DOMAIN = "sol-spp-option-a-bind-v1"
+BINDING_DOMAIN = b"sol-spp-option-a-bind-v1"
 
 
 def composite_binding_hash(
@@ -22,7 +22,7 @@ def composite_binding_hash(
     nonce: bytes,
     channel_binding: bytes,
     envelope_tlv: bytes,
-    domain: str = BINDING_DOMAIN,
+    domain: bytes = BINDING_DOMAIN,
 ) -> bytes:
     """Hash the verifier nonce, channel binding, and GPU envelope fingerprint."""
 
@@ -37,7 +37,7 @@ def composite_binding_hash(
 
     envelope_digest = hashlib.sha256(envelope_tlv).digest()
     digest = hashlib.sha256()
-    digest.update(domain.encode("utf-8"))
+    digest.update(domain)
     digest.update(nonce)
     digest.update(channel_binding)
     digest.update(envelope_digest)

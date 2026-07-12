@@ -13,18 +13,18 @@ from pathlib import Path
 from typing import NoReturn
 
 from solstone.think.models import AttestationFailedError
+from solstone.think.services.spp_attest.binding import BINDING_DOMAIN
 from solstone.think.services.spp_attest.errors import VerificationError
 from solstone.think.services.spp_attest.nvgpu.appraise import appraise_gpu_leg
 from solstone.think.services.spp_attest.nvgpu.claims import GpuAppraisal
 from solstone.think.services.spp_attest.nvgpu.errors import GpuAppraisalError
 from solstone.think.services.spp_attest.snp import (
     CpuAppraisal,
+    CpuBundle,
     Policy,
     appraise_cpu_leg,
-    read_bundle_nonce,
 )
 from solstone.think.services.spp_attest.tlv import decode_gpu_envelope
-from solstone.think.services.spp_attest.tpm_quote import TpmQuoteVerifier
 
 log = logging.getLogger(__name__)
 
@@ -44,27 +44,20 @@ class CompositeVerdict:
 
 
 def verify_composite(
-    bundle_dir: Path,
+    bundle: CpuBundle,
     *,
     envelope_tlv: bytes,
     channel_binding: bytes,
     owner_nonce: bytes,
     now: datetime,
     nvattest_dir: Path,
+    binding_domain: bytes = BINDING_DOMAIN,
     roots_dir: Path | None = None,
     policy: Policy | None = None,
-    quote_verifier: TpmQuoteVerifier | None = None,
+    quote_verifier: Callable[..., None] | None = None,
     gpu_appraiser: Callable[..., GpuAppraisal] | None = None,
 ) -> CompositeVerdict:
-    try:
-        bundle_nonce = read_bundle_nonce(bundle_dir / "nonce.hex")
-    except (OSError, VerificationError) as exc:
-        _raise_attestation_failed(
-            "the CPU bundle nonce was invalid (nonce_invalid)",
-            "confidential attestation nonce guard failed: nonce_invalid",
-            exc,
-        )
-    if bundle_nonce != owner_nonce:
+    if bundle.nonce != owner_nonce:
         log.warning("confidential attestation nonce guard failed: nonce_mismatch")
         raise AttestationFailedError(
             "the verifier nonce did not match the CPU bundle (nonce_mismatch)"
@@ -72,9 +65,10 @@ def verify_composite(
 
     try:
         cpu_provenance = appraise_cpu_leg(
-            bundle_dir,
+            bundle,
             envelope_tlv=envelope_tlv,
             channel_binding=channel_binding,
+            binding_domain=binding_domain,
             roots_dir=roots_dir,
             policy=policy,
             quote_verifier=quote_verifier,

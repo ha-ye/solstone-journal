@@ -13,6 +13,10 @@ from solstone.think.services.spp_attest.binding import (
     check_envelope_nonce,
     composite_binding_hash,
 )
+from solstone.think.services.spp_attest.ratls.contract import (
+    CERTIFICATE_BINDING_DOMAIN,
+    certificate_binding,
+)
 from solstone.think.services.spp_attest.tlv import decode_gpu_envelope
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "spp_attest"
@@ -53,6 +57,19 @@ def test_composite_binding_hash_matches_quote_extra_data() -> None:
 
     assert binding.hex() == BINDING_HEX
     assert hashlib.sha256(tlv).hexdigest() == GPU_ENVELOPE_SHA256
+
+
+def test_certificate_binding_matches_composite_binding_with_ratls_domain() -> None:
+    nonce = _nonce()
+    spki = (FIXTURE_DIR / "guest_x25519.pub.der").read_bytes()
+    envelope = _tlv_bytes()
+
+    assert certificate_binding(nonce, spki, envelope) == composite_binding_hash(
+        nonce=nonce,
+        channel_binding=hashlib.sha256(spki).digest(),
+        envelope_tlv=envelope,
+        domain=CERTIFICATE_BINDING_DOMAIN,
+    )
 
 
 def test_check_envelope_nonce_accepts_owner_and_spdm_nonce() -> None:

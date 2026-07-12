@@ -10,6 +10,7 @@ import binascii
 import datetime as dt
 import hashlib
 import json
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,12 +23,13 @@ from cryptography.hazmat.primitives.asymmetric import padding as asym_padding
 from cryptography.x509.oid import ExtensionOID, NameOID
 
 from solstone.think.services.spp_attest.binding import (
+    BINDING_DOMAIN,
     check_envelope_nonce,
     composite_binding_hash,
 )
 from solstone.think.services.spp_attest.errors import VerificationError
 from solstone.think.services.spp_attest.tlv import decode_gpu_envelope
-from solstone.think.services.spp_attest.tpm_quote import TpmQuoteVerifier
+from solstone.think.services.spp_attest.tpm_quote import verify_quote
 
 HCL_SIG = b"HCLA"
 HCL_REPORT_OFFSET = 32
@@ -234,6 +236,18 @@ class CpuAppraisal:
 
 
 @dataclass(frozen=True, slots=True)
+class CpuBundle:
+    hcl_report: bytes
+    standalone_report: bytes | None
+    cert_pems: tuple[bytes, ...]
+    ak_public_key_pem: bytes
+    nonce: bytes
+    quote_message: bytes
+    quote_signature: bytes
+    quote_pcrs: bytes
+
+
+@dataclass(frozen=True, slots=True)
 class _HclaBlob:
     version: int
     request_type: int
@@ -250,37 +264,33 @@ class _AmdRootSet:
 
 
 def appraise_cpu_leg(
-    bundle_dir: Path,
+    bundle: CpuBundle,
     *,
     envelope_tlv: bytes,
     channel_binding: bytes,
+    binding_domain: bytes = BINDING_DOMAIN,
     roots_dir: Path | None = None,
     policy: Policy | None = None,
-    quote_verifier: TpmQuoteVerifier | None = None,
+    quote_verifier: Callable[..., None] | None = None,
 ) -> CpuAppraisal:
     """Appraise the CPU side of an SPP composite attestation bundle."""
 
     policy = policy or Policy()
-    quote_verifier = quote_verifier or TpmQuoteVerifier()
+    quote_verifier = quote_verifier or verify_quote
     roots_dir = roots_dir or DEFAULT_ROOTS_DIR
-    paths = _bundle_paths(bundle_dir)
-    _require(
-        paths, "hcl", "certs", "ak_pub", "nonce", "quote_msg", "quote_sig", "quote_pcrs"
-    )
 
-    nonce = read_bundle_nonce(paths["nonce"])
     envelope = decode_gpu_envelope(envelope_tlv)
-    check_envelope_nonce(envelope, nonce)
+    check_envelope_nonce(envelope, bundle.nonce)
 
     steps: list[AppraisalStep] = []
-    hcla = _parse_hcla(paths["hcl"].read_bytes())
+    hcla = _parse_hcla(bundle.hcl_report)
     if hcla.version not in policy.allowed_hcla_versions:
         raise VerificationError(f"HCLA version {hcla.version} is not allowed")
     steps.append(
         _ok("hcla", f"sig=HCLA version={hcla.version} request_type={hcla.request_type}")
     )
 
-    if paths["report"].exists() and paths["report"].read_bytes() != hcla.report:
+    if bundle.standalone_report is not None and bundle.standalone_report != hcla.report:
         steps.append(
             _ok("standalone-report", "report.bin differs; using HCLA-embedded report")
         )
@@ -301,7 +311,7 @@ def appraise_cpu_leg(
     _check_runtime_binding(report, hcla.runtime_json)
     steps.append(_ok("runtime-binding", "report_data == SHA-256(runtime JSON)"))
 
-    vcek = _verify_amd_chain_and_report(report, paths["certs"], roots_dir)
+    vcek = _verify_amd_chain_and_report(report, bundle.cert_pems, roots_dir)
     steps.append(
         _ok("amd-chain", f"VCEK chains to pinned {name_cn(vcek.issuer)} roots")
     )
@@ -316,20 +326,21 @@ def appraise_cpu_leg(
         )
     )
 
-    _verify_ak_binding(hcla.runtime, paths["ak_pub"])
+    _verify_ak_binding(hcla.runtime, bundle.ak_public_key_pem)
     steps.append(_ok("ak-binding", "bundle AK public key matches AMD-bound HCLAkPub"))
 
     binding = composite_binding_hash(
-        nonce=nonce,
+        nonce=bundle.nonce,
         channel_binding=channel_binding,
         envelope_tlv=envelope_tlv,
+        domain=binding_domain,
     )
-    quote_verifier.verify(
-        paths["ak_pub"],
-        paths["quote_msg"],
-        paths["quote_sig"],
-        paths["quote_pcrs"],
-        binding.hex(),
+    quote_verifier(
+        ak_pub_pem=bundle.ak_public_key_pem,
+        quote_msg=bundle.quote_message,
+        quote_sig=bundle.quote_signature,
+        quote_pcrs=bundle.quote_pcrs,
+        expected_binding=binding,
     )
     steps.append(
         _ok(
@@ -338,7 +349,7 @@ def appraise_cpu_leg(
         )
     )
 
-    pcr_sha256 = hashlib.sha256(paths["quote_pcrs"].read_bytes()).hexdigest()
+    pcr_sha256 = hashlib.sha256(bundle.quote_pcrs).hexdigest()
     _check_pcr_policy(pcr_sha256, policy)
     if policy.pcr_mode == "record":
         steps.append(_ok("pcr-policy", f"record-then-pin v1 fingerprint={pcr_sha256}"))
@@ -426,10 +437,10 @@ def _check_runtime_binding(report: SnpReport, runtime_json: bytes) -> None:
 
 def _verify_amd_chain_and_report(
     report: SnpReport,
-    certs_dir: Path,
+    cert_pems: Sequence[bytes],
     roots_dir: Path,
 ) -> x509.Certificate:
-    certs = _load_certs_from_dir(certs_dir)
+    certs = _load_certs(cert_pems)
     vcek = _select_vcek(certs)
     root = _select_root_set(vcek, _load_root_sets(roots_dir))
     _verify_cert_signature(root.ask, root.ark)
@@ -442,17 +453,17 @@ def _verify_amd_chain_and_report(
     return vcek
 
 
-def _load_certs_from_dir(certs_dir: Path) -> list[x509.Certificate]:
-    if not certs_dir.is_dir():
-        raise VerificationError(f"missing certs directory: {certs_dir}")
+def _load_certs(cert_pems: Sequence[bytes]) -> list[x509.Certificate]:
     certs: list[x509.Certificate] = []
-    for path in sorted(certs_dir.glob("*.pem")):
+    for index, cert_pem in enumerate(cert_pems):
         try:
-            certs.append(x509.load_pem_x509_certificate(path.read_bytes()))
+            certs.append(x509.load_pem_x509_certificate(cert_pem))
         except ValueError as exc:
-            raise VerificationError(f"certificate did not parse: {path}") from exc
+            raise VerificationError(
+                f"certificate did not parse: index {index}"
+            ) from exc
     if not certs:
-        raise VerificationError(f"no PEM certificates in {certs_dir}")
+        raise VerificationError("no PEM certificates in CPU bundle")
     return certs
 
 
@@ -600,7 +611,7 @@ def _check_policy(report: SnpReport, policy: Policy) -> None:
         floor.check(tcb_fields[label], label)
 
 
-def _verify_ak_binding(runtime: dict[str, Any], ak_pub_path: Path) -> None:
+def _verify_ak_binding(runtime: dict[str, Any], ak_public_key_pem: bytes) -> None:
     keys = runtime.get("keys", [])
     if not isinstance(keys, list):
         raise VerificationError("runtime claims field 'keys' is not a list")
@@ -615,7 +626,7 @@ def _verify_ak_binding(runtime: dict[str, Any], ak_pub_path: Path) -> None:
     runtime_n = int.from_bytes(_b64url_decode(jwk["n"]), "big")
     runtime_e = int.from_bytes(_b64url_decode(jwk["e"]), "big")
     try:
-        ak_pub = serialization.load_pem_public_key(ak_pub_path.read_bytes())
+        ak_pub = serialization.load_pem_public_key(ak_public_key_pem)
     except ValueError as exc:
         raise VerificationError("bundle AK public key did not parse") from exc
     if not isinstance(ak_pub, rsa.RSAPublicKey):
@@ -654,23 +665,36 @@ def _check_cert_time(cert: x509.Certificate) -> None:
         )
 
 
-def _bundle_paths(bundle: Path) -> dict[str, Path]:
-    return {
-        "hcl": bundle / "hcl_report.bin",
-        "report": bundle / "report.bin",
-        "certs": bundle / "certs",
-        "ak_pub": bundle / "akpub.pem",
-        "nonce": bundle / "nonce.hex",
-        "quote_msg": bundle / "quote.msg",
-        "quote_sig": bundle / "quote.sig",
-        "quote_pcrs": bundle / "quote.pcrs",
+def load_cpu_bundle(bundle_dir: Path) -> CpuBundle:
+    paths = {
+        "hcl": bundle_dir / "hcl_report.bin",
+        "certs": bundle_dir / "certs",
+        "ak_pub": bundle_dir / "akpub.pem",
+        "nonce": bundle_dir / "nonce.hex",
+        "quote_msg": bundle_dir / "quote.msg",
+        "quote_sig": bundle_dir / "quote.sig",
+        "quote_pcrs": bundle_dir / "quote.pcrs",
     }
-
-
-def _require(paths: dict[str, Path], *names: str) -> None:
-    missing = [str(paths[name]) for name in names if not paths[name].exists()]
+    missing = [str(path) for path in paths.values() if not path.exists()]
     if missing:
         raise VerificationError("missing bundle files: " + ", ".join(missing))
+    certs_dir = paths["certs"]
+    if not certs_dir.is_dir():
+        raise VerificationError(f"missing certs directory: {certs_dir}")
+    cert_pems = tuple(path.read_bytes() for path in sorted(certs_dir.glob("*.pem")))
+    if not cert_pems:
+        raise VerificationError(f"no PEM certificates in {certs_dir}")
+    report_path = bundle_dir / "report.bin"
+    return CpuBundle(
+        hcl_report=paths["hcl"].read_bytes(),
+        standalone_report=report_path.read_bytes() if report_path.exists() else None,
+        cert_pems=cert_pems,
+        ak_public_key_pem=paths["ak_pub"].read_bytes(),
+        nonce=read_bundle_nonce(paths["nonce"]),
+        quote_message=paths["quote_msg"].read_bytes(),
+        quote_signature=paths["quote_sig"].read_bytes(),
+        quote_pcrs=paths["quote_pcrs"].read_bytes(),
+    )
 
 
 def read_bundle_nonce(path: Path) -> bytes:

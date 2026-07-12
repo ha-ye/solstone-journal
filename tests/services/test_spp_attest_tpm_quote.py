@@ -11,7 +11,6 @@ import pytest
 from solstone.think.services.spp_attest import VerificationError
 from solstone.think.services.spp_attest.binding import composite_binding_hash
 from solstone.think.services.spp_attest.tpm_quote import (
-    TpmQuoteVerifier,
     _parse_pcrs,
     _parse_quote_msg,
     verify_quote,
@@ -143,16 +142,6 @@ def test_verify_quote_accepts_fixture_bytes_and_vectors() -> None:
     assert hashlib.sha256(b"".join(digest_buffers)).hexdigest() == PCR_DIGEST_HEX
     assert hashlib.sha256(quote_pcrs).hexdigest() == PCR_SHA256_HEX
     assert selections[0].selected_pcrs() == (0, 2, 4, 7, 8, 9, 15, 16, 22, 23)
-
-
-def test_tpm_quote_verifier_facade_accepts_fixture_paths() -> None:
-    TpmQuoteVerifier().verify(
-        FIXTURE_DIR / "akpub.pem",
-        FIXTURE_DIR / "quote.msg",
-        FIXTURE_DIR / "quote.sig",
-        FIXTURE_DIR / "quote.pcrs",
-        BINDING_HEX,
-    )
 
 
 def test_verify_quote_rejects_flipped_signature_byte() -> None:

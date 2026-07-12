@@ -26,8 +26,10 @@ from solstone.think.services.spp_attest.nvgpu.evidence import to_nvattest_eviden
 from solstone.think.services.spp_attest.snp import (
     AppraisalStep,
     CpuAppraisal,
+    CpuBundle,
     Policy,
     appraise_cpu_leg,
+    load_cpu_bundle,
     read_bundle_nonce,
 )
 from solstone.think.services.spp_attest.tlv import (
@@ -35,7 +37,7 @@ from solstone.think.services.spp_attest.tlv import (
     decode_gpu_envelope,
     extract_spdm_nonce,
 )
-from solstone.think.services.spp_attest.tpm_quote import TpmQuoteVerifier, verify_quote
+from solstone.think.services.spp_attest.tpm_quote import verify_quote
 
 __all__ = [
     "AppraisalStep",
@@ -43,6 +45,7 @@ __all__ = [
     "BINDING_DOMAIN",
     "CompositeVerdict",
     "CpuAppraisal",
+    "CpuBundle",
     "GPU_REATTEST_INTERVAL",
     "GpuAppraisal",
     "GpuAppraisalError",
@@ -50,7 +53,6 @@ __all__ = [
     "Policy",
     "SESSION_CAP",
     "TPM_HEARTBEAT_INTERVAL",
-    "TpmQuoteVerifier",
     "VerificationError",
     "appraise_cpu_leg",
     "appraise_gpu_leg",
@@ -58,6 +60,7 @@ __all__ = [
     "composite_binding_hash",
     "decode_gpu_envelope",
     "extract_spdm_nonce",
+    "load_cpu_bundle",
     "read_bundle_nonce",
     "to_nvattest_evidence",
     "verify_composite",
