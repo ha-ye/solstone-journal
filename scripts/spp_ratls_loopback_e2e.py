@@ -77,8 +77,9 @@ def build_parser() -> argparse.ArgumentParser:
             "Real mode (--real) runs the same five cases with production verifiers. "
             "It requires live confidential hardware, a real collector and gateway, "
             "an nvattest install, and a separately-running loopback upstream "
-            "listening on 127.0.0.1:<upstream-port>. Provide --nvattest-dir, "
-            "--upstream-port, and --request-body together."
+            "listening on 127.0.0.1:<upstream-port>. --real requires "
+            "--nvattest-dir, --upstream-port, and --request-body; those flags "
+            "are rejected without --real."
         ),
     )
     parser.add_argument("--gateway", type=Path, required=True)
@@ -91,14 +92,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--nvattest-dir",
         type=Path,
-        help="nvattest install root containing bin/nvattest and lib/ (real mode only)",
+        help="nvattest install root containing bin/nvattest and lib/ (requires --real)",
     )
     parser.add_argument(
         "--upstream-port",
         type=int,
         help=(
             "port of the separately-running 127.0.0.1 loopback upstream "
-            "(real mode only)"
+            "(requires --real)"
         ),
     )
     parser.add_argument(
@@ -106,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help=(
             "path to the raw JSON request body sent to /v1/chat/completions "
-            "in real mode"
+            "(requires --real)"
         ),
     )
     return parser
