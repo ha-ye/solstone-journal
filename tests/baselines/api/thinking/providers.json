@@ -1,6 +1,11 @@
 {
   "active_lane": {
     "cogitate": "byo",
+    "confidential_attestation": {
+      "provenance": null,
+      "reason": "attestation_not_yet_verified",
+      "state": "verifying"
+    },
     "confidential_enabled": false,
     "confidential_operation": null,
     "confidential_provenance_configured": false,

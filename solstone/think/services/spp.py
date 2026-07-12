@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -19,6 +20,7 @@ from solstone.think.journal_config import (
     write_journal_config,
 )
 from solstone.think.providers.local_endpoint import normalize_local_endpoint_url
+from solstone.think.services.spp_attest.cadence import AttestationSession
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +44,47 @@ class JournalNotInitializedError(RuntimeError):
 class DisableOutcome:
     was_enabled: bool
     credential_preserved: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AttestationState:
+    session: AttestationSession | None = None
+    failure: str | None = None
+
+
+_ATTESTATION_LOCK = threading.Lock()
+_ATTESTATION_STATE = AttestationState()
+
+
+def record_attestation_verified(session: AttestationSession) -> None:
+    """Record a verified in-process attestation session."""
+
+    global _ATTESTATION_STATE
+    with _ATTESTATION_LOCK:
+        _ATTESTATION_STATE = AttestationState(session=session, failure=None)
+
+
+def record_attestation_failed(detail: str) -> None:
+    """Record an in-process attestation failure."""
+
+    global _ATTESTATION_STATE
+    with _ATTESTATION_LOCK:
+        _ATTESTATION_STATE = AttestationState(session=None, failure=detail)
+
+
+def clear_attestation_state() -> None:
+    """Clear process-local attestation state."""
+
+    global _ATTESTATION_STATE
+    with _ATTESTATION_LOCK:
+        _ATTESTATION_STATE = AttestationState()
+
+
+def get_attestation_state() -> AttestationState:
+    """Return process-local attestation state."""
+
+    with _ATTESTATION_LOCK:
+        return _ATTESTATION_STATE
 
 
 def _redact_handoff(payload: dict[str, Any]) -> dict[str, Any]:

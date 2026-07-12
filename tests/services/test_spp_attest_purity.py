@@ -26,6 +26,8 @@ PURE_EXCLUDED = {"nvgpu/appraise.py"}
 PURE_NON_VACUITY = {
     "__init__.py",
     "binding.py",
+    "cadence.py",
+    "composite.py",
     "errors.py",
     "nvgpu/binary.py",
     "nvgpu/claims.py",

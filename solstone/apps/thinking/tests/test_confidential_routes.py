@@ -113,6 +113,11 @@ def test_enable_confidential_returns_operation_and_lands_not_verified(
     assert payload["active_lane"]["confidential_enabled"] is True
     assert payload["active_lane"]["confidential_provenance_configured"] is True
     assert payload["active_lane"]["confidential_operation"]["phase"] == "not_verified"
+    assert payload["active_lane"]["confidential_attestation"] == {
+        "state": "verifying",
+        "provenance": None,
+        "reason": "attestation_not_yet_verified",
+    }
 
 
 def test_service_busy_for_second_confidential_operation(

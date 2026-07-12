@@ -356,6 +356,11 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "confidential_enabled": True,
         "confidential_provenance_configured": True,
         "confidential_operation": None,
+        "confidential_attestation": {
+            "state": "verifying",
+            "provenance": None,
+            "reason": "attestation_not_yet_verified",
+        },
     }
 
 

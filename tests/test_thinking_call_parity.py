@@ -137,6 +137,11 @@ def test_show_verbs_select_http_fields() -> None:
     assert providers_payload["cogitate"]["provider"] == "openai"
     assert providers_payload["local_override"]["enabled"] is False
     assert providers_payload["active_lane"]["lane"] == "byo"
+    assert providers_payload["active_lane"]["confidential_attestation"] == {
+        "state": "verifying",
+        "provenance": None,
+        "reason": "attestation_not_yet_verified",
+    }
 
     assert google.exit_code == 0
     assert json.loads(google.stdout) == {

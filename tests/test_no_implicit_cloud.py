@@ -18,7 +18,9 @@ from solstone.think.models import (
     GPT_5_MINI,
     LOCAL_MODEL,
     NO_BRAIN_PROVIDER,
+    AttestationFailedError,
     AttestationNotVerifiedError,
+    AttestationStaleError,
     NoBrainConfiguredError,
     get_backup_provider,
     is_local_provider_needed,
@@ -221,6 +223,10 @@ def test_confidential_attestation_error_is_non_retryable(tmp_path, monkeypatch):
     mocks = _cloud_call_mocks(monkeypatch)
 
     assert talents._is_retryable_error(AttestationNotVerifiedError()) is False
+    for exc in (AttestationFailedError("x"), AttestationStaleError("x")):
+        assert talents._is_retryable_error(exc) is False
+        assert talents._should_fallback(exc) is False
+    assert models._CONFIDENTIAL_ATTESTATION_VERIFIER is None
 
     with pytest.raises(AttestationNotVerifiedError):
         asyncio.run(

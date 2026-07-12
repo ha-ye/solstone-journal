@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from solstone.think.services import operations
+from solstone.think.services import operations, spp
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +23,13 @@ def _clear_service_operations():
     operations.clear_registry()
     yield
     operations.clear_registry()
+
+
+@pytest.fixture(autouse=True)
+def _clear_spp_attestation_state():
+    spp.clear_attestation_state()
+    yield
+    spp.clear_attestation_state()
 
 
 @pytest.fixture

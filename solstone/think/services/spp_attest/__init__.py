@@ -8,6 +8,16 @@ from solstone.think.services.spp_attest.binding import (
     check_envelope_nonce,
     composite_binding_hash,
 )
+from solstone.think.services.spp_attest.cadence import (
+    GPU_REATTEST_INTERVAL,
+    SESSION_CAP,
+    TPM_HEARTBEAT_INTERVAL,
+    AttestationSession,
+)
+from solstone.think.services.spp_attest.composite import (
+    CompositeVerdict,
+    verify_composite,
+)
 from solstone.think.services.spp_attest.errors import VerificationError
 from solstone.think.services.spp_attest.nvgpu.appraise import appraise_gpu_leg
 from solstone.think.services.spp_attest.nvgpu.claims import GpuAppraisal
@@ -18,6 +28,7 @@ from solstone.think.services.spp_attest.snp import (
     CpuAppraisal,
     Policy,
     appraise_cpu_leg,
+    read_bundle_nonce,
 )
 from solstone.think.services.spp_attest.tlv import (
     GpuEnvelope,
@@ -27,13 +38,18 @@ from solstone.think.services.spp_attest.tlv import (
 from solstone.think.services.spp_attest.tpm_quote import TpmQuoteVerifier, verify_quote
 
 __all__ = [
-    "BINDING_DOMAIN",
     "AppraisalStep",
+    "AttestationSession",
+    "BINDING_DOMAIN",
+    "CompositeVerdict",
     "CpuAppraisal",
+    "GPU_REATTEST_INTERVAL",
     "GpuAppraisal",
     "GpuAppraisalError",
     "GpuEnvelope",
     "Policy",
+    "SESSION_CAP",
+    "TPM_HEARTBEAT_INTERVAL",
     "TpmQuoteVerifier",
     "VerificationError",
     "appraise_cpu_leg",
@@ -42,6 +58,8 @@ __all__ = [
     "composite_binding_hash",
     "decode_gpu_envelope",
     "extract_spdm_nonce",
+    "read_bundle_nonce",
     "to_nvattest_evidence",
+    "verify_composite",
     "verify_quote",
 ]

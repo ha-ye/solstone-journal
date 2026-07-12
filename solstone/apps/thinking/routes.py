@@ -116,6 +116,34 @@ def _remap_confidential_operation(raw: dict[str, Any] | None) -> dict[str, Any] 
     return payload
 
 
+def _confidential_attestation_payload(now: datetime) -> dict[str, Any]:
+    state = spp.get_attestation_state()
+    if state.failure is not None:
+        return {"state": "failed", "provenance": None, "reason": "attestation_failed"}
+
+    session = state.session
+    if session is None:
+        return {
+            "state": "verifying",
+            "provenance": None,
+            "reason": "attestation_not_yet_verified",
+        }
+
+    if session.status(now) == "stale":
+        return {"state": "stale", "provenance": None, "reason": "attestation_stale"}
+
+    checked_at = session.verdict.checked_at.astimezone(timezone.utc).isoformat()
+    return {
+        "state": "verified",
+        "provenance": {
+            "legs": list(session.verdict.legs),
+            "substrate": session.verdict.substrate,
+            "checked_at": checked_at,
+        },
+        "reason": None,
+    }
+
+
 def _start_scout_operation(
     kind: str,
     portal_url: str | None,
@@ -298,6 +326,9 @@ def _active_lane_payload(
         "confidential_provenance_configured": confidential_provenance_present,
         "confidential_operation": _remap_confidential_operation(
             operations.operation_for_service(SERVICE_SPP)
+        ),
+        "confidential_attestation": _confidential_attestation_payload(
+            datetime.now(timezone.utc)
         ),
     }
 

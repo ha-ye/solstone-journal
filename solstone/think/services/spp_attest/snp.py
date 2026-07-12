@@ -268,7 +268,7 @@ def appraise_cpu_leg(
         paths, "hcl", "certs", "ak_pub", "nonce", "quote_msg", "quote_sig", "quote_pcrs"
     )
 
-    nonce = _read_nonce(paths["nonce"])
+    nonce = read_bundle_nonce(paths["nonce"])
     envelope = decode_gpu_envelope(envelope_tlv)
     check_envelope_nonce(envelope, nonce)
 
@@ -673,7 +673,7 @@ def _require(paths: dict[str, Path], *names: str) -> None:
         raise VerificationError("missing bundle files: " + ", ".join(missing))
 
 
-def _read_nonce(path: Path) -> bytes:
+def read_bundle_nonce(path: Path) -> bytes:
     nonce_hex = "".join(path.read_text(encoding="utf-8").split())
     if len(nonce_hex) != 64:
         raise VerificationError(f"nonce is {len(nonce_hex)} hex chars, expected 64")

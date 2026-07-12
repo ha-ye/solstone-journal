@@ -292,10 +292,29 @@ class AttestationNotVerifiedError(RuntimeError):
         )
 
 
-# Follow-on wiring assigns a verifier that appraises composite SEV-SNP + SPDM
-# + TPM2 evidence for the pinned endpoint. It raises AttestationNotVerifiedError
-# on negative/stale verdicts (reserved reason codes: attestation_failed,
-# attestation_stale) or returns on a verified verdict.
+class AttestationFailedError(AttestationNotVerifiedError):
+    """Raised when confidential hardware attestation fails closed."""
+
+    reason_code = "attestation_failed"
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        RuntimeError.__init__(self, f"Confidential attestation failed: {detail}.")
+
+
+class AttestationStaleError(AttestationNotVerifiedError):
+    """Raised when confidential hardware attestation has gone stale."""
+
+    reason_code = "attestation_stale"
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        RuntimeError.__init__(self, f"Confidential attestation is stale: {detail}.")
+
+
+# Attestation failures are non-retryable. AttestationFailedError is raised by
+# solstone.think.services.spp_attest.composite.verify_composite; AttestationStaleError
+# is reserved for the follow-on verifier when a session's cadence windows lapse.
 _CONFIDENTIAL_ATTESTATION_VERIFIER: Callable[[dict[str, Any]], None] | None = None
 
 
@@ -1947,7 +1966,9 @@ __all__ = [
     "TYPE_DEFAULTS",
     "NO_BRAIN_PROVIDER",
     "NoBrainConfiguredError",
+    "AttestationFailedError",
     "AttestationNotVerifiedError",
+    "AttestationStaleError",
     "confidential_egress_blocked",
     "PROMPT_PATHS",
     "get_context_registry",
