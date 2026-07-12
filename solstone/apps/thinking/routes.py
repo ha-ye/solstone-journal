@@ -1020,10 +1020,12 @@ def _lane_provider(request_data: dict[str, Any]) -> str | Any:
     endpoint = resolve_local_endpoint()
     local_endpoint_configured = not endpoint.is_bundled
     if lane == "confidential":
-        return error_response(
-            INVALID_OPERATION_FOR_STATE,
-            detail="confidential lane activation must use the confidential enable flow.",
-        )
+        if spp.confidential_provenance() is None:
+            return error_response(
+                INVALID_OPERATION_FOR_STATE,
+                detail="confidential lane activation must use the confidential enable flow.",
+            )
+        return "local"
     if lane == "local":
         if local_endpoint_configured:
             return error_response(

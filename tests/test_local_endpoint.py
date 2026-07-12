@@ -97,6 +97,30 @@ def test_probe_local_endpoint_treats_any_response_as_reachable(monkeypatch):
     assert calls == [("http://h:8080", 0.2)]
 
 
+def test_probe_local_endpoint_skips_get_for_confidential_status(monkeypatch):
+    import httpx
+
+    def fake_get(url, timeout):
+        raise AssertionError("endpoint probe attempted")
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_probe_status",
+        lambda: (False, "attestation_not_yet_verified"),
+    )
+    endpoint = local_endpoint.LocalEndpoint(
+        base_url="https://spp.example.test",
+        served_model_id="model",
+        credential=None,
+        is_bundled=False,
+    )
+
+    assert local_endpoint.probe_local_endpoint(endpoint) == (
+        False,
+        "attestation_not_yet_verified",
+    )
+
+
 @pytest.mark.parametrize("exc", ["connect", "timeout"])
 def test_probe_local_endpoint_reports_transport_failures(monkeypatch, exc):
     import httpx

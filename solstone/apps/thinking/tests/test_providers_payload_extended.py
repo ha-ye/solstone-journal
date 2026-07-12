@@ -589,6 +589,7 @@ def test_lane_switch_to_confidential_rejects_without_config_write(
 ):
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
     before = config_path.read_bytes()
 
     response = client.put(
@@ -604,6 +605,34 @@ def test_lane_switch_to_confidential_rejects_without_config_write(
         == "confidential lane activation must use the confidential enable flow."
     )
     assert config_path.read_bytes() == before
+
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/v1",
+        "served_model_id": "served-model",
+    }
+    config.setdefault("services", {})["confidential"] = {
+        "enabled_at": "2026-05-24T00:00:00Z",
+        "account_id": "acct-confidential",
+        "endpoint_url": "http://host.test:8080",
+        "served_model_id": "served-model",
+        "credential_created_at": "2026-05-24T00:00:00Z",
+        "credential_fingerprint_sha256": "fingerprint",
+        "prior_generate_provider": "google",
+        "prior_cogitate_provider": "openai",
+        "prior_local_endpoint": None,
+    }
+    _write_config(journal_path, config)
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "confidential"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["active_lane"]["lane"] == "confidential"
+    assert payload["generate"]["provider"] == "local"
+    assert payload["cogitate"]["provider"] == "local"
 
 
 def test_lane_for_provider_derives_confidential_from_local_endpoint_provenance():

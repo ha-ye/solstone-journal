@@ -318,6 +318,18 @@ class AttestationStaleError(AttestationNotVerifiedError):
 _CONFIDENTIAL_ATTESTATION_VERIFIER: Callable[[dict[str, Any]], None] | None = None
 
 
+def _confidential_attestation_verifier() -> Callable[[dict[str, Any]], None]:
+    global _CONFIDENTIAL_ATTESTATION_VERIFIER
+
+    if _CONFIDENTIAL_ATTESTATION_VERIFIER is None:
+        from solstone.think.services.spp_transport import (
+            verify_confidential_attestation,
+        )
+
+        _CONFIDENTIAL_ATTESTATION_VERIFIER = verify_confidential_attestation
+    return _CONFIDENTIAL_ATTESTATION_VERIFIER
+
+
 # ---------------------------------------------------------------------------
 # Prompt context discovery
 #
@@ -1033,27 +1045,25 @@ def _raise_if_confidential_unverified() -> None:
     block = get_config().get("services", {}).get("confidential")
     if not isinstance(block, dict):
         return
-    verifier = _CONFIDENTIAL_ATTESTATION_VERIFIER
-    if verifier is not None:
-        verifier(block)
-        return
-    raise AttestationNotVerifiedError()
+    _confidential_attestation_verifier()(block)
 
 
 def confidential_egress_blocked() -> bool:
-    """Return whether confidential egress is currently gated closed.
+    """Return whether confidential egress is currently gated closed."""
 
-    Boolean twin of _raise_if_confidential_unverified(): True when a
-    services.confidential block is present and attestation has not verified
-    (this lode: verifier unwired -> always blocked). Callers that must not
-    reach the confidential endpoint (readiness probes) consult this.
-    """
-
-    try:
-        _raise_if_confidential_unverified()
+    block = get_config().get("services", {}).get("confidential")
+    if not isinstance(block, dict):
         return False
-    except AttestationNotVerifiedError:
-        return True
+
+    from datetime import datetime, timezone
+
+    from solstone.think.services import spp
+
+    state = spp.get_attestation_state()
+    return (
+        state.session is None
+        or state.session.status(datetime.now(timezone.utc)) != "verified"
+    )
 
 
 def get_model_provider(model: str) -> str:

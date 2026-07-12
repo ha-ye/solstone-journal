@@ -418,6 +418,7 @@
 
   function laneIsUsable(lane) {
     if (lane === 'byo') return byoIsUsable();
+    if (lane === 'confidential') return confidentialProvenancePresent();
     if (lane === 'local') return localIsReady() && !localEndpointConfigured();
     return false;
   }

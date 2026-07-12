@@ -29,6 +29,17 @@ from solstone.think.models import (
 from solstone.think.providers import get_provider_module
 
 
+@pytest.fixture(autouse=True)
+def _clear_confidential_transport_state():
+    from solstone.think.services import spp, spp_transport
+
+    spp.clear_attestation_state()
+    spp_transport.teardown_confidential_transport()
+    yield
+    spp.clear_attestation_state()
+    spp_transport.teardown_confidential_transport()
+
+
 def _empty_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     for key in ("GOOGLE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
@@ -93,8 +104,27 @@ def _confidential_config(*, provider_pins: bool = True) -> dict:
     return config
 
 
-def _assert_attestation_not_verified(exc: AttestationNotVerifiedError) -> None:
-    assert exc.reason_code == "attestation_not_yet_verified"
+def _install_failing_confidential_transport(
+    monkeypatch: pytest.MonkeyPatch,
+    reason_code: str = "gateway_unreachable",
+) -> Mock:
+    from solstone.think.services import spp, spp_transport
+    from solstone.think.services.spp_attest.ratls.channel import RatlsChannelError
+
+    spp.clear_attestation_state()
+    spp_transport.teardown_confidential_transport()
+    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    establish = Mock(side_effect=RatlsChannelError(reason_code))
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+    return establish
+
+
+def _assert_attestation_failed(
+    exc: AttestationFailedError,
+    reason_code: str = "gateway_unreachable",
+) -> None:
+    assert exc.reason_code == "attestation_failed"
+    assert f"({reason_code})" in exc.detail
 
 
 def test_unconfigured_journal_resolves_to_no_brain(tmp_path, monkeypatch):
@@ -128,29 +158,30 @@ def test_confidential_generate_stops_before_any_provider_dispatch(
 ):
     _empty_journal(tmp_path, monkeypatch)
     _write_journal_config(tmp_path, _confidential_config())
-    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
     httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
     httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
     monkeypatch.setattr("httpx.post", httpx_post)
     monkeypatch.setattr("httpx.get", httpx_get)
 
-    with pytest.raises(AttestationNotVerifiedError) as generate_exc:
+    with pytest.raises(AttestationFailedError) as generate_exc:
         models.generate("hello", "any.context")
-    _assert_attestation_not_verified(generate_exc.value)
+    _assert_attestation_failed(generate_exc.value)
 
-    with pytest.raises(AttestationNotVerifiedError) as result_exc:
+    with pytest.raises(AttestationFailedError) as result_exc:
         models.generate_with_result("hello", "any.context")
-    _assert_attestation_not_verified(result_exc.value)
+    _assert_attestation_failed(result_exc.value)
 
-    with pytest.raises(AttestationNotVerifiedError) as async_exc:
+    with pytest.raises(AttestationFailedError) as async_exc:
         asyncio.run(models.agenerate("hello", "any.context"))
-    _assert_attestation_not_verified(async_exc.value)
+    _assert_attestation_failed(async_exc.value)
 
     for mock in mocks:
         mock.assert_not_called()
     httpx_post.assert_not_called()
     httpx_get.assert_not_called()
+    assert establish.call_count == 3
 
 
 def test_confidential_cogitate_stops_before_any_provider_dispatch(
@@ -159,7 +190,7 @@ def test_confidential_cogitate_stops_before_any_provider_dispatch(
 ):
     _empty_journal(tmp_path, monkeypatch)
     _write_journal_config(tmp_path, _confidential_config())
-    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
     build_llm = Mock(side_effect=AssertionError("llm build attempted"))
     monkeypatch.setattr("solstone.think.providers.openhands._build_llm", build_llm)
@@ -168,7 +199,7 @@ def test_confidential_cogitate_stops_before_any_provider_dispatch(
     monkeypatch.setattr("httpx.post", httpx_post)
     monkeypatch.setattr("httpx.get", httpx_get)
 
-    with pytest.raises(AttestationNotVerifiedError) as exc_info:
+    with pytest.raises(AttestationFailedError) as exc_info:
         asyncio.run(
             talents._execute_with_tools(
                 {"provider": "google"},
@@ -176,12 +207,13 @@ def test_confidential_cogitate_stops_before_any_provider_dispatch(
             )
         )
 
-    _assert_attestation_not_verified(exc_info.value)
+    _assert_attestation_failed(exc_info.value)
     build_llm.assert_not_called()
     for mock in mocks:
         mock.assert_not_called()
     httpx_post.assert_not_called()
     httpx_get.assert_not_called()
+    establish.assert_called_once()
 
 
 def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
@@ -198,7 +230,6 @@ def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
         "credential": "confidential-credential",
     }
     _write_journal_config(tmp_path, config)
-    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
     httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
     monkeypatch.setattr("httpx.get", httpx_get)
 
@@ -219,25 +250,31 @@ def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
 def test_confidential_attestation_error_is_non_retryable(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
     _write_journal_config(tmp_path, _confidential_config())
-    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
 
     assert talents._is_retryable_error(AttestationNotVerifiedError()) is False
     for exc in (AttestationFailedError("x"), AttestationStaleError("x")):
         assert talents._is_retryable_error(exc) is False
         assert talents._should_fallback(exc) is False
-    assert models._CONFIDENTIAL_ATTESTATION_VERIFIER is None
+    from solstone.think.services.spp_transport import verify_confidential_attestation
 
-    with pytest.raises(AttestationNotVerifiedError):
+    assert (
+        models._confidential_attestation_verifier() is verify_confidential_attestation
+    )
+
+    with pytest.raises(AttestationFailedError) as exc_info:
         asyncio.run(
             talents._execute_with_tools(
                 {"provider": "google", "backup": "anthropic"},
                 lambda _event: None,
             )
         )
+    _assert_attestation_failed(exc_info.value)
 
     for mock in mocks:
         mock.assert_not_called()
+    establish.assert_called_once()
 
 
 def test_confidential_gate_keys_on_provenance_not_provider_resolution(
@@ -248,18 +285,19 @@ def test_confidential_gate_keys_on_provenance_not_provider_resolution(
     config = _confidential_config(provider_pins=False)
     config["env"] = {"GOOGLE_API_KEY": "stray-google-key"}
     _write_journal_config(tmp_path, config)
-    monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
+    establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
     httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
     monkeypatch.setattr("httpx.post", httpx_post)
 
-    with pytest.raises(AttestationNotVerifiedError) as exc_info:
+    with pytest.raises(AttestationFailedError) as exc_info:
         models.generate("hello", "any.context")
 
-    _assert_attestation_not_verified(exc_info.value)
+    _assert_attestation_failed(exc_info.value)
     for mock in mocks:
         mock.assert_not_called()
     httpx_post.assert_not_called()
+    establish.assert_called_once()
 
 
 def test_confidential_stt_chokepoint_blocks_cloud_audio_egress(

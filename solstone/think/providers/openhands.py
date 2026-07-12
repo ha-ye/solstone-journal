@@ -133,12 +133,14 @@ def _build_llm(provider: str, model: str) -> Any:
 
     if provider == "local":
         from solstone.think.providers.local_endpoint import resolve_local_endpoint
+        from solstone.think.services.spp_transport import confidential_egress_base_url
 
         endpoint = resolve_local_endpoint()
         if not endpoint.is_bundled:
+            base_url = confidential_egress_base_url(endpoint.base_url)
             return LLM(
                 model=f"openai/{endpoint.served_model_id}",
-                base_url=f"{endpoint.base_url}/v1",
+                base_url=f"{base_url}/v1",
                 api_key=endpoint.credential or "EMPTY",
                 native_tool_calling=False,
                 timeout=LLM_TIMEOUT_S,

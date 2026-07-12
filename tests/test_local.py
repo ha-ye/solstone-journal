@@ -813,6 +813,127 @@ def test_run_generate_byo_posts_to_normalized_endpoint_and_skips_connect(monkeyp
     assert result["text"] == "hello"
 
 
+def test_run_generate_confidential_posts_to_forwarder_not_configured_endpoint(
+    monkeypatch,
+):
+    provider = _provider()
+
+    from solstone.think.providers import local_budget
+    from solstone.think.providers.local_endpoint import LocalEndpoint
+
+    configured_endpoint = "https://spp.example.test"
+    forwarder = "http://127.0.0.1:4567"
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: LocalEndpoint(
+            base_url=configured_endpoint,
+            served_model_id="confidential-model",
+            credential="confidential-token",
+            is_bundled=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_egress_base_url",
+        lambda base_url: forwarder if base_url == configured_endpoint else base_url,
+    )
+    monkeypatch.setattr(local_budget, "count_tokens", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {"content": "hello"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert result["text"] == "hello"
+    assert captured["url"] == f"{forwarder}/v1/chat/completions"
+    assert configured_endpoint not in captured["url"]
+
+
+def test_run_agenerate_confidential_posts_to_forwarder_not_configured_endpoint(
+    monkeypatch,
+):
+    provider = _provider()
+
+    from solstone.think.providers.local_endpoint import LocalEndpoint
+
+    configured_endpoint = "https://spp.example.test"
+    forwarder = "http://127.0.0.1:4567"
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: LocalEndpoint(
+            base_url=configured_endpoint,
+            served_model_id="confidential-model",
+            credential="confidential-token",
+            is_bundled=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_egress_base_url",
+        lambda base_url: forwarder if base_url == configured_endpoint else base_url,
+    )
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "choices": [
+                    {
+                        "message": {"content": "hello"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            captured.update({"url": url, **kwargs})
+            return Response()
+
+    import httpx
+
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    result = asyncio.run(provider.run_agenerate("hello", model=LOCAL_MODEL))
+
+    assert result["text"] == "hello"
+    assert captured["url"] == f"{forwarder}/v1/chat/completions"
+    assert configured_endpoint not in captured["url"]
+
+
 def test_run_generate_byo_body_omits_bundled_qwen_sampling(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
@@ -1312,6 +1433,46 @@ def test_openhands_local_byo_llm_kwargs(monkeypatch, credential, expected_key):
         "litellm_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     }
     assert "max_input_tokens" not in captured
+
+
+def test_openhands_local_confidential_llm_uses_forwarder(monkeypatch):
+    from solstone.think.providers import local_endpoint, openhands
+
+    configured_endpoint = "https://spp.example.test"
+    forwarder = "http://127.0.0.1:4567"
+    captured = {}
+
+    class FakeLLM:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    sdk_module = types.ModuleType("openhands.sdk")
+    sdk_module.LLM = FakeLLM
+    monkeypatch.setitem(sys.modules, "openhands.sdk", sdk_module)
+    monkeypatch.setattr(
+        local_endpoint,
+        "resolve_local_endpoint",
+        lambda: local_endpoint.LocalEndpoint(
+            base_url=configured_endpoint,
+            served_model_id="confidential-model",
+            credential="confidential-token",
+            is_bundled=False,
+        ),
+    )
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_egress_base_url",
+        lambda base_url: forwarder if base_url == configured_endpoint else base_url,
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+
+    llm = openhands._build_llm("local", LOCAL_MODEL)
+
+    assert isinstance(llm, FakeLLM)
+    assert captured["base_url"] == f"{forwarder}/v1"
+    assert configured_endpoint not in captured["base_url"]
 
 
 def test_local_context_window_split_floor_vs_tier():

@@ -632,6 +632,8 @@ def run_generate(
 
     import httpx
 
+    from solstone.think.services.spp_transport import confidential_egress_base_url
+
     post_kwargs: dict[str, Any] = {
         "json": body,
         "timeout": timeout_s or _DEFAULT_TIMEOUT,
@@ -639,8 +641,9 @@ def run_generate(
     if endpoint.credential:
         post_kwargs["headers"] = {"Authorization": f"Bearer {endpoint.credential}"}
     try:
+        base_url = confidential_egress_base_url(endpoint.base_url)
         response = httpx.post(
-            f"{endpoint.base_url}/v1/chat/completions",
+            f"{base_url}/v1/chat/completions",
             **post_kwargs,
         )
         response.raise_for_status()
@@ -688,9 +691,14 @@ async def run_agenerate(
         if endpoint.credential:
             post_kwargs["headers"] = {"Authorization": f"Bearer {endpoint.credential}"}
         try:
+            from solstone.think.services.spp_transport import (
+                confidential_egress_base_url,
+            )
+
+            base_url = confidential_egress_base_url(endpoint.base_url)
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{endpoint.base_url}/v1/chat/completions", **post_kwargs
+                    f"{base_url}/v1/chat/completions", **post_kwargs
                 )
             response.raise_for_status()
             return _parse_response(response.json())
