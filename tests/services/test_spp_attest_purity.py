@@ -22,7 +22,7 @@ PACKAGE_DIR = (
 )
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "spp_attest"
 NVATTEST_FIXTURE_DIR = FIXTURE_DIR / "nvattest"
-PURE_EXCLUDED = {"nvgpu/appraise.py"}
+PURE_EXCLUDED = {"nvgpu/appraise.py", "ratls/channel.py"}
 PURE_NON_VACUITY = {
     "__init__.py",
     "binding.py",
@@ -34,6 +34,9 @@ PURE_NON_VACUITY = {
     "nvgpu/evidence.py",
     "nvgpu/errors.py",
     "nvgpu/__init__.py",
+    "ratls/__init__.py",
+    "ratls/contract.py",
+    "ratls/verify.py",
     "snp.py",
     "tlv.py",
     "tpm_quote.py",
@@ -84,7 +87,7 @@ WRITE_MODE_CHARS = frozenset({"w", "a", "x", "+"})
 
 
 def test_spp_attest_package_stays_pure_python_read_only_except_nvgpu_appraise() -> None:
-    assert PURE_EXCLUDED == {"nvgpu/appraise.py"}
+    assert PURE_EXCLUDED == {"nvgpu/appraise.py", "ratls/channel.py"}
     files = [
         path
         for path in sorted(PACKAGE_DIR.rglob("*.py"))
@@ -122,6 +125,31 @@ def test_nvgpu_appraise_impurity_is_narrow() -> None:
                 banned_import_roots=APPRAISE_BANNED_IMPORT_ROOTS,
                 banned_write_attrs=BANNED_WRITE_ATTRS - {"unlink"},
                 ban_solstone_utils=True,
+                os_names=os_names,
+            )
+        )
+
+    assert findings == []
+
+
+def test_ratls_channel_impurity_is_narrow() -> None:
+    path = PACKAGE_DIR / "ratls" / "channel.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports = _import_roots(tree)
+
+    assert "socket" in imports
+    assert not (
+        {"httpx", "requests", "subprocess", "tempfile", "shutil", "urllib"} & imports
+    )
+
+    findings: list[str] = []
+    os_names = _imported_module_names(tree, "os")
+    for node in ast.walk(tree):
+        findings.extend(
+            _scan_node(
+                path,
+                node,
+                banned_import_roots=BANNED_IMPORT_ROOTS - {"socket"},
                 os_names=os_names,
             )
         )
