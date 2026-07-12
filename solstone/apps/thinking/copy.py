@@ -65,7 +65,7 @@ CONFIDENTIAL_SETUP = {
 CONFIDENTIAL_ATTESTATION_STATES = {
     "off": "",
     "verifying": "checking the hardware…",
-    "verified": "checked {checked}",
+    "verified": "{legs} · {substrate} · checked {checked}",
     "failed": "couldn't verify the service — sol isn't sending.",
     "stale": "your journal needs to re-check the service before sending.",
     "unreachable": "can't reach confidential processing right now — sol isn't sending.",

@@ -26,6 +26,10 @@ def _node_script(body: str) -> str:
         extract_js_function(source, "formatCopy"),
         extract_js_function(source, "confidentialOperationIsTerminal"),
         extract_js_function(source, "confidentialOperationRender"),
+        extract_js_function(source, "confidentialLegsLabel"),
+        extract_js_function(source, "confidentialVerifiedValues"),
+        extract_js_function(source, "confidentialSetupMetaLine"),
+        extract_js_function(source, "confidentialNoticeLine"),
         extract_js_function(source, "confidentialAttestationRender"),
         extract_js_function(source, "clearConfidentialInProgressOperation"),
         extract_js_function(source, "confidentialGlanceForAttestation"),
@@ -56,13 +60,19 @@ def test_confidential_render_mappings_are_pure() -> None:
         _node_script(
             """
 const confidentialCopy = copy.confidential;
+const completeProvenance = {
+  legs: ['cpu', 'gpu'],
+  substrate: 'AMD SEV-SNP + NVIDIA GH100 A01 GSP BROM',
+  checked_at: '2026-07-12T12:00:00+00:00',
+};
+const verifiedLine = 'CPU + GPU · AMD SEV-SNP + NVIDIA GH100 A01 GSP BROM · checked just now';
 const verified = confidentialAttestationRender({
   state: 'verified',
-  provenance: {checked_at: '2026-07-12T12:00:00+00:00'},
+  provenance: completeProvenance,
 }, confidentialCopy, 'just now');
 assert(verified.pill === 'active', 'verified pill');
 assert(verified.tone === 'hot', 'verified tone');
-assert(verified.message === 'checked just now', 'verified message');
+assert(verified.message === verifiedLine, 'verified message');
 
 const failed = confidentialAttestationRender({state: 'failed'}, confidentialCopy);
 assert(failed.tone === 'bad', 'failed tone');
@@ -75,12 +85,82 @@ const early = confidentialOperationRender({phase: 'early_access'}, confidentialC
 assert(early.message === 'confidential processing is coming — scouts get it first.', 'early access copy');
 assert(confidentialOperationIsTerminal({phase: 'early_access'}), 'early access terminal');
 
-const glance = confidentialGlanceForAttestation({state: 'verified', provenance: {}}, copy, '1 min ago');
+const glance = confidentialGlanceForAttestation(
+  {state: 'verified', provenance: completeProvenance},
+  copy,
+  'just now',
+);
 assert(glance.label === 'sol is thinking with', 'verified glance label');
-assert(glance.detail === 'checked 1 min ago', 'verified glance detail');
+assert(glance.detail === verifiedLine, 'verified glance detail');
 const blocked = confidentialGlanceForAttestation({state: 'unreachable'}, copy);
 assert(blocked.label === 'sol is holding', 'blocked glance label');
 assert(blocked.detail === "can't reach confidential processing right now — sol isn't sending.", 'blocked glance detail');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_confidential_verified_render_and_setup_lines() -> None:
+    _run_node(
+        _node_script(
+            """
+const confidentialCopy = copy.confidential;
+const substrate = 'AMD SEV-SNP + NVIDIA GH100 A01 GSP BROM';
+const completeProvenance = {
+  legs: ['cpu', 'gpu'],
+  substrate,
+  checked_at: '2026-07-12T12:00:00+00:00',
+};
+const expectedLine = `CPU + GPU · ${substrate} · checked 1 min ago`;
+const verifiedAttestation = {state: 'verified', provenance: completeProvenance};
+const verified = confidentialAttestationRender(verifiedAttestation, confidentialCopy, '1 min ago');
+const verifiedGlance = confidentialGlanceForAttestation(verifiedAttestation, copy, '1 min ago');
+assert(verified.message === expectedLine, 'verified setup and lane-card line');
+assert(verifiedGlance.detail === expectedLine, 'verified glance line');
+assert(verified.message === verifiedGlance.detail, 'verified surfaces share formatter');
+assert(confidentialSetupMetaLine(verifiedAttestation, 'just now') === '', 'verified meta hidden');
+
+for (const state of ['failed', 'stale', 'unreachable']) {
+  assert(
+    confidentialSetupMetaLine({state}, 'just now') === 'last checked just now',
+    `${state} meta line`,
+  );
+  assert(confidentialSetupMetaLine({state}, '') === '', `${state} meta hidden without time`);
+}
+
+const earlyNotice = confidentialNoticeLine({phase: 'early_access'}, confidentialCopy);
+assert(earlyNotice.hidden === false, 'early notice visible');
+assert(
+  earlyNotice.text === 'confidential processing is coming — scouts get it first.',
+  'early notice text',
+);
+for (const operation of [
+  null,
+  {phase: 'starting'},
+  {phase: 'waiting'},
+  {phase: 'repair_needed'},
+  {phase: 'not_verified'},
+]) {
+  const notice = confidentialNoticeLine(operation, confidentialCopy);
+  assert(notice.text === '', `notice text hidden for ${operation?.phase || 'none'}`);
+  assert(notice.hidden === true, `notice hidden for ${operation?.phase || 'none'}`);
+}
+
+for (const provenance of [
+  {substrate, checked_at: '2026-07-12T12:00:00+00:00'},
+  {legs: ['cpu', 'gpu'], substrate: '   ', checked_at: '2026-07-12T12:00:00+00:00'},
+  completeProvenance,
+]) {
+  const checkedLabel = provenance === completeProvenance ? '' : 'just now';
+  const incomplete = {state: 'verified', provenance};
+  const rendered = confidentialAttestationRender(incomplete, confidentialCopy, checkedLabel);
+  const glance = confidentialGlanceForAttestation(incomplete, copy, checkedLabel);
+  assert(rendered.pill === 'off', 'incomplete verified pill');
+  assert(rendered.tone === '', 'incomplete verified tone');
+  assert(rendered.message === '', 'incomplete verified message');
+  assert(glance.detail === '', 'incomplete verified glance detail');
+}
 console.log('PASS');
 """
         )

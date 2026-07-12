@@ -66,6 +66,14 @@ def test_workspace_renders_each_lane(settings_env):
     assert 'data-open-view="confidential-setup"' in html
     assert 'id="confidentialLaneOperation"' in html
     assert 'id="confidentialLaneOperationLink"' in html
+    assert (
+        re.search(
+            r'<div\b(?=[^>]*\bclass="notice")(?=[^>]*\bid="confidentialNotice")'
+            r"(?=[^>]*\bhidden\b)[^>]*>",
+            html,
+        )
+        is not None
+    )
     assert 'id="confidentialLaneStatus"' in html
     assert 'id="confidentialEnable"' in html
     assert 'id="confidentialRecheck"' in html
@@ -242,7 +250,7 @@ def test_thinking_deck_copy_constants() -> None:
         "confidential_verified": {
             "label": "sol is thinking with",
             "value": "confidential processing",
-            "detail": "checked {checked}",
+            "detail": "{legs} · {substrate} · checked {checked}",
         },
         "confidential_blocked": {
             "label": "sol is holding",
@@ -356,7 +364,7 @@ def test_thinking_deck_copy_constants() -> None:
     assert thinking_copy.CONFIDENTIAL_ATTESTATION_STATES == {
         "off": "",
         "verifying": "checking the hardware…",
-        "verified": "checked {checked}",
+        "verified": "{legs} · {substrate} · checked {checked}",
         "failed": "couldn't verify the service — sol isn't sending.",
         "stale": "your journal needs to re-check the service before sending.",
         "unreachable": "can't reach confidential processing right now — sol isn't sending.",
