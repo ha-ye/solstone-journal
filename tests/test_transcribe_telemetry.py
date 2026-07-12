@@ -8,6 +8,7 @@ See solstone/observe/transcribe/failure-and-telemetry.md for the field contract.
 
 from __future__ import annotations
 
+import argparse
 import importlib
 import json
 from pathlib import Path
@@ -18,6 +19,7 @@ import pytest
 
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
+from solstone.think.providers.parakeet_server import ParakeetServerNotReady
 
 # A string that exists nowhere but in the (mocked) transcript. If it shows up in a
 # serialized event, transcript content leaked into telemetry.
@@ -99,6 +101,58 @@ def _run_success(
     return mock_send.call_args.kwargs
 
 
+def _run_parakeet_cpp_process_one_event(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_path: Path,
+    audio_buffer,
+    vad_result,
+    *,
+    stt_error: Exception,
+    expected_exit: int,
+    placement: str | None = None,
+    configured_device: str | None = "auto",
+) -> dict:
+    from solstone.observe.transcribe import _parakeet_cpp as parakeet_cpp
+    from solstone.observe.transcribe.main import _process_one
+
+    journal_root = raw_path.parents[4]
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_root))
+    if placement is not None:
+        parakeet_cpp.parakeet_server.write_parakeet_placement(placement)
+    parakeet_cpp_config = {}
+    if configured_device is not None:
+        parakeet_cpp_config["device"] = configured_device
+    args = argparse.Namespace(backend=None, cpu=False, model=None, redo=False)
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(journal_root),
+        ),
+        patch("solstone.observe.transcribe.main.load_audio", return_value=audio_buffer),
+        patch("solstone.observe.vad.run_vad", return_value=vad_result),
+        patch("solstone.observe.vad.reduce_audio", return_value=(None, None)),
+        patch("solstone.observe.transcribe.main.tag_audio", return_value={"tags": {}}),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe",
+            side_effect=stt_error,
+        ),
+        patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            _process_one(
+                raw_path,
+                args,
+                {"backend": "parakeet-cpp", "parakeet-cpp": parakeet_cpp_config},
+                "parakeet-cpp",
+                [],
+            )
+
+    assert exc_info.value.code == expected_exit
+    assert mock_send.call_args.args[:2] == ("observe", "transcribed")
+    return mock_send.call_args.kwargs
+
+
 def test_success_event_carries_stage_timings_and_envelope(
     raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
 ) -> None:
@@ -157,8 +211,109 @@ def test_success_event_and_header_use_parakeet_placement_record(
     kwargs = _run_success(raw_path, audio_buffer, vad_result, backend_module)
 
     assert kwargs["device"] == placement
+    assert kwargs["device"] != "auto"
     header = json.loads(raw_path.with_suffix(".jsonl").read_text().splitlines()[0])
     assert header["device"] == placement
+    assert header["device"] != "auto"
+
+
+@pytest.mark.parametrize("placement", ["cpu", "gpu"])
+def test_deferred_event_uses_parakeet_placement_record(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_path: Path,
+    audio_buffer: np.ndarray,
+    vad_result: VadResult,
+    placement: str,
+) -> None:
+    from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
+
+    kwargs = _run_parakeet_cpp_process_one_event(
+        monkeypatch,
+        raw_path,
+        audio_buffer,
+        vad_result,
+        stt_error=ParakeetServerNotReady("warming", retry_reason="no_port"),
+        expected_exit=EXIT_PROVIDER_BLOCKED,
+        placement=placement,
+        configured_device="auto",
+    )
+
+    assert kwargs["outcome"] == "deferred"
+    assert kwargs["backend"] == "parakeet-cpp"
+    assert kwargs["device"] == placement
+    assert kwargs["device"] != "auto"
+    assert "model" not in kwargs
+
+
+def test_deferred_event_uses_configured_device_without_parakeet_placement_record(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_path: Path,
+    audio_buffer: np.ndarray,
+    vad_result: VadResult,
+) -> None:
+    from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
+
+    kwargs = _run_parakeet_cpp_process_one_event(
+        monkeypatch,
+        raw_path,
+        audio_buffer,
+        vad_result,
+        stt_error=ParakeetServerNotReady("warming", retry_reason="no_port"),
+        expected_exit=EXIT_PROVIDER_BLOCKED,
+        placement=None,
+        configured_device="auto",
+    )
+
+    assert kwargs["outcome"] == "deferred"
+    assert kwargs["device"] == "auto"
+
+
+def test_deferred_event_reports_parakeet_placement_when_config_has_no_device(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_path: Path,
+    audio_buffer: np.ndarray,
+    vad_result: VadResult,
+) -> None:
+    from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
+
+    kwargs = _run_parakeet_cpp_process_one_event(
+        monkeypatch,
+        raw_path,
+        audio_buffer,
+        vad_result,
+        stt_error=ParakeetServerNotReady("warming", retry_reason="no_port"),
+        expected_exit=EXIT_PROVIDER_BLOCKED,
+        placement="cpu",
+        configured_device=None,
+    )
+
+    assert kwargs["outcome"] == "deferred"
+    assert kwargs["device"] == "cpu"
+
+
+@pytest.mark.parametrize("placement", ["cpu", "gpu"])
+def test_failed_event_uses_parakeet_placement_record(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_path: Path,
+    audio_buffer: np.ndarray,
+    vad_result: VadResult,
+    placement: str,
+) -> None:
+    kwargs = _run_parakeet_cpp_process_one_event(
+        monkeypatch,
+        raw_path,
+        audio_buffer,
+        vad_result,
+        stt_error=RuntimeError("boom"),
+        expected_exit=1,
+        placement=placement,
+        configured_device="auto",
+    )
+
+    assert kwargs["outcome"] == "failed"
+    assert kwargs["backend"] == "parakeet-cpp"
+    assert kwargs["device"] == placement
+    assert kwargs["device"] != "auto"
 
 
 def test_failed_event_is_content_free_even_when_the_exception_message_is_not(

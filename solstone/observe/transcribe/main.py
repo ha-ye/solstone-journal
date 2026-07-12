@@ -372,6 +372,13 @@ def _peak_rss_mib() -> int:
     return int(peak / divisor)
 
 
+def _uses_parakeet_cpp(backend: str | None) -> bool:
+    """Return whether this backend dispatches to the Linux parakeet.cpp path."""
+    return backend == "parakeet-cpp" or (
+        backend == "parakeet" and sys.platform.startswith("linux")
+    )
+
+
 def _emit_transcribed(
     event: dict,
     *,
@@ -396,10 +403,17 @@ def _emit_transcribed(
     if backend:
         event["backend"] = backend
 
-    # device: resolved value when the backend told us, else the configured value.
-    # Deferred events run before get_model_info(), and probing for it costs a
-    # helper subprocess on the CoreML backend -- so it is omitted, not guessed.
-    device = (model_info or {}).get("device") or (backend_config or {}).get("device")
+    # device: backend-reported value first, then parakeet.cpp's supervisor placement
+    # when that record exists, then configured value. Deferred events still omit
+    # model because resolving it can cost a CoreML helper subprocess.
+    device = (model_info or {}).get("device")
+    if not device:
+        if _uses_parakeet_cpp(backend):
+            from solstone.observe.transcribe import _parakeet_cpp
+
+            device = _parakeet_cpp.resolve_serving_device(backend_config or {})
+        else:
+            device = (backend_config or {}).get("device")
     if device:
         event["device"] = device
     model = (model_info or {}).get("model")
@@ -1455,29 +1469,23 @@ def _process_one(
         # Pass entities to Rev.ai for custom vocabulary
         if entity_names:
             backend_config["entities"] = entity_names
-    elif backend == "parakeet":
-        if sys.platform.startswith("linux"):
-            parakeet_cpp_config = transcribe_config.get("parakeet-cpp", {})
-            backend_config = {
-                k: v for k, v in parakeet_cpp_config.items() if k == "device"
-            }
-        else:
-            parakeet_config = transcribe_config.get("parakeet", {})
-            backend_config = {
-                k: v
-                for k, v in parakeet_config.items()
-                if k
-                in (
-                    "model_version",
-                    "cache_dir",
-                    "timeout_sec",
-                    "device",
-                    "quantization",
-                )
-            }
-    elif backend == "parakeet-cpp":
+    elif _uses_parakeet_cpp(backend):
         parakeet_cpp_config = transcribe_config.get("parakeet-cpp", {})
         backend_config = {k: v for k, v in parakeet_cpp_config.items() if k == "device"}
+    elif backend == "parakeet":
+        parakeet_config = transcribe_config.get("parakeet", {})
+        backend_config = {
+            k: v
+            for k, v in parakeet_config.items()
+            if k
+            in (
+                "model_version",
+                "cache_dir",
+                "timeout_sec",
+                "device",
+                "quantization",
+            )
+        }
     elif backend == "gemini":
         # Gemini backend - model resolved by think.models based on context
         # Entity names handled by enrich step, not passed to transcription

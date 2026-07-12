@@ -40,6 +40,14 @@ def _validate_config(config: dict) -> str:
     return device
 
 
+def resolve_serving_device(config: dict, *, default: str | None = None) -> str | None:
+    """Return supervisor placement when recorded, else the configured device."""
+    placement = parakeet_server.read_parakeet_placement()
+    if placement is not None:
+        return placement
+    return config.get("device", default)
+
+
 def _audio_to_wav_bytes(audio_array: np.ndarray, sample_rate: int) -> bytes:
     import soundfile as sf
 
@@ -219,10 +227,10 @@ def get_model_info(config: dict) -> dict:
     """Return parakeet.cpp model metadata for transcript JSONL headers."""
     _require_linux()
     device = _validate_config(config)
-    placement = parakeet_server.read_parakeet_placement()
+    resolved_device = resolve_serving_device(config, default=device)
     return {
         "model": parakeet_readiness.PARAKEET_CPP_MODEL_FILENAME,
-        "device": placement or device,
+        "device": resolved_device,
         "compute_type": _COMPUTE_TYPE,
         "per_word_confidence": True,
     }
