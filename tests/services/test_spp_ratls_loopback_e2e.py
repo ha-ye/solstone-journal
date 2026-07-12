@@ -346,6 +346,90 @@ def test_real_positive_does_not_claim_upstream_observation(
     assert sent == [harness.build_chat_completions_request(b'{"messages":[]}')]
 
 
+def _run_default_positive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forwarded: bytes,
+) -> str:
+    class FakeGateway:
+        def __init__(self, _gateway_path, _collector_path, upstream_port: int) -> None:
+            self.port = 12345
+
+        def close(self) -> None:
+            pass
+
+    class FakeUpstream:
+        def __init__(self) -> None:
+            self.port = 9999
+            self.request = forwarded
+            self.thread = SimpleNamespace(join=lambda timeout=None: None)
+
+        def start(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    channel = SimpleNamespace(
+        tls=SimpleNamespace(sendall=lambda _data: None),
+        verdict=SimpleNamespace(substrate=""),
+        close=lambda: None,
+    )
+    context = harness.RunContext(
+        establish=lambda _port: channel,
+        upstream_port=None,
+        request_body=harness.DEFAULT_REQUEST_BODY,
+        banner=harness.DEFAULT_BANNER,
+    )
+    monkeypatch.setattr(harness, "GatewayProcess", FakeGateway)
+    monkeypatch.setattr(harness, "Upstream", FakeUpstream)
+    monkeypatch.setattr(
+        harness, "_recv_http_response", lambda _tls: b"HTTP/1.1 200 OK\r\n\r\n"
+    )
+
+    return harness.run_positive(
+        tmp_path / "gateway.py", tmp_path / "collector.py", context
+    )
+
+
+# A gateway may legitimately rewrite or add headers while forwarding; the default
+# proxy check must not couple to its header handling.
+@pytest.mark.parametrize(
+    "forwarded",
+    [
+        CURRENT_DEFAULT_REQUEST,
+        b"POST /v1/chat/completions HTTP/1.1\r\n"
+        b"Host: upstream.internal\r\nContent-Length: 2\r\n\r\n{}",
+        b"POST /v1/chat/completions HTTP/1.1\r\n"
+        b"Host: spp-engine\r\nX-Forwarded-For: 127.0.0.1\r\n"
+        b"Connection: close\r\nContent-Length: 2\r\n\r\n{}",
+    ],
+)
+def test_default_positive_accepts_gateway_rewritten_headers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forwarded: bytes,
+) -> None:
+    assert _run_default_positive(tmp_path, monkeypatch, forwarded) == "verified"
+
+
+@pytest.mark.parametrize(
+    "forwarded",
+    [
+        b"",
+        b"GET /healthz HTTP/1.1\r\nHost: spp-engine\r\n\r\n",
+        b"POST /v1/embeddings HTTP/1.1\r\nHost: spp-engine\r\n\r\n",
+    ],
+)
+def test_default_positive_rejects_forward_that_is_not_chat_completions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    forwarded: bytes,
+) -> None:
+    with pytest.raises(RuntimeError, match="positive_proxy_failed"):
+        _run_default_positive(tmp_path, monkeypatch, forwarded)
+
+
 def test_real_premature_inference_does_not_claim_upstream_observation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

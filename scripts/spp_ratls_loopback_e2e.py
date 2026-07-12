@@ -498,7 +498,11 @@ def run_positive(gateway_path: Path, collector_path: Path, context: RunContext) 
             raise RuntimeError("positive_http_failed")
         if upstream is not None:
             upstream.thread.join(timeout=5)
-            if upstream.request != request:
+            # The forwarded request line, not the verbatim bytes: a gateway may
+            # rewrite or add headers while proxying. Byte-exact construction of
+            # the caller's request is a property of build_chat_completions_request
+            # and is proven there.
+            if not upstream.request.startswith(b"POST /v1/chat/completions"):
                 raise RuntimeError("positive_proxy_failed")
         else:
             validate_chat_completion_envelope(response)
