@@ -414,7 +414,7 @@ def init_finalize() -> Any:
     if lane is None or lane == "":
         redirect_target = url_for("app:thinking.index")
     elif isinstance(lane, str) and lane in valid_lanes:
-        lane_target = "main" if lane == "confidential" else f"{lane}-setup"
+        lane_target = f"{lane}-setup"
         redirect_target = url_for("app:thinking.index") + f"#{lane_target}"
     else:
         return error_response(

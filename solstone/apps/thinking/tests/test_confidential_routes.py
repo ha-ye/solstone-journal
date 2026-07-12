@@ -6,13 +6,15 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from solstone.convey import create_app
 from solstone.think.journal_config import write_journal_config
-from solstone.think.services import operations, spp, spp_handoff
+from solstone.think.services import operations, spp, spp_handoff, spp_transport
+from solstone.think.services.spp_attest.cadence import AttestationSession
 
 
 def _payload(suffix: str = "one") -> dict[str, str]:
@@ -116,7 +118,39 @@ def test_enable_confidential_returns_operation_and_lands_not_verified(
     assert payload["active_lane"]["confidential_attestation"] == {
         "state": "verifying",
         "provenance": None,
+        "last_verified": None,
         "reason": "attestation_not_yet_verified",
+    }
+
+
+def test_enable_confidential_early_access_stays_off(
+    thinking_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def runner(**_kwargs):
+        return operations.HandoffResult("early_access", None, False)
+
+    monkeypatch.setattr(spp_handoff, "run_confidential_handoff", runner)
+
+    response = thinking_client.post("/app/thinking/api/confidential/enable")
+
+    assert response.status_code == 202
+    _wait_until(
+        lambda: (
+            _providers(thinking_client)["active_lane"]["confidential_operation"][
+                "phase"
+            ]
+            == "early_access"
+        )
+    )
+    payload = _providers(thinking_client)
+    assert payload["active_lane"]["confidential_enabled"] is False
+    assert payload["active_lane"]["confidential_provenance_configured"] is False
+    assert payload["active_lane"]["confidential_attestation"] == {
+        "state": "off",
+        "provenance": None,
+        "last_verified": None,
+        "reason": "confidential_not_configured",
     }
 
 
@@ -157,6 +191,15 @@ def test_disable_confidential_restores_synchronously(
     thinking_client, journal_copy: Path
 ):
     spp.provision_confidential_handoff(_payload("disable"))
+    now = datetime.now(timezone.utc)
+    spp.record_attestation_verified(
+        AttestationSession(
+            verdict=object(),
+            started_at=now,
+            tpm_heartbeat_at=now,
+            gpu_reattest_at=now,
+        )
+    )
 
     response = thinking_client.post("/app/thinking/api/confidential/disable")
 
@@ -169,6 +212,41 @@ def test_disable_confidential_restores_synchronously(
     assert config["providers"]["cogitate"]["provider"] == "openai"
     assert config["providers"]["local"] == {}
     assert "confidential" not in config["services"]
+    state = spp.get_attestation_state()
+    assert state.session is None
+    assert state.failure is None
+    assert state.last_verified is None
+
+
+def test_recheck_confidential_rejects_when_off(thinking_client) -> None:
+    response = thinking_client.post("/app/thinking/api/confidential/recheck")
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_operation_for_state"
+
+
+def test_recheck_confidential_returns_refreshed_provider_state(
+    thinking_client,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    spp.provision_confidential_handoff(_payload("recheck"))
+
+    def recheck() -> None:
+        spp.record_attestation_failed("failed", "gpu_nonce_mismatch")
+
+    monkeypatch.setattr(spp_transport, "recheck_confidential_attestation", recheck)
+
+    response = thinking_client.post("/app/thinking/api/confidential/recheck")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["active_lane"]["confidential_enabled"] is True
+    assert payload["active_lane"]["confidential_attestation"] == {
+        "state": "failed",
+        "provenance": None,
+        "last_verified": None,
+        "reason": "attestation_failed",
+    }
 
 
 def test_confidential_routes_and_provider_payload_are_secret_free(

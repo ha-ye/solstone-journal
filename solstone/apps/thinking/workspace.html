@@ -509,13 +509,14 @@
         </article>
 
         <div class="laneslot" id="confidentialLaneSlot">
-          <article class="lane" id="lane-confidential">
+          <article class="lane" id="lane-confidential" data-lane="confidential" data-open-view="confidential-setup" role="button" tabindex="0">
             <div class="lanehead">
               <h2 id="confidentialLaneTitle"></h2>
               <span class="pill" id="confidentialLanePill"></span>
             </div>
             <p id="confidentialLaneDescription"></p>
             <span class="activetag" id="confidentialActiveTag" hidden>active</span>
+            <button type="button" class="trail" data-open-view="confidential-setup" id="confidentialLaneStatus"></button>
           </article>
           <button type="button" class="lanemore" id="confidentialLaneMore" aria-controls="lane-detail-confidential" aria-expanded="false"></button>
           <div class="lanedetail" id="lane-detail-confidential" hidden></div>
@@ -582,10 +583,47 @@
         </div>
         <div class="message" id="vertexStatus"></div>
       </details>
-    </section>
+      </section>
 
-    <section class="view" data-view="byo-setup" hidden>
-      <button type="button" class="backlink" id="byoBackLink">‹ thinking</button>
+      <section class="view" data-view="confidential-setup" hidden>
+        <button type="button" class="backlink" data-open-view="main">‹ thinking</button>
+        <div class="panelbody">
+          <h2 id="confidentialSetupHeading"></h2>
+          <p class="intro" id="confidentialSetupSub"></p>
+        </div>
+
+        <div class="app-onoff" id="confidentialSetupCard">
+          <div class="cardtop">
+            <h3 id="confidentialSetupTitle"></h3>
+            <span class="pill" id="confidentialSetupPill">off</span>
+          </div>
+          <p class="gsub" id="confidentialSetupState"></p>
+          <p class="meta" id="confidentialSetupMeta"></p>
+        </div>
+
+        <section class="panelbody">
+          <div class="lanedetail" id="confidentialSetupTrust">
+            <div class="lanedetail-heading" id="confidentialTrustHeading"></div>
+            <div class="lanedetail-sub" id="confidentialTrustSub"></div>
+            <div class="lanedetail-line" id="confidentialTrustEgress"></div>
+            <div class="lanedetail-claims" id="confidentialTrustClaims"></div>
+            <div class="lanedetail-line" id="confidentialTrustFailClosed"></div>
+            <div class="lanedetail-line" id="confidentialTrustSubstrate"></div>
+          </div>
+        </section>
+
+        <div class="message" id="confidentialLaneOperation"></div>
+        <a id="confidentialLaneOperationLink" class="textlink" href="" target="_blank" rel="noopener noreferrer" hidden></a>
+        <div class="notice" id="confidentialNotice"></div>
+        <div class="actions">
+          <button type="button" class="btn primary" id="confidentialEnable"></button>
+          <button type="button" class="btn" id="confidentialRecheck"></button>
+          <button type="button" class="btn ghost" id="confidentialDisable"></button>
+        </div>
+      </section>
+
+      <section class="view" data-view="byo-setup" hidden>
+        <button type="button" class="backlink" id="byoBackLink">‹ thinking</button>
       <div class="panelbody">
         <h2 id="byoSetupTitle"></h2>
         <p class="intro" id="byoIntro"></p>

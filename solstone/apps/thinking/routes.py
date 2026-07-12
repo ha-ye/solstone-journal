@@ -62,8 +62,16 @@ from solstone.think.providers.local_endpoint import (
     normalize_local_endpoint_url,
     resolve_local_endpoint,
 )
-from solstone.think.services import operations, scout, scout_handoff, spp, spp_handoff
+from solstone.think.services import (
+    operations,
+    scout,
+    scout_handoff,
+    spp,
+    spp_handoff,
+    spp_transport,
+)
 from solstone.think.services.constants import SERVICE_SPP
+from solstone.think.services.spp_attest.cadence import AttestationSession
 from solstone.think.utils import CorruptConfigError, get_journal
 from solstone.think.utils import get_config as get_journal_config
 
@@ -103,6 +111,7 @@ _CONFIDENTIAL_PHASE_TO_PRODUCT = {
     "starting": "starting",
     "waiting": "waiting",
     "enabled": "not_verified",
+    "early_access": "early_access",
     "error": "repair_needed",
 }
 
@@ -116,30 +125,85 @@ def _remap_confidential_operation(raw: dict[str, Any] | None) -> dict[str, Any] 
     return payload
 
 
-def _confidential_attestation_payload(now: datetime) -> dict[str, Any]:
+def _owner_safe_attestation_provenance(
+    session: AttestationSession,
+) -> dict[str, Any] | None:
+    verdict = session.verdict
+    checked_at = verdict.checked_at
+    if not verdict.legs or not verdict.substrate.strip() or checked_at is None:
+        return None
+    return {
+        "legs": list(verdict.legs),
+        "substrate": verdict.substrate,
+        "checked_at": checked_at.astimezone(timezone.utc).isoformat(),
+    }
+
+
+def _confidential_attestation_payload(
+    now: datetime,
+    *,
+    configured: bool | None = None,
+) -> dict[str, Any]:
+    if configured is None:
+        configured = spp.confidential_provenance() is not None
+    if not configured:
+        return {
+            "state": "off",
+            "provenance": None,
+            "last_verified": None,
+            "reason": "confidential_not_configured",
+        }
+
     state = spp.get_attestation_state()
+    last_verified = (
+        _owner_safe_attestation_provenance(state.last_verified)
+        if state.last_verified is not None
+        else None
+    )
     if state.failure is not None:
-        return {"state": "failed", "provenance": None, "reason": "attestation_failed"}
+        if state.failure.kind == "unreachable":
+            return {
+                "state": "unreachable",
+                "provenance": None,
+                "last_verified": last_verified,
+                "reason": "attestation_unreachable",
+            }
+        return {
+            "state": "failed",
+            "provenance": None,
+            "last_verified": last_verified,
+            "reason": "attestation_failed",
+        }
 
     session = state.session
     if session is None:
         return {
             "state": "verifying",
             "provenance": None,
+            "last_verified": last_verified,
             "reason": "attestation_not_yet_verified",
         }
 
     if session.status(now) == "stale":
-        return {"state": "stale", "provenance": None, "reason": "attestation_stale"}
+        return {
+            "state": "stale",
+            "provenance": None,
+            "last_verified": last_verified,
+            "reason": "attestation_stale",
+        }
 
-    checked_at = session.verdict.checked_at.astimezone(timezone.utc).isoformat()
+    provenance = _owner_safe_attestation_provenance(session)
+    if provenance is None:
+        return {
+            "state": "failed",
+            "provenance": None,
+            "last_verified": last_verified,
+            "reason": "attestation_failed",
+        }
     return {
         "state": "verified",
-        "provenance": {
-            "legs": list(session.verdict.legs),
-            "substrate": session.verdict.substrate,
-            "checked_at": checked_at,
-        },
+        "provenance": provenance,
+        "last_verified": provenance,
         "reason": None,
     }
 
@@ -328,7 +392,8 @@ def _active_lane_payload(
             operations.operation_for_service(SERVICE_SPP)
         ),
         "confidential_attestation": _confidential_attestation_payload(
-            datetime.now(timezone.utc)
+            datetime.now(timezone.utc),
+            configured=confidential_provenance_present,
         ),
     }
 
@@ -487,6 +552,11 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         "vertex_credentials_email": vertex_creds_email,
         "scout_enabled": scout.is_scout_enabled(),
     }
+
+
+def _default_provider_payload() -> dict[str, Any]:
+    local_model_id = local_bootstrap.accepted_request_model(None) or LOCAL_MODEL
+    return _provider_payload(get_journal_config(), local_model_id)
 
 
 def _local_model_error(model: str) -> Any:
@@ -670,6 +740,21 @@ def confidential_disable() -> Any:
         )
     except Exception:
         logger.exception("error disabling confidential processing")
+        return _thinking_operation_failed()
+
+
+@thinking_bp.route("/api/confidential/recheck", methods=["POST"])
+def confidential_recheck() -> Any:
+    try:
+        if spp.confidential_provenance() is None:
+            return error_response(
+                INVALID_OPERATION_FOR_STATE,
+                detail="confidential processing is not set up.",
+            )
+        spp_transport.recheck_confidential_attestation()
+        return jsonify(_default_provider_payload())
+    except Exception:
+        logger.exception("error rechecking confidential processing")
         return _thinking_operation_failed()
 
 

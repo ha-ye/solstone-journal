@@ -101,5 +101,18 @@ def test_thinking_surface_avoids_forbidden_owner_terms():
     ):
         assert re.search(rf"\b{re.escape(term)}\b", combined, re.IGNORECASE) is None
 
-    for phrase in ("sol pbc", "this machine", "this device"):
-        assert re.search(rf"\b{re.escape(phrase)}\b", combined, re.IGNORECASE) is None
+    for phrase in (
+        "sol pbc",
+        "this machine",
+        "this device",
+        "sealed",
+        "sealed engine",
+        "not sol pbc's to read",
+        "only you can read it",
+        "checks the hardware before it sends",
+        "verified ✓",
+    ):
+        pattern = (
+            rf"\b{re.escape(phrase)}\b" if phrase[-1].isalnum() else re.escape(phrase)
+        )
+        assert re.search(pattern, combined, re.IGNORECASE) is None

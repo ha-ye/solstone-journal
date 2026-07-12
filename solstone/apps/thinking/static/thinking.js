@@ -10,6 +10,7 @@
     scout: null,
     install: null,
     installPollGeneration: 0,
+    confidentialPollGeneration: 0,
     confidentialDetailOpen: false,
     selectedByoProvider: '',
     byoMode: 'pick',
@@ -18,11 +19,13 @@
   let copy = {};
   let scoutCopy = {};
   const scoutTerminalPhases = new Set(['invited', 'requested', 'ended', 'repair_needed']);
+  const confidentialTerminalPhases = new Set(['not_verified', 'repair_needed', 'early_access']);
   const installInFlightStates = new Set(['resolving', 'downloading', 'verifying', 'installing']);
   const installTerminalStates = new Set(['idle', 'installed', 'failed']);
   const pollIntervalMs = 1500;
   const scoutPollMaxMs = 15 * 60 * 1000;
-  const views = new Set(['main', 'byo-setup', 'local-setup', 'lane-switch']);
+  const confidentialPollMaxMs = 15 * 60 * 1000;
+  const views = new Set(['main', 'byo-setup', 'confidential-setup', 'local-setup', 'lane-switch']);
   const providerEnv = {
     anthropic: 'ANTHROPIC_API_KEY',
     google: 'GOOGLE_API_KEY',
@@ -173,6 +176,140 @@
     return true;
   }
 
+  function confidentialOperationIsTerminal(operation) {
+    return !operation || confidentialTerminalPhases.has(operation.phase || '');
+  }
+
+  function confidentialOperationRender(operation, text) {
+    const phase = operation?.phase || '';
+    const states = text?.operation_states || {};
+    if (phase === 'starting' || phase === 'waiting') {
+      return {message: states[phase] || '', tone: '', active: true};
+    }
+    if (phase === 'early_access') {
+      return {message: states.early_access || '', tone: '', active: false};
+    }
+    if (phase === 'not_verified') {
+      return {message: '', tone: '', active: false};
+    }
+    if (phase === 'repair_needed') {
+      return {message: states.repair_needed || '', tone: 'error', active: false};
+    }
+    return {message: operation?.guidance || '', tone: '', active: false};
+  }
+
+  function confidentialAttestationRender(attestation, text, checkedLabel = '') {
+    const stateName = attestation?.state || 'off';
+    const states = text?.attestation_states || {};
+    const actions = text?.actions || {};
+    if (stateName === 'verified' && attestation?.provenance) {
+      return {
+        pill: 'active',
+        tone: 'hot',
+        message: formatCopy(states.verified || '', {checked: checkedLabel}),
+        action: actions.enabled || '',
+        recheck: false,
+        disabled: false,
+      };
+    }
+    if (stateName === 'failed' || stateName === 'stale' || stateName === 'unreachable') {
+      return {
+        pill: stateName === 'unreachable' ? 'unreachable' : 'not ready',
+        tone: 'bad',
+        message: states[stateName] || '',
+        action: actions.enabled || '',
+        recheck: true,
+        disabled: false,
+      };
+    }
+    if (stateName === 'verifying') {
+      return {
+        pill: 'checking',
+        tone: '',
+        message: states.verifying || '',
+        action: actions.enabled || '',
+        recheck: false,
+        disabled: false,
+      };
+    }
+    return {
+      pill: 'off',
+      tone: '',
+      message: '',
+      action: actions.off || '',
+      recheck: false,
+      disabled: false,
+    };
+  }
+
+  function confidentialGlanceForAttestation(attestation, text, checkedLabel = '') {
+    const glance = text?.glance || {};
+    const stateName = attestation?.state || 'off';
+    if (stateName === 'verified' && attestation?.provenance) {
+      const row = glance.confidential_verified || {};
+      return {
+        label: row.label || glance.lane_label || '',
+        value: row.value || '',
+        detail: formatCopy(row.detail || '', {checked: checkedLabel}),
+      };
+    }
+    if (stateName === 'verifying') {
+      const row = glance.confidential_checking || {};
+      return {
+        label: row.label || '',
+        value: row.value || '',
+        detail: row.detail || '',
+      };
+    }
+    const row = glance.confidential_blocked || {};
+    const message = text?.confidential?.attestation_states?.[stateName] || '';
+    return {
+      label: row.label || '',
+      value: row.value || '',
+      detail: formatCopy(row.detail || '', {message}),
+    };
+  }
+
+  async function pollConfidentialUntilTerminal({
+    fetchStatus,
+    sleepFn,
+    applyStatus,
+    isCurrent,
+    intervalMs,
+    maxElapsedMs,
+    initialStatus = null,
+    nowFn = Date.now,
+  }) {
+    const started = nowFn();
+    if (initialStatus) {
+      applyStatus(initialStatus);
+      if (confidentialOperationIsTerminal(initialStatus.active_lane?.confidential_operation)) return initialStatus;
+    }
+    while (isCurrent() && nowFn() - started < maxElapsedMs) {
+      const status = await fetchStatus();
+      applyStatus(status);
+      if (confidentialOperationIsTerminal(status?.active_lane?.confidential_operation)) return status;
+      await sleepFn(intervalMs);
+    }
+    if (!isCurrent()) return null;
+    throw new Error('confidential setup timed out');
+  }
+
+  function handleConfidentialPollError({
+    generation,
+    currentGeneration,
+    clearOperation,
+    stopPoll,
+    showError,
+    error,
+  }) {
+    if (generation !== currentGeneration()) return false;
+    clearOperation();
+    stopPoll();
+    showError(error?.message || '');
+    return true;
+  }
+
   function formatCopy(template, values = {}) {
     return String(template || '').replace(/\{(\w+)\}/g, (_, key) => values[key] ?? '');
   }
@@ -274,6 +411,9 @@
       refreshInstallStatus({autoResume: true}).catch((err) => {
         setMessage('localSetupMessage', err.message, 'error');
       });
+    }
+    if (target !== 'confidential-setup') {
+      stopConfidentialPoll();
     }
     document.querySelectorAll('#providers [data-view]').forEach((section) => {
       section.hidden = section.dataset.view !== target;
@@ -462,12 +602,12 @@
       setText('thinkingActiveValue', row.value || '');
       setText('thinkingActiveDetail', row.detail || '');
     } else if (brain.kind === 'confidential') {
-      setText('thinkingActiveLane', 'sol is waiting on');
-      setText('thinkingActiveValue', 'confidential verification');
-      setText(
-        'thinkingActiveDetail',
-        'hardware attestation is not yet verified, so thinking is blocked before anything leaves your journal.',
-      );
+      const attestation = activeLanePayload().confidential_attestation || {};
+      const checked = relativeTime(attestation.provenance?.checked_at || '');
+      const row = confidentialGlanceForAttestation(attestation, copy, checked);
+      setText('thinkingActiveLane', row.label || '');
+      setText('thinkingActiveValue', row.value || '');
+      setText('thinkingActiveDetail', row.detail || '');
     } else if (brain.kind === 'advanced') {
       setText('thinkingActiveLane', 'sol is thinking with');
       setText('thinkingActiveValue', 'an advanced split');
@@ -541,6 +681,108 @@
     };
   }
 
+  function confidentialCheckedLabel(attestation) {
+    return relativeTime(attestation?.provenance?.checked_at || '');
+  }
+
+  function renderConfidentialTrust() {
+    const beats = copy.confidential?.setup?.trust_beats || {};
+    setText('confidentialSetupHeading', beats.heading || '');
+    setText('confidentialSetupSub', beats.sub || '');
+    setText('confidentialTrustHeading', beats.heading || '');
+    setText('confidentialTrustSub', beats.sub || '');
+    setText('confidentialTrustEgress', beats.egress || '');
+    setText('confidentialTrustClaims', beats.claims || '');
+    setText('confidentialTrustFailClosed', beats.attestation || '');
+    setText('confidentialTrustSubstrate', beats.substrate || '');
+  }
+
+  function renderConfidentialCard() {
+    const active = activeLanePayload();
+    const lane = laneCopy('confidential');
+    const attestation = active.confidential_attestation || {state: 'off'};
+    const operation = active.confidential_operation;
+    const confidentialCopy = copy.confidential || {};
+    const checked = confidentialCheckedLabel(attestation);
+    const rendered = confidentialAttestationRender(attestation, confidentialCopy, checked);
+    const operationRendered = confidentialOperationRender(operation, confidentialCopy);
+    const operationActive = !!operation && !confidentialOperationIsTerminal(operation);
+
+    setCardActive('confidential', activeBrain().kind === 'confidential');
+    setPill(
+      'confidentialLanePill',
+      operationActive ? operation.phase || '' : rendered.pill,
+      operationActive ? '' : rendered.tone,
+    );
+    setText(
+      'confidentialLaneDescription',
+      operationRendered.message || rendered.message || lane.description || '',
+    );
+    setText(
+      'confidentialLaneStatus',
+      operationActive
+        ? 'continue in browser →'
+        : attestation.state === 'off'
+          ? confidentialCopy.actions?.off || ''
+          : rendered.recheck
+            ? confidentialCopy.actions?.recheck || ''
+            : 'manage →',
+    );
+  }
+
+  function renderConfidentialSetup() {
+    renderConfidentialTrust();
+    const active = activeLanePayload();
+    const attestation = active.confidential_attestation || {state: 'off'};
+    const operation = active.confidential_operation;
+    const configured = !!active.confidential_provenance_configured;
+    const confidentialCopy = copy.confidential || {};
+    const checked = confidentialCheckedLabel(attestation);
+    const rendered = confidentialAttestationRender(attestation, confidentialCopy, checked);
+    const operationRendered = confidentialOperationRender(operation, confidentialCopy);
+    const operationActive = !!operation && !confidentialOperationIsTerminal(operation);
+    const phase = operation?.phase || '';
+
+    setText('confidentialSetupTitle', activeLaneLabel('confidential'));
+    setPill(
+      'confidentialSetupPill',
+      operationActive ? phase : rendered.pill,
+      operationActive ? '' : rendered.tone,
+    );
+    setText('confidentialSetupState', operationRendered.message || rendered.message);
+    const last = attestation.last_verified?.checked_at
+      ? relativeTime(attestation.last_verified.checked_at)
+      : '';
+    setText(
+      'confidentialSetupMeta',
+      attestation.state === 'verified' && checked
+        ? `checked ${checked}`
+        : last
+          ? `last checked ${last}`
+          : '',
+    );
+    setMessage(
+      'confidentialLaneOperation',
+      operationRendered.message || '',
+      operationRendered.tone,
+    );
+    setLink(
+      'confidentialLaneOperationLink',
+      operation?.portal_url || '',
+      'continue in browser →',
+    );
+    setText(
+      'confidentialNotice',
+      phase === 'early_access' ? confidentialCopy.operation_states?.early_access || '' : '',
+    );
+    setButtonState('confidentialEnable', !configured && !operationActive, operationActive);
+    setButtonText('confidentialEnable', confidentialCopy.actions?.off || '');
+    setButtonState('confidentialDisable', configured, operationActive || !configured);
+    setButtonText('confidentialDisable', confidentialCopy.actions?.enabled || '');
+    setButtonState('confidentialRecheck', configured && rendered.recheck, operationActive);
+    setButtonText('confidentialRecheck', confidentialCopy.actions?.recheck || '');
+  }
+
   function renderMainLanes() {
     const brain = activeBrain();
     const localLane = laneCopy('local');
@@ -598,9 +840,7 @@
       setText('localLaneStatus', 'set up →');
     }
 
-    setCardActive('confidential', brain.kind === 'confidential');
-    setPill('confidentialLanePill', confidentialLane.tag || '');
-    setText('confidentialLaneDescription', confidentialLane.description || '');
+    renderConfidentialCard();
     renderConfidentialDetailPanel();
 
     const configured = configuredProviders();
@@ -1159,14 +1399,19 @@
     renderByo();
     renderLocalEndpoint();
     renderScout();
+    renderConfidentialSetup();
     renderLocal();
     renderLaneSwitch();
   }
 
-  async function refreshProviders() {
+  async function refreshProvidersPayload() {
     const model = $('localModelSelect')?.value;
     const suffix = model ? `?local_model=${encodeURIComponent(model)}` : '';
-    state.providers = await api(`api/providers${suffix}`);
+    return api(`api/providers${suffix}`);
+  }
+
+  async function refreshProviders() {
+    state.providers = await refreshProvidersPayload();
     renderAll();
   }
 
@@ -1216,6 +1461,50 @@
 
   function stopInstallPoll() {
     state.installPollGeneration += 1;
+  }
+
+  function stopConfidentialPoll() {
+    state.confidentialPollGeneration += 1;
+  }
+
+  function applyConfidentialProviders(payload, generation) {
+    if (generation !== undefined && generation !== state.confidentialPollGeneration) return false;
+    state.providers = payload || state.providers;
+    renderAll();
+    return true;
+  }
+
+  function startConfidentialPoll(initialStatus = null) {
+    stopConfidentialPoll();
+    const generation = state.confidentialPollGeneration;
+    return pollConfidentialUntilTerminal({
+      fetchStatus: refreshProvidersPayload,
+      sleepFn: sleep,
+      applyStatus: (payload) => applyConfidentialProviders(payload, generation),
+      isCurrent: () => generation === state.confidentialPollGeneration,
+      intervalMs: pollIntervalMs,
+      maxElapsedMs: confidentialPollMaxMs,
+      initialStatus,
+    })
+      .then((payload) => {
+        if (generation !== state.confidentialPollGeneration) return;
+        if (payload !== null) stopConfidentialPoll();
+      })
+      .catch((err) => {
+        handleConfidentialPollError({
+          generation,
+          currentGeneration: () => state.confidentialPollGeneration,
+          clearOperation: () => {
+            if (state.providers.active_lane) {
+              state.providers.active_lane.confidential_operation = null;
+            }
+            renderAll();
+          },
+          stopPoll: stopConfidentialPoll,
+          showError: (message) => setMessage('confidentialLaneOperation', message, 'error'),
+          error: err,
+        });
+      });
   }
 
   async function fetchInstallStatus(model = selectedLocalModelId()) {
@@ -1359,6 +1648,35 @@
     const result = await api('api/scout/disable', {method: 'POST'});
     state.scout = result.status || state.scout;
     await Promise.all([refreshScout(), refreshProviders(), refreshKeys()]);
+    showView('main');
+  }
+
+  async function enableConfidential() {
+    setMessage('confidentialLaneOperation', '');
+    let start;
+    try {
+      start = await api('api/confidential/enable', {method: 'POST'});
+    } catch (err) {
+      setMessage('confidentialLaneOperation', err.message, 'error');
+      return;
+    }
+    if (state.providers.active_lane) {
+      state.providers.active_lane.confidential_operation = start?.operation || null;
+      renderAll();
+    }
+    openConsentTab(start?.operation);
+    await startConfidentialPoll();
+  }
+
+  async function recheckConfidential() {
+    setMessage('confidentialLaneOperation', copy.confidential?.attestation_states?.verifying || '');
+    state.providers = await api('api/confidential/recheck', {method: 'POST'});
+    renderAll();
+  }
+
+  async function disableConfidential() {
+    await api('api/confidential/disable', {method: 'POST'});
+    await Promise.all([refreshProviders(), refreshKeys(), refreshLocalAvailability()]);
     showView('main');
   }
 
@@ -1570,8 +1888,12 @@
     $('scoutRefresh')?.addEventListener('click', () => refreshScoutOp().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('scoutDisable')?.addEventListener('click', () => disableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('scoutCheck')?.addEventListener('click', () => checkScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
+    $('confidentialEnable')?.addEventListener('click', () => enableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error')));
+    $('confidentialRecheck')?.addEventListener('click', () => recheckConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error')));
+    $('confidentialDisable')?.addEventListener('click', () => disableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error')));
     $('localRefresh')?.addEventListener('click', () => {
       stopInstallPoll();
+      stopConfidentialPoll();
       Promise.all([
         refreshProviders(),
         refreshLocalAvailability(),
@@ -1582,6 +1904,7 @@
     $('localActivate')?.addEventListener('click', () => activateLane('local').catch((err) => setMessage('localSetupMessage', err.message, 'error')));
     $('localModelSelect')?.addEventListener('change', () => {
       stopInstallPoll();
+      stopConfidentialPoll();
       state.install = null;
       renderAll();
       Promise.all([

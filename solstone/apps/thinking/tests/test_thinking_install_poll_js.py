@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -13,68 +12,27 @@ import pytest
 
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.apps.thinking.install_copy import INSTALL_FAILED_NO_PROGRESS
+from solstone.apps.thinking.tests.js_extract import (
+    extract_js_const,
+    extract_js_function,
+)
 
 STATIC = Path(__file__).resolve().parents[1] / "static" / "thinking.js"
-
-
-def _extract_js_const(source: str, const_name: str) -> str:
-    match = re.search(
-        rf"  const {re.escape(const_name)} = new Set\(\[[^\]]+\]\);",
-        source,
-    )
-    if match is None:
-        raise AssertionError(f"could not extract {const_name}")
-    return match.group(0).strip()
-
-
-def _extract_js_function(source: str, function_name: str) -> str:
-    markers = [
-        f"  function {function_name}",
-        f"  async function {function_name}",
-    ]
-    starts = [source.index(marker) for marker in markers if marker in source]
-    if not starts:
-        raise AssertionError(f"could not extract {function_name}")
-    start = min(starts) + 2
-    brace = source.index(") {", start) + 2
-    depth = 0
-    in_string: str | None = None
-    escaped = False
-    for index in range(brace, len(source)):
-        char = source[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == in_string:
-                in_string = None
-            continue
-        if char in {"'", '"', "`"}:
-            in_string = char
-            continue
-        if char == "{":
-            depth += 1
-        elif char == "}":
-            depth -= 1
-            if depth == 0:
-                return source[start : index + 1]
-    raise AssertionError(f"could not extract {function_name}")
 
 
 def _node_script(body: str) -> str:
     source = STATIC.read_text(encoding="utf-8")
     parts = [
-        _extract_js_const(source, "installInFlightStates"),
-        _extract_js_const(source, "installTerminalStates"),
-        _extract_js_function(source, "installIsInFlight"),
-        _extract_js_function(source, "installIsTerminal"),
-        _extract_js_function(source, "formatInstallBytes"),
-        _extract_js_function(source, "installCopyForStatus"),
-        _extract_js_function(source, "pollLocalInstallUntilTerminal"),
-        _extract_js_function(source, "handleInstallPollError"),
+        extract_js_const(source, "installInFlightStates"),
+        extract_js_const(source, "installTerminalStates"),
+        extract_js_function(source, "installIsInFlight"),
+        extract_js_function(source, "installIsTerminal"),
+        extract_js_function(source, "formatInstallBytes"),
+        extract_js_function(source, "installCopyForStatus"),
+        extract_js_function(source, "pollLocalInstallUntilTerminal"),
+        extract_js_function(source, "handleInstallPollError"),
         "const pollIntervalMs = 1500;",
-        _extract_js_function(source, "startInstallPoll"),
+        extract_js_function(source, "startInstallPoll"),
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         f"const text = {json.dumps(thinking_copy.LOCAL_INSTALL)};",
         f"const installFailedNoProgress = {json.dumps(INSTALL_FAILED_NO_PROGRESS)};",

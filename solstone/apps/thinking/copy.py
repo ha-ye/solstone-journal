@@ -21,8 +21,7 @@ LANES = [
         "id": "confidential",
         "label": "Confidential processing",
         "sub": "operated by sol pbc",
-        "tag": "not open yet",
-        "description": "coming — scouts get it first.",
+        "description": "sol pbc runs the model on confidential GPUs.",
     },
     {
         "id": "byo",
@@ -34,25 +33,53 @@ LANES = [
         ),
     },
 ]
+CONFIDENTIAL_TRUST_HEADING = "confidential processing"
+CONFIDENTIAL_TRUST_SUB = "operated by sol pbc"
+CONFIDENTIAL_TRUST_EGRESS = "only the thinking leaves — the text and images sol works through. your journal stays on this computer, and your recordings stay here too (speech becomes text on your device first)."
+CONFIDENTIAL_TRUST_CLAIMS = (
+    "no content is retained · no human reviews it · nothing is used to train"
+)
+CONFIDENTIAL_TRUST_FAIL_CLOSED = "your journal must verify the service before anything is sent — if it can't verify, it doesn't send."
+CONFIDENTIAL_TRUST_SUBSTRATE = "sol pbc runs the model itself on confidential GPUs in Microsoft Azure. the hardware boundary keeps the cloud host excluded from what's processed — no third-party AI provider is in the path."
+CONFIDENTIAL_EARLY_ACCESS = "confidential processing is coming — scouts get it first."
+CONFIDENTIAL_TRUST_BEATS = {
+    "heading": CONFIDENTIAL_TRUST_HEADING,
+    "sub": CONFIDENTIAL_TRUST_SUB,
+    "egress": CONFIDENTIAL_TRUST_EGRESS,
+    "claims": CONFIDENTIAL_TRUST_CLAIMS,
+    "attestation": CONFIDENTIAL_TRUST_FAIL_CLOSED,
+    "substrate": CONFIDENTIAL_TRUST_SUBSTRATE,
+}
 CONFIDENTIAL_LANE_DETAIL = {
-    "heading": "confidential processing",
-    "sub": "operated by sol pbc · not open yet",
-    "mechanism": (
-        "let sol "
-        "think off your device — on confidential hardware sol pbc runs "
-        "that keeps nothing."
-    ),
-    "egress": (
-        "when it opens, sol will send only the thinking off your device — never "
-        "your journal, which stays here on this computer. it runs on confidential "
-        "hardware sol pbc operates."
-    ),
-    "claims": "no content is retained · no human reviews it · nothing is used to train",
-    "attestation": "your journal checks the hardware before it sends anything.",
-    "early_access": (
-        "scouts get confidential processing first. it isn't open yet — when it "
-        "is, the scout program is the way in."
-    ),
+    "heading": CONFIDENTIAL_TRUST_HEADING,
+    "sub": CONFIDENTIAL_TRUST_SUB,
+    "mechanism": CONFIDENTIAL_TRUST_SUBSTRATE,
+    "egress": CONFIDENTIAL_TRUST_EGRESS,
+    "claims": CONFIDENTIAL_TRUST_CLAIMS,
+    "attestation": CONFIDENTIAL_TRUST_FAIL_CLOSED,
+    "early_access": CONFIDENTIAL_EARLY_ACCESS,
+}
+CONFIDENTIAL_SETUP = {
+    "trust_beats": dict(CONFIDENTIAL_TRUST_BEATS),
+}
+CONFIDENTIAL_ATTESTATION_STATES = {
+    "off": "",
+    "verifying": "checking the hardware…",
+    "verified": "checked {checked}",
+    "failed": "couldn't verify the service — sol isn't sending.",
+    "stale": "your journal needs to re-check the service before sending.",
+    "unreachable": "can't reach confidential processing right now — sol isn't sending.",
+}
+CONFIDENTIAL_OPERATION_STATES = {
+    "starting": "opening your browser to confirm…",
+    "waiting": "finish turning it on in your browser",
+    "early_access": CONFIDENTIAL_EARLY_ACCESS,
+    "repair_needed": "couldn't verify the service — sol isn't sending.",
+}
+CONFIDENTIAL_ACTIONS = {
+    "off": "turn on confidential processing →",
+    "enabled": "turn off",
+    "recheck": "check again",
 }
 ACTIVE_LANE_LABELS = {
     "none": "not thinking yet",
@@ -111,6 +138,21 @@ GLANCE = {
             "covered through the scout program while you're in alpha — stays in "
             "your journal"
         ),
+    },
+    "confidential_checking": {
+        "label": "sol is waiting on",
+        "value": "confidential processing",
+        "detail": CONFIDENTIAL_ATTESTATION_STATES["verifying"],
+    },
+    "confidential_verified": {
+        "label": "sol is thinking with",
+        "value": "confidential processing",
+        "detail": CONFIDENTIAL_ATTESTATION_STATES["verified"],
+    },
+    "confidential_blocked": {
+        "label": "sol is holding",
+        "value": "confidential processing",
+        "detail": "{message}",
     },
     "none": {
         "value": "not thinking yet",
@@ -230,6 +272,12 @@ def thinking_copy_payload() -> dict[str, Any]:
         "confidential": {
             "lane_detail": dict(CONFIDENTIAL_LANE_DETAIL),
             "more_label": CONFIDENTIAL_MORE_LABEL,
+            "setup": {
+                "trust_beats": dict(CONFIDENTIAL_SETUP["trust_beats"]),
+            },
+            "attestation_states": dict(CONFIDENTIAL_ATTESTATION_STATES),
+            "operation_states": dict(CONFIDENTIAL_OPERATION_STATES),
+            "actions": dict(CONFIDENTIAL_ACTIONS),
         },
         "glance": dict(GLANCE),
         "byo_setup": dict(BYO_SETUP),

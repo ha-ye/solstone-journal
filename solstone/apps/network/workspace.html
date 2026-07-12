@@ -595,7 +595,7 @@
   let lastPosture = null;
   let reachRevealed = false;
   let linkInitialized = false;
-  // Mirror of operations.TERMINAL_PHASES (solstone/think/services/operations.py) — keep in lockstep.
+  // Private-link product phases that finish the setup poll.
   const PRIVATE_LINK_TERMINAL_PHASES = new Set(['enabled', 'needs_subscription', 'revoked', 'error']);
   const PRIVATE_LINK_POLL_TIMEOUT_MS = 900000;
   let privateLinkRetryAction = null;

@@ -17,9 +17,26 @@ ATTESTED_SUBSTRATE = "AMD SEV-SNP + NVIDIA GH100 A01 GSP BROM"
 HOSTILE_ARCH = "<script>alert(1)</script>"
 
 
-def _client(settings_env):
+def _client(settings_env, *, confidential: bool = False):
     journal_path, config = settings_env()
     config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    if confidential:
+        config.setdefault("services", {})["confidential"] = {
+            "enabled_at": "2026-05-24T00:00:00Z",
+            "account_id": "acct-secret",
+            "endpoint_url": "https://spp.example.test/v1",
+            "served_model_id": "confidential-model",
+            "credential_created_at": "2026-05-24T00:00:00Z",
+            "credential_fingerprint_sha256": "fingerprint-secret",
+            "prior_generate_provider": "google",
+            "prior_cogitate_provider": "openai",
+            "prior_local_endpoint": None,
+        }
+        config.setdefault("providers", {})["local"] = {
+            "endpoint_url": "https://spp.example.test",
+            "served_model_id": "confidential-model",
+            "credential": "credential-secret",
+        }
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
@@ -85,14 +102,30 @@ def _providers(client) -> dict:
     return payload
 
 
-def test_active_lane_confidential_attestation_defaults_to_verifying(settings_env):
+def test_active_lane_confidential_attestation_defaults_to_off(settings_env):
     client = _client(settings_env)
+
+    payload = _providers(client)
+
+    assert payload["active_lane"]["confidential_attestation"] == {
+        "state": "off",
+        "provenance": None,
+        "last_verified": None,
+        "reason": "confidential_not_configured",
+    }
+
+
+def test_active_lane_confidential_attestation_configured_without_session_verifies(
+    settings_env,
+):
+    client = _client(settings_env, confidential=True)
 
     payload = _providers(client)
 
     assert payload["active_lane"]["confidential_attestation"] == {
         "state": "verifying",
         "provenance": None,
+        "last_verified": None,
         "reason": "attestation_not_yet_verified",
     }
 
@@ -100,7 +133,7 @@ def test_active_lane_confidential_attestation_defaults_to_verifying(settings_env
 def test_active_lane_confidential_attestation_verified_session_serializes_safe_provenance(
     settings_env,
 ):
-    client = _client(settings_env)
+    client = _client(settings_env, confidential=True)
     now = datetime.now(timezone.utc)
     session = _session(
         now=now,
@@ -118,6 +151,11 @@ def test_active_lane_confidential_attestation_verified_session_serializes_safe_p
     assert attestation == {
         "state": "verified",
         "provenance": {
+            "legs": ["cpu", "gpu"],
+            "substrate": ATTESTED_SUBSTRATE,
+            "checked_at": now.isoformat(),
+        },
+        "last_verified": {
             "legs": ["cpu", "gpu"],
             "substrate": ATTESTED_SUBSTRATE,
             "checked_at": now.isoformat(),
@@ -140,7 +178,7 @@ def test_active_lane_confidential_attestation_verified_session_serializes_safe_p
 def test_active_lane_confidential_attestation_does_not_serialize_unverified_arch(
     settings_env,
 ):
-    client = _client(settings_env)
+    client = _client(settings_env, confidential=True)
     now = datetime.now(timezone.utc)
     session = _session(
         now=now,
@@ -161,7 +199,7 @@ def test_active_lane_confidential_attestation_does_not_serialize_unverified_arch
 
 
 def test_active_lane_confidential_attestation_stale_session(settings_env):
-    client = _client(settings_env)
+    client = _client(settings_env, confidential=True)
     now = datetime.now(timezone.utc)
     session = _session(
         now=now,
@@ -176,18 +214,76 @@ def test_active_lane_confidential_attestation_stale_session(settings_env):
     assert payload["active_lane"]["confidential_attestation"] == {
         "state": "stale",
         "provenance": None,
+        "last_verified": {
+            "legs": ["cpu", "gpu"],
+            "substrate": ATTESTED_SUBSTRATE,
+            "checked_at": now.isoformat(),
+        },
         "reason": "attestation_stale",
     }
 
 
 def test_active_lane_confidential_attestation_failed_state(settings_env):
-    client = _client(settings_env)
-    spp.record_attestation_failed("gpu_nonce_mismatch")
+    client = _client(settings_env, confidential=True)
+    spp.record_attestation_failed("failed", "gpu_nonce_mismatch")
 
     payload = _providers(client)
 
     assert payload["active_lane"]["confidential_attestation"] == {
         "state": "failed",
         "provenance": None,
+        "last_verified": None,
+        "reason": "attestation_failed",
+    }
+
+
+def test_active_lane_confidential_attestation_unreachable_state_preserves_last_verified(
+    settings_env,
+):
+    client = _client(settings_env, confidential=True)
+    now = datetime.now(timezone.utc)
+    session = _session(
+        now=now,
+        started_at=now - timedelta(minutes=1),
+        tpm_heartbeat_at=now - timedelta(minutes=1),
+        gpu_reattest_at=now - timedelta(minutes=1),
+    )
+    spp.record_attestation_verified(session)
+    spp.record_attestation_failed("unreachable", "gateway_unreachable")
+
+    payload = _providers(client)
+
+    assert payload["active_lane"]["confidential_attestation"] == {
+        "state": "unreachable",
+        "provenance": None,
+        "last_verified": {
+            "legs": ["cpu", "gpu"],
+            "substrate": ATTESTED_SUBSTRATE,
+            "checked_at": now.isoformat(),
+        },
+        "reason": "attestation_unreachable",
+    }
+
+
+def test_active_lane_confidential_attestation_missing_provenance_degrades_to_failed(
+    settings_env,
+):
+    client = _client(settings_env, confidential=True)
+    now = datetime.now(timezone.utc)
+    session = _session(
+        now=now,
+        started_at=now - timedelta(minutes=1),
+        tpm_heartbeat_at=now - timedelta(minutes=1),
+        gpu_reattest_at=now - timedelta(minutes=1),
+        substrate="",
+    )
+    spp.record_attestation_verified(session)
+
+    payload = _providers(client)
+
+    assert payload["active_lane"]["confidential_attestation"] == {
+        "state": "failed",
+        "provenance": None,
+        "last_verified": None,
         "reason": "attestation_failed",
     }

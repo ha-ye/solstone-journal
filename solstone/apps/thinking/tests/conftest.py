@@ -27,9 +27,9 @@ def _clear_service_operations():
 
 @pytest.fixture(autouse=True)
 def _clear_spp_attestation_state():
-    spp.clear_attestation_state()
+    spp.delete_attestation_state()
     yield
-    spp.clear_attestation_state()
+    spp.delete_attestation_state()
 
 
 @pytest.fixture

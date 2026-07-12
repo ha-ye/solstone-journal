@@ -359,6 +359,7 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "confidential_attestation": {
             "state": "verifying",
             "provenance": None,
+            "last_verified": None,
             "reason": "attestation_not_yet_verified",
         },
     }

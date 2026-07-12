@@ -58,17 +58,20 @@ def test_workspace_renders_each_lane(settings_env):
     for view in (
         "main",
         "byo-setup",
+        "confidential-setup",
         "local-setup",
         "lane-switch",
     ):
         assert f'data-view="{view}"' in html
-    assert 'data-view="confidential-setup"' not in html
-    assert 'data-open-view="confidential-setup"' not in html
-    assert 'id="confidentialLaneOperation"' not in html
-    assert 'id="confidentialLaneStatus"' not in html
+    assert 'data-open-view="confidential-setup"' in html
+    assert 'id="confidentialLaneOperation"' in html
+    assert 'id="confidentialLaneOperationLink"' in html
+    assert 'id="confidentialLaneStatus"' in html
+    assert 'id="confidentialEnable"' in html
+    assert 'id="confidentialRecheck"' in html
+    assert 'id="confidentialDisable"' in html
     assert 'id="confidentialLaneMore"' in html
     assert 'id="lane-detail-confidential"' in html
-    assert "set up confidential" not in html
     assert 'data-open-view="byo-setup"' in html
     assert 'data-open-view="local-setup"' in html
     assert "data-switch-lane" in html
@@ -151,7 +154,7 @@ def test_scout_consent_static_behavior_is_wired() -> None:
     assert "!!actions.enable && !operationActive" in js
 
 
-def test_confidential_teaser_static_behavior_is_wired() -> None:
+def test_confidential_live_static_behavior_is_wired() -> None:
     html = WORKSPACE.read_text(encoding="utf-8")
     js = STATIC.read_text(encoding="utf-8")
     card = re.search(r'<article class="lane" id="lane-confidential"([^>]*)>', html)
@@ -162,15 +165,17 @@ def test_confidential_teaser_static_behavior_is_wired() -> None:
     assert 'aria-controls="lane-detail-confidential"' in html
     assert 'aria-expanded="false"' in html
     assert 'id="lane-detail-confidential"' in html
-    assert "data-lane" not in card.group(1)
-    assert 'role="button"' not in card.group(1)
-    assert "tabindex" not in card.group(1)
-    assert "api/confidential" not in js
+    assert 'data-lane="confidential"' in card.group(1)
+    assert 'role="button"' in card.group(1)
+    assert 'tabindex="0"' in card.group(1)
+    assert "api/confidential/enable" in js
+    assert "api/confidential/recheck" in js
+    assert "api/confidential/disable" in js
     assert "function openConsentTab(operation)" in js
     assert "confidentialProvenancePresent" in js
     assert "renderConfidentialDetailPanel" in js
-    assert "switchLane('confidential')" not in js
-    assert "confidential-setup" not in js
+    assert "function pollConfidentialUntilTerminal(" in js
+    assert "confidential-setup" in js
 
 
 def test_copy_payload_round_trips_apostrophes() -> None:
@@ -190,9 +195,12 @@ def test_thinking_copy_lanes_use_init_deck() -> None:
         assert lane.get("sub")
         assert lane.get("description")
     assert by_id["byo"]["label"] == "your own AI engine"
-    assert by_id["confidential"]["description"] == "coming — scouts get it first."
-    assert by_id["confidential"]["tag"] == "not open yet"
-    assert [lane["id"] for lane in lanes if "tag" in lane] == ["confidential"]
+    assert (
+        by_id["confidential"]["description"]
+        == "sol pbc runs the model on confidential GPUs."
+    )
+    assert "tag" not in by_id["confidential"]
+    assert [lane["id"] for lane in lanes if "tag" in lane] == []
 
 
 def test_thinking_deck_copy_constants() -> None:
@@ -223,6 +231,21 @@ def test_thinking_deck_copy_constants() -> None:
                 "covered through the scout program while you're in alpha — stays in "
                 "your journal"
             ),
+        },
+        "confidential_checking": {
+            "label": "sol is waiting on",
+            "value": "confidential processing",
+            "detail": "checking the hardware…",
+        },
+        "confidential_verified": {
+            "label": "sol is thinking with",
+            "value": "confidential processing",
+            "detail": "checked {checked}",
+        },
+        "confidential_blocked": {
+            "label": "sol is holding",
+            "value": "confidential processing",
+            "detail": "{message}",
         },
         "none": {
             "value": "not thinking yet",
@@ -300,6 +323,53 @@ def test_thinking_deck_copy_constants() -> None:
         ),
     }
     assert thinking_copy.CONFIDENTIAL_MORE_LABEL == "how it works →"
+    assert thinking_copy.CONFIDENTIAL_TRUST_BEATS == {
+        "heading": "confidential processing",
+        "sub": "operated by sol pbc",
+        "egress": (
+            "only the thinking leaves — the text and images sol works through. "
+            "your journal stays on this computer, and your recordings stay here "
+            "too (speech becomes text on your device first)."
+        ),
+        "claims": "no content is retained · no human reviews it · nothing is used to train",
+        "attestation": (
+            "your journal must verify the service before anything is sent — if "
+            "it can't verify, it doesn't send."
+        ),
+        "substrate": (
+            "sol pbc runs the model itself on confidential GPUs in Microsoft "
+            "Azure. the hardware boundary keeps the cloud host excluded from "
+            "what's processed — no third-party AI provider is in the path."
+        ),
+    }
+    assert thinking_copy.CONFIDENTIAL_LANE_DETAIL == {
+        "heading": thinking_copy.CONFIDENTIAL_TRUST_HEADING,
+        "sub": thinking_copy.CONFIDENTIAL_TRUST_SUB,
+        "mechanism": thinking_copy.CONFIDENTIAL_TRUST_SUBSTRATE,
+        "egress": thinking_copy.CONFIDENTIAL_TRUST_EGRESS,
+        "claims": thinking_copy.CONFIDENTIAL_TRUST_CLAIMS,
+        "attestation": thinking_copy.CONFIDENTIAL_TRUST_FAIL_CLOSED,
+        "early_access": "confidential processing is coming — scouts get it first.",
+    }
+    assert thinking_copy.CONFIDENTIAL_ATTESTATION_STATES == {
+        "off": "",
+        "verifying": "checking the hardware…",
+        "verified": "checked {checked}",
+        "failed": "couldn't verify the service — sol isn't sending.",
+        "stale": "your journal needs to re-check the service before sending.",
+        "unreachable": "can't reach confidential processing right now — sol isn't sending.",
+    }
+    assert thinking_copy.CONFIDENTIAL_OPERATION_STATES == {
+        "starting": "opening your browser to confirm…",
+        "waiting": "finish turning it on in your browser",
+        "early_access": "confidential processing is coming — scouts get it first.",
+        "repair_needed": "couldn't verify the service — sol isn't sending.",
+    }
+    assert thinking_copy.CONFIDENTIAL_ACTIONS == {
+        "off": "turn on confidential processing →",
+        "enabled": "turn off",
+        "recheck": "check again",
+    }
 
 
 def test_thinking_copy_payload_carries_confidential_lane_detail() -> None:
@@ -310,6 +380,18 @@ def test_thinking_copy_payload_carries_confidential_lane_detail() -> None:
     )
     assert (
         payload["confidential"]["more_label"] == thinking_copy.CONFIDENTIAL_MORE_LABEL
+    )
+    assert payload["confidential"]["setup"] == {
+        "trust_beats": dict(thinking_copy.CONFIDENTIAL_SETUP["trust_beats"])
+    }
+    assert payload["confidential"]["attestation_states"] == dict(
+        thinking_copy.CONFIDENTIAL_ATTESTATION_STATES
+    )
+    assert payload["confidential"]["operation_states"] == dict(
+        thinking_copy.CONFIDENTIAL_OPERATION_STATES
+    )
+    assert payload["confidential"]["actions"] == dict(
+        thinking_copy.CONFIDENTIAL_ACTIONS
     )
 
 
@@ -358,8 +440,20 @@ def test_thinking_copy_avoids_forbidden_terms() -> None:
     ):
         assert re.search(rf"\b{re.escape(term)}\b", combined, re.IGNORECASE) is None
 
-    for phrase in ("this machine", "this device"):
-        assert re.search(rf"\b{re.escape(phrase)}\b", combined, re.IGNORECASE) is None
+    for phrase in (
+        "this machine",
+        "this device",
+        "sealed",
+        "sealed engine",
+        "not sol pbc's to read",
+        "only you can read it",
+        "checks the hardware before it sends",
+        "verified ✓",
+    ):
+        pattern = (
+            rf"\b{re.escape(phrase)}\b" if phrase[-1].isalnum() else re.escape(phrase)
+        )
+        assert re.search(pattern, combined, re.IGNORECASE) is None
 
 
 def test_thinking_copy_avoids_banned_absolute_claims() -> None:
