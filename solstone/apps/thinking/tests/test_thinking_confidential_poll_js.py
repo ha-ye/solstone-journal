@@ -121,6 +121,10 @@ assert(verifiedGlance.detail === expectedLine, 'verified glance line');
 assert(verified.message === verifiedGlance.detail, 'verified surfaces share formatter');
 assert(confidentialSetupMetaLine(verifiedAttestation, 'just now') === '', 'verified meta hidden');
 
+for (const state of ['verifying', 'off', '']) {
+  assert(confidentialSetupMetaLine({state}, 'just now') === '', `${state || 'empty'} meta hidden`);
+}
+
 for (const state of ['failed', 'stale', 'unreachable']) {
   assert(
     confidentialSetupMetaLine({state}, 'just now') === 'last checked just now',
