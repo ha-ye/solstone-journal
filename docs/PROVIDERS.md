@@ -255,9 +255,11 @@ processes without a scheduler service or in-memory queue. Waiting async calls
 are cancellation-safe; exceptions and cancellation release acquired locks;
 process exit releases kernel locks. Queue time consumes the caller's existing
 provider deadline, so waiting cannot silently extend a request beyond its
-configured timeout. Cogitate holds one permit for its run because the OpenHands
-SDK owns its internal multi-turn HTTP calls; this is conservative and avoids an
-uncontrolled second path to the same server.
+configured timeout. Cogitate holds one parent permit across model turns, but
+temporarily yields that permit while the OpenHands `sol` tool runs a nested
+`sol` child process. The parent reacquires through the same FIFO admission pool
+before any further model request; failure to reacquire is a terminal
+`local_queue_timeout`.
 
 Every bundled-local attempt appends a content-free JSON record to
 `health/local-inference/YYYYMMDD.jsonl`. These files follow the configured

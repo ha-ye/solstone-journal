@@ -17,6 +17,7 @@ import math
 import os
 import shutil
 import sys
+import threading
 import traceback
 import uuid
 from collections.abc import Callable
@@ -46,6 +47,11 @@ from solstone.think.cogitate_policy import (
     resolve_read_scope,
 )
 from solstone.think.providers.cli import QuotaExhaustedError, assemble_prompt
+from solstone.think.providers.local_admission import (
+    LocalAdmissionCancelled,
+    LocalAdmissionTimeout,
+    LocalSlotLease,
+)
 from solstone.think.providers.local_server import LOCAL_MIN_CONTEXT_TOKENS
 from solstone.think.providers.shared import (
     USAGE_KEYS,
@@ -259,16 +265,33 @@ def _ensure_sol_types() -> dict[str, Any]:
             policy: CogitatePolicy,
             callback: JSONEventCallback,
             read_call_budget: int,
+            slot_lease: LocalSlotLease | None = None,
         ) -> None:
             self.policy = policy
             self.callback = callback
             self.read_call_budget = read_call_budget
+            self.slot_lease = slot_lease
             self.read_call_count = 0
             self._budget_exhausted_emitted = False
+            self._conversation: Any | None = None
+            self._terminal_error: LocalAdmissionTimeout | None = None
+            self._terminal_error_lock = threading.Lock()
+            self._slot_cycle_lock = threading.Lock()
+
+        def bind_conversation(self, conversation: Any) -> None:
+            self._conversation = conversation
+
+        def take_terminal_error(self) -> LocalAdmissionTimeout | None:
+            with self._terminal_error_lock:
+                error = self._terminal_error
+                self._terminal_error = None
+                return error
+
+        def interrupt(self) -> None:
+            if self.slot_lease is not None:
+                self.slot_lease.cancel_pending_reacquire()
 
         def __call__(self, action: Any, conversation: Any = None) -> Any:
-            del conversation
-
             command = str(action.command)
             decision = self.policy.classify_command(command)
             if not decision.allowed:
@@ -293,8 +316,47 @@ def _ensure_sol_types() -> dict[str, Any]:
                 )
 
             assert decision.argv is not None
-            result = _run_command(decision.argv)
+            if self.slot_lease is None:
+                result = _run_command(decision.argv)
+                return SolObservation.from_text(
+                    result["text"], is_error=result["is_error"]
+                )
+
+            with self._slot_cycle_lock:
+                self.slot_lease.yield_slot()
+                result: dict[str, Any] | None = None
+                command_error: Exception | None = None
+                try:
+                    result = _run_command(decision.argv)
+                except Exception as exc:
+                    command_error = exc
+                finally:
+                    try:
+                        self.slot_lease.reacquire()
+                    except LocalAdmissionTimeout as exc:
+                        self._store_terminal_error(exc)
+                        live_conversation = conversation or self._conversation
+                        if live_conversation is not None:
+                            live_conversation.interrupt()
+                        return SolObservation.from_text(str(exc), is_error=True)
+                    except LocalAdmissionCancelled:
+                        if result is not None:
+                            return SolObservation.from_text(
+                                result["text"], is_error=result["is_error"]
+                            )
+                        return SolObservation.from_text(
+                            "local_admission_cancelled: cogitate run interrupted "
+                            "before reacquiring local inference",
+                            is_error=True,
+                        )
+                if command_error is not None:
+                    raise command_error
+                assert result is not None
             return SolObservation.from_text(result["text"], is_error=result["is_error"])
+
+        def _store_terminal_error(self, error: LocalAdmissionTimeout) -> None:
+            with self._terminal_error_lock:
+                self._terminal_error = error
 
     class SolTool(ToolDefinition[SolAction, SolObservation]):
         name = "sol"
@@ -330,6 +392,7 @@ def _build_sol_tools(
     policy: CogitatePolicy,
     callback: JSONEventCallback,
     read_call_budget: int,
+    slot_lease: LocalSlotLease | None = None,
 ) -> tuple[list[Any], Any]:
     types = _ensure_sol_types()
     sol_action = types["SolAction"]
@@ -342,6 +405,7 @@ def _build_sol_tools(
         policy=policy,
         callback=callback,
         read_call_budget=read_call_budget,
+        slot_lease=slot_lease,
     )
     tool = sol_tool_cls(
         description=(
@@ -1038,6 +1102,8 @@ def _wall_clock_deadline_s(timeout_seconds: float) -> float:
 async def run_cogitate(
     config: dict[str, Any],
     on_event: Callable[[dict], None] | None = None,
+    *,
+    slot_lease: LocalSlotLease | None = None,
 ) -> str | None:
     """Run a cogitate prompt through OpenHands SDK."""
     callback = JSONEventCallback(on_event)
@@ -1080,11 +1146,13 @@ async def run_cogitate(
         llm = _build_llm(provider, model)
         usage_start = _usage_snapshot(llm)
         tool_specs = []
+        sol_executor = None
         if caps.sol:
-            sol_tools, _executor = _build_sol_tools(
+            sol_tools, sol_executor = _build_sol_tools(
                 policy=policy,
                 callback=callback,
                 read_call_budget=read_call_budget,
+                slot_lease=slot_lease,
             )
             # openhands-sdk v1.23 resolves Agent.tools by spec name via the
             # registry; passing ToolDefinition instances directly fails pydantic
@@ -1146,6 +1214,8 @@ async def run_cogitate(
             visualizer=None,
         )
         translator.conversation = conversation
+        if sol_executor is not None:
+            sol_executor.bind_conversation(conversation)
         conversation.send_message(prompt_body)
         timeout_seconds = float(config.get("timeout_seconds", 600) or 600)
         wall_clock_s = _wall_clock_deadline_s(timeout_seconds)
@@ -1171,6 +1241,12 @@ async def run_cogitate(
                 # so re-raise here to keep the existing QuotaExhaustedError /
                 # generic except-Exception classification path unchanged.
                 run_task.result()
+
+        if sol_executor is not None:
+            terminal_error = sol_executor.take_terminal_error()
+            if terminal_error is not None:
+                conversation.close()
+                raise terminal_error
 
         result = translator.result()
         usage = _usage_delta(usage_start, llm)

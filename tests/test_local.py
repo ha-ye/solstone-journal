@@ -1817,7 +1817,12 @@ def test_run_cogitate_byo_acquires_permit_and_records_no_telemetry(monkeypatch):
     records = []
     monkeypatch.setattr(local_admission, "record_local_inference", records.append)
 
-    async def fake_cogitate(*_args, **_kwargs):
+    async def fake_cogitate(*_args, slot_lease=None, **_kwargs):
+        assert slot_lease is not None
+        slot_lease.yield_slot()
+        with local_admission.acquire_local_slot(1, 0.1) as nested:
+            assert nested.slot_index == 0
+        slot_lease.reacquire()
         with pytest.raises(local_admission.LocalAdmissionTimeout):
             local_admission.acquire_local_slot(1, 0.03)
         return "ok"
@@ -1835,6 +1840,82 @@ def test_run_cogitate_byo_acquires_permit_and_records_no_telemetry(monkeypatch):
     assert records == []
     with local_admission.acquire_local_slot(1, 0.1) as permit:
         assert permit.slot_index == 0
+
+
+def test_run_cogitate_byo_keeps_permit_for_non_sol_work(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+
+    from solstone.think.providers import local_admission
+
+    async def fake_cogitate(*_args, slot_lease=None, **_kwargs):
+        assert slot_lease is not None
+        with pytest.raises(local_admission.LocalAdmissionTimeout):
+            local_admission.acquire_local_slot(1, 0.03)
+        return "ok"
+
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_cogitate",
+        fake_cogitate,
+    )
+
+    assert (
+        asyncio.run(provider.run_cogitate({"model": LOCAL_MODEL, "timeout_seconds": 1}))
+        == "ok"
+    )
+
+
+@pytest.mark.parametrize("bundled", [False, True])
+def test_run_cogitate_reacquire_timeout_preserves_exact_type(
+    monkeypatch,
+    bundled,
+):
+    provider = _provider()
+    if bundled:
+        _patch_bundled_server(monkeypatch)
+    else:
+        monkeypatch.setattr(
+            provider,
+            "resolve_local_endpoint",
+            lambda: _byo_endpoint(parallel_slots=1),
+        )
+        monkeypatch.setattr(
+            "solstone.think.providers.local_server.connect",
+            lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+        )
+
+    from solstone.think.providers import local_admission
+
+    async def fake_cogitate(*_args, slot_lease=None, **_kwargs):
+        assert slot_lease is not None
+        slot_lease.yield_slot()
+        holder = local_admission.acquire_local_slot(1, 0.1)
+        try:
+            slot_lease.reacquire()
+        finally:
+            holder.release()
+
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_cogitate",
+        fake_cogitate,
+    )
+
+    with pytest.raises(local_admission.LocalAdmissionTimeout) as exc:
+        asyncio.run(
+            provider.run_cogitate({"model": LOCAL_MODEL, "timeout_seconds": 0.03})
+        )
+
+    assert exc.type is local_admission.LocalAdmissionTimeout
+    assert exc.value.reason_code == "local_queue_timeout"
+    assert not list(Path(local_admission._admission_dir()).glob("wait-*.ticket"))
 
 
 def test_run_cogitate_byo_queue_timeout_preserves_exact_type(monkeypatch):

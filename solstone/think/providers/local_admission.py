@@ -10,6 +10,7 @@ import errno
 import fcntl
 import logging
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -28,6 +29,10 @@ class LocalAdmissionTimeout(TimeoutError):
     """No governed local inference slot became available before the deadline."""
 
     reason_code = "local_queue_timeout"
+
+
+class LocalAdmissionCancelled(Exception):
+    """Internal cancellation of a synchronous local admission wait."""
 
 
 @dataclass
@@ -189,17 +194,25 @@ def _deadline(started: float, timeout_s: float | None) -> float | None:
 
 
 def acquire_local_slot(
-    capacity: int, timeout_s: float | None, *, exclusive: bool = False
+    capacity: int,
+    timeout_s: float | None,
+    *,
+    exclusive: bool = False,
+    cancel_event: threading.Event | None = None,
 ) -> LocalPermit:
     """Wait synchronously for governed local serving capacity."""
     if capacity < 1:
         raise ValueError("local inference capacity must be at least one")
+    if cancel_event is not None and cancel_event.is_set():
+        raise LocalAdmissionCancelled("local inference admission was cancelled")
     started = time.monotonic()
     deadline = _deadline(started, timeout_s)
     root = _admission_dir()
     ticket = _create_ticket(root)
     try:
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                raise LocalAdmissionCancelled("local inference admission was cancelled")
             if _ticket_has_turn(root, ticket):
                 permit = (
                     _try_acquire_exclusive(capacity, started, root)
@@ -207,6 +220,11 @@ def acquire_local_slot(
                     else _try_acquire(capacity, started, root)
                 )
                 if permit is not None:
+                    if cancel_event is not None and cancel_event.is_set():
+                        permit.release()
+                        raise LocalAdmissionCancelled(
+                            "local inference admission was cancelled"
+                        )
                     return permit
             now = time.monotonic()
             if deadline is not None and now >= deadline:
@@ -216,7 +234,13 @@ def acquire_local_slot(
             sleep_s = _POLL_INTERVAL_S
             if deadline is not None:
                 sleep_s = min(sleep_s, max(0.0, deadline - now))
-            time.sleep(sleep_s)
+            if cancel_event is not None:
+                if cancel_event.wait(sleep_s):
+                    raise LocalAdmissionCancelled(
+                        "local inference admission was cancelled"
+                    )
+            else:
+                time.sleep(sleep_s)
     finally:
         _drop_ticket(ticket)
 
@@ -254,6 +278,90 @@ async def acquire_local_slot_async(
         _drop_ticket(ticket)
 
 
+class LocalSlotLease:
+    """Thread-safe owner for a local inference permit that can yield and reacquire."""
+
+    def __init__(
+        self,
+        *,
+        capacity: int,
+        deadline: float | None,
+        permit: LocalPermit,
+    ) -> None:
+        if capacity < 1:
+            raise ValueError("local inference capacity must be at least one")
+        self.capacity = capacity
+        self.deadline = deadline
+        self.initial_queue_wait_ms = permit.queue_wait_ms
+        self.initial_slot_index = permit.slot_index
+        self._permit: LocalPermit | None = permit
+        self._lock = threading.Lock()
+        self._cancel_event = threading.Event()
+        self._closed = False
+        self._reacquiring = False
+
+    def yield_slot(self) -> None:
+        """Release the currently held permit without closing the lease."""
+        with self._lock:
+            if self._closed:
+                raise LocalAdmissionCancelled("local inference lease is closed")
+            permit = self._permit
+            if permit is None:
+                raise RuntimeError("local inference lease has no held permit to yield")
+            self._permit = None
+        permit.release()
+
+    def reacquire(self) -> LocalPermit:
+        """Reacquire the permit through the FIFO admission queue."""
+        with self._lock:
+            if self._closed or self._cancel_event.is_set():
+                raise LocalAdmissionCancelled("local inference lease is cancelled")
+            if self._permit is not None:
+                return self._permit
+            if self._reacquiring:
+                raise RuntimeError("local inference lease reacquire already in flight")
+            self._reacquiring = True
+
+        try:
+            timeout_s = self._remaining_timeout()
+            permit = acquire_local_slot(
+                self.capacity,
+                timeout_s,
+                cancel_event=self._cancel_event,
+            )
+        except BaseException:
+            with self._lock:
+                self._reacquiring = False
+            raise
+
+        with self._lock:
+            self._reacquiring = False
+            if self._closed or self._cancel_event.is_set():
+                permit.release()
+                raise LocalAdmissionCancelled("local inference lease is cancelled")
+            self._permit = permit
+            return permit
+
+    def cancel_pending_reacquire(self) -> None:
+        """Cancel a pending or future reacquire without releasing a held permit."""
+        self._cancel_event.set()
+
+    def close(self) -> None:
+        """Close the lease, cancel pending reacquire, and release a held permit."""
+        with self._lock:
+            self._closed = True
+            self._cancel_event.set()
+            permit = self._permit
+            self._permit = None
+        if permit is not None:
+            permit.release()
+
+    def _remaining_timeout(self) -> float | None:
+        if self.deadline is None:
+            return None
+        return max(0.0, self.deadline - time.monotonic())
+
+
 def record_local_inference(record: dict[str, Any]) -> None:
     """Durably append one prompt/output-free local inference record."""
     try:
@@ -271,6 +379,7 @@ def record_local_inference(record: dict[str, Any]) -> None:
 __all__ = [
     "LocalAdmissionTimeout",
     "LocalPermit",
+    "LocalSlotLease",
     "acquire_local_slot",
     "acquire_local_slot_async",
     "record_local_inference",

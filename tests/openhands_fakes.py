@@ -141,6 +141,7 @@ class Conversation(FakeModel):
         super().__init__(**kwargs)
         self.messages: list[str] = []
         self.paused = False
+        self.interrupted = False
         self.closed = False
         self.state = SimpleNamespace(execution_status=None)
         type(self).instances.append(self)
@@ -150,6 +151,10 @@ class Conversation(FakeModel):
 
     def pause(self) -> None:
         self.paused = True
+
+    def interrupt(self) -> None:
+        self.interrupted = True
+        self.state.execution_status = "paused"
 
     def close(self) -> None:
         self.closed = True

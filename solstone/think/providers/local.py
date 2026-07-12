@@ -888,6 +888,7 @@ async def run_cogitate(
     from solstone.think.providers import local_server, openhands
     from solstone.think.providers.local_admission import (
         LocalAdmissionTimeout,
+        LocalSlotLease,
         acquire_local_slot_async,
         record_local_inference,
     )
@@ -899,7 +900,7 @@ async def run_cogitate(
     timeout = float(config.get("timeout_seconds", 600) or 600)
     server = None
     capacity = None
-    permit = None
+    slot_lease = None
     outcome = "success"
     reason_code: str | None = None
     try:
@@ -910,12 +911,26 @@ async def run_cogitate(
                 capacity.parallel_slots,
                 _remaining_timeout(started, timeout),
             )
+            slot_lease = LocalSlotLease(
+                capacity=capacity.parallel_slots,
+                deadline=started + timeout,
+                permit=permit,
+            )
         elif endpoint.parallel_slots is not None:
             permit = await acquire_local_slot_async(
                 endpoint.parallel_slots,
                 _remaining_timeout(started, timeout),
             )
-        return await openhands.run_cogitate(config, on_event=on_event)
+            slot_lease = LocalSlotLease(
+                capacity=endpoint.parallel_slots,
+                deadline=started + timeout,
+                permit=permit,
+            )
+        return await openhands.run_cogitate(
+            config,
+            on_event=on_event,
+            slot_lease=slot_lease,
+        )
     except asyncio.CancelledError:
         outcome = "cancelled"
         reason_code = "cancelled"
@@ -968,8 +983,8 @@ async def run_cogitate(
             raise wrapped from exc
         raise
     finally:
-        if permit is not None:
-            permit.release()
+        if slot_lease is not None:
+            slot_lease.close()
         if server is not None and capacity is not None:
             record_local_inference(
                 _telemetry_record(
@@ -981,11 +996,15 @@ async def run_cogitate(
                     capacity_source=capacity.source,
                     started=started,
                     queue_wait_ms=(
-                        permit.queue_wait_ms
-                        if permit is not None
+                        slot_lease.initial_queue_wait_ms
+                        if slot_lease is not None
                         else (time.monotonic() - started) * 1000.0
                     ),
-                    admission_slot=permit.slot_index if permit is not None else None,
+                    admission_slot=(
+                        slot_lease.initial_slot_index
+                        if slot_lease is not None
+                        else None
+                    ),
                     retry_index=None,
                     outcome=outcome,
                     finish_reason="stop" if outcome == "success" else None,

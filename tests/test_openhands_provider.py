@@ -18,6 +18,7 @@ from solstone.think.cogitate_policy import (
     MAX_TURNS_HEADROOM,
 )
 from solstone.think.providers import openhands
+from solstone.think.providers.local_admission import LocalAdmissionTimeout
 from solstone.think.providers.shared import USAGE_KEYS, JSONEventCallback
 from solstone.think.talent import get_talent, get_talent_configs
 from tests.openhands_fakes import _REGISTERED_TOOLS, install_fake_openhands
@@ -730,6 +731,49 @@ def test_run_cogitate_keeps_finish_branch_without_output_path(
     assert len(finish_events) == 1
     assert finish_events[0]["result"] is None
     assert [event for event in events if event["event"] == "error"] == []
+
+
+def test_run_cogitate_threads_slot_lease_to_sol_executor_and_binds_conversation(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    config = _run_config(monkeypatch, tmp_path)
+    events: list[dict] = []
+    slot_lease = object()
+
+    asyncio.run(openhands.run_cogitate(config, events.append, slot_lease=slot_lease))
+
+    conversation = fake_openhands.Conversation.instances[0]
+    executor = _REGISTERED_TOOLS["sol"].executor
+    assert executor.slot_lease is slot_lease
+    assert executor._conversation is conversation
+
+
+def test_run_cogitate_terminal_sol_reacquire_error_preempts_stuck_classification(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    terminal = LocalAdmissionTimeout("busy")
+
+    async def mark_terminal_and_stuck(conversation):
+        _REGISTERED_TOOLS["sol"].executor._store_terminal_error(terminal)
+        conversation.state.execution_status = "stuck"
+
+    fake_openhands.Conversation.arun_impl = mark_terminal_and_stuck
+    config = _run_config(monkeypatch, tmp_path)
+    events: list[dict] = []
+
+    with pytest.raises(LocalAdmissionTimeout) as exc:
+        asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert exc.value is terminal
+    conversation = fake_openhands.Conversation.instances[0]
+    assert conversation.closed is True
+    assert [
+        event for event in events if event.get("reason_code") == "agent_stuck"
+    ] == []
 
 
 def test_run_cogitate_uses_emit_final_branch_for_daily_no_output(
