@@ -411,6 +411,39 @@ def test_nvattest_command_env_inherits_parent_and_sets_library_path(
     assert command.env["LD_LIBRARY_PATH"] == str(nvattest_dir / "lib")
 
 
+def test_nvattest_command_uses_absolute_install_paths_not_path_or_python_namespace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nvattest_dir = _fake_nvattest_dir(tmp_path)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "verifier.py").write_text("#!/usr/bin/env python\n", encoding="utf-8")
+    path_bin = tmp_path / "path-bin"
+    path_bin.mkdir()
+    competing_nvattest = path_bin / "nvattest"
+    competing_nvattest.write_text("#!/bin/sh\n", encoding="utf-8")
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("PATH", str(path_bin))
+
+    command = build_nvattest_attest_command(
+        nvattest_dir=Path("..") / "nvattest",
+        evidence_file=tmp_path / "evidence.json",
+        owner_nonce=_owner_nonce(),
+    )
+
+    expected_root = nvattest_dir.resolve()
+    assert command.argv[0] == str(expected_root / "bin" / "nvattest")
+    assert Path(command.argv[0]).is_absolute()
+    assert command.env["LD_LIBRARY_PATH"] == str(expected_root / "lib")
+    assert "-m" not in command.argv
+    assert not any(Path(arg).name in {"python", "python3"} for arg in command.argv)
+    assert not any(arg == "nvattest" for arg in command.argv)
+    assert not any(arg.startswith(("./", "../")) for arg in command.argv)
+    assert str(cwd / "verifier.py") not in command.argv
+    assert str(competing_nvattest) not in command.argv
+
+
 def test_rim_store_dir_argv_shape(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

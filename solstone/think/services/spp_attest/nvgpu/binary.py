@@ -22,9 +22,10 @@ class NvattestCommand:
 def locate_nvattest(nvattest_dir: Path) -> tuple[Path, Path]:
     """Return the nvattest binary and lib directory under an injected install dir."""
 
-    binary = nvattest_dir / "bin" / "nvattest"
-    lib_dir = nvattest_dir / "lib"
-    if not nvattest_dir.is_dir():
+    root = nvattest_dir.resolve()
+    binary = root / "bin" / "nvattest"
+    lib_dir = root / "lib"
+    if not root.is_dir():
         raise GpuAppraisalError("nvattest_unavailable")
     if not binary.is_file():
         raise GpuAppraisalError("nvattest_unavailable")
