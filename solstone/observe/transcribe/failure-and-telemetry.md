@@ -101,7 +101,7 @@ One event name, five outcomes. Every attempt emits exactly one event.
 | `reason` | machine reason (table above) | deferred, failed |
 | `error` | exception **type name** — never the message (see below) | failed |
 | `backend` | STT backend name (`parakeet-cpp`, `gemini`, …) | whenever resolved |
-| `device` | resolved device (`auto` / `cpu`) | whenever known (see below) |
+| `device` | resolved placement (`cpu` / `gpu`) when a placement record exists; configured device otherwise | whenever known (see below) |
 | `model` | model filename | success, and failures after the backend reported it |
 | `audio_seconds` | original decoded length, 1 dp | whenever decoded |
 | `reduced_seconds` | length after silence-trimming, 1 dp | when reduction ran |
@@ -171,8 +171,9 @@ right now.
 - **`model` on deferred events.** `get_model_info()` is cheap for the parakeet-cpp and
   cloud backends, but on Apple Silicon it shells out to the CoreML helper (`--version`,
   10 s timeout). Rather than hoist a subprocess probe onto a path whose whole point is
-  *not* to do expensive work, deferred events omit `model`. `device` is still reported
-  when the config names one.
+  *not* to do expensive work, deferred events omit `model`. `device` reports the
+  supervisor placement for parakeet-cpp when that record exists, and otherwise falls
+  back to the configured value when the config names one.
 
 ## Rollback
 

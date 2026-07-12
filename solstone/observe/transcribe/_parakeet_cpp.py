@@ -219,9 +219,10 @@ def get_model_info(config: dict) -> dict:
     """Return parakeet.cpp model metadata for transcript JSONL headers."""
     _require_linux()
     device = _validate_config(config)
+    placement = parakeet_server.read_parakeet_placement()
     return {
         "model": parakeet_readiness.PARAKEET_CPP_MODEL_FILENAME,
-        "device": device,
+        "device": placement or device,
         "compute_type": _COMPUTE_TYPE,
         "per_word_confidence": True,
     }

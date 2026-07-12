@@ -51,13 +51,18 @@ def _backend_module() -> MagicMock:
     backend_module = MagicMock()
     backend_module.get_model_info.return_value = {
         "model": "parakeet-v3-q8_0.gguf",
-        "device": "auto",
+        "device": "gpu",
         "compute_type": "q8_0",
     }
     return backend_module
 
 
-def _run_success(raw_path: Path, audio_buffer, vad_result) -> dict:
+def _run_success(
+    raw_path: Path,
+    audio_buffer,
+    vad_result,
+    backend_module: MagicMock | None = None,
+) -> dict:
     """Run a successful process_audio and return the emitted event kwargs."""
     from solstone.observe.transcribe.main import process_audio
 
@@ -79,7 +84,7 @@ def _run_success(raw_path: Path, audio_buffer, vad_result) -> dict:
         ),
         patch(
             "solstone.observe.transcribe.main.get_backend",
-            return_value=_backend_module(),
+            return_value=backend_module or _backend_module(),
         ),
         patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
@@ -110,8 +115,10 @@ def test_success_event_carries_stage_timings_and_envelope(
     assert all(isinstance(v, int) and v >= 0 for v in timings.values())
 
     assert kwargs["backend"] == "parakeet-cpp"
-    assert kwargs["device"] == "auto"
+    assert kwargs["device"] == "gpu"
     assert kwargs["model"] == "parakeet-v3-q8_0.gguf"
+    header = json.loads(raw_path.with_suffix(".jsonl").read_text().splitlines()[0])
+    assert header["device"] == "gpu"
     assert kwargs["audio_seconds"] == 10.0
     assert isinstance(kwargs["peak_rss_mib"], int)
     assert kwargs["peak_rss_mib"] > 0
@@ -129,6 +136,29 @@ def test_success_event_is_content_free(
     # And none of the enrichment-derived content fields ride along either.
     for banned in ("text", "words", "statements", "topics", "setting", "emotions"):
         assert banned not in kwargs
+
+
+@pytest.mark.parametrize("placement", ["gpu", "cpu"])
+def test_success_event_and_header_use_parakeet_placement_record(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_path: Path,
+    audio_buffer: np.ndarray,
+    vad_result: VadResult,
+    placement: str,
+) -> None:
+    from solstone.observe.transcribe import _parakeet_cpp as parakeet_cpp
+
+    monkeypatch.setattr(parakeet_cpp.sys, "platform", "linux")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(raw_path.parents[4]))
+    parakeet_cpp.parakeet_server.write_parakeet_placement(placement)
+    backend_module = MagicMock()
+    backend_module.get_model_info.side_effect = parakeet_cpp.get_model_info
+
+    kwargs = _run_success(raw_path, audio_buffer, vad_result, backend_module)
+
+    assert kwargs["device"] == placement
+    header = json.loads(raw_path.with_suffix(".jsonl").read_text().splitlines()[0])
+    assert header["device"] == placement
 
 
 def test_failed_event_is_content_free_even_when_the_exception_message_is_not(

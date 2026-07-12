@@ -329,3 +329,46 @@ def test_get_model_info_does_not_connect(monkeypatch: pytest.MonkeyPatch) -> Non
         "compute_type": "q8_0",
         "per_word_confidence": True,
     }
+
+
+@pytest.mark.parametrize("placement", ["gpu", "cpu"])
+def test_get_model_info_reports_supervisor_placement_record(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    placement: str,
+) -> None:
+    monkeypatch.setattr(parakeet_cpp.sys, "platform", "linux")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+    parakeet_cpp.parakeet_server.write_parakeet_placement(placement)
+
+    info = parakeet_cpp.get_model_info({"device": "auto"})
+
+    assert info["device"] == placement
+    assert info["device"] != "auto"
+
+
+def test_get_model_info_uses_configured_device_without_placement_record(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(parakeet_cpp.sys, "platform", "linux")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+
+    info = parakeet_cpp.get_model_info({"device": "auto"})
+
+    assert info["device"] == "auto"
+
+
+def test_get_model_info_ignores_invalid_placement_record(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(parakeet_cpp.sys, "platform", "linux")
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+    placement_path = tmp_path / "journal" / "health" / "parakeet-cpp.placement"
+    placement_path.parent.mkdir(parents=True)
+    placement_path.write_text("vulkan")
+
+    info = parakeet_cpp.get_model_info({"device": "cpu"})
+
+    assert info["device"] == "cpu"

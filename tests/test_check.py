@@ -12,6 +12,16 @@ from solstone.think import utils as think_utils
 from solstone.think.providers import local_cuda, local_vulkan, memory
 
 GB = 1024**3
+PLACEMENT_LINE = (
+    "sol thinks on your GPU; transcription runs on your CPU on this machine"
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_vulkan_detect_cache():
+    local_vulkan.reset_detect_cache()
+    yield
+    local_vulkan.reset_detect_cache()
 
 
 def _patch_platform(
@@ -50,6 +60,10 @@ def _patch_linux_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     _patch_platform(monkeypatch)
     _patch_memory(monkeypatch)
     _patch_disk(monkeypatch)
+    monkeypatch.setattr(
+        local_vulkan, "detect_gpus", lambda: [_vulkan_device(vram_mib=24576)]
+    )
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: True)
 
 
 def _nvidia_probe(
@@ -90,12 +104,13 @@ def _vulkan_device(
     *,
     index: int = 0,
     name: str = "Vulkan GPU",
+    device_type: int = local_vulkan.VK_TYPE_DISCRETE,
     vram_mib: int = 8192,
 ) -> local_vulkan.VulkanDevice:
     return local_vulkan.VulkanDevice(
         index=index,
         name=name,
-        device_type=local_vulkan.VK_TYPE_DISCRETE,
+        device_type=device_type,
         vram_mib=vram_mib,
     )
 
@@ -168,6 +183,90 @@ def test_linux_nvidia_vulkan_backend_recommendation(
     output = capsys.readouterr().out
     assert "solstone-journal" in output
     assert "solstone-journal-cuda" not in output
+
+
+def test_linux_nvidia_small_single_discrete_mentions_cpu_transcription(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_linux_ok(monkeypatch)
+    monkeypatch.setattr(
+        local_cuda,
+        "probe_nvidia_gpu",
+        lambda: _nvidia_probe(vram_mib=6144),
+    )
+    monkeypatch.setattr(
+        local_vulkan, "detect_gpus", lambda: [_vulkan_device(vram_mib=6144)]
+    )
+
+    result = check.build_check_report()
+
+    gpu = _checks(result)["gpu"]
+    assert gpu.severity == "ok"
+    assert gpu.detail == f"NVIDIA GPU with 6 GB; {PLACEMENT_LINE}"
+
+
+@pytest.mark.parametrize(
+    ("probe", "devices", "probe_ok"),
+    [
+        (_nvidia_probe(vram_mib=12288), [_vulkan_device(vram_mib=12288)], True),
+        (
+            _nvidia_probe(vram_mib=6144),
+            [
+                _vulkan_device(index=0, vram_mib=6144),
+                _vulkan_device(index=1, vram_mib=6144),
+            ],
+            True,
+        ),
+        (
+            _nvidia_probe(
+                vram_mib=6144,
+                memory_source=local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE,
+            ),
+            [_vulkan_device(vram_mib=6144)],
+            True,
+        ),
+        (_nvidia_probe(vram_mib=16384), [_vulkan_device(vram_mib=16384)], True),
+        (_nvidia_probe(vram_mib=6144), [], False),
+    ],
+)
+def test_linux_nvidia_cpu_transcription_line_absent_outside_predicate(
+    monkeypatch: pytest.MonkeyPatch,
+    probe: local_cuda.NvidiaProbe,
+    devices: list[local_vulkan.VulkanDevice],
+    probe_ok: bool,
+) -> None:
+    _patch_linux_ok(monkeypatch)
+    monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", lambda: probe)
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: devices)
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: probe_ok)
+
+    result = check.build_check_report()
+
+    gpu = _checks(result)["gpu"]
+    assert gpu.severity == "ok"
+    assert PLACEMENT_LINE not in gpu.detail
+
+
+def test_linux_nvidia_vulkan_detection_exception_keeps_current_detail(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_linux_ok(monkeypatch)
+    monkeypatch.setattr(
+        local_cuda,
+        "probe_nvidia_gpu",
+        lambda: _nvidia_probe(vram_mib=6144),
+    )
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: (_ for _ in ()).throw(RuntimeError("vulkan failed")),
+    )
+
+    result = check.build_check_report()
+
+    gpu = _checks(result)["gpu"]
+    assert gpu.severity == "ok"
+    assert gpu.detail == "NVIDIA GPU with 6 GB"
 
 
 def test_linux_vulkan_ok(

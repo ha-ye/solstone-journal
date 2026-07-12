@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -22,6 +23,36 @@ def _install_fake_httpx(monkeypatch: pytest.MonkeyPatch, get):
     fake_httpx = types.SimpleNamespace(get=get)
     monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
     return fake_httpx
+
+
+def test_placement_record_round_trips_and_clears(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+
+    assert parakeet_server.read_parakeet_placement() is None
+    parakeet_server.clear_parakeet_placement()
+    parakeet_server.write_parakeet_placement("gpu")
+    assert parakeet_server.read_parakeet_placement() == "gpu"
+    parakeet_server.write_parakeet_placement("cpu")
+    assert parakeet_server.read_parakeet_placement() == "cpu"
+    parakeet_server.clear_parakeet_placement()
+    assert parakeet_server.read_parakeet_placement() is None
+
+
+def test_placement_record_validation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+    with pytest.raises(ValueError, match="invalid parakeet placement"):
+        parakeet_server.write_parakeet_placement("vulkan")
+
+    path = tmp_path / "journal" / "health" / "parakeet-cpp.placement"
+    path.parent.mkdir(parents=True)
+    path.write_text("vulkan")
+    assert parakeet_server.read_parakeet_placement() is None
 
 
 def test_no_port_probe_failed_and_connect_not_ready(monkeypatch: pytest.MonkeyPatch):

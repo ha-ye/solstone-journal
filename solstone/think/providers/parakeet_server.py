@@ -6,16 +6,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 from solstone.think import parakeet_readiness
 from solstone.think.providers.parakeet_install import ParakeetProviderError
-from solstone.think.utils import read_service_port
+from solstone.think.utils import get_journal, read_service_port
 
 STATE_READY = "ready"
 STATE_FAILED = "failed"
 
 _HOST = "127.0.0.1"
 _SERVICE_NAME = "parakeet-cpp"
+_PLACEMENT_FILE = "parakeet-cpp.placement"
+_VALID_PLACEMENTS = {"cpu", "gpu"}
 
 
 class ParakeetServerNotReady(ParakeetProviderError):
@@ -41,6 +44,33 @@ class ParakeetServerInfo:
 
 def _base_url(port: int) -> str:
     return f"http://{_HOST}:{port}"
+
+
+def _placement_path() -> Path:
+    return Path(get_journal()) / "health" / _PLACEMENT_FILE
+
+
+def write_parakeet_placement(device: str) -> None:
+    """Persist the resolved parakeet.cpp serving placement for telemetry."""
+    if device not in _VALID_PLACEMENTS:
+        raise ValueError(f"invalid parakeet placement: {device!r}")
+    path = _placement_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(device)
+
+
+def read_parakeet_placement() -> str | None:
+    """Read the resolved parakeet.cpp serving placement, if valid."""
+    try:
+        device = _placement_path().read_text().strip()
+    except FileNotFoundError:
+        return None
+    return device if device in _VALID_PLACEMENTS else None
+
+
+def clear_parakeet_placement() -> None:
+    """Remove any stale parakeet.cpp serving placement record."""
+    _placement_path().unlink(missing_ok=True)
 
 
 def _probe_health(port: int, timeout_s: float = 1.0) -> tuple[str, str | None]:
@@ -88,6 +118,9 @@ __all__ = [
     "STATE_READY",
     "ParakeetServerInfo",
     "ParakeetServerNotReady",
+    "clear_parakeet_placement",
     "connect",
     "probe_state",
+    "read_parakeet_placement",
+    "write_parakeet_placement",
 ]

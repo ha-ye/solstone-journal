@@ -3363,10 +3363,18 @@ def test_log_context_assertion(caplog):
     from solstone.think.providers import local_server
 
     floor = local_server.ServerTier(
-        name="floor", context_tokens=16384, parallel_slots=1, prompt_cache_mib=0
+        name="floor",
+        context_tokens=16384,
+        parallel_slots=1,
+        prompt_cache_mib=0,
+        resident_mib=4541,
     )
     capable = local_server.ServerTier(
-        name="capable", context_tokens=32768, parallel_slots=2, prompt_cache_mib=2048
+        name="capable",
+        context_tokens=32768,
+        parallel_slots=2,
+        prompt_cache_mib=2048,
+        resident_mib=None,
     )
 
     with caplog.at_level(logging.INFO):

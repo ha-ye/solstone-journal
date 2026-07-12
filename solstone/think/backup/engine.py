@@ -59,6 +59,7 @@ BACKUP_EXCLUDES = (
     ".tmp*",
     "supervisor.ready",
     "supervisor.start_time",
+    "parakeet-cpp.placement",
     "scheduler.json",
     "talents.json",
     "agents.json",

@@ -178,11 +178,19 @@ def _render_nodes_present_but_inaccessible() -> bool:
 def _linux_gpu_check(probe: object) -> FitCheck:
     try:
         from solstone.think.providers import local_cuda, local_vulkan, memory
+        from solstone.think.providers.parakeet_placement import cpu_placement_suffix
 
-        if not bool(getattr(probe, "detected")):
+        try:
             devices = local_vulkan.detect_gpus()
             probe_ok = local_vulkan.gpu_probe_ok()
-            selected = local_vulkan.select_device(devices) if probe_ok else None
+        except Exception:
+            if not bool(getattr(probe, "detected")):
+                raise
+            # Fail toward current behavior: Vulkan failure on NVIDIA yields no placement line.
+            devices = []
+            probe_ok = False
+        selected = local_vulkan.select_device(devices) if probe_ok else None
+        if not bool(getattr(probe, "detected")):
             inaccessible = (
                 not probe_ok or selected is None
             ) and _render_nodes_present_but_inaccessible()
@@ -223,7 +231,18 @@ def _linux_gpu_check(probe: object) -> FitCheck:
             return FitCheck(
                 "gpu",
                 "ok",
-                f"Vulkan GPU {selected.name} with {memory.gb_label(vram_bytes)} GB",
+                (
+                    f"Vulkan GPU {selected.name} with {memory.gb_label(vram_bytes)} GB"
+                    + cpu_placement_suffix(
+                        devices=devices,
+                        selected=selected,
+                        local_vulkan=local_vulkan,
+                        unified_memory=False,
+                        # sol check runs before install and cannot rely on journal
+                        # config; use the bundled-brain default for this advisory.
+                        brain_lane_active=True,
+                    )
+                ),
                 required_bytes=GPU_MIN_BYTES,
                 available_bytes=vram_bytes,
             )
@@ -257,6 +276,18 @@ def _linux_gpu_check(probe: object) -> FitCheck:
         detail = f"NVIDIA GPU with {memory.gb_label(gpu_bytes)} GB"
         if getattr(probe, "memory_source") == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE:
             detail = f"{detail} (unified memory)"
+        detail += cpu_placement_suffix(
+            devices=devices,
+            selected=selected,
+            local_vulkan=local_vulkan,
+            unified_memory=(
+                getattr(probe, "memory_source")
+                == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE
+            ),
+            # sol check runs before install and cannot rely on journal config; use
+            # the bundled-brain default for this advisory.
+            brain_lane_active=True,
+        )
         return FitCheck(
             "gpu",
             "ok",

@@ -38,19 +38,28 @@ class ServerTier:
     context_tokens: int
     parallel_slots: int
     prompt_cache_mib: int
+    resident_mib: int | None
 
 
 # Tunable estimates — keep all tier values in these two instances; do not
 # scatter literals elsewhere. The threshold is the only other tunable.
 _CAPABLE_TIER_MIN_VRAM_MIB = 16000
+# ``resident_mib`` is measured floor-tier brain residency under production
+# launch args. ``None`` on capable is load-bearing: unmeasured residency means
+# the co-location placement predicate can never fire at >=16 GiB.
 _CAPABLE_TIER = ServerTier(
-    name="capable", context_tokens=32768, parallel_slots=2, prompt_cache_mib=2048
+    name="capable",
+    context_tokens=32768,
+    parallel_slots=2,
+    prompt_cache_mib=2048,
+    resident_mib=None,
 )
 _FLOOR_TIER = ServerTier(
     name="floor",
     context_tokens=LOCAL_MIN_CONTEXT_TOKENS,
     parallel_slots=1,
     prompt_cache_mib=0,
+    resident_mib=4541,
 )
 
 # COPY REVIEW: placeholder owner-facing copy; founder-gated before ship.

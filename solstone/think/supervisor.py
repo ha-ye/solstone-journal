@@ -64,6 +64,7 @@ from solstone.think.processing import (
     evaluate_drain_gate,
     load_processing_settings,
 )
+from solstone.think.providers import parakeet_server
 from solstone.think.providers.memory import read_available_bytes
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
@@ -2420,12 +2421,19 @@ def start_local_server() -> RunnerManagedProcess | None:
 
 def start_parakeet_server() -> RunnerManagedProcess | None:
     """Launch the supervisor-owned parakeet-server when STT opts into it."""
+    parakeet_server.clear_parakeet_placement()
     if not linux_stt_uses_parakeet_cpp():
         return None
 
     from solstone.think.providers import local_vulkan, parakeet_install
+    from solstone.think.providers.parakeet_placement import (
+        decide_parakeet_auto_placement,
+        discrete_hardware_gpu_count,
+        is_discrete,
+    )
 
     config_device = _configured_parakeet_device()
+    effective_device = config_device
     selected = None
     if config_device == "auto":
         devices = local_vulkan.detect_gpus()
@@ -2440,8 +2448,42 @@ def start_parakeet_server() -> RunnerManagedProcess | None:
                 else "none"
             ),
         )
+        selected_is_discrete = selected is not None and is_discrete(
+            selected, local_vulkan
+        )
+        if selected is not None and selected_is_discrete:
+            from solstone.think.providers import local_cuda
+            from solstone.think.providers.local_endpoint import resolve_local_endpoint
 
-    plan = resolve_parakeet_server_launch_plan(config_device, selected)
+            discrete_count = discrete_hardware_gpu_count(devices, local_vulkan)
+            probe = local_cuda.probe_nvidia_gpu()
+            decision = decide_parakeet_auto_placement(
+                vram_mib=selected.vram_mib,
+                selected_device_is_discrete=selected_is_discrete,
+                discrete_hardware_gpu_count=discrete_count,
+                unified_memory=(
+                    probe.memory_source == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE
+                ),
+                brain_lane_active=(
+                    is_local_provider_needed() and resolve_local_endpoint().is_bundled
+                ),
+            )
+            if decision.force_cpu:
+                logging.info(
+                    "parakeet-server auto placement resolved to CPU: "
+                    "tier=%s tier_resident_mib=%s "
+                    "parakeet_worst_case_mib=%d margin_mib=%d "
+                    "required_mib=%s gpu_vram_mib=%s placement=cpu",
+                    decision.tier_name,
+                    decision.tier_resident_mib,
+                    decision.parakeet_worst_case_mib,
+                    decision.margin_mib,
+                    decision.required_mib,
+                    decision.vram_mib,
+                )
+                effective_device = "cpu"
+
+    plan = resolve_parakeet_server_launch_plan(effective_device, selected)
     try:
         binary_path, gguf_path = parakeet_install.ensure_artifacts_installed(
             plan.binary_backend
@@ -2465,6 +2507,9 @@ def start_parakeet_server() -> RunnerManagedProcess | None:
         env,
     )
     if status == "ready":
+        parakeet_server.write_parakeet_placement(
+            "gpu" if plan.binary_backend == "vulkan" else "cpu"
+        )
         return managed
 
     if plan.binary_backend == "vulkan" and status in {"crashed", "timeout"}:
@@ -2499,6 +2544,7 @@ def start_parakeet_server() -> RunnerManagedProcess | None:
                 "continuing startup",
                 PARAKEET_SERVER_READY_TIMEOUT_S,
             )
+        parakeet_server.write_parakeet_placement("cpu")
         return cpu_managed
 
     if plan.binary_backend == "cpu":
@@ -2514,8 +2560,12 @@ def start_parakeet_server() -> RunnerManagedProcess | None:
                 "continuing startup",
                 PARAKEET_SERVER_READY_TIMEOUT_S,
             )
+            parakeet_server.write_parakeet_placement("cpu")
             return managed
 
+    parakeet_server.write_parakeet_placement(
+        "gpu" if plan.binary_backend == "vulkan" else "cpu"
+    )
     return managed
 
 

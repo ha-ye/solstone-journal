@@ -200,6 +200,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Schedules (`config/schedules.json`) | `solstone/think/schedule_config.py` |
 | Push devices (`config/push_devices.json`) | `solstone/think/push/devices.py` |
 | Local inference operational telemetry (`health/local-inference/YYYYMMDD.jsonl`) | `solstone/think/providers/local_admission.py` |
+| Parakeet server placement record (`health/parakeet-cpp.placement`) | `solstone/think/providers/parakeet_server.py` |
 | Hosted backup binding (`backup/hosted/binding.json`) | `solstone/think/backup/hosted.py` |
 | Convey config (`config/convey.json`) | `solstone/convey/config.py` + `solstone/think/facets.py` |
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |

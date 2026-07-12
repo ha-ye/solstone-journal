@@ -74,6 +74,8 @@ def build_local_fit_report(model_id: str) -> FitReport:
 
     probe = None
     choice = None
+    devices: list[Any] = []
+    brain_lane_active = True
     if sys.platform.startswith("linux"):
         probe = local_cuda.probe_nvidia_gpu()
         choice = local_cuda.select_local_backend(
@@ -86,6 +88,16 @@ def build_local_fit_report(model_id: str) -> FitReport:
             if choice.backend == "cuda"
             else "llama-server tarball"
         )
+        devices = local_vulkan.detect_gpus()
+        try:
+            from solstone.think.models import is_local_provider_needed
+            from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+            brain_lane_active = (
+                is_local_provider_needed() and resolve_local_endpoint().is_bundled
+            )
+        except Exception:
+            brain_lane_active = True
     else:
         unknown_server = "llama-server tarball"
 
@@ -103,7 +115,13 @@ def build_local_fit_report(model_id: str) -> FitReport:
 
     if sys.platform.startswith("linux") and probe is not None and choice is not None:
         checks.append(
-            _local_gpu_check(probe, choice, local_vulkan.detect_gpus(), local_vulkan)
+            _local_gpu_check(
+                probe,
+                choice,
+                devices,
+                local_vulkan,
+                brain_lane_active=brain_lane_active,
+            )
         )
 
     return FitReport(artifact="local provider artifacts", checks=tuple(checks))
@@ -388,8 +406,11 @@ def _local_gpu_check(
     choice: Any,
     devices: list[Any],
     local_vulkan: Any,
+    *,
+    brain_lane_active: bool,
 ) -> FitCheck:
     from solstone.think.providers import local_cuda
+    from solstone.think.providers.parakeet_placement import cpu_placement_suffix
 
     backend = getattr(choice, "backend")
     reason = getattr(choice, "reason")
@@ -401,6 +422,14 @@ def _local_gpu_check(
         )
 
     memory_source = getattr(probe, "memory_source")
+    selected = local_vulkan.select_device(devices)
+    placement_suffix = cpu_placement_suffix(
+        devices=devices,
+        selected=selected,
+        local_vulkan=local_vulkan,
+        unified_memory=memory_source == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE,
+        brain_lane_active=brain_lane_active,
+    )
     if memory_source == local_cuda.MEMORY_SOURCE_UNAVAILABLE:
         return FitCheck(
             "gpu",
@@ -412,6 +441,7 @@ def _local_gpu_check(
         detail = f"CUDA backend selected: {reason}"
         if memory_source == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE:
             detail = f"{detail}; GPU tiering memory uses system MemAvailable"
+        detail = f"{detail}{placement_suffix}"
         return FitCheck("gpu", "ok", detail)
 
     probe_ok = local_vulkan.gpu_probe_ok()
@@ -421,7 +451,6 @@ def _local_gpu_check(
             "unknown",
             f"Vulkan GPU probe did not complete; resolved backend is {backend}: {reason}",
         )
-    selected = local_vulkan.select_device(devices)
     if selected is None:
         return FitCheck(
             "gpu",
@@ -431,7 +460,10 @@ def _local_gpu_check(
     return FitCheck(
         "gpu",
         "ok",
-        f"Vulkan GPU selected: {selected.name}; resolved backend is {backend}: {reason}",
+        (
+            f"Vulkan GPU selected: {selected.name}; resolved backend is {backend}: "
+            f"{reason}{placement_suffix}"
+        ),
     )
 
 

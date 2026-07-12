@@ -7,9 +7,53 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think.providers import fit_report, local_install
+from solstone.think.providers import fit_report, local_cuda, local_install, local_vulkan
 from solstone.think.providers.local import LocalProviderError
 from solstone.think.providers.memory import MemoryVerdict
+
+PLACEMENT_LINE = (
+    "sol thinks on your GPU; transcription runs on your CPU on this machine"
+)
+
+
+@pytest.fixture(autouse=True)
+def _reset_vulkan_detect_cache():
+    local_vulkan.reset_detect_cache()
+    yield
+    local_vulkan.reset_detect_cache()
+
+
+def _nvidia_probe(
+    *,
+    vram_mib: int,
+    memory_source: str = local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
+) -> local_cuda.NvidiaProbe:
+    return local_cuda.NvidiaProbe(
+        index=0,
+        compute_cap="sm_89",
+        driver_cuda_version=13,
+        vram_mib=vram_mib,
+        tiering_memory_mib=vram_mib,
+        memory_source=memory_source,
+        detected=True,
+    )
+
+
+def _vulkan_device(
+    *,
+    index: int = 0,
+    vram_mib: int,
+) -> local_vulkan.VulkanDevice:
+    return local_vulkan.VulkanDevice(
+        index=index,
+        name=f"Test GPU {index}",
+        device_type=local_vulkan.VK_TYPE_DISCRETE,
+        vram_mib=vram_mib,
+    )
+
+
+def _choice(backend: str = "cuda") -> local_cuda.BackendChoice:
+    return local_cuda.BackendChoice(backend=backend, reason="test choice")
 
 
 def test_overall_collapses_unknown_to_warning() -> None:
@@ -35,6 +79,59 @@ def test_overall_blocked_wins() -> None:
     )
 
     assert report.overall == "blocked"
+
+
+def test_local_gpu_check_mentions_cpu_transcription_on_small_bundled_brain() -> None:
+    check = fit_report._local_gpu_check(
+        _nvidia_probe(vram_mib=6144),
+        _choice(),
+        [_vulkan_device(vram_mib=6144)],
+        local_vulkan,
+        brain_lane_active=True,
+    )
+
+    assert check.severity == "ok"
+    assert check.detail == f"CUDA backend selected: test choice; {PLACEMENT_LINE}"
+
+
+@pytest.mark.parametrize(
+    ("probe", "devices", "brain_lane_active"),
+    [
+        (_nvidia_probe(vram_mib=6144), [_vulkan_device(vram_mib=6144)], False),
+        (
+            _nvidia_probe(vram_mib=6144),
+            [
+                _vulkan_device(index=0, vram_mib=6144),
+                _vulkan_device(index=1, vram_mib=6144),
+            ],
+            True,
+        ),
+        (
+            _nvidia_probe(
+                vram_mib=6144,
+                memory_source=local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE,
+            ),
+            [_vulkan_device(vram_mib=6144)],
+            True,
+        ),
+        (_nvidia_probe(vram_mib=16384), [_vulkan_device(vram_mib=16384)], True),
+    ],
+)
+def test_local_gpu_check_omits_cpu_transcription_line_outside_predicate(
+    probe: local_cuda.NvidiaProbe,
+    devices: list[local_vulkan.VulkanDevice],
+    brain_lane_active: bool,
+) -> None:
+    check = fit_report._local_gpu_check(
+        probe,
+        _choice(),
+        devices,
+        local_vulkan,
+        brain_lane_active=brain_lane_active,
+    )
+
+    assert check.severity == "ok"
+    assert PLACEMENT_LINE not in check.detail
 
 
 def test_disk_unknown_size_warns_when_known_size_fits(

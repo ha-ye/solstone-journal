@@ -245,6 +245,8 @@ def test_run_backup_unlocks_then_calls_restic_with_expected_argv(
             "--exclude",
             "supervisor.start_time",
             "--exclude",
+            "parakeet-cpp.placement",
+            "--exclude",
             "scheduler.json",
             "--exclude",
             "talents.json",
