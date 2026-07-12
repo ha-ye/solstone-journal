@@ -259,30 +259,74 @@ def test_wrong_epoch_channel_is_not_checked_out() -> None:
     assert spp_transport._POOL == []
 
 
-@pytest.mark.parametrize(
-    ("exc", "kind", "reason_code"),
-    [
-        (
-            RatlsChannelError("gateway_unreachable"),
-            "unreachable",
-            "gateway_unreachable",
-        ),
-        (RatlsChannelError("tls_handshake_failed"), "failed", "tls_handshake_failed"),
-        (RatlsVerificationError("nonce_mismatch"), "failed", "nonce_mismatch"),
-        (RuntimeError("boom"), "failed", "unexpected_error"),
-    ],
+RATLS_CHANNEL_REASON_CODES = (
+    "gateway_unreachable",
+    "tls_handshake_failed",
+    "proof_http_failed",
 )
-def test_attestation_failure_buckets_at_transport_catch_site(
+RATLS_VERIFICATION_REASON_CODES = (
+    "certificate_invalid",
+    "certificate_extension_missing",
+    "certificate_extension_not_critical",
+    "certificate_extension_invalid",
+    "certificate_evidence_invalid",
+    "nonce_mismatch",
+    "spki_mismatch",
+    "cpu_verification_failed",
+    "gpu_nonce_mismatch",
+    "nvattest_unavailable",
+    "gpu_appraisal_failed",
+    "composite_appraisal_failed",
+    "exporter_proof_invalid",
+    "exporter_mismatch",
+    "exporter_quote_failed",
+)
+BUCKETING_CASES = (
+    tuple(
+        ("channel", code, "unreachable" if code == "gateway_unreachable" else "failed")
+        for code in RATLS_CHANNEL_REASON_CODES
+    )
+    + tuple(
+        ("verification", code, "failed") for code in RATLS_VERIFICATION_REASON_CODES
+    )
+    + (
+        ("endpoint", "endpoint_invalid", "failed"),
+        ("unexpected", "unexpected_error", "failed"),
+    )
+)
+
+
+@pytest.mark.parametrize(
+    ("source", "reason_code", "kind"),
+    BUCKETING_CASES,
+    ids=[f"{source}:{reason_code}" for source, reason_code, _kind in BUCKETING_CASES],
+)
+def test_attestation_failure_buckets_real_reason_codes_at_transport_catch_site(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    exc: Exception,
-    kind: str,
+    source: str,
     reason_code: str,
+    kind: str,
 ) -> None:
     block = _write_confidential_config(tmp_path, monkeypatch)
-    monkeypatch.setattr(
-        spp_transport, "establish_attested_channel", Mock(side_effect=exc)
-    )
+    if source == "channel":
+        exc: Exception = RatlsChannelError(reason_code)
+        monkeypatch.setattr(
+            spp_transport, "establish_attested_channel", Mock(side_effect=exc)
+        )
+    elif source == "verification":
+        exc = RatlsVerificationError(reason_code)
+        monkeypatch.setattr(
+            spp_transport, "establish_attested_channel", Mock(side_effect=exc)
+        )
+    elif source == "endpoint":
+        block["endpoint_url"] = "not-a-url"
+    elif source == "unexpected":
+        monkeypatch.setattr(
+            spp_transport,
+            "establish_attested_channel",
+            Mock(side_effect=RuntimeError("boom")),
+        )
 
     with pytest.raises(AttestationFailedError):
         spp_transport.verify_confidential_attestation(block)
@@ -291,22 +335,6 @@ def test_attestation_failure_buckets_at_transport_catch_site(
     assert failure is not None
     assert failure.kind == kind
     assert failure.reason_code == reason_code
-
-
-def test_endpoint_invalid_buckets_as_failed_without_detail_parsing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    block = _write_confidential_config(tmp_path, monkeypatch)
-    block["endpoint_url"] = "not-a-url"
-
-    with pytest.raises(AttestationFailedError):
-        spp_transport.verify_confidential_attestation(block)
-
-    failure = spp.get_attestation_state().failure
-    assert failure is not None
-    assert failure.kind == "failed"
-    assert failure.reason_code == "endpoint_invalid"
 
 
 def test_recheck_confidential_attestation_records_success(

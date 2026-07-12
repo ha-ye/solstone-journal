@@ -97,7 +97,8 @@ def _close_channel(channel: AttestedChannel) -> None:
 
 
 def _teardown_locked() -> None:
-    global _EPOCH, _FORWARDER_BASE_URL, _LISTENER, _LISTENER_THREAD
+    global _CONFIDENTIAL_BLOCK, _EPOCH, _FORWARDER_BASE_URL, _LISTENER
+    global _LISTENER_THREAD
 
     _EPOCH += 1
     listener = _LISTENER
@@ -106,6 +107,7 @@ def _teardown_locked() -> None:
     _LISTENER = None
     _LISTENER_THREAD = None
     _FORWARDER_BASE_URL = None
+    _CONFIDENTIAL_BLOCK = None
     _POOL.clear()
     _ACTIVE.clear()
     if listener is not None:
@@ -275,9 +277,9 @@ def recheck_confidential_attestation() -> None:
         return
     now = datetime.now(timezone.utc)
     with _LOCK:
-        _CONFIDENTIAL_BLOCK = dict(block)
         _teardown_locked()
         spp.clear_attestation_state()
+        _CONFIDENTIAL_BLOCK = dict(block)
         try:
             _establish_and_record_locked(block, now)
         except AttestationFailedError:

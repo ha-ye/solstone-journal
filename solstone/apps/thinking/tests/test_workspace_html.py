@@ -175,6 +175,8 @@ def test_confidential_live_static_behavior_is_wired() -> None:
     assert "confidentialProvenancePresent" in js
     assert "renderConfidentialDetailPanel" in js
     assert "function pollConfidentialUntilTerminal(" in js
+    assert "if (lane === 'confidential')" in js
+    assert "showView('confidential-setup');" in js
     assert "confidential-setup" in js
 
 

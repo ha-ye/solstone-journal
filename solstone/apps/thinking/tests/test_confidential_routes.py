@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -15,6 +16,28 @@ from solstone.convey import create_app
 from solstone.think.journal_config import write_journal_config
 from solstone.think.services import operations, spp, spp_handoff, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
+
+
+class _FakeChannel:
+    def __init__(self, verdict: object) -> None:
+        self.verdict = verdict
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeListener:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _AliveThread:
+    def is_alive(self) -> bool:
+        return True
 
 
 def _payload(suffix: str = "one") -> dict[str, str]:
@@ -188,7 +211,7 @@ def test_enable_confidential_rejects_when_provenance_exists(thinking_client) -> 
 
 
 def test_disable_confidential_restores_synchronously(
-    thinking_client, journal_copy: Path
+    thinking_client, journal_copy: Path, monkeypatch: pytest.MonkeyPatch
 ):
     spp.provision_confidential_handoff(_payload("disable"))
     now = datetime.now(timezone.utc)
@@ -200,6 +223,15 @@ def test_disable_confidential_restores_synchronously(
             gpu_reattest_at=now,
         )
     )
+    old_channel = _FakeChannel("old")
+    old_listener = _FakeListener()
+    spp_transport._POOL[:] = [old_channel]
+    spp_transport._LISTENER = old_listener
+    spp_transport._LISTENER_THREAD = _AliveThread()
+    spp_transport._FORWARDER_BASE_URL = "http://127.0.0.1:1111"
+    spp_transport._CONFIDENTIAL_BLOCK = {
+        "endpoint_url": "https://spp-disable.example.test/v1"
+    }
 
     response = thinking_client.post("/app/thinking/api/confidential/disable")
 
@@ -216,6 +248,34 @@ def test_disable_confidential_restores_synchronously(
     assert state.session is None
     assert state.failure is None
     assert state.last_verified is None
+    assert old_channel.closed is True
+    assert old_listener.closed is True
+    assert spp_transport._POOL == []
+    assert spp_transport._LISTENER is None
+    assert spp_transport._LISTENER_THREAD is None
+    assert spp_transport._FORWARDER_BASE_URL is None
+    assert spp_transport._CONFIDENTIAL_BLOCK is None
+
+    fresh_channel = _FakeChannel("fresh")
+    establish = Mock(return_value=fresh_channel)
+
+    def fake_start_listener() -> None:
+        spp_transport._LISTENER = _FakeListener()
+        spp_transport._LISTENER_THREAD = _AliveThread()
+        spp_transport._FORWARDER_BASE_URL = "http://127.0.0.1:2222"
+
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+    monkeypatch.setattr(spp_transport, "_start_listener_locked", fake_start_listener)
+    spp.provision_confidential_handoff(_payload("fresh"))
+
+    provenance = spp.confidential_provenance()
+    assert provenance is not None
+    spp_transport.verify_confidential_attestation(provenance)
+
+    assert establish.call_args.args[0].host == "spp-fresh.example.test"
+    assert spp_transport._POOL == [fresh_channel]
+    assert old_channel not in spp_transport._POOL
+    assert spp_transport._CONFIDENTIAL_BLOCK == provenance
 
 
 def test_recheck_confidential_rejects_when_off(thinking_client) -> None:

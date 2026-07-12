@@ -27,6 +27,7 @@ def _node_script(body: str) -> str:
         extract_js_function(source, "confidentialOperationIsTerminal"),
         extract_js_function(source, "confidentialOperationRender"),
         extract_js_function(source, "confidentialAttestationRender"),
+        extract_js_function(source, "clearConfidentialInProgressOperation"),
         extract_js_function(source, "confidentialGlanceForAttestation"),
         extract_js_function(source, "pollConfidentialUntilTerminal"),
         extract_js_function(source, "handleConfidentialPollError"),
@@ -70,7 +71,6 @@ assert(failed.message === "couldn't verify the service — sol isn't sending.", 
 
 const starting = confidentialOperationRender({phase: 'starting'}, confidentialCopy);
 assert(starting.message === 'opening your browser to confirm…', 'starting message');
-assert(starting.active === true, 'starting active');
 const early = confidentialOperationRender({phase: 'early_access'}, confidentialCopy);
 assert(early.message === 'confidential processing is coming — scouts get it first.', 'early access copy');
 assert(confidentialOperationIsTerminal({phase: 'early_access'}), 'early access terminal');
@@ -179,6 +179,26 @@ async function main() {
   console.log('PASS');
 }
 main().catch((error) => { console.error(error.stack || error); process.exit(1); });
+"""
+        )
+    )
+
+
+def test_confidential_poll_cancellation_clears_only_in_progress_operation() -> None:
+    _run_node(
+        _node_script(
+            """
+const activeLane = {confidential_operation: {phase: 'waiting'}};
+assert(clearConfidentialInProgressOperation(activeLane) === true, 'waiting cleared');
+assert(activeLane.confidential_operation === null, 'operation nulled');
+
+const terminalLane = {confidential_operation: {phase: 'early_access'}};
+assert(clearConfidentialInProgressOperation(terminalLane) === false, 'terminal kept');
+assert(terminalLane.confidential_operation.phase === 'early_access', 'terminal preserved');
+
+const emptyLane = {};
+assert(clearConfidentialInProgressOperation(emptyLane) === false, 'empty ignored');
+console.log('PASS');
 """
         )
     )

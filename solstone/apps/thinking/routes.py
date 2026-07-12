@@ -728,6 +728,7 @@ def confidential_enable() -> Any:
 def confidential_disable() -> Any:
     try:
         outcome = spp.disable_confidential()
+        spp_transport.teardown_confidential_transport()
         return jsonify(
             {
                 "success": True,
