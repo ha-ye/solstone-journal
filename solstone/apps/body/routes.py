@@ -30,9 +30,8 @@ from typing import Any, Callable
 
 from flask import (
     Blueprint,
-    get_template_attribute,
+    current_app,
     jsonify,
-    render_template,
     request,
 )
 
@@ -4310,40 +4309,28 @@ def _build_source_freshness(journal_root: Path) -> dict[str, Any]:
 
 @body_bp.route("/")
 def index():
-    # The overview is the stable Body home: no date-nav pill here — the
-    # day grid and recent-day rail are the pickers. Day pages own ‹ date ›.
+    # The overview is the stable Body home: no date-nav pill here; the
+    # client-rendered day grid and recent-day rail are the pickers. Day pages
+    # own ‹ date ›.
     # (Deliberate divergence from transcripts/timeline, which land on a day:
     # Body's archive-first landing is the product identity.)
-    return render_template(
-        "app.html",
-        body_status=_build_health_import_status(_journal_root()),
-    )
+    return current_app.send_static_file("shell.html")
 
 
 @body_bp.route("/trends")
 def trends_view():
-    # Same shell and archive context as the overview; the ``body_trends``
-    # flag switches the workspace template to the trends view. Signal
-    # series arrive through /api/trends so the page never blocks on the
-    # aggregate fold.
-    return render_template(
-        "app.html",
-        body_status=_build_health_import_status(_journal_root()),
-        body_trends=True,
-    )
+    return current_app.send_static_file("shell.html")
 
 
 @body_bp.route("/<day>")
 def day_view(day: str):
+    if not DAY_RE.fullmatch(day):
+        return error_response(INVALID_DAY)
     try:
-        body_day = _build_health_day(_journal_root(), day)
+        datetime.strptime(day, "%Y%m%d")
     except ValueError:
         return error_response(INVALID_DAY)
-    return render_template(
-        "app.html",
-        body_status=None,
-        body_day=body_day,
-    )
+    return current_app.send_static_file("shell.html")
 
 
 @body_bp.get("/api/status")
@@ -4355,10 +4342,9 @@ def api_status():
 def api_recent():
     """The next carousel batch: day cards strictly older than ``before``.
 
-    Alongside the card payloads and the older-days-remain flag, the
-    response carries the batch rendered through the same ``body_day_card``
-    Jinja macro the overview's initial render uses — one card markup,
-    never a client-side copy that could drift.
+    The response carries compact card payloads and the older-days-remain
+    flag. The client renders both this batch and the initial overview rail
+    through the single ``renderDayCard`` renderer.
     """
     before = request.args.get("before", "")
     if not DAY_RE.fullmatch(before):
@@ -4384,12 +4370,10 @@ def api_recent():
     journal_root = _journal_root()
     by_day = _read_health_dedupe_stats(journal_root)["by_day"]
     days, has_more = _recent_day_rail(journal_root, by_day, before=before, limit=limit)
-    render_card = get_template_attribute("body/workspace.html", "body_day_card")
     return jsonify(
         {
             "days": days,
             "has_more": has_more,
-            "html": "".join(render_card(item) for item in days),
         }
     )
 

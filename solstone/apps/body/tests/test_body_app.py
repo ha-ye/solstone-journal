@@ -20,6 +20,81 @@ from solstone.apps.body import routes as body_routes
 from solstone.apps.events import EventContext
 from solstone.think.importers import health_schema
 
+BODY_ROOT = Path(body_routes.__file__).resolve().parent
+
+
+def _workspace_source() -> str:
+    return (BODY_ROOT / "workspace.html").read_text(encoding="utf-8")
+
+
+def _function_source(source: str, name: str) -> str:
+    marker = f"function {name}("
+    start = source.index(marker)
+    open_paren = source.index("(", start)
+    paren_depth = 0
+    close_paren = -1
+    for index in range(open_paren, len(source)):
+        char = source[index]
+        if char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth -= 1
+            if paren_depth == 0:
+                close_paren = index
+                break
+    assert close_paren != -1, f"function {name} has no closing parameter list"
+    brace = source.index("{", close_paren)
+    depth = 0
+    for index in range(brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"function {name} has no closing brace")
+
+
+def _function_sources(*names: str) -> str:
+    source = _workspace_source()
+    return "\n".join(_function_source(source, name) for name in names)
+
+
+def _collect_strings(node: object) -> list[str]:
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, dict):
+        strings: list[str] = []
+        for value in node.values():
+            strings.extend(_collect_strings(value))
+        return strings
+    if isinstance(node, list):
+        strings: list[str] = []
+        for value in node:
+            strings.extend(_collect_strings(value))
+        return strings
+    return []
+
+
+def _collect_strings_except_keys(node: object, excluded: set[str]) -> list[str]:
+    if isinstance(node, str):
+        return [node]
+    if isinstance(node, dict):
+        strings: list[str] = []
+        for key, value in node.items():
+            if key in excluded:
+                continue
+            strings.extend(_collect_strings_except_keys(value, excluded))
+        return strings
+    if isinstance(node, list):
+        strings: list[str] = []
+        for value in node:
+            strings.extend(_collect_strings_except_keys(value, excluded))
+        return strings
+    return []
+
+
 DEDUPE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS health_dedupe (
     dedupe_key TEXT PRIMARY KEY,
@@ -361,19 +436,23 @@ def test_status_api_summarizes_synthetic_health_import(body_env):
     }
 
 
-def test_status_page_renders_import_and_dedupe_sections(body_env):
+def test_status_api_and_workspace_cover_import_and_dedupe_sections(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
-    response = env.client.get("/app/body/")
+    response = env.client.get("/app/body/api/status")
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert "20260703_120000" in html
-    assert "By type" in html
-    assert "Dedupe by type" in html
-    assert "HKQuantityTypeIdentifierBloodGlucose" in html
-    assert "apple_health" in html
+    status = response.get_json()
+    assert status["imports"][0]["import_id"] == "20260703_120000"
+    assert status["normalized"]["by_type"]["HKQuantityTypeIdentifierBloodGlucose"] == 2
+    assert status["dedupe"]["by_source"] == {"apple_health": 4}
+
+    source = _function_source(_workspace_source(), "renderOverviewAudit")
+    assert "By type" in source
+    assert "Dedupe by type" in source
+    assert "renderCountList(status.normalized?.by_type" in source
+    assert "renderCountList(status.dedupe?.by_type" in source
 
 
 def test_day_api_returns_summary_and_factual_glucose_stats(body_env):
@@ -395,37 +474,41 @@ def test_day_api_returns_summary_and_factual_glucose_stats(body_env):
     }
 
 
-def test_day_page_renders_summary_and_glucose_facts_only(body_env):
+def test_day_api_and_workspace_cover_summary_and_glucose_facts_only(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
-    response = env.client.get("/app/body/20260703")
+    response = env.client.get("/app/body/api/day/20260703")
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert "Day summary" in html
-    assert "HKQuantityTypeIdentifierBloodGlucose: 2" in html
-    assert "What was glucose doing?" in html
-    assert "avg" in html
-    assert "120" in html
-    lowered = html.lower()
+    payload = response.get_json()
+    assert "HKQuantityTypeIdentifierBloodGlucose: 2" in payload["summary_markdown"]
+    glucose = payload["glucose_series"][0]
+    assert glucose["mean_label"] == "120"
+    assert glucose["range_label"] == "100–140 mg/dL"
+
+    source = _function_sources("renderDayAudit", "renderGlucoseCard")
+    assert "Day summary" in source
+    assert "What was glucose doing?" in source
+    assert "mean_label" in source
+    lowered = source.lower()
     assert "normal glucose" not in lowered
     assert "high glucose" not in lowered
     assert "low glucose" not in lowered
 
 
-def test_day_page_lede_renders_once_in_hero_card(body_env):
+def test_day_api_lede_and_workspace_hero_render_once(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
     lede = env.client.get("/app/body/api/day/20260703").get_json()["lede"]
-    html = env.client.get("/app/body/20260703").get_data(as_text=True)
+    source = _function_source(_workspace_source(), "renderDayBrief")
 
     # The lede lives in the "What your body added to the day" hero card
     # only — the page header carries just the date context.
     assert lede
-    assert html.count(lede) == 1
-    assert "What your body added to the day" in html
+    assert source.count("bodyDay.lede") == 1
+    assert "What your body added to the day" in source
 
 
 def test_body_workspace_template_avoids_surveillance_verbs():
@@ -462,7 +545,7 @@ def test_read_routes_create_nothing_in_empty_journal(body_env):
     assert env.client.get("/app/body/api/stats/2026-07").status_code == 200
     recent = env.client.get("/app/body/api/recent?before=20260703")
     assert recent.status_code == 200
-    assert recent.get_json() == {"days": [], "has_more": False, "html": ""}
+    assert recent.get_json() == {"days": [], "has_more": False}
     assert env.client.get("/app/body/api/trends").status_code == 200
     assert env.client.get("/app/body/").status_code == 200
     assert env.client.get("/app/body/trends").status_code == 200
@@ -516,6 +599,21 @@ def test_day_api_rejects_invalid_day(body_env):
     assert env.client.get("/app/body/api/day/not-a-day").status_code == 400
     assert env.client.get("/app/body/api/day/2026-07-03").status_code == 400
     assert env.client.get("/app/body/api/day/20261399").status_code == 400
+
+
+def test_day_page_rejects_invalid_day_and_valid_day_serves_shell(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    invalid = env.client.get("/app/body/20261399")
+    assert invalid.status_code == 400
+    assert invalid.get_json()["reason_code"] == "invalid_day"
+
+    valid = env.client.get("/app/body/20260703")
+    assert valid.status_code == 200
+    html = valid.get_data(as_text=True)
+    assert 'data-solstone-shell="spa"' in html
+    assert "HKQuantityTypeIdentifierBloodGlucose: 2" not in html
 
 
 def test_day_api_counts_overlapping_bundles_once(body_env):
@@ -1257,22 +1355,26 @@ def test_day_api_empty_day_links_nearest_days_with_data(body_env):
     assert after["nearest"]["next"] is None
 
 
-def test_day_page_empty_day_renders_honest_empty_state(body_env):
+def test_day_api_empty_day_and_workspace_empty_state(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
-    response = env.client.get("/app/body/20260601")
+    response = env.client.get("/app/body/api/day/20260601")
 
     assert response.status_code == 200
-    html = response.get_data(as_text=True)
-    assert "No body data present for this day." in html
-    assert "/app/body/20260703" in html
+    payload = response.get_json()
+    assert payload["has_data"] is False
+    assert payload["nearest"]["next"] == "20260703"
+
+    source = _function_source(_workspace_source(), "renderEmptyDay")
+    assert "No body data present for this day." in source
+    assert "bodyDayHref(nearest.next)" in source
 
 
 # --- Day view: prompts hook --------------------------------------------------
 
 
-def test_day_page_renders_ask_prompts_with_chat_hook(body_env):
+def test_day_api_prompts_and_workspace_chat_hook(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
@@ -1280,10 +1382,10 @@ def test_day_page_renders_ask_prompts_with_chat_hook(body_env):
     assert len(payload["prompts"]) == 3
     assert any("glucose peak" in prompt for prompt in payload["prompts"])
 
-    html = env.client.get("/app/body/20260703").get_data(as_text=True)
-    assert "Ask Solstone about this day" in html
-    assert "data-prompt=" in html
-    assert "window.fillChat" in html
+    source = _function_sources("renderPrompts", "bindPromptButtons")
+    assert "Ask Solstone about this day" in source
+    assert "data-prompt=" in source
+    assert "window.fillChat" in source
 
 
 # --- Archive: day grid, families, rail ----------------------------------------
@@ -1353,7 +1455,7 @@ def test_status_api_day_grid_groups_years_and_log_scales(body_env):
     assert by_day["20260102"]["title"] == "Jan 2, 2026 · no entries"
 
 
-def test_status_page_day_grid_links_only_days_with_data(body_env):
+def test_status_api_day_grid_and_workspace_links_only_days_with_data(body_env):
     env = body_env()
     rows = [
         _row(
@@ -1373,13 +1475,23 @@ def test_status_page_day_grid_links_only_days_with_data(body_env):
     ]
     _seed_import(env.journal, "20260807_000000", rows)
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
+    status = env.client.get("/app/body/api/status").get_json()
+    cells = {
+        cell["day"]: cell
+        for block in status["archive"]["day_grid"]
+        for cell in _grid_cells(block)
+    }
 
-    assert 'href="/app/body/20260315"' in html
-    assert "Mar 15, 2026 · 1 entry" in html
+    assert cells["20260315"]["count"] == 1
+    assert cells["20260315"]["title"] == "Mar 15, 2026 · 1 entry"
     # A day inside the span with no entries renders pale and unlinked.
-    assert 'href="/app/body/20260401"' not in html
-    assert "Apr 1, 2026 · no entries" in html
+    assert cells["20260401"]["count"] == 0
+    assert cells["20260401"]["title"] == "Apr 1, 2026 · no entries"
+
+    source = _function_source(_workspace_source(), "renderDayGrid")
+    assert 'href="${bodyDayHref(cell.day)}"' in source
+    assert 'class="body-day-cell body-day-cell--empty"' in source
+    assert 'aria-hidden="true"' in source
 
 
 def test_dedupe_stats_include_per_type_time_ranges(body_env):
@@ -1503,30 +1615,27 @@ def test_status_api_recent_day_rail_caps_at_fourteen_days(body_env):
     assert archive["recent_days_has_more"] is True
 
 
-def test_overview_recent_days_render_as_snap_carousel(body_env):
-    env = body_env()
-    _seed_health_import(env.journal)
-
-    html = env.client.get("/app/body/").get_data(as_text=True)
+def test_overview_recent_days_workspace_renders_snap_carousel():
+    source = _workspace_source()
 
     # The rail is a horizontal scroll-snap carousel with fixed-width cards
     # and a thin scrollbar; the page itself never scrolls sideways.
-    assert 'class="body-recent-carousel"' in html
-    assert "scroll-snap-type: x mandatory" in html
-    assert "overflow-x: auto" in html
-    assert "scroll-snap-align: start" in html
-    assert "scrollbar-width: thin" in html
+    assert 'class="body-recent-carousel"' in source
+    assert "scroll-snap-type: x mandatory" in source
+    assert "overflow-x: auto" in source
+    assert "scroll-snap-align: start" in source
+    assert "scrollbar-width: thin" in source
 
     # Paging buttons: newest-first order puts newer days to the left, so
     # the labels follow content, not direction.
-    assert 'aria-label="Newer days"' in html
-    assert 'aria-label="Earlier days"' in html
+    assert 'aria-label="Newer days"' in source
+    assert 'aria-label="Earlier days"' in source
 
     # Buttons disable at the respective end of the scroll range and the
     # control cluster hides entirely when every card fits without overflow.
-    assert "backBtn.disabled" in html
-    assert "fwdBtn.disabled" in html
-    assert "controls.hidden = true" in html
+    assert "backBtn.disabled" in source
+    assert "fwdBtn.disabled" in source
+    assert "controls.hidden = true" in source
 
 
 def _seed_july_days(journal: Path, last_day: int) -> None:
@@ -1667,75 +1776,84 @@ def test_recent_api_skips_empty_days_across_month_boundary(body_env):
     assert second["has_more"] is False
 
 
-def test_recent_api_fragment_renders_shared_card_macro(body_env):
+def test_recent_api_returns_payload_for_single_day_card_renderer(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
-    page = env.client.get("/app/body/").get_data(as_text=True)
     batch = env.client.get("/app/body/api/recent?before=20260704").get_json()
 
+    assert set(batch) == {"days", "has_more"}
     assert [item["day"] for item in batch["days"]] == ["20260703"]
     assert batch["has_more"] is False
-    assert 'data-day="20260703"' in batch["html"]
-    assert 'href="/app/body/20260703"' in batch["html"]
-    # The fragment is the same macro output the overview rendered inline,
-    # so paged-in cards can never drift from the server-rendered ones.
-    assert batch["html"].strip() in page
 
-    body_root = Path(body_routes.__file__).resolve().parent
-    workspace = (body_root / "workspace.html").read_text(encoding="utf-8")
-    assert "{% macro body_day_card(recent) %}" in workspace
-    assert "{{ body_day_card(recent) }}" in workspace
-    routes_source = (body_root / "routes.py").read_text(encoding="utf-8")
-    assert (
-        'get_template_attribute("body/workspace.html", "body_day_card")'
-        in routes_source
-    )
+    workspace = _workspace_source()
+    assert workspace.count("function renderDayCard") == 1
+    assert 'days.map(renderDayCard).join("")' in workspace
+    assert "renderDayCard(item)" in workspace
+    routes_source = (BODY_ROOT / "routes.py").read_text(encoding="utf-8")
+    assert '"html"' not in batch
+    assert "get_template_attribute" not in routes_source
 
 
 def test_overview_carousel_pages_archive_with_guarded_fetches(body_env):
     env = body_env()
     _seed_july_days(env.journal, 18)
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
+    status = env.client.get("/app/body/api/status").get_json()
+    source = _workspace_source()
 
-    # The initial render stays the newest 14 SSR cards and flags that
+    # The initial API payload stays the newest 14 cards and flags that
     # older days remain for the carousel to page in.
-    assert html.count('data-day="') == 14
-    assert 'data-has-more="true"' in html
+    assert len(status["archive"]["recent_days"]) == 14
+    assert status["archive"]["recent_days_has_more"] is True
+    assert (
+        'data-has-more="${archive.recent_days_has_more ? "true" : "false"}"' in source
+    )
 
     # Cursor-paged fetch of earlier days, triggered within ~2 card widths
     # of the right end, one request in flight at a time, deduped by day.
-    assert "/app/body/api/recent?before=" in html
-    assert "remaining > 2 * cardStep()" in html
-    assert "if (!hasMore || fetching) return;" in html
-    assert "present[card.dataset.day]" in html
+    assert "/app/body/api/recent?before=" in source
+    assert "window.apiJson" in source
+    assert "remaining > 2 * cardStep()" in source
+    assert "if (!hasMore || fetching) return;" in source
+    assert "present[card.dataset.day]" in source
+    assert "appendBatchDays(batch.days)" in source
+    assert "batch.html" not in source
+    assert "template.innerHTML" not in source
 
     # A neutral placeholder card shows while a batch loads.
-    assert "Loading earlier days" in html
-    assert "body-recent-loading" in html
+    assert "Loading earlier days" in source
+    assert "body-recent-loading" in source
 
     # The forward control only hard-disables at the true archive end.
-    assert "fwdBtn.disabled = !hasMore && carousel.scrollLeft >= maxScroll - 1;" in html
-    assert "hasMore = !!batch.has_more;" in html
+    assert (
+        "fwdBtn.disabled = !hasMore && carousel.scrollLeft >= maxScroll - 1;" in source
+    )
+    assert "hasMore = !!batch.has_more;" in source
 
 
-def test_status_page_renders_archive_sections(body_env):
+def test_status_api_and_workspace_cover_archive_sections(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
+    archive = env.client.get("/app/body/api/status").get_json()["archive"]
+    source = _workspace_source()
 
-    assert "Body archive" in html
-    assert "Recent body days" in html
-    assert "Explore all history" in html
-    assert "Coverage areas" in html
-    assert "Sources represented" in html
-    assert "body-day-cell" in html
-    assert "months observed" in html
+    assert archive["coverage"]["range_label"] == "Jul 2026 – Jul 2026"
+    assert archive["recent_days"]
+    assert archive["day_grid"]
+    assert archive["families"]
+    assert archive["sources"]
+    assert "Body archive" in source
+    assert "Recent body days" in source
+    assert "Explore all history" in source
+    assert "Coverage areas" in source
+    assert "Sources represented" in source
+    assert "body-day-cell" in source
+    assert "months observed" in source
     # Month labels above the grid and the ramp legend under it.
-    assert "body-days-months" in html
-    assert "more body data" in html
+    assert "body-days-months" in source
+    assert "more body data" in source
 
 
 def test_status_api_archive_latest_day_and_month_labels(body_env):
@@ -1791,78 +1909,82 @@ def test_overview_quick_entry_row_and_section_order(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
+    archive = env.client.get("/app/body/api/status").get_json()["archive"]
+    source = _workspace_source()
 
     # Quick-entry row: solid button to the latest day with data, outline
     # button opening the jump-to-date calendar. No "This week" button.
-    assert "Open latest day" in html
-    assert 'href="/app/body/20260704"' in html
-    assert "Jump to date" in html
-    assert 'id="body-jump-pop"' in html
-    assert 'data-start-month="2026-07"' in html
-    assert 'data-end-month="2026-07"' in html
-    assert "This week" not in html
+    assert archive["latest_day"] == "20260704"
+    assert archive["coverage"]["start_month"] == "2026-07"
+    assert archive["coverage"]["end_month"] == "2026-07"
+    assert "Open latest day" in source
+    assert "bodyDayHref(latestDay)" in source
+    assert "Jump to date" in source
+    assert 'id="body-jump-pop"' in source
+    assert 'data-start-month="${escapeHtml(coverage.start_month)}"' in source
+    assert 'data-end-month="${escapeHtml(coverage.end_month)}"' in source
+    assert "This week" not in source
 
     # Latest-first order: hero, quick entry, recent days, all history,
     # coverage/sources panels, audit drawer last.
+    overview_source = _function_source(source, "renderOverview")
     order = [
-        html.index("Body archive"),
-        html.index("Open latest day"),
-        html.index("Recent body days"),
-        html.index("Explore all history"),
-        html.index("Coverage areas"),
-        html.index("Sources represented"),
-        html.index("Audit"),
+        overview_source.index("renderArchiveHero"),
+        overview_source.index("renderQuickActions"),
+        overview_source.index("renderRecentDaysSection"),
+        overview_source.index("renderDayGrid"),
+        overview_source.index("renderCoverageAreas"),
+        overview_source.index("renderSourcesRepresented"),
+        overview_source.index("renderOverviewAudit"),
     ]
     assert order == sorted(order)
 
 
-def test_overview_jump_popover_header_button_opens_year_month_picker(body_env):
-    env = body_env()
-    _seed_health_import(env.journal)
-
-    html = env.client.get("/app/body/").get_data(as_text=True)
+def test_overview_jump_popover_header_button_opens_year_month_picker():
+    source = _workspace_source()
 
     # The header month-year text is a real button that discloses the
     # two-step picker inside the same popover.
     assert (
         '<button type="button" class="body-jump-title" id="body-jump-title-btn"'
-        ' aria-expanded="false" aria-controls="body-jump-picker">' in html
+        ' aria-expanded="false" aria-controls="body-jump-picker">' in source
     )
-    assert 'titleBtn.setAttribute("aria-expanded", picking ? "true" : "false");' in html
+    assert (
+        'titleBtn.setAttribute("aria-expanded", picking ? "true" : "false");' in source
+    )
 
     # Step 1 offers the coverage years, step 2 the chosen year's months —
     # both mounted inside the popover, after the day grid.
-    pop_at = html.index('id="body-jump-pop"')
-    days_at = html.index('id="body-jump-days"')
-    picker_at = html.index('id="body-jump-picker"')
-    years_at = html.index('id="body-jump-years"')
-    months_at = html.index('id="body-jump-months"')
+    pop_at = source.index('id="body-jump-pop"')
+    days_at = source.index('id="body-jump-days"')
+    picker_at = source.index('id="body-jump-picker"')
+    years_at = source.index('id="body-jump-years"')
+    months_at = source.index('id="body-jump-months"')
     assert pop_at < days_at < picker_at < years_at < months_at
 
     # Coverage years derive from the bounds the popover already carries.
-    assert "parseInt(startMonth.slice(0, 4), 10)" in html
-    assert 'class="body-jump-year"' in html
+    assert "parseInt(startMonth.slice(0, 4), 10)" in source
+    assert 'class="body-jump-year"' in source
 
     # Months outside the archive's coverage bounds render disabled.
-    assert "var out = ym < startMonth || ym > endMonth;" in html
-    assert '(out ? " disabled" : "")' in html
+    assert "const out = ym < startMonth || ym > endMonth;" in source
+    assert 'out ? " disabled" : ""' in source
 
     # A back affordance returns from months to years; Escape still closes
     # the whole popover from any picker depth.
-    assert 'id="body-jump-back"' in html
-    assert "backToYearsBtn.addEventListener" in html
-    assert 'if (event.key === "Escape") closePop(true);' in html
+    assert 'id="body-jump-back"' in source
+    assert "backToYearsBtn.addEventListener" in source
+    assert 'if (event.key === "Escape") closePop(true);' in source
 
     # Picking a month returns to the day grid on that month, and reopening
     # the popover always resets to the day-grid view.
-    assert "function showDayGrid(month)" in html
-    assert "showDayGrid(pick.dataset.month);" in html
-    assert "showDayGrid(current);" in html
+    assert "function showDayGrid(month)" in source
+    assert "showDayGrid(pick.dataset.month);" in source
+    assert "showDayGrid(current);" in source
 
     # The existing month-stepping chevrons stay wired.
-    assert "shiftMonth(current, -1)" in html
-    assert "shiftMonth(current, 1)" in html
+    assert "shiftMonth(current, -1)" in source
+    assert "shiftMonth(current, 1)" in source
 
 
 # --- Overview vs day-page navigation model --------------------------------------
@@ -1879,14 +2001,18 @@ def test_overview_is_stable_home_without_day_nav(body_env):
     assert 'id="date-nav-label"' not in html
 
 
-def test_day_page_mounts_day_nav_and_overview_backlink(body_env):
+def test_valid_day_page_serves_shell_and_workspace_has_overview_backlink(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
     html = env.client.get("/app/body/20260703").get_data(as_text=True)
 
-    assert 'id="date-nav-label"' in html
-    assert "Body overview" in html
+    assert 'data-solstone-shell="spa"' in html
+    assert "Day summary" not in html
+    assert "Glucose 100–140 mg/dL." not in html
+    source = _workspace_source()
+    assert "Body overview" in source
+    assert 'renderHeader(`Body · ${bodyDay.date_label}`, "", true)' in source
 
 
 # --- Shared display normalizers ------------------------------------------------
@@ -2058,9 +2184,9 @@ def test_day_api_single_blood_oxygen_reading_renders_as_percent(body_env):
     facts = {fact["label"]: fact["value"] for fact in payload["heart"]["facts"]}
     assert facts["Blood oxygen"] == "98%"
 
-    html = env.client.get("/app/body/20260716").get_data(as_text=True)
-    assert "98%" in html
-    assert "1.0 %" not in html
+    heart_strings = "\n".join(_collect_strings(payload["heart"]))
+    assert "98%" in heart_strings
+    assert "1.0 %" not in heart_strings
 
 
 def test_day_api_blood_pressure_pairs_by_start_time(body_env):
@@ -2089,9 +2215,9 @@ def test_day_api_blood_pressure_pairs_by_start_time(body_env):
     assert "Blood pressure (systolic)" not in labels
     assert "Blood pressure (diastolic)" not in labels
 
-    html = env.client.get("/app/body/20260717").get_data(as_text=True)
-    assert "Blood pressure" in html
-    assert "122/78 mmHg" in html
+    source = _function_source(_workspace_source(), "renderHeartCard")
+    assert "Blood pressure" in source
+    assert "bp.readings" in source
 
 
 def test_day_api_blood_pressure_compresses_to_ranges_when_many_readings(body_env):
@@ -2129,8 +2255,9 @@ HIGH_HR_EVENT_TYPE = "HKCategoryTypeIdentifierHighHeartRateEvent"
 LOW_HR_EVENT_TYPE = "HKCategoryTypeIdentifierLowHeartRateEvent"
 AFIB_BURDEN_TYPE = "HKQuantityTypeIdentifierAtrialFibrillationBurden"
 
-# Advisory or interpretive phrasing that must never accompany a rhythm
-# row. Checked against the rendered Heart & breathing card, lowercased.
+# Advisory or interpretive phrasing that must never accompany a rhythm row.
+# Checked over every server-produced string in the heart subtree and over
+# the renderer function that contributes the card's literal copy.
 RHYTHM_BANNED_PHRASES = (
     "atrial fibrillation",
     "detected",
@@ -2148,11 +2275,6 @@ RHYTHM_BANNED_PHRASES = (
     "doctor",
     "seek ",
 )
-
-
-def _heart_card_slice(html: str) -> str:
-    start = html.index('id="body-heart-title"')
-    return html[start : html.index("</section>", start)]
 
 
 def test_day_api_rhythm_events_state_count_and_device_only(body_env):
@@ -2202,7 +2324,7 @@ def test_day_api_rhythm_events_state_count_and_device_only(body_env):
     assert payload["other_signals"] is None
 
 
-def test_day_page_rhythm_lines_pin_format_and_ban_advisory_phrasing(body_env):
+def test_day_api_rhythm_subtree_pins_format_and_bans_advisory_phrasing(body_env):
     env = body_env()
     rows = [
         _row(
@@ -2222,21 +2344,42 @@ def test_day_page_rhythm_lines_pin_format_and_ban_advisory_phrasing(body_env):
     ]
     _seed_import(env.journal, "20260920_110000", rows)
 
-    html = env.client.get("/app/body/20260902").get_data(as_text=True)
+    payload = env.client.get("/app/body/api/day/20260902").get_json()
+    rhythm = payload["heart"]["rhythm"]
 
     # Exact card line format: label cell, then the factual detail cell.
-    assert "<span>Irregular rhythm notification</span>" in html
-    assert (
-        '<strong class="body-num">1 event · reported by Synthetic Watch</strong>'
-        in html
-    )
-    assert "<span>AFib burden</span>" in html
-    assert (
-        '<strong class="body-num">2.1% · reported by Synthetic Watch</strong>' in html
-    )
-    card = _heart_card_slice(html).lower()
+    assert rhythm["events"] == [
+        {
+            "label": "Irregular rhythm notification",
+            "count": 1,
+            "count_label": "1",
+            "sources": ["Synthetic Watch"],
+            "detail": "1 event · reported by Synthetic Watch",
+            "line": "Irregular rhythm notification · 1 event · reported by Synthetic Watch",
+        }
+    ]
+    assert rhythm["burden"] == {
+        "label": "AFib burden",
+        "value": "2.1%",
+        "count": 1,
+        "count_label": "1",
+        "sources": ["Synthetic Watch"],
+        "detail": "2.1% · reported by Synthetic Watch",
+        "line": "AFib burden · 2.1% · reported by Synthetic Watch",
+    }
+    heart_strings = [text.lower() for text in _collect_strings(payload["heart"])]
     for phrase in RHYTHM_BANNED_PHRASES:
-        assert phrase not in card, f"advisory phrasing in rhythm card: {phrase!r}"
+        assert all(phrase not in text for text in heart_strings), (
+            f"advisory phrasing in heart payload: {phrase!r}"
+        )
+
+
+def test_workspace_heart_renderer_adds_no_rhythm_advisory_phrasing():
+    source = _function_source(_workspace_source(), "renderHeartCard").lower()
+    assert "heart.rhythm" in source
+    assert "heart.rhythm.burden" in source
+    for phrase in RHYTHM_BANNED_PHRASES:
+        assert phrase not in source, f"advisory phrasing in heart renderer: {phrase!r}"
 
 
 def test_day_api_afib_burden_scales_fraction_percent(body_env):
@@ -2259,10 +2402,8 @@ def test_day_api_afib_burden_scales_fraction_percent(body_env):
     assert burden["line"] == "AFib burden · 2.1% · reported by Synthetic Watch"
     assert payload["heart"]["rhythm"]["events"] == []
 
-    html = env.client.get("/app/body/20260904").get_data(as_text=True)
-    assert "2.1% · reported by Synthetic Watch" in html
     # The 0–1 fraction never reaches the page unscaled.
-    assert "0.021" not in html
+    assert "0.021" not in "\n".join(_collect_strings(payload["heart"]))
 
 
 def test_day_api_multi_entry_afib_burden_leads_with_latest(body_env):
@@ -2451,10 +2592,11 @@ def test_day_api_heart_rate_series_absent_below_threshold(body_env):
     assert heart["series"] is None
     assert heart["heart_rate"]["summary"] == "60–70 bpm · 11 readings"
 
-    html = env.client.get("/app/body/20260811").get_data(as_text=True)
-    assert "60–70 bpm · 11 readings" in html
-    assert "Heart rate through the day" not in html
-    assert 'class="body-curve-band"' not in html
+    source = _function_source(_workspace_source(), "renderHeartCard")
+    assert "heart.heart_rate" in source
+    assert "hr ? html([" in source
+    assert 'aria-label="Heart rate through the day"' in source
+    assert 'class="body-curve-band"' in source
 
 
 def test_day_api_heart_rate_revision_moves_across_month_shards(body_env):
@@ -2515,7 +2657,7 @@ def test_day_api_heart_series_y_axis_labels_match_padded_domain(body_env):
     assert series["svg"]["y_max_label"] == "149"
 
 
-def test_day_page_renders_heart_curve_under_range_row(body_env):
+def test_day_api_and_workspace_render_heart_curve_under_range_row(body_env):
     env = body_env()
     readings = [(f"07:{i:02d}", 62 + (i % 7)) for i in range(20)]
     rows = _hr_rows("2026-08-13", readings) + [
@@ -2529,17 +2671,19 @@ def test_day_page_renders_heart_curve_under_range_row(body_env):
     ]
     _seed_import(env.journal, "20260910_030000", rows)
 
-    html = env.client.get("/app/body/20260813").get_data(as_text=True)
-
     # Range row, then the curve with its band, then the other facts.
-    assert "62–68 bpm · 20 readings" in html
-    assert 'aria-label="Heart rate through the day"' in html
-    assert 'class="body-curve-band"' in html
-    assert "Respiratory rate" in html
-    curve_at = html.index('aria-label="Heart rate through the day"')
-    assert html.index("62–68 bpm") < curve_at
-    assert curve_at < html.index("Respiratory rate")
-    assert "count/min" not in html
+    heart = env.client.get("/app/body/api/day/20260813").get_json()["heart"]
+    assert heart["heart_rate"]["summary"] == "62–68 bpm · 20 readings"
+    assert heart["series"] is not None
+    assert {fact["label"] for fact in heart["facts"]} == {"Respiratory rate"}
+    displayed = "\n".join(_collect_strings_except_keys(heart, {"unit"}))
+    assert "count/min" not in displayed
+
+    source = _function_source(_workspace_source(), "renderHeartCard")
+    curve_at = source.index('aria-label="Heart rate through the day"')
+    assert source.index("heart.heart_rate") < curve_at
+    assert curve_at < source.index("facts.length")
+    assert 'class="body-curve-band"' in source
 
 
 def test_day_api_payload_keys_stay_additive_with_heart_series(body_env):
@@ -2663,9 +2807,9 @@ def test_day_api_steps_pick_primary_source_by_coverage(body_env):
     assert steps["others"] == ["Synthetic Phone"]
     assert steps["others_label"] == "Synthetic Phone also contributed"
 
-    html = env.client.get("/app/body/20260719").get_data(as_text=True)
-    assert "6,412" in html
-    assert "Synthetic Phone also contributed" in html
+    source = _function_source(_workspace_source(), "renderActivityCard")
+    assert "activity.steps.total_label" in source
+    assert "activity.steps.others_label" in source
 
 
 # --- Day view: asleep vs in-bed --------------------------------------------------
@@ -2710,9 +2854,9 @@ def test_day_api_sleep_splits_asleep_from_in_bed_when_stages_exist(body_env):
     assert sleep["duration"] == "8h 10m"
     assert payload["lede"].startswith("Slept 7h 40m (in bed 8h 10m)")
 
-    html = env.client.get("/app/body/20260721").get_data(as_text=True)
-    assert "asleep" in html
-    assert "in bed" in html
+    source = _function_source(_workspace_source(), "renderSleepCard")
+    assert "asleep" in source
+    assert "in bed" in source
 
     rail = {
         item["day"]: item
@@ -2784,9 +2928,15 @@ def test_day_api_oura_sleep_uses_stage_durations_for_asleep_time(body_env):
     assert sleep["duration"] == "10h 26m"
     assert payload["lede"].startswith("Slept 8h 00m (in bed 10h 26m)")
 
-    html = env.client.get("/app/body/20260705").get_data(as_text=True)
-    assert 'asleep <span class="body-num">8h 00m</span>' in html
-    assert 'in bed <span class="body-num">10h 26m</span>' in html
+    source = _function_source(_workspace_source(), "renderSleepCard")
+    assert (
+        'asleep <span class="body-num">${escapeHtml(sleep.asleep_duration)}</span>'
+        in source
+    )
+    assert (
+        'in bed <span class="body-num">${escapeHtml(sleep.in_bed_duration)}</span>'
+        in source
+    )
 
     trends = _trends_after_warm(env.client)
     asleep = next(s for s in trends["signals"] if s["key"] == "asleep_minutes")
@@ -2832,8 +2982,8 @@ def test_day_api_workout_summary_aggregates_kinds(body_env):
     assert day_two["workout_summary"] == "Cycling ×2 · Hiking +2 more"
     assert len(day_two["workouts"]) == 5
 
-    html = env.client.get("/app/body/20260725").get_data(as_text=True)
-    assert "Cycling ×2 · Walking" in html
+    source = _function_source(_workspace_source(), "renderDayHighlights")
+    assert "bodyDay.activity.workout_summary" in source
 
 
 def test_day_api_workouts_show_recovered_distance_and_energy(body_env):
@@ -2880,12 +3030,11 @@ def test_day_api_workouts_show_recovered_distance_and_energy(body_env):
     assert workouts[1]["metric_labels"] == []
     assert workouts[1]["metrics_label"] is None
 
-    html = env.client.get("/app/body/20260727").get_data(as_text=True)
-    assert "7:00 AM" in html
-    assert "45m" in html
-    assert "12.4 km" in html
-    assert "322 Cal" in html
-    assert "None" not in html
+    source = _function_source(_workspace_source(), "renderActivityCard")
+    assert "workout.start" in source
+    assert "workout.duration" in source
+    assert "workout.metrics_label" in source
+    assert "None" not in "\n".join(_collect_strings({"workouts": workouts}))
 
 
 # --- Day view: running dynamics ---------------------------------------------------
@@ -2921,9 +3070,9 @@ def test_day_api_running_dynamics_summarize_instead_of_counting(body_env):
     counter_labels = [item["label"] for item in activity["counters"]]
     assert "Running power" not in counter_labels
 
-    html = env.client.get("/app/body/20260730").get_data(as_text=True)
-    assert "Running dynamics" in html
-    assert "240–260 W · avg 250" in html
+    source = _function_source(_workspace_source(), "renderActivityCard")
+    assert "Running dynamics" in source
+    assert "item.summary" in source
 
 
 # --- Day view: summable single-source totals --------------------------------------
@@ -3043,10 +3192,6 @@ def test_day_api_energy_and_distance_pick_primary_source_totals(body_env):
     # Distance totals keep one decimal in the rows' own unit.
     assert counters["Walking + running distance"] == "4.2 mi"
 
-    html = env.client.get("/app/body/20260820").get_data(as_text=True)
-    assert "612 Cal · Synthetic Ring — Synthetic Phone also contributed" in html
-    assert "4.2 mi" in html
-
 
 def test_day_api_zero_summable_totals_fall_back_to_entry_counts(body_env):
     env = body_env()
@@ -3089,11 +3234,11 @@ def test_day_api_zero_summable_totals_fall_back_to_entry_counts(body_env):
     # A real total still reads as its value.
     assert counters["Flights climbed"]["value"] == "3"
 
-    html = env.client.get("/app/body/20260822").get_data(as_text=True)
-    assert "0 Cal" not in html
-    assert "0.0 mi" not in html
+    activity_strings = "\n".join(_collect_strings(payload["activity"]))
+    assert "0 Cal" not in activity_strings
+    assert "0.0 mi" not in activity_strings
     # The count fallback pluralizes honestly: one row reads '1 entry'.
-    assert ">entry<" in html
+    assert counters["Active energy"]["count_label"] == "1"
 
 
 def test_day_api_stand_hours_count_distinct_stood_hours(body_env):
@@ -3177,17 +3322,17 @@ def test_day_api_walking_metrics_summarize_values(body_env):
     assert walking["Walking double support percentage"]["summary"] == "avg 28.3%"
     assert walking["Walking asymmetry percentage"]["summary"] == "avg 3%"
 
-    html = env.client.get("/app/body/20260822").get_data(as_text=True)
-    assert "2.1–3.4 mph · avg 2.8" in html
-    assert "avg 28.3%" in html
+    source = _function_sources("renderSecondaryLists", "renderSimpleFactSection")
+    assert "Walking metrics" in source
+    assert "fact.summary" in source
     # Entry counts stay secondary next to the value.
-    assert "3 entries" in html
+    assert walking["Walking speed"]["count_label"] == "3"
 
 
 # --- Day view: source chip counts ---------------------------------------------------
 
 
-def test_day_page_source_chips_carry_entry_counts(body_env):
+def test_day_api_source_chips_carry_entry_counts(body_env):
     env = body_env()
     rows = [
         _row(
@@ -3223,15 +3368,15 @@ def test_day_page_source_chips_carry_entry_counts(body_env):
     # The footer total is unchanged alongside the per-chip counts.
     assert sources["entry_total_label"] == "3"
 
-    html = env.client.get("/app/body/20260823").get_data(as_text=True)
-    assert "2 entries" in html
-    assert "1 entry" in html
-    assert "entries observed" in html
+    source = _function_source(_workspace_source(), "renderSourcesThisDay")
+    assert "entries_label" in source
+    assert "entries observed" in source
     # The sources highlight pluralizes by count.
-    assert "2 sources" in html
+    highlight_source = _function_source(_workspace_source(), "renderDayHighlights")
+    assert 'source${sourceNames.length === 1 ? "" : "s"}' in highlight_source
 
 
-def test_day_page_single_source_highlight_reads_singular(body_env):
+def test_day_api_single_source_highlight_reads_singular(body_env):
     env = body_env()
     rows = [
         _row(
@@ -3244,15 +3389,16 @@ def test_day_page_single_source_highlight_reads_singular(body_env):
     ]
     _seed_import(env.journal, "20260910_150000", rows)
 
-    html = env.client.get("/app/body/20260825").get_data(as_text=True)
-    assert "1 source" in html
-    assert "1 sources" not in html
+    payload = env.client.get("/app/body/api/day/20260825").get_json()
+    assert payload["sources"]["names"] == ["Synthetic Watch"]
+    source = _function_source(_workspace_source(), "renderDayHighlights")
+    assert 'source${sourceNames.length === 1 ? "" : "s"}' in source
 
 
 # --- Day view: raw units never reach the page ---------------------------------------
 
 
-def test_day_page_html_carries_no_raw_unit_strings(body_env):
+def test_day_api_owner_facing_payload_carries_no_raw_unit_strings(body_env):
     env = body_env()
     rows = [
         _row(HR_TYPE, "2026-08-24T09:00:00-06:00", value="70", unit="count/min"),
@@ -3291,16 +3437,23 @@ def test_day_page_html_carries_no_raw_unit_strings(body_env):
     ]
     _seed_import(env.journal, "20260910_100000", rows)
 
-    html = env.client.get("/app/body/20260824").get_data(as_text=True)
+    payload = env.client.get("/app/body/api/day/20260824").get_json()
+    owner_payload = {
+        "heart": payload["heart"],
+        "activity": payload["activity"],
+        "mind_sound": payload["mind_sound"],
+        "walking": payload["walking"],
+    }
+    owner_strings = "\n".join(_collect_strings_except_keys(owner_payload, {"unit"}))
 
     # Raw exporter unit strings never reach the page — the shared
     # normalizers relabel them ('bpm', 'dB', 'mph', 'Cal').
     for raw in ("count/min", "dBASPL", "kcal", "mi/hr"):
-        assert raw not in html, f"raw unit string leaked into HTML: {raw}"
-    assert "bpm" in html
-    assert "dB" in html
-    assert "mph" in html
-    assert "512 Cal" in html
+        assert raw not in owner_strings, f"raw unit string leaked into payload: {raw}"
+    assert "bpm" in owner_strings
+    assert "dB" in owner_strings
+    assert "mph" in owner_strings
+    assert "512 Cal" in owner_strings
 
 
 # --- Day view: workout ordering and sub-minute durations -----------------------------
@@ -3345,9 +3498,9 @@ def test_day_api_workouts_sort_by_start_and_never_render_zero_minutes(body_env):
     assert workouts[1]["duration"] is None
     assert workouts[2]["duration"] == "30m"
 
-    html = env.client.get("/app/body/20260825").get_data(as_text=True)
-    assert "&lt;1m" in html
-    assert "&middot; 0m" not in html
+    source = _function_source(_workspace_source(), "renderActivityCard")
+    assert "escapeHtml(workout.duration)" in source
+    assert all(workout.get("duration") != "0m" for workout in workouts)
 
 
 # --- Day view: audio-level summaries ------------------------------------------
@@ -3406,12 +3559,11 @@ def test_day_api_audio_levels_summarize_factual_range(body_env):
     assert facts["Headphone audio level"] == "3 entries · 52.1–78 dB"
     assert facts["Environmental audio level"] == "2 entries · 61.7–84.6 dB"
 
-    html = env.client.get("/app/body/20260806").get_data(as_text=True)
-    assert "Mind &amp; sound" in html
-    assert "3 entries · 52.1–78 dB" in html
+    source = _function_sources("renderSecondaryLists", "renderSimpleFactSection")
+    assert "Mind & sound" in source
+    assert "fact.value" in source
     # Factual range only inside the card — no exposure judgments.
-    card = html[html.index("Mind &amp; sound") : html.index("Sources this day")]
-    lowered = card.lower()
+    lowered = "\n".join(_collect_strings(payload["mind_sound"])).lower()
     assert "loud" not in lowered
     assert "warning" not in lowered
     assert "exposure" not in lowered
@@ -3478,10 +3630,9 @@ def test_day_api_body_measurements_and_other_signals_cards(body_env):
     assert other_facts["Wrist temperature"] == "96.5 degF"
     assert other_facts["Number of times fallen"] == "1"
 
-    html = env.client.get("/app/body/20260801").get_data(as_text=True)
-    assert "Body measurements" in html
-    assert "Other signals" in html
-    assert "22.3%" in html
+    source = _function_source(_workspace_source(), "renderSecondaryLists")
+    assert "Body measurements" in source
+    assert "Other signals" in source
 
 
 def test_day_api_multi_row_body_measurements_show_latest_value(body_env):
@@ -3538,9 +3689,6 @@ def test_day_api_multi_row_body_measurements_show_latest_value(body_env):
     # percent), with the factual entry count alongside.
     assert facts["Body mass"] == "latest 172.4 lb · 3 entries"
     assert facts["Body fat"] == "latest 22.3% · 2 entries"
-
-    html = env.client.get("/app/body/20260508").get_data(as_text=True)
-    assert "latest 172.4 lb · 3 entries" in html
 
 
 # --- Day view: prompt gating --------------------------------------------------------
@@ -3684,9 +3832,10 @@ def test_overview_titles_carry_sources_month_qualifier(body_env):
     status = env.client.get("/app/body/api/status").get_json()
     assert status["sources_month_label"] == "July 2026"
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
-    assert "Sources represented &middot; July 2026" in html
-    assert "By source &middot; July 2026" in html
+    source = _function_sources("renderSourcesRepresented", "renderOverviewAudit")
+    assert "Sources represented" in source
+    assert "status.sources_month_label" in source
+    assert "By source" in source
 
 
 def test_status_api_import_months_render_as_range_label(body_env):
@@ -3734,9 +3883,9 @@ def test_status_api_import_months_render_as_range_label(body_env):
     )
     assert by_id["20260902_010000"]["normalized_months_label"] == "—"
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
-    assert "2025-12 – 2026-07 · 2 months" in html
-    assert "&mdash;" in html
+    source = _function_source(_workspace_source(), "renderOverviewAudit")
+    assert "item.normalized_months_label" in source
+    assert "&mdash;" in source
 
 
 def test_day_audit_lists_every_bundle_containing_the_day(body_env):
@@ -4067,29 +4216,18 @@ def _seed_trend_days(journal: Path) -> None:
     _seed_import(journal, "20260901_000000", rows)
 
 
-def test_trends_page_renders_workspace_with_trends_flag(body_env, monkeypatch):
+def test_trends_page_serves_static_shell_and_static_rule_wins(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
     # The static /trends rule wins over the /<day> converter.
-    assert env.client.get("/app/body/trends").status_code == 200
+    response = env.client.get("/app/body/trends")
+    assert response.status_code == 200
+    assert 'data-solstone-shell="spa"' in response.get_data(as_text=True)
 
-    captured: dict[str, object] = {}
-
-    def _capture(template: str, **context: object) -> str:
-        captured["template"] = template
-        captured["context"] = context
-        return ""
-
-    monkeypatch.setattr(body_routes, "render_template", _capture)
-    assert env.client.get("/app/body/trends").status_code == 200
-
-    assert captured["template"] == "app.html"
-    context = captured["context"]
-    assert context["body_trends"] is True
-    # The trends page carries the same archive/status context the
-    # overview renders with.
-    assert "archive" in context["body_status"]
+    source = _function_source(_workspace_source(), "initBodyTrends")
+    assert 'if (segment !== "trends") return;' in source
+    assert not hasattr(body_routes, "render_template")
 
 
 def test_trends_api_contract_shape_and_signal_honesty(body_env):
@@ -4350,48 +4488,44 @@ def test_stats_warm_leaves_first_request_hot(body_env):
 # --- Trends front-end --------------------------------------------------------
 #
 # Owned by the Trends front-end change-set (workspace.html). The pins below
-# are template-source-level — the repo's JS-invariant idiom — because the
-# /app/body/trends page route and /app/body/api/trends endpoint belong to the
-# server change-set and may land separately. Nothing here requests either
-# endpoint; the one rendered-page test uses the overview route, which exists
-# independently of the server half.
+# are fragment-source-level — the repo's JS-invariant idiom.
 
 
 def _trends_workspace_source() -> str:
-    body_root = Path(body_routes.__file__).resolve().parent
-    return (body_root / "workspace.html").read_text(encoding="utf-8")
+    return _workspace_source()
 
 
-def test_trends_branch_renders_instead_of_overview_and_day():
+def test_trends_init_selects_trends_segment_only():
     source = _trends_workspace_source()
 
-    # The trends flag owns the first template branch; the day view and the
-    # overview keep theirs, so exactly one of the three ever renders.
-    trends_at = source.index("{% if body_trends %}")
-    day_at = source.index("{% elif body_day %}")
-    status_at = source.index("{% elif body_status %}")
-    assert trends_at < day_at < status_at
+    overview_at = source.index("function initBodyOverview()")
+    day_at = source.index("function initBodyDay()")
+    trends_at = source.index("function initBodyTrends()")
+    assert overview_at < day_at < trends_at
 
     # Header: Trends title plus the overview backlink, day-page idiom.
-    branch = source[trends_at:day_at]
-    assert "Body &middot; Trends" in branch
+    branch = _function_sources("renderHeader", "renderTrendsShell", "initBodyTrends")
+    assert "Body · Trends" in branch
     assert 'href="/app/body/"' in branch
     assert "Body overview" in branch
+    assert 'if (segment !== "trends") return;' in branch
 
 
 def test_trends_view_fetches_api_and_polls_while_warming():
     source = _trends_workspace_source()
 
-    assert 'fetch("/app/body/api/trends")' in source
+    assert 'window.apiJson("/app/body/api/trends")' in source
     # The calm warming placeholder, re-polled every five seconds until the
     # first build lands.
     assert (
         "Preparing trends — the first build over five years takes a minute." in source
     )
-    assert "var POLL_MS = 5000;" in source
+    assert "const POLL_MS = 5000;" in source
     assert "window.setTimeout(loadTrends, POLL_MS);" in source
     # The ribbon stack stays hidden until real series arrive.
-    assert 'id="body-trends-stack" hidden' in source
+    assert (
+        '<div class="body-trends-stack" id="body-trends-stack" hidden></div>' in source
+    )
 
 
 def test_trends_ribbons_bucket_weekly_medians_with_honest_gaps():
@@ -4436,7 +4570,7 @@ def test_trends_range_chips_annotations_and_collapse_controls():
     source = _trends_workspace_source()
 
     # 1y / 3y / All re-window client-side from the latest data week.
-    assert 'RANGE_WEEKS = { "1y": 52, "3y": 156 }' in source
+    assert 'const RANGE_WEEKS = { "1y": 52, "3y": 156 }' in source
     assert '["1y", "3y", "all"]' in source
     assert "data-range" in source
     assert "Math.max(domain.w0, domain.w1 - span)" in source
@@ -4456,24 +4590,21 @@ def test_trends_range_chips_annotations_and_collapse_controls():
 
     # One canvas at a time; resting heart rate opens first when present.
     assert "function expandSignal(key)" in source
-    assert "One canvas at a time" in source
+    assert "collapseOpen(false);" in _function_source(source, "expandSignal")
     assert 'expandSignal("resting_hr")' in source
 
 
-def test_trends_overview_button_sits_in_quick_entry_row(body_env):
-    env = body_env()
-    _seed_health_import(env.journal)
-
-    html = env.client.get("/app/body/").get_data(as_text=True)
+def test_trends_overview_button_sits_in_quick_entry_row():
+    source = _function_source(_workspace_source(), "renderQuickActions")
 
     assert (
         '<a class="body-btn body-btn--outline" href="/app/body/trends">Trends</a>'
-        in html
+        in source
     )
     # The link sits in the quick-entry row: after the jump button, before
     # the recent-days rail.
-    trends_at = html.index('href="/app/body/trends"')
-    assert html.index("Jump to date") < trends_at < html.index("Recent body days")
+    trends_at = source.index('href="/app/body/trends"')
+    assert source.index("Jump to date") < trends_at < source.index('id="body-jump-pop"')
 
 
 def test_trends_copy_avoids_surveillance_and_interpretation_words():
@@ -4712,12 +4843,10 @@ def test_trends_asleep_supersedes_mirror_on_api_days(body_env):
 # Oura's, never Solstone's conclusion.
 
 # Oura's own qualitative vocabulary (resilience levels, stress day
-# summaries) plus generic judgment words — each may reach the rendered
-# card ONLY inside the attributed-label format, immediately followed by
-# " · Oura's label". Anywhere else it is an unattributed judgment and
-# fails the sweep. ("strong" stays off the list only because <strong>
-# tags would false-positive; "solid"/"adequate"/"limited" cover the
-# resilience levels that could actually leak.)
+# summaries) plus generic judgment words — each may reach the JSON payload
+# ONLY inside the attributed-label format, immediately followed by
+# " · Oura's label". Anywhere else it is an unattributed judgment and fails
+# the sweep.
 RECOVERY_BANNED_ADJECTIVES = (
     "solid",
     "normal",
@@ -4731,9 +4860,10 @@ RECOVERY_BANNED_ADJECTIVES = (
     "adequate",
 )
 
-# The lowercased, HTML-escaped attribution tail that must immediately
-# follow any adjective in the rendered card.
-_ATTRIBUTED_LABEL_TAIL = " · oura&#39;s label"
+# The lowercased raw JSON attribution tail that must immediately follow
+# any adjective in the API payload. Client-side escaping happens later via
+# AppServices.escapeHtml, so the stale HTML-escaped form must not be used.
+_ATTRIBUTED_LABEL_TAIL = " · oura's label"
 
 
 def _assert_adjectives_only_attributed(card: str) -> None:
@@ -4745,11 +4875,6 @@ def _assert_adjectives_only_attributed(card: str) -> None:
                 f"unattributed adjective in recovery card: {word!r} "
                 f"(followed by {tail!r})"
             )
-
-
-def _recovery_card_slice(html: str) -> str:
-    start = html.index('id="body-recovery-title"')
-    return html[start : html.index("</section>", start)]
 
 
 def _seed_recovery_day(journal: Path, day: str = "20260715") -> None:
@@ -4783,7 +4908,7 @@ def _seed_recovery_day(journal: Path, day: str = "20260715") -> None:
     )
 
 
-def test_day_api_recovery_card_pins_attributed_number_lines(body_env):
+def test_day_api_recovery_subtree_pins_attributed_number_lines(body_env):
     env = body_env()
     _seed_recovery_day(env.journal)
 
@@ -4811,17 +4936,12 @@ def test_day_api_recovery_card_pins_attributed_number_lines(body_env):
     # Recovery rows never leak into the Other-signals catch-all.
     assert payload["other_signals"] is None
 
-    html = env.client.get("/app/body/20260715").get_data(as_text=True)
-    assert "How recovered am I?" in html
-    assert "<span>Readiness</span>" in html
-    assert '<strong class="body-num">82 · Oura&#39;s score</strong>' in html
-    assert '<strong class="body-num">+0.34 °C · Oura&#39;s measurement</strong>' in html
-    assert '<strong class="body-num">97.4% · Oura&#39;s average</strong>' in html
     # Adjectives render only inside the attributed-label format; the
     # sweep still bans every unattributed appearance.
-    assert '<strong class="body-num">solid · Oura&#39;s label</strong>' in html
-    card = _recovery_card_slice(html).lower()
-    _assert_adjectives_only_attributed(card)
+    recovery_strings = [text.lower() for text in _collect_strings(payload["recovery"])]
+    assert "solid · oura's label" in recovery_strings
+    assert "normal · oura's label" in recovery_strings
+    _assert_adjectives_only_attributed("\n".join(recovery_strings))
 
     # The window API picks up the same rows with their friendly labels.
     window = env.client.get(
@@ -4830,6 +4950,20 @@ def test_day_api_recovery_card_pins_attributed_number_lines(body_env):
     labels = {signal["label"] for signal in window["signals"]}
     assert "Readiness" in labels
     assert "Nightly blood oxygen" in labels
+
+
+def test_workspace_recovery_renderer_adds_no_unattributed_adjectives():
+    source = _function_sources(
+        "renderRecoveryCard",
+        "renderScoreAnatomy",
+        "renderSimpleFactSection",
+    ).lower()
+    assert "recovery.facts" in source
+    assert "renderscoreanatomy" in source
+    for word in RECOVERY_BANNED_ADJECTIVES:
+        assert word not in source, (
+            f"unattributed adjective in recovery renderer: {word!r}"
+        )
 
 
 def test_day_api_recovery_temperature_sign_is_explicit(body_env):
@@ -4884,9 +5018,9 @@ def test_day_api_sleep_card_gains_oura_score_line(body_env):
     # an unattributed count fact elsewhere.
     assert payload["other_signals"] is None
 
-    html = env.client.get("/app/body/20260718").get_data(as_text=True)
-    assert "Sleep score 88" in html
-    assert "Oura&#39;s score" in html
+    source = _function_source(_workspace_source(), "renderSleepCard")
+    assert "sleep.score_line" in source
+    assert "escapeHtml(sleep.score_line)" in source
 
 
 def test_status_api_recovery_family_and_oura_api_source_chip(body_env):
@@ -5331,10 +5465,10 @@ def test_day_api_oura_workout_supersedes_mirror_but_keeps_watch_workout(body_env
         "oura.workout": 1,
     }
 
-    html = env.client.get("/app/body/20260727").get_data(as_text=True)
-    assert "Walking" in html
-    assert "Oura (API)" in html
-    assert "1,200.0 m · 80 Cal" in html
+    source = _function_source(_workspace_source(), "renderActivityCard")
+    assert "workout.name" in source
+    assert "workout.source" in source
+    assert "workout.metrics_label" in source
 
     window = env.client.get(
         "/app/body/api/window"
@@ -5393,11 +5527,11 @@ def test_day_api_oura_cardio_vo2_and_audit_only_details(body_env):
         {"label": "Caffeine", "detail": "9:15 AM · Oura (API) · note present"},
     ]
 
-    html = env.client.get("/app/body/20260728").get_data(as_text=True)
-    assert "<span>Vascular age</span>" in html
-    assert "34 · Oura&#39;s estimate" in html
-    assert "Pulse-wave velocity" in html
-    assert "Sessions and tags stay here until a day-card use is clear." in html
+    source = _function_sources("renderHeartCard", "renderDayAudit")
+    assert "fact.label" in source
+    assert "fact.value" in source
+    assert "oura_appendix" in source
+    assert "Sessions and tags stay here until a day-card use is clear." in source
 
 
 def test_day_api_sleep_score_contributors_join_sleep_card(body_env):
@@ -5779,279 +5913,183 @@ def test_trends_vascular_age_ribbon_is_bare_age_without_typical(body_env):
 
 # --- Round-2 Oura display front-end: anatomy, medians, juxtaposition ----------
 #
-# Owned by the round-2 FRONT-END change-set (workspace.html). The server
-# half — recovery.contributors / sleep.score_contributors, per-fact
-# ``typical`` medians, and the heart/sleep ``comparison_line`` keys —
-# lands in the concurrent server change-set, so nothing here requests a
-# route that depends on it. Rendered assertions fabricate the ``body_day``
-# context and render the template directly; JS behavior pins are
-# template-source-level, the repo's JS-invariant idiom.
-#
-# Assumed contracts (also stated in the change-set report; reconciled
-# against the server change-set's in-flight code where it had landed):
-# - recovery.contributors / sleep.score_contributors: [{label, value}]
-#   with owner-facing labels and display-ready values.
-# - fact.typical_label (recovery facts, heart facts) plus
-#   sleep.score_typical_label / sleep.asleep_typical_label: the full
-#   pre-formatted self-baseline copy ("your 90-day median N"); the
-#   template renders it verbatim after a "·" in the muted class. The
-#   raw ``typical`` number rides alongside for machine use; presence is
-#   judged on the label.
-# - heart.comparison_line / sleep.comparison_line: fully pre-formatted
-#   device juxtaposition strings (device names included — the template
-#   may never hardcode a device name), present only when BOTH a genuine
-#   cross-device source and the ring pipe measured that day. The
-#   both-devices gate is server logic; the template renders on presence.
-# - Attributed adjective lines (e.g. "Resilience solid · Oura's label")
-#   arrive pre-formatted inside recovery.facts and render as plain fact
-#   rows — no template special-casing.
-# - Trends: stress_high_minutes travels as minutes with unit label "h";
-#   the client's key branch renders "2h 00m" copy and must sit before
-#   the generic "h" (decimal hours) path.
+# Owned by the round-2 front-end surface (workspace.html). Assertions here
+# pin the static fragment's renderer functions and pair them with API payload
+# checks for the server-produced strings they render.
 
 
-def _render_body_workspace(**context) -> str:
-    """Render workspace.html directly with a fabricated context."""
-    import jinja2  # local: keeps this change-set append-only in this file
-
-    body_root = Path(body_routes.__file__).resolve().parent
-    env = jinja2.Environment(
-        loader=jinja2.FileSystemLoader(str(body_root)), autoescape=True
+def test_score_anatomy_renderer_collapsed_by_default_with_aria_pins():
+    source = _function_sources(
+        "renderScoreAnatomy",
+        "bindScoreAnatomy",
+        "renderSleepCard",
+        "renderRecoveryCard",
     )
-    return env.get_template("workspace.html").render(**context)
 
-
-def _fabricated_day(**overrides) -> dict:
-    day = {
-        "day": "20260715",
-        "date_label": "July 15, 2026",
-        "has_data": True,
-        "lede": "Slept 8h 03m.",
-        "summary_markdown": None,
-        "audit": {"types": {}, "import_ids": []},
-    }
-    day.update(overrides)
-    return day
-
-
-def _fabricated_sleep(**overrides) -> dict:
-    sleep = {
-        "source": "Oura (API)",
-        "other_sources": [],
-        "window": "12:00 AM – 8:10 AM",
-        "duration": "8h 10m",
-        "asleep_duration": "7h 58m",
-        "in_bed_duration": "8h 10m",
-        "has_stage_detail": True,
-        "naps": [],
-        "bar": {"segments": [], "ticks": []},
-        "score_line": None,
-    }
-    sleep.update(overrides)
-    return sleep
-
-
-def _fabricated_heart(**overrides) -> dict:
-    heart = {
-        "heart_rate": {"summary": "51–139 bpm · 1,240 readings"},
-        "series": None,
-        "blood_pressure": None,
-        "rhythm": None,
-        "facts": [],
-    }
-    heart.update(overrides)
-    return heart
-
-
-def test_score_anatomy_macro_collapsed_by_default_with_aria_pins():
-    source = _trends_workspace_source()
-
-    # Shared macro: both cards disclose through the same markup.
-    assert "{% macro score_anatomy(anatomy_id, contributors) %}" in source
+    # Shared renderer: both cards disclose through the same markup.
+    assert source.count("function renderScoreAnatomy") == 1
+    assert (
+        'renderScoreAnatomy("body-sleep-anatomy", sleep.score_contributors)' in source
+    )
+    assert (
+        'renderScoreAnatomy("body-recovery-anatomy", recovery.contributors)' in source
+    )
     # Collapsed by default: the button states it and the panel is hidden.
     assert 'class="body-anatomy-btn" aria-expanded="false" aria-controls=' in source
-    assert 'id="{{ anatomy_id }}" hidden' in source
+    assert 'class="body-anatomy" id="${escapeHtml(id)}" hidden' in source
     assert "Why this score" in source
     # The list is attributed to Oura, §13-style.
-    assert "Oura's contributors" in source
+    assert "Oura\\'s contributors" in source
 
     # The toggle keeps aria-expanded and the panel's hidden attribute in
     # lockstep, both directions.
-    assert 'document.querySelectorAll(".body-anatomy-btn")' in source
-    assert 'var open = button.getAttribute("aria-expanded") === "true";' in source
+    assert 'root.querySelectorAll(".body-anatomy-btn")' in source
+    assert 'const open = button.getAttribute("aria-expanded") === "true";' in source
     assert 'button.setAttribute("aria-expanded", open ? "false" : "true");' in source
     assert "if (panel) panel.hidden = open;" in source
 
 
-def test_score_anatomy_renders_collapsed_on_recovery_and_sleep_cards():
-    html = _render_body_workspace(
-        body_day=_fabricated_day(
-            sleep=_fabricated_sleep(
-                score_line="Sleep score 88 · Oura's score",
-                score_contributors=[
-                    {"label": "Deep sleep", "value": 92},
-                    {"label": "Efficiency", "value": 85},
-                ],
-            ),
-            recovery={
-                "facts": [{"label": "Readiness", "detail": "82 · Oura's score"}],
-                "contributors": [
-                    {"label": "HRV balance", "value": 80},
-                    {"label": "Sleep balance", "value": 70},
-                ],
-            },
-        )
-    )
+def test_score_anatomy_guarded_on_contributors_before_rendering():
+    source = _function_source(_workspace_source(), "renderScoreAnatomy")
 
-    # One disclosure per card, each collapsed with its panel hidden.
-    assert html.count('class="body-anatomy-btn"') == 2
-    assert html.count('aria-expanded="false"') >= 2
-    assert 'aria-controls="body-recovery-anatomy"' in html
-    assert 'id="body-recovery-anatomy" hidden' in html
-    assert 'aria-controls="body-sleep-anatomy"' in html
-    assert 'id="body-sleep-anatomy" hidden' in html
-    # Compact label/value rows, values verbatim.
-    assert "<li><span>HRV balance</span>" in html
-    assert '<strong class="body-num">80</strong>' in html
-    assert "<li><span>Deep sleep</span>" in html
-    assert '<strong class="body-num">92</strong>' in html
-    # Attributed footer inside each panel.
-    assert html.count('<p class="body-anatomy-foot">Oura\'s contributors</p>') == 2
+    assert "const items = asArray(contributors);" in source
+    assert 'if (!items.length) return "";' in source
+    assert "items.map((item)" in source
 
 
-def test_score_anatomy_absent_without_contributors():
-    html = _render_body_workspace(
-        body_day=_fabricated_day(
-            sleep=_fabricated_sleep(score_line="Sleep score 88 · Oura's score"),
-            recovery={"facts": [{"label": "Readiness", "detail": "82 · Oura's score"}]},
-        )
-    )
+def test_fact_typical_median_rides_muted_never_colorized(body_env):
+    env = body_env()
+    _seed_typical_history(env.journal)
+    _trends_after_warm(env.client)
 
-    # The stylesheet and toggle script always ship, so absence is judged
-    # on rendered markup: no disclosure button, no panel, no button copy.
-    assert 'class="body-anatomy-btn"' not in html
-    assert 'class="body-anatomy"' not in html
-    assert "Why this score" not in html
-
-
-def test_fact_typical_median_rides_muted_never_colorized():
-    html = _render_body_workspace(
-        body_day=_fabricated_day(
-            recovery={
-                "facts": [
-                    {
-                        "label": "Readiness",
-                        "detail": "82 · Oura's score",
-                        "typical": 78.0,
-                        "typical_label": "your 90-day median 78",
-                    }
-                ]
-            },
-            heart=_fabricated_heart(
-                facts=[
-                    {
-                        "label": "Resting heart rate",
-                        "count": 1,
-                        "count_label": "1",
-                        "value": "58 bpm",
-                        "typical": 56.0,
-                        "typical_label": "your 90-day median 56 bpm",
-                    }
-                ]
-            ),
-            sleep=_fabricated_sleep(
-                score_line="Sleep score 88 · Oura's score",
-                score_typical=85.0,
-                score_typical_label="your 90-day median 85",
-                asleep_typical_minutes=460.0,
-                asleep_typical_label="your 90-day median 7h 40m",
-            ),
-        )
+    payload = env.client.get("/app/body/api/day/20260715").get_json()
+    assert payload["recovery"]["facts"][0]["typical_label"] == (
+        "your 90-day median 70.5"
     )
-
-    # The median rides each fact's detail in the muted class, the
-    # server's copy verbatim after a "·".
-    assert (
-        '82 · Oura&#39;s score <span class="body-fact-typical">'
-        "&middot; your 90-day median 78</span>" in html
-    )
-    assert (
-        '58 bpm <span class="body-fact-typical">'
-        "&middot; your 90-day median 56 bpm</span>" in html
-    )
-    # Sleep card: the score line and the asleep headline carry theirs.
-    assert (
-        'Sleep score 88 · Oura&#39;s score <span class="body-fact-typical">'
-        "&middot; your 90-day median 85</span>" in html
-    )
-    assert (
-        '8h 10m</span> <span class="body-fact-typical body-num">'
-        "&middot; your 90-day median 7h 40m</span>" in html
-    )
+    assert payload["sleep"]["score_typical_label"] == "your 90-day median 80.5"
+    assert payload["sleep"]["asleep_typical_label"] == "your 90-day median 7h 00m"
+    resting = {fact["label"]: fact for fact in payload["heart"]["facts"]}[
+        "Resting heart rate"
+    ]
+    assert resting["typical_label"] == "your 90-day median 52 bpm"
 
     # The muted class never colorizes: faint ink only, no orange — the
     # median is stated, never graded.
     source = _trends_workspace_source()
+    renderer = _function_sources(
+        "typicalSpan",
+        "renderSleepCard",
+        "renderHeartCard",
+        "renderRecoveryCard",
+    )
+    assert 'class="body-fact-typical' in renderer
+    assert "typical_label" in renderer
     rule_at = source.index(".body-fact-typical {")
     rule = source[rule_at : source.index("}", rule_at)]
     assert "var(--ink-faint-paper)" in rule
     assert "orange" not in rule
 
 
-def test_fact_typical_absent_without_key():
-    html = _render_body_workspace(
-        body_day=_fabricated_day(
-            recovery={"facts": [{"label": "Readiness", "detail": "82 · Oura's score"}]},
-            sleep=_fabricated_sleep(score_line="Sleep score 88 · Oura's score"),
-        )
+def test_fact_typical_absent_without_key(body_env):
+    env = body_env()
+    rows = [
+        _oura_row(OURA_READINESS_TYPE, f"202607{i:02d}", value=70 + i, unit="score")
+        for i in range(1, 6)
+    ]
+    rows.append(_oura_row(OURA_READINESS_TYPE, "20260715", value=82, unit="score"))
+    _seed_import(env.journal, "20260906_190000", rows)
+
+    _trends_after_warm(env.client)
+
+    fact = env.client.get("/app/body/api/day/20260715").get_json()["recovery"]["facts"][
+        0
+    ]
+    assert "typical" not in fact
+    assert "typical_label" not in fact
+
+    source = _function_sources(
+        "typicalSpan",
+        "renderSleepCard",
+        "renderHeartCard",
+        "renderRecoveryCard",
     )
+    assert "typical_label" in source
+    assert "typicalSpan(" in source
 
-    assert "90-day median" not in html
-    assert 'class="body-fact-typical"' not in html
 
-
-def test_attributed_adjective_line_renders_as_plain_fact_row():
+def test_attributed_adjective_line_renders_as_plain_fact_row(body_env):
     # Pre-formatted attributed adjectives are ordinary facts to the
-    # template: the same row markup as every number line, no special case.
-    html = _render_body_workspace(
-        body_day=_fabricated_day(
-            recovery={
-                "facts": [
-                    {"label": "Readiness", "detail": "82 · Oura's score"},
-                    {"label": "Resilience", "detail": "solid · Oura's label"},
-                ]
-            }
-        )
+    # renderer: the same row markup as every number line, no special case.
+    env = body_env()
+    _seed_recovery_day(env.journal)
+
+    recovery = env.client.get("/app/body/api/day/20260715").get_json()["recovery"]
+    resilience = next(
+        fact for fact in recovery["facts"] if fact["label"] == "Resilience"
+    )
+    assert resilience["detail"] == "solid · Oura's label"
+
+    source = _function_source(_workspace_source(), "renderRecoveryCard")
+    assert "asArray(recovery.facts).map((fact)" in source
+    assert "<li><span>${escapeHtml(fact.label)}</span>" in source
+    assert "escapeHtml(fact.detail)" in source
+
+
+def test_device_comparison_lines_render_only_when_server_sends_them(body_env):
+    env = body_env()
+    _seed_import(
+        env.journal,
+        "20260906_170000",
+        [
+            _row(
+                SLEEP_TYPE,
+                "2026-07-29T00:10:00-06:00",
+                "2026-07-29T08:08:00-06:00",
+                value="HKCategoryValueSleepAnalysisAsleepUnspecified",
+                source="Synthetic Watch",
+            ),
+            _oura_row(
+                OURA_SLEEP_PERIOD_TYPE,
+                "20260729",
+                value=29400,
+                unit="s",
+                start="2026-07-29T00:00:00-06:00",
+                end="2026-07-29T08:10:00-06:00",
+                kind="sleep_period",
+            ),
+            _row(
+                HR_TYPE,
+                "2026-07-29T06:00:00-06:00",
+                value="60",
+                unit="count/min",
+                source="Synthetic Watch",
+            ),
+            _hr_sample_row("20260729", "06:00", 51),
+            _row(
+                SLEEP_TYPE,
+                "2026-07-30T00:10:00-06:00",
+                "2026-07-30T08:08:00-06:00",
+                value="HKCategoryValueSleepAnalysisAsleepUnspecified",
+                source="Synthetic Watch",
+            ),
+        ],
     )
 
-    assert "<span>Resilience</span>" in html
-    assert '<strong class="body-num">solid · Oura&#39;s label</strong>' in html
-
-
-def test_device_comparison_lines_render_only_when_server_sends_them():
-    context_with = _fabricated_day(
-        sleep=_fabricated_sleep(
-            comparison_line="Apple Watch saw 7h 58m · Oura saw 8h 10m"
-        ),
-        heart=_fabricated_heart(
-            comparison_line="Apple Watch 51–139 bpm · Oura 49–142 bpm"
-        ),
+    with_lines = env.client.get("/app/body/api/day/20260729").get_json()
+    assert with_lines["sleep"]["comparison_line"] == (
+        "Synthetic Watch saw 7h 58m · Oura (API) saw 8h 10m"
     )
-    html = _render_body_workspace(body_day=context_with)
-
-    # Pure juxtaposition rows: the server's line verbatim, muted, one per
-    # card — and the canonical headlines stay unchanged beside them.
-    assert html.count('class="body-muted body-num body-device-compare"') == 2
-    assert "Apple Watch 51–139 bpm · Oura 49–142 bpm" in html
-    assert "Apple Watch saw 7h 58m · Oura saw 8h 10m" in html
-    assert 'asleep <span class="body-num">7h 58m</span>' in html
-
-    # Without the server key, no comparison markup renders at all (the
-    # stylesheet always ships, so absence is judged on rendered markup).
-    html_without = _render_body_workspace(
-        body_day=_fabricated_day(sleep=_fabricated_sleep(), heart=_fabricated_heart())
+    assert with_lines["heart"]["comparison_line"] == (
+        "Synthetic Watch 60 bpm · Oura (API) 51 bpm"
     )
-    assert 'class="body-muted body-num body-device-compare"' not in html_without
+    without_lines = env.client.get("/app/body/api/day/20260730").get_json()
+    assert without_lines["sleep"]["comparison_line"] is None
+
+    source = _function_sources("renderSleepCard", "renderHeartCard")
+    assert source.count('class="body-muted body-num body-device-compare"') == 3
+    assert "sleep.comparison_line ?" in source
+    assert "heart.comparison_line ?" in source
+    assert "heart.resting_comparison_line ?" in source
 
 
 def test_trends_new_signal_units_format_score_degrees_and_minutes():
@@ -6059,9 +6097,9 @@ def test_trends_new_signal_units_format_score_degrees_and_minutes():
 
     # temp_deviation: signed °C, two decimals, the day card's convention.
     assert 'if (signal.key === "temp_deviation")' in source
-    assert "var deg = value.toFixed(2);" in source
-    assert 'if (deg.charAt(0) !== "-") deg = "+" + deg;' in source
-    assert 'return deg + " " + (signal.unit_label || "°C");' in source
+    assert "let deg = value.toFixed(2);" in source
+    assert 'if (deg.charAt(0) !== "-") deg = `+${deg}`;' in source
+    assert 'return `${deg} ${signal.unit_label || "°C"}`;' in source
 
     # stress_high_minutes: minute totals as "2h 00m" / "45m". The key
     # branch must sit before the generic "h" unit path — the server
@@ -6074,18 +6112,19 @@ def test_trends_new_signal_units_format_score_degrees_and_minutes():
         'if (signal.unit_label === "h")'
     )
     assert "function formatMinutes(minutes)" in source
-    assert 'String(mins).padStart(2, "0") + "m"' in source
-    assert 'return mins + "m";' in source
+    assert 'return `${hours}h ${String(mins).padStart(2, "0")}m`;' in source
+    assert "return `${mins}m`;" in source
 
     # Scores stay bare: sleep_score takes the same empty-unit-label
     # fallback readiness already uses — no special branch.
-    assert "Scores (readiness, sleep score) carry an empty unit label" in source
-    assert "return Math.round(value) +" in source
+    assert "sleep_score" not in _function_source(source, "formatValue")
+    assert "readiness" not in _function_source(source, "formatValue")
+    assert "return `${Math.round(value)}${signal.unit_label" in source
 
     # Pre-data, a signal in the payload with no points draws the calm
     # placeholder on a disabled ribbon — no canvas to open.
     assert '"not present yet"' in source
-    assert '(hasData ? "" : " disabled")' in source
+    assert 'hasData ? "" : " disabled"' in source
 
 
 def test_trends_fine_scale_domain_keeps_temp_deviation_legible():
@@ -6218,8 +6257,8 @@ def test_day_api_resting_fact_ring_only_day_attributes_oura(body_env):
     assert resting["value"] == "51 bpm · Oura's measurement"
     assert heart["resting_comparison_line"] is None
 
-    html = env.client.get("/app/body/20260610").get_data(as_text=True)
-    assert "51 bpm · Oura&#39;s measurement" in html
+    source = _function_source(_workspace_source(), "renderHeartCard")
+    assert "escapeHtml(fact.value)" in source
 
 
 def test_day_api_resting_fact_keeps_watch_primary_and_juxtaposes_ring(body_env):
@@ -6261,8 +6300,8 @@ def test_day_api_resting_fact_keeps_watch_primary_and_juxtaposes_ring(body_env):
         "Synthetic Watch 58 bpm · Oura (API) 51 bpm"
     )
 
-    html = env.client.get("/app/body/20260611").get_data(as_text=True)
-    assert "Synthetic Watch 58 bpm · Oura (API) 51 bpm" in html
+    source = _function_source(_workspace_source(), "renderHeartCard")
+    assert "heart.resting_comparison_line" in source
 
     watch_only = env.client.get("/app/body/api/day/20260612").get_json()["heart"]
     resting = {f["label"]: f for f in watch_only["facts"]}["Resting heart rate"]
@@ -6350,13 +6389,18 @@ def test_status_api_freshness_names_quiet_source_factually(body_env):
     assert freshness["quiet"] is True
     assert freshness["quiet_lines"] == ["Stelo last delivered 6 days ago"]
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
-    # The strip is present, muted, and states the fact verbatim.
-    assert 'aria-label="Source freshness"' in html
-    assert "Stelo last delivered 6 days ago" in html
+    freshness_strings = [text.lower() for text in _collect_strings(freshness)]
+    assert "stelo last delivered 6 days ago" in freshness_strings
     # §13: facts only — the banner never advises.
-    assert "you should" not in html.lower()
-    assert "check your" not in html.lower()
+    assert all("you should" not in text for text in freshness_strings)
+    assert all("check your" not in text for text in freshness_strings)
+
+    source = _function_source(_workspace_source(), "renderFreshnessStrip")
+    # The strip is present only for quiet lines, muted, and states the
+    # server fact verbatim.
+    assert 'aria-label="Source freshness"' in source
+    assert "quiet_lines" in source
+    assert 'if (!lines.length) return "";' in source
 
 
 def test_status_api_freshness_states_no_data_for_absent_source(body_env):
@@ -6373,6 +6417,11 @@ def test_status_api_freshness_states_no_data_for_absent_source(body_env):
     cap = body_routes.FRESHNESS_SCAN_MONTH_CAP
     assert lingo["line"] == f"Lingo — no data in the last {cap} months"
     assert by_name["Stelo"]["quiet"] is False
+
+    freshness_strings = [text.lower() for text in _collect_strings(freshness)]
+    assert f"lingo — no data in the last {cap} months".lower() in freshness_strings
+    assert all("you should" not in text for text in freshness_strings)
+    assert all("check your" not in text for text in freshness_strings)
 
 
 def test_overview_freshness_banner_absent_when_sources_fresh(body_env):
@@ -6392,16 +6441,21 @@ def test_overview_freshness_banner_absent_when_sources_fresh(body_env):
     assert status["freshness"]["quiet"] is False
     assert status["freshness"]["quiet_lines"] == []
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
-    assert 'aria-label="Source freshness"' not in html
+    strip_source = _function_source(_workspace_source(), "renderFreshnessStrip")
+    assert 'aria-label="Source freshness"' in strip_source
+    assert 'if (!lines.length) return "";' in strip_source
     # The coverage-area Sources block still lists every expected source
     # with its last-delivered day.
-    assert 'id="body-sources-fresh-title"' in html
-    assert "Expected sources" in html
+    sources_source = _function_source(_workspace_source(), "renderFreshnessSources")
+    assert 'id="body-sources-fresh-title"' in sources_source
+    assert "Expected sources" in sources_source
     for name in body_routes.EXPECTED_SOURCE_QUIET_DAYS:
-        assert name.replace("'", "&#39;") in html
+        assert name in {source["name"] for source in status["freshness"]["sources"]}
     yesterday_label = body_routes._format_day_long(_day_key_ago(1))
-    assert f"{yesterday_label} · 1 day ago" in html
+    assert all(
+        source["detail"] == f"{yesterday_label} · 1 day ago"
+        for source in status["freshness"]["sources"]
+    )
 
 
 def test_freshness_empty_journal_stays_silent(body_env):
@@ -6413,9 +6467,11 @@ def test_freshness_empty_journal_stays_silent(body_env):
     # quiet: the sentinel stays empty rather than naming four absences.
     assert status["freshness"] == {"sources": [], "quiet_lines": [], "quiet": False}
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
-    assert 'aria-label="Source freshness"' not in html
-    assert 'id="body-sources-fresh-title"' not in html
+    source = _function_sources("renderFreshnessStrip", "renderFreshnessSources")
+    assert 'aria-label="Source freshness"' in source
+    assert 'id="body-sources-fresh-title"' in source
+    assert source.count('if (!lines.length) return "";') == 1
+    assert source.count('if (!sources.length) return "";') == 1
 
 
 def test_freshness_scan_is_calendar_bounded_and_signature_cached(body_env, monkeypatch):
