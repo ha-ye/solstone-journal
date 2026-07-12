@@ -27,6 +27,9 @@ SYNCABLE_REGISTRY: dict[str, str] = {
     "granola": "solstone.think.importers.granola",
     "obsidian": "solstone.think.importers.obsidian",
     "audio": "solstone.think.importers.audio",
+    # Save mode is gated (oura_sync_preflight artifact) and catalog mode
+    # writes nothing; see solstone/think/importers/oura.py.
+    "oura": "solstone.think.importers.oura",
 }
 
 

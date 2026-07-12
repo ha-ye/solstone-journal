@@ -225,6 +225,44 @@ def _run_muesli_sync() -> bool:
         return False
 
 
+def _run_connect(backend_name: str) -> None:
+    """Owner-present connect flow for API-backed importers (oura only)."""
+    if backend_name != "oura":
+        raise SystemExit(
+            f"Unknown connect backend: {backend_name}\nConnectable backends: oura"
+        )
+    from solstone.think.importers import oura_auth
+    from solstone.think.importers.oura import OAUTH_CONFIG_KEY
+    from solstone.think.journal_config import read_journal_config
+
+    # client_id is a public-client identifier — not a secret; it is read
+    # (read-only) from journal config. Exchanged tokens land in journal
+    # config too, through oura_auth -> journal_config (the journal is the
+    # one trusted store); nothing token-shaped is printed.
+    config = read_journal_config()
+    section = config.get(OAUTH_CONFIG_KEY)
+    client_id = section.get("client_id") if isinstance(section, dict) else None
+    if not isinstance(client_id, str) or not client_id:
+        raise SystemExit(
+            "Oura client_id missing from journal config "
+            '(config/journal.json -> {"oura": {"client_id": ...}}). '
+            "Register the Oura dev app and record its public client id "
+            "before connecting."
+        )
+
+    print("Opening the Oura authorization page — owner-present step.")
+    print("Requesting scopes: " + " ".join(oura_auth.OAUTH_SCOPES))
+    try:
+        tokens = oura_auth.run_owner_present_auth(client_id=client_id)
+    except oura_auth.OuraAuthError as exc:
+        raise SystemExit(f"Oura authorization did not complete: {exc}") from None
+    oura_auth.save_oura_tokens(tokens)
+    print("Oura authorization saved to journal config (config/journal.json).")
+    print("Next:")
+    print("  journal importer --sync oura                 (catalog; writes nothing)")
+    print("  journal importer --sync oura --save --confirm-health-save")
+
+
 def _run_sync(
     backend_name: str,
     *,
@@ -236,6 +274,7 @@ def _run_sync(
     import inspect
 
     from solstone.think.importers.plaud import format_size
+    from solstone.think.importers.pre_save_gate import PreSaveGateError
     from solstone.think.importers.sync import get_syncable_backends, load_sync_state
 
     journal_root = Path(get_journal())
@@ -271,6 +310,11 @@ def _run_sync(
 
     try:
         result = backend.sync(journal_root, **sync_kwargs)
+    except PreSaveGateError as e:
+        # Health-gated sync backends (oura) fail closed with a
+        # traceback-free, owner-facing explanation.
+        print(e.format_text())
+        raise SystemExit(e.exit_code)
     except ValueError as e:
         raise SystemExit(str(e))
     except RuntimeError as e:
@@ -361,6 +405,15 @@ def _run_sync(
         print()
         print("Everything is up to date.")
 
+    # Oura wiring: when the sync artifact records scheduled-sync consent,
+    # the backend returns the exact crontab line as guidance. Never
+    # installed here — the owner adds it deliberately.
+    cron_hint = result.get("cron_hint")
+    if cron_hint:
+        print()
+        print("Scheduled-sync consent is recorded. Crontab line (not installed):")
+        print(f"  {cron_hint}")
+
 
 def import_one(
     media: str | Path,
@@ -376,6 +429,10 @@ def import_one(
     verbose: bool = False,
     wait_for_processing: bool = True,
     deterministic_only: bool = False,
+    confirm_health_save: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    with_day_summaries: bool = False,
 ) -> dict[str, Any] | None:
     """When False, returns after segment creation without awaiting transcription completion;
     failed_segments is omitted from the result and created_segments is the durable
@@ -394,8 +451,48 @@ def import_one(
         verbose=verbose,
         wait_for_processing=wait_for_processing,
         deterministic_only=deterministic_only,
+        confirm_health_save=confirm_health_save,
+        date_from=date_from,
+        date_to=date_to,
+        with_day_summaries=with_day_summaries,
     )
     return _import_one_from_args(args)
+
+
+def _preview_file_importer(
+    importer: Any,
+    path: Path,
+    args: argparse.Namespace,
+) -> Any:
+    if importer.name == "apple_health":
+        return importer.preview(
+            path,
+            date_from=getattr(args, "date_from", None),
+            date_to=getattr(args, "date_to", None),
+        )
+    return importer.preview(path)
+
+
+def _process_file_importer(
+    importer: Any,
+    path: Path,
+    journal_root: Path,
+    args: argparse.Namespace,
+) -> Any:
+    kwargs: dict[str, Any] = {
+        "facet": args.facet,
+        "import_id": _import_id,
+        "progress_callback": _progress_callback,
+    }
+    if importer.name == "apple_health":
+        kwargs.update(
+            {
+                "date_from": getattr(args, "date_from", None),
+                "date_to": getattr(args, "date_to", None),
+                "with_day_summaries": getattr(args, "with_day_summaries", False),
+            }
+        )
+    return importer.process(path, journal_root, **kwargs)
 
 
 def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
@@ -554,7 +651,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     )
 
     if args.dry_run and _file_importer is not None:
-        preview = _file_importer.preview(Path(args.media))
+        preview = _preview_file_importer(_file_importer, Path(args.media), args)
         if args.json:
             print(
                 json.dumps(
@@ -696,6 +793,25 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             "source_type": import_source,
         }
 
+    if _file_importer is not None:
+        from solstone.think.importers.pre_save_gate import (
+            PreSaveGateError,
+            enforce_pre_save_gate,
+        )
+
+        try:
+            enforce_pre_save_gate(
+                _file_importer,
+                dry_run=args.dry_run,
+                confirm_health_save=getattr(args, "confirm_health_save", False),
+            )
+        except PreSaveGateError as exc:
+            if args.json:
+                print(json.dumps(exc.to_dict()))
+            else:
+                print(exc.format_text())
+            raise SystemExit(exc.exit_code) from None
+
     # Copy to imports/ if file is not already there
     if needs_setup:
         args.media = _setup_import(
@@ -786,10 +902,14 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             if not args.force:
                 from solstone.think.importers.shared import (
                     find_manifest_by_hash,
-                    hash_source,
+                    windowed_source_hash,
                 )
 
-                _source_hash = hash_source(Path(args.media))
+                _source_hash = windowed_source_hash(
+                    Path(args.media),
+                    getattr(args, "date_from", None),
+                    getattr(args, "date_to", None),
+                )
                 existing = find_manifest_by_hash(journal_root, _source_hash)
                 if existing:
                     imported_at = existing.get("imported_at", "unknown date")
@@ -805,30 +925,29 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                         "entry_count": entry_count,
                     }
             else:
-                from solstone.think.importers.shared import hash_source
+                from solstone.think.importers.shared import windowed_source_hash
 
-                _source_hash = hash_source(Path(args.media))
+                # --force skips the duplicate refusal; it must not change the
+                # recorded source identity, or a forced windowed slice would
+                # masquerade as the whole source.
+                _source_hash = windowed_source_hash(
+                    Path(args.media),
+                    getattr(args, "date_from", None),
+                    getattr(args, "date_to", None),
+                )
 
             import_dir = _setup_file_import(_import_id)
             if _file_importer.name == "journal_archive":
                 # The archive importer owns the same O_EXCL lock internally for direct callers.
-                result = _file_importer.process(
-                    Path(args.media),
-                    journal_root,
-                    facet=args.facet,
-                    import_id=_import_id,
-                    progress_callback=_progress_callback,
+                result = _process_file_importer(
+                    _file_importer, Path(args.media), journal_root, args
                 )
             else:
                 from solstone.think.importers.journal_archive import acquire_merge_lock
 
                 with acquire_merge_lock(journal_root, "file-import", _import_id):
-                    result = _file_importer.process(
-                        Path(args.media),
-                        journal_root,
-                        facet=args.facet,
-                        import_id=_import_id,
-                        progress_callback=_progress_callback,
+                    result = _process_file_importer(
+                        _file_importer, Path(args.media), journal_root, args
                     )
 
             all_created_files.extend(result.files_created)
@@ -1367,6 +1486,28 @@ def main() -> None:
         help="Show what would be imported without writing to the journal",
     )
     parser.add_argument(
+        "--confirm-health-save",
+        action="store_true",
+        help="Confirm this run may save sensitive health importer output",
+    )
+    parser.add_argument(
+        "--date-from",
+        type=str,
+        default=None,
+        help="For Apple Health: include records on or after YYYY-MM-DD",
+    )
+    parser.add_argument(
+        "--date-to",
+        type=str,
+        default=None,
+        help="For Apple Health: include records on or before YYYY-MM-DD",
+    )
+    parser.add_argument(
+        "--with-day-summaries",
+        action="store_true",
+        help="For Apple Health: write factual daily summary transcript segments",
+    )
+    parser.add_argument(
         "--deterministic-only",
         action="store_true",
         help="Use only deterministic timestamp detection; skip model detection",
@@ -1392,6 +1533,26 @@ def main() -> None:
         type=str,
         default=None,
         help="With --sync: override the default source directory path",
+    )
+    parser.add_argument(
+        "--window-days",
+        type=int,
+        default=None,
+        help="With --sync oura: fetch a trailing window of this many days",
+    )
+    parser.add_argument(
+        "--scheduled",
+        action="store_true",
+        help=(
+            "With --sync oura --save: this is an unattended scheduled run; "
+            "requires the artifact's standing scheduled_sync consent"
+        ),
+    )
+    parser.add_argument(
+        "--connect",
+        type=str,
+        metavar="BACKEND",
+        help="Owner-present connect/authorization flow (e.g., oura)",
     )
     parser.add_argument(
         "--list-importers",
@@ -1466,6 +1627,10 @@ def main() -> None:
             print("No file importers available")
         return
 
+    if args.connect:
+        _run_connect(args.connect)
+        return
+
     if args.sync:
         extra: dict[str, Any] = {}
         if args.path:
@@ -1473,6 +1638,11 @@ def main() -> None:
         if args.force:
             extra["force"] = True
         extra["auto"] = args.auto
+        # Oura wiring: forwarded only to backends whose sync() signature
+        # accepts them (see the signature filter in _run_sync).
+        extra["window_days"] = args.window_days
+        extra["scheduled"] = args.scheduled or None
+        extra["confirm_health_save"] = args.confirm_health_save or None
         _run_sync(
             args.sync,
             dry_run=args.dry_run or not args.save,
@@ -1497,6 +1667,10 @@ def main() -> None:
             json_output=args.json,
             verbose=args.verbose,
             deterministic_only=args.deterministic_only,
+            confirm_health_save=args.confirm_health_save,
+            date_from=args.date_from,
+            date_to=args.date_to,
+            with_day_summaries=args.with_day_summaries,
         )
     except Exception as exc:
         raise SystemExit(str(exc)) from exc

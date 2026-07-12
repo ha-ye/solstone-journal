@@ -22,6 +22,7 @@ import solstone.apps.transcripts.routes as routes
 from solstone.apps.transcripts.routes import (
     _attach_streams_to_ranges,
     _segment_modality_signals,
+    _timestamp_from_day_time,
     _watch_reprocess_completion,
 )
 from solstone.apps.transcripts.tests._media_helpers import (
@@ -582,6 +583,71 @@ def test_segment_content_happy_path_returns_segment_payload(client):
     assert all(isinstance(value, bool) for value in data["media_purged"].values())
 
 
+def test_markdown_only_import_segment_lists_as_markdown(client, journal_copy):
+    day = "20990114"
+    stream = "import.apple_health"
+    segment = "000000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "day_summary_transcript.md").write_text(
+        "# Apple Health Summary\n\nGlucose readings: 12\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segments/{day}")
+
+    assert response.status_code == 200
+    segments = response.get_json()["segments"]
+    health_segment = next(seg for seg in segments if seg["stream"] == stream)
+    assert health_segment["types"] == ["markdown"]
+    assert health_segment["data_state"] == {"markdown": "analyzed"}
+    assert health_segment["think"] is None
+
+    day_response = client.get(f"/app/transcripts/api/day/{day}")
+    assert day_response.status_code == 200
+    day_data = day_response.get_json()
+    assert day_data["audio"] == []
+    assert day_data["screen"] == []
+    assert day_data["segments"] == [health_segment]
+
+
+def test_markdown_only_import_segment_renders_markdown_chunk(client, journal_copy):
+    day = "20990114"
+    stream = "import.apple_health"
+    segment = "000000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "day_summary_transcript.md").write_text(
+        "# Apple Health Summary\n\nGlucose readings: 12\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["audio_file"] is None
+    assert data["duration"] == 0.0
+    assert data["media_sizes"] == {"audio": 0, "screen": 0}
+    assert data["media_purged"] == {"audio": False, "screen": False}
+    assert data["data_state"] == {"markdown": "analyzed"}
+    assert len(data["chunks"]) == 1
+    chunk = data["chunks"][0]
+    assert chunk["type"] == "markdown"
+    assert chunk["time"] == "00:00:00"
+    assert chunk["timestamp"] == _timestamp_from_day_time(day, "00:00:00")
+    assert chunk["markdown"] == "# Apple Health Summary\n\nGlucose readings: 12"
+    assert chunk["source_ref"] == {"filename": "day_summary_transcript.md"}
+
+
 def test_segment_content_marks_headerless_screen_frame_analyzed(client, journal_copy):
     day = "20990115"
     stream = "default"
@@ -1132,6 +1198,81 @@ def test_segment_content_returns_warning_details_for_parse_failures(
     assert all(detail["ts"] for detail in data["warning_details"])
     assert data["data_state"] == {"audio": "failed", "screen": "failed"}
     assert data["media_purged"] == {"audio": False, "screen": False}
+
+
+def test_segment_content_screen_media_description_string(client, journal_copy):
+    day = "20990106"
+    stream = "default"
+    segment = "090000_300"
+    _write_segment(journal_copy, day, stream, segment, screen=False)
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    _write_jsonl(
+        segment_dir / "screen.jsonl",
+        [
+            {"raw": "screen.webm"},
+            {
+                "frame_id": 1,
+                "timestamp": 1,
+                "analysis": {
+                    "primary": "media",
+                    "visual_description": "Watching a livestream.",
+                },
+                "content": {"media": "# [OpenAI - Introducing GPT-Live]"},
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["warnings"] == 0
+    screen_chunk = next(chunk for chunk in data["chunks"] if chunk["type"] == "screen")
+    assert "# [OpenAI - Introducing GPT-Live]" in screen_chunk["markdown"]
+
+
+def test_segment_content_preserves_image_backed_media_description_string(
+    client, journal_copy
+):
+    day = "20990119"
+    stream = "mentra-live"
+    segment = "164900_60"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "frame.jpg").write_bytes(b"image-frame")
+    _write_jsonl(
+        segment_dir / "frame.jsonl",
+        [
+            {"raw": "frame.jpg", "kind": "image"},
+            {"start": "00:00:00", "text": "Image sidecar description."},
+        ],
+    )
+    _write_jsonl(
+        segment_dir / "screen.jsonl",
+        [
+            {"raw": "frame.jpg", "modality": "photo"},
+            {
+                "frame_id": 1,
+                "timestamp": 0,
+                "analysis": {
+                    "primary": "media",
+                    "visual_description": "Mentra Live photo captured.",
+                },
+                "content": {"media": "# [Original Markdown Media]"},
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    screen_chunk = next(chunk for chunk in data["chunks"] if chunk["type"] == "screen")
+    assert "# [Original Markdown Media]" in screen_chunk["markdown"]
+    assert '"photo_file": "frame.jpg"' not in screen_chunk["markdown"]
+    assert "Image sidecar description." in screen_chunk["markdown"]
+    assert screen_chunk["source_ref"]["raw"] == "frame.jpg"
+    assert screen_chunk["source_ref"]["media_kind"] == "image"
 
 
 @pytest.mark.parametrize("raw_name", ["audio.flac", "audio.m4a"])
@@ -2087,3 +2228,36 @@ def test_cancel_delete_segment_writes_cancelled_audit_row(
         for row in cancel_rows
     )
     assert fake_deferred_deletes.cancel(cancel_pending_id) is False
+
+
+def test_segment_content_audio_timestamps_are_absolute_not_midnight(
+    client, journal_copy
+):
+    # Audio "start" values are segment-relative offsets; the API timestamp
+    # must resolve to the segment's wall-clock time, not just past midnight
+    # (upstream PR review finding, 2026-07-04).
+    day = "20990110"
+    stream = "default"
+    segment = "093000_300"
+    _write_segment(journal_copy, day, stream, segment)
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    _write_jsonl(
+        segment_dir / "audio.jsonl",
+        [
+            {"raw": "raw.m4a", "duration": 42.0},
+            {
+                "start": "00:00:05",
+                "source": "mic",
+                "speaker": 1,
+                "text": "daytime words",
+            },
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    chunks = response.get_json()["chunks"]
+    audio_chunk = next(chunk for chunk in chunks if chunk["type"] == "audio")
+    stamped = datetime.fromtimestamp(audio_chunk["timestamp"] / 1000)
+    assert (stamped.hour, stamped.minute, stamped.second) == (9, 30, 5)

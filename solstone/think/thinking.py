@@ -71,6 +71,7 @@ from solstone.think.pipeline_health import (
     read_segment_progress,
     segment_fully_sensed,
     segment_fully_thought,
+    segment_requires_processing,
 )
 from solstone.think.providers.local_endpoint import resolve_local_endpoint
 from solstone.think.providers.local_server import read_server_parallel_slots
@@ -580,6 +581,9 @@ def _select_segment_repair_targets(
     progress = read_segment_progress(day)
     selected: list[dict] = []
     for seg in segments:
+        if not segment_requires_processing(seg):
+            counts["complete"] += 1
+            continue
         if not segment_fully_sensed(seg.get("data_state", {})):
             counts["raw_blocked"] += 1
             continue

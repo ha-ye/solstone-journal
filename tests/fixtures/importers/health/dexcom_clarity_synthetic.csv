@@ -1,0 +1,3 @@
+Timestamp (YYYY-MM-DDThh:mm:ss),Event Type,Glucose Value (mg/dL),Transmitter Time (Long Integer),Source
+2026-01-02T12:30:00,EGV,105,1000000001,Synthetic Stelo
+2026-01-02T12:35:00,EGV,108,1000000002,Synthetic Stelo
