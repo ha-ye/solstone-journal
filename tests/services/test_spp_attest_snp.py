@@ -109,6 +109,12 @@ def _load_cert(path: Path) -> x509.Certificate:
     return x509.load_pem_x509_certificate(path.read_bytes())
 
 
+def test_vcek_fixture_loads_with_serial_zero() -> None:
+    cert = _load_cert(FIXTURE_DIR / "certs" / "vcek.pem")
+
+    assert cert.serial_number == 0
+
+
 def _generated_cert_with_subject(subject: x509.Name, *, ca: bool) -> bytes:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = dt.datetime.now(dt.UTC)

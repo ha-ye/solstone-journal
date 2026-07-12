@@ -47,7 +47,7 @@ THIN_BASE = {
     "typer",
     "requests",
     "timefhuman",
-    "cryptography>=42",
+    "cryptography>=42,<47",
     "pyOpenSSL>=24.0",
     "argon2-cffi",
     "websockets>=13.0",
