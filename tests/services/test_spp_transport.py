@@ -18,12 +18,25 @@ from solstone.think.services.spp_attest.cadence import AttestationSession
 
 class _FakeChannel:
     def __init__(
-        self, verdict: object, last_used_monotonic: float | None = None
+        self,
+        verdict: object,
+        last_used_monotonic: float | None = None,
+        epoch: int | None = None,
     ) -> None:
         self.verdict = verdict
+        self.tls = object()
         self.last_used_monotonic = (
             time.monotonic() if last_used_monotonic is None else last_used_monotonic
         )
+        self.epoch = spp_transport._EPOCH if epoch is None else epoch
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeLocal:
+    def __init__(self) -> None:
         self.closed = False
 
     def close(self) -> None:
@@ -101,7 +114,11 @@ def test_verify_confidential_attestation_reuses_then_raises_stale_once_then_rees
     block = _write_confidential_config(tmp_path, monkeypatch)
     _patch_listener(monkeypatch)
     verdict = object()
-    establish = Mock(side_effect=[_FakeChannel(verdict), _FakeChannel(verdict)])
+
+    def fake_establish(*_args, **kwargs):
+        return _FakeChannel(verdict, epoch=kwargs["epoch"])
+
+    establish = Mock(side_effect=fake_establish)
     monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
 
     spp_transport.verify_confidential_attestation(block)
@@ -135,7 +152,11 @@ def test_confidential_egress_base_url_returns_forwarder_not_configured_endpoint(
 ) -> None:
     block = _write_confidential_config(tmp_path, monkeypatch)
     _patch_listener(monkeypatch)
-    establish = Mock(return_value=_FakeChannel(object()))
+
+    def fake_establish(*_args, **kwargs):
+        return _FakeChannel(object(), epoch=kwargs["epoch"])
+
+    establish = Mock(side_effect=fake_establish)
     monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
 
     base_url = spp_transport.confidential_egress_base_url(block["endpoint_url"])
@@ -188,3 +209,46 @@ def test_pooled_channels_older_than_idle_limit_are_discarded() -> None:
     assert stale.closed is True
     assert fresh.closed is False
     assert spp_transport._POOL == [fresh]
+
+
+def test_teardown_closes_checked_out_channel_and_prevents_repool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_listener(monkeypatch)
+    verdict = object()
+    now = datetime.now(timezone.utc)
+    spp.record_attestation_verified(
+        AttestationSession(
+            verdict=verdict,
+            started_at=now,
+            tpm_heartbeat_at=now,
+            gpu_reattest_at=now,
+        )
+    )
+    channel = _FakeChannel(verdict)
+    spp_transport._POOL[:] = [channel]
+    local = _FakeLocal()
+
+    def fake_pump(_local, _tls):
+        assert channel in spp_transport._ACTIVE
+        with spp_transport._LOCK:
+            spp_transport._teardown_locked()
+        return "local_closed"
+
+    monkeypatch.setattr(spp_transport, "_pump", fake_pump)
+
+    spp_transport._handle_loopback_connection(local)
+
+    assert local.closed is True
+    assert channel.closed is True
+    assert channel not in spp_transport._POOL
+    assert channel not in spp_transport._ACTIVE
+
+
+def test_wrong_epoch_channel_is_not_checked_out() -> None:
+    stale_epoch_channel = _FakeChannel(object(), epoch=spp_transport._EPOCH - 1)
+    spp_transport._POOL[:] = [stale_epoch_channel]
+
+    assert spp_transport._borrow_channel_locked(time.monotonic()) is None
+    assert stale_epoch_channel.closed is True
+    assert spp_transport._POOL == []

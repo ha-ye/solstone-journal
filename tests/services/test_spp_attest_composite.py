@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 from datetime import datetime, timezone
@@ -276,6 +277,7 @@ def test_verify_composite_rejects_mutated_channel_binding_without_leak(
 
 def test_verify_composite_maps_gpu_nonce_mismatch_without_leak(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     def rejecting_gpu_appraiser(
         _envelope: GpuEnvelope,
@@ -290,21 +292,28 @@ def test_verify_composite_maps_gpu_nonce_mismatch_without_leak(
             stderr=f"nonce_from_ar: {owner_nonce.hex()}",
         )
 
-    with pytest.raises(AttestationFailedError) as exc_info:
-        verify_composite(
-            _cpu_bundle(),
-            envelope_tlv=_envelope_tlv(),
-            channel_binding=_channel_binding(),
-            owner_nonce=_owner_nonce(),
-            now=NOW,
-            nvattest_dir=tmp_path / "unused",
-            gpu_appraiser=rejecting_gpu_appraiser,
-        )
+    with caplog.at_level(
+        logging.WARNING,
+        logger="solstone.think.services.spp_attest.composite",
+    ):
+        with pytest.raises(AttestationFailedError) as exc_info:
+            verify_composite(
+                _cpu_bundle(),
+                envelope_tlv=_envelope_tlv(),
+                channel_binding=_channel_binding(),
+                owner_nonce=_owner_nonce(),
+                now=NOW,
+                nvattest_dir=tmp_path / "unused",
+                gpu_appraiser=rejecting_gpu_appraiser,
+            )
 
     assert exc_info.value.detail == (
         "the GPU leg rejected the evidence (gpu_nonce_mismatch)"
     )
-    assert isinstance(exc_info.value.__cause__, GpuAppraisalError)
+    assert exc_info.value.__cause__ is None
+    assert "gpu_nonce_mismatch" in caplog.text
+    assert _owner_nonce().hex() not in caplog.text
+    assert "nonce_from_ar" not in caplog.text
     _assert_owner_message_safe(exc_info.value)
 
 

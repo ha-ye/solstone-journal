@@ -48,12 +48,13 @@ class RatlsEndpoint:
     server_name: bytes = b"spp-engine"
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class AttestedChannel:
     raw_socket: socket.socket
     tls: SSL.Connection
     verified: VerifiedCertificateEvidence
     last_used_monotonic: float
+    epoch: int
 
     @property
     def verdict(self) -> CompositeVerdict:
@@ -111,8 +112,8 @@ def _recv_proof_response(connection: SSL.Connection) -> bytes:
         if lowered == b"content-length":
             try:
                 content_length = int(value.strip())
-            except ValueError as exc:
-                raise RatlsChannelError("proof_http_failed") from exc
+            except ValueError:
+                raise RatlsChannelError("proof_http_failed")
     if content_length is None or content_length > MAX_PROOF_RESPONSE_BYTES:
         raise RatlsChannelError("proof_http_failed")
     while len(body) < content_length:
@@ -135,6 +136,7 @@ def establish_attested_channel(
     composite_verifier: Callable[..., CompositeVerdict],
     socket_timeout_s: float = 30.0,
     monotonic_now: Callable[[], float],
+    epoch: int,
 ) -> AttestedChannel:
     raw: socket.socket | None = None
     connection: SSL.Connection | None = None
@@ -190,6 +192,7 @@ def establish_attested_channel(
             tls=connection,
             verified=verified,
             last_used_monotonic=monotonic_now(),
+            epoch=epoch,
         )
     except RatlsVerificationError:
         if connection is not None:
@@ -209,7 +212,7 @@ def establish_attested_channel(
         elif raw is not None:
             raw.close()
         raise
-    except (OSError, SSL.Error) as exc:
+    except (OSError, SSL.Error):
         if connection is not None:
             try:
                 connection.close()
@@ -217,4 +220,4 @@ def establish_attested_channel(
                 pass
         elif raw is not None:
             raw.close()
-        raise RatlsChannelError("gateway_unreachable") from exc
+        raise RatlsChannelError("gateway_unreachable")

@@ -39,6 +39,8 @@ FORWARDER_SELECT_TIMEOUT_S = 180.0
 
 _LOCK = threading.RLock()
 _POOL: list[AttestedChannel] = []
+_ACTIVE: set[AttestedChannel] = set()
+_EPOCH = 0
 _LISTENER: socket.socket | None = None
 _LISTENER_THREAD: threading.Thread | None = None
 _FORWARDER_BASE_URL: str | None = None
@@ -46,15 +48,12 @@ _CONFIDENTIAL_BLOCK: dict[str, Any] | None = None
 _REASON_CODE_RE = re.compile(r"\(([a-z0-9_]+)\)$")
 
 
-def _attestation_failed(reason_code: str, exc: BaseException | None = None) -> None:
+def _attestation_failed(reason_code: str) -> None:
     log.warning("event=confidential_attestation_rejected reason=%s", reason_code)
     spp.record_attestation_failed(reason_code)
-    error = AttestationFailedError(
+    raise AttestationFailedError(
         f"the confidential attestation transport failed closed ({reason_code})"
     )
-    if exc is None:
-        raise error
-    raise error from exc
 
 
 def _reason_from_attestation_failed(exc: AttestationFailedError) -> str:
@@ -73,10 +72,10 @@ def _endpoint_from_block(block: dict[str, Any]) -> RatlsEndpoint:
         )
     try:
         port = parsed.port
-    except ValueError as exc:
+    except ValueError:
         raise AttestationFailedError(
             "the confidential endpoint configuration is invalid (endpoint_invalid)"
-        ) from exc
+        )
     if port is None:
         port = 443 if parsed.scheme == "https" else 80
     return RatlsEndpoint(host=parsed.hostname, port=port)
@@ -96,19 +95,26 @@ def _close_channel(channel: AttestedChannel) -> None:
 
 
 def _teardown_locked() -> None:
-    global _FORWARDER_BASE_URL, _LISTENER, _LISTENER_THREAD
+    global _EPOCH, _FORWARDER_BASE_URL, _LISTENER, _LISTENER_THREAD
 
+    _EPOCH += 1
     listener = _LISTENER
+    pooled = tuple(_POOL)
+    active = tuple(_ACTIVE)
     _LISTENER = None
     _LISTENER_THREAD = None
     _FORWARDER_BASE_URL = None
+    _POOL.clear()
+    _ACTIVE.clear()
     if listener is not None:
         try:
             listener.close()
         except OSError:
             pass
-    while _POOL:
-        _close_channel(_POOL.pop())
+    for channel in pooled:
+        _close_channel(channel)
+    for channel in active:
+        _close_channel(channel)
 
 
 def teardown_confidential_transport() -> None:
@@ -119,7 +125,10 @@ def teardown_confidential_transport() -> None:
 def _discard_idle_locked(now_monotonic: float) -> None:
     kept: list[AttestedChannel] = []
     for channel in _POOL:
-        if now_monotonic - channel.last_used_monotonic > POOLED_CHANNEL_MAX_IDLE_S:
+        if (
+            channel.epoch != _EPOCH
+            or now_monotonic - channel.last_used_monotonic > POOLED_CHANNEL_MAX_IDLE_S
+        ):
             _close_channel(channel)
         else:
             kept.append(channel)
@@ -133,6 +142,11 @@ def _start_listener_locked() -> None:
         return
     listener = socket.socket()
     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    # The loopback listener is intentionally same-UID reachable: a local process
+    # that can connect here can already read journal/config/journal.json and dial
+    # the gateway with the plaintext credential. The load-bearing constraints are
+    # loopback-only bind, ephemeral port, per-session lifetime, creation only
+    # after P2-green, and teardown on stale/failure.
     listener.bind(("127.0.0.1", 0))
     listener.listen()
     listener.settimeout(1.0)
@@ -159,16 +173,19 @@ def _establish_channel_locked(block: dict[str, Any], now: datetime) -> AttestedC
             now=now,
             composite_verifier=verify_composite,
             monotonic_now=time.monotonic,
+            epoch=_EPOCH,
         )
     except (RatlsChannelError, RatlsVerificationError) as exc:
+        reason_code = exc.reason_code
         _teardown_locked()
-        _attestation_failed(exc.reason_code, exc)
+        _attestation_failed(reason_code)
     except AttestationFailedError as exc:
+        reason_code = _reason_from_attestation_failed(exc)
         _teardown_locked()
-        _attestation_failed(_reason_from_attestation_failed(exc), exc)
-    except Exception as exc:
+        _attestation_failed(reason_code)
+    except Exception:
         _teardown_locked()
-        _attestation_failed("unexpected_error", exc)
+        _attestation_failed("unexpected_error")
 
 
 def verify_confidential_attestation(block: dict[str, Any]) -> None:
@@ -248,11 +265,18 @@ def _borrow_or_establish_channel_locked(now: datetime) -> AttestedChannel | None
     if state.session is None or state.session.status(now) != "verified":
         return None
     channel = _borrow_channel_locked(time.monotonic())
-    if channel is not None:
-        return channel
     if _CONFIDENTIAL_BLOCK is None:
+        return _activate_channel_locked(channel)
+    if channel is None:
+        channel = _establish_channel_locked(_CONFIDENTIAL_BLOCK, now)
+    return _activate_channel_locked(channel)
+
+
+def _activate_channel_locked(channel: AttestedChannel | None) -> AttestedChannel | None:
+    if channel is None:
         return None
-    return _establish_channel_locked(_CONFIDENTIAL_BLOCK, now)
+    _ACTIVE.add(channel)
+    return channel
 
 
 def _accept_loop(listener: socket.socket) -> None:
@@ -287,14 +311,18 @@ def _handle_loopback_connection(local: socket.socket) -> None:
         if outcome == "local_closed":
             channel.last_used_monotonic = time.monotonic()
             with _LOCK:
-                _POOL.append(channel)
-            channel = None
+                _ACTIVE.discard(channel)
+                if channel.epoch == _EPOCH and _transport_live_locked():
+                    _POOL.append(channel)
+                    channel = None
     finally:
         try:
             local.close()
         except OSError:
             pass
         if channel is not None:
+            with _LOCK:
+                _ACTIVE.discard(channel)
             _close_channel(channel)
 
 

@@ -273,6 +273,7 @@ def _establish(port: int):
         now=datetime.now(timezone.utc),
         composite_verifier=_stub_composite_verifier,
         monotonic_now=time.monotonic,
+        epoch=0,
     )
 
 

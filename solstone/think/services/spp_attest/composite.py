@@ -73,11 +73,10 @@ def verify_composite(
             policy=policy,
             quote_verifier=quote_verifier,
         )
-    except VerificationError as exc:
+    except VerificationError:
         _raise_attestation_failed(
             "the CPU leg rejected the evidence (cpu_verification_failed)",
             "confidential attestation CPU leg failed",
-            exc,
         )
 
     envelope = decode_gpu_envelope(envelope_tlv)
@@ -94,13 +93,11 @@ def verify_composite(
         _raise_attestation_failed(
             f"the GPU leg rejected the evidence ({reason})",
             "confidential attestation GPU leg failed",
-            exc,
         )
-    except Exception as exc:
+    except Exception:
         _raise_attestation_failed(
             "the verifier encountered an internal error (unexpected_error)",
             "confidential attestation GPU leg raised unexpectedly",
-            exc,
         )
 
     return CompositeVerdict(
@@ -116,7 +113,12 @@ def verify_composite(
 def _raise_attestation_failed(
     detail: str,
     log_message: str,
-    exc: BaseException,
 ) -> NoReturn:
-    log.warning(log_message, exc_info=True)
-    raise AttestationFailedError(detail) from exc
+    log.warning("%s reason=%s", log_message, _reason_from_detail(detail))
+    raise AttestationFailedError(detail)
+
+
+def _reason_from_detail(detail: str) -> str:
+    if detail.endswith(")") and "(" in detail:
+        return detail.rsplit("(", 1)[1][:-1]
+    return "attestation_failed"

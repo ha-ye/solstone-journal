@@ -221,6 +221,11 @@ def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
     monkeypatch,
 ):
     from solstone.think.providers import state
+    from solstone.think.providers.local_endpoint import (
+        probe_local_endpoint,
+        resolve_local_endpoint,
+    )
+    from solstone.think.services.spp_transport import confidential_probe_status
 
     _empty_journal(tmp_path, monkeypatch)
     config = _confidential_config()
@@ -233,7 +238,9 @@ def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
     httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
     monkeypatch.setattr("httpx.get", httpx_get)
 
-    assert models.confidential_egress_blocked() is True
+    endpoint = resolve_local_endpoint()
+    assert confidential_probe_status() == (False, "attestation_not_yet_verified")
+    assert probe_local_endpoint(endpoint) == (False, "attestation_not_yet_verified")
     status = state.local_status_dict()
 
     assert status["configured"] is True
@@ -244,7 +251,7 @@ def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
 
     config.pop("services", None)
     _write_journal_config(tmp_path, config)
-    assert models.confidential_egress_blocked() is False
+    assert confidential_probe_status() is None
 
 
 def test_confidential_attestation_error_is_non_retryable(tmp_path, monkeypatch):

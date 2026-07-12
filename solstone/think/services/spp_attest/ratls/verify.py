@@ -75,15 +75,15 @@ def verify_certificate_evidence(
 ) -> VerifiedCertificateEvidence:
     try:
         certificate = x509.load_der_x509_certificate(certificate_der)
-    except ValueError as exc:
-        raise RatlsVerificationError("certificate_invalid") from exc
+    except ValueError:
+        raise RatlsVerificationError("certificate_invalid")
 
     try:
         extension = certificate.extensions.get_extension_for_oid(
             ObjectIdentifier(COMPOSITE_EVIDENCE_OID)
         )
-    except x509.ExtensionNotFound as exc:
-        raise RatlsVerificationError("certificate_extension_missing") from exc
+    except x509.ExtensionNotFound:
+        raise RatlsVerificationError("certificate_extension_missing")
     if not extension.critical:
         raise RatlsVerificationError("certificate_extension_not_critical")
     if not isinstance(extension.value, x509.UnrecognizedExtension):
@@ -91,8 +91,8 @@ def verify_certificate_evidence(
 
     try:
         evidence = CompositeEvidence.from_der(extension.value.value)
-    except ValueError as exc:
-        raise RatlsVerificationError("certificate_evidence_invalid") from exc
+    except ValueError:
+        raise RatlsVerificationError("certificate_evidence_invalid")
     if evidence.owner_nonce != owner_nonce:
         raise RatlsVerificationError("nonce_mismatch")
 
@@ -130,7 +130,7 @@ def verify_certificate_evidence(
             code = "gpu_appraisal_failed"
         else:
             code = "composite_appraisal_failed"
-        raise RatlsVerificationError(code) from exc
+        raise RatlsVerificationError(code)
 
     return VerifiedCertificateEvidence(
         evidence=evidence,
@@ -148,8 +148,8 @@ def verify_exporter_proof(
 ) -> None:
     try:
         proof = ExporterProof.from_der(proof_der)
-    except ValueError as exc:
-        raise RatlsVerificationError("exporter_proof_invalid") from exc
+    except ValueError:
+        raise RatlsVerificationError("exporter_proof_invalid")
     if proof.owner_nonce != owner_nonce:
         raise RatlsVerificationError("nonce_mismatch")
     if proof.tls_spki_der != evidence.tls_spki_der:
@@ -170,5 +170,5 @@ def verify_exporter_proof(
                 evidence.gpu_envelope,
             ),
         )
-    except VerificationError as exc:
-        raise RatlsVerificationError("exporter_quote_failed") from exc
+    except VerificationError:
+        raise RatlsVerificationError("exporter_quote_failed")

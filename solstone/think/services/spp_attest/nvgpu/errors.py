@@ -14,14 +14,12 @@ GpuAppraisalReason = Literal[
     "gpu_nonce_mismatch",
     "gpu_appraisal_failed",
 ]
-STDERR_TAIL_CHARS = 4000
 
 
 class GpuAppraisalError(VerificationError):
     """Raised when NVIDIA GPU appraisal fails."""
 
     reason: GpuAppraisalReason
-    stderr: str
 
     def __init__(
         self,
@@ -30,17 +28,6 @@ class GpuAppraisalError(VerificationError):
         *,
         stderr: str = "",
     ) -> None:
+        _ = (message, stderr)
         self.reason = reason
-        self.stderr = _stderr_tail(stderr)
-        detail = f"{reason}: {message}"
-        if self.stderr:
-            detail = f"{detail}\nnvattest stderr tail:\n{self.stderr}"
-        super().__init__(detail)
-
-
-def _stderr_tail(stderr: str) -> str:
-    if not stderr:
-        return ""
-    if len(stderr) <= STDERR_TAIL_CHARS:
-        return stderr
-    return "[truncated to last 4000 chars]\n" + stderr[-STDERR_TAIL_CHARS:]
+        super().__init__(reason)

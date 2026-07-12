@@ -1048,24 +1048,6 @@ def _raise_if_confidential_unverified() -> None:
     _confidential_attestation_verifier()(block)
 
 
-def confidential_egress_blocked() -> bool:
-    """Return whether confidential egress is currently gated closed."""
-
-    block = get_config().get("services", {}).get("confidential")
-    if not isinstance(block, dict):
-        return False
-
-    from datetime import datetime, timezone
-
-    from solstone.think.services import spp
-
-    state = spp.get_attestation_state()
-    return (
-        state.session is None
-        or state.session.status(datetime.now(timezone.utc)) != "verified"
-    )
-
-
 def get_model_provider(model: str) -> str:
     """Get the provider name from a model identifier.
 
@@ -1979,7 +1961,6 @@ __all__ = [
     "AttestationFailedError",
     "AttestationNotVerifiedError",
     "AttestationStaleError",
-    "confidential_egress_blocked",
     "PROMPT_PATHS",
     "get_context_registry",
     # Model constants (used by provider backends for defaults)

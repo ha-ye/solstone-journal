@@ -171,18 +171,17 @@ def test_appraise_gpu_leg_accepts_positive_capture(
 
 
 @pytest.mark.parametrize(
-    ("name", "marker"),
+    "name",
     [
-        ("negA", "get_evidence"),
-        ("negB", "get_evidence"),
-        ("negC", "generate_gpu_evidence_claims"),
+        "negA",
+        "negB",
+        "negC",
     ],
 )
 def test_appraise_gpu_leg_classifies_negative_nonce_captures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     name: str,
-    marker: str,
 ) -> None:
     with pytest.raises(GpuAppraisalError) as exc_info:
         _run_appraisal_with_stdout(
@@ -193,9 +192,8 @@ def test_appraise_gpu_leg_classifies_negative_nonce_captures(
         )
 
     assert exc_info.value.reason == "gpu_nonce_mismatch"
-    assert marker in exc_info.value.stderr
-    if name == "negC":
-        assert "nonce_from_ar" in exc_info.value.stderr
+    assert "nonce_from_ar" not in str(exc_info.value)
+    assert str(exc_info.value) == "gpu_nonce_mismatch"
 
 
 @pytest.mark.parametrize(
@@ -343,6 +341,19 @@ def test_stderr_does_not_influence_acceptance(
     )
 
     assert result.driver_version == "595.71.05"
+
+
+def test_gpu_appraisal_error_message_omits_vendor_stderr_marker() -> None:
+    marker = "vendor-stderr-marker-nonce_from_ar"
+    exc = GpuAppraisalError(
+        "gpu_appraisal_failed",
+        "nvattest failed with stderr",
+        stderr=f"collector detail {marker}",
+    )
+
+    assert str(exc) == "gpu_appraisal_failed"
+    assert marker not in str(exc)
+    assert "nvattest failed" not in str(exc)
 
 
 def test_bool_false_returncode_rejects(
