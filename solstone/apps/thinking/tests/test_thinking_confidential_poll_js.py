@@ -30,6 +30,7 @@ def _node_script(body: str) -> str:
         extract_js_function(source, "confidentialVerifiedValues"),
         extract_js_function(source, "confidentialSetupMetaLine"),
         extract_js_function(source, "confidentialNoticeLine"),
+        extract_js_function(source, "confidentialSetupOperationLines"),
         extract_js_function(source, "confidentialAttestationRender"),
         extract_js_function(source, "clearConfidentialInProgressOperation"),
         extract_js_function(source, "confidentialGlanceForAttestation"),
@@ -149,6 +150,31 @@ for (const operation of [
   const notice = confidentialNoticeLine(operation, confidentialCopy);
   assert(notice.text === '', `notice text hidden for ${operation?.phase || 'none'}`);
   assert(notice.hidden === true, `notice hidden for ${operation?.phase || 'none'}`);
+}
+
+const earlyLines = confidentialSetupOperationLines(
+  {phase: 'early_access'},
+  confidentialCopy,
+  '',
+);
+const earlySentence = 'confidential processing is coming — scouts get it first.';
+assert(earlyLines.state === '', 'early access absent from state line');
+assert(earlyLines.operation === '', 'early access absent from operation line');
+assert(earlyLines.notice.text === earlySentence, 'early access assigned to notice');
+assert(
+  [earlyLines.state, earlyLines.operation, earlyLines.notice.text]
+    .filter((line) => line === earlySentence).length === 1,
+  'early access visible exactly once',
+);
+
+for (const [phase, message] of [
+  ['starting', 'opening your browser to confirm…'],
+  ['waiting', 'finish turning it on in your browser'],
+]) {
+  const lines = confidentialSetupOperationLines({phase}, confidentialCopy, 'attestation');
+  assert(lines.state === message, `${phase} state unchanged`);
+  assert(lines.operation === message, `${phase} operation unchanged`);
+  assert(lines.notice.hidden === true, `${phase} notice hidden`);
 }
 
 for (const provenance of [

@@ -225,6 +225,20 @@
     return {text: message, hidden: !message};
   }
 
+  function confidentialSetupOperationLines(operation, text, attestationMessage = '') {
+    const rendered = confidentialOperationRender(operation, text);
+    const notice = confidentialNoticeLine(operation, text);
+    if (!notice.hidden) {
+      return {state: attestationMessage, operation: '', operationTone: '', notice};
+    }
+    return {
+      state: rendered.message || attestationMessage,
+      operation: rendered.message || '',
+      operationTone: rendered.tone,
+      notice,
+    };
+  }
+
   function confidentialAttestationRender(attestation, text, checkedLabel = '') {
     const stateName = attestation?.state || 'off';
     const states = text?.attestation_states || {};
@@ -766,7 +780,7 @@
     const confidentialCopy = copy.confidential || {};
     const checked = confidentialCheckedLabel(attestation);
     const rendered = confidentialAttestationRender(attestation, confidentialCopy, checked);
-    const operationRendered = confidentialOperationRender(operation, confidentialCopy);
+    const lines = confidentialSetupOperationLines(operation, confidentialCopy, rendered.message);
     const operationActive = !!operation && !confidentialOperationIsTerminal(operation);
     const phase = operation?.phase || '';
 
@@ -776,22 +790,21 @@
       operationActive ? phase : rendered.pill,
       operationActive ? '' : rendered.tone,
     );
-    setText('confidentialSetupState', operationRendered.message || rendered.message);
+    setText('confidentialSetupState', lines.state);
     const lastChecked = relativeTime(attestation.last_verified?.checked_at || '');
     setText('confidentialSetupMeta', confidentialSetupMetaLine(attestation, lastChecked));
     setMessage(
       'confidentialLaneOperation',
-      operationRendered.message || '',
-      operationRendered.tone,
+      lines.operation,
+      lines.operationTone,
     );
     setLink(
       'confidentialLaneOperationLink',
       operation?.portal_url || '',
       'continue in browser →',
     );
-    const notice = confidentialNoticeLine(operation, confidentialCopy);
-    setText('confidentialNotice', notice.text);
-    setHidden('confidentialNotice', notice.hidden);
+    setText('confidentialNotice', lines.notice.text);
+    setHidden('confidentialNotice', lines.notice.hidden);
     setButtonState('confidentialEnable', !configured && !operationActive, operationActive);
     setButtonText('confidentialEnable', confidentialCopy.actions?.off || '');
     setButtonState('confidentialDisable', configured, operationActive || !configured);
