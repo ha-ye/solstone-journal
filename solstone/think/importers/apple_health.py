@@ -141,7 +141,6 @@ class _NormalizedItem:
     dedupe_record: HealthDedupeRecord
     month: str
     day: str
-    manifest_entry: dict[str, Any]
 
 
 @dataclass(frozen=True, slots=True)
@@ -791,18 +790,6 @@ def _normalize_element(
         "raw_ref": raw_ref,
     }
     row = {key: value for key, value in row.items() if value is not None}
-    manifest_entry = {
-        "id": dedupe_key,
-        "title": _display_identifier(record_type),
-        "date": day,
-        "type": "health_record" if kind == "record" else "health_workout",
-        "preview": _display_identifier(record_type),
-        "meta": {
-            "source_name": source_name,
-            "kind": kind,
-        },
-        "segments": [],
-    }
     return _NormalizedItem(
         row=row,
         dedupe_record=HealthDedupeRecord(
@@ -823,7 +810,6 @@ def _normalize_element(
         ),
         month=month,
         day=day,
-        manifest_entry=manifest_entry,
     )
 
 
@@ -1315,19 +1301,6 @@ def _parse_float(value: Any | None) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
-
-
-def _display_identifier(value: str | None) -> str:
-    if not value:
-        return "Unknown"
-    display = value
-    for prefix in (
-        "HKQuantityTypeIdentifier",
-        "HKCategoryTypeIdentifier",
-        "HKWorkoutActivityType",
-    ):
-        display = display.replace(prefix, "")
-    return display or value
 
 
 def _summary(stats: _PreviewStats) -> str:
