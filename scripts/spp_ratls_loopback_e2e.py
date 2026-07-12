@@ -7,22 +7,31 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import secrets
 import socket
 import subprocess
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from types import ModuleType
-from typing import Callable
+from typing import Callable, cast
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from OpenSSL import SSL
 
+from solstone.think.services.spp_attest.composite import (
+    CompositeVerdict,
+    verify_composite,
+)
+from solstone.think.services.spp_attest.nvgpu.binary import locate_nvattest
+from solstone.think.services.spp_attest.nvgpu.errors import GpuAppraisalError
 from solstone.think.services.spp_attest.ratls import verify as ratls_verify
 from solstone.think.services.spp_attest.ratls.channel import (
+    AttestedChannel,
     RatlsEndpoint,
     establish_attested_channel,
 )
@@ -33,6 +42,154 @@ from solstone.think.services.spp_attest.ratls.contract import (
     PREFACE_MAGIC,
     exporter_context,
 )
+
+DEFAULT_REQUEST_BODY = b"{}"
+DEFAULT_BANNER = (
+    "mode: default synthetic loopback; verifier stubs installed; "
+    "protocol regression only, not proof of real appraisal"
+)
+REAL_BANNER = "mode: real loopback; production verifiers against live hardware"
+
+
+@dataclass(frozen=True, slots=True)
+class RealModeConfig:
+    nvattest_dir: Path
+    upstream_port: int
+    request_body: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class RunContext:
+    establish: Callable[[int], AttestedChannel]
+    upstream_port: int | None
+    request_body: bytes
+    banner: str
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the SPP RA-TLS loopback harness. Default mode runs the five "
+            "protocol-regression cases with synthetic upstream traffic and "
+            "verifier stubs; it is not proof of real hardware appraisal."
+        ),
+        epilog=(
+            "Real mode (--real) runs the same five cases with production verifiers. "
+            "It requires live confidential hardware, a real collector and gateway, "
+            "an nvattest install, and a separately-running loopback upstream "
+            "listening on 127.0.0.1:<upstream-port>. Provide --nvattest-dir, "
+            "--upstream-port, and --request-body together."
+        ),
+    )
+    parser.add_argument("--gateway", type=Path, required=True)
+    parser.add_argument("--collector", type=Path, required=True)
+    parser.add_argument(
+        "--real",
+        action="store_true",
+        help="run the same five cases with production verifiers against live hardware",
+    )
+    parser.add_argument(
+        "--nvattest-dir",
+        type=Path,
+        help="nvattest install root containing bin/nvattest and lib/ (real mode only)",
+    )
+    parser.add_argument(
+        "--upstream-port",
+        type=int,
+        help=(
+            "port of the separately-running 127.0.0.1 loopback upstream "
+            "(real mode only)"
+        ),
+    )
+    parser.add_argument(
+        "--request-body",
+        type=Path,
+        help=(
+            "path to the raw JSON request body sent to /v1/chat/completions "
+            "in real mode"
+        ),
+    )
+    return parser
+
+
+def validate_runtime_args(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> RealModeConfig | None:
+    real_only = {
+        "--nvattest-dir": args.nvattest_dir,
+        "--upstream-port": args.upstream_port,
+        "--request-body": args.request_body,
+    }
+    provided_real_only = [
+        name for name, value in real_only.items() if value is not None
+    ]
+    if not args.real:
+        if provided_real_only:
+            parser.error(f"{', '.join(provided_real_only)} require --real")
+        return None
+
+    missing = [name for name, value in real_only.items() if value is None]
+    if missing:
+        parser.error(f"--real requires {', '.join(missing)}")
+
+    try:
+        request_body = args.request_body.read_bytes()
+    except OSError:
+        parser.error(f"unable to read --request-body: {args.request_body}")
+    try:
+        json.loads(request_body)
+    except ValueError:
+        parser.error("--request-body must contain valid JSON")
+
+    try:
+        locate_nvattest(args.nvattest_dir)
+    except GpuAppraisalError:
+        parser.error("--nvattest-dir must contain bin/nvattest and lib/")
+
+    return RealModeConfig(
+        nvattest_dir=args.nvattest_dir.resolve(),
+        upstream_port=args.upstream_port,
+        request_body=request_body,
+    )
+
+
+def build_chat_completions_request(body: bytes, *, host: str = "spp-engine") -> bytes:
+    return (
+        b"POST /v1/chat/completions HTTP/1.1\r\n"
+        + f"Host: {host}\r\n".encode("ascii")
+        + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        + body
+    )
+
+
+def validate_chat_completion_envelope(response: bytes) -> None:
+    try:
+        _head, body = response.split(b"\r\n\r\n", 1)
+        data = json.loads(body)
+    except ValueError:
+        raise RuntimeError("response_envelope_invalid") from None
+    if not isinstance(data, dict):
+        raise RuntimeError("response_envelope_invalid")
+    if not isinstance(data.get("id"), str) or not data["id"]:
+        raise RuntimeError("response_envelope_invalid")
+    if data.get("object") != "chat.completion":
+        raise RuntimeError("response_envelope_invalid")
+    choices = data.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("response_envelope_invalid")
+    choice = choices[0]
+    if not isinstance(choice, dict):
+        raise RuntimeError("response_envelope_invalid")
+    message = choice.get("message")
+    if not isinstance(message, dict):
+        raise RuntimeError("response_envelope_invalid")
+    if message.get("role") != "assistant":
+        raise RuntimeError("response_envelope_invalid")
+    if "content" not in message:
+        raise RuntimeError("response_envelope_invalid")
+    finish_reason = choice.get("finish_reason")
+    if not isinstance(finish_reason, str) or not finish_reason:
+        raise RuntimeError("response_envelope_invalid")
 
 
 class Upstream:
@@ -265,51 +422,109 @@ def _stub_composite_verifier(_bundle, **_kwargs):
     return object()
 
 
-def _establish(port: int):
+def _establish(
+    port: int,
+    *,
+    owner_nonce: bytes,
+    nvattest_dir: Path,
+    composite_verifier: Callable[..., CompositeVerdict],
+) -> AttestedChannel:
     return establish_attested_channel(
         RatlsEndpoint("127.0.0.1", port),
-        owner_nonce=b"n" * OWNER_NONCE_BYTES,
-        nvattest_dir=Path("."),
+        owner_nonce=owner_nonce,
+        nvattest_dir=nvattest_dir,
         now=datetime.now(timezone.utc),
-        composite_verifier=_stub_composite_verifier,
+        composite_verifier=composite_verifier,
         monotonic_now=time.monotonic,
         epoch=0,
     )
 
 
-def run_positive(gateway_path: Path, collector_path: Path) -> str:
-    upstream = Upstream()
-    upstream.start()
-    gateway = GatewayProcess(gateway_path, collector_path, upstream.port)
-    try:
-        channel = _establish(gateway.port)
-        channel.tls.sendall(
-            b"POST /v1/chat/completions HTTP/1.1\r\n"
-            b"Host: spp-engine\r\nContent-Length: 2\r\n\r\n{}"
+def _establish_default(port: int) -> AttestedChannel:
+    return _establish(
+        port,
+        owner_nonce=b"n" * OWNER_NONCE_BYTES,
+        nvattest_dir=Path("."),
+        composite_verifier=cast(
+            Callable[..., CompositeVerdict],
+            _stub_composite_verifier,
+        ),
+    )
+
+
+def _establish_real(port: int, *, nvattest_dir: Path) -> AttestedChannel:
+    return _establish(
+        port,
+        owner_nonce=secrets.token_bytes(OWNER_NONCE_BYTES),
+        nvattest_dir=nvattest_dir,
+        composite_verifier=verify_composite,
+    )
+
+
+def make_run_context(config: RealModeConfig | None) -> RunContext:
+    if config is None:
+        _stub_verifiers()
+        return RunContext(
+            establish=_establish_default,
+            upstream_port=None,
+            request_body=DEFAULT_REQUEST_BODY,
+            banner=DEFAULT_BANNER,
         )
+    return RunContext(
+        establish=lambda port: _establish_real(port, nvattest_dir=config.nvattest_dir),
+        upstream_port=config.upstream_port,
+        request_body=config.request_body,
+        banner=REAL_BANNER,
+    )
+
+
+def run_positive(gateway_path: Path, collector_path: Path, context: RunContext) -> str:
+    request = build_chat_completions_request(context.request_body)
+    upstream = None
+    upstream_port = context.upstream_port
+    if upstream_port is None:
+        upstream = Upstream()
+        upstream.start()
+        upstream_port = upstream.port
+
+    gateway = GatewayProcess(gateway_path, collector_path, upstream_port)
+    channel = None
+    try:
+        channel = context.establish(gateway.port)
+        channel.tls.sendall(request)
         response = _recv_http_response(channel.tls)
-        channel.close()
-        upstream.thread.join(timeout=5)
         if b"HTTP/1.1 200 OK" not in response:
             raise RuntimeError("positive_http_failed")
-        if not upstream.request.startswith(b"POST /v1/chat/completions"):
-            raise RuntimeError("positive_proxy_failed")
+        if upstream is not None:
+            upstream.thread.join(timeout=5)
+            if upstream.request != request:
+                raise RuntimeError("positive_proxy_failed")
+        else:
+            validate_chat_completion_envelope(response)
+            substrate = channel.verdict.substrate
+            if not substrate:
+                raise RuntimeError("positive_substrate_missing")
+            return f"verified substrate={substrate}"
         return "verified"
     finally:
+        if channel is not None:
+            channel.close()
         gateway.close()
-        upstream.close()
+        if upstream is not None:
+            upstream.close()
 
 
 def run_adversarial(
     gateway_module: ModuleType,
     collector_path: Path,
+    context: RunContext,
     mode: str,
     expected_reason: str,
 ) -> str:
     gateway = AdversarialGateway(gateway_module, collector_path, mode, timeout_s=5)
     gateway.start()
     try:
-        channel = _establish(gateway.port)
+        channel = context.establish(gateway.port)
     except Exception as exc:
         reason = getattr(exc, "reason_code", type(exc).__name__)
         if reason != expected_reason:
@@ -324,76 +539,107 @@ def run_adversarial(
         gateway.close()
 
 
-def run_premature_inference(gateway_path: Path, collector_path: Path) -> str:
-    upstream = Upstream()
-    upstream.start()
-    gateway = GatewayProcess(gateway_path, collector_path, upstream.port)
+def run_premature_inference(
+    gateway_path: Path,
+    collector_path: Path,
+    context: RunContext,
+) -> str:
+    request = build_chat_completions_request(context.request_body)
+    upstream = None
+    upstream_port = context.upstream_port
+    if upstream_port is None:
+        upstream = Upstream()
+        upstream.start()
+        upstream_port = upstream.port
+
+    gateway = GatewayProcess(gateway_path, collector_path, upstream_port)
     raw = socket.create_connection(("127.0.0.1", gateway.port), timeout=5)
+    connection = None
     try:
         raw.sendall(PREFACE_MAGIC + b"p" * OWNER_NONCE_BYTES)
-        context = SSL.Context(SSL.TLS_CLIENT_METHOD)
-        context.set_min_proto_version(SSL.TLS1_3_VERSION)
-        context.set_max_proto_version(SSL.TLS1_3_VERSION)
-        context.set_verify(SSL.VERIFY_NONE, lambda *_args: True)
-        connection = SSL.Connection(context, raw)
+        tls_context = SSL.Context(SSL.TLS_CLIENT_METHOD)
+        tls_context.set_min_proto_version(SSL.TLS1_3_VERSION)
+        tls_context.set_max_proto_version(SSL.TLS1_3_VERSION)
+        tls_context.set_verify(SSL.VERIFY_NONE, lambda *_args: True)
+        connection = SSL.Connection(tls_context, raw)
         connection.setblocking(1)
         connection.set_connect_state()
         connection.set_tlsext_host_name(b"spp-engine")
         connection.do_handshake()
-        connection.sendall(
-            b"POST /v1/chat/completions HTTP/1.1\r\n"
-            b"Host: spp-engine\r\nContent-Length: 2\r\n\r\n{}"
-        )
+        connection.sendall(request)
         try:
             if connection.recv(1) != b"":
                 raise RuntimeError("premature_inference_not_rejected")
         except (SSL.ZeroReturnError, SSL.SysCallError, ConnectionError, OSError):
             pass
-        upstream.thread.join(timeout=0.5)
-        if upstream.request:
-            raise RuntimeError("premature_inference_reached_upstream")
-        connection.close()
+        if upstream is not None:
+            upstream.thread.join(timeout=0.5)
+            if upstream.request:
+                raise RuntimeError("premature_inference_reached_upstream")
         return "protocol_or_tls_rejected"
     finally:
+        if connection is not None:
+            connection.close()
         raw.close()
         gateway.close()
-        upstream.close()
+        if upstream is not None:
+            upstream.close()
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--gateway", type=Path, required=True)
-    parser.add_argument("--collector", type=Path, required=True)
-    args = parser.parse_args()
-
-    _stub_verifiers()
-    gateway_module = _load_gateway_module(args.gateway)
-    cases: list[tuple[str, Callable[[], str]]] = [
-        ("positive", lambda: run_positive(args.gateway, args.collector)),
+def build_cases(
+    gateway_path: Path,
+    collector_path: Path,
+    gateway_module: ModuleType,
+    context: RunContext,
+) -> list[tuple[str, Callable[[], str]]]:
+    return [
+        ("positive", lambda: run_positive(gateway_path, collector_path, context)),
         (
             "relay",
             lambda: run_adversarial(
-                gateway_module, args.collector, "relay", "spki_mismatch"
+                gateway_module,
+                collector_path,
+                context,
+                "relay",
+                "spki_mismatch",
             ),
         ),
         (
             "splice",
             lambda: run_adversarial(
-                gateway_module, args.collector, "splice", "nonce_mismatch"
+                gateway_module,
+                collector_path,
+                context,
+                "splice",
+                "nonce_mismatch",
             ),
         ),
         (
             "stale",
             lambda: run_adversarial(
-                gateway_module, args.collector, "stale", "exporter_mismatch"
+                gateway_module,
+                collector_path,
+                context,
+                "stale",
+                "exporter_mismatch",
             ),
         ),
         (
             "premature-inference",
-            lambda: run_premature_inference(args.gateway, args.collector),
+            lambda: run_premature_inference(gateway_path, collector_path, context),
         ),
     ]
 
+
+def main(argv: list[str] | None = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    config = validate_runtime_args(args, parser)
+    context = make_run_context(config)
+    gateway_module = _load_gateway_module(args.gateway)
+    cases = build_cases(args.gateway, args.collector, gateway_module, context)
+
+    print(context.banner)
     failed = False
     for name, runner in cases:
         try:
