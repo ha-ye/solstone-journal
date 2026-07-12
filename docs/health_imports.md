@@ -14,11 +14,11 @@ The current Apple Health importer supports a gated synthetic/test-week save path
 - Keep importer-owned record dedupe in `imports/health-dedupe.sqlite`.
 - Optionally write small factual day-summary transcript files with `--with-day-summaries`.
 
-The live journal and real Apple Health export remain outside automated tests. Use synthetic fixtures and temp/sandbox journals only until Jack separately creates the approval artifact and runs the first live test-week command.
+The live journal and real Apple Health export remain outside automated tests. Use synthetic fixtures and temp/sandbox journals only until the owner creates the approval artifact and runs the first live test-week command.
 
-## Phase 1 Local Save Path
+## Apple Health Local Save Path
 
-Apple Health Phase 1 adds a concrete importer save path for orchestrated use after privacy preflight. The importer writes only under the provided `journal_root`: raw source material under `imports/<id>/raw/`, normalized monthly JSONL under `imports/<id>/normalized/`, importer-owned dedupe rows in `imports/health-dedupe.sqlite`, and optional factual day-summary transcript files under `chronicle/YYYYMMDD/import.apple_health/000000_86400/`.
+Apple Health has a concrete importer save path for orchestrated use after privacy preflight. The importer writes only under the provided `journal_root`: raw source material under `imports/<id>/raw/`, normalized monthly JSONL under `imports/<id>/normalized/`, importer-owned dedupe rows in `imports/health-dedupe.sqlite`, and optional factual day-summary transcript files under `chronicle/YYYYMMDD/import.apple_health/000000_300/`.
 
 Dense normalized JSONL shards are not returned in `ImportResult.files_created`; only optional day-summary transcript files are returned there so indexers do not ingest per-sample health rows.
 
@@ -86,19 +86,26 @@ Before any live-journal save-mode health import:
 
 The required approval artifact lives at `imports/_approvals/health_import_preflight.json` in the target journal. It must match the current checklist version and contain a decision for each replication destination: `time_machine`, `icloud`, `solbase`, `hosted_backup`, and `other`.
 
-## Deferred Work
+## Current Deferred Work
 
-The following are intentionally out of scope for Phase 0:
+Shipped on this branch:
 
-- Oura OAuth, token storage, API sync, or webhooks.
+- Oura OAuth via `journal importer --connect oura`.
+- Oura token storage and refresh in journal config through `oura_auth.py`.
+- Oura API sync that writes health bundles and sync cursor state.
+
+Still deferred:
+
+- Oura webhooks.
+- Oura file-import save path; `OuraImporter.process(...)` gates save mode and then raises `NotImplementedError`.
 - Health Auto Export or custom HealthKit ingest endpoints.
 - Any LAN, public, or phone-to-Mac health ingest service.
 - Entity, facet, observation, activity, or indexer writes.
 - Medical advice, recommendations, or anomaly interpretation.
 
-## Phase 0 Verification
+## Health Import Verification
 
-Run these before treating Phase 0 as complete:
+Run these before treating health import changes as complete:
 
 - `make test-only TEST=tests/test_health_dedupe.py`
 - `make test-only TEST=tests/test_apple_health_importer.py`

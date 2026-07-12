@@ -51,7 +51,7 @@ here so this module's import graph stays network-free. The OAuth
 ``client_id`` is a public-client identifier — not a secret — read from
 the same config section.
 
-Design doc: ``oura_design_20260705.md`` (Codex outputs, 2026-07-03
+Design doc: ``docs/design/oura-import.md`` (Codex outputs, 2026-07-03
 check-m-2), amended by the locked morning decisions O-1..O-9 (O-5
 amended to C: the AH-mirror overlap endpoints ``heartrate`` and
 ``daily_activity`` are imported; presentation precedence is a
@@ -111,7 +111,7 @@ SYNC_STATE_SCHEMA: Final = "solstone.import_sync.oura.v1"
 # client_secret, tokens.*): config/journal.json -> {"oura": {...}}.
 # Read-only here; writes route through oura_auth -> journal_config (L2).
 OAUTH_CONFIG_KEY: Final = "oura"
-DESIGN_DOC: Final = "oura_design_20260705.md"
+DESIGN_DOC: Final = "docs/design/oura-import.md"
 
 API_BASE_URL: Final = "https://api.ouraring.com/v2/usercollection"
 SOURCE_LABEL: Final = "Oura (API)"
