@@ -227,6 +227,19 @@ def test_malformed_success_payload_returns_malformed() -> None:
     assert result.reason_code == outcomes.MALFORMED
 
 
+def test_unknown_outcome_kind_returns_malformed() -> None:
+    result = _run(
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="early_access",
+        ),
+        clock=lambda: 0.0,
+        wait_seconds=10,
+    )
+
+    assert result.state == outcomes.MALFORMED
+    assert result.reason_code == outcomes.MALFORMED
+
+
 def test_deadline_returns_expired() -> None:
     def fail_poll(*_args, **_kwargs):
         raise AssertionError("poll_once should not be called after deadline")

@@ -102,6 +102,8 @@ def enable_spl_via_consent(
                     detail=outcome.detail,
                 )
             return outcomes.outcome_for_code(outcomes.MALFORMED, detail=outcome.detail)
+        if outcome.kind != "success":
+            return outcomes.outcome_for_code(outcomes.MALFORMED)
 
         payload = outcome.payload or {}
         if not isinstance(payload, dict):

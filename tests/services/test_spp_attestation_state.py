@@ -18,9 +18,9 @@ NOW = datetime(2026, 7, 11, 18, 0, tzinfo=timezone.utc)
 
 @pytest.fixture(autouse=True)
 def _clear_attestation_state():
-    spp.clear_attestation_state()
+    spp.delete_attestation_state()
     yield
-    spp.clear_attestation_state()
+    spp.delete_attestation_state()
 
 
 def _session() -> AttestationSession:
@@ -68,10 +68,11 @@ def test_attestation_state_defaults_empty() -> None:
 
     assert state.session is None
     assert state.failure is None
+    assert state.last_verified is None
 
 
 def test_record_attestation_verified_sets_session_and_clears_failure() -> None:
-    spp.record_attestation_failed("prior")
+    spp.record_attestation_failed("failed", "prior")
     session = _session()
 
     spp.record_attestation_verified(session)
@@ -79,23 +80,42 @@ def test_record_attestation_verified_sets_session_and_clears_failure() -> None:
     state = spp.get_attestation_state()
     assert state.session is session
     assert state.failure is None
+    assert state.last_verified is session
 
 
-def test_record_attestation_failed_sets_failure_and_clears_session() -> None:
-    spp.record_attestation_verified(_session())
+def test_record_attestation_failed_sets_failure_and_preserves_last_verified() -> None:
+    session = _session()
+    spp.record_attestation_verified(session)
 
-    spp.record_attestation_failed("gpu_nonce_mismatch")
+    spp.record_attestation_failed("failed", "gpu_nonce_mismatch")
 
     state = spp.get_attestation_state()
     assert state.session is None
-    assert state.failure == "gpu_nonce_mismatch"
+    assert state.failure is not None
+    assert state.failure.kind == "failed"
+    assert state.failure.reason_code == "gpu_nonce_mismatch"
+    assert state.last_verified is session
 
 
-def test_clear_attestation_state_resets_holder() -> None:
-    spp.record_attestation_failed("failure")
+def test_clear_attestation_state_preserves_last_verified() -> None:
+    session = _session()
+    spp.record_attestation_verified(session)
+    spp.record_attestation_failed("unreachable", "gateway_unreachable")
 
     spp.clear_attestation_state()
 
     state = spp.get_attestation_state()
     assert state.session is None
     assert state.failure is None
+    assert state.last_verified is session
+
+
+def test_delete_attestation_state_resets_holder() -> None:
+    spp.record_attestation_verified(_session())
+
+    spp.delete_attestation_state()
+
+    state = spp.get_attestation_state()
+    assert state.session is None
+    assert state.failure is None
+    assert state.last_verified is None

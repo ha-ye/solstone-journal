@@ -129,6 +129,13 @@ def enable_spb_via_consent(
             continue
         if outcome.kind == "failed":
             return _failed_result(outcome.reason)
+        if outcome.kind != "success":
+            return SpbHandoffResult(
+                outcomes.MALFORMED,
+                None,
+                None,
+                outcomes.MALFORMED,
+            )
 
         payload = outcome.payload
         if not isinstance(payload, dict):

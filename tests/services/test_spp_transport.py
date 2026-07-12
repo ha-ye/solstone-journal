@@ -11,9 +11,11 @@ from unittest.mock import Mock
 
 import pytest
 
-from solstone.think.models import AttestationStaleError
+from solstone.think.models import AttestationFailedError, AttestationStaleError
 from solstone.think.services import spp, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
+from solstone.think.services.spp_attest.ratls.channel import RatlsChannelError
+from solstone.think.services.spp_attest.ratls.verify import RatlsVerificationError
 
 
 class _FakeChannel:
@@ -58,10 +60,10 @@ class _AliveThread:
 
 @pytest.fixture(autouse=True)
 def _clear_transport_state():
-    spp.clear_attestation_state()
+    spp.delete_attestation_state()
     spp_transport.teardown_confidential_transport()
     yield
-    spp.clear_attestation_state()
+    spp.delete_attestation_state()
     spp_transport.teardown_confidential_transport()
 
 
@@ -194,8 +196,11 @@ def test_confidential_probe_status_reads_state_without_attestation(
     spp.record_attestation_verified(_stale_session(object()))
     assert spp_transport.confidential_probe_status() == (False, "attestation_stale")
 
-    spp.record_attestation_failed("gateway_unreachable")
-    assert spp_transport.confidential_probe_status() == (False, "attestation_failed")
+    spp.record_attestation_failed("unreachable", "gateway_unreachable")
+    assert spp_transport.confidential_probe_status() == (
+        False,
+        "attestation_unreachable",
+    )
     establish.assert_not_called()
 
 
@@ -252,3 +257,111 @@ def test_wrong_epoch_channel_is_not_checked_out() -> None:
     assert spp_transport._borrow_channel_locked(time.monotonic()) is None
     assert stale_epoch_channel.closed is True
     assert spp_transport._POOL == []
+
+
+@pytest.mark.parametrize(
+    ("exc", "kind", "reason_code"),
+    [
+        (
+            RatlsChannelError("gateway_unreachable"),
+            "unreachable",
+            "gateway_unreachable",
+        ),
+        (RatlsChannelError("tls_handshake_failed"), "failed", "tls_handshake_failed"),
+        (RatlsVerificationError("nonce_mismatch"), "failed", "nonce_mismatch"),
+        (RuntimeError("boom"), "failed", "unexpected_error"),
+    ],
+)
+def test_attestation_failure_buckets_at_transport_catch_site(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exc: Exception,
+    kind: str,
+    reason_code: str,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        spp_transport, "establish_attested_channel", Mock(side_effect=exc)
+    )
+
+    with pytest.raises(AttestationFailedError):
+        spp_transport.verify_confidential_attestation(block)
+
+    failure = spp.get_attestation_state().failure
+    assert failure is not None
+    assert failure.kind == kind
+    assert failure.reason_code == reason_code
+
+
+def test_endpoint_invalid_buckets_as_failed_without_detail_parsing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    block["endpoint_url"] = "not-a-url"
+
+    with pytest.raises(AttestationFailedError):
+        spp_transport.verify_confidential_attestation(block)
+
+    failure = spp.get_attestation_state().failure
+    assert failure is not None
+    assert failure.kind == "failed"
+    assert failure.reason_code == "endpoint_invalid"
+
+
+def test_recheck_confidential_attestation_records_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    _patch_listener(monkeypatch)
+    verdict = object()
+    monkeypatch.setattr(
+        spp_transport,
+        "establish_attested_channel",
+        Mock(return_value=_FakeChannel(verdict)),
+    )
+
+    spp_transport.recheck_confidential_attestation()
+
+    state = spp.get_attestation_state()
+    assert state.session is not None
+    assert state.session.verdict is verdict
+    assert state.failure is None
+    assert state.last_verified is state.session
+    assert spp_transport._FORWARDER_BASE_URL == "http://127.0.0.1:4567"
+    assert block["endpoint_url"] == "https://spp.example.test:9443"
+
+
+def test_recheck_confidential_attestation_fails_closed_and_preserves_last_verified(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_confidential_config(tmp_path, monkeypatch)
+    prior = _stale_session(object())
+    spp.record_attestation_verified(prior)
+    monkeypatch.setattr(
+        spp_transport,
+        "establish_attested_channel",
+        Mock(side_effect=RatlsChannelError("gateway_unreachable")),
+    )
+
+    spp_transport.recheck_confidential_attestation()
+
+    state = spp.get_attestation_state()
+    assert state.session is None
+    assert state.last_verified is prior
+    assert state.failure is not None
+    assert state.failure.kind == "unreachable"
+    assert state.failure.reason_code == "gateway_unreachable"
+
+
+def test_recheck_confidential_attestation_off_is_noop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    establish = Mock(side_effect=AssertionError("attestation attempted"))
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+
+    spp_transport.recheck_confidential_attestation()
+
+    establish.assert_not_called()

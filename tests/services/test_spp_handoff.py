@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +29,15 @@ def _stable_portal(monkeypatch: pytest.MonkeyPatch) -> None:
         spp_handoff.portal_client, "portal_base_url", lambda: "http://portal.test"
     )
     monkeypatch.setattr(spp_handoff.portal_client, "mint_nonce", lambda: "NONCE")
+    monkeypatch.setattr(
+        spp_handoff.LinkState,
+        "load_or_create",
+        classmethod(
+            lambda cls: SimpleNamespace(
+                instance_id="00000000-0000-4000-8000-000000000000"
+            )
+        ),
+    )
 
 
 def _config_bytes(journal: Path) -> bytes:
@@ -41,7 +51,10 @@ def _config(journal: Path) -> dict:
 def test_build_confidential_handoff_url_uses_spp_service() -> None:
     consent_url, nonce, base_url = spp_handoff.build_confidential_handoff_url()
 
-    assert consent_url == "http://portal.test/enable/spp?nonce=NONCE"
+    assert (
+        consent_url
+        == "http://portal.test/enable/spp?nonce=NONCE&instance=00000000-0000-4000-8000-000000000000"
+    )
     assert nonce == "NONCE"
     assert base_url == "http://portal.test"
 
@@ -119,5 +132,23 @@ def test_run_confidential_handoff_malformed_apply_does_not_write_journal(
     )
 
     assert result.phase == "error"
+    assert result.retryable is False
+    assert _config_bytes(journal_copy) == before
+
+
+def test_run_confidential_handoff_early_access_is_terminal_without_write(
+    journal_copy: Path,
+) -> None:
+    before = _config_bytes(journal_copy)
+
+    result = spp_handoff.run_confidential_handoff(
+        refresh=True,
+        nonce="NONCE",
+        base_url="http://portal.test",
+        poll_once=lambda *_args, **_kwargs: PollOutcome(kind="early_access"),
+    )
+
+    assert result.phase == "early_access"
+    assert result.guidance is None
     assert result.retryable is False
     assert _config_bytes(journal_copy) == before

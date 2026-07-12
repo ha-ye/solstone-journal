@@ -693,6 +693,13 @@ def test_run_spl_handoff_maps_terminal_outcomes(journal_copy: Path) -> None:
             payload={"service": "spl", "state": "bad"},
         ),
     )
+    unknown = spl_handoff.run_spl_handoff(
+        nonce=TEST_NONCE,
+        base_url=TEST_BASE_URL,
+        poll_once=lambda *_args, **_kwargs: portal_client.PollOutcome(
+            kind="early_access",
+        ),
+    )
 
     assert revoked.phase == "revoked"
     assert revoked.retryable is False
@@ -700,3 +707,5 @@ def test_run_spl_handoff_maps_terminal_outcomes(journal_copy: Path) -> None:
     assert expired.retryable is True
     assert malformed.phase == "error"
     assert malformed.retryable is False
+    assert unknown.phase == "error"
+    assert unknown.retryable is False

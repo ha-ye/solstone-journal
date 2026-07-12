@@ -120,6 +120,21 @@ def test_terminal_enabled_entry_drops_portal_url_in_grace() -> None:
     assert op["portal_url"] is None
 
 
+def test_terminal_early_access_entry_drops_portal_url_in_grace() -> None:
+    operations.start_operation(
+        "spp",
+        "enable",
+        "https://portal.test/spp",
+        lambda: operations.HandoffResult("early_access", None, False),
+    )
+    _wait_until(
+        lambda: operations.operation_for_service("spp")["phase"] == "early_access"
+    )
+    op = operations.operation_for_service("spp")
+    assert op["phase"] == "early_access"
+    assert op["portal_url"] is None
+
+
 def test_non_terminal_phases_keep_portal_url() -> None:
     started = threading.Event()
     release = threading.Event()

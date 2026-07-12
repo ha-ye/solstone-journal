@@ -145,3 +145,20 @@ def test_run_scout_handoff_malformed_apply_does_not_write_journal(
     assert result.phase == "error"
     assert result.retryable is False
     assert _config_bytes(journal_copy) == before
+
+
+def test_run_scout_handoff_unknown_outcome_kind_fails_loudly(
+    journal_copy: Path,
+) -> None:
+    before = _config_bytes(journal_copy)
+
+    result = scout_handoff.run_scout_handoff(
+        refresh=True,
+        nonce="NONCE",
+        base_url="http://portal.test",
+        poll_once=lambda *_args, **_kwargs: PollOutcome(kind="early_access"),
+    )
+
+    assert result.phase == "error"
+    assert result.retryable is False
+    assert _config_bytes(journal_copy) == before

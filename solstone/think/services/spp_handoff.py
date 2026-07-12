@@ -9,6 +9,7 @@ import logging
 import time
 from collections.abc import Callable
 
+from solstone.think.link.paths import LinkState
 from solstone.think.services import operations, outcomes, portal_client, spp
 from solstone.think.services.constants import SERVICE_SPP
 
@@ -26,7 +27,8 @@ def build_confidential_handoff_url() -> tuple[str, str, str]:
     Returns ``(consent_url, nonce, base_url)``.
     """
 
-    return portal_client.build_consent_url(SERVICE_SPP)
+    instance_id = LinkState.load_or_create().instance_id
+    return portal_client.build_consent_url(SERVICE_SPP, instance=instance_id)
 
 
 def _handoff_error_result(
@@ -77,6 +79,12 @@ def run_confidential_handoff(
             return _handoff_error_result(
                 "unexpected_payload",
                 detail=outcome.detail,
+            )
+        if outcome.kind == "early_access":
+            return operations.HandoffResult(
+                phase="early_access",
+                guidance=None,
+                retryable=False,
             )
         if outcome.kind != "success":
             return _handoff_error_result("unexpected_payload")

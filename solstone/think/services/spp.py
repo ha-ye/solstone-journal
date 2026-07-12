@@ -10,7 +10,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from solstone.think.journal_config import (
@@ -47,9 +47,16 @@ class DisableOutcome:
 
 
 @dataclass(frozen=True, slots=True)
+class AttestationFailure:
+    kind: Literal["failed", "unreachable"]
+    reason_code: str
+
+
+@dataclass(frozen=True, slots=True)
 class AttestationState:
     session: AttestationSession | None = None
-    failure: str | None = None
+    failure: AttestationFailure | None = None
+    last_verified: AttestationSession | None = None
 
 
 _ATTESTATION_LOCK = threading.Lock()
@@ -61,19 +68,40 @@ def record_attestation_verified(session: AttestationSession) -> None:
 
     global _ATTESTATION_STATE
     with _ATTESTATION_LOCK:
-        _ATTESTATION_STATE = AttestationState(session=session, failure=None)
+        _ATTESTATION_STATE = AttestationState(
+            session=session,
+            failure=None,
+            last_verified=session,
+        )
 
 
-def record_attestation_failed(detail: str) -> None:
+def record_attestation_failed(
+    kind: Literal["failed", "unreachable"],
+    reason_code: str,
+) -> None:
     """Record an in-process attestation failure."""
 
     global _ATTESTATION_STATE
     with _ATTESTATION_LOCK:
-        _ATTESTATION_STATE = AttestationState(session=None, failure=detail)
+        _ATTESTATION_STATE = AttestationState(
+            session=None,
+            failure=AttestationFailure(kind=kind, reason_code=reason_code),
+            last_verified=_ATTESTATION_STATE.last_verified,
+        )
 
 
 def clear_attestation_state() -> None:
-    """Clear process-local attestation state."""
+    """Clear current process-local attestation state while preserving last verified."""
+
+    global _ATTESTATION_STATE
+    with _ATTESTATION_LOCK:
+        _ATTESTATION_STATE = AttestationState(
+            last_verified=_ATTESTATION_STATE.last_verified
+        )
+
+
+def delete_attestation_state() -> None:
+    """Delete all process-local attestation state."""
 
     global _ATTESTATION_STATE
     with _ATTESTATION_LOCK:
@@ -211,6 +239,7 @@ def disable_confidential() -> DisableOutcome:
         services = config.setdefault("services", {})
         block = services.get("confidential")
         if not isinstance(block, dict):
+            delete_attestation_state()
             return DisableOutcome(was_enabled=False, credential_preserved=False)
 
         providers = _providers_block(config)
@@ -243,6 +272,7 @@ def disable_confidential() -> DisableOutcome:
 
         services.pop("confidential", None)
         write_journal_config(config)
+        delete_attestation_state()
         log.debug("disabled confidential service")
         return DisableOutcome(
             was_enabled=True,

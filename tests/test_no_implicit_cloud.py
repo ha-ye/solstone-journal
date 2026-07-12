@@ -33,10 +33,10 @@ from solstone.think.providers import get_provider_module
 def _clear_confidential_transport_state():
     from solstone.think.services import spp, spp_transport
 
-    spp.clear_attestation_state()
+    spp.delete_attestation_state()
     spp_transport.teardown_confidential_transport()
     yield
-    spp.clear_attestation_state()
+    spp.delete_attestation_state()
     spp_transport.teardown_confidential_transport()
 
 
@@ -111,7 +111,7 @@ def _install_failing_confidential_transport(
     from solstone.think.services import spp, spp_transport
     from solstone.think.services.spp_attest.ratls.channel import RatlsChannelError
 
-    spp.clear_attestation_state()
+    spp.delete_attestation_state()
     spp_transport.teardown_confidential_transport()
     monkeypatch.setattr(models, "_CONFIDENTIAL_ATTESTATION_VERIFIER", None)
     establish = Mock(side_effect=RatlsChannelError(reason_code))

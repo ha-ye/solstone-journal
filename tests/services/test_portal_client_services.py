@@ -3,9 +3,30 @@
 
 from __future__ import annotations
 
+import json
+from typing import Any
+
 import pytest
 
 from solstone.think.services import portal_client
+
+
+class FakeResponse:
+    def __init__(self, status: int, payload: dict[str, Any]) -> None:
+        self.status = status
+        self._payload = payload
+
+    def __enter__(self) -> FakeResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+    def getcode(self) -> int:
+        return self.status
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
 
 
 def test_scout_is_default_handoff_service() -> None:
@@ -120,3 +141,19 @@ def test_poll_handoff_unknown_service_never_opens_network(monkeypatch) -> None:
             "NONCE",
             service="bogus",
         )
+
+
+def test_poll_handoff_early_access_is_terminal_kind(monkeypatch) -> None:
+    monkeypatch.setattr(
+        portal_client.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: FakeResponse(200, {"state": "early_access"}),
+    )
+
+    outcome = portal_client.poll_handoff_once(
+        "https://services.test",
+        "NONCE",
+        service="spp",
+    )
+
+    assert outcome == portal_client.PollOutcome(kind="early_access")

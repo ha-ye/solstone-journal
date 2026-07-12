@@ -245,13 +245,16 @@ def poll_handoff_once(
 
     if status == 200:
         try:
-            return PollOutcome(kind="success", payload=read_handoff_payload(raw_body))
+            payload = read_handoff_payload(raw_body)
         except ValueError as exc:
             return PollOutcome(
                 kind="failed",
                 reason="unexpected_payload",
                 detail=str(exc),
             )
+        if payload.get("state") == "early_access":
+            return PollOutcome(kind="early_access")
+        return PollOutcome(kind="success", payload=payload)
     if status == 204:
         return PollOutcome(kind="continue")
     return handle_http_status(status)

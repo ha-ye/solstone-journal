@@ -6,14 +6,13 @@
 from __future__ import annotations
 
 import logging
-import re
 import secrets
 import selectors
 import socket
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from OpenSSL import SSL
@@ -45,37 +44,40 @@ _LISTENER: socket.socket | None = None
 _LISTENER_THREAD: threading.Thread | None = None
 _FORWARDER_BASE_URL: str | None = None
 _CONFIDENTIAL_BLOCK: dict[str, Any] | None = None
-_REASON_CODE_RE = re.compile(r"\(([a-z0-9_]+)\)$")
 
 
-def _attestation_failed(reason_code: str) -> None:
+class ConfidentialEndpointError(RuntimeError):
+    """Raised when confidential endpoint configuration is unusable."""
+
+    reason_code = "endpoint_invalid"
+
+
+def _failure_kind(exc: BaseException) -> Literal["failed", "unreachable"]:
+    if isinstance(exc, RatlsChannelError) and exc.reason_code == "gateway_unreachable":
+        return "unreachable"
+    return "failed"
+
+
+def _attestation_failed(
+    kind: Literal["failed", "unreachable"],
+    reason_code: str,
+) -> None:
     log.warning("event=confidential_attestation_rejected reason=%s", reason_code)
-    spp.record_attestation_failed(reason_code)
+    spp.record_attestation_failed(kind, reason_code)
     raise AttestationFailedError(
         f"the confidential attestation transport failed closed ({reason_code})"
     )
-
-
-def _reason_from_attestation_failed(exc: AttestationFailedError) -> str:
-    match = _REASON_CODE_RE.search(exc.detail.strip())
-    if match is not None:
-        return match.group(1)
-    return exc.reason_code
 
 
 def _endpoint_from_block(block: dict[str, Any]) -> RatlsEndpoint:
     endpoint_url = str(block.get("endpoint_url") or "")
     parsed = urlsplit(endpoint_url)
     if not parsed.hostname:
-        raise AttestationFailedError(
-            "the confidential endpoint configuration is invalid (endpoint_invalid)"
-        )
+        raise ConfidentialEndpointError("confidential endpoint hostname is invalid")
     try:
         port = parsed.port
     except ValueError:
-        raise AttestationFailedError(
-            "the confidential endpoint configuration is invalid (endpoint_invalid)"
-        )
+        raise ConfidentialEndpointError("confidential endpoint port is invalid")
     if port is None:
         port = 443 if parsed.scheme == "https" else 80
     return RatlsEndpoint(host=parsed.hostname, port=port)
@@ -120,6 +122,7 @@ def _teardown_locked() -> None:
 def teardown_confidential_transport() -> None:
     with _LOCK:
         _teardown_locked()
+        spp.clear_attestation_state()
 
 
 def _discard_idle_locked(now_monotonic: float) -> None:
@@ -177,15 +180,32 @@ def _establish_channel_locked(block: dict[str, Any], now: datetime) -> AttestedC
         )
     except (RatlsChannelError, RatlsVerificationError) as exc:
         reason_code = exc.reason_code
+        kind = _failure_kind(exc)
         _teardown_locked()
-        _attestation_failed(reason_code)
+        _attestation_failed(kind, reason_code)
+    except ConfidentialEndpointError as exc:
+        _teardown_locked()
+        _attestation_failed("failed", exc.reason_code)
     except AttestationFailedError as exc:
-        reason_code = _reason_from_attestation_failed(exc)
         _teardown_locked()
-        _attestation_failed(reason_code)
+        _attestation_failed("failed", exc.reason_code)
     except Exception:
         _teardown_locked()
-        _attestation_failed("unexpected_error")
+        _attestation_failed("failed", "unexpected_error")
+
+
+def _establish_and_record_locked(block: dict[str, Any], now: datetime) -> None:
+    channel = _establish_channel_locked(block, now)
+    _start_listener_locked()
+    _POOL.append(channel)
+    spp.record_attestation_verified(
+        AttestationSession(
+            verdict=channel.verdict,
+            started_at=now,
+            tpm_heartbeat_at=now,
+            gpu_reattest_at=now,
+        )
+    )
 
 
 def verify_confidential_attestation(block: dict[str, Any]) -> None:
@@ -211,17 +231,7 @@ def verify_confidential_attestation(block: dict[str, Any]) -> None:
                 "the confidential attestation cadence lapsed (attestation_stale)"
             )
 
-        channel = _establish_channel_locked(block, now)
-        _start_listener_locked()
-        _POOL.append(channel)
-        spp.record_attestation_verified(
-            AttestationSession(
-                verdict=channel.verdict,
-                started_at=now,
-                tpm_heartbeat_at=now,
-                gpu_reattest_at=now,
-            )
-        )
+        _establish_and_record_locked(block, now)
 
 
 def confidential_egress_base_url(endpoint_base_url: str) -> str:
@@ -245,12 +255,33 @@ def confidential_probe_status(
     now = now or datetime.now(timezone.utc)
     state = spp.get_attestation_state()
     if state.failure is not None:
+        if state.failure.kind == "unreachable":
+            return False, "attestation_unreachable"
         return False, "attestation_failed"
     if state.session is None:
         return False, "attestation_not_yet_verified"
     if state.session.status(now) == "stale":
         return False, "attestation_stale"
     return True, None
+
+
+def recheck_confidential_attestation() -> None:
+    """Recheck the configured confidential service without sending inference content."""
+
+    global _CONFIDENTIAL_BLOCK
+
+    block = spp.confidential_provenance()
+    if block is None:
+        return
+    now = datetime.now(timezone.utc)
+    with _LOCK:
+        _CONFIDENTIAL_BLOCK = dict(block)
+        _teardown_locked()
+        spp.clear_attestation_state()
+        try:
+            _establish_and_record_locked(block, now)
+        except AttestationFailedError:
+            return
 
 
 def _borrow_channel_locked(now_monotonic: float) -> AttestedChannel | None:
