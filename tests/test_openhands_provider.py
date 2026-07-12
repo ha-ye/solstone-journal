@@ -776,6 +776,32 @@ def test_run_cogitate_terminal_sol_reacquire_error_preempts_stuck_classification
     ] == []
 
 
+def test_run_cogitate_reraises_non_timeout_terminal_sol_error(
+    fake_openhands,
+    monkeypatch,
+    tmp_path,
+):
+    terminal = RuntimeError("flock exploded")
+
+    async def mark_terminal_and_stuck(conversation):
+        _REGISTERED_TOOLS["sol"].executor._store_terminal_error(terminal)
+        conversation.state.execution_status = "stuck"
+
+    fake_openhands.Conversation.arun_impl = mark_terminal_and_stuck
+    config = _run_config(monkeypatch, tmp_path)
+    events: list[dict] = []
+
+    with pytest.raises(RuntimeError) as exc:
+        asyncio.run(openhands.run_cogitate(config, events.append))
+
+    assert exc.value is terminal
+    conversation = fake_openhands.Conversation.instances[0]
+    assert conversation.closed is True
+    assert [
+        event for event in events if event.get("reason_code") == "agent_stuck"
+    ] == []
+
+
 def test_run_cogitate_uses_emit_final_branch_for_daily_no_output(
     fake_openhands,
     monkeypatch,

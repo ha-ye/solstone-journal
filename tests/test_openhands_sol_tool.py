@@ -230,6 +230,47 @@ def test_reacquire_timeout_sets_terminal_marker_and_interrupts_conversation(
         assert permit.slot_index == 0
 
 
+def test_unexpected_reacquire_exception_sets_terminal_marker_and_interrupts(
+    fake_openhands,
+    fixed_time,
+    tmp_path,
+    monkeypatch,
+):
+    events: list[dict] = []
+    lease = _isolated_lease(monkeypatch, tmp_path)
+    tool, executor = _sol_tool_and_executor(
+        tmp_path=tmp_path,
+        events=events,
+        slot_lease=lease,
+    )
+    terminal = RuntimeError("flock exploded")
+
+    monkeypatch.setattr(
+        openhands,
+        "_run_command",
+        lambda _argv: {"text": "ran", "is_error": False},
+    )
+
+    def fail_reacquire() -> None:
+        raise terminal
+
+    monkeypatch.setattr(lease, "reacquire", fail_reacquire)
+    conversation = fake_openhands.Conversation()
+
+    observation = tool(
+        tool.action_from_arguments({"command": "sol call journal search x"}),
+        conversation,
+    )
+
+    assert observation.is_error is True
+    assert observation.text == "flock exploded"
+    assert executor.take_terminal_error() is terminal
+    assert conversation.interrupted is True
+    lease.close()
+    with local_admission.acquire_local_slot(1, 0.1) as permit:
+        assert permit.slot_index == 0
+
+
 def test_reacquire_cancel_is_recoverable_observation_not_terminal(
     fake_openhands,
     fixed_time,

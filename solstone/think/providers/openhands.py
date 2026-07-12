@@ -49,7 +49,6 @@ from solstone.think.cogitate_policy import (
 from solstone.think.providers.cli import QuotaExhaustedError, assemble_prompt
 from solstone.think.providers.local_admission import (
     LocalAdmissionCancelled,
-    LocalAdmissionTimeout,
     LocalSlotLease,
 )
 from solstone.think.providers.local_server import LOCAL_MIN_CONTEXT_TOKENS
@@ -274,14 +273,14 @@ def _ensure_sol_types() -> dict[str, Any]:
             self.read_call_count = 0
             self._budget_exhausted_emitted = False
             self._conversation: Any | None = None
-            self._terminal_error: LocalAdmissionTimeout | None = None
+            self._terminal_error: Exception | None = None
             self._terminal_error_lock = threading.Lock()
             self._slot_cycle_lock = threading.Lock()
 
         def bind_conversation(self, conversation: Any) -> None:
             self._conversation = conversation
 
-        def take_terminal_error(self) -> LocalAdmissionTimeout | None:
+        def take_terminal_error(self) -> Exception | None:
             with self._terminal_error_lock:
                 error = self._terminal_error
                 self._terminal_error = None
@@ -333,12 +332,6 @@ def _ensure_sol_types() -> dict[str, Any]:
                 finally:
                     try:
                         self.slot_lease.reacquire()
-                    except LocalAdmissionTimeout as exc:
-                        self._store_terminal_error(exc)
-                        live_conversation = conversation or self._conversation
-                        if live_conversation is not None:
-                            live_conversation.interrupt()
-                        return SolObservation.from_text(str(exc), is_error=True)
                     except LocalAdmissionCancelled:
                         if result is not None:
                             return SolObservation.from_text(
@@ -349,12 +342,18 @@ def _ensure_sol_types() -> dict[str, Any]:
                             "before reacquiring local inference",
                             is_error=True,
                         )
+                    except Exception as exc:
+                        self._store_terminal_error(exc)
+                        live_conversation = conversation or self._conversation
+                        if live_conversation is not None:
+                            live_conversation.interrupt()
+                        return SolObservation.from_text(str(exc), is_error=True)
                 if command_error is not None:
                     raise command_error
                 assert result is not None
             return SolObservation.from_text(result["text"], is_error=result["is_error"])
 
-        def _store_terminal_error(self, error: LocalAdmissionTimeout) -> None:
+        def _store_terminal_error(self, error: Exception) -> None:
             with self._terminal_error_lock:
                 self._terminal_error = error
 

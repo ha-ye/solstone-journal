@@ -108,7 +108,7 @@ the sync and async admission twins with an explicit exclusive mode.
 
 Public shape:
 
-- `acquire_local_slot(capacity, timeout_s, *, exclusive=False)`
+- `acquire_local_slot(capacity, timeout_s, *, exclusive=False, cancel_event=None)`
 - `acquire_local_slot_async(capacity, timeout_s, *, exclusive=False)`
 
 `exclusive=False` keeps current one-slot behavior. `exclusive=True` means the
