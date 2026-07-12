@@ -4177,8 +4177,8 @@ def warm_trends_cache(
 def _read_quiet_day_expectations(journal_root: Path) -> dict[str, int]:
     """Read body.freshness.quiet_days from journal config.
 
-    Invalid entries are skipped so a config typo does not break the Body
-    overview; an absent map leaves the sentinel dormant.
+    Invalid quiet_days entries are skipped; an absent map leaves the
+    sentinel dormant.
     """
     config = read_journal_config(journal_root)
     body_config = config.get("body")

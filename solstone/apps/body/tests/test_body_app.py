@@ -618,6 +618,9 @@ def test_status_api_lists_apple_health_and_oura_api_import_manifests(body_env):
     assert by_id["20260703_120000"]["source_type"] == "apple_health"
     assert by_id[import_id]["source_type"] == health_schema.SOURCE_OURA_API
     assert by_id[import_id]["normalized_months_label"] == "2026-07"
+    hero_source = _function_source(_workspace_source(), "renderArchiveHero")
+    assert "Apple Health " not in hero_source
+    assert "health " in hero_source
 
 
 def test_month_stats_api_returns_day_counts(body_env):

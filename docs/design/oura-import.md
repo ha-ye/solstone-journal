@@ -6,6 +6,11 @@
 - **Hard rules honored:** no network code anywhere (a test greps the module for network-capable imports), no OAuth against real Oura, no live-journal writes, no credentials or token files, synthetic fixtures only. The first live OAuth authorization is **OWNER-PRESENT-ONLY** (§8, phase O2).
 - **Copy canon:** §13 of the repo guide. Oura's numbers render as attributed facts — "Readiness 82 · Oura's score" — never our gloss, never medical interpretation.
 
+Status note, 2026-07-12: this document records the original Oura lane design.
+Since then, owner-present Oura OAuth connect, journal-config token
+storage/refresh, and Oura API sync with cursor and bundle writes have shipped.
+The Oura file-import save path and webhooks remain deferred.
+
 ---
 
 ## 1. Where this fits in the existing architecture
