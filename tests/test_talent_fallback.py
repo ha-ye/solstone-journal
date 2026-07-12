@@ -22,6 +22,7 @@ from solstone.think.models import (
     should_recheck_health,
 )
 from solstone.think.providers.cli import QuotaExhaustedError
+from solstone.think.providers.local import LocalCapacityExhausted
 from solstone.think.talents import (
     TalentHookError,
     _is_retryable_error,
@@ -774,24 +775,64 @@ def test_execute_generate_local_length_retry_succeeds(
     assert events[-1]["retries"] == 1
 
 
+def test_execute_generate_local_capacity_retry_succeeds(monkeypatch):
+    from solstone.think.talents import _execute_generate
+
+    events = []
+    calls = []
+
+    def mock_generate_with_result(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise LocalCapacityExhausted()
+        return {"text": "ok", "usage": {"input_tokens": 1, "output_tokens": 1}}
+
+    def fail_backup(_agent_type):
+        raise AssertionError("local capacity retry must not consult cloud backup")
+
+    monkeypatch.setattr(
+        "solstone.think.talent.key_to_context", lambda _name: "talent.system.default"
+    )
+    monkeypatch.setattr(
+        "solstone.think.models.generate_with_result", mock_generate_with_result
+    )
+    monkeypatch.setattr("solstone.think.models.get_backup_provider", fail_backup)
+
+    config = {
+        "name": "chat",
+        "provider": "local",
+        "model": LOCAL_MODEL,
+        "prompt": "hello",
+        "health_stale": False,
+    }
+
+    asyncio.run(_execute_generate(config, events.append))
+
+    assert len(calls) == 2
+    assert "inference_retry_index" not in calls[0]
+    assert "local_exclusive_admission" not in calls[0]
+    assert calls[1]["inference_retry_index"] == 1
+    assert calls[1]["local_exclusive_admission"] is True
+    assert calls[0]["temperature"] == 0.3
+    assert calls[1]["temperature"] == calls[0]["temperature"]
+    assert not any(e.get("event") == "fallback" for e in events)
+    assert not any(e.get("event") == "error" for e in events)
+    assert events[-1]["event"] == "finish"
+    assert events[-1]["retries"] == 1
+
+
 def test_main_async_local_capacity_retry_second_failure_emits_one_error(
     monkeypatch,
     capsys,
 ):
     from solstone.think import talents
 
-    class LocalCapacityError(RuntimeError):
-        reason_code = "local_capacity_exhausted"
-
     ndjson_input = json.dumps({"name": "chat", "prompt": "hello"})
     calls = []
 
     def mock_generate_with_result(**kwargs):
         calls.append(kwargs)
-        raise LocalCapacityError(
-            "The local model was busy and could not finish this request. "
-            "Try again in a moment."
-        )
+        raise LocalCapacityExhausted()
 
     def fail_backup(_agent_type):
         raise AssertionError("local capacity retry must not consult cloud backup")
