@@ -479,11 +479,15 @@ def _process_file_importer(
     journal_root: Path,
     args: argparse.Namespace,
 ) -> Any:
+    from solstone.think.importers.pre_save_gate import SENSITIVE_IMPORTERS
+
     kwargs: dict[str, Any] = {
         "facet": args.facet,
         "import_id": _import_id,
         "progress_callback": _progress_callback,
     }
+    if importer.name in SENSITIVE_IMPORTERS:
+        kwargs["confirm_health_save"] = getattr(args, "confirm_health_save", False)
     if importer.name == "apple_health":
         kwargs.update(
             {
@@ -793,6 +797,8 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             "source_type": import_source,
         }
 
+    journal_root = Path(get_journal())
+
     if _file_importer is not None:
         from solstone.think.importers.pre_save_gate import (
             PreSaveGateError,
@@ -804,6 +810,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                 _file_importer,
                 dry_run=args.dry_run,
                 confirm_health_save=getattr(args, "confirm_health_save", False),
+                journal_root=journal_root,
             )
         except PreSaveGateError as exc:
             if args.json:
@@ -874,7 +881,6 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     # Track all created files and processing metadata
     all_created_files: list[str] = []
     created_segments: list[str] = []
-    journal_root = Path(get_journal())
     processing_results = {
         "processed_timestamp": args.timestamp,
         "target_day": base_dt.strftime("%Y%m%d"),

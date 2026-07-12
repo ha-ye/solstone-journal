@@ -30,6 +30,7 @@ from solstone.think.importers.health_schema import (
     health_value_hash,
     pick_day_sleep,
 )
+from solstone.think.importers.pre_save_gate import enforce_pre_save_gate
 from solstone.think.importers.shared import (
     install_source_file,
     windowed_source_hash,
@@ -236,7 +237,16 @@ class AppleHealthImporter:
         date_from: str | None = None,
         date_to: str | None = None,
         with_day_summaries: bool = False,
+        confirm_health_save: bool = False,
     ) -> ImportResult:
+        # Save mode fails closed before any parse or write, root-explicit
+        # against the journal this call would actually write.
+        enforce_pre_save_gate(
+            self,
+            dry_run=dry_run,
+            confirm_health_save=confirm_health_save,
+            journal_root=journal_root,
+        )
         date_window = _parse_date_window(date_from, date_to)
         preview = self.preview(path, date_from=date_from, date_to=date_to)
         if dry_run:

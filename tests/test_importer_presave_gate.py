@@ -26,6 +26,7 @@ from solstone.think.importers.pre_save_gate import (
     oura_sync_approval_path_for_journal,
     read_oura_sync_approval,
 )
+from tests.conftest import write_health_approval_artifact
 
 APPLE_HEALTH_FIXTURE = (
     Path(__file__).parent
@@ -33,6 +34,9 @@ APPLE_HEALTH_FIXTURE = (
     / "importers"
     / "health"
     / "apple_health_synthetic"
+)
+OURA_FIXTURE = (
+    Path(__file__).parent / "fixtures" / "importers" / "health" / "oura_synthetic"
 )
 
 
@@ -507,6 +511,73 @@ def test_apple_health_save_with_valid_gate_reaches_process(
     assert calls == ["setup", "process"]
     assert result.files_created == []
     assert result.segments is None
+
+
+def test_cli_apple_health_save_with_valid_gate_imports_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    write_health_approval_artifact(journal, importers=["apple_health"])
+    cli = import_module("solstone.think.importers.cli")
+
+    result = cli._import_one_from_args(
+        Namespace(
+            media=str(APPLE_HEALTH_FIXTURE),
+            timestamp="20260102_123000",
+            facet=None,
+            setting=None,
+            source="apple_health",
+            force=False,
+            auto=None,
+            dry_run=False,
+            json=False,
+            verbose=False,
+            wait_for_processing=True,
+            deterministic_only=False,
+            confirm_health_save=True,
+            date_from=None,
+            date_to=None,
+            with_day_summaries=False,
+        )
+    )
+
+    import_dir = journal / "imports" / "20260102_123000"
+    assert result is not None
+    assert result["entries_written"] > 0
+    assert (import_dir / "manifest.json").is_file()
+    assert list((import_dir / "normalized").glob("*.jsonl"))
+
+
+def test_cli_oura_save_with_valid_gate_reaches_deferred_save_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    write_health_approval_artifact(journal, importers=["oura"])
+    cli = import_module("solstone.think.importers.cli")
+
+    with pytest.raises(NotImplementedError):
+        cli._import_one_from_args(
+            Namespace(
+                media=str(OURA_FIXTURE),
+                timestamp="20260102_123000",
+                facet=None,
+                setting=None,
+                source="oura",
+                force=False,
+                auto=None,
+                dry_run=False,
+                json=False,
+                verbose=False,
+                wait_for_processing=True,
+                deterministic_only=False,
+                confirm_health_save=True,
+                date_from=None,
+                date_to=None,
+                with_day_summaries=False,
+            )
+        )
 
 
 def test_file_importer_dry_run_does_not_require_health_gate(

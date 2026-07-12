@@ -10,6 +10,7 @@ import re
 import zipfile
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -18,12 +19,15 @@ from solstone.think.importers import apple_health
 from solstone.think.importers.apple_health import (
     AppleHealthImporter,
 )
+from solstone.think.importers.file_importer import ImportResult
 from solstone.think.importers.health_dedupe import get_health_dedupe_record
 from solstone.think.importers.health_schema import (
     merge_sleep_sessions,
     pick_day_sleep,
     pick_main_session,
 )
+from solstone.think.importers.pre_save_gate import PreSaveGateError
+from tests.conftest import write_health_approval_artifact
 
 FIXTURE_ROOT = (
     Path(__file__).parent
@@ -75,6 +79,16 @@ Glucose 105 mg/dL, 1 workout.
 *Sources: Synthetic Ring Mirror, Synthetic Stelo, Synthetic Watch \
 · 4 records summarized · brought in via Apple Health · import 20260103_120000*
 """
+
+
+def _process_with_approval(path: Path, journal: Path, **kwargs: Any) -> ImportResult:
+    write_health_approval_artifact(journal, importers=["apple_health"])
+    return AppleHealthImporter().process(
+        path,
+        journal,
+        confirm_health_save=True,
+        **kwargs,
+    )
 
 
 def _record_row(
@@ -273,6 +287,27 @@ def test_dry_run_process_returns_preview_without_files(tmp_path: Path):
     assert not (tmp_path / "imports").exists()
 
 
+def test_save_without_approval_artifact_blocks_before_any_write_and_dry_run_still_works(
+    tmp_path: Path,
+) -> None:
+    journal = tmp_path / "journal"
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        AppleHealthImporter().process(FIXTURE_ROOT, journal, dry_run=False)
+
+    payload = exc_info.value.to_dict()
+    assert payload["reason"] == "health_pre_save_gate_required"
+    assert payload["gate_reason"] == "missing_approval_artifact"
+    assert payload["importer"] == "apple_health"
+    assert not (journal / "imports").exists()
+
+    dry_run = AppleHealthImporter().process(FIXTURE_ROOT, journal, dry_run=True)
+
+    assert dry_run.entries_written == 0
+    assert "Dry run only" in dry_run.summary
+    assert not (journal / "imports").exists()
+
+
 def test_save_mode_writes_raw_source_normalized_rows_and_dedupe_to_journal_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -281,7 +316,7 @@ def test_save_mode_writes_raw_source_normalized_rows_and_dedupe_to_journal_root(
     journal = tmp_path / "synthetic-journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(live_journal))
 
-    result = AppleHealthImporter().process(
+    result = _process_with_approval(
         FIXTURE_ROOT,
         journal,
         import_id="20260103_120000",
@@ -333,7 +368,7 @@ def test_workout_statistics_children_land_in_metadata_without_changing_dedupe(
     export = _write_workout_statistics_zip(tmp_path / "workout_stats.zip")
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
-    AppleHealthImporter().process(
+    _process_with_approval(
         export,
         journal,
         import_id="20260704_120000",
@@ -375,7 +410,7 @@ def test_backfill_workout_statistics_script_updates_metadata_not_dedupe(
     export = _write_workout_statistics_zip(tmp_path / "workout_stats.zip")
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
-    AppleHealthImporter().process(
+    _process_with_approval(
         export,
         journal,
         import_id="20260704_120000",
@@ -431,7 +466,7 @@ def test_save_mode_writes_opt_in_day_summary_files_only_in_files_created(
 ):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
-    result = AppleHealthImporter().process(
+    result = _process_with_approval(
         FIXTURE_ROOT,
         tmp_path,
         import_id="20260103_120000",
@@ -487,7 +522,7 @@ def test_day_summary_card_has_lede_and_provenance_footer(
 ):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
-    AppleHealthImporter().process(
+    _process_with_approval(
         FIXTURE_ROOT,
         tmp_path,
         import_id="20260103_120000",
@@ -829,7 +864,7 @@ def test_day_card_sleep_matches_body_day_page_for_cross_midnight_session(
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     export = _write_cross_midnight_export(tmp_path / "source")
 
-    AppleHealthImporter().process(
+    _process_with_approval(
         export,
         journal,
         import_id="20260702_080000",
@@ -885,7 +920,7 @@ def test_regenerate_script_feeds_prev_day_sleep_into_cross_midnight_cards(
     journal.mkdir()
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     export = _write_cross_midnight_export(tmp_path / "source")
-    AppleHealthImporter().process(
+    _process_with_approval(
         export,
         journal,
         import_id="20260702_080000",
@@ -925,7 +960,7 @@ def test_regenerate_script_dry_run_reports_diff_without_writing(
     capsys: pytest.CaptureFixture,
 ):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    AppleHealthImporter().process(
+    _process_with_approval(
         FIXTURE_ROOT,
         tmp_path,
         import_id="20260103_120000",
@@ -962,7 +997,7 @@ def test_regenerate_script_apply_rewrites_from_rows_deduped_across_bundles(
 ):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     for import_id in ("20260103_120000", "20260104_090000"):
-        AppleHealthImporter().process(
+        _process_with_approval(
             FIXTURE_ROOT,
             tmp_path,
             import_id=import_id,
@@ -1086,7 +1121,7 @@ def test_windowed_save_records_window_in_manifest_hash(
     journal = tmp_path / "synthetic-journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(live_journal))
 
-    AppleHealthImporter().process(
+    _process_with_approval(
         FIXTURE_ROOT,
         journal,
         import_id="20260103_130000",
