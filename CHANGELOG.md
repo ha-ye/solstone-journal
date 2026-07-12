@@ -4,6 +4,22 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.8.4] - 2026-07-12
+
+### Added
+
+- when solstone suggests merging duplicate people or companies in your journal, you can now review several of those suggestions at once. select a batch and accept or dismiss them together instead of one by one; if some can't be merged, the rest still go through and the ones that need attention stay listed.
+
+### Changed
+
+- sol's chat replies now display formatting properly, so lists, emphasis, and code render instead of showing as raw text, and long code blocks stay contained inside the reply rather than stretching it wider. when you ask sol about your own life or history, it also now checks your journal by default instead of answering from general knowledge, while everyday conversation like greetings and follow-ups still answers directly.
+- setting up local thinking now shows live progress while the model downloads and installs, picks up where it left off if you reload the page, and shows a clear error with a retry if an install doesn't finish.
+
+### Fixed
+
+- the words in your transcripts are never meant to appear in solstone's internal error reports. we closed a gap where a failed transcription could put a short fragment of that text into one, and made the guarantee structural: those reports now carry only the kind of error, never any of your content.
+- local thinking and transcription handle their limits more honestly now. when a request is too long for the local model or your machine is busy, sol says so in plain words instead of showing a raw code; when local transcription can't finish a clip, sol keeps the audio and retries next time instead of quietly treating it as finished; and truncated local runs no longer leave partial results in your journal.
+
 ## [0.8.3] - 2026-07-10
 
 ### Added
