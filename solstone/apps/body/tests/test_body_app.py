@@ -583,6 +583,43 @@ def test_non_health_import_manifests_are_excluded(body_env):
     assert import_ids == ["20260703_120000"]
 
 
+def test_status_api_lists_apple_health_and_oura_api_import_manifests(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+    import_id = "20260705_090000"
+    oura_row = _oura_row(OURA_READINESS_TYPE, "20260705", value=82, unit="score")
+    _write_json(
+        env.journal / "imports" / import_id / "manifest.json",
+        {
+            "import_id": import_id,
+            "source_type": health_schema.SOURCE_OURA_API,
+            "source_hash": "sha256:oura",
+            "entry_count": 1,
+            "days_affected": ["20260705"],
+            "files_created": [],
+            "imported_at": "2026-07-05T09:00:00",
+            "imported_via": "test",
+        },
+    )
+    _append_jsonl(
+        env.journal / "imports" / import_id / "normalized" / "2026-07.jsonl",
+        [oura_row],
+    )
+
+    response = env.client.get("/app/body/api/status")
+
+    assert response.status_code == 200
+    status = response.get_json()
+    imports = status["imports"]
+    assert len(imports) == 2
+    assert status["archive"]["import_count"] == 2
+    by_id = {item["import_id"]: item for item in imports}
+    assert set(by_id) == {"20260703_120000", import_id}
+    assert by_id["20260703_120000"]["source_type"] == "apple_health"
+    assert by_id[import_id]["source_type"] == health_schema.SOURCE_OURA_API
+    assert by_id[import_id]["normalized_months_label"] == "2026-07"
+
+
 def test_month_stats_api_returns_day_counts(body_env):
     env = body_env()
     _seed_health_import(env.journal)
@@ -6331,12 +6368,31 @@ def test_day_api_ring_resting_fact_carries_typical_after_warm(body_env):
 
 # --- Source-freshness sentinel ------------------------------------------------
 #
-# For each expected source the status payload states days-since-last-data;
+# For each configured source the status payload states days-since-last-data;
 # the overview names quiet sources in a slim muted strip and lists every
-# expected source's last-delivered day in the coverage area. Copy is §13-
+# configured source's last-delivered day in the coverage area. Copy is §13-
 # factual: names, dates, day counts — never advice, never alarm styling.
 # Fixtures seed days relative to the real clock so the assertions hold on
 # any run date.
+
+QUIET_DAY_EXPECTATIONS = {
+    "Oura": 2,
+    "Test Phone": 4,
+    "Stelo": 4,
+    "Lingo": 7,
+}
+
+
+def _seed_quiet_day_expectations(
+    journal: Path,
+    expectations: dict[str, int] | None = None,
+) -> None:
+    config_path = journal / "config" / "journal.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config.setdefault("body", {}).setdefault("freshness", {})["quiet_days"] = dict(
+        expectations or QUIET_DAY_EXPECTATIONS
+    )
+    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
 
 def _day_key_ago(days: int) -> str:
@@ -6357,6 +6413,7 @@ def _delivery_row(source: str, days_ago: int) -> dict:
 
 def test_status_api_freshness_names_quiet_source_factually(body_env):
     env = body_env()
+    _seed_quiet_day_expectations(env.journal)
     _seed_import(
         env.journal,
         "20260907_040000",
@@ -6365,9 +6422,9 @@ def test_status_api_freshness_names_quiet_source_factually(body_env):
             # The ring delivers through its API pipe — the "Oura (API)"
             # label must satisfy the "Oura" expectation.
             _oura_row(OURA_READINESS_TYPE, _day_key_ago(1), value=82, unit="score"),
-            # Live device names carry a typographic apostrophe; the ASCII
-            # config key must still match.
-            _delivery_row("Jack’s iPhone", 1),
+            # The source label may carry extra model text; the config key
+            # still matches by substring.
+            _delivery_row("Test Phone Pro", 1),
             _delivery_row("Lingo", 3),
         ],
     )
@@ -6375,7 +6432,7 @@ def test_status_api_freshness_names_quiet_source_factually(body_env):
     freshness = env.client.get("/app/body/api/status").get_json()["freshness"]
 
     by_name = {source["name"]: source for source in freshness["sources"]}
-    assert set(by_name) == set(body_routes.EXPECTED_SOURCE_QUIET_DAYS)
+    assert set(by_name) == set(QUIET_DAY_EXPECTATIONS)
     stelo = by_name["Stelo"]
     assert stelo["quiet"] is True
     assert stelo["days_since"] == 6
@@ -6384,7 +6441,7 @@ def test_status_api_freshness_names_quiet_source_factually(body_env):
     assert stelo["line"] == "Stelo last delivered 6 days ago"
     assert by_name["Oura"]["quiet"] is False
     assert by_name["Oura"]["days_since"] == 1
-    assert by_name["Jack's iPhone"]["quiet"] is False
+    assert by_name["Test Phone"]["quiet"] is False
     assert by_name["Lingo"]["quiet"] is False
     assert freshness["quiet"] is True
     assert freshness["quiet_lines"] == ["Stelo last delivered 6 days ago"]
@@ -6405,6 +6462,7 @@ def test_status_api_freshness_names_quiet_source_factually(body_env):
 
 def test_status_api_freshness_states_no_data_for_absent_source(body_env):
     env = body_env()
+    _seed_quiet_day_expectations(env.journal)
     _seed_import(env.journal, "20260907_050000", [_delivery_row("Stelo", 1)])
 
     freshness = env.client.get("/app/body/api/status").get_json()["freshness"]
@@ -6426,13 +6484,14 @@ def test_status_api_freshness_states_no_data_for_absent_source(body_env):
 
 def test_overview_freshness_banner_absent_when_sources_fresh(body_env):
     env = body_env()
+    _seed_quiet_day_expectations(env.journal)
     _seed_import(
         env.journal,
         "20260907_060000",
         [
             _delivery_row("Stelo", 1),
             _delivery_row("Lingo", 1),
-            _delivery_row("Jack’s iPhone", 1),
+            _delivery_row("Test Phone", 1),
             _oura_row(OURA_READINESS_TYPE, _day_key_ago(1), value=82, unit="score"),
         ],
     )
@@ -6449,7 +6508,7 @@ def test_overview_freshness_banner_absent_when_sources_fresh(body_env):
     sources_source = _function_source(_workspace_source(), "renderFreshnessSources")
     assert 'id="body-sources-fresh-title"' in sources_source
     assert "Expected sources" in sources_source
-    for name in body_routes.EXPECTED_SOURCE_QUIET_DAYS:
+    for name in QUIET_DAY_EXPECTATIONS:
         assert name in {source["name"] for source in status["freshness"]["sources"]}
     yesterday_label = body_routes._format_day_long(_day_key_ago(1))
     assert all(
@@ -6460,6 +6519,7 @@ def test_overview_freshness_banner_absent_when_sources_fresh(body_env):
 
 def test_freshness_empty_journal_stays_silent(body_env):
     env = body_env()
+    _seed_quiet_day_expectations(env.journal)
 
     status = env.client.get("/app/body/api/status").get_json()
 
@@ -6476,6 +6536,7 @@ def test_freshness_empty_journal_stays_silent(body_env):
 
 def test_freshness_scan_is_calendar_bounded_and_signature_cached(body_env, monkeypatch):
     env = body_env()
+    _seed_quiet_day_expectations(env.journal)
     old_day = _day_key_ago(250)
     iso = f"{old_day[:4]}-{old_day[4:6]}-{old_day[6:8]}"
     _seed_import(
@@ -6512,3 +6573,12 @@ def test_freshness_scan_is_calendar_bounded_and_signature_cached(body_env, monke
     monkeypatch.setattr(body_routes, "_recent_month_keys", _boom)
     second = env.client.get("/app/body/api/status").get_json()["freshness"]
     assert second == freshness
+
+
+def test_freshness_unconfigured_journal_with_body_data_stays_dormant(body_env):
+    env = body_env()
+    _seed_import(env.journal, "20260907_080000", [_delivery_row("Stelo", 6)])
+
+    status = env.client.get("/app/body/api/status").get_json()
+
+    assert status["freshness"] == {"sources": [], "quiet_lines": [], "quiet": False}

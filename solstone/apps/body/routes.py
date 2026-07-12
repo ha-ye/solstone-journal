@@ -39,6 +39,7 @@ from solstone.convey import state
 from solstone.convey.reasons import INVALID_DAY, INVALID_REQUEST_VALUE
 from solstone.convey.utils import error_response
 from solstone.think.importers.health_schema import (
+    KNOWN_SOURCE_FAMILIES,
     SOURCE_APPLE_HEALTH,
     SOURCE_OURA_API,
     display_number,
@@ -50,6 +51,7 @@ from solstone.think.importers.health_schema import (
     pick_day_sleep,
     pick_main_session,
 )
+from solstone.think.journal_config import read_journal_config
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +60,6 @@ body_bp = Blueprint("app:body", __name__, url_prefix="/app/body")
 DAY_RE = re.compile(r"^\d{8}$")
 MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
 DAY_SUMMARY_STREAM = "import.apple_health"
-APPLE_HEALTH_SOURCE_TYPE = "apple_health"
 DAY_SUMMARY_FILE = "day_summary_transcript.md"
 
 # Day-curve readings further apart than this render as separate curve
@@ -75,20 +76,13 @@ STALE_SOURCE_DAYS = 30
 
 # --- Source-freshness sentinel ------------------------------------------------
 #
-# Expected sources and how many quiet days each may go without delivering
-# before the overview names the quiet. Keys match owner-facing source
-# labels (the same labels the chips and day pages show) by case- and
-# apostrophe-insensitive substring, so "Oura" covers both of the ring's
-# pipes ("Oura", "Oura (API)"). Copy stays factual (§13): a name, a day
-# count — never advice, never alarm styling. The Apple Watch is
-# intentionally absent until its channel heals; restoring it is one line
-# here.
-EXPECTED_SOURCE_QUIET_DAYS: dict[str, int] = {
-    "Oura": 2,
-    "Jack's iPhone": 4,
-    "Stelo": 4,
-    "Lingo": 7,
-}
+# Expected sources are configured in journal.json at
+# body.freshness.quiet_days. Keys match owner-facing source labels (the
+# same labels the chips and day pages show) by case- and
+# apostrophe-insensitive substring, so "Oura" covers both ring labels
+# ("Oura", "Oura (API)"). With no configured expectations the sentinel
+# is dormant. Copy stays factual (§13): a name, a day count — never
+# advice, never alarm styling.
 # The freshness walk reads month shards for the most recent calendar
 # months only, newest first, stopping early once every expected source is
 # found — a page load never pays a full-archive scan. A source absent
@@ -290,7 +284,8 @@ def _iter_health_import_manifests(journal_root: Path) -> list[dict[str, Any]]:
         except ValueError:
             logger.warning("Skipping unreadable import manifest %s", manifest_path)
             continue
-        if manifest.get("source_type") != APPLE_HEALTH_SOURCE_TYPE:
+        source_type = str(manifest.get("source_type") or "")
+        if source_type not in KNOWN_SOURCE_FAMILIES:
             continue
         import_id = str(manifest.get("import_id") or manifest_path.parent.name)
         manifest["import_id"] = import_id
@@ -1271,6 +1266,7 @@ def _build_health_import_status(journal_root: Path) -> dict[str, Any]:
     imports.sort(key=lambda item: str(item.get("imported_at") or ""), reverse=True)
     dedupe = _read_health_dedupe_stats(journal_root)
     recent = _latest_sources_snapshot(journal_root)
+    quiet_days = _read_quiet_day_expectations(journal_root)
     return {
         "imports": imports,
         "normalized": {
@@ -1292,10 +1288,10 @@ def _build_health_import_status(journal_root: Path) -> dict[str, Any]:
             _format_month_full(recent["month"]) if recent["month"] else None
         ),
         "day_counts": dedupe["by_day"],
-        # Source-freshness sentinel: days-since-last-data per expected
+        # Source-freshness sentinel: days-since-last-data per configured
         # source, exposed on the status payload for future notification
         # use alongside the overview banner.
-        "freshness": _build_source_freshness(journal_root),
+        "freshness": _build_source_freshness(journal_root, quiet_days),
         "archive": _build_archive(
             journal_root, dedupe=dedupe, imports=imports, recent=recent
         ),
@@ -4170,19 +4166,56 @@ def warm_trends_cache(
 
 # --- Source-freshness sentinel ------------------------------------------------
 #
-# For each expected source (EXPECTED_SOURCE_QUIET_DAYS, top of file) the
-# overview states when it last delivered data. Quiet sources — past their
-# threshold — are named in a slim muted strip, factually ("Stelo last
-# delivered 6 days ago"), never as alarm or advice (§13). The fold walks
-# only the most recent calendar months of shards and caches by the same
-# dedupe-db signature the trends fold keys on.
+# For each configured source (body.freshness.quiet_days in journal config)
+# the overview states when it last delivered data. Quiet sources — past
+# their threshold — are named in a slim muted strip, factually ("Stelo
+# last delivered 6 days ago"), never as alarm or advice (§13). The fold
+# walks only the most recent calendar months of shards and caches by the
+# same dedupe-db signature the trends fold keys on.
+
+
+def _read_quiet_day_expectations(journal_root: Path) -> dict[str, int]:
+    """Read body.freshness.quiet_days from journal config.
+
+    Invalid entries are skipped so a config typo does not break the Body
+    overview; an absent map leaves the sentinel dormant.
+    """
+    config = read_journal_config(journal_root)
+    body_config = config.get("body")
+    if not isinstance(body_config, dict):
+        return {}
+    freshness_config = body_config.get("freshness")
+    if not isinstance(freshness_config, dict):
+        return {}
+    quiet_days = freshness_config.get("quiet_days")
+    if quiet_days is None:
+        return {}
+    if not isinstance(quiet_days, dict):
+        logger.warning("Ignoring body.freshness.quiet_days: expected object")
+        return {}
+
+    expectations: dict[str, int] = {}
+    for key, value in quiet_days.items():
+        if (
+            not isinstance(key, str)
+            or not key
+            or not isinstance(value, int)
+            or isinstance(value, bool)
+            or value <= 0
+        ):
+            logger.warning(
+                "Ignoring invalid body.freshness.quiet_days entry for %r", key
+            )
+            continue
+        expectations[key] = value
+    return expectations
 
 
 def _normalize_source_text(text: str) -> str:
     """Casefolded, ASCII-apostrophe text for freshness label matching.
 
-    Live device names carry typographic apostrophes ("Jack's iPhone"
-    with U+2019); the config keys stay plain ASCII.
+    Source labels may carry typographic apostrophes (U+2019); config keys
+    can stay plain ASCII.
     """
     return text.replace("’", "'").casefold()
 
@@ -4204,11 +4237,17 @@ def _recent_month_keys(today: date, cap: int) -> list[str]:
 
 
 _freshness_cache: dict[
-    str, tuple[tuple[tuple[int, int, int, int], str], dict[str, str | None]]
+    str,
+    tuple[
+        tuple[tuple[int, int, int, int], str, tuple[tuple[str, int], ...]],
+        dict[str, str | None],
+    ],
 ] = {}
 
 
-def _expected_source_last_days(journal_root: Path) -> dict[str, str | None]:
+def _expected_source_last_days(
+    journal_root: Path, quiet_days: dict[str, int]
+) -> dict[str, str | None]:
     """Last-delivered day per expected source, from a bounded shard walk.
 
     Walks the most recent ``FRESHNESS_SCAN_MONTH_CAP`` calendar months'
@@ -4220,13 +4259,14 @@ def _expected_source_last_days(journal_root: Path) -> dict[str, str | None]:
     loads in between cost one stat call.
     """
     this_month = datetime.now().strftime("%Y-%m")
-    signature = (_trends_signature(journal_root), this_month)
+    expectation_signature = tuple(sorted(quiet_days.items()))
+    signature = (_trends_signature(journal_root), this_month, expectation_signature)
     cache_key = str(_trends_db_path(journal_root))
     cached = _freshness_cache.get(cache_key)
     if cached and cached[0] == signature:
         return cached[1]
 
-    last_days: dict[str, str | None] = dict.fromkeys(EXPECTED_SOURCE_QUIET_DAYS)
+    last_days: dict[str, str | None] = dict.fromkeys(quiet_days)
     existing = set(_coverage_month_keys(journal_root))
     for month in _recent_month_keys(datetime.now().date(), FRESHNESS_SCAN_MONTH_CAP):
         pending = [name for name, day in last_days.items() if day is None]
@@ -4249,7 +4289,9 @@ def _expected_source_last_days(journal_root: Path) -> dict[str, str | None]:
     return last_days
 
 
-def _build_source_freshness(journal_root: Path) -> dict[str, Any]:
+def _build_source_freshness(
+    journal_root: Path, quiet_days: dict[str, int]
+) -> dict[str, Any]:
     """The freshness payload: last-delivered facts per expected source.
 
     Every string is a fact — a source's name, a date, a day count. A
@@ -4259,11 +4301,11 @@ def _build_source_freshness(journal_root: Path) -> dict[str, Any]:
     """
     if not _coverage_month_keys(journal_root):
         return {"sources": [], "quiet_lines": [], "quiet": False}
-    last_days = _expected_source_last_days(journal_root)
+    last_days = _expected_source_last_days(journal_root, quiet_days)
     today = datetime.now().date()
     sources: list[dict[str, Any]] = []
     quiet_lines: list[str] = []
-    for name, threshold in EXPECTED_SOURCE_QUIET_DAYS.items():
+    for name, threshold in quiet_days.items():
         last_day = last_days.get(name)
         if last_day is None:
             detail = f"no data in the last {FRESHNESS_SCAN_MONTH_CAP} months"
