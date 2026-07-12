@@ -76,6 +76,24 @@ def _local_response(finish_reason):
     }
 
 
+class _ChatResponse:
+    def __init__(self, text: str = "hello") -> None:
+        self.text = text
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {
+            "choices": [
+                {
+                    "message": {"content": self.text},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+
 def test_local_model_prefix_maps_to_provider():
     assert get_model_provider(LOCAL_MODEL) == "local"
 
@@ -876,7 +894,10 @@ def test_openhands_local_llm_kwargs(monkeypatch):
     assert openhands._prefixed_model("local", LOCAL_MODEL) == f"openai/{LOCAL_MODEL}"
 
 
-def _byo_endpoint(credential: str | None = "test-token-PLACEHOLDER"):
+def _byo_endpoint(
+    credential: str | None = "test-token-PLACEHOLDER",
+    parallel_slots: int | None = None,
+):
     from solstone.think.providers.local_endpoint import (
         LocalEndpoint,
         normalize_local_endpoint_url,
@@ -887,6 +908,7 @@ def _byo_endpoint(credential: str | None = "test-token-PLACEHOLDER"):
         served_model_id="served-model",
         credential=credential,
         is_bundled=False,
+        parallel_slots=parallel_slots,
     )
 
 
@@ -957,6 +979,157 @@ def test_run_generate_byo_posts_to_normalized_endpoint_and_skips_connect(monkeyp
     assert captured["headers"] == {"Authorization": "Bearer test-token-PLACEHOLDER"}
     assert local_budget.TRUNCATION_MARKER not in str(captured["json"])
     assert result["text"] == "hello"
+
+
+def test_run_generate_byo_acquires_and_releases_permit(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+    captured = {}
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return _ChatResponse()
+
+    import httpx
+
+    from solstone.think.providers import local_admission
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = provider.run_generate("hello", model=LOCAL_MODEL)
+
+    assert result["text"] == "hello"
+    assert captured["url"] == "http://byo.example/openai/v1/chat/completions"
+    with local_admission.acquire_local_slot(1, 0.1) as permit:
+        assert permit.slot_index == 0
+
+
+def test_run_generate_byo_queue_timeout_preserves_exact_type_and_skips_post(
+    monkeypatch,
+):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+
+    def fake_post(*_args, **_kwargs):
+        raise AssertionError("httpx.post must not run after queue timeout")
+
+    import httpx
+
+    from solstone.think.providers import local_admission
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    holder = local_admission.acquire_local_slot(1, 0.1)
+    try:
+        with pytest.raises(local_admission.LocalAdmissionTimeout) as exc:
+            provider.run_generate("hello", model=LOCAL_MODEL, timeout_s=0.03)
+        assert exc.type is local_admission.LocalAdmissionTimeout
+        assert exc.value.reason_code == "local_queue_timeout"
+    finally:
+        holder.release()
+
+
+def test_run_generate_byo_http_timeout_uses_remaining_deadline(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+    captured = {}
+    times = iter([100.0, 100.0, 100.35])
+
+    def fake_monotonic():
+        try:
+            return next(times)
+        except StopIteration:
+            return 100.35
+
+    def fake_acquire(capacity, timeout_s, *, exclusive=False):
+        captured["capacity"] = capacity
+        captured["permit_timeout"] = timeout_s
+        captured["exclusive"] = exclusive
+        return contextlib.nullcontext()
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return _ChatResponse()
+
+    import contextlib
+
+    import httpx
+
+    from solstone.think.providers import local_admission
+
+    monkeypatch.setattr(provider.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(local_admission, "acquire_local_slot", fake_acquire)
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    provider.run_generate("hello", model=LOCAL_MODEL, timeout_s=1.0)
+
+    assert captured["capacity"] == 1
+    assert captured["permit_timeout"] == pytest.approx(1.0)
+    assert captured["exclusive"] is False
+    assert captured["timeout"] == pytest.approx(0.65)
+
+
+def test_run_generate_confidential_with_stray_slots_skips_admission(monkeypatch):
+    provider = _provider()
+    configured_endpoint = "https://spp.example.test"
+    config = {
+        "providers": {
+            "local": {
+                "endpoint_url": configured_endpoint,
+                "served_model_id": "confidential-model",
+                "credential": "confidential-token",
+                "parallel_slots": 1,
+            }
+        },
+        "services": {"confidential": {"account_id": "acct"}},
+    }
+    captured = {}
+    current_time = {"value": 100.0}
+
+    def fake_monotonic():
+        return current_time["value"]
+
+    def fail_acquire(*_args, **_kwargs):
+        raise AssertionError("confidential generate must not acquire admission")
+
+    def fake_post(url, **kwargs):
+        captured.update({"url": url, **kwargs})
+        return _ChatResponse()
+
+    def fake_egress_base_url(base_url):
+        current_time["value"] += 2.0
+        return "http://127.0.0.1:4567" if base_url == configured_endpoint else base_url
+
+    import httpx
+
+    from solstone.think.providers import local_admission, local_endpoint
+
+    monkeypatch.setattr(provider.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(local_endpoint, "read_journal_config", lambda: config)
+    monkeypatch.setattr(local_admission, "acquire_local_slot", fail_acquire)
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_egress_base_url",
+        fake_egress_base_url,
+    )
+    monkeypatch.setattr(httpx, "post", fake_post)
+
+    result = provider.run_generate("hello", model=LOCAL_MODEL, timeout_s=1.0)
+
+    assert result["text"] == "hello"
+    assert captured["url"] == "http://127.0.0.1:4567/v1/chat/completions"
+    assert captured["timeout"] == pytest.approx(1.0)
 
 
 def test_run_generate_confidential_posts_to_forwarder_not_configured_endpoint(
@@ -1078,6 +1251,192 @@ def test_run_agenerate_confidential_posts_to_forwarder_not_configured_endpoint(
     assert result["text"] == "hello"
     assert captured["url"] == f"{forwarder}/v1/chat/completions"
     assert configured_endpoint not in captured["url"]
+
+
+def test_run_agenerate_byo_acquires_and_releases_permit(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+    captured = {}
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            captured.update({"url": url, **kwargs})
+            return _ChatResponse()
+
+    import httpx
+
+    from solstone.think.providers import local_admission
+
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    result = asyncio.run(provider.run_agenerate("hello", model=LOCAL_MODEL))
+
+    assert result["text"] == "hello"
+    assert captured["url"] == "http://byo.example/openai/v1/chat/completions"
+    with local_admission.acquire_local_slot(1, 0.1) as permit:
+        assert permit.slot_index == 0
+
+
+def test_run_agenerate_byo_queue_timeout_preserves_exact_type_and_skips_post(
+    monkeypatch,
+):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+    entered = False
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            nonlocal entered
+            entered = True
+            raise AssertionError("AsyncClient.post must not run after queue timeout")
+
+    import httpx
+
+    from solstone.think.providers import local_admission
+
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    holder = local_admission.acquire_local_slot(1, 0.1)
+    try:
+        with pytest.raises(local_admission.LocalAdmissionTimeout) as exc:
+            asyncio.run(
+                provider.run_agenerate("hello", model=LOCAL_MODEL, timeout_s=0.03)
+            )
+        assert exc.type is local_admission.LocalAdmissionTimeout
+        assert exc.value.reason_code == "local_queue_timeout"
+        assert entered is False
+    finally:
+        holder.release()
+
+
+def test_run_agenerate_byo_http_timeout_uses_remaining_deadline(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+    captured = {}
+    after_wait = False
+
+    def fake_monotonic():
+        return 200.25 if after_wait else 200.0
+
+    async def fake_acquire(capacity, timeout_s, *, exclusive=False):
+        nonlocal after_wait
+        captured["capacity"] = capacity
+        captured["permit_timeout"] = timeout_s
+        captured["exclusive"] = exclusive
+        after_wait = True
+        return contextlib.nullcontext()
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            captured.update({"url": url, **kwargs})
+            return _ChatResponse()
+
+    import contextlib
+
+    import httpx
+
+    from solstone.think.providers import local_admission
+
+    monkeypatch.setattr(provider.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(local_admission, "acquire_local_slot_async", fake_acquire)
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    asyncio.run(provider.run_agenerate("hello", model=LOCAL_MODEL, timeout_s=1.0))
+
+    assert captured["capacity"] == 1
+    assert captured["permit_timeout"] == pytest.approx(1.0)
+    assert captured["exclusive"] is False
+    assert captured["timeout"] == pytest.approx(0.75)
+
+
+def test_run_agenerate_confidential_with_stray_slots_skips_admission(monkeypatch):
+    provider = _provider()
+    configured_endpoint = "https://spp.example.test"
+    config = {
+        "providers": {
+            "local": {
+                "endpoint_url": configured_endpoint,
+                "served_model_id": "confidential-model",
+                "credential": "confidential-token",
+                "parallel_slots": 1,
+            }
+        },
+        "services": {"confidential": {"account_id": "acct"}},
+    }
+    captured = {}
+    current_time = {"value": 200.0}
+
+    def fake_monotonic():
+        return current_time["value"]
+
+    async def fail_acquire(*_args, **_kwargs):
+        raise AssertionError("confidential agenerate must not acquire admission")
+
+    def fake_egress_base_url(base_url):
+        current_time["value"] += 2.0
+        return "http://127.0.0.1:4567" if base_url == configured_endpoint else base_url
+
+    class AsyncClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, url, **kwargs):
+            captured.update({"url": url, **kwargs})
+            return _ChatResponse()
+
+    import httpx
+
+    from solstone.think.providers import local_admission, local_endpoint
+
+    monkeypatch.setattr(provider.time, "monotonic", fake_monotonic)
+    monkeypatch.setattr(local_endpoint, "read_journal_config", lambda: config)
+    monkeypatch.setattr(local_admission, "acquire_local_slot_async", fail_acquire)
+    monkeypatch.setattr(
+        "solstone.think.services.spp_transport.confidential_egress_base_url",
+        fake_egress_base_url,
+    )
+    monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
+
+    result = asyncio.run(
+        provider.run_agenerate("hello", model=LOCAL_MODEL, timeout_s=1.0)
+    )
+
+    assert result["text"] == "hello"
+    assert captured["url"] == "http://127.0.0.1:4567/v1/chat/completions"
+    assert captured["timeout"] == pytest.approx(1.0)
 
 
 def test_run_generate_byo_body_omits_bundled_qwen_sampling(monkeypatch):
@@ -1444,6 +1803,114 @@ def test_bundled_local_admission_timeout_reason_code_escapes(monkeypatch):
     with pytest.raises(local_admission.LocalAdmissionTimeout) as cogitate_exc:
         asyncio.run(provider.run_cogitate({"model": LOCAL_MODEL}))
     assert cogitate_exc.value.reason_code == "local_queue_timeout"
+
+
+def test_run_cogitate_byo_acquires_permit_and_records_no_telemetry(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+
+    from solstone.think.providers import local_admission
+
+    records = []
+    monkeypatch.setattr(local_admission, "record_local_inference", records.append)
+
+    async def fake_cogitate(*_args, **_kwargs):
+        with pytest.raises(local_admission.LocalAdmissionTimeout):
+            local_admission.acquire_local_slot(1, 0.03)
+        return "ok"
+
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_cogitate",
+        fake_cogitate,
+    )
+
+    result = asyncio.run(
+        provider.run_cogitate({"model": LOCAL_MODEL, "timeout_seconds": 1})
+    )
+
+    assert result == "ok"
+    assert records == []
+    with local_admission.acquire_local_slot(1, 0.1) as permit:
+        assert permit.slot_index == 0
+
+
+def test_run_cogitate_byo_queue_timeout_preserves_exact_type(monkeypatch):
+    provider = _provider()
+    monkeypatch.setattr(
+        provider,
+        "resolve_local_endpoint",
+        lambda: _byo_endpoint(parallel_slots=1),
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+
+    async def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("openhands must not run after queue timeout")
+
+    from solstone.think.providers import local_admission
+
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_cogitate",
+        fail_if_called,
+    )
+
+    holder = local_admission.acquire_local_slot(1, 0.1)
+    try:
+        with pytest.raises(local_admission.LocalAdmissionTimeout) as exc:
+            asyncio.run(
+                provider.run_cogitate({"model": LOCAL_MODEL, "timeout_seconds": 0.03})
+            )
+        assert exc.type is local_admission.LocalAdmissionTimeout
+        assert exc.value.reason_code == "local_queue_timeout"
+    finally:
+        holder.release()
+
+
+def test_run_cogitate_confidential_with_stray_slots_skips_admission(monkeypatch):
+    provider = _provider()
+    configured_endpoint = "https://spp.example.test"
+    config = {
+        "providers": {
+            "local": {
+                "endpoint_url": configured_endpoint,
+                "served_model_id": "confidential-model",
+                "credential": "confidential-token",
+                "parallel_slots": 1,
+            }
+        },
+        "services": {"confidential": {"account_id": "acct"}},
+    }
+    monkeypatch.setattr(
+        "solstone.think.providers.local_server.connect",
+        lambda: (_ for _ in ()).throw(AssertionError("connect not expected")),
+    )
+
+    from solstone.think.providers import local_admission, local_endpoint
+
+    async def fail_acquire(*_args, **_kwargs):
+        raise AssertionError("confidential cogitate must not acquire admission")
+
+    async def fake_cogitate(*_args, **_kwargs):
+        return "ok"
+
+    monkeypatch.setattr(local_endpoint, "read_journal_config", lambda: config)
+    monkeypatch.setattr(local_admission, "acquire_local_slot_async", fail_acquire)
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_cogitate",
+        fake_cogitate,
+    )
+
+    assert asyncio.run(provider.run_cogitate({"model": LOCAL_MODEL})) == "ok"
 
 
 def test_run_generate_bundled_context_budget_exceeded_reason_code_escapes(

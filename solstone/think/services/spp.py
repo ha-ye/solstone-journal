@@ -19,7 +19,10 @@ from solstone.think.journal_config import (
     read_journal_config,
     write_journal_config,
 )
-from solstone.think.providers.local_endpoint import normalize_local_endpoint_url
+from solstone.think.providers.local_endpoint import (
+    confidential_provenance_block,
+    normalize_local_endpoint_url,
+)
 from solstone.think.services.spp_attest.cadence import AttestationSession
 
 log = logging.getLogger(__name__)
@@ -283,8 +286,7 @@ def disable_confidential() -> DisableOutcome:
 def confidential_provenance() -> dict[str, Any] | None:
     """Return the confidential provenance block from journal config, if present."""
 
-    provenance = read_journal_config().get("services", {}).get("confidential")
-    return provenance if isinstance(provenance, dict) else None
+    return confidential_provenance_block(read_journal_config())
 
 
 def is_confidential_enabled() -> bool:

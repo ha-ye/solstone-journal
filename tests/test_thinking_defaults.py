@@ -3,9 +3,8 @@
 
 """Provider-aware sizing of the think fan-out defaults.
 
-The CPU formulas overcommit the bundled local model server, which runs with one
-(floor tier) or two (capable tier) parallel slots. When the work behind a
-default can resolve to that server, the default is capped at its slot count.
+The CPU formulas overcommit governed local lanes. When the work behind a
+default can resolve to such a lane, the default is capped at its slot count.
 """
 
 from __future__ import annotations
@@ -39,13 +38,18 @@ def _pin_cpu_count(monkeypatch: pytest.MonkeyPatch, cpu_count: int) -> None:
 
 
 def _write_journal_config(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, providers: dict
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    providers: dict,
+    *,
+    services: dict | None = None,
 ) -> None:
     journal = tmp_path / "journal"
     (journal / "config").mkdir(parents=True)
-    (journal / "config" / "journal.json").write_text(
-        json.dumps({"providers": providers})
-    )
+    config = {"providers": providers}
+    if services is not None:
+        config["services"] = services
+    (journal / "config" / "journal.json").write_text(json.dumps(config))
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
 
@@ -54,7 +58,7 @@ def _write_journal_config(
 
 def test_default_segment_workers_local_floor_slots_returns_one(monkeypatch):
     _pin_cpu_count(monkeypatch, 12)
-    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "_segment_work_uses_local", lambda: True)
     _pin_slots(monkeypatch, FLOOR_SLOTS)
 
     assert think._default_segment_workers() == FLOOR_SLOTS == 1
@@ -64,7 +68,7 @@ def test_default_segment_workers_local_floor_slots_returns_one(monkeypatch):
 
 
 def test_default_segment_workers_local_capable_slots_respects_formula_min(monkeypatch):
-    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "_segment_work_uses_local", lambda: True)
     _pin_slots(monkeypatch, CAPABLE_SLOTS)
 
     # Formula (8) exceeds slots (2): slots win.
@@ -81,7 +85,7 @@ def test_default_segment_workers_local_capable_slots_respects_formula_min(monkey
 
 def test_default_segment_workers_nonlocal_cpu_formula(monkeypatch):
     _pin_cpu_count(monkeypatch, 12)
-    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: False)
+    monkeypatch.setattr(think, "_segment_work_uses_local", lambda: False)
     _forbid_slot_discovery(monkeypatch)
 
     # Distinct from the local cases' 1 and 2.
@@ -122,7 +126,7 @@ def test_default_segment_workers_cap_logs_once_with_provider_slots_formula_deriv
     monkeypatch, caplog
 ):
     _pin_cpu_count(monkeypatch, 12)
-    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "_segment_work_uses_local", lambda: True)
     _pin_slots(monkeypatch, FLOOR_SLOTS)
 
     caplog.set_level(logging.INFO)
@@ -139,7 +143,7 @@ def test_default_segment_workers_does_not_log_when_cap_changes_nothing(
     monkeypatch, caplog
 ):
     _pin_cpu_count(monkeypatch, 2)  # formula == 1 == slots
-    monkeypatch.setattr(think, "_segment_work_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "_segment_work_uses_local", lambda: True)
     _pin_slots(monkeypatch, FLOOR_SLOTS)
 
     caplog.set_level(logging.INFO)
@@ -153,11 +157,11 @@ def test_default_segment_workers_does_not_log_when_cap_changes_nothing(
 def test_default_describe_jobs_local_caps_and_nonlocal_uses_formula(monkeypatch):
     _pin_cpu_count(monkeypatch, 16)
 
-    monkeypatch.setattr(think, "_describe_uses_bundled_local", lambda: False)
+    monkeypatch.setattr(think, "_describe_uses_local", lambda: False)
     _forbid_slot_discovery(monkeypatch)
     assert think._default_describe_jobs() == 4
 
-    monkeypatch.setattr(think, "_describe_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "_describe_uses_local", lambda: True)
     _pin_slots(monkeypatch, FLOOR_SLOTS)
     # Distinct from the non-local 4.
     assert think._default_describe_jobs() == 1
@@ -165,7 +169,7 @@ def test_default_describe_jobs_local_caps_and_nonlocal_uses_formula(monkeypatch)
 
 def test_default_describe_jobs_capable_slots_cap(monkeypatch):
     _pin_cpu_count(monkeypatch, 16)
-    monkeypatch.setattr(think, "_describe_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "_describe_uses_local", lambda: True)
     _pin_slots(monkeypatch, CAPABLE_SLOTS)
 
     assert think._default_describe_jobs() == CAPABLE_SLOTS == 2
@@ -175,7 +179,7 @@ def test_default_describe_jobs_cap_logs_provider_slots_formula_derived(
     monkeypatch, caplog
 ):
     _pin_cpu_count(monkeypatch, 16)
-    monkeypatch.setattr(think, "_describe_uses_bundled_local", lambda: True)
+    monkeypatch.setattr(think, "_describe_uses_local", lambda: True)
     _pin_slots(monkeypatch, FLOOR_SLOTS)
 
     caplog.set_level(logging.INFO)
@@ -191,10 +195,10 @@ def test_default_describe_jobs_cap_logs_provider_slots_formula_derived(
 # --- BYO endpoint (design P3, not an AC) -----------------------------------
 
 
-def test_segment_default_byo_endpoint_uses_cpu_formula_and_does_not_probe(
+def test_segment_default_byo_endpoint_uses_configured_slot_cap_and_does_not_probe(
     monkeypatch, tmp_path
 ):
-    """A third-party OpenAI-compatible endpoint is not the bundled server."""
+    """A governed third-party endpoint caps without bundled slot discovery."""
     _write_journal_config(
         monkeypatch,
         tmp_path,
@@ -203,6 +207,7 @@ def test_segment_default_byo_endpoint_uses_cpu_formula_and_does_not_probe(
             "local": {
                 "endpoint_url": "https://example.invalid/v1",
                 "served_model_id": "some-model",
+                "parallel_slots": 3,
             },
         },
     )
@@ -210,5 +215,76 @@ def test_segment_default_byo_endpoint_uses_cpu_formula_and_does_not_probe(
     _forbid_slot_discovery(monkeypatch)
 
     assert think.is_local_provider_needed() is True
-    assert think._segment_work_uses_bundled_local() is False
+    assert think._segment_work_uses_local() is True
+    assert think._default_segment_workers() == 3
+
+
+def test_segment_default_confidential_endpoint_uses_cpu_formula_and_does_not_probe(
+    monkeypatch, tmp_path
+):
+    """Confidential BYO endpoints are ungoverned even with a stray slot key."""
+    _write_journal_config(
+        monkeypatch,
+        tmp_path,
+        {
+            "generate": {"provider": "local"},
+            "local": {
+                "endpoint_url": "https://example.invalid/v1",
+                "served_model_id": "some-model",
+                "parallel_slots": 1,
+            },
+        },
+        services={"confidential": {"account_id": "acct"}},
+    )
+    _pin_cpu_count(monkeypatch, 12)
+    _forbid_slot_discovery(monkeypatch)
+
+    assert think.is_local_provider_needed() is True
     assert think._default_segment_workers() == 6
+
+
+def test_describe_default_byo_endpoint_uses_configured_slot_cap_and_does_not_probe(
+    monkeypatch, tmp_path
+):
+    _write_journal_config(
+        monkeypatch,
+        tmp_path,
+        {
+            "generate": {"provider": "google"},
+            "contexts": {think.FRAME_CONTEXT: {"provider": "local"}},
+            "local": {
+                "endpoint_url": "https://example.invalid/v1",
+                "served_model_id": "some-model",
+                "parallel_slots": 2,
+            },
+        },
+    )
+    _pin_cpu_count(monkeypatch, 16)
+    _forbid_slot_discovery(monkeypatch)
+
+    assert think._describe_uses_local() is True
+    assert think._default_describe_jobs() == 2
+
+
+def test_describe_default_confidential_endpoint_uses_cpu_formula_and_does_not_probe(
+    monkeypatch, tmp_path
+):
+    _write_journal_config(
+        monkeypatch,
+        tmp_path,
+        {
+            "generate": {"provider": "google"},
+            "contexts": {think.FRAME_CONTEXT: {"provider": "local"}},
+            "local": {
+                "endpoint_url": "https://example.invalid/v1",
+                "served_model_id": "some-model",
+                "parallel_slots": 1,
+            },
+        },
+        services={"confidential": {"account_id": "acct"}},
+    )
+    _pin_cpu_count(monkeypatch, 16)
+    _forbid_slot_discovery(monkeypatch)
+
+    assert think._describe_uses_local() is True
+    assert think._default_describe_jobs() == 4

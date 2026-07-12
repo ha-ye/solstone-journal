@@ -96,7 +96,8 @@ Flow:
 Rules:
 
 - The kwarg never reaches `_build_request_body()` or the HTTP request body.
-- The BYO branch ignores it after popping; BYO endpoint behavior is unchanged.
+- The BYO branch ignores it after popping; BYO admission, when configured,
+  remains non-exclusive.
 - It is not inferred from `inference_retry_index`. Existing incomplete-JSON
   retries pass `inference_retry_index=1` and remain non-exclusive.
 
@@ -150,8 +151,9 @@ admission switch.
   and async HTTP responses.
 - `run_generate()` and `run_agenerate()` both pop `local_exclusive_admission`
   and pass it to their sync/async admission twin.
-- BYO sync/async paths do not call `_raise_bundled_status()` and do not acquire
-  local admission permits.
+- BYO sync/async paths do not call `_raise_bundled_status()`. Non-confidential
+  BYO paths may acquire non-exclusive local admission permits; confidential BYO
+  paths remain ungoverned.
 
 ### D6. Talent Retry
 

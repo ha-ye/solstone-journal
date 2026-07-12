@@ -504,20 +504,29 @@ def _dispatch_local_provider_needed() -> bool:
     return _LOCAL_PROVIDER_NEEDED
 
 
-def _segment_work_uses_bundled_local() -> bool:
-    """Return True when segment-pipeline work can resolve to the bundled server."""
-    return is_local_provider_needed() and resolve_local_endpoint().is_bundled
+def _segment_work_uses_local() -> bool:
+    """Return True when segment-pipeline work can resolve to the local provider."""
+    return is_local_provider_needed()
 
 
-def _describe_uses_bundled_local() -> bool:
-    """Return True when screen-describe resolves to the bundled server."""
+def _describe_uses_local() -> bool:
+    """Return True when screen-describe resolves to the local provider."""
     provider, _ = resolve_provider(FRAME_CONTEXT, "generate")
-    return provider == "local" and resolve_local_endpoint().is_bundled
+    return provider == "local"
+
+
+def _local_fanout_slots() -> int | None:
+    endpoint = resolve_local_endpoint()
+    if endpoint.is_bundled:
+        return read_server_parallel_slots()
+    return endpoint.parallel_slots
 
 
 def _cap_default_at_local_slots(formula: int, log_key: str) -> int:
-    """Clamp a CPU-derived default to the bundled server's parallel slots."""
-    slots = read_server_parallel_slots()
+    """Clamp a CPU-derived default to the local provider's client-side slots."""
+    slots = _local_fanout_slots()
+    if slots is None:
+        return formula
     derived = min(formula, slots)
     if derived < formula and log_key not in _CAP_LOGGED:
         _CAP_LOGGED.add(log_key)
@@ -534,12 +543,12 @@ def _cap_default_at_local_slots(formula: int, log_key: str) -> int:
 def _default_segment_workers() -> int:
     """Return the default segment-level worker count for repair mode.
 
-    Capped at the bundled local server's parallel-slot count when any
-    segment-pipeline work can resolve to that server.
+    Capped at the local provider's client-side slot count when any
+    segment-pipeline work can resolve to a governed local lane.
     """
     cpu_count = os.cpu_count() or 2
     formula = max(1, min(8, cpu_count // 2))
-    if not _segment_work_uses_bundled_local():
+    if not _segment_work_uses_local():
         return formula
     return _cap_default_at_local_slots(formula, "default_segment_workers")
 
@@ -547,11 +556,11 @@ def _default_segment_workers() -> int:
 def _default_describe_jobs() -> int:
     """Return the default screen-describe worker count for repair mode.
 
-    Capped at the bundled local server's parallel-slot count when the describe
-    path resolves to that server.
+    Capped at the local provider's client-side slot count when the describe
+    path resolves to a governed local lane.
     """
     formula = max(1, min(4, (os.cpu_count() or 2) // 4))
-    if not _describe_uses_bundled_local():
+    if not _describe_uses_local():
         return formula
     return _cap_default_at_local_slots(formula, "default_describe_jobs")
 

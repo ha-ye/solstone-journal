@@ -47,6 +47,23 @@ def _write_config(journal: Path, config: dict) -> None:
     write_journal_config(config, journal)
 
 
+def test_confidential_provenance_delegates_to_config_helper(
+    journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    expected = {"account_id": "acct"}
+
+    def fake_block(config: dict) -> dict:
+        calls.append(config)
+        return expected
+
+    monkeypatch.setattr(spp_module, "confidential_provenance_block", fake_block)
+
+    assert confidential_provenance() is expected
+    assert calls == [_read_config(journal_copy)]
+
+
 def test_provision_confidential_handoff_round_trip_writes_single_state(
     journal_copy: Path,
 ) -> None:

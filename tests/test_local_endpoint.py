@@ -61,6 +61,122 @@ def test_resolve_local_endpoint_carries_placeholder_credential(monkeypatch):
 
     assert endpoint.is_bundled is False
     assert endpoint.credential == "test-token-PLACEHOLDER"
+    assert endpoint.parallel_slots == 2
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (1, 1),
+        (2, 2),
+        (8, 8),
+    ],
+)
+def test_resolve_local_endpoint_parallel_slots_from_config(monkeypatch, raw, expected):
+    monkeypatch.setattr(
+        local_endpoint,
+        "read_journal_config",
+        lambda: _config(
+            {
+                "endpoint_url": "http://h:8080",
+                "served_model_id": "model",
+                "parallel_slots": raw,
+            }
+        ),
+    )
+
+    endpoint = local_endpoint.resolve_local_endpoint()
+
+    assert endpoint.is_bundled is False
+    assert endpoint.parallel_slots == expected
+
+
+@pytest.mark.parametrize("raw", [0, -1, True, False, 1.5, "2", [], {}])
+def test_resolve_local_endpoint_invalid_parallel_slots_defaults_and_warns(
+    monkeypatch,
+    caplog,
+    raw,
+):
+    monkeypatch.setattr(
+        local_endpoint,
+        "read_journal_config",
+        lambda: _config(
+            {
+                "endpoint_url": "http://h:8080",
+                "served_model_id": "model",
+                "parallel_slots": raw,
+            }
+        ),
+    )
+
+    endpoint = local_endpoint.resolve_local_endpoint()
+
+    assert endpoint.parallel_slots == 2
+    assert (
+        f"Invalid providers.local.parallel_slots in journal config: {raw!r} - "
+        "defaulting to 2"
+    ) in caplog.text
+
+
+def test_resolve_local_endpoint_bundled_ignores_stray_parallel_slots(
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.setattr(
+        local_endpoint,
+        "read_journal_config",
+        lambda: _config({"parallel_slots": 0}),
+    )
+
+    endpoint = local_endpoint.resolve_local_endpoint()
+
+    assert endpoint.is_bundled is True
+    assert endpoint.parallel_slots is None
+    assert "providers.local.parallel_slots" not in caplog.text
+
+
+def test_resolve_local_endpoint_confidential_ignores_stray_parallel_slots(
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.setattr(
+        local_endpoint,
+        "read_journal_config",
+        lambda: {
+            "providers": {
+                "local": {
+                    "endpoint_url": "https://spp.example.test",
+                    "served_model_id": "confidential-model",
+                    "parallel_slots": 0,
+                }
+            },
+            "services": {"confidential": {"account_id": "acct"}},
+        },
+    )
+
+    endpoint = local_endpoint.resolve_local_endpoint()
+
+    assert endpoint.is_bundled is False
+    assert endpoint.parallel_slots is None
+    assert "providers.local.parallel_slots" not in caplog.text
+
+
+def test_confidential_provenance_block_returns_dict_only():
+    block = {"account_id": "acct"}
+
+    assert (
+        local_endpoint.confidential_provenance_block(
+            {"services": {"confidential": block}}
+        )
+        is block
+    )
+    assert local_endpoint.confidential_provenance_block({}) is None
+    assert (
+        local_endpoint.confidential_provenance_block(
+            {"services": {"confidential": "bad"}}
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(

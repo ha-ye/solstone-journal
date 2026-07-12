@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from solstone.think.journal_config import read_journal_config
+
+LOG = logging.getLogger(__name__)
 
 # COPY REVIEW: founder-gated owner-facing copy; keep in sync with convey reason UI.
 LOCAL_ENDPOINT_UNREACHABLE_COPY = (
@@ -23,14 +26,24 @@ _REASON_COPY_BY_CODE = {
     "local_endpoint_unreachable": LOCAL_ENDPOINT_UNREACHABLE_COPY,
     "local_endpoint_contract_failed": LOCAL_ENDPOINT_CONTRACT_COPY,
 }
+_DEFAULT_BYO_PARALLEL_SLOTS = 2
 
 
 @dataclass(frozen=True)
 class LocalEndpoint:
+    """Resolved local endpoint and optional client-side admission capacity.
+
+    Bundled endpoints always carry ``parallel_slots=None``; bundled capacity is
+    live server state and this field is inert. Confidential BYO endpoints also
+    carry ``None`` and are ungoverned. Non-confidential BYO endpoints carry the
+    resolved ``int >= 1`` client-side slot count.
+    """
+
     base_url: str
     served_model_id: str
     credential: str | None
     is_bundled: bool
+    parallel_slots: int | None = None
 
 
 def normalize_local_endpoint_url(raw_url: str) -> str:
@@ -40,6 +53,32 @@ def normalize_local_endpoint_url(raw_url: str) -> str:
     if root.endswith("/v1"):
         root = root[: -len("/v1")].rstrip("/")
     return root
+
+
+def confidential_provenance_block(config: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the services.confidential block from an already-read journal config."""
+
+    services = config.get("services")
+    if not isinstance(services, dict):
+        return None
+    provenance = services.get("confidential")
+    return provenance if isinstance(provenance, dict) else None
+
+
+def _configured_byo_parallel_slots(local_config: dict[str, Any]) -> int:
+    if "parallel_slots" not in local_config:
+        return _DEFAULT_BYO_PARALLEL_SLOTS
+
+    raw = local_config.get("parallel_slots")
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw < 1:
+        LOG.warning(
+            "Invalid providers.local.parallel_slots in journal config: %r - "
+            "defaulting to %d",
+            raw,
+            _DEFAULT_BYO_PARALLEL_SLOTS,
+        )
+        return _DEFAULT_BYO_PARALLEL_SLOTS
+    return raw
 
 
 def resolve_local_endpoint() -> LocalEndpoint:
@@ -62,6 +101,11 @@ def resolve_local_endpoint() -> LocalEndpoint:
             served_model_id=served_model_id,
             credential=str(credential) if credential is not None else None,
             is_bundled=False,
+            parallel_slots=(
+                None
+                if confidential_provenance_block(config) is not None
+                else _configured_byo_parallel_slots(local_config)
+            ),
         )
     return LocalEndpoint("", "", None, is_bundled=True)
 
@@ -144,6 +188,7 @@ __all__ = [
     "LOCAL_ENDPOINT_UNREACHABLE_COPY",
     "LocalEndpoint",
     "classify_byo_cogitate_error",
+    "confidential_provenance_block",
     "local_endpoint_reason_copy",
     "normalize_local_endpoint_url",
     "probe_local_endpoint",
