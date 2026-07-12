@@ -25,7 +25,7 @@ _POLL_INTERVAL_S = 0.025
 
 
 class LocalAdmissionTimeout(TimeoutError):
-    """No bundled-local inference slot became available before the deadline."""
+    """No governed local inference slot became available before the deadline."""
 
     reason_code = "local_queue_timeout"
 
@@ -191,7 +191,7 @@ def _deadline(started: float, timeout_s: float | None) -> float | None:
 def acquire_local_slot(
     capacity: int, timeout_s: float | None, *, exclusive: bool = False
 ) -> LocalPermit:
-    """Wait synchronously for bundled-local serving capacity."""
+    """Wait synchronously for governed local serving capacity."""
     if capacity < 1:
         raise ValueError("local inference capacity must be at least one")
     started = time.monotonic()
@@ -224,7 +224,7 @@ def acquire_local_slot(
 async def acquire_local_slot_async(
     capacity: int, timeout_s: float | None, *, exclusive: bool = False
 ) -> LocalPermit:
-    """Wait cancellation-safely for bundled-local serving capacity."""
+    """Wait cancellation-safely for governed local serving capacity."""
     if capacity < 1:
         raise ValueError("local inference capacity must be at least one")
     started = time.monotonic()

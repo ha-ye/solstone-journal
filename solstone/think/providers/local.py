@@ -676,20 +676,25 @@ def run_generate(
         post_kwargs["headers"] = {"Authorization": f"Bearer {endpoint.credential}"}
     started = time.monotonic()
     timeout = timeout_s or _DEFAULT_TIMEOUT
-    admission = (
-        contextlib.nullcontext()
-        if endpoint.parallel_slots is None
-        else acquire_local_slot(
+    if endpoint.parallel_slots is None:
+        admission = contextlib.nullcontext()
+        post_timeout = timeout
+    else:
+        admission = acquire_local_slot(
             endpoint.parallel_slots,
             _remaining_timeout(started, timeout),
         )
-    )
+        try:
+            post_timeout = _remaining_timeout(started, timeout)
+        except LocalAdmissionTimeout:
+            admission.release()
+            raise
     try:
         with admission:
             base_url = confidential_egress_base_url(endpoint.base_url)
             response = httpx.post(
                 f"{base_url}/v1/chat/completions",
-                timeout=_remaining_timeout(started, timeout),
+                timeout=post_timeout,
                 **post_kwargs,
             )
             response.raise_for_status()
@@ -748,21 +753,26 @@ async def run_agenerate(
             post_kwargs["headers"] = {"Authorization": f"Bearer {endpoint.credential}"}
         started = time.monotonic()
         timeout = timeout_s or _DEFAULT_TIMEOUT
-        admission = (
-            contextlib.nullcontext()
-            if endpoint.parallel_slots is None
-            else await acquire_local_slot_async(
+        if endpoint.parallel_slots is None:
+            admission = contextlib.nullcontext()
+            post_timeout = timeout
+        else:
+            admission = await acquire_local_slot_async(
                 endpoint.parallel_slots,
                 _remaining_timeout(started, timeout),
             )
-        )
+            try:
+                post_timeout = _remaining_timeout(started, timeout)
+            except LocalAdmissionTimeout:
+                admission.release()
+                raise
         try:
             async with admission:
                 base_url = confidential_egress_base_url(endpoint.base_url)
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
                         f"{base_url}/v1/chat/completions",
-                        timeout=_remaining_timeout(started, timeout),
+                        timeout=post_timeout,
                         **post_kwargs,
                     )
                 response.raise_for_status()

@@ -1096,6 +1096,10 @@ def test_run_generate_confidential_with_stray_slots_skips_admission(monkeypatch)
         "services": {"confidential": {"account_id": "acct"}},
     }
     captured = {}
+    current_time = {"value": 100.0}
+
+    def fake_monotonic():
+        return current_time["value"]
 
     def fail_acquire(*_args, **_kwargs):
         raise AssertionError("confidential generate must not acquire admission")
@@ -1104,24 +1108,28 @@ def test_run_generate_confidential_with_stray_slots_skips_admission(monkeypatch)
         captured.update({"url": url, **kwargs})
         return _ChatResponse()
 
+    def fake_egress_base_url(base_url):
+        current_time["value"] += 2.0
+        return "http://127.0.0.1:4567" if base_url == configured_endpoint else base_url
+
     import httpx
 
     from solstone.think.providers import local_admission, local_endpoint
 
+    monkeypatch.setattr(provider.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(local_endpoint, "read_journal_config", lambda: config)
     monkeypatch.setattr(local_admission, "acquire_local_slot", fail_acquire)
     monkeypatch.setattr(
         "solstone.think.services.spp_transport.confidential_egress_base_url",
-        lambda base_url: (
-            "http://127.0.0.1:4567" if base_url == configured_endpoint else base_url
-        ),
+        fake_egress_base_url,
     )
     monkeypatch.setattr(httpx, "post", fake_post)
 
-    result = provider.run_generate("hello", model=LOCAL_MODEL)
+    result = provider.run_generate("hello", model=LOCAL_MODEL, timeout_s=1.0)
 
     assert result["text"] == "hello"
     assert captured["url"] == "http://127.0.0.1:4567/v1/chat/completions"
+    assert captured["timeout"] == pytest.approx(1.0)
 
 
 def test_run_generate_confidential_posts_to_forwarder_not_configured_endpoint(
@@ -1386,9 +1394,17 @@ def test_run_agenerate_confidential_with_stray_slots_skips_admission(monkeypatch
         "services": {"confidential": {"account_id": "acct"}},
     }
     captured = {}
+    current_time = {"value": 200.0}
+
+    def fake_monotonic():
+        return current_time["value"]
 
     async def fail_acquire(*_args, **_kwargs):
         raise AssertionError("confidential agenerate must not acquire admission")
+
+    def fake_egress_base_url(base_url):
+        current_time["value"] += 2.0
+        return "http://127.0.0.1:4567" if base_url == configured_endpoint else base_url
 
     class AsyncClient:
         async def __aenter__(self):
@@ -1405,20 +1421,22 @@ def test_run_agenerate_confidential_with_stray_slots_skips_admission(monkeypatch
 
     from solstone.think.providers import local_admission, local_endpoint
 
+    monkeypatch.setattr(provider.time, "monotonic", fake_monotonic)
     monkeypatch.setattr(local_endpoint, "read_journal_config", lambda: config)
     monkeypatch.setattr(local_admission, "acquire_local_slot_async", fail_acquire)
     monkeypatch.setattr(
         "solstone.think.services.spp_transport.confidential_egress_base_url",
-        lambda base_url: (
-            "http://127.0.0.1:4567" if base_url == configured_endpoint else base_url
-        ),
+        fake_egress_base_url,
     )
     monkeypatch.setattr(httpx, "AsyncClient", AsyncClient)
 
-    result = asyncio.run(provider.run_agenerate("hello", model=LOCAL_MODEL))
+    result = asyncio.run(
+        provider.run_agenerate("hello", model=LOCAL_MODEL, timeout_s=1.0)
+    )
 
     assert result["text"] == "hello"
     assert captured["url"] == "http://127.0.0.1:4567/v1/chat/completions"
+    assert captured["timeout"] == pytest.approx(1.0)
 
 
 def test_run_generate_byo_body_omits_bundled_qwen_sampling(monkeypatch):
