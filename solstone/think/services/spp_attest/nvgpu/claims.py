@@ -20,9 +20,9 @@ from solstone.think.services.spp_attest.tlv import GpuEnvelope
 class GpuAppraisal:
     """GPU appraisal provenance.
 
-    envelope_gpu_uuid is copied from our SPP GPU envelope field 6. nvattest never
-    consumes or verifies that UUID, so it is intentionally prefixed as envelope
-    metadata rather than an nvattest-verified claim.
+    arch and envelope_gpu_uuid are copied from our SPP GPU envelope fields 7 and
+    6. They are not nvattest-verified claims, so they must not be surfaced as
+    verified provenance.
     """
 
     steps: list[AppraisalStep]

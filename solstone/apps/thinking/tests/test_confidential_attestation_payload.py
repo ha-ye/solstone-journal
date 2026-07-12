@@ -13,6 +13,9 @@ from solstone.think.services.spp_attest.composite import CompositeVerdict
 from solstone.think.services.spp_attest.nvgpu.claims import GpuAppraisal
 from solstone.think.services.spp_attest.snp import AppraisalStep, CpuAppraisal
 
+ATTESTED_SUBSTRATE = "AMD SEV-SNP + NVIDIA GH100 A01 GSP BROM"
+HOSTILE_ARCH = "<script>alert(1)</script>"
+
 
 def _client(settings_env):
     journal_path, config = settings_env()
@@ -32,6 +35,8 @@ def _session(
     started_at: datetime,
     tpm_heartbeat_at: datetime,
     gpu_reattest_at: datetime,
+    substrate: str = ATTESTED_SUBSTRATE,
+    arch: str = "HOPPER",
 ) -> AttestationSession:
     cpu = CpuAppraisal(
         steps=[AppraisalStep("cpu", "ok", "test")],
@@ -53,13 +58,13 @@ def _session(
         oemid="5703",
         eat_nonce="eat-nonce-secret",
         claims_version="3.0",
-        arch="HOPPER",
+        arch=arch,
         envelope_gpu_uuid="GPU-machine-secret",
     )
     verdict = CompositeVerdict(
         verified=True,
         legs=("cpu", "gpu"),
-        substrate="AMD SEV-SNP + NVIDIA HOPPER",
+        substrate=substrate,
         checked_at=now,
         cpu_provenance=cpu,
         gpu_provenance=gpu,
@@ -114,7 +119,7 @@ def test_active_lane_confidential_attestation_verified_session_serializes_safe_p
         "state": "verified",
         "provenance": {
             "legs": ["cpu", "gpu"],
-            "substrate": "AMD SEV-SNP + NVIDIA HOPPER",
+            "substrate": ATTESTED_SUBSTRATE,
             "checked_at": now.isoformat(),
         },
         "reason": None,
@@ -130,6 +135,29 @@ def test_active_lane_confidential_attestation_verified_session_serializes_safe_p
         "eat-nonce-secret",
     }:
         assert forbidden not in serialized
+
+
+def test_active_lane_confidential_attestation_does_not_serialize_unverified_arch(
+    settings_env,
+):
+    client = _client(settings_env)
+    now = datetime.now(timezone.utc)
+    session = _session(
+        now=now,
+        started_at=now - timedelta(minutes=1),
+        tpm_heartbeat_at=now - timedelta(minutes=1),
+        gpu_reattest_at=now - timedelta(minutes=1),
+        arch=HOSTILE_ARCH,
+    )
+    spp.record_attestation_verified(session)
+
+    response = client.get("/app/thinking/api/providers")
+    assert response.status_code == 200
+    payload = response.get_json()
+    attestation = payload["active_lane"]["confidential_attestation"]
+
+    assert attestation["provenance"]["substrate"] == ATTESTED_SUBSTRATE
+    assert HOSTILE_ARCH not in response.get_data(as_text=True)
 
 
 def test_active_lane_confidential_attestation_stale_session(settings_env):

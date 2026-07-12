@@ -20,6 +20,8 @@ from solstone.think.services.spp_attest.tlv import GpuEnvelope
 
 FIXTURE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "spp_attest"
 NOW = datetime(2026, 7, 11, 18, 0, tzinfo=timezone.utc)
+ATTESTED_HWMODEL = "GH100 A01 GSP BROM"
+HOSTILE_ARCH = "<script>alert(1)</script>"
 
 
 def _owner_nonce() -> bytes:
@@ -48,17 +50,22 @@ def _fake_nvattest_dir(tmp_path: Path) -> Path:
     return root
 
 
-def _gpu_appraisal(envelope: GpuEnvelope) -> GpuAppraisal:
+def _gpu_appraisal(
+    envelope: GpuEnvelope,
+    *,
+    arch: str | None = None,
+    hwmodel: str = ATTESTED_HWMODEL,
+) -> GpuAppraisal:
     return GpuAppraisal(
         steps=[AppraisalStep("nvattest", "ok", "test")],
         driver_version="595.71.05",
         vbios_version="96.00.88.00.11",
-        hwmodel="GH100 A01 GSP BROM",
+        hwmodel=hwmodel,
         ueid="test-ueid",
         oemid="5703",
         eat_nonce=_owner_nonce().hex(),
         claims_version="3.0",
-        arch=envelope.field(7).decode("utf-8").upper(),
+        arch=arch or envelope.field(7).decode("utf-8").upper(),
         envelope_gpu_uuid="GPU-test-machine-id",
     )
 
@@ -106,7 +113,7 @@ def test_verify_composite_positive_fixture_with_injected_gpu_appraiser(
 
     assert verdict.verified is True
     assert verdict.legs == ("cpu", "gpu")
-    assert verdict.substrate == "AMD SEV-SNP + NVIDIA HOPPER"
+    assert verdict.substrate == f"AMD SEV-SNP + NVIDIA {ATTESTED_HWMODEL}"
     assert verdict.checked_at == NOW
     assert verdict.cpu_provenance.report_version == 5
     assert verdict.gpu_provenance.arch == "HOPPER"
@@ -143,10 +150,38 @@ def test_verify_composite_positive_fixture_through_real_gpu_appraiser(
         nvattest_dir=nvattest_dir,
     )
 
-    assert verdict.substrate == "AMD SEV-SNP + NVIDIA HOPPER"
+    assert verdict.substrate == f"AMD SEV-SNP + NVIDIA {ATTESTED_HWMODEL}"
     argv = observed["argv"]
     assert isinstance(argv, list)
     assert argv[argv.index("--nonce") + 1] == _owner_nonce().hex()
+
+
+def test_verify_composite_substrate_uses_attested_hwmodel_not_envelope_arch(
+    tmp_path: Path,
+) -> None:
+    def hostile_arch_appraiser(
+        envelope: GpuEnvelope,
+        owner_nonce: bytes,
+        *,
+        nvattest_dir: Path,
+    ) -> GpuAppraisal:
+        assert owner_nonce == _owner_nonce()
+        assert nvattest_dir
+        return _gpu_appraisal(envelope, arch=HOSTILE_ARCH)
+
+    verdict = verify_composite(
+        FIXTURE_DIR,
+        envelope_tlv=_envelope_tlv(),
+        channel_binding=_channel_binding(),
+        owner_nonce=_owner_nonce(),
+        now=NOW,
+        nvattest_dir=tmp_path / "unused",
+        gpu_appraiser=hostile_arch_appraiser,
+    )
+
+    assert verdict.gpu_provenance.arch == HOSTILE_ARCH
+    assert verdict.substrate == f"AMD SEV-SNP + NVIDIA {ATTESTED_HWMODEL}"
+    assert HOSTILE_ARCH not in verdict.substrate
 
 
 def test_verify_composite_rejects_tampered_embedded_cpu_report_without_leak(
@@ -253,6 +288,42 @@ def test_verify_composite_maps_gpu_nonce_mismatch_without_leak(
         "the GPU leg rejected the evidence (gpu_nonce_mismatch)"
     )
     assert isinstance(exc_info.value.__cause__, GpuAppraisalError)
+    _assert_owner_message_safe(exc_info.value)
+
+
+def test_verify_composite_bounds_out_of_band_gpu_reason_without_leak(
+    tmp_path: Path,
+) -> None:
+    unsafe_reason = f"unsafe-reason-{_owner_nonce().hex()}"
+
+    def rejecting_gpu_appraiser(
+        _envelope: GpuEnvelope,
+        _owner_nonce: bytes,
+        *,
+        nvattest_dir: Path,
+    ) -> GpuAppraisal:
+        assert nvattest_dir
+        raise GpuAppraisalError(
+            unsafe_reason,
+            "raw diagnostic",
+            stderr=f"nonce_from_ar: {unsafe_reason}",
+        )
+
+    with pytest.raises(AttestationFailedError) as exc_info:
+        verify_composite(
+            FIXTURE_DIR,
+            envelope_tlv=_envelope_tlv(),
+            channel_binding=_channel_binding(),
+            owner_nonce=_owner_nonce(),
+            now=NOW,
+            nvattest_dir=tmp_path / "unused",
+            gpu_appraiser=rejecting_gpu_appraiser,
+        )
+
+    assert exc_info.value.detail == (
+        "the GPU leg rejected the evidence (gpu_appraisal_failed)"
+    )
+    assert unsafe_reason not in str(exc_info.value)
     _assert_owner_message_safe(exc_info.value)
 
 

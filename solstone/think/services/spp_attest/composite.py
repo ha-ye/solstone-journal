@@ -28,6 +28,10 @@ from solstone.think.services.spp_attest.tpm_quote import TpmQuoteVerifier
 
 log = logging.getLogger(__name__)
 
+_GPU_REASONS = frozenset(
+    {"nvattest_unavailable", "gpu_nonce_mismatch", "gpu_appraisal_failed"}
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CompositeVerdict:
@@ -92,8 +96,9 @@ def verify_composite(
             nvattest_dir=nvattest_dir,
         )
     except GpuAppraisalError as exc:
+        reason = exc.reason if exc.reason in _GPU_REASONS else "gpu_appraisal_failed"
         _raise_attestation_failed(
-            f"the GPU leg rejected the evidence ({exc.reason})",
+            f"the GPU leg rejected the evidence ({reason})",
             "confidential attestation GPU leg failed",
             exc,
         )
@@ -107,7 +112,7 @@ def verify_composite(
     return CompositeVerdict(
         verified=True,
         legs=("cpu", "gpu"),
-        substrate=f"AMD SEV-SNP + NVIDIA {gpu_provenance.arch}",
+        substrate=f"AMD SEV-SNP + NVIDIA {gpu_provenance.hwmodel}",
         checked_at=now,
         cpu_provenance=cpu_provenance,
         gpu_provenance=gpu_provenance,
