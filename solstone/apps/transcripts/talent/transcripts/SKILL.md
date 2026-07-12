@@ -88,6 +88,7 @@ Source flags:
 - `--percepts`: screen percepts only.
 - `--agents`: agent outputs only.
 - Default with no source flags: transcripts + agents (no percepts).
+- `--max BYTES`: output is truncated at 16384 bytes by default; use a larger value (for example, `--max 400000`) for full-day or full-transcript reads, or `--max 0` for unlimited output.
 
 `--audio` and `--screen` are hidden aliases for `--transcripts` and `--percepts` respectively. Prefer the primary flags in new code.
 
