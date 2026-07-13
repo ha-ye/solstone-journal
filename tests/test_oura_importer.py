@@ -1791,6 +1791,32 @@ def test_oura_sync_private_modes_under_permissive_umask(
         assert _mode(file_path) == 0o600
 
 
+def test_oura_sync_missing_auth_repairs_imports_dir_before_lock(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    imports_dir = journal / "imports"
+    imports_dir.chmod(0o777)
+
+    with _temporary_umask(0o000):
+        with pytest.raises(oura.OuraAuthorizationNeeded):
+            oura.backend.sync(
+                journal,
+                dry_run=False,
+                confirm_health_save=True,
+                today=dt.date(2026, 1, 10),
+            )
+
+    assert _mode(imports_dir) == 0o700
+    assert _mode(imports_dir / "oura.json.lock") == 0o600
+    assert not (imports_dir / "oura.json").exists()
+    assert not any(
+        entry.startswith("imports/2026") for entry in _imports_contents(journal)
+    )
+
+
 def test_overlapping_save_sync_loser_gets_structured_lock_timeout(
     tmp_path: Path,
     monkeypatch,

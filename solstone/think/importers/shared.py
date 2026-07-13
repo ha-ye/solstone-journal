@@ -48,6 +48,8 @@ def hold_private_import_lock(
 ):
     """Hold a private sidecar lock for imports-owned state."""
 
+    path = Path(path)
+    ensure_private_import_dir(path.parent)
     try:
         with hold_lock(
             path,
@@ -394,8 +396,8 @@ def install_source_file(src: Path, dest: Path) -> None:
     """Install an original source file onto dest atomically, preserving mtime.
 
     Streams src into a same-directory temp in dest.parent, then promotes it via
-    journal_io.install_file. The installed file takes the journal default mode
-    (mkstemp-derived), NOT src's mode -- a deliberate, conservative choice for
+    journal_io.install_file. The installed file takes the private importer file
+    mode, NOT src's mode -- a deliberate, conservative choice for
     arbitrary user-supplied originals (unlike shutil.copy2, which copies mode).
     """
     _ensure_import_parent_dir(dest.parent)
