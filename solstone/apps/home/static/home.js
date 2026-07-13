@@ -458,11 +458,14 @@
     const kinds = Array.isArray(neighbor.kinds) ? neighbor.kinds : [];
     const chips = kinds
       .filter(function (item) {
-        return isPlainObject(item) && typeof item.kind === 'string' && !attendanceKinds.has(item.kind);
+        return isPlainObject(item)
+          && typeof item.kind === 'string'
+          && !attendanceKinds.has(item.kind)
+          && typeof kindWords[item.kind] === 'string';
       })
       .slice(0, 2)
       .map(function (item) {
-        const label = kindWords[item.kind] || item.kind;
+        const label = kindWords[item.kind];
         return '<span class="pulse-connections-chip">' + esc(label) + '</span>';
       });
     if (!chips.length) return '';

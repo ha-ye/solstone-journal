@@ -213,6 +213,7 @@ const pulseWithConnections = Object.assign({}, pulsePayload, {
         last_seen: '20260310',
         kinds: [
           { kind: 'attended-with', count: 1, weighted: 14 },
+          { kind: 'unmapped-kind', count: 1, weighted: 13 },
           { kind: 'spoke-with', count: 4, weighted: 12 },
           { kind: 'mentioned', count: 3, weighted: 9 },
         ],
@@ -421,6 +422,8 @@ function makeContext(apiJson) {
   assert((julietRow.match(/<span class="pulse-connections-chip">/g) || []).length === 2, 'juliet should render exactly two chips');
   assert(julietRow.includes('<span class="pulse-connections-chip">spoke</span><span class="pulse-connections-chip">mentions</span>'), 'juliet chips should be spoke then mentions');
   assert(!julietRow.includes('<span class="pulse-connections-chip">events</span>'), 'juliet attendance chip should not render');
+  assert(!julietRow.includes('<span class="pulse-connections-chip">unmapped-kind</span>'), 'unmapped kind slug should not render');
+  assert(!julietRow.includes('<span class="pulse-connections-chip">undefined</span>'), 'unmapped kind should not render undefined');
   assert(connected.surface.innerHTML.includes('all connections →'), 'connections footer missing');
   assert(!connected.surface.innerHTML.includes('class="pulse-connections-row" href='), 'row must not be the anchor');
   assert(!connected.surface.innerHTML.includes('&view='), 'entity links must use bare hashes');
