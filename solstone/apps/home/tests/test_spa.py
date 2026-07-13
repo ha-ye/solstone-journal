@@ -195,6 +195,61 @@ const pulsePayload = {
   needs_summary: '',
 };
 
+const pulseWithConnections = Object.assign({}, pulsePayload, {
+  connections: {
+    state: 'ok',
+    total: 4,
+    kind_words: {
+      'spoke-with': 'spoke',
+      mentioned: 'mentions',
+    },
+    attendance_kinds: ['attended-with', 'co-present', 'scheduled-with'],
+    neighbors: [
+      {
+        entity_id: 'juliet_capulet',
+        name: 'Juliet Capulet',
+        evidence_class: 'mixed',
+        count: 8,
+        last_seen: '20260310',
+        kinds: [
+          { kind: 'attended-with', count: 1, weighted: 14 },
+          { kind: 'spoke-with', count: 4, weighted: 12 },
+          { kind: 'mentioned', count: 3, weighted: 9 },
+        ],
+        latest_label: 'Balcony conversation',
+        latest_kind: 'spoke-with',
+        latest_day: '20260310',
+      },
+      {
+        entity_id: 'friar_lawrence',
+        name: 'Friar Lawrence',
+        evidence_class: 'attendance',
+        count: 3,
+        last_seen: '20260310',
+        kinds: [
+          { kind: 'attended-with', count: 3, weighted: 6 },
+        ],
+        latest_label: 'Shared event',
+        latest_kind: 'attended-with',
+        latest_day: '20260310',
+      },
+      {
+        entity_id: 'mercutio_escalus',
+        name: 'Mercutio Escalus',
+        evidence_class: 'semantic',
+        count: 1,
+        last_seen: '20260307',
+        kinds: [
+          { kind: 'spoke-with', count: 1, weighted: 4 },
+        ],
+        latest_label: 'Street conversation',
+        latest_kind: 'spoke-with',
+        latest_day: '20260307',
+      },
+    ],
+  },
+});
+
 function flush() {
   return new Promise(resolve => setImmediate(resolve));
 }
@@ -331,6 +386,44 @@ function makeContext(apiJson) {
   assert(success.apiCalls.filter(url => url === '/app/home/api/pulse').length === 1, 'pulse should fetch once');
   assert(success.surface.innerHTML.includes('pulse-vitals'), 'pulse render did not populate vitals');
   assert(success.surface.innerHTML.includes('pulse-narrative'), 'pulse render did not populate narrative');
+  assert(!success.surface.innerHTML.includes('data-home-surface="connections"'), 'missing connections payload should not render connections');
+
+  const connected = makeContext(url => {
+    if (url === '/app/home/api/pulse') return Promise.resolve(pulseWithConnections);
+    if (url === '/app/home/api/briefing') {
+      return Promise.resolve({
+        exists: false,
+        phase: 'eod',
+        summary: null,
+        meta: null,
+        sections: {},
+        needs_deduped: [],
+        needs_shared_count: 0,
+        needs_badge: null,
+      });
+    }
+    return Promise.reject(new Error(`unexpected url ${url}`));
+  });
+  connected.listeners['workspace:mounted']({ detail: { app: 'home' } });
+  await flush();
+  await flush();
+  assert(connected.surface.innerHTML.includes('data-home-surface="connections"'), 'connections card did not render');
+  assert(connected.surface.innerHTML.includes('relationships'), 'relationships shelf missing');
+  assert(connected.surface.innerHTML.includes('often around — events only'), 'attendance shelf missing');
+  assert(connected.surface.innerHTML.includes('href="/app/entities#juliet_capulet"'), 'bare entity hash link missing');
+  assert(connected.surface.innerHTML.includes('href="/app/entities#friar_lawrence">Friar Lawrence</a> <span class="pulse-connections-cluster-count">3 events</span>'), 'attendance name/count split missing');
+  assert(connected.surface.innerHTML.includes('<span class="pulse-connections-chip">spoke</span>'), 'spoke chip missing');
+  assert(connected.surface.innerHTML.includes('<span class="pulse-connections-chip">mentions</span>'), 'mentions chip missing');
+  const julietStart = connected.surface.innerHTML.indexOf('<a class="pulse-connections-name" href="/app/entities#juliet_capulet"');
+  assert(julietStart >= 0, 'juliet row missing');
+  const julietEnd = connected.surface.innerHTML.indexOf('</div>', julietStart);
+  const julietRow = connected.surface.innerHTML.slice(julietStart, julietEnd);
+  assert((julietRow.match(/<span class="pulse-connections-chip">/g) || []).length === 2, 'juliet should render exactly two chips');
+  assert(julietRow.includes('<span class="pulse-connections-chip">spoke</span><span class="pulse-connections-chip">mentions</span>'), 'juliet chips should be spoke then mentions');
+  assert(!julietRow.includes('<span class="pulse-connections-chip">events</span>'), 'juliet attendance chip should not render');
+  assert(connected.surface.innerHTML.includes('all connections →'), 'connections footer missing');
+  assert(!connected.surface.innerHTML.includes('class="pulse-connections-row" href='), 'row must not be the anchor');
+  assert(!connected.surface.innerHTML.includes('&view='), 'entity links must use bare hashes');
 
   let failureCalls = 0;
   const failed = makeContext(url => {

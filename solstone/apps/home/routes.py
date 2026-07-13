@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 from flask import Blueprint, current_app, jsonify
 
+from solstone.apps.home.connections import build_connections_card
 from solstone.apps.home.health_glance import build_health_glance
 from solstone.apps.home.needs_you import classify_needs_you, needs_dedup_key
 from solstone.apps.home.thinking_readiness import _thinking_blocked
@@ -952,6 +953,7 @@ def _build_pulse_context() -> dict[str, Any]:
         "briefing_needs_badge": briefing_needs_badge,
         "latest_weekly_reflection": latest_weekly_reflection,
         "yesterday_processing": yesterday_processing,
+        "connections": build_connections_card(),
         "show_welcome": show_welcome,
         "journal_age_days": journal_age_days,
         "home_state": "welcome" if show_welcome else "active",

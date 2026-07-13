@@ -219,6 +219,7 @@
     cards.push(renderWeeklyReflectionHtml(data));
     cards.push(renderTodayHtml(data));
     cards.push(renderNeedsYouHtml(data));
+    cards.push(renderConnectionsHtml(data));
     setSurfaceHtml(cards.join(''));
     restoreSectionState();
     refreshBriefing();
@@ -435,6 +436,128 @@
     replaceHomeSurface('needs', renderNeedsYouHtml(pulse), ['vitals', 'yesterday', 'briefing', 'narrative', 'reflection', 'today']);
   }
 
+  function formatConnectionDay(day, referenceDay) {
+    const text = String(day || '');
+    if (!/^\d{8}$/.test(text)) return text;
+    const date = new Date(Number(text.slice(0, 4)), Number(text.slice(4, 6)) - 1, Number(text.slice(6, 8)));
+    let label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const reference = String(referenceDay || '');
+    if (/^\d{8}$/.test(reference) && text.slice(0, 4) !== reference.slice(0, 4)) {
+      label += " '" + text.slice(2, 4);
+    }
+    return label;
+  }
+
+  function connectionEntityHref(entityId) {
+    return '/app/entities#' + String(entityId || '');
+  }
+
+  function connectionKindChipsHtml(neighbor, connections) {
+    const kindWords = isPlainObject(connections.kind_words) ? connections.kind_words : {};
+    const attendanceKinds = new Set(Array.isArray(connections.attendance_kinds) ? connections.attendance_kinds : []);
+    const kinds = Array.isArray(neighbor.kinds) ? neighbor.kinds : [];
+    const chips = kinds
+      .filter(function (item) {
+        return isPlainObject(item) && typeof item.kind === 'string' && !attendanceKinds.has(item.kind);
+      })
+      .slice(0, 2)
+      .map(function (item) {
+        const label = kindWords[item.kind] || item.kind;
+        return '<span class="pulse-connections-chip">' + esc(label) + '</span>';
+      });
+    if (!chips.length) return '';
+    return '<span class="pulse-connections-chip-list">' + chips.join('') + '</span>';
+  }
+
+  function connectionRowMeta(neighbor, referenceDay) {
+    const count = Number(neighbor.count || 0);
+    const moments = count === 1 ? '1 moment' : String(count) + ' moments';
+    const day = formatConnectionDay(neighbor.last_seen, referenceDay);
+    return day ? moments + ' · ' + day : moments;
+  }
+
+  function connectionRowHtml(neighbor, connections, referenceDay) {
+    const entityId = typeof neighbor.entity_id === 'string' ? neighbor.entity_id : '';
+    const name = typeof neighbor.name === 'string' && neighbor.name ? neighbor.name : entityId;
+    if (!entityId || !name) return '';
+    return '<div class="pulse-connections-row">'
+      + '<a class="pulse-connections-name" href="' + esc(connectionEntityHref(entityId)) + '">' + esc(name) + '</a>'
+      + connectionKindChipsHtml(neighbor, connections)
+      + '<span class="pulse-connections-meta">' + esc(connectionRowMeta(neighbor, referenceDay)) + '</span>'
+      + '</div>';
+  }
+
+  function connectionAttendanceItemHtml(neighbor) {
+    const entityId = typeof neighbor.entity_id === 'string' ? neighbor.entity_id : '';
+    const name = typeof neighbor.name === 'string' && neighbor.name ? neighbor.name : entityId;
+    if (!entityId || !name) return '';
+    const count = Number(neighbor.count || 0);
+    const eventCount = count === 1 ? '1 event' : String(count) + ' events';
+    return '<a href="' + esc(connectionEntityHref(entityId)) + '">' + esc(name) + '</a>'
+      + ' <span class="pulse-connections-cluster-count">' + esc(eventCount) + '</span>';
+  }
+
+  function renderConnectionsHtml(pulse) {
+    const connections = isPlainObject(pulse?.connections) ? pulse.connections : null;
+    if (!connections || typeof connections.state !== 'string') return '';
+    if (connections.state === 'empty') {
+      return '<div class="pulse-empty-state" data-home-surface="connections">'
+        + '<h2 class="pulse-section-header">connections</h2>'
+        + '<div class="pulse-empty-message">no connections yet — sol builds this from the people and things your days involve.</div>'
+        + '</div>';
+    }
+    if (connections.state === 'unavailable') {
+      return '<div class="pulse-empty-state" data-home-surface="connections">'
+        + '<h2 class="pulse-section-header">connections</h2>'
+        + '<div class="pulse-empty-message">connections are unavailable right now. '
+        + '<a href="/app/health">check system health →</a></div>'
+        + '</div>';
+    }
+    if (connections.state !== 'ok' || !Array.isArray(connections.neighbors)) return '';
+
+    const neighbors = connections.neighbors.filter(isPlainObject);
+    const relationshipRows = neighbors
+      .filter(function (neighbor) { return neighbor.evidence_class !== 'attendance'; })
+      .slice(0, 6);
+    const attendanceRows = neighbors
+      .filter(function (neighbor) { return neighbor.evidence_class === 'attendance'; })
+      .slice(0, 8);
+    const referenceDay = pulse?.today || '';
+    const relationshipItems = relationshipRows.map(function (neighbor) {
+      return connectionRowHtml(neighbor, connections, referenceDay);
+    }).filter(Boolean);
+    const attendanceItems = attendanceRows.map(connectionAttendanceItemHtml).filter(Boolean);
+    let html = '<div class="pulse-connections" data-home-surface="connections">'
+      + '<h2 class="pulse-section-header">connections</h2>';
+
+    if (relationshipItems.length) {
+      html += '<div class="pulse-connections-shelf">'
+        + '<div class="pulse-connections-shelf-label">relationships</div>'
+        + '<div class="pulse-connections-list">'
+        + relationshipItems.join('')
+        + '</div></div>';
+    } else {
+      html += '<div class="pulse-connections-note">no direct evidence yet — sol is still learning who&#39;s who.</div>';
+    }
+
+    if (attendanceItems.length) {
+      html += '<div class="pulse-connections-shelf">'
+        + '<div class="pulse-connections-shelf-label">often around — events only</div>'
+        + '<div class="pulse-connections-cluster">' + attendanceItems.join(' · ') + '</div>'
+        + '</div>';
+    }
+
+    const rendered = relationshipItems.length + attendanceItems.length;
+    if (Number(connections.total || 0) > rendered) {
+      html += '<div class="pulse-connections-footer"><a href="/app/entities">all connections →</a></div>';
+    }
+    return html + '</div>';
+  }
+
+  function renderConnections(pulse) {
+    replaceHomeSurface('connections', renderConnectionsHtml(pulse), ['vitals', 'yesterday', 'briefing', 'narrative', 'reflection', 'today', 'needs']);
+  }
+
   function normalizeBriefingFromPulse(pulse) {
     return {
       exists: Boolean(pulse.briefing_exists),
@@ -601,6 +724,7 @@
         validatePulse(data);
         lastPulse = Object.assign({}, lastPulse || {}, data);
         renderNeedsYou(data);
+        renderConnections(data);
         renderVitals(data);
         clearPulseRefreshError('pulse-vitals');
       })
@@ -617,6 +741,7 @@
         lastPulse = Object.assign({}, lastPulse || {}, data);
         renderNarrative(data);
         renderNeedsYou(data);
+        renderConnections(data);
         clearPulseRefreshError('pulse-narrative');
       })
       .catch(function (error) {

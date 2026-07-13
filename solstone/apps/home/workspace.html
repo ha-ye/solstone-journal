@@ -391,6 +391,98 @@
   font-size: 0.78rem;
 }
 
+/* Connections */
+.pulse-connections {
+  padding: 1.25rem;
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid #d1d5db;
+}
+
+.pulse-connections-shelf {
+  margin-top: 0.85rem;
+}
+
+.pulse-connections-shelf-label {
+  color: #64748b;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.45rem;
+}
+
+.pulse-connections-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.pulse-connections-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0;
+}
+
+.pulse-connections-name,
+.pulse-connections-footer a,
+.pulse-connections-cluster a {
+  color: #334155;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.pulse-connections-name:hover,
+.pulse-connections-footer a:hover,
+.pulse-connections-cluster a:hover {
+  text-decoration: underline;
+}
+
+.pulse-connections-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  justify-content: flex-end;
+}
+
+.pulse-connections-chip {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  color: #475569;
+  font-size: 0.72rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+}
+
+.pulse-connections-meta,
+.pulse-connections-cluster,
+.pulse-connections-note,
+.pulse-connections-footer {
+  color: #64748b;
+  font-size: 0.85rem;
+}
+
+.pulse-connections-note {
+  font-style: italic;
+}
+
+.pulse-connections-cluster {
+  line-height: 1.7;
+}
+
+.pulse-connections-cluster-count {
+  color: #94a3b8;
+}
+
+.pulse-connections-footer {
+  border-top: 1px solid #f1f5f9;
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+}
+
 /* Click-to-converse interactive elements */
 [data-conversation] {
   cursor: pointer;
@@ -709,6 +801,7 @@
 .pulse-reflection,
 .pulse-today,
 .pulse-needs,
+.pulse-connections,
 .pulse-yesterday,
 .pulse-briefing-card,
 .pulse-empty-state {
@@ -763,12 +856,32 @@
   .pulse-section-toggle,
   .pulse-event,
   .pulse-activity,
-  .pulse-needs-item {
+  .pulse-needs-item,
+  .pulse-connections-row {
     padding-block: 10px;
   }
 
   .pulse-welcome p {
     font-size: 0.95rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .pulse-connections-row {
+    display: flex;
+    flex-wrap: wrap;
+  }
+
+  .pulse-connections-name {
+    min-width: 0;
+  }
+
+  .pulse-connections-chip-list {
+    justify-content: flex-start;
+  }
+
+  .pulse-connections-meta {
+    flex-basis: 100%;
   }
 }
 
@@ -781,6 +894,7 @@
   .pulse-reflection,
   .pulse-today,
   .pulse-needs,
+  .pulse-connections,
   .pulse-yesterday,
   .pulse-briefing-card,
   .pulse-empty-state {
@@ -796,6 +910,7 @@
   .pulse-reflection,
   .pulse-today,
   .pulse-needs,
+  .pulse-connections,
   .pulse-yesterday,
   .pulse-briefing-card,
   .pulse-empty-state {
