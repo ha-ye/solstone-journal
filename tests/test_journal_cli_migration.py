@@ -6,8 +6,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
-
 from solstone.think.sol_cli import ALIASES, COMMANDS
 
 EXCLUDED_DIRS = {
@@ -124,21 +122,21 @@ SERVICE_SOL_LITERAL_RE = re.compile(
 )
 
 
-@pytest.mark.parametrize("path", _candidate_files(), ids=str)
-def test_service_tagged_commands_are_not_documented_as_sol(path: Path) -> None:
-    text = path.read_text(encoding="utf-8")
-    checked_lines = [line for line in text.splitlines() if not _skip_line(path, line)]
-    service_matches = [
-        (line_number, line)
-        for line_number, line in enumerate(checked_lines, start=1)
-        if SERVICE_SOL_RE.search(line)
-    ]
+def test_service_tagged_commands_are_not_documented_as_sol() -> None:
+    service_matches = []
+    missing_access_expectations = []
+    for path in _candidate_files():
+        text = path.read_text(encoding="utf-8")
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            if not _skip_line(path, line) and SERVICE_SOL_RE.search(line):
+                service_matches.append(f"{path}:{line_number}: {line}")
+
+        access_expectation = ACCESS_POSITIVE_EXPECTATIONS.get(path)
+        if access_expectation is not None and access_expectation.search(text) is None:
+            missing_access_expectations.append(str(path))
 
     assert service_matches == []
-
-    access_expectation = ACCESS_POSITIVE_EXPECTATIONS.get(path)
-    if access_expectation is not None:
-        assert access_expectation.search(text)
+    assert missing_access_expectations == []
 
 
 def _production_python_files() -> list[Path]:
