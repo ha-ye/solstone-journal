@@ -73,6 +73,7 @@ from solstone.think.link.paths import authorized_clients_path
 from solstone.think.streams import stream_name, update_stream, write_segment_stream
 from solstone.think.utils import day_path, iter_segments, now_ms, segment_path
 
+from .processing_proof import has_terminal_processing_proof
 from .share_delete import DELETABLE_SOURCE_STREAMS, delete_source_stream
 from .utils import (
     ObserverRegistry,
@@ -645,20 +646,27 @@ def api_get_key(key_prefix: str) -> Any:
 # === Sync history helpers ===
 
 
-def resolve_file_presence(
+def resolve_file_status(
     day_dir: Path,
     stream: str,
     segment: str,
     written: str,
+    size: object,
 ) -> str:
-    """Read-only presence check for a recorded file on disk.
+    """Read-only status check for a recorded file on disk.
 
     The recorded day/stream/segment/filename path is the only proof the
     journal still holds an uploaded file. Returns "present" when the file
-    exists at that exact path, else "missing". Does not scan descendants.
+    exists at that exact path, "processed" when a same-stem sidecar at that
+    exact segment path carries terminal processing proof for the recorded raw
+    media and size, else "missing". Does not scan descendants.
     """
     recorded_path = day_dir / stream / segment / written
-    return "present" if recorded_path.exists() else "missing"
+    if recorded_path.exists():
+        return "present"
+    if has_terminal_processing_proof(recorded_path, size):
+        return "processed"
+    return "missing"
 
 
 def check_matched_files_held(
@@ -667,14 +675,15 @@ def check_matched_files_held(
     matched_sha256s: set[str],
     fallback_stream: str,
 ) -> bool:
-    """Return True only when every matched sha is present at its recorded path.
+    """Return True only when every matched sha is held by the journal.
 
     This is read-only. It resolves each sha through the most-recent upload
-    history record before checking disk truth.
+    history record before checking disk truth. Both "present" and "processed"
+    count as held; only "missing" requires healing.
     """
     day_dir = day_path(day)
     records = load_history(key_prefix, day)
-    latest: dict[str, tuple[str, str, str]] = {}
+    latest: dict[str, tuple[str, str, str, object]] = {}
 
     for record in records:
         if record.get("type"):
@@ -690,6 +699,7 @@ def check_matched_files_held(
                     stream,
                     segment,
                     file_rec.get("written", ""),
+                    file_rec.get("size"),
                 )
 
     for sha256 in matched_sha256s:
@@ -697,8 +707,8 @@ def check_matched_files_held(
         if entry is None:
             return False
 
-        stream, segment, written = entry
-        status = resolve_file_presence(day_dir, stream, segment, written)
+        stream, segment, written, size = entry
+        status = resolve_file_status(day_dir, stream, segment, written, size)
         if status == "missing":
             return False
 
@@ -1347,6 +1357,7 @@ def ingest_segments(day: str) -> Any:
 
     Returns JSON array of segments with file status:
     - present: File exists at recorded path
+    - processed: Raw media absent with terminal same-stem sidecar proof
     - missing: File not found
 
     Args:
@@ -1426,8 +1437,8 @@ def ingest_segments(day: str) -> Any:
             if submitted != written:
                 file_info["submitted_name"] = submitted
 
-            file_info["status"] = resolve_file_presence(
-                day_dir, stream, segment, written
+            file_info["status"] = resolve_file_status(
+                day_dir, stream, segment, written, size
             )
 
             # Deduplicate by sha256 - later uploads overwrite earlier

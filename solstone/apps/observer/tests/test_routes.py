@@ -30,6 +30,13 @@ from solstone.apps.observer.utils import (
 from solstone.convey.copy import OBSERVER_CALLOSUM_LIVE_LABEL
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.convey.sol_initiated.copy import KIND_SOL_CHAT_REQUEST
+from solstone.observe.processing_record import (
+    HANDLER_DESCRIBE,
+    HANDLER_TRANSCRIBE,
+    SCHEMA,
+    STATE_EMPTY,
+    STATE_FAILED,
+)
 from solstone.observe.protocol import OBSERVER_HANDLE_HEADER, OBSERVER_PROTOCOL_VERSION
 from solstone.think.contract.journal import ContractIssue
 from solstone.think.link.auth import AuthorizedClients
@@ -157,6 +164,82 @@ def _post_valid_contract_triple(env, key: str):
             "files": _valid_contract_files(),
         },
     )
+
+
+def _post_raw_audio_screen_bundle(
+    env,
+    key: str,
+    stream: str,
+    audio_content: bytes,
+    screen_content: bytes,
+    *,
+    day: str = "20250103",
+    segment: str = "120000_300",
+):
+    stream_marker = json.dumps(
+        {"stream": stream, "prev_day": None, "prev_segment": None, "seq": 1}
+    ).encode("utf-8")
+    return env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": day,
+            "segment": segment,
+            "files": [
+                (io.BytesIO(audio_content), "audio.flac"),
+                (io.BytesIO(screen_content), "screen.mp4"),
+                (io.BytesIO(stream_marker + b"\n"), "stream.json"),
+            ],
+        },
+    )
+
+
+def _write_audio_processing_sidecar(
+    segment_dir: Path,
+    *,
+    input_size: object,
+    schema: object = SCHEMA,
+    state: str = STATE_EMPTY,
+    handler: str = HANDLER_TRANSCRIBE,
+    include_schema: bool = True,
+    include_input_size: bool = True,
+) -> None:
+    record = {
+        "state": state,
+        "handler": handler,
+    }
+    if include_schema:
+        record["schema"] = schema
+    if include_input_size:
+        record["input_size"] = input_size
+    row = {"raw": "audio.flac", "_solstone_processing": record}
+    (segment_dir / "audio.jsonl").write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+
+def _listed_files_by_name(env, key: str, *, day: str = "20250103") -> dict[str, dict]:
+    resp = env.client.get(
+        f"/app/observer/ingest/segments/{day}",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert len(data) == 1
+    return {file_info["name"]: file_info for file_info in data[0]["files"]}
+
+
+def _history_line_count(env, key_prefix: str, *, day: str = "20250103") -> int:
+    hist_path = (
+        env.journal
+        / "apps"
+        / "observer"
+        / "observers"
+        / key_prefix
+        / "hist"
+        / f"{day}.jsonl"
+    )
+    if not hist_path.exists():
+        return 0
+    return len(hist_path.read_text(encoding="utf-8").splitlines())
 
 
 def _plant_source_segment(
@@ -2253,6 +2336,244 @@ def test_segments_endpoint_missing_path_does_not_scan_day_tree(
         raise AssertionError("day-tree scan attempted")
 
     monkeypatch.setattr(Path, "rglob", fail_rglob)
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_reports_processed_for_terminal_audio_sidecar(observer_env):
+    env = observer_env()
+    observer_name = "segments-processed-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes for terminal processing"
+    screen_content = b"raw screen bytes that remain present"
+
+    resp = _post_raw_audio_screen_bundle(
+        env, key, observer_name, audio_content, screen_content
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ok"
+
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    _write_audio_processing_sidecar(segment_dir, input_size=len(audio_content))
+    (segment_dir / "audio.flac").unlink()
+
+    files = _listed_files_by_name(env, key)
+    assert files["audio.flac"]["status"] == "processed"
+    assert files["screen.mp4"]["status"] == "present"
+    assert files["stream.json"]["status"] == "present"
+
+
+def test_ingest_processed_duplicate_does_not_create_collision_lattice(observer_env):
+    env = observer_env()
+    observer_name = "processed-lattice-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes for processed duplicate gating"
+    screen_content = b"raw screen bytes for processed duplicate gating"
+
+    resp = _post_raw_audio_screen_bundle(
+        env, key, observer_name, audio_content, screen_content
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ok"
+
+    observer = _observer_record()
+    key_prefix = observer["filename_prefix"]
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    _write_audio_processing_sidecar(segment_dir, input_size=len(audio_content))
+    (segment_dir / "audio.flac").unlink()
+
+    stream_dir = env.journal / "chronicle" / "20250103" / observer_name
+    initial_history_lines = _history_line_count(env, key_prefix)
+    assert initial_history_lines == 1
+
+    for _ in range(3):
+        resp = _post_raw_audio_screen_bundle(
+            env, key, observer_name, audio_content, screen_content
+        )
+        body = resp.get_json()
+        assert resp.status_code == 200
+        assert body["status"] == "duplicate"
+        assert len(list(stream_dir.iterdir())) == 1
+        assert _history_line_count(env, key_prefix) == initial_history_lines
+        assert not (_day_dir(env) / "observer" / "failed").exists()
+
+
+def test_segments_endpoint_no_sidecar_keeps_raw_file_missing(observer_env):
+    env = observer_env()
+    observer_name = "processed-no-sidecar-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes with no processing sidecar"
+
+    resp = _upload_audio(env, key, audio_content)
+    assert resp.status_code == 200
+    (_day_dir(env) / observer_name / "120000_300" / "audio.flac").unlink()
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_malformed_sidecar_keeps_raw_file_missing(observer_env):
+    env = observer_env()
+    observer_name = "processed-malformed-sidecar-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes with malformed sidecar"
+
+    resp = _upload_audio(env, key, audio_content)
+    assert resp.status_code == 200
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    (segment_dir / "audio.jsonl").write_text("{not json\n", encoding="utf-8")
+    (segment_dir / "audio.flac").unlink()
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_absent_processing_schema_keeps_raw_file_missing(
+    observer_env,
+):
+    env = observer_env()
+    observer_name = "processed-absent-schema-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes with absent processing schema"
+
+    resp = _upload_audio(env, key, audio_content)
+    assert resp.status_code == 200
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    _write_audio_processing_sidecar(
+        segment_dir,
+        input_size=len(audio_content),
+        include_schema=False,
+    )
+    (segment_dir / "audio.flac").unlink()
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_wrong_processing_schema_keeps_raw_file_missing(
+    observer_env,
+):
+    env = observer_env()
+    observer_name = "processed-wrong-schema-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes with wrong processing schema"
+
+    resp = _upload_audio(env, key, audio_content)
+    assert resp.status_code == 200
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    _write_audio_processing_sidecar(
+        segment_dir,
+        input_size=len(audio_content),
+        schema="solstone.processing.v0",
+    )
+    (segment_dir / "audio.flac").unlink()
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_failed_processing_state_keeps_raw_file_missing(
+    observer_env,
+):
+    env = observer_env()
+    observer_name = "processed-failed-state-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes with failed processing state"
+
+    resp = _upload_audio(env, key, audio_content)
+    assert resp.status_code == 200
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    _write_audio_processing_sidecar(
+        segment_dir,
+        input_size=len(audio_content),
+        state=STATE_FAILED,
+    )
+    (segment_dir / "audio.flac").unlink()
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_handler_mismatch_keeps_raw_file_missing(observer_env):
+    env = observer_env()
+    observer_name = "processed-handler-mismatch-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes with handler mismatch"
+
+    resp = _upload_audio(env, key, audio_content)
+    assert resp.status_code == 200
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    _write_audio_processing_sidecar(
+        segment_dir,
+        input_size=len(audio_content),
+        handler=HANDLER_DESCRIBE,
+    )
+    (segment_dir / "audio.flac").unlink()
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_absent_processing_input_size_keeps_raw_file_missing(
+    observer_env,
+):
+    env = observer_env()
+    observer_name = "processed-absent-input-size-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes with absent processing input size"
+
+    resp = _upload_audio(env, key, audio_content)
+    assert resp.status_code == 200
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    _write_audio_processing_sidecar(
+        segment_dir,
+        input_size=len(audio_content),
+        include_input_size=False,
+    )
+    (segment_dir / "audio.flac").unlink()
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_non_int_processing_input_size_keeps_raw_file_missing(
+    observer_env,
+):
+    env = observer_env()
+    observer_name = "processed-non-int-input-size-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes with non-int processing input size"
+
+    resp = _upload_audio(env, key, audio_content)
+    assert resp.status_code == 200
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    _write_audio_processing_sidecar(
+        segment_dir,
+        input_size=str(len(audio_content)),
+    )
+    (segment_dir / "audio.flac").unlink()
+
+    file_info = _listed_file_info(env, key)
+    assert file_info["status"] == "missing"
+
+
+def test_segments_endpoint_mismatched_processing_input_size_keeps_raw_file_missing(
+    observer_env,
+):
+    env = observer_env()
+    observer_name = "processed-mismatched-input-size-test"
+    key = _create_observer(env, observer_name)
+    audio_content = b"raw audio bytes with mismatched processing input size"
+
+    resp = _upload_audio(env, key, audio_content)
+    assert resp.status_code == 200
+    segment_dir = _day_dir(env) / observer_name / "120000_300"
+    _write_audio_processing_sidecar(
+        segment_dir,
+        input_size=len(audio_content) + 1,
+    )
+    (segment_dir / "audio.flac").unlink()
 
     file_info = _listed_file_info(env, key)
     assert file_info["status"] == "missing"

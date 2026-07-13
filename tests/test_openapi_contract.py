@@ -276,7 +276,7 @@ def test_segment_file_status_enum_matches_live_day_listing(contract_app):
     status_enum = document["components"]["schemas"]["SegmentFile"]["properties"][
         "status"
     ]["enum"]
-    assert status_enum == ["present", "missing"]
+    assert status_enum == ["present", "missing", "processed"]
     key = _register_observer(client)
 
     upload = client.post(

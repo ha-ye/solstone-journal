@@ -95,6 +95,13 @@ Each observer is a standalone package in its own repo (see the Observer Architec
 
 All upload segments via the same HTTP ingest API (`/app/observer/ingest/<key>`).
 
+Segment listings report each uploaded file as `present`, `processed`, or
+`missing`. `present` means the recorded file still exists at its exact path.
+`processed` applies only to raw audio/video media whose recorded path is absent
+but whose same-stem JSONL sidecar at that segment path carries a terminal
+`solstone.processing.v1` proof for the original input size. Anything else is
+`missing` and remains eligible for upload healing.
+
 ### Observer health
 
 Observer health has three distinct signals:

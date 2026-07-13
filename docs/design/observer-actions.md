@@ -251,6 +251,10 @@ Filename-stem constraint:
 Operational caveats:
 
 - Duplicate submissions short-circuit with `status="duplicate"` and do not emit `observe.observing` (`solstone/apps/observer/routes.py:369-395`, `solstone/apps/observer/routes.py:604-605`, `solstone/apps/observer/tests/test_routes.py:1276-1368`).
+- Segment listings can mark raw media as `processed` when journal-side processing
+  terminally consumed the recorded file and left same-stem sidecar proof. That is
+  proven-held for duplicate gating and confirm-before-delete, so re-uploading the
+  same bytes still short-circuits as `duplicate` instead of creating a collision.
 - Segment collisions can rewrite the final segment key; the server returns the adjusted `segment` in the response body and records `segment_original` in history (`solstone/apps/observer/routes.py:406-425`, `solstone/apps/observer/routes.py:470-500`, `solstone/apps/observer/tests/test_routes.py:1552-1586`).
 - If the client ever needs server-truth correlation after upload, it should trust the response body’s `segment`, not assume the requested key survived unchanged.
 
