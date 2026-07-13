@@ -12,6 +12,7 @@ import pytest
 
 from solstone.think.backup import restore
 from solstone.think.backup.destination import Destination
+from solstone.think.backup.hosted import HostedBinding, HostedCredentials
 from solstone.think.backup.runner import ResticResult
 
 
@@ -49,6 +50,27 @@ def _operated_destination() -> Destination:
             "secret_access_key": "SAK-OPERATED",
             "session_token": "SESSION-OPERATED",
         },
+    )
+
+
+def _operated_binding() -> HostedBinding:
+    return HostedBinding(
+        broker_endpoint="https://broker.example",
+        account_id="acct",
+        instance_id="inst",
+        bucket="journal-backups",
+        prefix="users/acct/inst/",
+        broker_token="BTOKEN-OPERATED",
+    )
+
+
+def _operated_credentials() -> HostedCredentials:
+    return HostedCredentials(
+        access_key_id="AKID-OPERATED",
+        secret_access_key="SAK-OPERATED",
+        session_token="SESSION-OPERATED",
+        endpoint="https://r2.example",
+        expires_at="2026-07-13T12:00:00Z",
     )
 
 
@@ -92,7 +114,9 @@ def test_restore_success_normalizes_key_assembles_env_and_reindexes(
     calls: list[tuple[list[str], dict[str, Any]]] = []
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        order.append(args[0])
+        order.append(
+            next(arg for arg in args if arg in {"snapshots", "restore", "check"})
+        )
         calls.append((args, kwargs))
         return next(responses)
 
@@ -436,7 +460,9 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
     real_set_recovery_key_confirmed = restore.set_recovery_key_confirmed
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        order.append(args[0])
+        order.append(
+            next(arg for arg in args if arg in {"snapshots", "restore", "check"})
+        )
         calls.append((args, kwargs))
         return next(responses)
 
@@ -462,6 +488,7 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
         return True
 
     monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(restore, "ensure_rclone", lambda: Path("/rclone"))
     monkeypatch.setattr(restore, "run_restic", fake_run_restic)
     monkeypatch.setattr(
         restore,
@@ -479,7 +506,11 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
     )
     monkeypatch.setattr(restore, "scan_journal", fake_scan_journal)
 
-    result = restore.restore_journal_operated(destination, entered)
+    result = restore.restore_journal_operated(
+        _operated_binding(),
+        _operated_credentials(),
+        entered,
+    )
 
     assert result == restore.RestoreResult(
         status="ok",
@@ -497,11 +528,17 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
         "set_recovery_key_confirmed",
         "scan_journal",
     ]
-    assert calls[0][1]["backend_env"] == {
-        "AWS_ACCESS_KEY_ID": "AKID-OPERATED",
-        "AWS_SECRET_ACCESS_KEY": "SAK-OPERATED",
-        "AWS_SESSION_TOKEN": "SESSION-OPERATED",
-    }
+    assert calls[0][1]["backend_env"]["AWS_CONTAINER_CREDENTIALS_FULL_URI"].startswith(
+        "http://127.0.0.1:"
+    )
+    assert calls[0][0][:4] == [
+        "-o",
+        "rclone.program=/rclone",
+        "-o",
+        "rclone.args=serve restic --stdio --append-only --config /dev/null",
+    ]
+    assert calls[0][1]["repository"] == ("rclone:spb:journal-backups/users/acct/inst/")
+    assert calls[0][1]["backend_env"]["RCLONE_CONFIG_SPB_ENV_AUTH"] == "true"
     config = _read_config(tmp_path)
     serialized = json.dumps(config)
     assert config["backup"]["mode"] == "operated"
@@ -540,9 +577,41 @@ def test_restore_operated_invalid_key_persists_nothing(
         lambda destination: pytest.fail("must not persist destination"),
     )
 
-    result = restore.restore_journal_operated(_operated_destination(), "too-short")
+    result = restore.restore_journal_operated(
+        _operated_binding(),
+        _operated_credentials(),
+        "too-short",
+    )
 
     assert result.reason_code == "invalid_key"
+    assert _read_config(tmp_path) == original_config
+
+
+def test_restore_operated_rclone_unavailable_persists_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    original_config = {"backup": {"daily_key": "daily-secret"}}
+    _write_config(tmp_path, original_config)
+    monkeypatch.setattr(
+        restore,
+        "ensure_rclone",
+        lambda: (_ for _ in ()).throw(RuntimeError("missing")),
+    )
+    monkeypatch.setattr(
+        restore,
+        "ensure_restic",
+        lambda: pytest.fail("restic should not be resolved"),
+    )
+
+    result = restore.restore_journal_operated(
+        _operated_binding(),
+        _operated_credentials(),
+        "A" * 64,
+    )
+
+    assert result.reason_code == "rclone_unavailable"
     assert _read_config(tmp_path) == original_config
 
 
@@ -554,6 +623,7 @@ def test_restore_operated_restic_failure_persists_nothing(
     original_config = {"backup": {"daily_key": "daily-secret"}}
     _write_config(tmp_path, original_config)
     monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(restore, "ensure_rclone", lambda: Path("/rclone"))
     monkeypatch.setattr(restore, "run_restic", lambda args, **kwargs: _result(12))
     monkeypatch.setattr(
         restore,
@@ -571,7 +641,11 @@ def test_restore_operated_restic_failure_persists_nothing(
         lambda key: pytest.fail("must not persist key"),
     )
 
-    result = restore.restore_journal_operated(_operated_destination(), "A" * 64)
+    result = restore.restore_journal_operated(
+        _operated_binding(),
+        _operated_credentials(),
+        "A" * 64,
+    )
 
     assert result.reason_code == "auth_failed"
     assert _read_config(tmp_path) == original_config

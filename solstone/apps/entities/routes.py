@@ -100,6 +100,7 @@ from solstone.think.entities.review_candidates import (
 )
 from solstone.think.facets import get_facets, log_call_action
 from solstone.think.indexer.edges import (
+    ATTENDANCE_KINDS,
     load_edge_evidence,
     load_entity_network,
     load_network_overview,
@@ -126,7 +127,12 @@ def index() -> Any:
 def api_state() -> Any:
     """Return initial entities workspace state."""
     try:
-        return jsonify({"entities_copy": entities_copy_payload()})
+        return jsonify(
+            {
+                "entities_copy": entities_copy_payload(),
+                "attendance_kinds": sorted(ATTENDANCE_KINDS),
+            }
+        )
     except Exception:
         logger.exception("error loading entities state")
         return error_response(

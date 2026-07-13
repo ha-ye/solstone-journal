@@ -63,6 +63,7 @@ def _creds() -> HostedCredentials:
         secret_access_key="SAK",
         session_token="SESS",
         endpoint="https://r2.example",
+        expires_at="2026-07-13T12:00:00Z",
     )
 
 
@@ -424,6 +425,7 @@ def test_enable_hosted_approved_initializes_then_persists_and_queues(
     request_backup_now = Mock(return_value=True)
     save_hosted_binding = Mock()
     set_mode = Mock()
+    set_enabled = Mock()
     monkeypatch.setattr(
         backup_routes,
         "run_spb_handoff",
@@ -443,6 +445,7 @@ def test_enable_hosted_approved_initializes_then_persists_and_queues(
     monkeypatch.setattr(backup_routes, "request_backup_now", request_backup_now)
     monkeypatch.setattr(backup_routes, "save_hosted_binding", save_hosted_binding)
     monkeypatch.setattr(backup_routes, "set_mode", set_mode)
+    monkeypatch.setattr(backup_routes, "set_enabled", set_enabled)
 
     response = env.client.post("/app/backup/enable-hosted")
     final = _wait_for_phase(env, wait_until_helper, "done")
@@ -459,6 +462,7 @@ def test_enable_hosted_approved_initializes_then_persists_and_queues(
     assert init_repository.call_args.kwargs["timeout"] == backup_routes.ENABLE_TIMEOUT
     save_hosted_binding.assert_called_once_with(binding)
     set_mode.assert_called_once_with("operated")
+    set_enabled.assert_called_once_with(True)
     request_backup_now.assert_called_once_with()
 
 
@@ -519,6 +523,7 @@ def test_restore_hosted_approved_works_without_local_keys(
     restore_journal_operated = Mock(
         return_value=SimpleNamespace(status="ok", reason_code=None)
     )
+    fetch_hosted_credentials = Mock(return_value=_creds())
     monkeypatch.setattr(
         backup_routes,
         "run_spb_handoff",
@@ -527,7 +532,7 @@ def test_restore_hosted_approved_works_without_local_keys(
     monkeypatch.setattr(
         backup_routes,
         "fetch_hosted_credentials",
-        Mock(return_value=_creds()),
+        fetch_hosted_credentials,
     )
     monkeypatch.setattr(backup_routes, "save_hosted_binding", save_hosted_binding)
     monkeypatch.setattr(
@@ -546,10 +551,8 @@ def test_restore_hosted_approved_works_without_local_keys(
     assert response.get_json()["operation"]["portal_url"] == CONSENT_URL
     assert final["reason_code"] is None
     save_hosted_binding.assert_called_once_with(binding)
-    restore_journal_operated.assert_called_once()
-    destination = restore_journal_operated.call_args.args[0]
-    assert destination.credentials["session_token"] == "SESS"
-    assert restore_journal_operated.call_args.args[1] == "A" * 64
+    fetch_hosted_credentials.assert_called_once_with(binding, scope="maintenance")
+    restore_journal_operated.assert_called_once_with(binding, _creds(), "A" * 64)
 
 
 def test_restore_hosted_needs_subscription_returns_terminal_phase(

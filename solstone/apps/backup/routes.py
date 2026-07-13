@@ -359,6 +359,7 @@ def _enable_hosted_thunk(nonce: str, base_url: str) -> OpOutcome:
     try:
         save_hosted_binding(binding)
         set_mode("operated")
+        set_enabled(True)
     except Exception:
         logger.exception("backup hosted state update failed")
         return OpOutcome("error", "failed")
@@ -388,13 +389,12 @@ def _restore_hosted_thunk(
     if binding is None:
         return OpOutcome("error", "failed")
     try:
-        creds = fetch_hosted_credentials(binding, scope="backup")
+        creds = fetch_hosted_credentials(binding, scope="maintenance")
     except HostedCredsUnavailable as exc:
         return OpOutcome("error", exc.reason_code)
 
-    destination = operated_destination(binding, creds)
     save_hosted_binding(binding)
-    restore_result = restore_journal_operated(destination, recovery_key)
+    restore_result = restore_journal_operated(binding, creds, recovery_key)
     return OpOutcome(
         status=restore_result.status,
         reason_code=restore_result.reason_code,

@@ -261,6 +261,7 @@ def test_operated_teardown_wipes_prefix_and_deletes_binding_on_success_without_k
             secret_access_key="SAK",
             session_token="SESS",
             endpoint="https://acct.r2.cloudflarestorage.com",
+            expires_at="2026-07-13T12:00:00Z",
         )
 
     def fail_run_restic(*_args: Any, **_kwargs: Any) -> ResticResult:
@@ -370,6 +371,7 @@ def test_operated_teardown_wipe_failure_preserves_binding_and_config(
                 secret_access_key="SAK",
                 session_token="SESS",
                 endpoint="https://acct.r2.cloudflarestorage.com",
+                expires_at="2026-07-13T12:00:00Z",
             )
         ),
     )

@@ -52,6 +52,7 @@ class HostedCredentials:
     secret_access_key: str
     session_token: str
     endpoint: str
+    expires_at: str
 
     def __repr__(self) -> str:
         return (
@@ -226,11 +227,13 @@ def fetch_hosted_credentials(
     secret_access_key = _non_blank_string(payload, "secret_access_key")
     session_token = _non_blank_string(payload, "session_token")
     endpoint = _non_blank_string(payload, "endpoint")
+    expires_at = _non_blank_string(payload, "expires_at")
     if (
         access_key_id is None
         or secret_access_key is None
         or session_token is None
         or endpoint is None
+        or expires_at is None
     ):
         logger.warning("hosted credential broker response was incomplete")
         raise HostedCredsUnavailable("broker_error")
@@ -240,6 +243,7 @@ def fetch_hosted_credentials(
         secret_access_key=secret_access_key,
         session_token=session_token,
         endpoint=endpoint,
+        expires_at=expires_at,
     )
 
 

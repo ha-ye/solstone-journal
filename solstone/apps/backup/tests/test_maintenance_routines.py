@@ -19,14 +19,14 @@ def test_backup_routines_are_discovered_with_expected_schedule_entries() -> None
     assert "backup:run" in routines
     assert "backup:prune" in routines
     assert routines["backup:run"].every == "hourly"
-    assert routines["backup:run"].max_runtime == "7h"
+    assert routines["backup:run"].max_runtime == "49h"
     assert routines["backup:prune"].every == "daily"
     assert routines["backup:prune"].max_runtime == "3h"
     assert expected_schedule_entry("backup:run", routines["backup:run"]) == {
         "cmd": ["journal", "maintenance", "run", "backup:run"],
         "every": "hourly",
         "enabled": True,
-        "max_runtime": "7h",
+        "max_runtime": "49h",
     }
     assert expected_schedule_entry("backup:prune", routines["backup:prune"]) == {
         "cmd": ["journal", "maintenance", "run", "backup:prune"],
