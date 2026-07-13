@@ -18,6 +18,7 @@ from solstone.observe.transcribe._audio_wire import (
     audio_to_wav_bytes,
     parse_words,
 )
+from solstone.observe.transcribe.config import confidential_audio_enabled
 from solstone.observe.transcribe.utils import build_statements_from_acoustic
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.think.models import AttestationFailedError, AttestationStaleError
@@ -88,6 +89,8 @@ def transcribe(audio: np.ndarray, sample_rate: int, config: dict) -> list[dict]:
     block = spp.confidential_provenance()
     if block is None:
         raise ConfidentialTranscribeDeferral("confidential_lane_inactive")
+    if not confidential_audio_enabled():
+        raise ConfidentialTranscribeDeferral("confidential_audio_disabled")
     if sample_rate != SAMPLE_RATE:
         raise ValueError(f"audio sample rate must be {SAMPLE_RATE}")
     if not isinstance(audio, np.ndarray):

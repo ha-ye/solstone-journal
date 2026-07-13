@@ -141,6 +141,7 @@ The `transcribe` block configures audio transcription settings for `journal tran
     "backend": "parakeet",
     "enrich": true,
     "preserve_all": false,
+    "confidential_audio": true,
     "noise_upgrade_min_speech_ratio": 0.3,
     "parakeet": {
       "model_version": "v3",
@@ -155,9 +156,10 @@ The `transcribe` block configures audio transcription settings for `journal tran
 ```
 
 **Top-level fields:**
-- `backend` (string) – STT backend to use: `"parakeet"` (default local processing), `"parakeet-cpp"` (Linux-only local processing via a supervised parakeet.cpp server), `"revai"` (cloud with speaker diarization), or `"gemini"` (cloud with speaker diarization). Default: `"parakeet"`.
+- `backend` (string) – STT backend to use: `"parakeet"` (default local processing), `"parakeet-cpp"` (Linux-only local processing via a supervised parakeet.cpp server), `"confidential"` (operated attested STT when the confidential lane is active), `"revai"` (cloud with speaker diarization), or `"gemini"` (cloud with speaker diarization). Default: `"parakeet"`.
 - `enrich` (boolean) – Enable LLM enrichment for topic extraction and transcript correction. Default: `true`.
 - `preserve_all` (boolean) – Keep audio files even when no speech is detected. When `false`, silent recordings are deleted to save disk space. Default: `false`.
+- `confidential_audio` (boolean) – Allow confidential hosted STT when the confidential lane is active. Absent means `true`; set to `false` to keep STT on local placement.
 - `noise_upgrade_min_speech_ratio` (number) – Min speech/loud ratio required for noisy upgrade (default: `0.3`). Filters out music and other non-speech noise.
 
 **Parakeet backend settings** (`transcribe.parakeet`):

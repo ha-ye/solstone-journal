@@ -14,6 +14,7 @@ Terminology:
 
 Available backends:
 - parakeet: Default local backend via Apple Silicon helper or Linux parakeet.cpp
+- confidential: Operated attested STT over the verified confidential forwarder
 - revai: Rev.ai cloud API (speaker diarization)
 - gemini: Google Gemini API (speaker diarization)
 

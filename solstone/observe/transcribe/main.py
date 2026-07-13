@@ -16,7 +16,7 @@ Output files:
 - <stem>.npz: Sentence-level voice embeddings indexed by statement id
 
 Configuration (journal config transcribe section):
-- transcribe.backend: STT backend ("parakeet", "parakeet-cpp", "revai", "gemini"). If unset, auto-selected by free memory.
+- transcribe.backend: STT backend ("parakeet", "parakeet-cpp", "confidential", "revai", "gemini"). If unset, auto-selected by lane and resources.
 - transcribe.enrich: Enable/disable LLM enrichment (default: true)
 - transcribe.preserve_all: Keep audio files even when no speech detected (default: false)
 - transcribe.min_speech_seconds: Minimum speech duration to proceed. Default: 1.0

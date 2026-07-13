@@ -209,10 +209,8 @@ right now.
 
 ## Rollback
 
-Revert the lode. The change is behaviour-local to the transcribe handler
-(`transcribe/main.py`, `transcribe/_parakeet_cpp.py`), the `ParakeetServerNotReady`
-constructor in `think/providers/parakeet_server.py`, and the dead-fallback removal in
-`observe/sense.py`. It adds only additive fields to an event that has no consumers, and
-introduces one new `outcome` value. There is no schema migration, no config change, and
-no on-disk format change to undo. Reverting restores the old (silently-successful)
-behaviour and nothing else.
+Roll back the confidential STT backend, deny-by-default transcribe dispatcher gate,
+strict forwarder accessor, shared audio-wire helper, resolver changes, and API
+payload updates together. The config surface includes `transcribe.confidential_audio`,
+but there is no on-disk migration to undo because an absent value means enabled.
+Reverting restores the previous provider-selection and transcription failure behavior.

@@ -110,6 +110,21 @@ def test_confidential_transcribe_posts_canonical_wav_to_forwarder(
     assert statements[0]["words"][0]["probability"] == 1.0
 
 
+def test_confidential_direct_backend_call_respects_disabled_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_verified_lane(monkeypatch)
+    monkeypatch.setattr(confidential, "confidential_audio_enabled", lambda: False)
+    post = Mock(side_effect=AssertionError("audio egress attempted"))
+    monkeypatch.setattr(confidential.httpx, "post", post)
+
+    with pytest.raises(ConfidentialTranscribeDeferral) as exc_info:
+        confidential.transcribe(_audio(), SAMPLE_RATE, {})
+
+    assert exc_info.value.reason_code == "confidential_audio_disabled"
+    post.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("install_failure", "expected_reason"),
     [
