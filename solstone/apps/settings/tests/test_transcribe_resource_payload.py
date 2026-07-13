@@ -35,6 +35,7 @@ def _payload(
     google_key,
     configured,
     confidential=False,
+    confidential_audio=True,
 ):
     monkeypatch.setattr(
         transcribe_resource, "read_available_bytes", lambda: available_bytes
@@ -47,6 +48,7 @@ def _payload(
         google_key_present=google_key,
         configured_backend=configured,
         confidential_lane_active=confidential,
+        confidential_audio=confidential_audio,
     )
 
 
@@ -177,6 +179,22 @@ def test_transcribe_resource_confidential_low_memory_stays_local(monkeypatch):
     assert payload["force_local_hint"] == ""
 
 
+def test_transcribe_resource_confidential_disabled_low_memory_uses_local(monkeypatch):
+    payload = _payload(
+        monkeypatch,
+        available_bytes=2 * 1024**3,
+        floor_bytes=4 * 1024**3,
+        google_key=True,
+        configured=None,
+        confidential=True,
+        confidential_audio=False,
+    )
+
+    assert payload["auto_switched"] is False
+    assert payload["needs_setup"] is False
+    assert payload["notice"] == ""
+
+
 def test_transcribe_route_includes_resource_block(settings_env, monkeypatch):
     journal_path = _ready_journal(settings_env)
     monkeypatch.setattr(
@@ -220,6 +238,7 @@ def test_transcribe_route_passes_confidential_lane_flag(settings_env, monkeypatc
 
     assert response.status_code == 200
     assert captured["confidential_lane_active"] is True
+    assert captured["confidential_audio"] is True
 
 
 def test_transcribe_route_uses_resource_fallback_on_assembly_error(

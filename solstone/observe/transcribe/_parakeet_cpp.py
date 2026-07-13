@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import io
 import logging
 import sys
 import time
@@ -17,6 +16,7 @@ from solstone.think.providers import parakeet_server
 from solstone.think.providers.parakeet_install import ParakeetProviderError
 from solstone.think.providers.parakeet_server import ParakeetServerNotReady
 
+from ._audio_wire import AudioResponseContractError, audio_to_wav_bytes, parse_words
 from .utils import build_statements_from_acoustic
 
 logger = logging.getLogger(__name__)
@@ -46,14 +46,6 @@ def resolve_serving_device(config: dict, *, default: str | None = None) -> str |
     if placement is not None:
         return placement
     return config.get("device", default)
-
-
-def _audio_to_wav_bytes(audio_array: np.ndarray, sample_rate: int) -> bytes:
-    import soundfile as sf
-
-    buf = io.BytesIO()
-    sf.write(buf, audio_array, sample_rate, format="WAV", subtype="PCM_16")
-    return buf.getvalue()
 
 
 def _is_retryable_transport_error(exc: Exception) -> bool:
@@ -94,53 +86,6 @@ def _transport_retry_reason(exc: Exception) -> str:
     return "transport_error"
 
 
-def _invalid_contract(message: str) -> ParakeetProviderError:
-    return ParakeetProviderError("contract_violation", message)
-
-
-def _parse_words(payload: dict) -> tuple[list[dict], str]:
-    if "words" not in payload:
-        raise _invalid_contract(
-            "response missing top-level words[]; server did not honor "
-            "timestamp_granularities"
-        )
-    raw_words = payload["words"]
-    if not isinstance(raw_words, list):
-        raise _invalid_contract("response words must be a list")
-
-    text = str(payload.get("text", "")).strip()
-    if not raw_words:
-        if text:
-            raise _invalid_contract("response has text but no word timings")
-        return [], text
-
-    words: list[dict] = []
-    for item in raw_words:
-        if not isinstance(item, dict):
-            raise _invalid_contract("word timing item must be an object")
-        try:
-            token = str(item["word"]).strip()
-            start = float(item["start"])
-            end = float(item["end"])
-            conf = item.get("conf")
-            probability = float(conf) if conf is not None else 1.0
-        except KeyError as exc:
-            raise _invalid_contract(f"word timing missing key: {exc.args[0]}") from exc
-        except (TypeError, ValueError) as exc:
-            raise _invalid_contract(
-                "word timing contains invalid numeric value"
-            ) from exc
-        words.append(
-            {
-                "word": f" {token}",
-                "start": start,
-                "end": end,
-                "probability": probability,
-            }
-        )
-    return words, text
-
-
 def transcribe(audio: np.ndarray, sample_rate: int, config: dict) -> list[dict]:
     """Transcribe audio using a supervised parakeet.cpp server."""
     _require_linux()
@@ -149,7 +94,7 @@ def transcribe(audio: np.ndarray, sample_rate: int, config: dict) -> list[dict]:
         raise ValueError("audio must be a 1-D mono ndarray")
 
     device = _validate_config(config)
-    wav_bytes = _audio_to_wav_bytes(audio_array, sample_rate)
+    wav_bytes = audio_to_wav_bytes(audio_array, sample_rate)
     server = parakeet_server.connect()
 
     import httpx
@@ -194,7 +139,10 @@ def transcribe(audio: np.ndarray, sample_rate: int, config: dict) -> list[dict]:
     if not isinstance(payload, dict):
         raise ParakeetProviderError("invalid_json", "response JSON was not an object")
 
-    words, _text = _parse_words(payload)
+    try:
+        words, _text = parse_words(payload)
+    except AudioResponseContractError as exc:
+        raise ParakeetProviderError("contract_violation", str(exc)) from exc
     if not words:
         return []
 

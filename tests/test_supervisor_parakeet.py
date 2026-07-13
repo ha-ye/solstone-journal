@@ -423,14 +423,25 @@ def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
         "available_bytes",
         "google_key",
         "confidential",
+        "confidential_audio",
         "local_backend",
         "expected",
     ),
     [
-        ("linux", "x86_64", None, 5 * 1024**3, False, False, "parakeet", True),
-        ("linux", "x86_64", None, 3 * 1024**3, False, False, "parakeet", False),
-        ("linux", "x86_64", None, 3 * 1024**3, True, False, "parakeet", False),
-        ("linux", "x86_64", "parakeet", 3 * 1024**3, False, False, "parakeet", True),
+        ("linux", "x86_64", None, 5 * 1024**3, False, False, True, "parakeet", True),
+        ("linux", "x86_64", None, 3 * 1024**3, False, False, True, "parakeet", False),
+        ("linux", "x86_64", None, 3 * 1024**3, True, False, True, "parakeet", False),
+        (
+            "linux",
+            "x86_64",
+            "parakeet",
+            3 * 1024**3,
+            False,
+            False,
+            True,
+            "parakeet",
+            True,
+        ),
         (
             "linux",
             "x86_64",
@@ -438,18 +449,61 @@ def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
             3 * 1024**3,
             False,
             False,
+            True,
             "parakeet",
             True,
         ),
-        ("linux", "x86_64", "revai", 5 * 1024**3, False, False, "parakeet", False),
-        ("linux", "x86_64", "gemini", 5 * 1024**3, False, False, "parakeet", False),
-        ("linux", "aarch64", None, 5 * 1024**3, False, False, "parakeet", True),
-        ("linux", "aarch64", "parakeet", 3 * 1024**3, False, False, "parakeet", True),
-        ("darwin", "arm64", None, 5 * 1024**3, False, False, "parakeet", False),
-        ("linux", "x86_64", "gemini", 3 * 1024**3, True, True, "parakeet", True),
-        ("linux", "x86_64", "revai", 3 * 1024**3, False, True, "parakeet", True),
-        ("linux", "x86_64", None, 3 * 1024**3, True, True, "parakeet", True),
-        ("linux", "x86_64", None, 3 * 1024**3, True, True, None, False),
+        (
+            "linux",
+            "x86_64",
+            "revai",
+            5 * 1024**3,
+            False,
+            False,
+            True,
+            "parakeet",
+            False,
+        ),
+        (
+            "linux",
+            "x86_64",
+            "gemini",
+            5 * 1024**3,
+            False,
+            False,
+            True,
+            "parakeet",
+            False,
+        ),
+        ("linux", "aarch64", None, 5 * 1024**3, False, False, True, "parakeet", True),
+        (
+            "linux",
+            "aarch64",
+            "parakeet",
+            3 * 1024**3,
+            False,
+            False,
+            True,
+            "parakeet",
+            True,
+        ),
+        ("darwin", "arm64", None, 5 * 1024**3, False, False, True, "parakeet", False),
+        ("linux", "x86_64", "gemini", 3 * 1024**3, True, True, True, "parakeet", False),
+        ("linux", "x86_64", "revai", 3 * 1024**3, False, True, True, "parakeet", False),
+        (
+            "linux",
+            "x86_64",
+            "parakeet",
+            3 * 1024**3,
+            True,
+            True,
+            True,
+            "parakeet",
+            True,
+        ),
+        ("linux", "x86_64", None, 3 * 1024**3, True, True, True, "parakeet", False),
+        ("linux", "x86_64", None, 3 * 1024**3, True, True, False, "parakeet", True),
+        ("linux", "x86_64", None, 3 * 1024**3, True, True, True, None, False),
     ],
 )
 def test_linux_stt_uses_parakeet_cpp_truth_table(
@@ -460,12 +514,18 @@ def test_linux_stt_uses_parakeet_cpp_truth_table(
     available_bytes: int,
     google_key: bool,
     confidential: bool,
+    confidential_audio: bool,
     local_backend: str | None,
     expected: bool,
 ):
     monkeypatch.setattr(supervisor.sys, "platform", sys_platform)
     monkeypatch.setattr(supervisor.platform, "machine", lambda: machine)
-    config = {"transcribe": {"backend": backend}} if backend is not None else {}
+    transcribe_config = {}
+    if backend is not None:
+        transcribe_config["backend"] = backend
+    if not confidential_audio:
+        transcribe_config["confidential_audio"] = False
+    config = {"transcribe": transcribe_config} if transcribe_config else {}
     monkeypatch.setattr(supervisor, "read_journal_config", lambda: config)
     monkeypatch.setattr(supervisor, "read_available_bytes", lambda: available_bytes)
     monkeypatch.setattr(supervisor, "stt_local_floor_bytes", lambda: 4 * 1024**3)

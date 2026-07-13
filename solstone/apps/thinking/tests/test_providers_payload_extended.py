@@ -409,6 +409,7 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "scout_enabled": True,
         "scout_provenance_configured": True,
         "confidential_enabled": True,
+        "confidential_audio": True,
         "confidential_provenance_configured": True,
         "confidential_operation": None,
         "confidential_attestation": {

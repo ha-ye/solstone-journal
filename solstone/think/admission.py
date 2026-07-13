@@ -94,7 +94,7 @@ def _configured_floor_bytes(config: dict[str, Any]) -> tuple[bool, int | None]:
 
 
 def _default_floor_bytes() -> int:
-    # This gate is launch admission; select_stt_backend is the in-job backend
+    # This gate is launch admission; resolve_stt_backend_choice is the in-job backend
     # choice. A gate floor below the STT local floor would admit transcribe jobs
     # that then silently downgrade off the local backend, so unified machines use
     # a default floor at or above the platform STT floor plus margin.

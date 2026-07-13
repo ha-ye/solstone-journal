@@ -91,13 +91,16 @@ from solstone.observe.processing_record import (
 from solstone.observe.transcribe import (
     BACKEND_REGISTRY,
     ConfidentialAudioEgressError,
+    ConfidentialTranscribeDeferral,
     get_backend,
 )
 from solstone.observe.transcribe import transcribe as stt_transcribe
+from solstone.observe.transcribe.config import confidential_audio_enabled
 from solstone.observe.transcribe.resource import (
+    CONFIDENTIAL_STT_MAX_AUDIO_SECONDS,
     STT_SURFACE,
     local_stt_backend,
-    select_stt_backend,
+    resolve_stt_backend_choice,
     stt_local_floor_bytes,
 )
 from solstone.observe.transcribe.sound_tags import is_salient, tag_audio
@@ -180,18 +183,31 @@ def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -
                 DEFAULT_BACKEND,
             )
             explicit_backend = DEFAULT_BACKEND
-        _warn_if_local_below_floor(explicit_backend, available_bytes, floor_bytes)
-        return explicit_backend
     from solstone.think.services import spp
 
     confidential_lane_active = spp.confidential_provenance() is not None
-    backend = select_stt_backend(
+    confidential_audio = confidential_audio_enabled(transcribe_config)
+    backend = resolve_stt_backend_choice(
+        explicit_backend,
         available_bytes,
         google_key_present=google_key_present,
         floor_bytes=floor_bytes,
         local_backend=local_backend,
         confidential_lane_active=confidential_lane_active,
+        confidential_audio_enabled=confidential_audio,
     )
+    if explicit_backend == "confidential" and backend != "confidential":
+        reason = (
+            "confidential audio is disabled"
+            if confidential_lane_active
+            else "confidential lane is inactive"
+        )
+        logging.warning(
+            "Configured STT backend 'confidential' cannot run because %s; using local STT placement",
+            reason,
+        )
+    if explicit_backend and backend in {"parakeet", "parakeet-cpp"}:
+        _warn_if_local_below_floor(backend, available_bytes, floor_bytes)
     if backend == STT_SURFACE:
         _surface_stt_requirement(available_bytes, floor_bytes)
         raise SystemExit(1)
@@ -1077,7 +1093,7 @@ def process_audio(
         # speech and diarization adds no value.  Otherwise reuse the pyannote
         # log-probs computed above so the diarizer skips its own pyannote pass.
         _DIARIZE_MIN_OVERLAP = 0.05
-        if resolved_backend == "parakeet":
+        if resolved_backend in {"parakeet", "confidential"}:
             if overlap_fraction_value < _DIARIZE_MIN_OVERLAP:
                 logging.info(
                     "  Skipping diarization: overlap=%.2f (threshold %.2f)",
@@ -1209,6 +1225,26 @@ def process_audio(
             segment,
             observer,
             reason=e.retry_reason,
+            timings=timings,
+            backend=resolved_backend,
+            backend_config=backend_config,
+            audio_seconds=audio_seconds,
+            reduced_seconds=reduced_seconds,
+        )
+        raise SystemExit(EXIT_PROVIDER_BLOCKED) from e
+
+    except ConfidentialTranscribeDeferral as e:
+        logging.info(
+            "Confidential STT deferred for %s (%s)",
+            raw_path,
+            e.reason_code,
+        )
+        _emit_deferred(
+            raw_path,
+            vad_result,
+            segment,
+            observer,
+            reason=e.reason_code,
             timings=timings,
             backend=resolved_backend,
             backend_config=backend_config,
@@ -1455,6 +1491,21 @@ def _process_one(
             )
             backend = "revai"
 
+    if backend == "confidential":
+        audio_seconds = len(audio_buffer) / SAMPLE_RATE
+        if audio_seconds > CONFIDENTIAL_STT_MAX_AUDIO_SECONDS:
+            logging.info(
+                "Confidential STT cap exceeded (duration=%.1fs cap=%.1fs); routing to local STT placement",
+                audio_seconds,
+                CONFIDENTIAL_STT_MAX_AUDIO_SECONDS,
+            )
+            backend = local_stt_backend() or STT_SURFACE
+            if backend == STT_SURFACE:
+                _surface_stt_requirement(
+                    read_available_bytes(), stt_local_floor_bytes()
+                )
+                raise SystemExit(1)
+
     # Get backend-specific config from nested structure
     if backend == "revai":
         from solstone.observe.transcribe.revai import (
@@ -1489,6 +1540,8 @@ def _process_one(
     elif backend == "gemini":
         # Gemini backend - model resolved by think.models based on context
         # Entity names handled by enrich step, not passed to transcription
+        backend_config = {}
+    elif backend == "confidential":
         backend_config = {}
     else:
         # Unknown backend - let get_backend() raise the error

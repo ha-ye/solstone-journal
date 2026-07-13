@@ -17,7 +17,7 @@ from solstone.apps.settings.install_copy import (
 from solstone.observe.transcribe.resource import (
     STT_SURFACE,
     local_stt_backend,
-    select_stt_backend,
+    resolve_stt_backend_choice,
     stt_local_floor_bytes,
 )
 from solstone.think.providers.memory import gb, read_available_bytes
@@ -28,20 +28,21 @@ def get_transcribe_resource_payload(
     google_key_present: bool,
     configured_backend: str | None,
     confidential_lane_active: bool,
+    confidential_audio: bool,
 ) -> dict[str, bool | float | int | str | None]:
     """Return the resource display payload for Settings transcription."""
     available_bytes = read_available_bytes()
     floor_bytes = stt_local_floor_bytes()
     local_backend = local_stt_backend()
-    selected_backend = ""
-    if not configured_backend:
-        selected_backend = select_stt_backend(
-            available_bytes,
-            google_key_present=google_key_present,
-            floor_bytes=floor_bytes,
-            local_backend=local_backend,
-            confidential_lane_active=confidential_lane_active,
-        )
+    selected_backend = resolve_stt_backend_choice(
+        configured_backend,
+        available_bytes,
+        google_key_present=google_key_present,
+        floor_bytes=floor_bytes,
+        local_backend=local_backend,
+        confidential_lane_active=confidential_lane_active,
+        confidential_audio_enabled=confidential_audio,
+    )
     auto_switched = selected_backend == "gemini"
     needs_setup = selected_backend == STT_SURFACE
     notice = ""

@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -24,6 +27,7 @@ from solstone.think.models import (
     resolve_provider,
 )
 from solstone.think.providers import get_provider_module
+from solstone.think.services.spp_attest.cadence import AttestationSession
 
 
 @pytest.fixture(autouse=True)
@@ -114,6 +118,106 @@ def _install_failing_confidential_transport(
     establish = Mock(side_effect=RatlsChannelError(reason_code))
     monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
     return establish
+
+
+class _FakeChannel:
+    def __init__(self, verdict: object, epoch: int | None = None) -> None:
+        from solstone.think.services import spp_transport
+
+        self.verdict = verdict
+        self.tls = object()
+        self.last_used_monotonic = time.monotonic()
+        self.epoch = spp_transport._EPOCH if epoch is None else epoch
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeListener:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _AliveThread:
+    def is_alive(self) -> bool:
+        return True
+
+
+def _patch_confidential_listener(monkeypatch: pytest.MonkeyPatch) -> None:
+    from solstone.think.services import spp_transport
+
+    def fake_start_listener() -> None:
+        spp_transport._LISTENER = _FakeListener()
+        spp_transport._LISTENER_THREAD = _AliveThread()
+        spp_transport._FORWARDER_BASE_URL = "http://127.0.0.1:4567"
+
+    monkeypatch.setattr(spp_transport, "_start_listener_locked", fake_start_listener)
+
+
+def _stale_session(verdict: object) -> AttestationSession:
+    old = datetime.now(timezone.utc) - timedelta(hours=2)
+    return AttestationSession(
+        verdict=verdict,
+        started_at=old,
+        tpm_heartbeat_at=old,
+        gpu_reattest_at=old,
+    )
+
+
+def _add_local_endpoint(config: dict) -> None:
+    config.setdefault("providers", {})["local"] = {
+        "endpoint_url": "https://spp.example.test/v1",
+        "served_model_id": "confidential-model",
+        "credential": "confidential-credential",
+    }
+
+
+def _stt_audio() -> np.ndarray:
+    return np.zeros(16000, dtype=np.float32)
+
+
+def _install_stt_backend_mocks(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    gemini_result=AssertionError("gemini audio egress attempted"),
+    revai_result=AssertionError("revai audio egress attempted"),
+    parakeet_result=AssertionError("parakeet dispatch attempted"),
+    confidential_result=AssertionError("confidential dispatch attempted"),
+) -> dict[str, Mock]:
+    targets = {
+        "gemini": (
+            "solstone.observe.transcribe.gemini.transcribe",
+            gemini_result,
+        ),
+        "revai": (
+            "solstone.observe.transcribe.revai.transcribe",
+            revai_result,
+        ),
+        "parakeet": (
+            "solstone.observe.transcribe.parakeet.transcribe",
+            parakeet_result,
+        ),
+        "confidential": (
+            "solstone.observe.transcribe.confidential.transcribe",
+            confidential_result,
+        ),
+    }
+    mocks: dict[str, Mock] = {}
+    for name, (target, result) in targets.items():
+        if result is None:
+            continue
+        mock = (
+            Mock(side_effect=result)
+            if isinstance(result, BaseException)
+            else Mock(return_value=result)
+        )
+        monkeypatch.setattr(target, mock)
+        mocks[name] = mock
+    return mocks
 
 
 def _assert_attestation_failed(
@@ -311,43 +415,218 @@ def test_confidential_gate_keys_on_provenance_not_provider_resolution(
     establish.assert_called_once()
 
 
-def test_confidential_stt_chokepoint_blocks_cloud_audio_egress(
+def test_confidential_stt_attestation_failure_blocks_remote_audio_egress(
     tmp_path,
     monkeypatch,
 ):
     _empty_journal(tmp_path, monkeypatch)
-    _write_journal_config(tmp_path, _confidential_config(provider_pins=False))
-    audio = np.zeros(16000, dtype=np.float32)
-    gemini_transcribe = Mock(side_effect=AssertionError("audio egress attempted"))
-    revai_transcribe = Mock(side_effect=AssertionError("audio egress attempted"))
-    parakeet_transcribe = Mock(return_value=[])
-    monkeypatch.setattr(
-        "solstone.observe.transcribe.gemini.transcribe",
-        gemini_transcribe,
+    config = _confidential_config(provider_pins=False)
+    _add_local_endpoint(config)
+    _write_journal_config(tmp_path, config)
+    establish = _install_failing_confidential_transport(monkeypatch)
+    mocks = _install_stt_backend_mocks(
+        monkeypatch,
+        parakeet_result=[],
+        confidential_result=None,
     )
-    monkeypatch.setattr(
-        "solstone.observe.transcribe.revai.transcribe",
-        revai_transcribe,
-    )
-    monkeypatch.setattr(
-        "solstone.observe.transcribe.parakeet.transcribe",
-        parakeet_transcribe,
-    )
+    httpx_post = Mock(side_effect=AssertionError("audio egress attempted"))
+    monkeypatch.setattr("httpx.post", httpx_post)
 
     from solstone.observe.transcribe import (
+        BACKEND_REGISTRY,
         ConfidentialAudioEgressError,
+        ConfidentialTranscribeDeferral,
         transcribe,
     )
 
-    with pytest.raises(ConfidentialAudioEgressError):
-        transcribe("gemini", audio, 16000, {})
-    with pytest.raises(ConfidentialAudioEgressError):
-        transcribe("revai", audio, 16000, {})
+    with pytest.raises(ConfidentialTranscribeDeferral) as confidential_exc:
+        transcribe("confidential", _stt_audio(), 16000, {})
+    assert confidential_exc.value.reason_code == "attestation_unreachable"
 
-    gemini_transcribe.assert_not_called()
-    revai_transcribe.assert_not_called()
-    assert transcribe("parakeet", audio, 16000, {}) == []
-    parakeet_transcribe.assert_called_once()
+    with pytest.raises(ConfidentialAudioEgressError):
+        transcribe("gemini", _stt_audio(), 16000, {})
+    with pytest.raises(ConfidentialAudioEgressError):
+        transcribe("revai", _stt_audio(), 16000, {})
+    monkeypatch.setitem(
+        BACKEND_REGISTRY,
+        "future-remote",
+        "solstone.observe.transcribe.gemini",
+    )
+    with pytest.raises(ConfidentialAudioEgressError):
+        transcribe("future-remote", _stt_audio(), 16000, {})
+
+    assert transcribe("parakeet", _stt_audio(), 16000, {}) == []
+    mocks["gemini"].assert_not_called()
+    mocks["revai"].assert_not_called()
+    mocks["parakeet"].assert_called_once()
+    httpx_post.assert_not_called()
+    establish.assert_called_once()
+
+
+def test_confidential_stt_stale_session_defers_before_egress(tmp_path, monkeypatch):
+    from solstone.think.services import spp, spp_transport
+
+    _empty_journal(tmp_path, monkeypatch)
+    config = _confidential_config(provider_pins=False)
+    _add_local_endpoint(config)
+    _write_journal_config(tmp_path, config)
+    spp_transport._LISTENER = _FakeListener()
+    spp_transport._LISTENER_THREAD = _AliveThread()
+    spp_transport._FORWARDER_BASE_URL = "http://127.0.0.1:4567"
+    spp.record_attestation_verified(_stale_session(object()))
+    mocks = _install_stt_backend_mocks(monkeypatch, confidential_result=None)
+    httpx_post = Mock(side_effect=AssertionError("audio egress attempted"))
+    monkeypatch.setattr("httpx.post", httpx_post)
+
+    from solstone.observe.transcribe import ConfidentialTranscribeDeferral, transcribe
+
+    with pytest.raises(ConfidentialTranscribeDeferral) as exc_info:
+        transcribe("confidential", _stt_audio(), 16000, {})
+
+    assert exc_info.value.reason_code == "attestation_stale"
+    mocks["gemini"].assert_not_called()
+    mocks["revai"].assert_not_called()
+    mocks["parakeet"].assert_not_called()
+    httpx_post.assert_not_called()
+
+
+def test_confidential_stt_setting_off_gate_blocks_confidential_only(
+    tmp_path,
+    monkeypatch,
+):
+    _empty_journal(tmp_path, monkeypatch)
+    config = _confidential_config(provider_pins=False)
+    config["transcribe"] = {"confidential_audio": False}
+    _add_local_endpoint(config)
+    _write_journal_config(tmp_path, config)
+    mocks = _install_stt_backend_mocks(monkeypatch, parakeet_result=[])
+    httpx_post = Mock(side_effect=AssertionError("audio egress attempted"))
+    monkeypatch.setattr("httpx.post", httpx_post)
+
+    from solstone.observe.transcribe import (
+        ConfidentialAudioEgressError,
+        ConfidentialTranscribeDeferral,
+        transcribe,
+    )
+
+    with pytest.raises(ConfidentialTranscribeDeferral) as exc_info:
+        transcribe("confidential", _stt_audio(), 16000, {})
+    assert exc_info.value.reason_code == "confidential_audio_disabled"
+    with pytest.raises(ConfidentialAudioEgressError):
+        transcribe("gemini", _stt_audio(), 16000, {})
+    with pytest.raises(ConfidentialAudioEgressError):
+        transcribe("revai", _stt_audio(), 16000, {})
+
+    assert transcribe("parakeet", _stt_audio(), 16000, {}) == []
+    mocks["confidential"].assert_not_called()
+    mocks["gemini"].assert_not_called()
+    mocks["revai"].assert_not_called()
+    mocks["parakeet"].assert_called_once()
+    httpx_post.assert_not_called()
+
+
+def test_confidential_stt_lane_inactive_refuses_confidential_without_passthrough(
+    tmp_path,
+    monkeypatch,
+):
+    _empty_journal(tmp_path, monkeypatch)
+    _write_journal_config(
+        tmp_path,
+        {"env": {"GOOGLE_API_KEY": "test-google-key", "REVAI_ACCESS_TOKEN": "revai"}},
+    )
+    mocks = _install_stt_backend_mocks(
+        monkeypatch,
+        gemini_result=["gemini-dispatched"],
+        revai_result=["revai-dispatched"],
+    )
+    httpx_post = Mock(side_effect=AssertionError("passthrough URL posted to"))
+    monkeypatch.setattr("httpx.post", httpx_post)
+
+    from solstone.observe.transcribe import ConfidentialTranscribeDeferral, transcribe
+
+    with pytest.raises(ConfidentialTranscribeDeferral) as exc_info:
+        transcribe("confidential", _stt_audio(), 16000, {})
+    assert exc_info.value.reason_code == "confidential_lane_inactive"
+    assert transcribe("gemini", _stt_audio(), 16000, {}) == ["gemini-dispatched"]
+    assert transcribe("revai", _stt_audio(), 16000, {}) == ["revai-dispatched"]
+
+    mocks["confidential"].assert_not_called()
+    mocks["gemini"].assert_called_once()
+    mocks["revai"].assert_called_once()
+    httpx_post.assert_not_called()
+
+
+def test_confidential_stt_posts_only_to_verified_forwarder(tmp_path, monkeypatch):
+    _empty_journal(tmp_path, monkeypatch)
+    config = _confidential_config(provider_pins=False)
+    _add_local_endpoint(config)
+    _write_journal_config(tmp_path, config)
+    _patch_confidential_listener(monkeypatch)
+
+    from solstone.think.services import spp_transport
+
+    establish = Mock(
+        side_effect=lambda *_args, **kwargs: _FakeChannel(
+            object(), epoch=kwargs["epoch"]
+        )
+    )
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+    captured: dict = {}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured.update(kwargs)
+        return Mock(
+            status_code=200,
+            json=Mock(
+                return_value={
+                    "text": "hello.",
+                    "words": [{"word": "hello.", "start": 0.0, "end": 0.5}],
+                }
+            ),
+        )
+
+    monkeypatch.setattr("httpx.post", fake_post)
+
+    from solstone.observe.transcribe import transcribe
+
+    statements = transcribe("confidential", _stt_audio(), 16000, {})
+
+    assert statements
+    assert captured["url"] == "http://127.0.0.1:4567/v1/audio/transcriptions"
+    assert "spp.example.test" not in captured["url"]
+    assert captured["headers"]["Authorization"] == "Bearer confidential-credential"
+    assert captured["headers"]["x-sol-device"] == "fingerprint"
+    establish.assert_called_once()
+
+
+def test_confidential_stt_toggle_off_selection_is_immediate(tmp_path, monkeypatch):
+    _empty_journal(tmp_path, monkeypatch)
+    config = _confidential_config(provider_pins=False)
+    _write_journal_config(tmp_path, config)
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+    from solstone.think.utils import get_config
+
+    args = type("Args", (), {"backend": None})()
+    assert (
+        transcribe_main.resolve_default_backend(
+            args, get_config().get("transcribe", {})
+        )
+        == "confidential"
+    )
+
+    config["transcribe"] = {"confidential_audio": False}
+    _write_journal_config(tmp_path, config)
+
+    assert (
+        transcribe_main.resolve_default_backend(
+            args, get_config().get("transcribe", {})
+        )
+        == "parakeet"
+    )
 
 
 def test_none_provider_module_fails_closed(tmp_path, monkeypatch):

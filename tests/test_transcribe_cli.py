@@ -250,6 +250,61 @@ def test_resolve_default_backend_auto_switches_to_gemini(monkeypatch):
     assert transcribe_main.resolve_default_backend(_args(), {}) == "gemini"
 
 
+def test_resolve_default_backend_auto_selects_confidential_under_lane(monkeypatch):
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+    monkeypatch.setattr(
+        "solstone.think.services.spp.confidential_provenance",
+        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
+    )
+
+    assert transcribe_main.resolve_default_backend(_args(), {}) == "confidential"
+
+
+def test_resolve_default_backend_explicit_local_wins_under_lane(monkeypatch):
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+    monkeypatch.setattr(
+        "solstone.think.services.spp.confidential_provenance",
+        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
+    )
+
+    assert (
+        transcribe_main.resolve_default_backend(_args(), {"backend": "parakeet"})
+        == "parakeet"
+    )
+
+
+def test_resolve_default_backend_confidential_fallback_never_cloud(monkeypatch, caplog):
+    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+
+    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+    monkeypatch.setattr(
+        "solstone.think.services.spp.confidential_provenance",
+        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
+    )
+
+    with caplog.at_level(logging.WARNING):
+        backend = transcribe_main.resolve_default_backend(
+            _args(),
+            {"backend": "confidential", "confidential_audio": False},
+        )
+
+    assert backend == "parakeet"
+    assert "confidential audio is disabled" in caplog.text
+
+
 def test_resolve_default_backend_surfaces_when_no_viable_backend(monkeypatch):
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
 

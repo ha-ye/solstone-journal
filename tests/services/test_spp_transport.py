@@ -169,6 +169,60 @@ def test_confidential_egress_base_url_returns_forwarder_not_configured_endpoint(
     assert establish.call_args.args[0].port == 9443
 
 
+def test_confidential_forwarder_base_url_rejects_inactive_lane(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "journal.json").write_text("{}", encoding="utf-8")
+    establish = Mock(side_effect=AssertionError("attestation attempted"))
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+
+    with pytest.raises(spp_transport.ConfidentialLaneInactiveError) as exc_info:
+        spp_transport.confidential_forwarder_base_url()
+
+    assert exc_info.value.reason_code == "confidential_lane_inactive"
+    establish.assert_not_called()
+
+
+def test_confidential_forwarder_base_url_returns_verified_forwarder_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    block = _write_confidential_config(tmp_path, monkeypatch)
+    _patch_listener(monkeypatch)
+
+    def fake_establish(*_args, **kwargs):
+        return _FakeChannel(object(), epoch=kwargs["epoch"])
+
+    establish = Mock(side_effect=fake_establish)
+    monkeypatch.setattr(spp_transport, "establish_attested_channel", establish)
+
+    base_url = spp_transport.confidential_forwarder_base_url()
+
+    assert base_url == "http://127.0.0.1:4567"
+    assert base_url != block["endpoint_url"]
+    assert establish.call_args.args[0].host == "spp.example.test"
+    assert establish.call_args.args[0].port == 9443
+
+
+def test_confidential_forwarder_base_url_requires_verified_forwarder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_confidential_config(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        spp_transport,
+        "verify_confidential_attestation",
+        Mock(return_value=None),
+    )
+
+    with pytest.raises(AttestationFailedError):
+        spp_transport.confidential_forwarder_base_url()
+
+
 def test_confidential_probe_status_reads_state_without_attestation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -29,9 +29,10 @@ from typing import Any, Callable, Iterable, NoReturn
 
 import psutil
 
+from solstone.observe.transcribe.config import confidential_audio_enabled
 from solstone.observe.transcribe.resource import (
     local_stt_backend,
-    select_stt_backend,
+    resolve_stt_backend_choice,
     stt_local_floor_bytes,
 )
 from solstone.think import maintenance, scheduler
@@ -152,15 +153,15 @@ def linux_stt_uses_parakeet_cpp() -> bool:
     config = read_journal_config()
     transcribe = config.get("transcribe", {})
     backend = transcribe.get("backend") if isinstance(transcribe, dict) else None
-    if not confidential and isinstance(backend, str):
-        return backend not in {"revai", "gemini"}
 
-    selected = select_stt_backend(
+    selected = resolve_stt_backend_choice(
+        backend if isinstance(backend, str) else None,
         read_available_bytes(),
         google_key_present=bool(os.getenv("GOOGLE_API_KEY")),
         floor_bytes=stt_local_floor_bytes(),
         local_backend=local_stt_backend(),
         confidential_lane_active=confidential,
+        confidential_audio_enabled=confidential_audio_enabled(transcribe),
     )
     return selected in {"parakeet", "parakeet-cpp"}
 

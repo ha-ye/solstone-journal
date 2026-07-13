@@ -40,6 +40,7 @@ from solstone.convey.reasons import (
     SETTINGS_OPERATION_FAILED,
 )
 from solstone.convey.utils import error_response
+from solstone.observe.transcribe.config import confidential_audio_enabled
 from solstone.think.journal_config import (
     hold_config_lock,
     read_journal_config,
@@ -361,6 +362,7 @@ def _lane_for_provider(
 
 def _active_lane_payload(
     type_settings: dict[str, dict[str, Any]],
+    transcribe_config: dict[str, Any],
 ) -> dict[str, Any]:
     endpoint = resolve_local_endpoint()
     local_endpoint_configured = not endpoint.is_bundled
@@ -383,6 +385,7 @@ def _active_lane_payload(
         "scout_enabled": scout.is_scout_enabled(),
         "scout_provenance_configured": scout.scout_provenance() is not None,
         "confidential_enabled": spp.is_confidential_enabled(),
+        "confidential_audio": confidential_audio_enabled(transcribe_config),
         "confidential_provenance_configured": confidential_provenance_present,
         "confidential_operation": _remap_confidential_operation(
             operations.operation_for_service(SERVICE_SPP)
@@ -488,7 +491,12 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
             vertex_creds_configured,
         ),
         "ai_readiness": ai_readiness,
-        "active_lane": _active_lane_payload(type_settings),
+        "active_lane": _active_lane_payload(
+            type_settings,
+            config.get("transcribe", {})
+            if isinstance(config.get("transcribe", {}), dict)
+            else {},
+        ),
         "generate": type_settings["generate"],
         "cogitate": type_settings["cogitate"],
         "api_keys": _api_key_status(config),

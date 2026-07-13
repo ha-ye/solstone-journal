@@ -59,70 +59,117 @@ def test_local_stt_backend_platform_mapping(
 
 @pytest.mark.parametrize(
     (
+        "explicit_backend",
         "available_bytes",
         "google_key_present",
         "floor_bytes",
         "local_backend",
         "confidential_lane_active",
+        "confidential_audio_enabled",
         "expected",
     ),
     [
-        (4 * 1024**3, False, 4 * 1024**3, "parakeet", False, "parakeet"),
-        (5 * 1024**3, True, 4 * 1024**3, "parakeet", False, "parakeet"),
-        (3 * 1024**3, True, 4 * 1024**3, "parakeet", False, "gemini"),
-        (None, True, 4 * 1024**3, "parakeet", False, "gemini"),
-        (3 * 1024**3, True, None, None, False, "gemini"),
+        ("parakeet", 1, True, 4 * 1024**3, "parakeet", True, True, "parakeet"),
         (
-            3 * 1024**3,
-            False,
+            "parakeet-cpp",
+            1,
+            True,
             4 * 1024**3,
             "parakeet",
+            True,
+            True,
+            "parakeet-cpp",
+        ),
+        ("confidential", 1, True, 4 * 1024**3, "parakeet", True, True, "confidential"),
+        ("confidential", 1, True, 4 * 1024**3, "parakeet", True, False, "parakeet"),
+        (
+            "confidential",
+            1,
+            True,
+            4 * 1024**3,
+            None,
+            True,
             False,
             resource.STT_SURFACE,
         ),
+        ("confidential", 1, True, 4 * 1024**3, "parakeet", False, True, "parakeet"),
         (
+            "confidential",
+            1,
+            True,
+            4 * 1024**3,
+            None,
+            False,
+            True,
+            resource.STT_SURFACE,
+        ),
+        ("gemini", 1, False, 4 * 1024**3, "parakeet", True, True, "gemini"),
+        ("revai", 1, False, 4 * 1024**3, "parakeet", True, True, "revai"),
+        (None, 1, False, 4 * 1024**3, "parakeet", True, True, "confidential"),
+        (None, 1, True, 4 * 1024**3, "parakeet", True, False, "parakeet"),
+        (
+            None,
+            1,
+            True,
+            4 * 1024**3,
+            None,
+            True,
+            False,
+            resource.STT_SURFACE,
+        ),
+        (None, 4 * 1024**3, False, 4 * 1024**3, "parakeet", False, True, "parakeet"),
+        (None, 5 * 1024**3, True, 4 * 1024**3, "parakeet", False, True, "parakeet"),
+        (None, 3 * 1024**3, True, 4 * 1024**3, "parakeet", False, True, "gemini"),
+        (None, None, True, 4 * 1024**3, "parakeet", False, True, "gemini"),
+        (None, 3 * 1024**3, True, None, None, False, True, "gemini"),
+        (
+            None,
             None,
             False,
             4 * 1024**3,
             "parakeet",
             False,
+            True,
             resource.STT_SURFACE,
         ),
-        (3 * 1024**3, False, None, None, False, resource.STT_SURFACE),
-        (4 * 1024**3, False, 4 * 1024**3, "parakeet", False, "parakeet"),
-        (3 * 1024**3, True, 4 * 1024**3, "parakeet", False, "gemini"),
-        (3 * 1024**3, True, 4 * 1024**3, "parakeet", True, "parakeet"),
-        (3 * 1024**3, True, 4 * 1024**3, None, True, resource.STT_SURFACE),
-        (5 * 1024**3, True, 4 * 1024**3, "parakeet", True, "parakeet"),
+        (None, 3 * 1024**3, False, None, None, False, True, resource.STT_SURFACE),
     ],
 )
-def test_select_stt_backend_matrix(
+def test_resolve_stt_backend_choice_matrix(
+    explicit_backend: str | None,
     available_bytes: int | None,
     google_key_present: bool,
     floor_bytes: int | None,
     local_backend: str | None,
     confidential_lane_active: bool,
+    confidential_audio_enabled: bool,
     expected: str,
 ) -> None:
     assert (
-        resource.select_stt_backend(
+        resource.resolve_stt_backend_choice(
+            explicit_backend,
             available_bytes,
             google_key_present=google_key_present,
             floor_bytes=floor_bytes,
             local_backend=local_backend,
             confidential_lane_active=confidential_lane_active,
+            confidential_audio_enabled=confidential_audio_enabled,
         )
         == expected
     )
 
 
-def test_select_stt_backend_is_deterministic() -> None:
+def test_resolve_stt_backend_choice_is_deterministic() -> None:
     args = {
+        "explicit_backend": None,
         "available_bytes": 3 * 1024**3,
         "google_key_present": True,
         "floor_bytes": 4 * 1024**3,
         "local_backend": "parakeet",
         "confidential_lane_active": False,
+        "confidential_audio_enabled": True,
     }
 
-    assert resource.select_stt_backend(**args) == resource.select_stt_backend(**args)
+    assert resource.resolve_stt_backend_choice(
+        **args
+    ) == resource.resolve_stt_backend_choice(**args)

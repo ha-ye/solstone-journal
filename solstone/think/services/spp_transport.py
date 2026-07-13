@@ -52,6 +52,12 @@ class ConfidentialEndpointError(RuntimeError):
     reason_code = "endpoint_invalid"
 
 
+class ConfidentialLaneInactiveError(RuntimeError):
+    """Raised when a strict confidential-only caller has no active provenance."""
+
+    reason_code = "confidential_lane_inactive"
+
+
 def _failure_kind(exc: BaseException) -> Literal["failed", "unreachable"]:
     if isinstance(exc, RatlsChannelError) and exc.reason_code == "gateway_unreachable":
         return "unreachable"
@@ -240,6 +246,19 @@ def confidential_egress_base_url(endpoint_base_url: str) -> str:
     block = spp.confidential_provenance()
     if block is None:
         return endpoint_base_url
+    verify_confidential_attestation(block)
+    with _LOCK:
+        if _FORWARDER_BASE_URL is None:
+            raise AttestationFailedError(
+                "the confidential forwarder is unavailable (forwarder_unavailable)"
+            )
+        return _FORWARDER_BASE_URL
+
+
+def confidential_forwarder_base_url() -> str:
+    block = spp.confidential_provenance()
+    if block is None:
+        raise ConfidentialLaneInactiveError("confidential lane is not active")
     verify_confidential_attestation(block)
     with _LOCK:
         if _FORWARDER_BASE_URL is None:

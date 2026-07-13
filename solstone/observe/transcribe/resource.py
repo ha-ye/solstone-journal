@@ -10,6 +10,7 @@ import platform
 STT_SURFACE = "surface"
 STT_LOCAL_FLOOR_LINUX_BYTES = int(4 * 1024**3)
 STT_LOCAL_FLOOR_DARWIN_BYTES = int(2 * 1024**3)
+CONFIDENTIAL_STT_MAX_AUDIO_SECONDS = 300.0
 
 
 def stt_local_floor_bytes() -> int | None:
@@ -34,20 +35,34 @@ def local_stt_backend() -> str | None:
     return None
 
 
-def select_stt_backend(
+def resolve_stt_backend_choice(
+    explicit_backend: str | None,
     available_bytes: int | None,
     *,
     google_key_present: bool,
     floor_bytes: int | None,
     local_backend: str | None,
     confidential_lane_active: bool,
+    confidential_audio_enabled: bool,
 ) -> str:
-    """Resolve the unset/default STT backend without reading machine state."""
+    """Resolve STT backend choice without reading config, env, or machine state."""
+    if explicit_backend in {"parakeet", "parakeet-cpp"}:
+        return explicit_backend
+    if explicit_backend == "confidential":
+        if confidential_lane_active and confidential_audio_enabled:
+            return "confidential"
+        return local_backend if local_backend is not None else STT_SURFACE
+    if explicit_backend in {"gemini", "revai"}:
+        return explicit_backend
+
+    if confidential_lane_active and confidential_audio_enabled:
+        return "confidential"
     if confidential_lane_active:
         return local_backend if local_backend is not None else STT_SURFACE
 
     local_fits = (
-        floor_bytes is not None
+        local_backend is not None
+        and floor_bytes is not None
         and available_bytes is not None
         and available_bytes >= floor_bytes
     )
@@ -59,10 +74,11 @@ def select_stt_backend(
 
 
 __all__ = [
+    "CONFIDENTIAL_STT_MAX_AUDIO_SECONDS",
     "STT_LOCAL_FLOOR_DARWIN_BYTES",
     "STT_LOCAL_FLOOR_LINUX_BYTES",
     "STT_SURFACE",
     "local_stt_backend",
-    "select_stt_backend",
+    "resolve_stt_backend_choice",
     "stt_local_floor_bytes",
 ]

@@ -45,6 +45,7 @@
   ],
   "config": {
     "backend": "parakeet",
+    "confidential_audio": true,
     "enrich": true,
     "noise_upgrade": true,
     "parakeet": {

@@ -167,12 +167,17 @@ def _service_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _project_transcribe_config(transcribe_config: Any) -> dict[str, Any]:
+def _project_transcribe_config(
+    transcribe_config: Any,
+    *,
+    include_confidential_audio: bool = False,
+) -> dict[str, Any]:
     """Return the public transcribe config for currently supported backends."""
     if not isinstance(transcribe_config, dict):
         return {}
 
     from solstone.observe.transcribe import BACKEND_METADATA, BACKEND_REGISTRY
+    from solstone.observe.transcribe.config import confidential_audio_enabled
 
     supported_backends = set(BACKEND_REGISTRY)
     projected: dict[str, Any] = {}
@@ -196,6 +201,8 @@ def _project_transcribe_config(transcribe_config: Any) -> dict[str, Any]:
 
     if projected.get("backend") not in supported_backends:
         projected["backend"] = "parakeet"
+    if include_confidential_audio:
+        projected["confidential_audio"] = confidential_audio_enabled(transcribe_config)
     return projected
 
 
@@ -315,7 +322,13 @@ def update_config() -> Any:
                 "timezone",
             ],
             "journal": ["name"],
-            "transcribe": ["backend", "enrich", "preserve_all", "noise_upgrade"],
+            "transcribe": [
+                "backend",
+                "enrich",
+                "preserve_all",
+                "noise_upgrade",
+                "confidential_audio",
+            ],
             "support": ["enabled", "proactive", "anonymous_feedback", "portal_url"],
             "agent": ["name", "name_status", "named_date"],
             "env": API_KEY_ENV_VARS,
@@ -387,16 +400,28 @@ def update_config() -> Any:
             # Handle nested backend configs for transcribe section
             if section == "transcribe":
                 if "backend" in data:
-                    from solstone.observe.transcribe import BACKEND_REGISTRY
+                    from solstone.observe.transcribe import get_backend_list
 
-                    if data["backend"] not in BACKEND_REGISTRY:
-                        valid = ", ".join(sorted(BACKEND_REGISTRY))
+                    selectable = {item["name"] for item in get_backend_list()}
+                    if data["backend"] not in selectable:
+                        valid = ", ".join(sorted(selectable))
                         return error_response(
                             INVALID_CONFIG_VALUE,
                             detail=(
                                 f"Invalid backend: {data['backend']}. "
                                 f"Must be one of: {valid}"
                             ),
+                        )
+                for bool_key in (
+                    "enrich",
+                    "preserve_all",
+                    "noise_upgrade",
+                    "confidential_audio",
+                ):
+                    if bool_key in data and not isinstance(data[bool_key], bool):
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail=f"transcribe.{bool_key} must be a boolean",
                         )
                 for backend_key, allowed_keys in transcribe_nested.items():
                     if backend_key in data and isinstance(data[backend_key], dict):
@@ -573,7 +598,10 @@ def get_transcribe() -> Any:
         from solstone.observe.transcribe import get_backend_list
 
         config = get_journal_config()
-        transcribe_config = _project_transcribe_config(config.get("transcribe", {}))
+        transcribe_config = _project_transcribe_config(
+            config.get("transcribe", {}),
+            include_confidential_audio=True,
+        )
 
         # Get backends list from registry
         backends = get_backend_list()
@@ -589,6 +617,7 @@ def get_transcribe() -> Any:
                 api_keys[backend["name"]] = True  # Local backends always available
         google_key_present = bool(api_keys.get("gemini"))
         configured_backend = transcribe_config.get("backend")
+        confidential_audio = bool(transcribe_config.get("confidential_audio"))
         try:
             from solstone.think.services import spp
 
@@ -597,6 +626,7 @@ def get_transcribe() -> Any:
                 google_key_present=google_key_present,
                 configured_backend=configured_backend,
                 confidential_lane_active=confidential_lane_active,
+                confidential_audio=confidential_audio,
             )
         except Exception:
             logger.exception("error loading transcribe resource payload")

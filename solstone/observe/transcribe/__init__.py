@@ -65,6 +65,7 @@ BACKEND_REGISTRY: dict[str, str] = {
     "gemini": "solstone.observe.transcribe.gemini",
     "parakeet": "solstone.observe.transcribe.parakeet",
     "parakeet-cpp": "solstone.observe.transcribe._parakeet_cpp",
+    "confidential": "solstone.observe.transcribe.confidential",
 }
 
 # ---------------------------------------------------------------------------
@@ -80,26 +81,70 @@ BACKEND_METADATA: dict[str, dict] = {
         "description": "Cloud-based transcription with speaker identification",
         "env_key": "REVAI_ACCESS_TOKEN",
         "settings": ["model"],
+        "local": False,
+        "selectable": True,
     },
     "gemini": {
         "label": "Gemini - Cloud with speaker diarization",
         "description": "Cloud-based transcription with speaker identification",
         "env_key": "GOOGLE_API_KEY",
         "settings": [],
+        "local": False,
+        "selectable": True,
     },
     "parakeet": {
         "label": "Parakeet - Local processing (Apple Silicon CoreML or Linux parakeet.cpp)",
         "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses the supervised parakeet.cpp server. Requires `make install`.",
         "env_key": None,
         "settings": ["model_version", "device", "timeout_sec"],
+        "local": True,
+        "selectable": True,
     },
     "parakeet-cpp": {
         "label": "Parakeet.cpp - Local processing (Linux)",
         "description": "On-device speech recognition via a supervised parakeet.cpp server (mudler/parakeet.cpp). Linux only; install with `journal install-provider parakeet`.",
         "env_key": None,
         "settings": ["device"],
+        "local": True,
+        "selectable": True,
+    },
+    "confidential": {
+        "label": "Confidential - Operated attested transcription",
+        "description": "Hosted speech recognition over the verified confidential processing lane",
+        "env_key": None,
+        "settings": [],
+        "local": False,
+        "selectable": False,
     },
 }
+
+
+_PUBLIC_METADATA_FIELDS = ("label", "description", "env_key", "settings")
+
+
+def _validate_backend_metadata() -> None:
+    missing = sorted(set(BACKEND_REGISTRY) - set(BACKEND_METADATA))
+    stale = sorted(set(BACKEND_METADATA) - set(BACKEND_REGISTRY))
+    errors: list[str] = []
+    if missing:
+        errors.append(f"missing metadata for: {', '.join(missing)}")
+    if stale:
+        errors.append(f"metadata for unregistered backends: {', '.join(stale)}")
+
+    for name in sorted(set(BACKEND_REGISTRY) & set(BACKEND_METADATA)):
+        meta = BACKEND_METADATA[name]
+        for marker in ("local", "selectable"):
+            if marker not in meta:
+                errors.append(f"{name!r} metadata missing {marker!r} marker")
+                continue
+            if not isinstance(meta[marker], bool):
+                errors.append(f"{name!r} metadata marker {marker!r} must be bool")
+
+    if errors:
+        raise RuntimeError("Invalid STT backend metadata: " + "; ".join(errors))
+
+
+_validate_backend_metadata()
 
 
 def get_backend(name: str) -> ModuleType:
@@ -132,14 +177,27 @@ def get_backend_list() -> list[dict]:
         - env_key: Environment variable for API key (None for local backends)
         - settings: List of configurable field names
     """
-    return [
-        {"name": name, **BACKEND_METADATA.get(name, {"label": name})}
-        for name in BACKEND_REGISTRY
-    ]
+    backends = []
+    for name in BACKEND_REGISTRY:
+        meta = BACKEND_METADATA[name]
+        if not meta["selectable"]:
+            continue
+        backends.append(
+            {"name": name, **{field: meta[field] for field in _PUBLIC_METADATA_FIELDS}}
+        )
+    return backends
 
 
 class ConfidentialAudioEgressError(Exception):
     """Raised when confidential processing refuses a cloud STT backend."""
+
+
+class ConfidentialTranscribeDeferral(Exception):
+    """Raised when confidential transcription must defer without sending audio."""
+
+    def __init__(self, reason_code: str) -> None:
+        super().__init__(reason_code)
+        self.reason_code = reason_code
 
 
 def transcribe(
@@ -164,15 +222,36 @@ def transcribe(
     """
     from solstone.think.services import spp
 
-    if spp.confidential_provenance() is not None and backend in {"gemini", "revai"}:
-        logging.warning(
-            "Confidential lane refused cloud STT backend %s; raw audio must stay local",
-            backend,
-        )
-        raise ConfidentialAudioEgressError(
-            f"confidential lane blocks cloud STT backend {backend!r}; "
-            "raw audio must stay local"
-        )
+    confidential_lane_active = spp.confidential_provenance() is not None
+    if confidential_lane_active:
+        meta = BACKEND_METADATA.get(backend)
+        if meta is None:
+            logging.warning(
+                "Confidential lane refused unregistered STT backend %s; raw audio must stay local",
+                backend,
+            )
+            raise ConfidentialAudioEgressError(
+                f"confidential lane blocks unregistered STT backend {backend!r}; "
+                "raw audio must stay local"
+            )
+        if meta["local"]:
+            pass
+        elif backend == "confidential":
+            from solstone.observe.transcribe.config import confidential_audio_enabled
+
+            if not confidential_audio_enabled():
+                raise ConfidentialTranscribeDeferral("confidential_audio_disabled")
+        else:
+            logging.warning(
+                "Confidential lane refused cloud STT backend %s; raw audio must stay local",
+                backend,
+            )
+            raise ConfidentialAudioEgressError(
+                f"confidential lane blocks cloud STT backend {backend!r}; "
+                "raw audio must stay local"
+            )
+    elif backend == "confidential":
+        raise ConfidentialTranscribeDeferral("confidential_lane_inactive")
 
     backend_mod = get_backend(backend)
 
@@ -207,6 +286,7 @@ __all__ = [
     "get_backend",
     "get_backend_list",
     "ConfidentialAudioEgressError",
+    "ConfidentialTranscribeDeferral",
     "transcribe",
     # Utilities
     "SENTENCE_ENDINGS",

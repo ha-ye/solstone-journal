@@ -47,10 +47,21 @@ abort the entire batch.)
 
 ## Defer vs. fail
 
+Backend-specific policy:
+
+| Backend | Failure surface |
+|---------|-----------------|
+| `parakeet` / `parakeet-cpp` | Local STT. Supervised-server unavailability defers; live-server bad responses and contract failures fail loudly. |
+| `confidential` | Hosted STT over the verified loopback forwarder. Lane, attestation, backpressure, transport, rejected-request, unexpected-status, and bad-200 contract failures defer with hosted reason codes. |
+| `gemini` / `revai` | Third-party cloud STT. Under the confidential lane, raw-audio egress is denied before provider dispatch. |
+
 | Condition | Classified as | Why |
 |-----------|--------------|-----|
 | Parakeet server unreachable, warming, or **dead mid-request** | Defer (`69`) | The server is a supervised process. It comes back. |
 | Confidential lane refuses cloud egress | Defer (`69`) | The lane may permit a local backend later; the audio must not be lost. |
+| Confidential hosted STT lane inactive or audio disabled | Defer (`69`) | The owner selected or auto-resolved a confidential path, but the lane cannot currently carry audio. The input is preserved for a later local or confidential retry. |
+| Confidential hosted STT 400/413 or bad 200 contract | Defer (`69`) | Hosted STT is operated infrastructure. A 400 can be an engine-side regression, and owner audio is irreplaceable; preserving it for a post-fix drain is safer than failing permanently. |
+| Confidential hosted STT unreachable, backpressured, or unexpected status | Defer (`69`) | These are service-side or lane-side conditions. The deferred event carries the reason so health surfaces can show the condition without leaking content. |
 | HTTP 5xx from a live server, malformed JSON, contract violation | Fail (`1`) | The server answered — it is broken, not absent. Retrying the same request reproduces it. |
 | Malformed request or bad URL scheme (`LocalProtocolError`, `UnsupportedProtocol`) | Fail (`1`) | These are transport errors, but the bug is on *our* side of the wire. A retry cannot fix them, and deferring would hide the bug behind a daily retry forever. |
 | Anything else unexpected | Fail (`1`) | Surface it. |
@@ -68,6 +79,12 @@ Note that this makes the failure *honest*, not *rare*. A long clip will still OO
 server; it will now defer, be re-picked the next day, and OOM again. Chunking long audio
 so it stops OOMing is separate work.
 
+The confidential hosted lane deliberately deviates from the local-backend fail-loud
+rule for 400/413 and bad-200 contract failures. For the hosted lane only, those
+conditions defer because the operated engine can regress independently of the journal,
+the audio cannot be recreated, and the deferred event makes the condition visible on
+health surfaces. Local backends keep the fail-loud semantics above.
+
 ## Reason strings
 
 Every deferred and failed event carries a machine-readable `reason`.
@@ -82,12 +99,27 @@ Every deferred and failed event carries a machine-readable `reason`.
 | `network_error` | transport classifier | Other `httpx.NetworkError` (read/write errors on an established connection). |
 | `transport_error` | transport classifier | Any other `TransportError` (proxy, unsupported protocol). |
 | `confidential_egress_blocked` | `process_audio` | The confidential lane refused to send audio to a cloud backend. |
+| `confidential_lane_inactive` | confidential STT gate or backend | Confidential STT was selected, but the confidential lane was no longer active. |
+| `confidential_audio_disabled` | confidential STT gate | Confidential STT was selected under the lane, but `transcribe.confidential_audio` was off. |
+| `attestation_unreachable` | confidential probe status | Confidential attestation could not reach the gateway. Reused from the confidential lane health vocabulary. |
+| `attestation_failed` | confidential probe status | Confidential attestation completed but did not verify. Reused from the confidential lane health vocabulary. |
+| `attestation_not_yet_verified` | confidential probe status | Confidential provenance exists, but this process has no verified attestation session yet. Reused from the confidential lane health vocabulary. |
+| `attestation_stale` | confidential probe status | Confidential attestation cadence lapsed. Reused from the confidential lane health vocabulary. |
+| `hosted_transcribe_rejected` | confidential backend | Hosted STT returned 400 or 413. |
+| `hosted_transcribe_backpressure` | confidential backend | Hosted STT returned 429, 503, or 504. |
+| `hosted_transcribe_unreachable` | confidential backend | The hosted STT POST timed out or failed at the transport layer, or required local credential/device header data was unavailable. |
+| `hosted_transcribe_contract_failed` | confidential backend | Hosted STT returned 200 with invalid JSON, a non-object body, or a body that violated the expected word-timing contract. |
+| `hosted_transcribe_unexpected_status` | confidential backend | Hosted STT returned a non-200 status outside the named rejected/backpressure buckets. |
 | *(provider reason code)* | failed path | On a hard failure from a provider error — e.g. `transcription_http_error`, `invalid_json`, `contract_violation`. |
 | *(exception type name)* | failed path | On any other hard failure. |
 
 The transport classifier (`_transport_retry_reason` in `_parakeet_cpp.py`) is the single
 source of truth for the five transport reasons. Its checks run subclass-before-base
 because the httpx exception tree overlaps.
+
+The confidential backend reuses `confidential_probe_status()` for attestation reasons
+instead of inventing audio-specific attestation names. `AttestationFailedError` and
+`AttestationStaleError` therefore surface as one of the four attestation reasons above.
 
 ## The `observe.transcribed` event
 

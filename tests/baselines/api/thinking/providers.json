@@ -7,6 +7,7 @@
       "reason": "confidential_not_configured",
       "state": "off"
     },
+    "confidential_audio": true,
     "confidential_enabled": false,
     "confidential_operation": null,
     "confidential_provenance_configured": false,
