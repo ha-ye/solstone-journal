@@ -221,81 +221,71 @@ Importance levels are advisory hints passed to the AI selection process, not har
 
 ## Providers configuration
 
-The `providers` block enables fine-grained control over which LLM provider and model is used for different contexts. This supports a tier-based system where you can specify capability levels (pro/flash/lite) rather than specific model names.
+Brain choice is managed in the Thinking app. Your journal stores that choice in
+`journal/config/journal.json` under `providers`.
 
 ```json
 {
+  "env": {
+    "GOOGLE_API_KEY": "stored-by-settings"
+  },
   "providers": {
-    "default": {
+    "generate": {
       "provider": "google",
-      "tier": 2
+      "model": "gemini-flash-latest"
     },
-    "contexts": {
-      "observe.*": {"provider": "google", "tier": 3},
-      "talent.system.*": {"tier": 1},
-      "talent.system.conversation": {"provider": "anthropic", "disabled": true},
-      "talent.entities.observer": {"tier": 2}
+    "cogitate": {
+      "provider": "openai",
+      "model": "gpt-5.4-mini"
     },
-    "models": {
-      "google": {
-        "1": "gemini-3-pro-preview",
-        "2": "gemini-3-flash-preview",
-        "3": "gemini-2.5-flash-lite"
-      }
+    "local": {
+      "endpoint_url": "http://127.0.0.1:8080",
+      "served_model_id": "local-model-name",
+      "parallel_slots": 2
     }
   }
 }
 ```
 
-### Tier system
+### Live provider keys
 
-Tiers provide a provider-agnostic way to specify model capability levels:
+**`providers.generate`** controls the active brain for generator-style requests.
+It may contain:
+- `provider` – `"google"`, `"anthropic"`, `"openai"`, `"local"`, or omitted.
+- `model` – explicit model id for that provider.
 
-| Tier | Name  | Description |
-|------|-------|-------------|
-| 1    | pro   | Highest capability, best for complex reasoning |
-| 2    | flash | Balanced performance and cost (default) |
-| 3    | lite  | Fastest and cheapest, for simple tasks |
+**`providers.cogitate`** controls the active brain for tool-using requests. It
+has the same `provider` and `model` shape.
 
-System defaults map tiers to models for each provider. See `solstone/think/models.py` for current tier-to-model mappings (`PROVIDER_DEFAULTS` constant).
+When no provider is pinned, Solstone uses configured cloud keys in the
+grandfathered `google` → `anthropic` → `openai` order, then the ready local
+runtime, then the no-brain state.
 
-If a requested tier is unavailable for a provider, the system falls back to more capable tiers (e.g., tier 3 → tier 2 → tier 1).
+**`env`** stores managed cloud API keys:
+- `GOOGLE_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `OPENAI_API_KEY`
 
-### Context matching
+**`providers.local`** configures a local OpenAI-compatible endpoint. The endpoint
+is active only when both fields are present:
+- `endpoint_url`
+- `served_model_id`
 
-Contexts are matched in order of specificity:
-1. **Exact match** – `"talent.system.conversation"` matches only that exact context
-2. **Glob pattern** – `"observe.*"` matches any context starting with `observe.`
-3. **Default** – Falls back to the `default` configuration
+Optional local endpoint fields:
+- `credential`
+- `parallel_slots`
 
-### Context naming convention
+### Legacy routing keys
 
-Talent configs (agents and generators) use the pattern `talent.{source}.{name}`:
-- System configs: `talent.system.{name}` (e.g., `talent.system.conversation`, `talent.system.default`)
-- App configs: `talent.{app}.{name}` (e.g., `talent.entities.observer`, `talent.support.support`)
+These keys may still exist in older journals, but they no longer choose the
+provider or model:
+- `tier`
+- `backup`
+- `providers.models`
+- `providers.contexts.<context>.provider`
+- `providers.contexts.<context>.model`
 
-Other contexts follow the pattern `{module}.{feature}[.{operation}]`:
-- Observe pipeline: `observe.describe.frame`, `observe.enrich`, `observe.transcribe.gemini`
-
-### Configuration options
-
-**default** – Global defaults applied when no context matches:
-- `provider` (string) – Provider name: `"google"`, `"openai"`, or `"anthropic"`. Default: `"google"`.
-- `tier` (integer) – Tier number (1-3). Default: `2` (flash).
-- `model` (string) – Explicit model name (overrides tier if specified).
-
-**contexts** – Context-specific overrides. Each key is a context pattern, value is:
-- `provider` (string) – Override provider (optional, inherits from default).
-- `tier` (integer) – Tier number (optional).
-- `model` (string) – Explicit model name (optional, overrides tier).
-- `disabled` (boolean) – Disable this talent config (optional, talent contexts only).
-
-**models** – Per-provider tier overrides. Maps provider name to tier-model mappings:
-```json
-{
-  "google": {"1": "gemini-3-pro-preview", "2": "gemini-3-flash-preview"},
-  "openai": {"2": "gpt-5-mini-custom"}
-}
-```
-
-Note: Tier keys in JSON must be strings (`"1"`, `"2"`, `"3"`) since JSON doesn't support integer keys.
+`providers.contexts.<context>.disabled` and
+`providers.contexts.<context>.extract` are still used as talent metadata. Do not
+delete a `providers.contexts` block just because its old provider/model routing
+fields are no longer active.

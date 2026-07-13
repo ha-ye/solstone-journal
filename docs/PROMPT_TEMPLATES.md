@@ -141,14 +141,13 @@ Agent prompts are `.md` files with configuration in frontmatter:
 ```markdown
 {
   "title": "My Agent",
-  "tier": 2,
   "tools": "journal"
 }
 
 You are a helpful assistant...
 ```
 
-**Optional model configuration:** Add `max_output_tokens` (response length limit) and `thinking_budget` (model thinking token budget) to override provider defaults. Note: OpenAI uses fixed reasoning and ignores `thinking_budget`.
+**Optional model configuration:** Add `max_output_tokens` (response length limit) and `thinking_budget` (model thinking token budget) to tune the request sent through the active brain. Note: OpenAI uses fixed reasoning and ignores `thinking_budget`.
 
 **Reference:** `solstone/think/talent.py` → `get_talent()` for agent configuration loading
 

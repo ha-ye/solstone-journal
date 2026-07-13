@@ -1,5 +1,12 @@
 # Local provider
 
+Historical design note, July 2026: this document records the local-provider
+implementation lode. Current provider routing is documented in
+`docs/PROVIDERS.md`; the shipped system uses one active brain and does not use
+automatic backup-provider fallback or tier-based provider routing. Body
+references to `PROVIDER_DEFAULTS`, `get_backup_provider`, backup rewrites, or
+tier keys are historical, not live implementation instructions.
+
 ## D1 Provider identity and registry
 
 Decision: use the literal provider key `local`, registered as `PROVIDER_REGISTRY["local"] = "solstone.think.providers.local"`. Replace the current `ollama` provider entry; do not keep an alias. Use `PROVIDER_METADATA["local"] = {"label": "Local (on-device)", "env_key": ""}` with no `cogitate_runtime`, `cogitate_cli`, or install-command metadata.

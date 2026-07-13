@@ -1,5 +1,11 @@
 # Local Provider Capacity Retry
 
+Historical design note, July 2026: this document predates retirement of the
+automatic fallback-provider system and tier-based provider routing. Current
+behavior is one active brain with no provider switching on failure; see
+`docs/PROVIDERS.md`. Body references to cloud fallback or tier-era routing are
+historical, not live implementation instructions.
+
 ## Scope
 
 This note covers the bundled local generate path only. It does not change

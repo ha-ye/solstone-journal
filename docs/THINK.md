@@ -179,18 +179,26 @@ The `journal providers check` command is an ad-hoc provider check CLI. Cortex do
 journal providers check [TASK_FILE] [--provider PROVIDER] [--model MODEL] [--max-tokens N] [-o OUT_FILE]
 ```
 
-Provider resolution first honors an explicit local type default: cloud context or request pins cannot override that local-only promise. It then uses an explicit context provider, an explicit type provider, key presence in ``google`` -> ``anthropic`` -> ``openai`` order, the bundled local runtime when its artifacts are ready, and finally the no-thinking-engine state. Configure cloud API keys in the ``env`` section of ``journal/config/journal.json`` (for example, ``GOOGLE_API_KEY``, ``ANTHROPIC_API_KEY``, or ``OPENAI_API_KEY``). The ``local`` provider requires no API key — Settings installs a bundled loopback llama-server runtime and model on demand. Keys are loaded into ``os.environ`` by ``setup_cli()`` at process startup.
+Provider resolution lives in `solstone/think/models.py`. Each interface has one
+active brain: explicit `providers.generate` / `providers.cogitate` provider and
+model pins win first, then managed cloud-key presence in `google` -> `anthropic`
+-> `openai` order, then local runtime readiness, then the no-thinking-engine
+state. Retired tier, backup, and context provider/model routing keys are ignored
+by provider resolution. Configure managed cloud API keys in the `env` section of
+`journal/config/journal.json`. The `local` provider requires no API key.
 
 ### Provider modules
 
-Each provider lives in `solstone/think/providers/` and exposes a common interface:
+The registry in `solstone/think/providers/__init__.py` maps cloud provider names
+to `solstone/think/providers/openhands.py` and maps `local` to
+`solstone/think/providers/local.py`. Effective provider modules expose:
 
 - `run_generate()` - Sync text generation, returns `GenerateResult`
 - `run_agenerate()` - Async text generation, returns `GenerateResult`
 - `run_cogitate()` - Tool-calling execution via `sol call` commands and event streaming
 
-For direct LLM calls, use `think.models.generate()` or `think.models.agenerate()`
-which automatically routes to the configured provider based on context.
+For direct LLM calls, use `think.models.generate()` or `think.models.agenerate()`;
+they route through the active generate brain.
 
 ## Generator map keys
 
@@ -247,7 +255,7 @@ Cortex (orchestrator)
    ├── Tool execution via `sol call`
    └── Agent subprocess management
           ↓
-   Providers (openai, google, anthropic, local, mlx)
+   Providers (openai, google, anthropic, local)
 ```
 
 ## Providers
@@ -257,10 +265,12 @@ Cortex (orchestrator)
 | OpenAI | `solstone/think/providers/openhands.py` | GPT models via OpenHands/LiteLLM |
 | Google | `solstone/think/providers/openhands.py` | Gemini models via OpenHands/LiteLLM |
 | Anthropic | `solstone/think/providers/openhands.py` | Claude via OpenHands/LiteLLM |
-| Local | `solstone/think/providers/local.py` | On-device llama-server models |
-| MLX | `solstone/think/providers/mlx.py` | On-device Apple Silicon vision/generate |
+| Local | `solstone/think/providers/local.py` | Bundled llama-server, BYO OpenAI-compatible endpoint, and confidential local endpoint |
 
-Providers implement `run_generate()`, `run_agenerate()`, and `run_cogitate()` functions. See [PROVIDERS.md](PROVIDERS.md) for implementation details.
+Effective provider modules implement `run_generate()`, `run_agenerate()`, and
+`run_cogitate()` functions. Cloud vendor leaf modules implement generate only;
+OpenHands owns cloud cogitate. See [PROVIDERS.md](PROVIDERS.md) for implementation
+details.
 
 ## Key Components
 

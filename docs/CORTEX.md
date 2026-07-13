@@ -53,9 +53,9 @@ Requests are created via `cortex_request()` from `think.cortex_client`, which br
 }
 ```
 
-The model is automatically resolved based on the talent context (`talent.{source}.{name}`)
-and the configured tier in `journal.json`. Provider can optionally be overridden at
-request time, which will resolve the appropriate model for that provider at the same tier.
+The model is resolved from the active interface brain in
+`solstone/think/models.py`. Request-time provider/model pins may be supplied, but
+there is no tier-based fallback or backup-provider routing.
 
 ## Generator Request Format
 
@@ -280,32 +280,28 @@ The JSON frontmatter for an agent can include:
 
 ### Model Resolution
 
-Models are resolved automatically based on context and tier:
-1. Each talent config has a context pattern: `talent.{source}.{name}` (e.g., `talent.system.default`)
-2. The context determines the tier (pro/flash/lite) from `journal.json` or system defaults
-3. The tier + provider determines the actual model to use
+Models are resolved automatically by interface:
+1. `providers.generate.provider/model` or `providers.cogitate.provider/model`
+   pins the active brain when present.
+2. If no provider is pinned, managed cloud-key presence is honored in the
+   grandfathered `google` -> `anthropic` -> `openai` order.
+3. If no cloud key is configured and the local runtime is ready, `local` is used.
+4. If no brain is available, the request fails closed.
 
-This allows controlling model selection via tier configuration rather than hardcoding models:
-```json
-{
-  "providers": {
-    "contexts": {
-      "talent.system.default": {"tier": 1},
-      "talent.*": {"tier": 2}
-    }
-  }
-}
-```
+`providers.contexts` no longer selects provider/model. Its `disabled` and
+`extract` fields remain live talent metadata.
 
 ## Agent Providers
 
-The system supports multiple AI providers, each implementing the same event interface:
+The system supports multiple provider identities through
+`solstone/think/providers/__init__.py`:
 
-- **OpenAI** (`solstone/think/providers/openai.py`): GPT models with OpenAI Agents SDK
-- **Google** (`solstone/think/providers/google.py`): Gemini models with Google AI SDK
-- **Anthropic** (`solstone/think/providers/anthropic.py`): Claude models with Anthropic SDK
+- **OpenAI** (`solstone/think/providers/openhands.py`): GPT cogitate via OpenHands; generate redispatched to `solstone/think/providers/openai.py`
+- **Google** (`solstone/think/providers/openhands.py`): Gemini cogitate via OpenHands; generate redispatched to `solstone/think/providers/google.py`
+- **Anthropic** (`solstone/think/providers/openhands.py`): Claude cogitate via OpenHands; generate redispatched to `solstone/think/providers/anthropic.py`
+- **Local** (`solstone/think/providers/local.py`): bundled llama-server, BYO OpenAI-compatible endpoint, or confidential local endpoint
 
-All providers:
+Effective providers:
 - Emit JSON events to stdout (one per line)
 - Are spawned as subprocesses by Cortex
 - Use consistent event structures across providers

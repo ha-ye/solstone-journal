@@ -322,7 +322,7 @@ Bare links don't motivate clicking. Each entry below says when you actually need
 | `docs/OBSERVE.md` | Capture-side work: new modalities, transcription, sensing |
 | `docs/SOLCLI.md` | Adding a new `sol <cmd>` or `sol call <app> <verb>` |
 | `docs/PROMPT_TEMPLATES.md` | Modifying talent prompt format or frontmatter |
-| `docs/PROVIDERS.md` | Adding a new AI provider; debugging model selection |
+| `docs/PROVIDERS.md` | Three-lane provider architecture: active-brain resolution, local/BYO/confidential lanes, and honest no-fallback failure semantics |
 | `docs/testing.md` | Test structure, fixtures, debugging test isolation |
 | `docs/environment.md` | Journal path resolution, managed-wrapper behavior, service install details, and `SOLSTONE_JOURNAL` rules |
 | `docs/coding-standards.md` | Full naming conventions, ruff / mypy config, dep-management details — reference for everything not promoted into this file |

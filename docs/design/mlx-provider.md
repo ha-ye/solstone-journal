@@ -1,5 +1,12 @@
 # MLX provider
 
+Historical design note, July 2026: this document predates retirement of the
+standalone MLX provider plan, the automatic fallback-provider system, and
+tier-based provider routing. Current local/Apple backend behavior is documented
+through the `local` provider in `docs/PROVIDERS.md`. Body references to MLX
+provider constants, `get_backup_provider`, fallback tests, or tier mappings are
+historical, not live implementation instructions.
+
 ## D1. Provider registry key
 
 Decision: use `mlx`.
