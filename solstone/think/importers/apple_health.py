@@ -22,6 +22,7 @@ from solstone.think.importers.health_dedupe import (
     upsert_health_dedupe_records,
 )
 from solstone.think.importers.health_schema import (
+    DEFAULT_HEALTH_IMPORT_STREAM,
     SOURCE_APPLE_HEALTH,
     HealthRecordIdentity,
     SleepStagedInterval,
@@ -640,7 +641,7 @@ def _write_day_summaries(
         out_path = write_markdown_segment_file(
             journal_root,
             day,
-            "import.apple_health",
+            DEFAULT_HEALTH_IMPORT_STREAM,
             _DAY_SUMMARY_SEGMENT,
             "day_summary_transcript.md",
             _render_day_summary(summary, import_id=import_id),

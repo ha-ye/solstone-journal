@@ -30,7 +30,23 @@ KNOWN_SOURCE_FAMILIES: Final = frozenset(
     }
 )
 
-DEFAULT_HEALTH_IMPORT_STREAM: Final = "import.apple_health"
+
+@dataclass(frozen=True, slots=True)
+class HealthImporterRegistryEntry:
+    day_summary_stream: str
+
+
+HEALTH_IMPORTER_REGISTRY: Final[Mapping[str, HealthImporterRegistryEntry]] = {
+    SOURCE_APPLE_HEALTH: HealthImporterRegistryEntry(
+        day_summary_stream="import.apple_health"
+    ),
+    # Reserved stream identity only; this does not enable an Oura day-summary writer.
+    SOURCE_OURA: HealthImporterRegistryEntry(day_summary_stream="import.oura"),
+}
+
+DEFAULT_HEALTH_IMPORT_STREAM: Final = HEALTH_IMPORTER_REGISTRY[
+    SOURCE_APPLE_HEALTH
+].day_summary_stream
 
 # Owner-facing names for record types whose derived form reads poorly.
 # Everything else falls through to the prettifier below, so new owners'

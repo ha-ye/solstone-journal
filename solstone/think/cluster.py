@@ -17,7 +17,7 @@ from solstone.think.data_state import (
     derive_modality_state,
     read_processing_record,
 )
-from solstone.think.importers.health_schema import DEFAULT_HEALTH_IMPORT_STREAM
+from solstone.think.importers.health_schema import HEALTH_IMPORTER_REGISTRY
 from solstone.think.media import (
     AUDIO_EXTENSIONS,
     IMAGE_EXTENSIONS,
@@ -29,13 +29,9 @@ from solstone.think.talent_outputs import iter_talent_text_projections
 from .streams import read_segment_stream
 from .utils import day_from_path, day_path
 
-# These streams contain derived health day-summary cards, restated from
-# already-indexed health records. They must stay out of sense/entities/facets so
-# the system does not mine its own summaries back into entities. Other
-# markdown-only imports, such as owner notes, Kindle, ICS, or text, are real
-# owner thought and must enter think. Future health day-card streams join by
-# adding one entry here.
-HEALTH_CARD_STREAMS: Final = frozenset({DEFAULT_HEALTH_IMPORT_STREAM})
+HEALTH_CARD_STREAMS: Final = frozenset(
+    entry.day_summary_stream for entry in HEALTH_IMPORTER_REGISTRY.values()
+)
 
 
 def _date_str(day_dir: str) -> str:

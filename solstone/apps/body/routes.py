@@ -39,6 +39,7 @@ from solstone.convey import state
 from solstone.convey.reasons import INVALID_DAY, INVALID_REQUEST_VALUE
 from solstone.convey.utils import error_response
 from solstone.think.importers.health_schema import (
+    DEFAULT_HEALTH_IMPORT_STREAM,
     KNOWN_SOURCE_FAMILIES,
     SOURCE_APPLE_HEALTH,
     SOURCE_OURA_API,
@@ -59,7 +60,7 @@ body_bp = Blueprint("app:body", __name__, url_prefix="/app/body")
 
 DAY_RE = re.compile(r"^\d{8}$")
 MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
-DAY_SUMMARY_STREAM = "import.apple_health"
+DAY_SUMMARY_STREAM = DEFAULT_HEALTH_IMPORT_STREAM
 DAY_SUMMARY_FILE = "day_summary_transcript.md"
 
 # Day-curve readings further apart than this render as separate curve
