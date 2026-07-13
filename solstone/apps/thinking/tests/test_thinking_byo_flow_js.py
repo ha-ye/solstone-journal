@@ -15,6 +15,133 @@ from solstone.apps.thinking.tests.js_extract import extract_js_function
 
 STATIC = Path(__file__).resolve().parents[1] / "static" / "thinking.js"
 
+RENDER_DOM_STUB = """
+const nodes = new Map();
+const hiddenCalls = [];
+const providerEnv = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  google: 'GOOGLE_API_KEY',
+  openai: 'OPENAI_API_KEY',
+};
+const providerTerms = {
+  anthropic: 'https://www.anthropic.com/legal/commercial-terms',
+  google: 'https://ai.google.dev/gemini-api/terms',
+  openai: 'https://openai.com/policies/row-terms-of-use',
+};
+
+function makeClassList() {
+  return {
+    values: new Set(),
+    toggle(name, force) {
+      if (force) {
+        this.values.add(name);
+      } else {
+        this.values.delete(name);
+      }
+    },
+    contains(name) {
+      return this.values.has(name);
+    },
+  };
+}
+
+function makeNode(id = '', tagName = 'div') {
+  return {
+    id,
+    tagName,
+    children: [],
+    dataset: {},
+    attributes: {},
+    events: {},
+    className: '',
+    classList: makeClassList(),
+    textContent: '',
+    value: '',
+    hidden: false,
+    disabled: false,
+    checked: false,
+    type: '',
+    name: '',
+    appendChild(child) {
+      this.children.push(child);
+      return child;
+    },
+    append(...items) {
+      this.children.push(...items);
+    },
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    },
+    addEventListener(name, handler) {
+      this.events[name] = handler;
+    },
+  };
+}
+
+function $(id) {
+  if (!nodes.has(id)) nodes.set(id, makeNode(id));
+  return nodes.get(id);
+}
+
+function setText(id, message) {
+  $(id).textContent = message || '';
+}
+
+function setMessage(id, message, tone = '') {
+  const node = $(id);
+  node.textContent = message || '';
+  node.tone = tone;
+}
+
+function setHidden(id, hidden) {
+  const node = $(id);
+  node.hidden = !!hidden;
+  hiddenCalls.push({id, hidden: !!hidden});
+}
+
+function setButtonText(id, message) {
+  $(id).textContent = message || '';
+}
+
+function providerLabel(provider) {
+  return {anthropic: 'Claude', google: 'Gemini', openai: 'GPT'}[provider] || provider;
+}
+
+function relativeTime() {
+  return 'just now';
+}
+
+function activeLaneLabel(kind) {
+  return copy.active_lane_labels?.[kind] || kind || '';
+}
+
+function collectText(node) {
+  if (typeof node === 'string') return node;
+  return `${node.textContent || ''}${node.children.map(collectText).join('')}`;
+}
+
+function lastHidden(id) {
+  return hiddenCalls.filter((call) => call.id === id).at(-1)?.hidden;
+}
+
+const providerCards = ['anthropic', 'google', 'openai'].map((provider) => ({
+  dataset: {providerCard: provider},
+  classList: makeClassList(),
+}));
+
+const document = {
+  activeElement: null,
+  createElement(tagName) {
+    return makeNode('', tagName);
+  },
+  querySelectorAll(selector) {
+    if (selector === '[data-provider-card]') return providerCards;
+    if (selector === '[data-byo-key-link]') return [];
+    return [];
+  },
+};
+"""
+
 
 def _node_script(body: str) -> str:
     source = STATIC.read_text(encoding="utf-8")
@@ -38,6 +165,60 @@ def _node_script(body: str) -> str:
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
         "const text = copy.byo_setup;",
+        body,
+    ]
+    return "\n".join(parts)
+
+
+def _extract_js_function_exact(source: str, function_name: str) -> str:
+    marker = f"  function {function_name}("
+    start = source.index(marker) + 2
+    brace = source.index(") {", start) + 2
+    depth = 0
+    in_string: str | None = None
+    escaped = False
+    for index in range(brace, len(source)):
+        char = source[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == in_string:
+                in_string = None
+            continue
+        if char in {"'", '"', "`"}:
+            in_string = char
+            continue
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"could not extract {function_name}")
+
+
+def _node_render_script(body: str) -> str:
+    source = STATIC.read_text(encoding="utf-8")
+    parts = [
+        extract_js_function(source, "formatCopy"),
+        extract_js_function(source, "byoModelStepAllowed"),
+        extract_js_function(source, "byoTierList"),
+        extract_js_function(source, "preselectByoModel"),
+        extract_js_function(source, "byoTierRows"),
+        extract_js_function(source, "byoModelLabel"),
+        extract_js_function(source, "byoCustomText"),
+        extract_js_function(source, "byoCustomShowsChecked"),
+        extract_js_function(source, "byoSaveDisabled"),
+        extract_js_function(source, "resetByoDraft"),
+        extract_js_function(source, "selectedByoProvider"),
+        extract_js_function(source, "renderByoModelPanel"),
+        _extract_js_function_exact(source, "renderByo"),
+        "function assert(condition, message) { if (!condition) throw new Error(message); }",
+        f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
+        "const text = copy.byo_setup;",
+        RENDER_DOM_STUB,
         body,
     ]
     return "\n".join(parts)
@@ -298,6 +479,128 @@ assert(rows[1].tag === text.tier_tag_current, 'active model should be current');
 assert(rows[2].tag === text.tier_tag_suggested, 'lite model should be suggested');
 assert(byoModelLabel('anthropic', 'payload-top-id', injected) === 'Injected Top Label', 'known model label');
 assert(byoModelLabel('anthropic', 'custom-id', injected) === 'custom-id', 'custom id should stay raw');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_byo_model_panel_renders_payload_tier_cards() -> None:
+    _run_node(
+        _node_render_script(
+            """
+const state = {
+  selectedByoProvider: 'anthropic',
+  byoSelectedModel: '',
+  byoCustomOpen: false,
+  byoCustomModel: '',
+  byoCustomCheckedModel: '',
+  providers: {
+    generate: {provider: 'anthropic', model: 'injected-mid-id'},
+    model_tiers: {
+      anthropic: [
+        {tier: 'lite', label: 'Injected Lite', model: 'injected-lite-id'},
+        {tier: 'top', label: 'Injected Top', model: 'injected-top-id'},
+        {tier: 'mid', label: 'Injected Mid', model: 'injected-mid-id'},
+      ],
+    },
+  },
+};
+
+renderByoModelPanel('anthropic', {valid: true, timestamp: '2026-07-13T12:00:00Z'}, text);
+
+const cards = $('byoModelGrid').children;
+assert(cards.length === 3, 'three tier cards should render');
+assert(
+  JSON.stringify(cards.map((card) => collectText(card).includes('Injected Top'))) === JSON.stringify([true, false, false]),
+  'top card should render injected label first',
+);
+assert(
+  JSON.stringify(cards.map((card) => collectText(card).includes('Injected Mid'))) === JSON.stringify([false, true, false]),
+  'mid card should render injected label second',
+);
+assert(
+  JSON.stringify(cards.map((card) => collectText(card).includes('Injected Lite'))) === JSON.stringify([false, false, true]),
+  'lite card should render injected label third',
+);
+assert(
+  JSON.stringify(cards.map((card) => card.children[0].children[0].value)) === JSON.stringify([
+    'injected-top-id',
+    'injected-mid-id',
+    'injected-lite-id',
+  ]),
+  'cards should carry injected model ids',
+);
+assert(cards.every((card) => collectText(card).includes(card.children[0].children[0].value)), 'each injected id should render as text');
+assert(cards.every((card) => card.children[0].children[0].type === 'radio'), 'each card should contain a radio input');
+assert(new Set(cards.map((card) => card.children[0].children[0].name)).size === 1, 'radio inputs should share one name');
+assert(cards.every((card) => card.children[0].children[0].name === 'byoModelChoice'), 'radio input name should match BYO model group');
+assert(collectText(cards[1]).includes(text.tier_tag_current), 'active injected tier should show current tag');
+assert(collectText(cards[2]).includes(text.tier_tag_suggested), 'lite injected tier should show suggested tag');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_byo_render_shows_model_panel_only_for_valid_non_scout_key() -> None:
+    _run_node(
+        _node_render_script(
+            """
+const state = {
+  selectedByoProvider: 'anthropic',
+  byoMode: 'model',
+  byoSelectedModel: '',
+  byoCustomOpen: false,
+  byoCustomModel: '',
+  byoCustomCheckedModel: '',
+  providers: {
+    scout_enabled: false,
+    generate: {provider: 'anthropic', model: 'injected-mid-id'},
+    model_tiers: {
+      anthropic: [
+        {tier: 'top', label: 'Injected Top', model: 'injected-top-id'},
+        {tier: 'mid', label: 'Injected Mid', model: 'injected-mid-id'},
+        {tier: 'lite', label: 'Injected Lite', model: 'injected-lite-id'},
+      ],
+      google: [
+        {tier: 'top', label: 'Injected Google Top', model: 'google-top-id'},
+        {tier: 'mid', label: 'Injected Google Mid', model: 'google-mid-id'},
+        {tier: 'lite', label: 'Injected Google Lite', model: 'google-lite-id'},
+      ],
+    },
+  },
+  keys: {
+    api_keys: {anthropic: true, google: true},
+    key_validation: {
+      anthropic: {valid: true, timestamp: '2026-07-13T12:00:00Z'},
+      google: {valid: true, timestamp: '2026-07-13T12:00:00Z'},
+    },
+  },
+};
+
+renderByo();
+
+assert(lastHidden('byoModelPanel') === false, 'valid non-scout key should show model panel');
+assert(lastHidden('byoPastePanel') === true, 'valid non-scout key should hide paste panel');
+assert($('byoModelGrid').children.length === 3, 'shown model panel should render tier cards');
+
+hiddenCalls.length = 0;
+nodes.get('byoModelGrid').children = [];
+state.selectedByoProvider = 'google';
+state.byoMode = 'model';
+state.byoSelectedModel = '';
+state.byoCustomOpen = false;
+state.byoCustomModel = '';
+state.byoCustomCheckedModel = '';
+state.providers.scout_enabled = true;
+
+renderByo();
+
+assert(lastHidden('byoModelPanel') === true, 'scout google should not show model panel');
+assert(lastHidden('byoPastePanel') === false, 'scout google should fall back to paste panel');
+assert(state.byoMode === 'paste', 'scout google should reset model mode to paste');
+assert(state.byoSelectedModel === '', 'scout google fallback should clear selected model');
 console.log('PASS');
 """
         )
