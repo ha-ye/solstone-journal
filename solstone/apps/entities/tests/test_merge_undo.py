@@ -523,6 +523,61 @@ def test_non_lifo_overlapping_support_survives_undo_by_id(speakers_env) -> None:
     assert _private_payload_path(env, "overlap_target", merge_b["merge_id"]).is_file()
 
 
+def test_corrupt_active_sibling_payload_blocks_non_lifo_undo_without_mutation(
+    speakers_env,
+) -> None:
+    env = speakers_env()
+    for entity_id in ("sibling_a", "sibling_b", "sibling_target"):
+        env.create_entity(entity_id.replace("_", " ").title())
+        _normalize_entity_identity(entity_id)
+    for entity_id, title in (("sibling_a", "Title A"), ("sibling_b", "Title B")):
+        entity = load_journal_entity(entity_id)
+        assert entity is not None
+        entity["aka"] = ["Sibling Alias"]
+        entity["emails"] = ["sibling@example.com"]
+        entity["title"] = title
+        save_journal_entity(entity)
+        env.create_facet_relationship(
+            "work",
+            entity_id,
+            description=title,
+            observations=["sibling observation"],
+        )
+    env.create_facet_relationship("work", "sibling_target")
+
+    merge_a = merge_mod.merge_entity("sibling_a", "sibling_target", commit=True)
+    merge_b = merge_mod.merge_entity("sibling_b", "sibling_target", commit=True)
+    payload_b_path = _private_payload_path(env, "sibling_target", merge_b["merge_id"])
+    payload_b = _read_json(payload_b_path)
+    payload_b["manifest"].pop("identity")
+    _write_json(payload_b_path, payload_b)
+
+    tree_before = _journal_tree_hash(env.journal)
+    index_before = _index_hash(env)
+
+    undo = merge_mod.undo_entity_merge(merge_a["merge_id"])
+
+    assert "error" in undo
+    assert merge_b["merge_id"] in undo["error"]
+    assert _journal_tree_hash(env.journal) == tree_before
+    assert _index_hash(env) == index_before
+    assert load_journal_entity("sibling_a") is None
+    target = load_journal_entity("sibling_target")
+    assert target is not None
+    assert "Sibling Alias" in target["aka"]
+    assert "sibling@example.com" in target["emails"]
+    assert target["title"] == "Title A"
+    target_obs = _read_jsonl(
+        env.journal
+        / "facets"
+        / "work"
+        / "entities"
+        / "sibling_target"
+        / "observations.jsonl"
+    )
+    assert [item["content"] for item in target_obs] == ["sibling observation"]
+
+
 def _seed_chain(env) -> tuple[str, str]:
     for name in ("Chain C", "Chain A", "Chain Target"):
         env.create_entity(name)
@@ -916,6 +971,9 @@ def _facet_escape_canary(env, target_id: str, entry: dict) -> tuple[Path, bytes]
         pytest.param("facet_merge", "merge", id="facet-merge"),
         pytest.param("target_id_escape", None, id="target-id-escape"),
         pytest.param("source_id_escape", None, id="source-id-escape"),
+        pytest.param("missing_source_state", None, id="missing-source-state"),
+        pytest.param("missing_manifest", None, id="missing-manifest"),
+        pytest.param("missing_identity_manifest", None, id="missing-identity-manifest"),
         pytest.param("invalid_json", None, id="invalid-json"),
         pytest.param("missing_payload", None, id="missing-payload"),
     ],
@@ -971,6 +1029,15 @@ def test_hostile_manifest_fails_before_undo_mutation(
         )
         payload["source_id"] = _outside_component(env.journal / "entities", outside)
         assert ".." in Path(payload["source_id"]).parts
+        _write_json(payload_path, payload)
+    elif case == "missing_source_state":
+        payload.pop("source_state")
+        _write_json(payload_path, payload)
+    elif case == "missing_manifest":
+        payload.pop("manifest")
+        _write_json(payload_path, payload)
+    elif case == "missing_identity_manifest":
+        payload["manifest"].pop("identity")
         _write_json(payload_path, payload)
     elif case == "invalid_json":
         payload_path.write_text("{", encoding="utf-8")

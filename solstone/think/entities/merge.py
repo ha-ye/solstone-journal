@@ -1688,7 +1688,7 @@ def undo_entity_merge(
         try:
             rollback.snapshot(_journal_root() / "entities" / target_id)
             rollback.snapshot(_journal_root() / "entities" / source_id)
-            for snapshot in payload.get("source_state", {}).get("snapshots", []):
+            for snapshot in payload["source_state"]["snapshots"]:
                 rollback.snapshot(_contained(snapshot["rel"]))
             for path in _edge_db_paths():
                 rollback.snapshot(path)
@@ -1757,7 +1757,7 @@ def undo_entity_merge(
 
 
 def _restore_source_state(payload: dict[str, Any]) -> None:
-    for snapshot in payload.get("source_state", {}).get("snapshots", []):
+    for snapshot in payload["source_state"]["snapshots"]:
         _restore_snapshot(snapshot)
 
 
@@ -1826,7 +1826,7 @@ def _other_payload_supports(
 ) -> bool:
     section = "aka_support" if field == "aka" else "email_support"
     for payload in payloads:
-        for entry in payload.get("manifest", {}).get("identity", {}).get(section, []):
+        for entry in payload["manifest"]["identity"][section]:
             if str(entry.get("key")) == key:
                 return True
     return False
@@ -1880,11 +1880,7 @@ def _replay_identity_scalars(
         for payload in active_payloads:
             if int(payload.get("commit_seq") or 0) <= merge_seq:
                 continue
-            for other in (
-                payload.get("manifest", {})
-                .get("identity", {})
-                .get("scalar_support", [])
-            ):
+            for other in payload["manifest"]["identity"]["scalar_support"]:
                 if other.get("key") != key:
                     continue
                 if missing and not _is_missing_value(other.get("source_value")):
@@ -1941,8 +1937,7 @@ def _undo_voiceprints(
     )
 
     active_support = [
-        item.get("manifest", {}).get("voiceprints", {}).get("support", [])
-        for item in active_payloads
+        item["manifest"]["voiceprints"]["support"] for item in active_payloads
     ]
     apply_entity_merge_voiceprint_inverse(
         target_id,
@@ -1962,7 +1957,7 @@ def _undo_facets(
 
     active_entries: list[dict[str, Any]] = []
     for active in active_payloads:
-        for entry in active.get("manifest", {}).get("facets", {}).get("entries", []):
+        for entry in active["manifest"]["facets"]["entries"]:
             active_entry = copy.deepcopy(entry)
             active_entry["_commit_seq"] = int(active.get("commit_seq") or 0)
             active_entries.append(active_entry)
@@ -1986,9 +1981,7 @@ def _undo_observations(
 
     active_facet_entries: list[dict[str, Any]] = []
     for active in active_payloads:
-        active_facet_entries.extend(
-            active.get("manifest", {}).get("facets", {}).get("entries", [])
-        )
+        active_facet_entries.extend(active["manifest"]["facets"]["entries"])
     apply_entity_merge_observation_inverse(
         target_id=target_id,
         source_id=source_id,
@@ -1999,7 +1992,7 @@ def _undo_observations(
 
 
 def _delete_rebased_descendants(target_id: str, payload: dict[str, Any]) -> None:
-    for merge_id in payload.get("manifest", {}).get("rebased_merge_ids", []):
+    for merge_id in payload["manifest"]["rebased_merge_ids"]:
         remove_entity_merge_payload(target_id, str(merge_id))
 
 

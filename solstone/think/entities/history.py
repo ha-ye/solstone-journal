@@ -163,7 +163,12 @@ def load_entity_merge_payload(entity_id: str, merge_id: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise EntityHistoryError(f"private merge payload is not an object: {path}")
     payload = copy.deepcopy(payload)
-    _validate_merge_payload(payload)
+    try:
+        _validate_merge_payload(payload)
+    except Exception as exc:
+        raise EntityHistoryError(
+            f"invalid private merge payload for {entity_id}:{merge_id}: {exc}"
+        ) from exc
     return payload
 
 
@@ -425,10 +430,14 @@ def _validate_merge_payload(payload: Mapping[str, Any]) -> None:
     contained_path(journal, (Path("entities") / source_id).as_posix())
     contained_path(journal, (Path("entities") / target_id).as_posix())
 
-    source_state = payload.get("source_state", {})
+    if "source_state" not in payload:
+        raise EntityHistoryError("merge payload missing source_state")
+    source_state = payload["source_state"]
     if not isinstance(source_state, Mapping):
         raise EntityHistoryError("merge payload source_state is not an object")
-    snapshots = source_state.get("snapshots", [])
+    if "snapshots" not in source_state:
+        raise EntityHistoryError("merge payload missing snapshots")
+    snapshots = source_state["snapshots"]
     if not isinstance(snapshots, list):
         raise EntityHistoryError("merge payload snapshots is not a list")
     for snapshot in snapshots:
@@ -449,13 +458,46 @@ def _validate_merge_payload(payload: Mapping[str, Any]) -> None:
                 raise EntityHistoryError("manifest snapshot file missing relative path")
             contained_path(journal, (Path(rel) / item_rel).as_posix())
 
-    manifest = payload.get("manifest", {})
+    if "manifest" not in payload:
+        raise EntityHistoryError("merge payload missing manifest")
+    manifest = payload["manifest"]
     if not isinstance(manifest, Mapping):
         raise EntityHistoryError("merge payload manifest is not an object")
-    facets = manifest.get("facets", {})
+    if "identity" not in manifest:
+        raise EntityHistoryError("merge payload missing identity manifest")
+    identity = manifest["identity"]
+    if not isinstance(identity, Mapping):
+        raise EntityHistoryError("merge payload identity manifest is not an object")
+    for support_field in ("aka_support", "email_support", "scalar_support"):
+        if support_field not in identity:
+            raise EntityHistoryError(f"merge payload identity missing {support_field}")
+        if not isinstance(identity[support_field], list):
+            raise EntityHistoryError(
+                f"merge payload identity {support_field} is not a list"
+            )
+    if "target_before" not in identity:
+        raise EntityHistoryError("merge payload identity missing target_before")
+    if not isinstance(identity["target_before"], Mapping):
+        raise EntityHistoryError(
+            "merge payload identity target_before is not an object"
+        )
+    if "voiceprints" not in manifest:
+        raise EntityHistoryError("merge payload missing voiceprints manifest")
+    voiceprints = manifest["voiceprints"]
+    if not isinstance(voiceprints, Mapping):
+        raise EntityHistoryError("merge payload voiceprints manifest is not an object")
+    if "support" not in voiceprints:
+        raise EntityHistoryError("merge payload voiceprints missing support")
+    if not isinstance(voiceprints["support"], list):
+        raise EntityHistoryError("merge payload voiceprints support is not a list")
+    if "facets" not in manifest:
+        raise EntityHistoryError("merge payload missing facets manifest")
+    facets = manifest["facets"]
     if not isinstance(facets, Mapping):
         raise EntityHistoryError("merge payload facets manifest is not an object")
-    facet_entries = facets.get("entries", [])
+    if "entries" not in facets:
+        raise EntityHistoryError("merge payload facets missing entries")
+    facet_entries = facets["entries"]
     if not isinstance(facet_entries, list):
         raise EntityHistoryError("merge payload facet entries is not a list")
     for entry in facet_entries:
@@ -469,12 +511,16 @@ def _validate_merge_payload(payload: Mapping[str, Any]) -> None:
             (Path("facets") / facet / "entities" / target_id).as_posix(),
         )
     for section in ("segments", "activities", "observation_relations"):
-        section_manifest = manifest.get(section, {})
+        if section not in manifest:
+            raise EntityHistoryError(f"merge payload missing {section} manifest")
+        section_manifest = manifest[section]
         if not isinstance(section_manifest, Mapping):
             raise EntityHistoryError(
                 f"merge payload {section} manifest is not an object"
             )
-        entries = section_manifest.get("entries", [])
+        if "entries" not in section_manifest:
+            raise EntityHistoryError(f"merge payload {section} missing entries")
+        entries = section_manifest["entries"]
         if not isinstance(entries, list):
             raise EntityHistoryError(f"merge payload {section} entries is not a list")
         for entry in entries:
@@ -486,6 +532,10 @@ def _validate_merge_payload(payload: Mapping[str, Any]) -> None:
             if not isinstance(rel, str):
                 raise EntityHistoryError(f"manifest {section} entry missing path")
             contained_path(journal, rel)
+    if "rebased_merge_ids" not in manifest:
+        raise EntityHistoryError("merge payload missing rebased_merge_ids")
+    if not isinstance(manifest["rebased_merge_ids"], list):
+        raise EntityHistoryError("merge payload rebased_merge_ids is not a list")
 
 
 def _identity_snapshot(entity: Mapping[str, Any] | None) -> dict[str, Any] | None:
