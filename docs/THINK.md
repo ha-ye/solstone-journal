@@ -130,7 +130,7 @@ from solstone.think.callosum import CallosumConnection
 use_id = cortex_request(
     prompt="Your task here",
     name="default",
-    provider="openai"  # or "google", "anthropic", "claude"
+    provider="openai"  # or "google", "anthropic", "local"
 )
 
 # Watch for talent events via Callosum

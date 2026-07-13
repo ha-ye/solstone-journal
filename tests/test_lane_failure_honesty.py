@@ -66,9 +66,8 @@ class LaneProbe:
         return [obs for obs in self.observations if obs.method == method]
 
     def assert_only_provider(self, provider: str) -> None:
-        called = [obs for obs in self.observations if obs.method != "agenerate"]
-        assert called, "expected at least one provider call"
-        assert {obs.provider for obs in called} == {provider}
+        assert self.observations, "expected at least one provider call"
+        assert {obs.provider for obs in self.observations} == {provider}
 
     def assert_no_provider(self, provider: str) -> None:
         assert provider not in {obs.provider for obs in self.observations}
@@ -394,9 +393,10 @@ async def test_byo_endpoint_unreachable_stays_local(
 
     if interface == "generate":
         probe = _install_cloud_generate_tripwires(monkeypatch)
+        post_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
 
         def fake_post(*args: Any, **kwargs: Any) -> Any:
-            del args, kwargs
+            post_calls.append((args, dict(kwargs)))
             raise httpx.ConnectError("dead endpoint")
 
         monkeypatch.setattr("httpx.post", fake_post)
@@ -407,6 +407,8 @@ async def test_byo_endpoint_unreachable_stays_local(
                     lambda _event: None,
                 )
         assert exc_info.value.reason_code == "local_endpoint_unreachable"
+        assert len(post_calls) == 1
+        assert post_calls[0][0][0] == "http://127.0.0.1:9/v1/chat/completions"
         assert probe.observations == []
         return
 
@@ -458,9 +460,10 @@ async def test_byo_endpoint_contract_failure_stays_local(
 
     if interface == "generate":
         probe = _install_cloud_generate_tripwires(monkeypatch)
+        post_calls: list[tuple[str, dict[str, Any]]] = []
 
         def fake_post(url: str, **kwargs: Any) -> httpx.Response:
-            del kwargs
+            post_calls.append((url, dict(kwargs)))
             request = httpx.Request("POST", url)
             return httpx.Response(400, request=request, text="bad request")
 
@@ -472,6 +475,8 @@ async def test_byo_endpoint_contract_failure_stays_local(
                     lambda _event: None,
                 )
         assert exc_info.value.reason_code == "local_endpoint_contract_failed"
+        assert len(post_calls) == 1
+        assert post_calls[0][0] == "http://127.0.0.1:8080/v1/chat/completions"
         assert probe.observations == []
         return
 
@@ -543,6 +548,9 @@ async def test_vendor_quota_records_and_does_not_switch(
         assert [event["event"] for event in events] == ["error"]
 
     probe.assert_only_provider("anthropic")
+    assert (
+        len(probe.by_method("generate" if interface == "generate" else "cogitate")) == 1
+    )
     probe.assert_no_provider("google")
     probe.assert_no_provider("openai")
     probe.assert_no_provider("local")
@@ -596,6 +604,9 @@ async def test_non_quota_vendor_failure_does_not_switch(
 
     assert exc_info.value.reason_code == "network_unreachable"
     probe.assert_only_provider("anthropic")
+    assert (
+        len(probe.by_method("generate" if interface == "generate" else "cogitate")) == 1
+    )
     probe.assert_no_provider("google")
     probe.assert_no_provider("openai")
     probe.assert_no_provider("local")
@@ -643,45 +654,98 @@ async def test_standing_quota_row_does_not_pre_swap_active_brain(
             )
 
     probe.assert_only_provider("anthropic")
+    assert (
+        len(probe.by_method("generate" if interface == "generate" else "cogitate")) == 1
+    )
     probe.assert_no_provider("google")
     probe.assert_no_provider("openai")
     probe.assert_no_provider("local")
 
 
+@pytest.mark.parametrize("interface", ["generate", "cogitate"])
 @pytest.mark.asyncio
 async def test_explicit_local_not_ready_does_not_consult_cloud(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    interface: str,
 ):
+    from solstone.think.providers import local_server
+
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _write_test_config(
         tmp_path,
         provider="local",
         model=LOCAL_MODEL,
-        interface="generate",
+        interface=interface,
         env={
             "GOOGLE_API_KEY": "test-google-key",
             "ANTHROPIC_API_KEY": "test-anthropic-key",
         },
     )
-    probe = _install_cloud_generate_tripwires(monkeypatch)
+    connect_calls = 0
+    original_connect = local_server.connect
+
+    def spy_connect() -> Any:
+        nonlocal connect_calls
+        connect_calls += 1
+        return original_connect()
+
+    monkeypatch.setattr(local_server, "connect", spy_connect)
+
+    if interface == "generate":
+        probe = _install_cloud_generate_tripwires(monkeypatch)
+
+        with _assert_config_unchanged(tmp_path):
+            with pytest.raises(LocalProviderError) as exc_info:
+                await _execute_generate(
+                    _generate_config(provider="local", model=LOCAL_MODEL),
+                    lambda _event: None,
+                )
+
+        assert exc_info.value.reason_code == "local_model_not_ready"
+        assert connect_calls == 1
+        assert probe.observations == []
+        return
+
+    probe = _install_cogitate_probe(
+        monkeypatch,
+        active_provider="local",
+        patch_local=False,
+    )
 
     with _assert_config_unchanged(tmp_path):
         with pytest.raises(LocalProviderError) as exc_info:
-            await _execute_generate(
-                _generate_config(provider="local", model=LOCAL_MODEL),
+            await _execute_with_tools(
+                _cogitate_config(provider="local", model=LOCAL_MODEL),
                 lambda _event: None,
             )
 
     assert exc_info.value.reason_code == "local_model_not_ready"
-    assert probe.observations == []
+    assert connect_calls == 1
+    assert all(obs.provider == "local" for obs in probe.observations)
+    probe.assert_no_provider("google")
+    probe.assert_no_provider("openai")
+    probe.assert_no_provider("anthropic")
 
 
+@pytest.mark.parametrize(
+    ("failure", "expected_reason_code"),
+    [
+        (
+            LocalProviderError("provider_unavailable", "local provider unavailable"),
+            "provider_unavailable",
+        ),
+        (RuntimeError("not retryable"), None),
+    ],
+    ids=["reasoned", "bare"],
+)
 @pytest.mark.asyncio
 async def test_bundled_local_hard_failure_stays_local(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    failure: BaseException,
+    expected_reason_code: str | None,
 ):
     _clear_provider_env(monkeypatch)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
@@ -692,7 +756,6 @@ async def test_bundled_local_hard_failure_stays_local(
         interface="generate",
         env={"GOOGLE_API_KEY": "test-google-key"},
     )
-    failure = LocalProviderError("provider_unavailable", "local provider unavailable")
     probe = _install_generate_probe(
         monkeypatch,
         active_provider="local",
@@ -700,16 +763,21 @@ async def test_bundled_local_hard_failure_stays_local(
     )
 
     with _assert_config_unchanged(tmp_path):
-        with pytest.raises(LocalProviderError) as exc_info:
+        with pytest.raises(type(failure)) as exc_info:
             await _execute_generate(
                 _generate_config(provider="local", model=LOCAL_MODEL),
                 lambda _event: None,
             )
 
-    assert exc_info.value.reason_code == "provider_unavailable"
+    if expected_reason_code is None:
+        assert not hasattr(exc_info.value, "reason_code")
+    else:
+        assert exc_info.value.reason_code == expected_reason_code
     assert len(probe.by_method("generate")) == 1
     probe.assert_only_provider("local")
     probe.assert_no_provider("google")
+    probe.assert_no_provider("openai")
+    probe.assert_no_provider("anthropic")
 
 
 @pytest.mark.parametrize(
@@ -772,7 +840,10 @@ async def test_local_honest_retry_stays_same_provider(
             is expected_retry_kwargs["local_exclusive_admission"]
         )
     assert events[-1]["event"] == "finish"
+    probe.assert_only_provider("local")
     probe.assert_no_provider("google")
+    probe.assert_no_provider("openai")
+    probe.assert_no_provider("anthropic")
 
 
 @pytest.mark.asyncio
@@ -853,6 +924,7 @@ async def test_attempted_failed_segment_remains_repair_selectable(
 
     assert exc_info.value.reason_code == "network_unreachable"
     probe.assert_only_provider("anthropic")
+    assert len(probe.by_method("generate")) == 1
     progress = read_segment_progress(DAY)
     segment_progress = lookup_segment_progress(progress, STREAM, SEGMENT)
     assert segment_progress is not None

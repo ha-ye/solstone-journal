@@ -118,7 +118,7 @@ Capacity remains explicit and intentionally small:
 | Linux floor | 1 | supervisor `ServerTier`; live `/props.total_slots` wins |
 | Linux capable (at least 16 GiB tiering VRAM) | 2 | supervisor `ServerTier`; live `/props.total_slots` wins |
 | Apple mlx-vlm local backend | 1 | conservative explicit default; mlx-vlm on darwin exposes neither `/props` nor `ServerTier` (`solstone/think/providers/local_server.py:185`) |
-| Non-confidential BYO endpoint | configured | journal config `providers.local.parallel_slots`; see `docs/design/local-provider.md` for resolution and defaults |
+| Non-confidential BYO endpoint | configured | journal config `providers.local.parallel_slots`; resolved by `_configured_byo_parallel_slots()` (`solstone/think/providers/local_endpoint.py:68`) after `resolve_local_endpoint()` selects BYO (`solstone/think/providers/local_endpoint.py:84`) |
 
 For bundled local, the provider memoizes capacity once per process. It first
 reads live `/props.total_slots`, then the persisted `health/local.ctx` launch
@@ -157,7 +157,7 @@ another provider when the active brain fails.
 
 - Quota failures are recorded by
   `solstone/think/providers/state.py::record_quota_failure()` in
-  `journal/health/talents.json` with provider, model, interface,
+  `health/talents.json` under the active journal root with provider, model, interface,
   `provider_quota_exceeded`, and `reset_at_ms`.
 - Local endpoint reachability and contract failures are classified by
   `solstone/think/providers/local_endpoint.py` and
@@ -176,8 +176,8 @@ instead of falling back to a cloud provider.
 
 ## Live Configuration Keys
 
-Provider configuration lives in `journal/config/journal.json`; the canonical
-reader/writer is `solstone/think/journal_config.py`.
+Provider configuration lives in `config/journal.json` under the active journal
+root; the canonical reader/writer is `solstone/think/journal_config.py`.
 
 Live routing keys:
 
