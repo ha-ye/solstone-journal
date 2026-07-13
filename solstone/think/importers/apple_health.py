@@ -22,11 +22,11 @@ from solstone.think.importers.health_dedupe import (
     upsert_health_dedupe_records,
 )
 from solstone.think.importers.health_schema import (
-    DEFAULT_HEALTH_IMPORT_STREAM,
     SOURCE_APPLE_HEALTH,
     HealthRecordIdentity,
     SleepStagedInterval,
     friendly_type_name,
+    health_card_stream,
     health_record_dedupe_key,
     health_value_hash,
     pick_day_sleep,
@@ -647,11 +647,12 @@ def _write_day_summaries(
 ) -> tuple[list[str], list[tuple[str, str]]]:
     files: list[str] = []
     segments: list[tuple[str, str]] = []
+    stream = health_card_stream(SOURCE_APPLE_HEALTH)
     for day, summary in sorted(summaries.items()):
         out_path = write_markdown_segment_file(
             journal_root,
             day,
-            DEFAULT_HEALTH_IMPORT_STREAM,
+            stream,
             _DAY_SUMMARY_SEGMENT,
             "day_summary_transcript.md",
             _render_day_summary(summary, import_id=import_id),

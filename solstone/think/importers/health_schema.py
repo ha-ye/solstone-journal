@@ -21,32 +21,39 @@ SOURCE_OURA: Final = "oura"
 SOURCE_OURA_API: Final = "oura_api"
 SOURCE_DEXCOM_CLARITY: Final = "dexcom_clarity"
 
-KNOWN_SOURCE_FAMILIES: Final = frozenset(
-    {
-        SOURCE_APPLE_HEALTH,
-        SOURCE_OURA,
-        SOURCE_OURA_API,
-        SOURCE_DEXCOM_CLARITY,
-    }
-)
-
-
-@dataclass(frozen=True, slots=True)
-class HealthImporterRegistryEntry:
-    day_summary_stream: str
-
-
-HEALTH_IMPORTER_REGISTRY: Final[Mapping[str, HealthImporterRegistryEntry]] = {
-    SOURCE_APPLE_HEALTH: HealthImporterRegistryEntry(
-        day_summary_stream="import.apple_health"
-    ),
-    # Reserved stream identity only; this does not enable an Oura day-summary writer.
-    SOURCE_OURA: HealthImporterRegistryEntry(day_summary_stream="import.oura"),
+# Card streams contain derived health summaries and are excluded from
+# sense/think/entities so they are not mined back into the journal.
+HEALTH_CARD_STREAM_BY_FAMILY: Final[Mapping[str, str | None]] = {
+    SOURCE_APPLE_HEALTH: "import.apple_health",
+    SOURCE_OURA_API: "import.oura",
+    SOURCE_OURA: None,
+    SOURCE_DEXCOM_CLARITY: None,
 }
 
-DEFAULT_HEALTH_IMPORT_STREAM: Final = HEALTH_IMPORTER_REGISTRY[
-    SOURCE_APPLE_HEALTH
-].day_summary_stream
+KNOWN_SOURCE_FAMILIES: Final = frozenset(HEALTH_CARD_STREAM_BY_FAMILY)
+HEALTH_CARD_STREAMS: Final = frozenset(
+    stream for stream in HEALTH_CARD_STREAM_BY_FAMILY.values() if stream is not None
+)
+
+class HealthCardStreamError(ValueError):
+    """Raised when a health source family cannot write a chronicle card stream."""
+
+
+def health_card_stream(family: str) -> str:
+    """Return the chronicle card stream for a health source family."""
+
+    try:
+        stream = HEALTH_CARD_STREAM_BY_FAMILY[family]
+    except KeyError as exc:
+        raise HealthCardStreamError(
+            f"Unknown health source family: {family!r}"
+        ) from exc
+    if stream is None:
+        raise HealthCardStreamError(
+            f"Health source family {family!r} does not declare a chronicle card stream"
+        )
+    return stream
+
 
 # Owner-facing names for record types whose derived form reads poorly.
 # Everything else falls through to the prettifier below, so new owners'

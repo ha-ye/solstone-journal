@@ -6,7 +6,7 @@
 
 For the journal root given on the command line (required — this never
 defaults to a live journal), finds every
-``chronicle/<day>/import.apple_health/<segment>/day_summary_transcript.md``,
+Apple Health day-summary transcript,
 rebuilds that day's summary from the normalized rows across all
 ``imports/*/normalized/<month>.jsonl`` shards (deduplicated by
 ``dedupe_key``, later import bundles winning), and renders it with the
@@ -41,8 +41,8 @@ from solstone.think.importers.apple_health import (  # noqa: E402
     _resolve_night_sleep,
 )
 from solstone.think.importers.health_schema import (  # noqa: E402
-    DEFAULT_HEALTH_IMPORT_STREAM,
     SOURCE_APPLE_HEALTH,
+    health_card_stream,
 )
 from solstone.think.importers.shared import write_markdown_segment_file  # noqa: E402
 
@@ -155,9 +155,10 @@ def main(argv: list[str] | None = None) -> int:
     if not journal_root.is_dir():
         parser.error(f"journal root is not a directory: {journal_root}")
 
+    health_card_stream_name = health_card_stream(SOURCE_APPLE_HEALTH)
     summary_paths = sorted(
         journal_root.glob(
-            f"chronicle/*/{DEFAULT_HEALTH_IMPORT_STREAM}/*/{DAY_SUMMARY_FILENAME}"
+            f"chronicle/*/{health_card_stream_name}/*/{DAY_SUMMARY_FILENAME}"
         )
     )
     if not summary_paths:
@@ -195,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
             write_markdown_segment_file(
                 journal_root,
                 day,
-                DEFAULT_HEALTH_IMPORT_STREAM,
+                health_card_stream_name,
                 segment_key,
                 DAY_SUMMARY_FILENAME,
                 content,

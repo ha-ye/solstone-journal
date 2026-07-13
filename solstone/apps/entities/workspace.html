@@ -1302,7 +1302,9 @@ tr:hover .entity-delete-btn {
 
 .entity-conn-chip-list {
   display: flex;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
   flex-wrap: wrap;
   gap: 0.35em;
 }
@@ -2032,7 +2034,14 @@ function entityConnSourceWord(source) {
 function entityConnEvidenceLabel(row) {
   const rawLabel = row?.label;
   const label = rawLabel === null || rawLabel === undefined ? '' : String(rawLabel).trim();
-  if (label) return label;
+  if (label) {
+    const kindWord = entityConnKindWord(row?.kind);
+    if (kindWord && label.toLowerCase().startsWith(kindWord.toLowerCase())) {
+      const trimmed = label.slice(kindWord.length).replace(/^[\s,\u2013\u2014-]+/, '');
+      if (trimmed) return trimmed;
+    }
+    return label;
+  }
   const fallbacks = entityConnCopyMap('ENT_CONN_LABEL_FALLBACKS');
   return fallbacks[row?.kind] || entityConnKindWord(row?.kind);
 }
@@ -2045,7 +2054,7 @@ function formatEntityConnDay(day, referenceDay) {
   if (!day) return '';
   if (!/^\d{8}$/.test(day)) return day;
   const date = parseYYYYMMDD(day);
-  let label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  let label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toLowerCase();
   if (/^\d{8}$/.test(referenceDay || '')) {
     const reference = parseYYYYMMDD(referenceDay);
     if (date.getFullYear() !== reference.getFullYear()) {
@@ -2291,7 +2300,7 @@ function renderConnectionNeighborRow(entityId, neighbor, referenceDay) {
 
   const name = document.createElement('span');
   name.className = 'entity-conn-name';
-  name.textContent = neighbor.name || neighbor.entity_id || '';
+  name.textContent = neighbor.name || String(neighbor.entity_id || '').replace(/_/g, ' ');
   button.appendChild(name);
 
   const chips = renderConnectionKindChips(neighbor);
