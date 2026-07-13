@@ -180,9 +180,9 @@ def _model_from_response(response: httpx.Response) -> str | None:
         if not isinstance(item, dict):
             return None
         model = item.get("id")
-        if model is None:
+        if not isinstance(model, str):
             return None
-        return str(model).strip() or None
+        return model.strip() or None
     return None
 
 
