@@ -51,6 +51,10 @@ from solstone.think.importers.pre_save_gate import (
     approval_path_for_journal,
     oura_sync_approval_path_for_journal,
 )
+from solstone.think.importers.shared import (
+    ImportLockTimeout,
+    hold_private_import_lock,
+)
 from solstone.think.importers.sync import SYNCABLE_REGISTRY, get_syncable_backends
 
 FIXTURE_ROOT = (
@@ -1817,6 +1821,82 @@ def test_oura_sync_missing_auth_repairs_imports_dir_before_lock(
     )
 
 
+def test_private_import_lock_excludes_distinct_fds_in_one_process(
+    tmp_path: Path,
+) -> None:
+    lock_path = tmp_path / "journal" / "imports" / "oura.json"
+
+    with hold_private_import_lock(lock_path, timeout=1.0, poll_interval=0.0):
+        # This pins flock's per-open-file-description behavior. If this lock ever
+        # becomes POSIX per-process locking, the second acquire would succeed.
+        with pytest.raises(ImportLockTimeout) as exc_info:
+            with hold_private_import_lock(
+                lock_path,
+                timeout=0.0,
+                poll_interval=0.0,
+            ):
+                pass
+
+    assert exc_info.value.path == lock_path
+    assert exc_info.value.timeout == 0.0
+
+
+def test_oura_sync_lock_timeout_with_same_process_distinct_fd(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    lock_path = journal / "imports" / "oura.json"
+    transport = _fixture_transport()
+    monkeypatch.setattr(oura, "OURA_SYNC_LOCK_TIMEOUT", 0.2)
+
+    with hold_private_import_lock(lock_path, timeout=1.0, poll_interval=0.0):
+        with pytest.raises(oura.OuraSyncLockError) as exc_info:
+            oura.backend.sync(
+                journal,
+                dry_run=False,
+                confirm_health_save=True,
+                client=_canned_client(transport),
+                today=dt.date(2026, 1, 10),
+            )
+
+    payload = exc_info.value.to_dict()
+    text = (
+        f"{exc_info.value!s}\n"
+        f"{exc_info.value.format_text()}\n"
+        f"{exc_info.value.to_dict()!r}"
+    )
+    assert payload["error"] == "oura_sync_lock_timeout"
+    assert payload["journal_root"] == str(journal)
+    assert payload["lock_path"] == str(lock_path)
+    assert payload["timeout_seconds"] == 0.2
+    assert str(journal) in text
+    assert str(lock_path) in text
+    for forbidden in (
+        "Bearer",
+        "synthetic-access",
+        "synthetic-refresh",
+        "access_token",
+        "refresh_token",
+        "api.ouraring",
+        "daily_readiness",
+        "synthetic-readiness",
+    ):
+        assert forbidden not in text
+
+    assert transport.calls == []
+    contents = _imports_contents(journal)
+    assert "imports/oura.json.lock" in contents
+    assert "imports/oura.json" not in contents
+    assert "imports/health-dedupe.sqlite" not in contents
+    assert not any(entry.startswith("imports/2026") for entry in contents)
+    assert not any(entry.endswith("manifest.json") for entry in contents)
+    assert "imports/content_manifest.jsonl" not in contents
+    assert not any("/raw/" in entry or "/normalized/" in entry for entry in contents)
+
+
+@pytest.mark.integration
 def test_overlapping_save_sync_loser_gets_structured_lock_timeout(
     tmp_path: Path,
     monkeypatch,
@@ -1894,6 +1974,7 @@ oura.backend.sync(
     assert child.returncode == 0, stdout + stderr
 
 
+@pytest.mark.integration
 def test_in_lock_gate_rechecks_artifact_before_fetch_after_wait(
     tmp_path: Path,
     monkeypatch,
