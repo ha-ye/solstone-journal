@@ -48,15 +48,17 @@ Apple Health records are assigned to the local calendar day encoded in each reco
 
 ## Import Streams
 
-The declaring registry is `health_schema.HEALTH_CARD_STREAM_BY_FAMILY`.
+`health_schema.HEALTH_CARD_STREAM_BY_FAMILY` is the single declaring registry
+for health card streams; code resolves stream names from it rather than
+hardcoding them. Registering a family's card stream there excludes it from
+sense/think/entities before any writer exists, protecting derived summaries
+ahead of the code that writes them.
 
-The Apple Health summary stream name is `import.apple_health`.
-
-Later source-specific streams can be added only after privacy preflight and save-mode tests exist:
-
-- `import.oura`
-- `import.dexcom_clarity`
-- `import.health_auto_export`
+Today `apple_health` declares `import.apple_health` (writer shipped), `oura_api`
+declares `import.oura` (registered and excluded; no writer yet), and
+`dexcom_clarity` declares no card stream. A new health source that writes a day
+card needs exactly one registry edit; privacy preflight and save-mode tests still
+gate shipping the writer.
 
 ## Dedupe Boundary
 
