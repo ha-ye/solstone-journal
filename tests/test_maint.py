@@ -484,6 +484,7 @@ class TestRunTask:
         assert last_event["exit_code"] == -signal.SIGTERM
         assert last_event["error"] == "stalled"
 
+    @pytest.mark.integration
     def test_stall_hard_cap_kills_sigterm_ignoring_task(
         self, temp_journal, monkeypatch
     ):

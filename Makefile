@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install uninstall test test-cov test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging openapi check-openapi contract check-contract dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging openapi check-openapi contract check-contract dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -307,6 +307,7 @@ MYPY := $(VENV_BIN)/mypy
 # `make PYTEST_MAX_WORKERS=16 test` on a dedicated/idle box.
 PYTEST_MAX_WORKERS ?= 2
 PYTEST_XDIST_ARGS := -n auto --maxprocesses $(PYTEST_MAX_WORKERS) --dist loadgroup
+PYTEST_UNIT_ARGS := -m "not integration and not performance"
 
 # Check formatting without modifying files — gates `make test`
 format-check: .installed
@@ -317,12 +318,22 @@ format-check: .installed
 # IDE runs stay serial.
 test: .installed format-check
 	@echo "Running unit tests (core + apps)..."
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q $(PYTEST_XDIST_ARGS)
+	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q $(PYTEST_UNIT_ARGS) $(PYTEST_XDIST_ARGS)
 
 # Same suite with full-repo coverage (used by ci/verify)
 test-cov: .installed format-check
 	@echo "Running unit tests with coverage (core + apps)..."
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q --cov=. $(PYTEST_XDIST_ARGS)
+	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q --cov=. $(PYTEST_UNIT_ARGS) $(PYTEST_XDIST_ARGS)
+
+# Real external-process probes are valuable operator validation, not unit CI.
+test-integration: .installed format-check
+	@echo "Running integration tests..."
+	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q -m integration $(PYTEST_XDIST_ARGS)
+
+# Wall-clock thresholds are intentionally opt-in so loaded hosts do not make CI flaky.
+test-performance: .installed format-check
+	@echo "Running performance tests..."
+	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q -m performance
 
 # Run a single app's tests
 test-app: .installed
@@ -464,7 +475,7 @@ watch: .installed
 
 # Generate HTML coverage report (core + apps)
 coverage: .installed
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ --cov=. --cov-report=html --cov-report=term
+	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ $(PYTEST_UNIT_ARGS) --cov=. --cov-report=html --cov-report=term
 	@echo "Coverage report generated in htmlcov/index.html"
 
 # Update all dependencies to latest versions and refresh genai-prices

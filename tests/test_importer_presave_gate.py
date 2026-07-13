@@ -520,6 +520,7 @@ def test_cli_apple_health_save_with_valid_gate_imports_end_to_end(
     journal = _use_journal(tmp_path, monkeypatch)
     write_health_approval_artifact(journal, importers=["apple_health"])
     cli = import_module("solstone.think.importers.cli")
+    monkeypatch.setattr(cli, "_status_emitter", lambda: None)
 
     result = cli._import_one_from_args(
         Namespace(
@@ -556,6 +557,7 @@ def test_cli_oura_save_with_valid_gate_reaches_deferred_save_path(
     journal = _use_journal(tmp_path, monkeypatch)
     write_health_approval_artifact(journal, importers=["oura"])
     cli = import_module("solstone.think.importers.cli")
+    monkeypatch.setattr(cli, "_status_emitter", lambda: None)
 
     with pytest.raises(NotImplementedError):
         cli._import_one_from_args(

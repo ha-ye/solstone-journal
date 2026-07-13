@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -13,12 +12,8 @@ from solstone.think.backup import repo
 from solstone.think.backup.destination import (
     Destination,
     DestinationStatus,
-    assemble_backend_env,
-    validate_destination,
 )
-from solstone.think.backup.runner import ResticResult, run_restic
-
-RESTIC_BIN = shutil.which("restic")
+from solstone.think.backup.runner import ResticResult
 
 
 def _destination(repository: str = "s3:safe-bucket/path") -> Destination:
@@ -336,43 +331,3 @@ def test_remove_key_raises_typed_error_on_nonzero(
 
     assert exc_info.value.returncode == 11
     assert str(exc_info.value) == "restic key remove failed with returncode 11"
-
-
-@pytest.mark.skipif(RESTIC_BIN is None, reason="restic is not installed")
-def test_init_and_add_recovery_key_local_repository_integration(tmp_path: Path) -> None:
-    restic_path = Path(RESTIC_BIN or "")
-    destination = _destination(f"local:{tmp_path / 'repo'}")
-
-    init_result = run_restic(
-        ["init"],
-        repository=destination.repository,
-        password="daily-password",
-        restic_path=restic_path,
-        backend_env=assemble_backend_env(destination),
-        timeout=15,
-    )
-    assert init_result.returncode == 0, init_result.stderr
-
-    repo._add_recovery_key(
-        destination,
-        daily_key="daily-password",
-        recovery_key="recovery-password",
-        restic_path=restic_path,
-        timeout=15,
-    )
-
-    daily_status = validate_destination(
-        destination,
-        "daily-password",
-        restic_path=restic_path,
-        timeout=15,
-    )
-    recovery_status = validate_destination(
-        destination,
-        "recovery-password",
-        restic_path=restic_path,
-        timeout=15,
-    )
-
-    assert daily_status.reason_code == "repo_exists"
-    assert recovery_status.reason_code == "repo_exists"

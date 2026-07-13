@@ -5,6 +5,8 @@ import sqlite3
 import time
 from pathlib import Path
 
+import pytest
+
 from solstone.think.importers.health_dedupe import (
     DEDUPE_DB_RELATIVE_PATH,
     HealthDedupeRecord,
@@ -260,6 +262,7 @@ def measure_batched_health_dedupe_upsert_rate(
     return count / elapsed_seconds
 
 
+@pytest.mark.performance
 def test_batched_health_dedupe_upsert_benchmark(tmp_path: Path):
     upserts_per_second = measure_batched_health_dedupe_upsert_rate(tmp_path)
 
