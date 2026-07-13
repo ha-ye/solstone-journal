@@ -13,7 +13,9 @@ IMPORTER_ROOT = Path(__file__).resolve().parents[1] / "solstone" / "think" / "im
 ALLOWED_EGRESS: frozenset[tuple[str, str, str]] = frozenset(
     {
         ("oura", "_default_transport", "http_client"),
-        ("oura_auth", "<module>", "module_network_import"),
+        ("oura_auth", "<module>", "browser_open"),
+        ("oura_auth", "<module>", "http_client"),
+        ("oura_auth", "<module>", "loopback_http_server"),
         ("oura_auth", "_default_http_transport", "http_client"),
         ("oura_auth", "_post_token_request", "http_client"),
         ("oura_auth", "_authorization_url", "authorization_url"),
@@ -32,7 +34,10 @@ IMPORT_CAPABILITIES: dict[str, str] = {
     "http.client": "http_client",
     "http.server": "loopback_http_server",
     "httpx": "http_client",
+    "imaplib": "mail_client",
     "importlib": "dynamic_import",
+    "poplib": "mail_client",
+    "pycurl": "http_client",
     "requests": "http_client",
     "smtplib": "mail_client",
     "socket": "socket",
@@ -41,6 +46,7 @@ IMPORT_CAPABILITIES: dict[str, str] = {
     "urllib": "http_client",
     "urllib.error": "http_client",
     "urllib.request": "http_client",
+    "urllib3": "http_client",
     "webbrowser": "browser_open",
 }
 
@@ -52,15 +58,19 @@ CALL_CAPABILITIES: dict[str, str] = {
     "http.server.BaseHTTPRequestHandler": "loopback_http_server",
     "http.server.HTTPServer": "loopback_http_server",
     "httpx": "http_client",
+    "imaplib": "mail_client",
     "importlib": "dynamic_import",
     "os.popen": "process_escape",
     "os.system": "process_escape",
+    "poplib": "mail_client",
+    "pycurl": "http_client",
     "requests": "http_client",
     "smtplib": "mail_client",
     "socket": "socket",
     "ssl": "tls",
     "subprocess": "process_escape",
     "urllib.request": "http_client",
+    "urllib3": "http_client",
     "webbrowser.open": "browser_open",
 }
 
@@ -155,13 +165,7 @@ def _resolve_name(name: str, bindings: dict[str, str]) -> str:
 
 
 def _allowed(module: str, owner: str, capability: str) -> bool:
-    if (module, owner, capability) in ALLOWED_EGRESS:
-        return True
-    return (
-        owner == "<module>"
-        and capability != "dynamic_import"
-        and (module, owner, "module_network_import") in ALLOWED_EGRESS
-    )
+    return (module, owner, capability) in ALLOWED_EGRESS
 
 
 def _violation(
@@ -256,17 +260,44 @@ def test_oura_egress_guard_covers_all_oura_modules() -> None:
 
 def test_oura_egress_guard_reports_synthetic_violation() -> None:
     source = """
+import os
+import smtplib
 import socket
+import subprocess
+import urllib3
 
-def added_escape_hatch():
-    import subprocess
-    socket.socket()
-    __import__("ssl")
-    subprocess.run(["true"])
+socket.socket()
+smtplib.SMTP("localhost")
+subprocess.run(["true"])
+os.system("true")
+urllib3.PoolManager()
+__import__("ssl")
 """
 
     violations = _egress_violations("oura_future", source)
 
-    assert any("socket" in violation for violation in violations)
+    assert any(
+        "oura_future.<module>: process_escape: import subprocess" in violation
+        for violation in violations
+    )
+    assert any(
+        "oura_future.<module>: process_escape: call subprocess.run" in violation
+        for violation in violations
+    )
+    assert any(
+        "oura_future.<module>: process_escape: call os.system" in violation
+        for violation in violations
+    )
+    assert any(
+        "oura_future.<module>: socket: import socket" in violation
+        for violation in violations
+    )
+    assert any(
+        "oura_future.<module>: mail_client: import smtplib" in violation
+        for violation in violations
+    )
+    assert any(
+        "oura_future.<module>: http_client: import urllib3" in violation
+        for violation in violations
+    )
     assert any("dynamic_import" in violation for violation in violations)
-    assert any("process_escape" in violation for violation in violations)

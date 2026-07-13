@@ -172,7 +172,7 @@ Importer-owned files under `imports/` are private (`0600`) and importer-owned di
 
 ## 5. (d) Sync design
 
-**Backend.** `OuraSyncBackend` (skeleton class exists; `sync()` raises with a pointer here). Registered in `SYNCABLE_REGISTRY` **only at phase O3** — the skeleton deliberately leaves it unregistered so no runtime flow (CLI `--sync`, export tooling) can reach a half-built path; a test pins that until O3 flips both together.
+**Backend.** `OuraSyncBackend` is registered in `SYNCABLE_REGISTRY["oura"]` and implements save-mode sync. Save runs validate the pre-save gate before taking the per-journal import lock, recheck the gate inside the lock, then fetch and persist only after the gate and lock both hold. Cursor-only quiet runs intentionally advance `imports/oura.json` without creating an import bundle.
 
 **Cursor state** at `imports/oura.json` via `sync.load_sync_state`/`save_sync_state`:
 
@@ -415,7 +415,7 @@ reauthorization needed (the scopes were granted 2026-07-07).
 
 ## 10. What landed with this doc (phase O0 inventory)
 
-- `solstone/think/importers/oura.py` — parse layer (`parse_oura_bundle`, `parse_endpoint_document`, `parse_oura_day`), normalizer (`normalize_bundle` → rows + `HealthDedupeRecord`s via `health_schema`), §13 copy reference (`render_day_summary`), `OuraImporter` (detect/preview/dry-run live; save gated then seamed), `OuraSyncBackend` + OAuth seams (all raise, pointing here). Zero network imports, test-enforced.
+- `solstone/think/importers/oura.py` — parse layer (`parse_oura_bundle`, `parse_endpoint_document`, `parse_oura_day`), normalizer (`normalize_bundle` → rows + `HealthDedupeRecord`s via `health_schema`), §13 copy reference (`render_day_summary`), `OuraImporter` (detect/preview/dry-run live; save gated then seamed), `OuraSyncBackend` + OAuth seams. Network egress follows a lazy-import discipline: no module-level network imports, with live egress confined to the allowlisted transport path enforced by tests.
 - `solstone/think/importers/health_schema.py` — `SOURCE_OURA_API`, `KNOWN_SOURCE_FAMILIES` entry, friendly names for the seven `oura.*` record types.
 - `solstone/think/importers/pre_save_gate.py` — `"oura"` joins `SENSITIVE_IMPORTERS`.
 - `solstone/think/importers/file_importer.py` — registry entry (preview/dry-run-only paths active).
