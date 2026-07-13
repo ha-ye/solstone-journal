@@ -127,7 +127,7 @@ def _resolve_runtime(scope: str) -> _Runtime | None:
         binding = load_hosted_binding()
         if binding is None:
             return None
-        credential_scope = "maintenance" if scope == "backup" else scope
+        credential_scope = "operated" if scope == "backup" else scope
         creds = fetch_hosted_credentials(binding, scope=credential_scope)
         destination = operated_destination(binding, creds)
     else:
@@ -205,7 +205,6 @@ def _runtime_backend(
             return
         with hosted_restic_session(
             runtime.binding,
-            scope=scope,
             initial_credentials=runtime.hosted_credentials,
         ) as session:
             yield session

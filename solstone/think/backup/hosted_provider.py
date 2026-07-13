@@ -1,29 +1,21 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Authenticated loopback credential provider for long operated restic runs."""
+"""Operation-scoped credential sessions for hosted restic runs."""
 
 from __future__ import annotations
 
-import json
-import secrets
-import threading
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from solstone.think.backup.destination import Destination
+from solstone.think.backup.destination import Destination, assemble_backend_env
 from solstone.think.backup.hosted import (
     HostedBinding,
     HostedCredentials,
-    HostedCredsUnavailable,
-    fetch_hosted_credentials,
-    operated_repository,
+    operated_destination,
 )
-
-_CREDENTIAL_PATH = "/credentials"
 
 
 @dataclass(frozen=True)
@@ -33,131 +25,17 @@ class HostedResticSession:
     global_options: tuple[str, ...] = ()
 
 
-class _CredentialState:
-    def __init__(
-        self,
-        binding: HostedBinding,
-        scope: str,
-        initial_credentials: HostedCredentials,
-    ) -> None:
-        self.binding = binding
-        self.scope = scope
-        self._initial_credentials: HostedCredentials | None = initial_credentials
-        self._lock = threading.Lock()
-
-    def next_credentials(self) -> HostedCredentials:
-        with self._lock:
-            if self._initial_credentials is not None:
-                credentials = self._initial_credentials
-                self._initial_credentials = None
-                return credentials
-        return fetch_hosted_credentials(self.binding, scope=self.scope)
-
-
-class _CredentialServer(ThreadingHTTPServer):
-    daemon_threads = True
-
-    def __init__(
-        self,
-        state: _CredentialState,
-        authorization_token: str,
-    ) -> None:
-        self.state = state
-        self.authorization_token = authorization_token
-        super().__init__(("127.0.0.1", 0), _CredentialHandler)
-
-
-class _CredentialHandler(BaseHTTPRequestHandler):
-    server: _CredentialServer
-
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
-        if self.path != _CREDENTIAL_PATH:
-            self.send_error(404)
-            return
-        if self.headers.get("Authorization") != self.server.authorization_token:
-            self.send_error(401)
-            return
-
-        try:
-            credentials = self.server.state.next_credentials()
-        except HostedCredsUnavailable:
-            self.send_error(503)
-            return
-
-        body = json.dumps(
-            {
-                "AccessKeyId": credentials.access_key_id,
-                "SecretAccessKey": credentials.secret_access_key,
-                "Token": credentials.session_token,
-                "Expiration": credentials.expires_at,
-            },
-            separators=(",", ":"),
-        ).encode("utf-8")
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def log_message(self, _format: str, *_args: object) -> None:
-        return
-
-
-@contextmanager
-def _credential_provider(
-    binding: HostedBinding,
-    *,
-    scope: str,
-    initial_credentials: HostedCredentials | None = None,
-) -> Iterator[tuple[HostedCredentials, dict[str, str]]]:
-    credentials = initial_credentials or fetch_hosted_credentials(binding, scope=scope)
-    authorization_token = secrets.token_urlsafe(32)
-    state = _CredentialState(binding, scope, credentials)
-    server = _CredentialServer(state, authorization_token)
-    thread = threading.Thread(
-        target=server.serve_forever,
-        kwargs={"poll_interval": 0.05},
-        name="spb-credential-provider",
-        daemon=True,
-    )
-    thread.start()
-    host, port = server.server_address
-    try:
-        yield (
-            credentials,
-            {
-                "AWS_CONTAINER_CREDENTIALS_FULL_URI": (
-                    f"http://{host}:{port}{_CREDENTIAL_PATH}"
-                ),
-                "AWS_CONTAINER_AUTHORIZATION_TOKEN": authorization_token,
-            },
-        )
-    finally:
-        server.shutdown()
-        server.server_close()
-        thread.join()
-
-
 @contextmanager
 def hosted_restic_session(
     binding: HostedBinding,
     *,
-    scope: str,
-    initial_credentials: HostedCredentials | None = None,
+    initial_credentials: HostedCredentials,
 ) -> Iterator[HostedResticSession]:
-    with _credential_provider(
-        binding,
-        scope=scope,
-        initial_credentials=initial_credentials,
-    ) as (credentials, provider_env):
-        yield HostedResticSession(
-            destination=Destination(
-                repository=operated_repository(binding, credentials),
-                backend="s3",
-                credentials={},
-            ),
-            backend_env=provider_env,
-        )
+    destination = operated_destination(binding, initial_credentials)
+    yield HostedResticSession(
+        destination=destination,
+        backend_env=assemble_backend_env(destination),
+    )
 
 
 @contextmanager
@@ -165,37 +43,34 @@ def hosted_append_only_restic_session(
     binding: HostedBinding,
     *,
     rclone_path: Path,
-    initial_credentials: HostedCredentials | None = None,
+    initial_credentials: HostedCredentials,
 ) -> Iterator[HostedResticSession]:
     """Serve an operated repo through rclone's lock-aware append-only adapter."""
-    with _credential_provider(
-        binding,
-        scope="maintenance",
-        initial_credentials=initial_credentials,
-    ) as (credentials, provider_env):
-        backend_env = {
-            **provider_env,
-            "RCLONE_CONFIG_SPB_TYPE": "s3",
-            "RCLONE_CONFIG_SPB_PROVIDER": "Cloudflare",
-            "RCLONE_CONFIG_SPB_ENV_AUTH": "true",
-            "RCLONE_CONFIG_SPB_ENDPOINT": credentials.endpoint,
-            "RCLONE_CONFIG_SPB_REGION": "auto",
-            "RCLONE_CONFIG_SPB_NO_CHECK_BUCKET": "true",
-        }
-        yield HostedResticSession(
-            destination=Destination(
-                repository=f"rclone:spb:{binding.bucket}/{binding.prefix}",
-                backend="rclone",
-                credentials={},
-            ),
-            backend_env=backend_env,
-            global_options=(
-                "-o",
-                f"rclone.program={rclone_path}",
-                "-o",
-                "rclone.args=serve restic --stdio --append-only --config /dev/null",
-            ),
-        )
+    backend_env = {
+        "RCLONE_CONFIG_SPB_TYPE": "s3",
+        "RCLONE_CONFIG_SPB_PROVIDER": "Cloudflare",
+        "RCLONE_CONFIG_SPB_ENV_AUTH": "false",
+        "RCLONE_CONFIG_SPB_ACCESS_KEY_ID": initial_credentials.access_key_id,
+        "RCLONE_CONFIG_SPB_SECRET_ACCESS_KEY": initial_credentials.secret_access_key,
+        "RCLONE_CONFIG_SPB_SESSION_TOKEN": initial_credentials.session_token,
+        "RCLONE_CONFIG_SPB_ENDPOINT": initial_credentials.endpoint,
+        "RCLONE_CONFIG_SPB_REGION": "auto",
+        "RCLONE_CONFIG_SPB_NO_CHECK_BUCKET": "true",
+    }
+    yield HostedResticSession(
+        destination=Destination(
+            repository=f"rclone:spb:{binding.bucket}/{binding.prefix}",
+            backend="rclone",
+            credentials={},
+        ),
+        backend_env=backend_env,
+        global_options=(
+            "-o",
+            f"rclone.program={rclone_path}",
+            "-o",
+            "rclone.args=serve restic --stdio --append-only --config /dev/null",
+        ),
+    )
 
 
 __all__ = [

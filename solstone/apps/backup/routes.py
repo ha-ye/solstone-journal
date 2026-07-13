@@ -389,7 +389,7 @@ def _restore_hosted_thunk(
     if binding is None:
         return OpOutcome("error", "failed")
     try:
-        creds = fetch_hosted_credentials(binding, scope="maintenance")
+        creds = fetch_hosted_credentials(binding, scope="operated")
     except HostedCredsUnavailable as exc:
         return OpOutcome("error", exc.reason_code)
 

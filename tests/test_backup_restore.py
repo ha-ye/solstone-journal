@@ -528,8 +528,14 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
         "set_recovery_key_confirmed",
         "scan_journal",
     ]
-    assert calls[0][1]["backend_env"]["AWS_CONTAINER_CREDENTIALS_FULL_URI"].startswith(
-        "http://127.0.0.1:"
+    assert calls[0][1]["backend_env"]["RCLONE_CONFIG_SPB_ACCESS_KEY_ID"] == (
+        "AKID-OPERATED"
+    )
+    assert calls[0][1]["backend_env"]["RCLONE_CONFIG_SPB_SECRET_ACCESS_KEY"] == (
+        "SAK-OPERATED"
+    )
+    assert calls[0][1]["backend_env"]["RCLONE_CONFIG_SPB_SESSION_TOKEN"] == (
+        "SESSION-OPERATED"
     )
     assert calls[0][0][:4] == [
         "-o",
@@ -538,7 +544,7 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
         "rclone.args=serve restic --stdio --append-only --config /dev/null",
     ]
     assert calls[0][1]["repository"] == ("rclone:spb:journal-backups/users/acct/inst/")
-    assert calls[0][1]["backend_env"]["RCLONE_CONFIG_SPB_ENV_AUTH"] == "true"
+    assert calls[0][1]["backend_env"]["RCLONE_CONFIG_SPB_ENV_AUTH"] == "false"
     config = _read_config(tmp_path)
     serialized = json.dumps(config)
     assert config["backup"]["mode"] == "operated"

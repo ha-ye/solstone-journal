@@ -753,12 +753,6 @@ def test_operated_backup_fetches_creds_and_builds_repo(
     backup_args = backup_call[0]
     backup_kwargs = backup_call[1]
     backend_env = backup_kwargs["backend_env"]
-    assert backend_env["AWS_CONTAINER_CREDENTIALS_FULL_URI"].startswith(
-        "http://127.0.0.1:"
-    )
-    assert backend_env["AWS_CONTAINER_AUTHORIZATION_TOKEN"]
-    for secret in ("AKID", "SAK", "SESS"):
-        assert secret not in json.dumps(backend_env)
     assert backup_kwargs["repository"] == "rclone:spb:bkt/users/acct/inst"
     assert backup_args[:4] == [
         "-o",
@@ -769,10 +763,15 @@ def test_operated_backup_fetches_creds_and_builds_repo(
     assert backup_args[4] == "backup"
     assert backend_env["RCLONE_CONFIG_SPB_TYPE"] == "s3"
     assert backend_env["RCLONE_CONFIG_SPB_PROVIDER"] == "Cloudflare"
-    assert backend_env["RCLONE_CONFIG_SPB_ENV_AUTH"] == "true"
+    assert backend_env["RCLONE_CONFIG_SPB_ENV_AUTH"] == "false"
+    assert backend_env["RCLONE_CONFIG_SPB_ACCESS_KEY_ID"] == "AKID"
+    assert backend_env["RCLONE_CONFIG_SPB_SECRET_ACCESS_KEY"] == "SAK"
+    assert backend_env["RCLONE_CONFIG_SPB_SESSION_TOKEN"] == "SESS"
+    assert "AWS_CONTAINER_CREDENTIALS_FULL_URI" not in backend_env
+    assert "AWS_CONTAINER_AUTHORIZATION_TOKEN" not in backend_env
     for secret in ("AKID", "SAK", "SESS"):
         assert secret not in backup_kwargs["repository"]
-    assert captured["scope"] == "maintenance"
+    assert captured["scope"] == "operated"
 
 
 def test_operated_prune_requests_maintenance_scope(
@@ -831,9 +830,11 @@ def test_operated_prune_requests_maintenance_scope(
     assert result.status == "ok"
     forget_call = next(call for call in calls if call[0][0] == "forget")
     assert captured["scope"] == "maintenance"
-    assert forget_call[1]["backend_env"][
-        "AWS_CONTAINER_CREDENTIALS_FULL_URI"
-    ].startswith("http://127.0.0.1:")
+    assert forget_call[1]["backend_env"] == {
+        "AWS_ACCESS_KEY_ID": "AKID",
+        "AWS_SECRET_ACCESS_KEY": "SAK",
+        "AWS_SESSION_TOKEN": "SESS",
+    }
 
 
 def test_backup_timeout_is_long_only_until_first_snapshot(
@@ -1018,7 +1019,7 @@ def test_operated_does_not_persist_or_log_secrets(
         *,
         scope: str,
     ) -> HostedCredentials:
-        assert scope in {"backup", "maintenance"}
+        assert scope in {"operated", "maintenance"}
         return HostedCredentials(
             access_key_id="AKID-SECRET",
             secret_access_key="SAK-SECRET",
