@@ -6,6 +6,10 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+### Added
+
+- Thinking now includes an audio transcription switch for confidential processing and updates the what-leaves copy to match the current setting.
+
 ### Changed
 
 - sol now keeps one active brain for each lane instead of switching providers behind the scenes. old tier, context-routing, and backup keys are left in your config untouched, but they no longer steer model choice.

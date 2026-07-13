@@ -56,7 +56,18 @@ def test_thinking_static_uses_moved_endpoints_and_local_reason():
         assert endpoint in text
     assert "gpu_probe_failed" in text
     assert "gpu_unavailable" in text
-    assert "/app/settings" not in text
+    for moved in (
+        "/app/settings/api/providers",
+        "/app/settings/api/keys",
+        "/app/settings/api/validate-keys",
+        "/app/settings/api/local",
+        "/app/settings/api/scout",
+    ):
+        assert moved not in text
+    # The confidential audio switch writes transcribe config, which the settings
+    # app owns: this is the one settings endpoint thinking may call.
+    assert "/app/settings/api/config" in text
+    assert text.count("/app/settings") == 1
 
 
 def test_thinking_static_has_scout_orchestration_structures():

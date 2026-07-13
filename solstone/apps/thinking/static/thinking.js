@@ -239,6 +239,42 @@
     };
   }
 
+  function confidentialAudioSetting(activeLane) {
+    return activeLane?.confidential_audio !== false;
+  }
+
+  function confidentialEgressLine(activeLane, beats) {
+    return confidentialAudioSetting(activeLane)
+      ? beats?.egress_audio_on || ''
+      : beats?.egress_audio_off || '';
+  }
+
+  function confidentialAudioRender(activeLane, attestation, text) {
+    const on = confidentialAudioSetting(activeLane);
+    const audio = text?.audio || {};
+    return {
+      hidden: (attestation?.state || 'off') === 'off',
+      on,
+      label: audio.label || '',
+      description: on ? audio.on || '' : audio.off || '',
+      note: audio.note || '',
+    };
+  }
+
+  function confidentialAudioDeferralLine(activeLane, attestation, text) {
+    const stateName = attestation?.state || 'off';
+    if (!confidentialAudioSetting(activeLane)) return '';
+    if (
+      stateName !== 'verifying' &&
+      stateName !== 'failed' &&
+      stateName !== 'stale' &&
+      stateName !== 'unreachable'
+    ) {
+      return '';
+    }
+    return text?.audio?.deferral || '';
+  }
+
   function confidentialAttestationRender(attestation, text, checkedLabel = '') {
     const stateName = attestation?.state || 'off';
     const states = text?.attestation_states || {};
@@ -728,11 +764,23 @@
 
   function renderConfidentialTrust() {
     const beats = copy.confidential?.setup?.trust_beats || {};
+    const active = activeLanePayload();
+    const attestation = active.confidential_attestation || {state: 'off'};
+    const audio = confidentialAudioRender(active, attestation, copy.confidential);
+    const deferral = confidentialAudioDeferralLine(active, attestation, copy.confidential);
     setText('confidentialSetupHeading', beats.heading || '');
     setText('confidentialSetupSub', beats.sub || '');
     setText('confidentialTrustHeading', beats.heading || '');
     setText('confidentialTrustSub', beats.sub || '');
-    setText('confidentialTrustEgress', beats.egress || '');
+    setText('confidentialTrustEgress', confidentialEgressLine(active, beats));
+    setHidden('confidentialAudioRow', audio.hidden);
+    const audioToggle = $('confidentialAudioToggle');
+    if (audioToggle) audioToggle.checked = audio.on;
+    setText('confidentialAudioLabel', audio.label);
+    setText('confidentialAudioDescription', audio.description);
+    setText('confidentialAudioNote', audio.note);
+    setText('confidentialAudioDeferral', deferral);
+    setHidden('confidentialAudioDeferral', !deferral);
     setText('confidentialTrustClaims', beats.claims || '');
     setText('confidentialTrustFailClosed', beats.attestation || '');
     setText('confidentialTrustSubstrate', beats.substrate || '');
@@ -1712,6 +1760,30 @@
     showView('main');
   }
 
+  async function setConfidentialAudio(enabled) {
+    setMessage('confidentialLaneOperation', '');
+    try {
+      await api('/app/settings/api/config', {
+        method: 'PUT',
+        body: JSON.stringify({
+          section: 'transcribe',
+          data: {confidential_audio: enabled},
+        }),
+      });
+    } catch (err) {
+      // The write never landed, so authoritative state is unchanged.
+      setMessage('confidentialLaneOperation', err.message, 'error');
+      renderConfidentialSetup();
+      return;
+    }
+    try {
+      await refreshProviders();
+    } catch (err) {
+      // The write landed but the re-read failed; stale payload may under-claim what leaves.
+      setMessage('confidentialLaneOperation', err.message, 'error');
+    }
+  }
+
   async function saveByoKey() {
     const provider = laneProvider('byo');
     const value = $('byoKeyInput')?.value || '';
@@ -1927,6 +1999,7 @@
     $('confidentialEnable')?.addEventListener('click', () => enableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error')));
     $('confidentialRecheck')?.addEventListener('click', () => recheckConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error')));
     $('confidentialDisable')?.addEventListener('click', () => disableConfidential().catch((err) => setMessage('confidentialLaneOperation', err.message, 'error')));
+    $('confidentialAudioToggle')?.addEventListener('change', (event) => setConfidentialAudio(event.target.checked));
     $('localRefresh')?.addEventListener('click', () => {
       stopInstallPoll();
       stopConfidentialPoll();

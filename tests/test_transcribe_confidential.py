@@ -296,6 +296,84 @@ def test_confidential_get_model_info_caches_checked_identity(
     assert get.call_count == 1
 
 
+def test_confidential_get_model_info_parses_openai_list_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_verified_lane(monkeypatch)
+    monkeypatch.setattr(confidential, "_MODEL_CACHE", None)
+    get = Mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "object": "list",
+                "data": [
+                    {
+                        "id": "nvidia/parakeet-tdt-0.6b-v3",
+                        "object": "model",
+                        "owned_by": "sol pbc",
+                    }
+                ],
+            },
+        )
+    )
+    monkeypatch.setattr(confidential.httpx, "get", get)
+
+    first = confidential.get_model_info({})
+    second = confidential.get_model_info({})
+
+    expected = {
+        "model": "nvidia/parakeet-tdt-0.6b-v3",
+        "device": "confidential",
+        "per_word_confidence": False,
+    }
+    assert first == expected
+    assert second == expected
+    assert get.call_count == 1
+
+
+def test_confidential_get_model_info_reports_unknown_for_empty_model_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_verified_lane(monkeypatch)
+    monkeypatch.setattr(confidential, "_MODEL_CACHE", None)
+    get = Mock(return_value=httpx.Response(200, json={"object": "list", "data": []}))
+    monkeypatch.setattr(confidential.httpx, "get", get)
+
+    info = confidential.get_model_info({})
+
+    assert info["model"] == "unknown"
+    assert info["per_word_confidence"] is False
+    assert get.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"object": "list", "data": [{"id": {}}]},
+        {"object": "list", "data": [{"id": ["x"]}]},
+        {"object": "list", "data": [{}]},
+        {"object": "list", "data": [{"id": ""}]},
+        {"object": "list", "data": [{"id": "   "}]},
+        {"object": "list", "data": {"id": "x"}},
+        {"object": "list", "data": ["x"]},
+    ],
+)
+def test_confidential_get_model_info_reports_unknown_for_degenerate_model_envelopes(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict,
+) -> None:
+    _install_verified_lane(monkeypatch)
+    monkeypatch.setattr(confidential, "_MODEL_CACHE", None)
+    get = Mock(return_value=httpx.Response(200, json=payload))
+    monkeypatch.setattr(confidential.httpx, "get", get)
+
+    info = confidential.get_model_info({})
+
+    assert info["model"] == "unknown"
+    assert info["per_word_confidence"] is False
+    assert get.call_count == 1
+
+
 def test_confidential_get_model_info_reports_unknown_on_failed_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
