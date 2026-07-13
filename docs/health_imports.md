@@ -54,9 +54,8 @@ Apple Health records are assigned to the local calendar day encoded in each reco
 
 Health-owned day-summary stream identities live in `HEALTH_IMPORTER_REGISTRY` in `health_schema.py`. The Apple Health summary stream name is `import.apple_health`.
 
-The Oura stream identity `import.oura` is reserved there for exclusion/ownership bookkeeping only; no Oura day-summary writer exists. Later source-specific streams can be added only after privacy preflight and save-mode tests exist:
+The Oura stream identity `import.oura` is reserved there for exclusion/ownership bookkeeping only; no Oura day-summary writer exists. The reserved identity makes the think pipeline exclude future Oura day cards only if a writer is explicitly added later. Later source-specific streams can be added only after privacy preflight and save-mode tests exist:
 
-- `import.oura`
 - `import.dexcom_clarity`
 - `import.health_auto_export`
 
@@ -82,13 +81,23 @@ Before any live-journal save-mode health import:
 
 - Require explicit user confirmation that the export contains sensitive health data.
 - Print or display the target journal path before writing.
-- Confirm whether raw export files should be discarded, parsed-only retained, or completely retained.
+- Choose a closed raw-retention decision:
+  - `discard`: Apple Health writes no `raw/`; Oura writes no raw API page JSONL; normalized rows and newly inserted dedupe rows carry no `raw_ref`.
+  - `retain_parsed`: Apple Health stores only `imports/<id>/raw/export.xml` for either zip or directory inputs; Oura stores parsed raw API page JSONL under `imports/<id>/raw/oura/`.
+  - `retain_complete`: Apple Health may copy the original zip or full export tree; Oura rejects this value as source-incompatible.
+- Set `raw_retention.unparsed_sensitive_modalities_acknowledged: true` when, and only when, `retain_complete` is chosen.
 - Confirm whether replicated devices or backups are allowed to carry raw health data.
 - Never send raw health data, tokens, service-account JSON, or export files through Oracle, Claude, or other remote review prompts.
 - Never commit real health fixtures.
 - Keep summaries factual and avoid medical interpretation.
 
 The required approval artifact lives at `imports/_approvals/health_import_preflight.json` in the target journal. It must match `solstone.health_import_preflight.checklist.v3`, bind an absolute `journal_root`, contain a closed `raw_retention.decision` of `discard`, `retain_parsed`, or `retain_complete`, and contain a decision for each replication destination: `time_machine`, `icloud`, `solbase`, `hosted_backup`, and `other`. `retain_complete` also requires `raw_retention.unparsed_sensitive_modalities_acknowledged: true`.
+
+The Oura sync approval artifact lives at `imports/_approvals/oura_sync_preflight.json`. It must match `solstone.oura_sync_preflight.checklist.v2`, use the same raw-retention enum (`discard` or `retain_parsed` only), bind an absolute `journal_root`, and include the replication decisions. Scheduled sync consent additionally requires `scheduled_sync.approved: true`, a cadence, and a timezone-aware ISO-8601 `scheduled_sync.valid_until`; expired or malformed standing consent fails closed before any network or journal write.
+
+Owner remediation after this hardening lands is manual by design: update both approval artifacts to checklist v3/v2, migrate old raw-retention strings to the enum (`retain_compressed_zip` -> `retain_complete` only if the owner accepts complete Apple Health raw retention; `retain_raw_pages` -> `retain_parsed` for Oura), add `unparsed_sensitive_modalities_acknowledged: true` only for `retain_complete`, and add/refresh scheduled `valid_until` for Oura if unattended sync should continue.
+
+The Oura connect flow now asks future authorization requests for nine scopes: `daily`, `heartrate`, `workout`, `tag`, `session`, `spo2`, `stress`, `heart_health`, and `metabolic`. Removing `email` and `personal` changes only what future authorization requests ask for. It does not retroactively revoke scopes already granted on an already-issued token. Narrowing an existing token's granted scopes requires owner-present re-consent and/or revoking the old token; this code change does not perform that operator action.
 
 ## Current Deferred Work
 
@@ -97,6 +106,7 @@ Shipped on this branch:
 - Oura OAuth via `journal importer --connect oura`.
 - Oura token storage and refresh in journal config through `oura_auth.py`.
 - Oura API sync that writes health bundles and sync cursor state.
+- Oura save-mode sync locking, scheduled-consent expiry, and egress/scope guardrails.
 
 Still deferred:
 

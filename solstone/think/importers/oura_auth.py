@@ -48,7 +48,7 @@ CONFIG_SECTION = "oura"
 
 # OAuth scopes the connect flow requests, researched 2026-07-07:
 #
-# - The first eight are Oura's documented scope set
+# - The first six are Oura's documented health-data scope set
 #   (cloud.ouraring.com/docs/authentication).
 # - ``stress`` (daily_resilience), ``heart_health``
 #   (daily_cardiovascular_age, vo2_max), and ``metabolic`` (blood_glucose)
@@ -58,6 +58,10 @@ CONFIG_SECTION = "oura"
 #   authorize front door verifiably rewrites a plain ``scope=X`` query to
 #   ``extapi:X`` before handing off to its authorization server — so the
 #   plain names below are the correct request form.
+# - ``metabolic`` authorizes ``blood_glucose`` only. That endpoint stays
+#   partner-gated and is not polled by the sync engine; the scope remains
+#   requested so a future owner-approved polling change will not force an
+#   immediate second consent round-trip.
 # - Empirically (2026-07-06), a token granted with NO scope parameter
 #   reads resilience and cardiovascular-age documents but 401s on
 #   usercollection/blood_glucose: ``metabolic`` is not part of the default
@@ -66,8 +70,6 @@ CONFIG_SECTION = "oura"
 # The consent screen (owner-present) is the final validator: scope names
 # Oura rejects or drops surface there, with the owner at the keyboard.
 OAUTH_SCOPES: tuple[str, ...] = (
-    "email",
-    "personal",
     "daily",
     "heartrate",
     "workout",

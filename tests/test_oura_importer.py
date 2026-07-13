@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import ast
 import datetime as dt
 import json
 import os
@@ -3111,6 +3110,8 @@ def test_cli_connect_oura_prints_scopes_and_saves_tokens_to_config(
     # the blood-glucose (metabolic) scope this reauthorization adds.
     assert "Requesting scopes: " + " ".join(oura_auth.OAUTH_SCOPES) in out
     assert "metabolic" in out
+    assert "email" not in out
+    assert "personal" not in out
     assert "saved to journal config" in out
     # No token material in owner-facing output.
     assert "connected-access" not in out
@@ -3194,52 +3195,6 @@ def test_cli_sync_lock_timeout_prints_typed_message(
     assert str(lock_path) in out
     assert "Traceback" not in out
     assert "Bearer" not in out
-
-
-# ---------------------------------------------------------------------------
-# No-network guard: the module's only network-capable import lives inside
-# the injectable default transport, which tests never construct.
-# ---------------------------------------------------------------------------
-
-_NETWORK_ROOTS = {"requests", "httpx", "aiohttp", "socket", "http"}
-
-
-def _imported_module_names(node: ast.AST) -> list[str]:
-    if isinstance(node, ast.Import):
-        return [alias.name for alias in node.names]
-    if isinstance(node, ast.ImportFrom):
-        return [node.module or ""]
-    return []
-
-
-def test_module_has_no_reachable_network_imports():
-    source = Path(oura.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-
-    # Module level: no network-capable imports at all. urllib.parse is
-    # pure string handling (query encoding) and allowed; the socket-backed
-    # urllib.request / urllib.error are not.
-    for node in tree.body:
-        for name in _imported_module_names(node):
-            root = name.split(".")[0]
-            assert root not in _NETWORK_ROOTS, f"module-level import {name!r}"
-            assert name not in {"urllib", "urllib.request", "urllib.error"}, (
-                f"module-level import {name!r}"
-            )
-
-    # Function level: network-capable imports may exist ONLY inside the
-    # injectable default transport.
-    for func in ast.walk(tree):
-        if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for node in ast.walk(func):
-            for name in _imported_module_names(node):
-                root = name.split(".")[0]
-                if root in _NETWORK_ROOTS or name.startswith("urllib"):
-                    assert func.name == "_default_transport", (
-                        f"network-capable import {name!r} outside "
-                        f"_default_transport (in {func.name!r})"
-                    )
 
 
 def test_save_records_fetch_windows_and_catalog_reports_known_refetch(

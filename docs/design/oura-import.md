@@ -49,7 +49,7 @@ Endpoint names below are from model knowledge of the v2 API; **verify each again
 | `sleep` | per-period: `bedtime_start/end`, `type` (long_sleep/late_nap/…), stage durations (`deep_sleep_duration`, `rem_sleep_duration`, `light_sleep_duration`, `awake_time`), `efficiency`, `latency`, `average_heart_rate`, `lowest_heart_rate`, `average_hrv`, `average_breath`, `sleep_phase_5_min` hypnogram (1=deep, 2=light, 3=REM, 4=awake) | **Partly** — stages also mirror into AH as `HKCategoryValueSleepAnalysis*` intervals, but Oura-native durations, efficiency/latency, per-period HRV/HR aggregates, and the 5-minute hypnogram string are richer and carry Oura's own period identity (`id`, `day` attribution) | ✅ |
 | `heartrate`, `daily_activity`, `workout`, `session`, `enhanced_tag`, `sleep_time`, `ring_configuration`, `vO2max` / `daily_cardiovascular_age` | series + activity + tags + device | Mostly **duplicates the AH mirror** (HR, steps, workouts) or is metadata; excluded from the first import scope to avoid double-counting in presentation | ⚠ names |
 
-Other API facts to verify live at O2: OAuth2 endpoints (`cloud.ouraring.com/oauth/authorize`, `api.ouraring.com/oauth/token` ⚠), scopes (`email personal daily heartrate workout tag session spo2` ⚠), rate limit (historically 5000 requests / 5 min ⚠), the no-auth sandbox (`/v2/sandbox/usercollection/*` ⚠), personal-access-token deprecation status ⚠, webhook subscription API ⚠.
+Other API facts to verify live at O2: OAuth2 endpoints (`cloud.ouraring.com/oauth/authorize`, `api.ouraring.com/oauth/token` ⚠), scopes (`daily heartrate workout tag session spo2 stress heart_health metabolic`), rate limit (historically 5000 requests / 5 min ⚠), the no-auth sandbox (`/v2/sandbox/usercollection/*` ⚠), personal-access-token deprecation status ⚠, webhook subscription API ⚠.
 
 **Skeleton scope (implemented):** `daily_sleep`, `daily_readiness` (+ split-out `temperature_deviation` rows), `daily_resilience`, `daily_stress`, `daily_spo2`, `sleep`. That is exactly the "scores + stages" slice the day pages need and the AH mirror can't provide.
 
@@ -198,7 +198,21 @@ Never tokens, never client credentials, never raw values in the cursor. Catalog 
 - Redirect: loopback `http://localhost:<ephemeral>/callback` on the journal host, opened in the owner's browser with the owner at the keyboard. No headless, no automated retry, no unattended re-auth ever; if tokens die, sync degrades to a factual "authorization needed" status until Jack runs the step again.
 - **Token boundary: journal configuration, never the repo.** Client id, (secret if applicable), access + refresh tokens live in the journal's config domain under the reserved key `oura` (`OAUTH_CONFIG_KEY` in the skeleton), written exclusively through the config owner `solstone/think/journal_config.py` (L2). Never in this repository, never in env vars, never in logs, never in `imports/oura.json`, never through Oracle/Claude prompts. Refresh-token rotation writes through the same owner.
 - **Dev-account cap noted:** Oura developer apps are limited to roughly 10 users before requiring Oura's partnership review — irrelevant for a single owner, but it means client credentials must never be shared or committed, and a future multi-owner story needs Oura's blessing first.
-- Scopes: request the minimum for the import scope (daily + sleep + spo2-family; exact scope names ⚠ verify at O2).
+- Scopes: future owner-present authorization requests ask for `daily`, `heartrate`, `workout`, `tag`, `session`, `spo2`, `stress`, `heart_health`, and `metabolic`. `email` and `personal` are no longer requested.
+
+| Scope | Endpoint family authorized | Polled? | Notes |
+|---|---|---|---|
+| `daily` | daily sleep/readiness/activity documents | Yes | Core daily scores and activity documents. |
+| `heartrate` | `heartrate` series | Yes | Oura-native high-frequency series; normalized with owner-local day attribution. |
+| `workout` | `workout` documents | Yes | Activity interval documents. |
+| `tag` | `enhanced_tag` documents | Yes | Owner-entered tag metadata. |
+| `session` | `session` documents | Yes | Meditation/breathing/rest sessions. |
+| `spo2` | `daily_spo2` documents | Yes | Nightly oxygen summary documents. |
+| `stress` | `daily_resilience`, `daily_stress` | Yes | Live Oura scope system maps this to resilience/stress families. |
+| `heart_health` | `daily_cardiovascular_age`, `vO2_max` | Yes | Live Oura scope system maps this to cardiovascular age and VO2 max. |
+| `metabolic` | `blood_glucose` only | No | Kept deliberately, but `blood_glucose` remains partner-gated in `_PARTNER_GATED_ENDPOINTS` and is never in `SYNC_ENDPOINTS`. |
+
+Removing `email` and `personal` changes only what future authorization requests ask for. It does not retroactively revoke scopes already granted on an already-issued token. Narrowing an existing token's granted scopes requires owner-present re-consent and/or revoking the old token; this implementation does not perform that operator action.
 
 ---
 
@@ -212,6 +226,10 @@ Landed in the skeleton:
 - Tests prove: missing artifact blocks; artifact without `"oura"` in `approved_importers` blocks (`importer_not_approved`); missing per-run confirmation blocks; a fully approved run still writes nothing (seam); failure payloads leak no fixture paths or values.
 
 Phase O3 extends the health gate to sync with a separate `oura_sync_preflight` artifact: any save-mode `sync()` calls `enforce_oura_sync_gate(...)` before its first journal write, with the confirm flag passed explicitly from the CLI/scheduler invocation. Scheduled runs require `scheduled_sync.approved: true`, a cadence, and an unexpired timezone-aware `scheduled_sync.valid_until`; a scheduled job never self-confirms implicitly.
+
+The save-mode sync lock is `hold_lock(journal_root / "imports" / "oura.json", mode=0o600)`, which creates the private sidecar `imports/oura.json.lock`. The first gate runs before the lock so an initially invalid artifact creates nothing. The authoritative gate then runs again inside the lock before cursor read, client construction, token refresh, fetch, import-id allocation, bundle writes, or cursor advance. The lock is held through all of those steps, closing the import-id TOCTOU. If token refresh happens while the health lock is held, the ordering is health lock -> config lock; config writes do not acquire the health lock, so there is no inverse path.
+
+Oura sync applies the validated raw-retention decision from `PreSaveGateDecision`: `retain_parsed` writes raw API page JSONL under `imports/<id>/raw/oura/`; `discard` writes no raw pages and no new `raw_ref` values; `retain_complete` is rejected by the gate as source-incompatible. Scheduled consent is valid only while `now < scheduled_sync.valid_until`; missing, malformed, naive, or expired values block before any network or journal write. Consent expiring after the authoritative in-lock gate passes does not abort the running transaction.
 
 ---
 
@@ -258,8 +276,11 @@ commit (the hourly sync lane runs against repo HEAD):
   untouched as a safety copy; they are simply no longer read).
 - **Scopes.** The connect flow (`journal importer --connect oura`) now
   requests an explicit scope set and prints it for the owner:
-  `email personal daily heartrate workout tag session spo2 stress
-  heart_health metabolic`. The first eight are Oura's documented set;
+  `daily heartrate workout tag session spo2 stress heart_health metabolic`.
+  `email` and `personal` were removed from future authorization requests;
+  existing tokens keep whatever scopes they were already granted until the
+  owner re-consents or revokes them. The first six are Oura's documented
+  health-data set;
   `stress` / `heart_health` / `metabolic` are live but undocumented
   (evidence: tidepool-org/platform's Oura partner integration maps
   `extapi:stress` → daily_resilience, `extapi:heart_health` →

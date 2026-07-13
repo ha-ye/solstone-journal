@@ -117,8 +117,12 @@ def test_owner_present_auth_uses_fixed_redirect_pkce_and_private_token_exchange(
     # The full researched scope set is requested by default — including
     # the blood-glucose (metabolic) scope the default grant lacks.
     assert params["scope"] == [" ".join(OAUTH_SCOPES)]
-    assert "metabolic" in params["scope"][0].split()
-    assert "heart_health" in params["scope"][0].split()
+    requested_scopes = params["scope"][0].split()
+    assert len(requested_scopes) == 9
+    assert "metabolic" in requested_scopes
+    assert "heart_health" in requested_scopes
+    assert "email" not in requested_scopes
+    assert "personal" not in requested_scopes
 
 
 def test_wrong_state_and_wrong_path_do_not_exchange_tokens():
