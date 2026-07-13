@@ -359,6 +359,7 @@ def _enable_hosted_thunk(nonce: str, base_url: str) -> OpOutcome:
     try:
         save_hosted_binding(binding)
         set_mode("operated")
+        set_enabled(True)
     except Exception:
         logger.exception("backup hosted state update failed")
         return OpOutcome("error", "failed")

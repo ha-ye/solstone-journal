@@ -424,6 +424,7 @@ def test_enable_hosted_approved_initializes_then_persists_and_queues(
     request_backup_now = Mock(return_value=True)
     save_hosted_binding = Mock()
     set_mode = Mock()
+    set_enabled = Mock()
     monkeypatch.setattr(
         backup_routes,
         "run_spb_handoff",
@@ -443,6 +444,7 @@ def test_enable_hosted_approved_initializes_then_persists_and_queues(
     monkeypatch.setattr(backup_routes, "request_backup_now", request_backup_now)
     monkeypatch.setattr(backup_routes, "save_hosted_binding", save_hosted_binding)
     monkeypatch.setattr(backup_routes, "set_mode", set_mode)
+    monkeypatch.setattr(backup_routes, "set_enabled", set_enabled)
 
     response = env.client.post("/app/backup/enable-hosted")
     final = _wait_for_phase(env, wait_until_helper, "done")
@@ -459,6 +461,7 @@ def test_enable_hosted_approved_initializes_then_persists_and_queues(
     assert init_repository.call_args.kwargs["timeout"] == backup_routes.ENABLE_TIMEOUT
     save_hosted_binding.assert_called_once_with(binding)
     set_mode.assert_called_once_with("operated")
+    set_enabled.assert_called_once_with(True)
     request_backup_now.assert_called_once_with()
 
 
