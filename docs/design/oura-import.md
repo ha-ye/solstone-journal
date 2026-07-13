@@ -203,12 +203,12 @@ Never tokens, never client credentials, never raw values in the cursor. Catalog 
 
 Landed in the skeleton:
 
-- `SENSITIVE_IMPORTERS = frozenset({"apple_health", "oura"})` in `pre_save_gate.py`.
+- `SENSITIVE_IMPORTERS` is derived from `HEALTH_IMPORTER_REGISTRY` in `health_schema.py` so health importer registration and gate coverage cannot drift.
 - Same approval artifact (`imports/_approvals/health_import_preflight.json`, same `APPROVAL_SCHEMA`/`CHECKLIST_VERSION`): `approved_importers` must include `"oura"`; all five replication-destination decisions and the raw-retention decision apply unchanged to Oura data.
 - Same per-run `--confirm-health-save` requirement; `OuraImporter.process()` enforces the gate itself in save mode (defense in depth alongside the CLI's pre-`process` enforcement), **before** any parse or write, then stops at the phase-O1 seam.
 - Tests prove: missing artifact blocks; artifact without `"oura"` in `approved_importers` blocks (`importer_not_approved`); missing per-run confirmation blocks; a fully approved run still writes nothing (seam); failure payloads leak no fixture paths or values.
 
-Phase O3 extends the same gate to sync: any save-mode `sync()` calls `enforce_pre_save_gate("oura", dry_run=False, confirm_health_save=...)` before its first journal write, with the confirm flag passed explicitly from the CLI/scheduler invocation (scheduled runs may only be enabled after Jack records the approval artifact and opts the schedule in — a scheduled job never self-confirms implicitly; the opt-in is the standing confirmation, documented in the artifact's notes).
+Phase O3 extends the health gate to sync with a separate `oura_sync_preflight` artifact: any save-mode `sync()` calls `enforce_oura_sync_gate(...)` before its first journal write, with the confirm flag passed explicitly from the CLI/scheduler invocation. Scheduled runs require `scheduled_sync.approved: true`, a cadence, and an unexpired timezone-aware `scheduled_sync.valid_until`; a scheduled job never self-confirms implicitly.
 
 ---
 

@@ -14,17 +14,14 @@ approved setup action):
   (checked by :func:`enforce_oura_sync_gate`), same schema family, plus a
   distinct standing-consent block for *scheduled* (unattended) runs.
 
-Journal-path binding (checklist v2)
+Journal-path binding (checklist v3)
 -----------------------------------
 
 Every artifact binds to the exact journal it authorizes via a
 ``journal_root`` field; the gate verifies that binding against the target
 journal root that will actually be written (root-explicit — an artifact
-copied into another journal never authorizes it). Legacy checklist-v1
-``health_import_preflight`` artifacts carry the binding as
-``target_journal_path`` instead and are accepted **only for
-apple_health** (they predate the v2 rule); Oura arrived after v2, so any
-artifact authorizing Oura must carry ``journal_root`` on a v2 checklist.
+copied into another journal never authorizes it). Older checklist versions
+fail closed; ``target_journal_path`` is not accepted.
 
 Scheduled-sync consent
 ----------------------
@@ -34,7 +31,11 @@ Owner-present one-shot sync saves require the per-run
 cannot click "yes", so they are authorized only by an explicit standing
 consent recorded in the sync artifact::
 
-    {"scheduled_sync": {"approved": true, "cadence": "every 6 hours"}}
+    {"scheduled_sync": {
+        "approved": true,
+        "cadence": "every 6 hours",
+        "valid_until": "2026-08-01T00:00:00-06:00"
+    }}
 
 A scheduled run without that consent fails closed regardless of any
 other approval in the artifact.
@@ -42,24 +43,26 @@ other approval in the artifact.
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from solstone.think.importers.health_schema import (
+    HEALTH_IMPORTER_REGISTRY,
+    SOURCE_APPLE_HEALTH,
+    SOURCE_OURA,
+)
 from solstone.think.utils import get_journal
 
 APPROVAL_SCHEMA = "solstone.health_import_preflight.v1"
-# v2 adds the journal_root binding field (see module docstring).
-CHECKLIST_VERSION = "solstone.health_import_preflight.checklist.v2"
-LEGACY_CHECKLIST_VERSION = "solstone.health_import_preflight.checklist.v1"
-# Importers that may still pass with a legacy v1 artifact (binding via
-# target_journal_path). Oura postdates the v2 binding rule — never legacy.
-LEGACY_CHECKLIST_IMPORTERS = frozenset({"apple_health"})
+CHECKLIST_VERSION = "solstone.health_import_preflight.checklist.v3"
 APPROVAL_RELATIVE_PATH = Path("imports") / "_approvals" / "health_import_preflight.json"
 
 OURA_SYNC_APPROVAL_SCHEMA = "solstone.oura_sync_preflight.v1"
-OURA_SYNC_CHECKLIST_VERSION = "solstone.oura_sync_preflight.checklist.v1"
+OURA_SYNC_CHECKLIST_VERSION = "solstone.oura_sync_preflight.checklist.v2"
 OURA_SYNC_APPROVAL_RELATIVE_PATH = (
     Path("imports") / "_approvals" / "oura_sync_preflight.json"
 )
@@ -72,7 +75,13 @@ CHECKLIST_DESTINATIONS = (
     "other",
 )
 DESTINATION_DECISIONS = {"approved", "excluded"}
-SENSITIVE_IMPORTERS = frozenset({"apple_health", "oura"})
+SENSITIVE_IMPORTERS = frozenset(HEALTH_IMPORTER_REGISTRY)
+
+
+class RawRetentionDecision(StrEnum):
+    DISCARD = "discard"
+    RETAIN_PARSED = "retain_parsed"
+    RETAIN_COMPLETE = "retain_complete"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +92,14 @@ class PreSaveGateDecision:
     enforced: bool
     approval_path: str | None
     checklist_version: str
+    raw_retention: RawRetentionDecision | None = None
+    scheduled_sync: "ScheduledSyncConsent | None" = None
+
+
+@dataclass(frozen=True, slots=True)
+class ScheduledSyncConsent:
+    cadence: str
+    valid_until: dt.datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -214,6 +231,14 @@ def enforce_pre_save_gate(
         )
 
     target_root = Path(journal_root if journal_root is not None else get_journal())
+    if not target_root.is_absolute():
+        _block(
+            importer_name,
+            "target_journal_not_absolute",
+            target_root,
+            approval_path_for_journal(target_root),
+            invalid_fields=("journal_root",),
+        )
     target_root = target_root.resolve()
     approval_path = approval_path_for_journal(target_root)
 
@@ -227,7 +252,9 @@ def enforce_pre_save_gate(
         )
 
     artifact = _read_artifact(importer_name, target_root, approval_path)
-    _validate_artifact(importer_name, target_root, approval_path, artifact)
+    raw_retention = _validate_artifact(
+        importer_name, target_root, approval_path, artifact
+    )
 
     if not confirm_health_save:
         _block(
@@ -243,6 +270,7 @@ def enforce_pre_save_gate(
         enforced=True,
         approval_path=str(approval_path),
         checklist_version=CHECKLIST_VERSION,
+        raw_retention=raw_retention,
     )
 
 
@@ -251,6 +279,7 @@ def enforce_oura_sync_gate(
     *,
     confirm_health_save: bool = False,
     scheduled: bool = False,
+    now: dt.datetime | None = None,
 ) -> PreSaveGateDecision:
     """Fail closed before any Oura sync save-mode journal write.
 
@@ -261,8 +290,19 @@ def enforce_oura_sync_gate(
     ``scheduled_sync`` consent (a cron job cannot click "yes").
     """
 
-    target_root = Path(journal_root).resolve()
+    target_root = Path(journal_root)
+    if not target_root.is_absolute():
+        _block(
+            "oura",
+            "target_journal_not_absolute",
+            target_root,
+            oura_sync_approval_path_for_journal(target_root),
+            invalid_fields=("journal_root",),
+            flow="sync",
+        )
+    target_root = target_root.resolve()
     approval_path = oura_sync_approval_path_for_journal(target_root)
+    resolved_now = _resolve_gate_now(now)
 
     if not approval_path.is_file():
         _block(
@@ -298,12 +338,20 @@ def enforce_oura_sync_gate(
     _validate_journal_root_binding(
         "oura", target_root, approval_path, artifact, flow="sync"
     )
-    _validate_shared_checklist(
+    raw_retention = _validate_shared_checklist(
         "oura", target_root, approval_path, artifact, flow="sync"
     )
 
+    scheduled_sync = _validated_optional_scheduled_sync(
+        target_root,
+        approval_path,
+        artifact,
+        now=resolved_now,
+    )
     if scheduled:
-        _validate_scheduled_sync_consent(target_root, approval_path, artifact)
+        scheduled_sync = _validate_scheduled_sync_consent(
+            target_root, approval_path, artifact, now=resolved_now
+        )
     elif not confirm_health_save:
         _block(
             "oura",
@@ -319,12 +367,40 @@ def enforce_oura_sync_gate(
         enforced=True,
         approval_path=str(approval_path),
         checklist_version=OURA_SYNC_CHECKLIST_VERSION,
+        raw_retention=raw_retention,
+        scheduled_sync=scheduled_sync,
+    )
+
+
+def _resolve_gate_now(now: dt.datetime | None) -> dt.datetime:
+    resolved = now if now is not None else dt.datetime.now(dt.UTC)
+    if resolved.tzinfo is None or resolved.utcoffset() is None:
+        raise ValueError("now must be timezone-aware")
+    return resolved.astimezone(dt.UTC)
+
+
+def _validated_optional_scheduled_sync(
+    target_root: Path,
+    approval_path: Path,
+    artifact: dict[str, Any],
+    *,
+    now: dt.datetime,
+) -> ScheduledSyncConsent | None:
+    consent = artifact.get("scheduled_sync")
+    if not isinstance(consent, dict) or consent.get("approved") is not True:
+        return None
+    return _validate_scheduled_sync_consent(
+        target_root, approval_path, artifact, now=now
     )
 
 
 def _validate_scheduled_sync_consent(
-    target_root: Path, approval_path: Path, artifact: dict[str, Any]
-) -> None:
+    target_root: Path,
+    approval_path: Path,
+    artifact: dict[str, Any],
+    *,
+    now: dt.datetime,
+) -> ScheduledSyncConsent:
     consent = artifact.get("scheduled_sync")
     if not isinstance(consent, dict):
         _block(
@@ -354,6 +430,70 @@ def _validate_scheduled_sync_consent(
             invalid_fields=("scheduled_sync.cadence",),
             flow="sync",
         )
+    valid_until = _parse_scheduled_valid_until(
+        target_root,
+        approval_path,
+        consent.get("valid_until"),
+    )
+    if now >= valid_until.astimezone(dt.UTC):
+        _block(
+            "oura",
+            "scheduled_sync_consent_expired",
+            target_root,
+            approval_path,
+            invalid_fields=("scheduled_sync.valid_until",),
+            flow="sync",
+        )
+    return ScheduledSyncConsent(cadence=cadence.strip(), valid_until=valid_until)
+
+
+def _parse_scheduled_valid_until(
+    target_root: Path,
+    approval_path: Path,
+    value: object,
+) -> dt.datetime:
+    if value is None:
+        _block(
+            "oura",
+            "scheduled_sync_valid_until_missing",
+            target_root,
+            approval_path,
+            missing_fields=("scheduled_sync.valid_until",),
+            flow="sync",
+        )
+    if not isinstance(value, str) or not value.strip():
+        _block(
+            "oura",
+            "scheduled_sync_valid_until_invalid",
+            target_root,
+            approval_path,
+            invalid_fields=("scheduled_sync.valid_until",),
+            flow="sync",
+        )
+    raw = value.strip()
+    try:
+        parsed = dt.datetime.fromisoformat(
+            raw[:-1] + "+00:00" if raw.endswith("Z") else raw
+        )
+    except ValueError:
+        _block(
+            "oura",
+            "scheduled_sync_valid_until_invalid",
+            target_root,
+            approval_path,
+            invalid_fields=("scheduled_sync.valid_until",),
+            flow="sync",
+        )
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        _block(
+            "oura",
+            "scheduled_sync_valid_until_naive",
+            target_root,
+            approval_path,
+            invalid_fields=("scheduled_sync.valid_until",),
+            flow="sync",
+        )
+    return parsed
 
 
 def _importer_name(importer: str | object) -> str:
@@ -395,7 +535,7 @@ def _validate_artifact(
     journal_root: Path,
     approval_path: Path,
     artifact: dict[str, Any],
-) -> None:
+) -> RawRetentionDecision:
     if artifact.get("schema") != APPROVAL_SCHEMA:
         _block(
             importer,
@@ -405,11 +545,7 @@ def _validate_artifact(
             invalid_fields=("schema",),
         )
 
-    checklist_version = artifact.get("checklist_version")
-    if checklist_version != CHECKLIST_VERSION and not (
-        checklist_version == LEGACY_CHECKLIST_VERSION
-        and importer in LEGACY_CHECKLIST_IMPORTERS
-    ):
+    if artifact.get("checklist_version") != CHECKLIST_VERSION:
         _block(
             importer,
             "checklist_version_mismatch",
@@ -419,7 +555,9 @@ def _validate_artifact(
         )
 
     _validate_journal_root_binding(importer, journal_root, approval_path, artifact)
-    _validate_shared_checklist(importer, journal_root, approval_path, artifact)
+    raw_retention = _validate_shared_checklist(
+        importer, journal_root, approval_path, artifact
+    )
 
     approved_importers = artifact.get("approved_importers")
     if not isinstance(approved_importers, list) or importer not in approved_importers:
@@ -430,6 +568,7 @@ def _validate_artifact(
             approval_path,
             invalid_fields=("approved_importers",),
         )
+    return raw_retention
 
 
 def _validate_journal_root_binding(
@@ -440,38 +579,9 @@ def _validate_journal_root_binding(
     *,
     flow: str = "import",
 ) -> None:
-    """Verify the artifact's recorded journal binding against the target.
-
-    The binding field is ``journal_root`` (checklist v2 / sync artifacts).
-    Legacy checklist-v1 apple_health artifacts recorded the binding as
-    ``target_journal_path``; that field is accepted only for importers in
-    ``LEGACY_CHECKLIST_IMPORTERS`` — an artifact authorizing Oura must
-    always carry ``journal_root``.
-    """
+    """Verify the artifact's recorded journal binding against the target."""
 
     bound = artifact.get("journal_root")
-    if bound is None and importer in LEGACY_CHECKLIST_IMPORTERS:
-        legacy = artifact.get("target_journal_path")
-        if legacy is None:
-            _block(
-                importer,
-                "target_journal_path_mismatch",
-                journal_root,
-                approval_path,
-                missing_fields=("target_journal_path",),
-                flow=flow,
-            )
-        if Path(str(legacy)).resolve() != journal_root:
-            _block(
-                importer,
-                "target_journal_path_mismatch",
-                journal_root,
-                approval_path,
-                invalid_fields=("target_journal_path",),
-                flow=flow,
-            )
-        return
-
     if bound is None:
         _block(
             importer,
@@ -481,7 +591,17 @@ def _validate_journal_root_binding(
             missing_fields=("journal_root",),
             flow=flow,
         )
-    if Path(str(bound)).resolve() != journal_root:
+    bound_path = Path(str(bound))
+    if not bound_path.is_absolute():
+        _block(
+            importer,
+            "journal_root_binding_not_absolute",
+            journal_root,
+            approval_path,
+            invalid_fields=("journal_root",),
+            flow=flow,
+        )
+    if bound_path.resolve() != journal_root:
         _block(
             importer,
             "journal_root_binding_mismatch",
@@ -499,7 +619,7 @@ def _validate_shared_checklist(
     artifact: dict[str, Any],
     *,
     flow: str = "import",
-) -> None:
+) -> RawRetentionDecision:
     """Checks shared by both artifact kinds (replication, retention, per-run)."""
 
     missing, invalid = _replication_decision_errors(
@@ -516,20 +636,13 @@ def _validate_shared_checklist(
             flow=flow,
         )
 
-    raw_retention = artifact.get("raw_retention")
-    if (
-        not isinstance(raw_retention, dict)
-        or not isinstance(raw_retention.get("decision"), str)
-        or not raw_retention["decision"].strip()
-    ):
-        _block(
-            importer,
-            "raw_retention_decision_missing",
-            journal_root,
-            approval_path,
-            missing_fields=("raw_retention.decision",),
-            flow=flow,
-        )
+    raw_retention = _validate_raw_retention(
+        importer,
+        journal_root,
+        approval_path,
+        artifact.get("raw_retention"),
+        flow=flow,
+    )
 
     if artifact.get("requires_per_run_confirmation") is not True:
         _block(
@@ -540,6 +653,86 @@ def _validate_shared_checklist(
             invalid_fields=("requires_per_run_confirmation",),
             flow=flow,
         )
+    return raw_retention
+
+
+def _validate_raw_retention(
+    importer: str,
+    journal_root: Path,
+    approval_path: Path,
+    raw_retention: object,
+    *,
+    flow: str,
+) -> RawRetentionDecision:
+    if not isinstance(raw_retention, dict):
+        _block(
+            importer,
+            "raw_retention_decision_missing",
+            journal_root,
+            approval_path,
+            missing_fields=("raw_retention.decision",),
+            flow=flow,
+        )
+    raw_decision = raw_retention.get("decision")
+    if not isinstance(raw_decision, str) or not raw_decision.strip():
+        _block(
+            importer,
+            "raw_retention_decision_missing",
+            journal_root,
+            approval_path,
+            missing_fields=("raw_retention.decision",),
+            flow=flow,
+        )
+    try:
+        decision = RawRetentionDecision(raw_decision.strip())
+    except ValueError:
+        _block(
+            importer,
+            "raw_retention_decision_invalid",
+            journal_root,
+            approval_path,
+            invalid_fields=("raw_retention.decision",),
+            flow=flow,
+        )
+    if importer == SOURCE_OURA and decision is RawRetentionDecision.RETAIN_COMPLETE:
+        _block(
+            importer,
+            "raw_retention_decision_incompatible",
+            journal_root,
+            approval_path,
+            invalid_fields=("raw_retention.decision",),
+            flow=flow,
+        )
+    if decision is RawRetentionDecision.RETAIN_COMPLETE:
+        ack_field = "raw_retention.unparsed_sensitive_modalities_acknowledged"
+        if "unparsed_sensitive_modalities_acknowledged" not in raw_retention:
+            _block(
+                importer,
+                "raw_retention_acknowledgement_missing",
+                journal_root,
+                approval_path,
+                missing_fields=(ack_field,),
+                flow=flow,
+            )
+        if raw_retention.get("unparsed_sensitive_modalities_acknowledged") is not True:
+            _block(
+                importer,
+                "raw_retention_acknowledgement_missing",
+                journal_root,
+                approval_path,
+                invalid_fields=(ack_field,),
+                flow=flow,
+            )
+    if importer not in {SOURCE_APPLE_HEALTH, SOURCE_OURA}:
+        _block(
+            importer,
+            "importer_not_approved",
+            journal_root,
+            approval_path,
+            invalid_fields=("importer",),
+            flow=flow,
+        )
+    return decision
 
 
 def _replication_decision_errors(

@@ -48,9 +48,9 @@ Apple Health records are assigned to the local calendar day encoded in each reco
 
 ## Import Streams
 
-The Apple Health summary stream name is `import.apple_health`.
+Health-owned day-summary stream identities live in `HEALTH_IMPORTER_REGISTRY` in `health_schema.py`. The Apple Health summary stream name is `import.apple_health`.
 
-Later source-specific streams can be added only after privacy preflight and save-mode tests exist:
+The Oura stream identity `import.oura` is reserved there for exclusion/ownership bookkeeping only; no Oura day-summary writer exists. Later source-specific streams can be added only after privacy preflight and save-mode tests exist:
 
 - `import.oura`
 - `import.dexcom_clarity`
@@ -78,13 +78,13 @@ Before any live-journal save-mode health import:
 
 - Require explicit user confirmation that the export contains sensitive health data.
 - Print or display the target journal path before writing.
-- Confirm whether raw export files should be retained, copied, or discarded.
+- Confirm whether raw export files should be discarded, parsed-only retained, or completely retained.
 - Confirm whether replicated devices or backups are allowed to carry raw health data.
 - Never send raw health data, tokens, service-account JSON, or export files through Oracle, Claude, or other remote review prompts.
 - Never commit real health fixtures.
 - Keep summaries factual and avoid medical interpretation.
 
-The required approval artifact lives at `imports/_approvals/health_import_preflight.json` in the target journal. It must match the current checklist version and contain a decision for each replication destination: `time_machine`, `icloud`, `solbase`, `hosted_backup`, and `other`.
+The required approval artifact lives at `imports/_approvals/health_import_preflight.json` in the target journal. It must match `solstone.health_import_preflight.checklist.v3`, bind an absolute `journal_root`, contain a closed `raw_retention.decision` of `discard`, `retain_parsed`, or `retain_complete`, and contain a decision for each replication destination: `time_machine`, `icloud`, `solbase`, `hosted_backup`, and `other`. `retain_complete` also requires `raw_retention.unparsed_sensitive_modalities_acknowledged: true`.
 
 ## Current Deferred Work
 

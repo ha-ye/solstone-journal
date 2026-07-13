@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 from argparse import Namespace
 from copy import deepcopy
@@ -16,10 +17,10 @@ from solstone.think.importers.pre_save_gate import (
     APPROVAL_SCHEMA,
     CHECKLIST_DESTINATIONS,
     CHECKLIST_VERSION,
-    LEGACY_CHECKLIST_VERSION,
     OURA_SYNC_APPROVAL_SCHEMA,
     OURA_SYNC_CHECKLIST_VERSION,
     PreSaveGateError,
+    RawRetentionDecision,
     approval_path_for_journal,
     enforce_oura_sync_gate,
     enforce_pre_save_gate,
@@ -27,6 +28,9 @@ from solstone.think.importers.pre_save_gate import (
     read_oura_sync_approval,
 )
 from tests.conftest import write_health_approval_artifact
+
+FIXED_NOW = dt.datetime(2026, 7, 13, 12, 0, tzinfo=dt.UTC)
+FUTURE_VALID_UNTIL = "2026-08-01T00:00:00Z"
 
 APPLE_HEALTH_FIXTURE = (
     Path(__file__).parent
@@ -57,7 +61,39 @@ def _replication_destinations() -> dict:
     }
 
 
-def _valid_artifact(journal: Path) -> dict:
+def _raw_retention(
+    decision: str = RawRetentionDecision.RETAIN_PARSED.value,
+    *,
+    acknowledged: bool | None = None,
+) -> dict:
+    raw_retention = {
+        "decision": decision,
+        "notes": "Synthetic test decision.",
+    }
+    if acknowledged is not None:
+        raw_retention["unparsed_sensitive_modalities_acknowledged"] = acknowledged
+    return raw_retention
+
+
+def _scheduled_sync_consent(
+    *,
+    approved: bool = True,
+    cadence: str = "every 6 hours",
+    valid_until: str = FUTURE_VALID_UNTIL,
+) -> dict:
+    return {
+        "approved": approved,
+        "cadence": cadence,
+        "valid_until": valid_until,
+    }
+
+
+def _valid_artifact(
+    journal: Path,
+    *,
+    raw_retention_decision: str = RawRetentionDecision.RETAIN_PARSED.value,
+    acknowledged: bool | None = None,
+) -> dict:
     return {
         "schema": APPROVAL_SCHEMA,
         "checklist_version": CHECKLIST_VERSION,
@@ -66,23 +102,13 @@ def _valid_artifact(journal: Path) -> dict:
         "journal_root": str(journal.resolve()),
         "approved_importers": ["apple_health"],
         "replication_destinations": _replication_destinations(),
-        "raw_retention": {
-            "decision": "retain_compressed_zip",
-            "notes": "Synthetic test decision.",
-        },
+        "raw_retention": _raw_retention(
+            raw_retention_decision,
+            acknowledged=acknowledged,
+        ),
         "requires_per_run_confirmation": True,
         "no_real_health_data_in_artifact": True,
     }
-
-
-def _legacy_artifact(journal: Path) -> dict:
-    """A checklist-v1 artifact: binding recorded as target_journal_path."""
-
-    artifact = _valid_artifact(journal)
-    artifact["checklist_version"] = LEGACY_CHECKLIST_VERSION
-    del artifact["journal_root"]
-    artifact["target_journal_path"] = str(journal.resolve())
-    return artifact
 
 
 def _write_artifact(journal: Path, payload: dict) -> Path:
@@ -92,7 +118,11 @@ def _write_artifact(journal: Path, payload: dict) -> Path:
     return approval_path
 
 
-def _valid_sync_artifact(journal: Path) -> dict:
+def _valid_sync_artifact(
+    journal: Path,
+    *,
+    raw_retention_decision: str = RawRetentionDecision.RETAIN_PARSED.value,
+) -> dict:
     return {
         "schema": OURA_SYNC_APPROVAL_SCHEMA,
         "checklist_version": OURA_SYNC_CHECKLIST_VERSION,
@@ -100,10 +130,7 @@ def _valid_sync_artifact(journal: Path) -> dict:
         "approved_at": "2026-07-06T09:00:00-06:00",
         "journal_root": str(journal.resolve()),
         "replication_destinations": _replication_destinations(),
-        "raw_retention": {
-            "decision": "retain_raw_pages",
-            "notes": "Synthetic test decision.",
-        },
+        "raw_retention": _raw_retention(raw_retention_decision),
         "requires_per_run_confirmation": True,
         "no_real_health_data_in_artifact": True,
     }
@@ -228,7 +255,7 @@ def test_apple_health_save_missing_confirm_flag_blocks_with_artifact(
 
 
 # ---------------------------------------------------------------------------
-# Journal-root binding (checklist v2) + legacy v1 acceptance
+# Journal-root binding and old-version rejection
 # ---------------------------------------------------------------------------
 
 
@@ -321,32 +348,24 @@ def test_gate_passes_for_explicit_target_with_its_own_artifact(
 
     assert decision.enforced is True
     assert decision.approval_path == str(approval_path_for_journal(journal_b.resolve()))
+    assert decision.raw_retention is RawRetentionDecision.RETAIN_PARSED
 
 
-def test_apple_health_accepts_legacy_v1_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    # Artifacts recorded before the v2 journal-root binding carry
-    # checklist v1 and target_journal_path; they stay valid for
-    # apple_health only.
-    journal = _use_journal(tmp_path, monkeypatch)
-    _write_artifact(journal, _legacy_artifact(journal))
-
-    decision = enforce_pre_save_gate(
-        "apple_health",
-        dry_run=False,
-        confirm_health_save=True,
-    )
-
-    assert decision.enforced is True
-
-
-def test_legacy_v1_artifact_target_path_mismatch_still_blocks(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "old_version",
+    [
+        "solstone.health_import_preflight.checklist.v1",
+        "solstone.health_import_preflight.checklist.v2",
+    ],
+)
+def test_old_health_checklist_versions_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    old_version: str,
 ):
     journal = _use_journal(tmp_path, monkeypatch)
-    artifact = _legacy_artifact(journal)
-    artifact["target_journal_path"] = str((tmp_path / "other-journal").resolve())
+    artifact = _valid_artifact(journal)
+    artifact["checklist_version"] = old_version
     _write_artifact(journal, artifact)
 
     with pytest.raises(PreSaveGateError) as exc_info:
@@ -357,54 +376,68 @@ def test_legacy_v1_artifact_target_path_mismatch_still_blocks(
         )
 
     payload = exc_info.value.to_dict()
-    assert payload["gate_reason"] == "target_journal_path_mismatch"
-    assert payload["invalid_fields"] == ["target_journal_path"]
-
-
-def test_oura_never_accepts_legacy_v1_artifact(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
-    journal = _use_journal(tmp_path, monkeypatch)
-    artifact = _legacy_artifact(journal)
-    artifact["approved_importers"] = ["apple_health", "oura"]
-    _write_artifact(journal, artifact)
-
-    with pytest.raises(PreSaveGateError) as exc_info:
-        enforce_pre_save_gate(
-            "oura",
-            dry_run=False,
-            confirm_health_save=True,
-        )
-
-    payload = exc_info.value.to_dict()
     assert payload["gate_reason"] == "checklist_version_mismatch"
     assert payload["invalid_fields"] == ["checklist_version"]
 
 
-def test_v2_artifact_without_journal_root_blocks_oura_but_not_apple_health(
+def test_target_journal_path_legacy_binding_no_longer_authorizes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # A v2-checklist artifact that only carries the legacy binding field:
-    # accepted for apple_health (legacy binding, documented), required to
-    # carry journal_root for oura.
     journal = _use_journal(tmp_path, monkeypatch)
     artifact = _valid_artifact(journal)
-    artifact["approved_importers"] = ["apple_health", "oura"]
     del artifact["journal_root"]
     artifact["target_journal_path"] = str(journal.resolve())
     _write_artifact(journal, artifact)
 
-    decision = enforce_pre_save_gate(
-        "apple_health", dry_run=False, confirm_health_save=True
-    )
-    assert decision.enforced is True
-
     with pytest.raises(PreSaveGateError) as exc_info:
-        enforce_pre_save_gate("oura", dry_run=False, confirm_health_save=True)
+        enforce_pre_save_gate("apple_health", dry_run=False, confirm_health_save=True)
 
     payload = exc_info.value.to_dict()
     assert payload["gate_reason"] == "journal_root_binding_missing"
     assert payload["missing_fields"] == ["journal_root"]
+
+
+def test_relative_target_journal_root_fails_before_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_artifact(journal, _valid_artifact(journal))
+    monkeypatch.chdir(journal)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_pre_save_gate(
+            "apple_health",
+            dry_run=False,
+            confirm_health_save=True,
+            journal_root=Path("."),
+        )
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "target_journal_not_absolute"
+    assert payload["invalid_fields"] == ["journal_root"]
+    assert payload["target_journal"] == "."
+
+
+def test_relative_artifact_journal_root_binding_fails_before_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _valid_artifact(journal)
+    artifact["journal_root"] = "."
+    _write_artifact(journal, artifact)
+    monkeypatch.chdir(journal)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_pre_save_gate(
+            "apple_health",
+            dry_run=False,
+            confirm_health_save=True,
+            journal_root=journal,
+        )
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "journal_root_binding_not_absolute"
+    assert payload["invalid_fields"] == ["journal_root"]
 
 
 @pytest.mark.parametrize(
@@ -477,6 +510,98 @@ def test_apple_health_save_missing_raw_retention_blocks(
     assert payload["reason"] == "health_pre_save_gate_required"
     assert payload["gate_reason"] == "raw_retention_decision_missing"
     assert payload["missing_fields"] == ["raw_retention.decision"]
+
+
+def test_unknown_raw_retention_string_blocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _valid_artifact(journal, raw_retention_decision="retain_compressed_zip")
+    _write_artifact(journal, artifact)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_pre_save_gate(
+            "apple_health",
+            dry_run=False,
+            confirm_health_save=True,
+        )
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "raw_retention_decision_invalid"
+    assert payload["invalid_fields"] == ["raw_retention.decision"]
+
+
+@pytest.mark.parametrize(
+    ("acknowledged", "missing_fields", "invalid_fields"),
+    [
+        (None, ["raw_retention.unparsed_sensitive_modalities_acknowledged"], []),
+        (False, [], ["raw_retention.unparsed_sensitive_modalities_acknowledged"]),
+    ],
+)
+def test_retain_complete_without_sensitive_modalities_ack_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    acknowledged: bool | None,
+    missing_fields: list[str],
+    invalid_fields: list[str],
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _valid_artifact(
+        journal,
+        raw_retention_decision=RawRetentionDecision.RETAIN_COMPLETE.value,
+        acknowledged=acknowledged,
+    )
+    _write_artifact(journal, artifact)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_pre_save_gate(
+            "apple_health",
+            dry_run=False,
+            confirm_health_save=True,
+        )
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "raw_retention_acknowledgement_missing"
+    assert payload["missing_fields"] == missing_fields
+    assert payload["invalid_fields"] == invalid_fields
+
+
+def test_apple_health_retain_complete_with_ack_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _valid_artifact(
+        journal,
+        raw_retention_decision=RawRetentionDecision.RETAIN_COMPLETE.value,
+        acknowledged=True,
+    )
+    _write_artifact(journal, artifact)
+
+    decision = enforce_pre_save_gate(
+        "apple_health",
+        dry_run=False,
+        confirm_health_save=True,
+    )
+
+    assert decision.raw_retention is RawRetentionDecision.RETAIN_COMPLETE
+
+
+def test_oura_sync_retain_complete_blocks_as_source_incompatible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _valid_sync_artifact(
+        journal,
+        raw_retention_decision=RawRetentionDecision.RETAIN_COMPLETE.value,
+    )
+    _write_sync_artifact(journal, artifact)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_oura_sync_gate(journal, confirm_health_save=True, now=FIXED_NOW)
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "raw_retention_decision_incompatible"
+    assert payload["invalid_fields"] == ["raw_retention.decision"]
 
 
 def test_apple_health_save_with_valid_gate_reaches_process(
@@ -664,15 +789,31 @@ def test_sync_gate_missing_artifact_blocks(tmp_path: Path, monkeypatch):
     assert payload["checklist_version"] == OURA_SYNC_CHECKLIST_VERSION
 
 
+def test_old_oura_sync_checklist_version_fails_closed(tmp_path: Path, monkeypatch):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _valid_sync_artifact(journal)
+    artifact["checklist_version"] = "solstone.oura_sync_preflight.checklist.v1"
+    _write_sync_artifact(journal, artifact)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_oura_sync_gate(journal, confirm_health_save=True, now=FIXED_NOW)
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "checklist_version_mismatch"
+    assert payload["invalid_fields"] == ["checklist_version"]
+
+
 def test_sync_gate_one_shot_passes_with_confirmation(tmp_path: Path, monkeypatch):
     journal = _use_journal(tmp_path, monkeypatch)
     _write_sync_artifact(journal, _valid_sync_artifact(journal))
 
-    decision = enforce_oura_sync_gate(journal, confirm_health_save=True)
+    decision = enforce_oura_sync_gate(journal, confirm_health_save=True, now=FIXED_NOW)
 
     assert decision.enforced is True
     assert decision.importer == "oura"
     assert decision.checklist_version == OURA_SYNC_CHECKLIST_VERSION
+    assert decision.raw_retention is RawRetentionDecision.RETAIN_PARSED
+    assert decision.scheduled_sync is None
 
 
 def test_sync_gate_one_shot_without_confirmation_blocks(tmp_path: Path, monkeypatch):
@@ -680,7 +821,23 @@ def test_sync_gate_one_shot_without_confirmation_blocks(tmp_path: Path, monkeypa
     _write_sync_artifact(journal, _valid_sync_artifact(journal))
 
     with pytest.raises(PreSaveGateError) as exc_info:
-        enforce_oura_sync_gate(journal)
+        enforce_oura_sync_gate(journal, now=FIXED_NOW)
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "per_run_confirmation_missing"
+    assert payload["missing_fields"] == ["confirm_health_save"]
+
+
+def test_sync_gate_one_shot_does_not_treat_scheduled_consent_as_confirmation(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _valid_sync_artifact(journal)
+    artifact["scheduled_sync"] = _scheduled_sync_consent()
+    _write_sync_artifact(journal, artifact)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_oura_sync_gate(journal, now=FIXED_NOW)
 
     payload = exc_info.value.to_dict()
     assert payload["gate_reason"] == "per_run_confirmation_missing"
@@ -694,7 +851,7 @@ def test_sync_gate_requires_journal_root_binding(tmp_path: Path, monkeypatch):
     _write_sync_artifact(journal, artifact)
 
     with pytest.raises(PreSaveGateError) as exc_info:
-        enforce_oura_sync_gate(journal, confirm_health_save=True)
+        enforce_oura_sync_gate(journal, confirm_health_save=True, now=FIXED_NOW)
 
     payload = exc_info.value.to_dict()
     assert payload["gate_reason"] == "journal_root_binding_missing"
@@ -708,9 +865,46 @@ def test_sync_gate_binding_mismatch_blocks(tmp_path: Path, monkeypatch):
     _write_sync_artifact(journal, artifact)
 
     with pytest.raises(PreSaveGateError) as exc_info:
-        enforce_oura_sync_gate(journal, confirm_health_save=True)
+        enforce_oura_sync_gate(journal, confirm_health_save=True, now=FIXED_NOW)
 
     assert exc_info.value.to_dict()["gate_reason"] == "journal_root_binding_mismatch"
+
+
+def test_sync_gate_relative_target_journal_root_fails_before_resolution(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _valid_sync_artifact(journal))
+    monkeypatch.chdir(journal)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_oura_sync_gate(
+            Path("."),
+            confirm_health_save=True,
+            now=FIXED_NOW,
+        )
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "target_journal_not_absolute"
+    assert payload["invalid_fields"] == ["journal_root"]
+    assert payload["target_journal"] == "."
+
+
+def test_sync_gate_relative_artifact_binding_fails_before_resolution(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _valid_sync_artifact(journal)
+    artifact["journal_root"] = "."
+    _write_sync_artifact(journal, artifact)
+    monkeypatch.chdir(journal)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_oura_sync_gate(journal, confirm_health_save=True, now=FIXED_NOW)
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "journal_root_binding_not_absolute"
+    assert payload["invalid_fields"] == ["journal_root"]
 
 
 def test_sync_gate_scheduled_requires_standing_consent(tmp_path: Path, monkeypatch):
@@ -720,7 +914,12 @@ def test_sync_gate_scheduled_requires_standing_consent(tmp_path: Path, monkeypat
     # Even a per-run confirmation flag cannot stand in for the recorded
     # scheduled_sync consent — a cron job is not a person clicking yes.
     with pytest.raises(PreSaveGateError) as exc_info:
-        enforce_oura_sync_gate(journal, confirm_health_save=True, scheduled=True)
+        enforce_oura_sync_gate(
+            journal,
+            confirm_health_save=True,
+            scheduled=True,
+            now=FIXED_NOW,
+        )
 
     payload = exc_info.value.to_dict()
     assert payload["gate_reason"] == "scheduled_sync_consent_missing"
@@ -733,17 +932,82 @@ def test_sync_gate_scheduled_blocks_unapproved_or_missing_cadence(
     journal = _use_journal(tmp_path, monkeypatch)
 
     artifact = _valid_sync_artifact(journal)
-    artifact["scheduled_sync"] = {"approved": False, "cadence": "every 6 hours"}
+    artifact["scheduled_sync"] = _scheduled_sync_consent(approved=False)
     _write_sync_artifact(journal, artifact)
     with pytest.raises(PreSaveGateError) as exc_info:
-        enforce_oura_sync_gate(journal, scheduled=True)
+        enforce_oura_sync_gate(journal, scheduled=True, now=FIXED_NOW)
     assert exc_info.value.to_dict()["gate_reason"] == "scheduled_sync_not_approved"
 
-    artifact["scheduled_sync"] = {"approved": True, "cadence": "   "}
+    artifact["scheduled_sync"] = _scheduled_sync_consent(cadence="   ")
     _write_sync_artifact(journal, artifact)
     with pytest.raises(PreSaveGateError) as exc_info:
-        enforce_oura_sync_gate(journal, scheduled=True)
+        enforce_oura_sync_gate(journal, scheduled=True, now=FIXED_NOW)
     assert exc_info.value.to_dict()["gate_reason"] == "scheduled_sync_cadence_invalid"
+
+
+@pytest.mark.parametrize(
+    ("valid_until", "reason", "missing_fields", "invalid_fields"),
+    [
+        (
+            None,
+            "scheduled_sync_valid_until_missing",
+            ["scheduled_sync.valid_until"],
+            [],
+        ),
+        (
+            "not-a-date",
+            "scheduled_sync_valid_until_invalid",
+            [],
+            ["scheduled_sync.valid_until"],
+        ),
+        (
+            "2026-08-01T00:00:00",
+            "scheduled_sync_valid_until_naive",
+            [],
+            ["scheduled_sync.valid_until"],
+        ),
+        (
+            "2026-07-13T11:59:59Z",
+            "scheduled_sync_consent_expired",
+            [],
+            ["scheduled_sync.valid_until"],
+        ),
+        (
+            "2026-07-13T12:00:00Z",
+            "scheduled_sync_consent_expired",
+            [],
+            ["scheduled_sync.valid_until"],
+        ),
+    ],
+)
+def test_sync_gate_scheduled_valid_until_blocks_bad_or_expired_values(
+    tmp_path: Path,
+    monkeypatch,
+    valid_until: str | None,
+    reason: str,
+    missing_fields: list[str],
+    invalid_fields: list[str],
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _valid_sync_artifact(journal)
+    consent = _scheduled_sync_consent()
+    if valid_until is None:
+        consent.pop("valid_until")
+    else:
+        consent["valid_until"] = valid_until
+    artifact["scheduled_sync"] = consent
+    _write_sync_artifact(journal, artifact)
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_oura_sync_gate(journal, scheduled=True, now=FIXED_NOW)
+
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == reason
+    assert payload["missing_fields"] == missing_fields
+    assert payload["invalid_fields"] == invalid_fields
+    failure_json = json.dumps(payload, sort_keys=True)
+    assert "access_token" not in failure_json
+    assert "refresh_token" not in failure_json
 
 
 def test_sync_gate_scheduled_passes_on_standing_consent_without_flag(
@@ -751,12 +1015,16 @@ def test_sync_gate_scheduled_passes_on_standing_consent_without_flag(
 ):
     journal = _use_journal(tmp_path, monkeypatch)
     artifact = _valid_sync_artifact(journal)
-    artifact["scheduled_sync"] = {"approved": True, "cadence": "every 6 hours"}
+    artifact["scheduled_sync"] = _scheduled_sync_consent(
+        valid_until="2026-07-13T12:00:01Z"
+    )
     _write_sync_artifact(journal, artifact)
 
-    decision = enforce_oura_sync_gate(journal, scheduled=True)
+    decision = enforce_oura_sync_gate(journal, scheduled=True, now=FIXED_NOW)
 
     assert decision.enforced is True
+    assert decision.scheduled_sync is not None
+    assert decision.scheduled_sync.cadence == "every 6 hours"
 
 
 def test_sync_gate_rejects_health_import_artifact_schema(tmp_path: Path, monkeypatch):
@@ -766,7 +1034,7 @@ def test_sync_gate_rejects_health_import_artifact_schema(tmp_path: Path, monkeyp
     _write_sync_artifact(journal, _valid_artifact(journal))
 
     with pytest.raises(PreSaveGateError) as exc_info:
-        enforce_oura_sync_gate(journal, confirm_health_save=True)
+        enforce_oura_sync_gate(journal, confirm_health_save=True, now=FIXED_NOW)
 
     assert exc_info.value.to_dict()["gate_reason"] == "unsupported_approval_schema"
 
@@ -776,7 +1044,7 @@ def test_read_oura_sync_approval_is_read_only_and_lenient(tmp_path: Path, monkey
     assert read_oura_sync_approval(journal) is None
 
     artifact = _valid_sync_artifact(journal)
-    artifact["scheduled_sync"] = {"approved": True, "cadence": "every 6 hours"}
+    artifact["scheduled_sync"] = _scheduled_sync_consent()
     _write_sync_artifact(journal, artifact)
     loaded = read_oura_sync_approval(journal)
     assert loaded is not None

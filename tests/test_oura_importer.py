@@ -42,6 +42,7 @@ from solstone.think.importers.pre_save_gate import (
     OURA_SYNC_CHECKLIST_VERSION,
     SENSITIVE_IMPORTERS,
     PreSaveGateError,
+    RawRetentionDecision,
     approval_path_for_journal,
     oura_sync_approval_path_for_journal,
 )
@@ -65,6 +66,7 @@ _FIXTURE_ROW_COUNT = 31
 # Sync runs fetch SYNC_ENDPOINTS only: the partner-gated blood_glucose
 # fixture (4 rows) is parse/normalize-only, never polled.
 _SYNC_ROW_COUNT = _FIXTURE_ROW_COUNT - 4
+_SCHEDULED_VALID_UNTIL = "2099-01-01T00:00:00Z"
 
 
 def _use_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -80,7 +82,27 @@ def _use_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return journal
 
 
-def _valid_artifact(journal: Path, importers: list[str]) -> dict:
+def _raw_retention(decision: str = RawRetentionDecision.RETAIN_PARSED.value) -> dict:
+    return {
+        "decision": decision,
+        "notes": "Synthetic test decision.",
+    }
+
+
+def _scheduled_sync_consent() -> dict:
+    return {
+        "approved": True,
+        "cadence": "every 6 hours",
+        "valid_until": _SCHEDULED_VALID_UNTIL,
+    }
+
+
+def _valid_artifact(
+    journal: Path,
+    importers: list[str],
+    *,
+    raw_retention_decision: str = RawRetentionDecision.RETAIN_PARSED.value,
+) -> dict:
     return {
         "schema": APPROVAL_SCHEMA,
         "checklist_version": CHECKLIST_VERSION,
@@ -95,10 +117,7 @@ def _valid_artifact(journal: Path, importers: list[str]) -> dict:
             }
             for destination in CHECKLIST_DESTINATIONS
         },
-        "raw_retention": {
-            "decision": "retain_compressed_zip",
-            "notes": "Synthetic test decision.",
-        },
+        "raw_retention": _raw_retention(raw_retention_decision),
         "requires_per_run_confirmation": True,
         "no_real_health_data_in_artifact": True,
     }
@@ -111,7 +130,11 @@ def _write_artifact(journal: Path, payload: dict) -> Path:
     return approval_path
 
 
-def _sync_artifact(journal: Path) -> dict:
+def _sync_artifact(
+    journal: Path,
+    *,
+    raw_retention_decision: str = RawRetentionDecision.RETAIN_PARSED.value,
+) -> dict:
     return {
         "schema": OURA_SYNC_APPROVAL_SCHEMA,
         "checklist_version": OURA_SYNC_CHECKLIST_VERSION,
@@ -125,10 +148,7 @@ def _sync_artifact(journal: Path) -> dict:
             }
             for destination in CHECKLIST_DESTINATIONS
         },
-        "raw_retention": {
-            "decision": "retain_raw_pages",
-            "notes": "Synthetic test decision.",
-        },
+        "raw_retention": _raw_retention(raw_retention_decision),
         "requires_per_run_confirmation": True,
         "no_real_health_data_in_artifact": True,
     }
@@ -1849,7 +1869,10 @@ def test_scheduled_sync_with_unapproved_consent_fails_closed(
 ):
     journal = _use_journal(tmp_path, monkeypatch)
     artifact = _sync_artifact(journal)
-    artifact["scheduled_sync"] = {"approved": False, "cadence": "every 6 hours"}
+    artifact["scheduled_sync"] = {
+        "approved": False,
+        "cadence": "every 6 hours",
+    }
     _write_sync_artifact(journal, artifact)
 
     with pytest.raises(PreSaveGateError) as exc_info:
@@ -1869,7 +1892,7 @@ def test_scheduled_sync_with_consent_passes_and_emits_cron_hint(
 ):
     journal = _use_journal(tmp_path, monkeypatch)
     artifact = _sync_artifact(journal)
-    artifact["scheduled_sync"] = {"approved": True, "cadence": "every 6 hours"}
+    artifact["scheduled_sync"] = _scheduled_sync_consent()
     _write_sync_artifact(journal, artifact)
     client = _canned_client(_fixture_transport())
 
@@ -1885,6 +1908,30 @@ def test_scheduled_sync_with_consent_passes_and_emits_cron_hint(
     assert result["downloaded"] == _SYNC_ROW_COUNT
     assert result["cron_hint"].startswith("0 */6 * * * ")
     assert result["cron_hint"].endswith("importer --sync oura --save --scheduled")
+
+
+def test_save_sync_cron_hint_uses_gate_decision_without_rereading_artifact(
+    tmp_path: Path, monkeypatch
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    artifact = _sync_artifact(journal)
+    artifact["scheduled_sync"] = _scheduled_sync_consent()
+    _write_sync_artifact(journal, artifact)
+    monkeypatch.setattr(
+        oura,
+        "read_oura_sync_approval",
+        lambda _journal: pytest.fail("save-mode sync must not reread approval"),
+    )
+
+    result = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 10),
+    )
+
+    assert result["cron_hint"].startswith("0 */6 * * * ")
 
 
 def test_sync_fails_loud_on_corrupt_cursor(tmp_path: Path, monkeypatch):
@@ -2146,7 +2193,7 @@ def test_gate_still_blocks_would_be_quiet_run(tmp_path: Path, monkeypatch):
 def test_scheduled_quiet_run_relies_on_standing_consent(tmp_path: Path, monkeypatch):
     journal = _use_journal(tmp_path, monkeypatch)
     artifact = _sync_artifact(journal)
-    artifact["scheduled_sync"] = {"approved": True, "cadence": "every 6 hours"}
+    artifact["scheduled_sync"] = _scheduled_sync_consent()
     _write_sync_artifact(journal, artifact)
 
     oura.backend.sync(
@@ -2792,7 +2839,7 @@ def test_cli_sync_prints_cron_hint_when_scheduled_consent_exists(
 ):
     journal = _use_journal(tmp_path, monkeypatch)
     artifact = _sync_artifact(journal)
-    artifact["scheduled_sync"] = {"approved": True, "cadence": "every 6 hours"}
+    artifact["scheduled_sync"] = _scheduled_sync_consent()
     _write_sync_artifact(journal, artifact)
     cli = import_module("solstone.think.importers.cli")
 

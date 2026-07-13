@@ -102,6 +102,8 @@ def write_health_approval_artifact(
     journal_root: Path,
     *,
     importers: Sequence[str],
+    raw_retention_decision: str = "retain_parsed",
+    unparsed_sensitive_modalities_acknowledged: bool | None = None,
 ) -> Path:
     from solstone.think.importers.pre_save_gate import (
         APPROVAL_SCHEMA,
@@ -113,6 +115,14 @@ def write_health_approval_artifact(
     resolved = journal_root.resolve()
     approval_path = approval_path_for_journal(resolved)
     approval_path.parent.mkdir(parents=True, exist_ok=True)
+    raw_retention = {
+        "decision": raw_retention_decision,
+        "notes": "Synthetic test decision.",
+    }
+    if unparsed_sensitive_modalities_acknowledged is not None:
+        raw_retention["unparsed_sensitive_modalities_acknowledged"] = (
+            unparsed_sensitive_modalities_acknowledged
+        )
     artifact = {
         "schema": APPROVAL_SCHEMA,
         "checklist_version": CHECKLIST_VERSION,
@@ -127,10 +137,7 @@ def write_health_approval_artifact(
             }
             for destination in CHECKLIST_DESTINATIONS
         },
-        "raw_retention": {
-            "decision": "retain_compressed_zip",
-            "notes": "Synthetic test decision.",
-        },
+        "raw_retention": raw_retention,
         "requires_per_run_confirmation": True,
         "no_real_health_data_in_artifact": True,
     }

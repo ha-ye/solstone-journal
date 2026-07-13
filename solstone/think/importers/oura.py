@@ -90,6 +90,7 @@ from solstone.think.importers.health_schema import (
     health_value_hash,
 )
 from solstone.think.importers.pre_save_gate import (
+    ScheduledSyncConsent,
     enforce_oura_sync_gate,
     enforce_pre_save_gate,
     read_oura_sync_approval,
@@ -1443,8 +1444,9 @@ class OuraSyncBackend:
         # Gate before anything else in save mode — before the first fetch,
         # long before the first write. Catalog mode writes nothing (no
         # cursor), so it needs no approval.
+        _gate_decision = None
         if not dry_run:
-            enforce_oura_sync_gate(
+            _gate_decision = enforce_oura_sync_gate(
                 journal_root,
                 confirm_health_save=confirm_health_save,
                 scheduled=scheduled,
@@ -1514,6 +1516,8 @@ class OuraSyncBackend:
                 errors=errors,
             )
 
+        assert _gate_decision is not None
+
         # Quiet-run check: classify the fetch against the dedupe ledger
         # BEFORE allocating an import id or writing anything. Dedupe keys
         # and value hashes are import-id-independent, so a placeholder
@@ -1554,7 +1558,11 @@ class OuraSyncBackend:
                 inserted=0,
                 updated=0,
                 months=[],
-                cron_hint=_scheduled_cron_hint(journal_root),
+                cron_hint=_scheduled_cron_hint(
+                    journal_root,
+                    scheduled_sync=_gate_decision.scheduled_sync,
+                    read_artifact=False,
+                ),
                 quiet_run=True,
                 errors=errors,
             )
@@ -1590,7 +1598,11 @@ class OuraSyncBackend:
         )
         save_sync_state(journal_root, SYNC_BACKEND_NAME, new_state)
 
-        cron_hint = _scheduled_cron_hint(journal_root)
+        cron_hint = _scheduled_cron_hint(
+            journal_root,
+            scheduled_sync=_gate_decision.scheduled_sync,
+            read_artifact=False,
+        )
         return _sync_result(
             dry_run=False,
             items=items,
@@ -2058,7 +2070,12 @@ def _content_manifest_entries(
     return entries
 
 
-def _scheduled_cron_hint(journal_root: Path) -> str | None:
+def _scheduled_cron_hint(
+    journal_root: Path,
+    *,
+    scheduled_sync: ScheduledSyncConsent | None = None,
+    read_artifact: bool = True,
+) -> str | None:
     """The exact crontab line to suggest when scheduled consent exists.
 
     Guidance only — nothing is ever installed. Scheduled runs pass
@@ -2066,13 +2083,18 @@ def _scheduled_cron_hint(journal_root: Path) -> str | None:
     the per-run confirmation flag.
     """
 
-    artifact = read_oura_sync_approval(journal_root)
-    if not isinstance(artifact, dict):
-        return None
-    consent = artifact.get("scheduled_sync")
-    if not isinstance(consent, dict) or consent.get("approved") is not True:
-        return None
-    cadence = str(consent.get("cadence") or "")
+    if scheduled_sync is None:
+        if not read_artifact:
+            return None
+        artifact = read_oura_sync_approval(journal_root)
+        if not isinstance(artifact, dict):
+            return None
+        consent = artifact.get("scheduled_sync")
+        if not isinstance(consent, dict) or consent.get("approved") is not True:
+            return None
+        cadence = str(consent.get("cadence") or "")
+    else:
+        cadence = scheduled_sync.cadence
     hours = _cadence_hours(cadence)
     # The host-side importer CLI (`journal importer`) is the sync surface;
     # the thin `sol import` client rejects --sync on purpose.

@@ -241,7 +241,7 @@ class AppleHealthImporter:
     ) -> ImportResult:
         # Save mode fails closed before any parse or write, root-explicit
         # against the journal this call would actually write.
-        enforce_pre_save_gate(
+        _gate_decision = enforce_pre_save_gate(
             self,
             dry_run=dry_run,
             confirm_health_save=confirm_health_save,
