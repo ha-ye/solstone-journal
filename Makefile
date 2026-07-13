@@ -320,7 +320,7 @@ test: .installed format-check
 	@echo "Running unit tests (core + apps)..."
 	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q $(PYTEST_UNIT_ARGS) $(PYTEST_XDIST_ARGS)
 
-# Same suite with full-repo coverage (used by ci/verify)
+# Same suite with full-repo coverage (operator opt-in; used by verify).
 test-cov: .installed format-check
 	@echo "Running unit tests with coverage (core + apps)..."
 	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q --cov=. $(PYTEST_UNIT_ARGS) $(PYTEST_XDIST_ARGS)
@@ -458,7 +458,7 @@ install-checks: .installed
 
 ci: install-checks
 	@echo "=== Running tests ==="
-	@$(MAKE) test-cov
+	@$(MAKE) test
 	@echo ""
 	@echo "All CI checks passed!"
 
