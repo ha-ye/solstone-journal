@@ -7,8 +7,6 @@ import re
 import subprocess
 from pathlib import Path
 
-import pytest
-
 EXCLUDED_DIRS = {".git", ".venv", "build", "dist"}
 TEXT_SUFFIXES = {
     ".html",
@@ -69,26 +67,29 @@ def _candidate_files() -> list[Path]:
     return files
 
 
-@pytest.mark.parametrize("path", _candidate_files(), ids=str)
-def test_old_sol_call_local_paths_are_not_documented(path: Path) -> None:
-    text = path.read_text(encoding="utf-8")
+def test_old_sol_call_local_paths_are_not_documented() -> None:
     matches = []
-    for line_number, line in enumerate(text.splitlines(), start=1):
-        for pattern in BAN_PATTERNS:
-            if pattern.search(line):
-                matches.append((line_number, line))
+    for path in _candidate_files():
+        text = path.read_text(encoding="utf-8")
+        for line_number, line in enumerate(text.splitlines(), start=1):
+            for pattern in BAN_PATTERNS:
+                if pattern.search(line):
+                    matches.append(f"{path}:{line_number}: {line}")
 
     assert matches == []
 
 
-@pytest.mark.parametrize(
-    "survivor",
-    [
+def test_old_sol_call_ban_regex_precision() -> None:
+    survivors = (
         "sol call settings identity",
         "sol call settings providers show",
         "sol call settings providers set-generate",
         "sol call settings providers set-cogitate",
-    ],
-)
-def test_old_sol_call_ban_regex_precision(survivor: str) -> None:
-    assert all(pattern.search(survivor) is None for pattern in BAN_PATTERNS)
+    )
+    matches = [
+        survivor
+        for survivor in survivors
+        if any(pattern.search(survivor) is not None for pattern in BAN_PATTERNS)
+    ]
+
+    assert matches == []

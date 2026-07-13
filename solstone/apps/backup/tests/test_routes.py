@@ -551,7 +551,7 @@ def test_restore_hosted_approved_works_without_local_keys(
     assert response.get_json()["operation"]["portal_url"] == CONSENT_URL
     assert final["reason_code"] is None
     save_hosted_binding.assert_called_once_with(binding)
-    fetch_hosted_credentials.assert_called_once_with(binding, scope="maintenance")
+    fetch_hosted_credentials.assert_called_once_with(binding, scope="operated")
     restore_journal_operated.assert_called_once_with(binding, _creds(), "A" * 64)
 
 

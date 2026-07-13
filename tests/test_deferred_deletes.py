@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import threading
-import time
 
 import pytest
 
@@ -39,9 +38,11 @@ def test_cancel_prevents_commit():
         lambda: committed.append("ran"),
         ttl_seconds=1.0,
     )
+    with deferred_deletes._LOCK:
+        timer = deferred_deletes._TIMERS[deferred_id]
 
     assert deferred_deletes.cancel(deferred_id) is True
-    time.sleep(1.15)
+    timer.function(*timer.args, **timer.kwargs)
     assert committed == []
 
 

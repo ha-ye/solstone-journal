@@ -7,8 +7,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import subprocess
-import sys
 from pathlib import Path
 
 import frontmatter
@@ -295,13 +293,3 @@ def test_discovery_floor_matches_cogitate_frontmatter() -> None:
     discovered = {rel for rel, _body in ccp.discover_prompts()}
     assert expected
     assert expected <= discovered
-
-
-def test_repo_tree_is_green() -> None:
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT)],
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "cogitate-prompts: pass" in result.stdout

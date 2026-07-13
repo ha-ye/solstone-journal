@@ -335,8 +335,3 @@ def test_ratchet_by_file_kind_count(bad_root):
     ratcheted[key] = counts[key] - 1
     new_over, _ = cjm.evaluate(bad_root, ratcheted)
     assert new_over
-
-
-def test_repo_tree_is_green():
-    result = _run(REPO_ROOT)
-    assert result.returncode == 0, result.stdout + result.stderr

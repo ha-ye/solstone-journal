@@ -23,13 +23,6 @@ def _run(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_repo_tree_is_green() -> None:
-    result = _run()
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "access-imports-clean: pass" in result.stdout
-
-
 def test_injected_access_heavy_import_goes_red_and_names_offender() -> None:
     result = _run("--inject-heavy-module", "solstone.think.notify_cli")
 

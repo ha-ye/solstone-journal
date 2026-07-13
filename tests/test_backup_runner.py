@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -305,43 +304,3 @@ def test_select_summary_from_dict_or_json_lines() -> None:
         ]
     ) == {"message_type": "summary", "snapshot_id": "two"}
     assert runner.select_summary({"message_type": "status"}) is None
-
-
-RESTIC_BIN = shutil.which("restic")
-
-
-@pytest.mark.skipif(RESTIC_BIN is None, reason="restic is not installed")
-def test_run_restic_local_repository_integration(tmp_path: Path):
-    restic_path = Path(RESTIC_BIN or "")
-    repo = tmp_path / "repo"
-    data = tmp_path / "data.txt"
-    data.write_text("backup me", encoding="utf-8")
-
-    init_result = runner.run_restic(
-        ["init"],
-        repository=f"local:{repo}",
-        password="test-password",
-        restic_path=restic_path,
-        timeout=15,
-    )
-    assert init_result.returncode == 0, init_result.stderr
-
-    backup_result = runner.run_restic(
-        ["backup", str(data)],
-        repository=f"local:{repo}",
-        password="test-password",
-        restic_path=restic_path,
-        timeout=30,
-    )
-    assert backup_result.returncode == 0, backup_result.stderr
-
-    snapshots_result = runner.run_restic(
-        ["snapshots"],
-        repository=f"local:{repo}",
-        password="test-password",
-        restic_path=restic_path,
-        json=True,
-        timeout=15,
-    )
-    assert snapshots_result.returncode == 0, snapshots_result.stderr
-    assert snapshots_result.json is not None

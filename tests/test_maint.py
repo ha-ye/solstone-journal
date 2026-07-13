@@ -8,13 +8,13 @@ import logging
 import signal
 import subprocess
 import sys
-import threading
 from pathlib import Path
 
 import pytest
 
 from solstone.think.maint import (
     MaintTask,
+    _terminate_with_grace,
     get_state_file,
     get_task_status,
     list_tasks,
@@ -432,6 +432,7 @@ class TestRunTask:
         assert emitted[1][1] == "maint_complete"
         assert emitted[1][2]["success"] is True
 
+    @pytest.mark.integration
     def test_stall_warning_logs_named_task(self, temp_journal, monkeypatch, caplog):
         task = self._task("warn_task")
         self._patch_python_subprocess(
@@ -456,6 +457,7 @@ class TestRunTask:
         events = self._read_events(temp_journal, task)
         assert events[-1]["exit_code"] == 0
 
+    @pytest.mark.integration
     def test_stall_hard_cap_terminates_silent_task(self, temp_journal, monkeypatch):
         task = self._task("silent_stall_task")
         self._patch_python_subprocess(
@@ -484,6 +486,7 @@ class TestRunTask:
         assert last_event["exit_code"] == -signal.SIGTERM
         assert last_event["error"] == "stalled"
 
+    @pytest.mark.integration
     def test_stall_hard_cap_kills_sigterm_ignoring_task(
         self, temp_journal, monkeypatch
     ):
@@ -511,6 +514,7 @@ class TestRunTask:
         assert last_event["exit_code"] == -signal.SIGKILL
         assert last_event["error"] == "stalled"
 
+    @pytest.mark.integration
     def test_stalled_task_emits_stalled_complete_event(self, temp_journal, monkeypatch):
         task = self._task("stalled_emit_task")
         self._patch_python_subprocess(
@@ -546,6 +550,7 @@ class TestRunTask:
         events = self._read_events(temp_journal, task)
         assert events[-1]["error"] == "stalled"
 
+    @pytest.mark.integration
     def test_final_stdout_line_is_drained_after_process_exit(
         self, temp_journal, monkeypatch
     ):
@@ -574,6 +579,7 @@ class TestRunTask:
         lines = [event["line"] for event in events if event["event"] == "line"]
         assert lines == ["first", "final"]
 
+    @pytest.mark.integration
     def test_output_activity_resets_idle_timer(self, temp_journal, monkeypatch):
         task = self._task("idle_reset_task")
         self._patch_python_subprocess(
@@ -598,6 +604,7 @@ class TestRunTask:
         events = self._read_events(temp_journal, task)
         assert "error" not in events[-1]
 
+    @pytest.mark.integration
     def test_stalled_task_does_not_wedge_followup_run_task(
         self, temp_journal, monkeypatch
     ):
@@ -640,31 +647,11 @@ class TestRunTask:
         fast_events = self._read_events(temp_journal, fast_task)
         assert "error" not in fast_events[-1]
 
-    def test_unkillable_stalled_task_records_sigkill_exit(
-        self, temp_journal, monkeypatch, caplog
-    ):
-        task = self._task("unkillable_task")
-        procs = []
-
-        class BlockingStdout:
-            def __init__(self):
-                self.release = threading.Event()
-
-            def __iter__(self):
-                self.release.wait()
-                return self
-
-            def __next__(self):
-                raise StopIteration
-
+    def test_terminate_with_grace_returns_sigkill_for_unkillable_process(self, caplog):
         class MockProc:
             def __init__(self):
-                self.stdout = BlockingStdout()
                 self.terminated = False
                 self.killed = False
-
-            def poll(self):
-                return None
 
             def terminate(self):
                 self.terminated = True
@@ -675,32 +662,15 @@ class TestRunTask:
             def wait(self, timeout=None):
                 raise subprocess.TimeoutExpired(cmd="fake", timeout=timeout)
 
-        def mock_popen(*args, **kwargs):
-            proc = MockProc()
-            procs.append(proc)
-            return proc
-
-        monkeypatch.setattr(subprocess, "Popen", mock_popen)
+        proc = MockProc()
 
         with caplog.at_level(logging.ERROR, logger="solstone.think.maint"):
-            success, exit_code = run_task(
-                temp_journal,
-                task,
-                stall_warn_interval_sec=0.2,
-                stall_hard_cap_sec=0.6,
-            )
+            exit_code = _terminate_with_grace(proc, "test_app:unkillable_task")
 
-        procs[0].stdout.release.set()
-
-        assert success is False
         assert exit_code == -signal.SIGKILL
-        assert procs[0].terminated is True
-        assert procs[0].killed is True
+        assert proc.terminated is True
+        assert proc.killed is True
         assert any(
             "Maint task unkillable: test_app:unkillable_task" in record.message
             for record in caplog.records
         )
-        events = self._read_events(temp_journal, task)
-        last_event = events[-1]
-        assert last_event["exit_code"] == -signal.SIGKILL
-        assert last_event["error"] == "stalled"

@@ -142,6 +142,7 @@ def _backup_journal(
 
 
 @pytest.mark.skipif(RESTIC_BIN is None, reason="restic is not installed")
+@pytest.mark.integration
 @pytest.mark.timeout(120)
 def test_backup_restore_rotation_teardown_real_local_round_trip(
     tmp_path: Path,
