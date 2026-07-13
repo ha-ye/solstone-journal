@@ -1,18 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Tests for cortex_client module with Callosum."""
+"""Tests for the cortex_client module."""
 
 import json
-import shutil
-import tempfile
 import threading
 import time
-from pathlib import Path
 
 import pytest
 
-from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.cortex_client import (
     CortexNotClaimed,
     CortexSpawnUnavailable,
@@ -29,66 +25,47 @@ from solstone.think.utils import now_ms
 
 
 @pytest.fixture
-def callosum_server(monkeypatch):
-    """Start a Callosum server for testing.
+def sent_callosum_messages(tmp_path, monkeypatch):
+    """Capture Cortex sends without exercising Callosum transport."""
+    messages = []
 
-    Uses a short temp path in /tmp to avoid Unix socket path length limits
-    (~104 chars on macOS). pytest's tmp_path creates paths that are too long.
-    """
-    # Create short temp dir to avoid Unix socket path length limits
-    tmp_dir = tempfile.mkdtemp(dir="/tmp", prefix="callosum_")
-    tmp_path = Path(tmp_dir)
+    def capture(tract, event, **fields):
+        messages.append({"tract": tract, "event": event, **fields})
+        return ""
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    (tmp_path / "talents").mkdir(parents=True, exist_ok=True)
-
-    server = CallosumServer()
-    server_thread = threading.Thread(target=server.start, daemon=True)
-    server_thread.start()
-
-    # Wait for server to be ready
-    socket_path = tmp_path / "health" / "callosum.sock"
-    for _ in range(50):
-        if socket_path.exists():
-            break
-        time.sleep(0.1)
-    else:
-        pytest.fail("Callosum server did not start in time")
-
-    yield tmp_path
-
-    server.stop()
-    server_thread.join(timeout=2)
-    shutil.rmtree(tmp_dir, ignore_errors=True)
+    monkeypatch.setattr(
+        "solstone.think.cortex_client.callosum_send_classified", capture
+    )
+    monkeypatch.setattr(
+        "solstone.think.cortex_client.get_use_log_status", lambda _uid: "running"
+    )
+    return messages
 
 
 @pytest.fixture
-def callosum_listener(callosum_server):
-    """Provide a CallosumConnection listener that collects received messages.
+def fake_callosum_listener(monkeypatch):
+    """Capture wait_for_uses callbacks without opening a UNIX socket."""
+    callbacks = []
+    started = threading.Event()
 
-    Yields (messages, listener) where messages is a list that accumulates
-    all broadcast messages received during the test.
-    """
-    messages = []
+    class FakeCallosumConnection:
+        def start(self, callback=None):
+            callbacks.append(callback)
+            started.set()
 
-    def callback(msg):
-        messages.append(msg)
+        def stop(self):
+            pass
 
-    listener = CallosumConnection()
-    listener.start(callback=callback)
-    time.sleep(0.1)  # Allow connection to establish
-
-    yield messages
-
-    listener.stop()
-
-
-def test_cortex_request_broadcasts_to_callosum(callosum_listener, monkeypatch):
-    """Test that cortex_request broadcasts request to Callosum."""
-    messages = callosum_listener
     monkeypatch.setattr(
-        "solstone.think.cortex_client.get_use_log_status", lambda uid: "running"
+        "solstone.think.cortex_client.CallosumConnection", FakeCallosumConnection
     )
+    return callbacks, started
+
+
+def test_cortex_request_broadcasts_to_callosum(sent_callosum_messages):
+    """Test that cortex_request broadcasts request to Callosum."""
+    messages = sent_callosum_messages
 
     # Create a request
     use_id = cortex_request(
@@ -97,8 +74,6 @@ def test_cortex_request_broadcasts_to_callosum(callosum_listener, monkeypatch):
         provider="openai",
         config={"model": GPT_5},
     )
-
-    time.sleep(0.2)
 
     # Verify broadcast was received
     assert len(messages) == 1
@@ -113,13 +88,8 @@ def test_cortex_request_broadcasts_to_callosum(callosum_listener, monkeypatch):
     assert "ts" in msg
 
 
-def test_cortex_request_returns_agent_id(callosum_server, monkeypatch):
+def test_cortex_request_returns_agent_id(sent_callosum_messages):
     """Test that cortex_request returns use_id string."""
-    _ = callosum_server  # Needed for side effects only
-    monkeypatch.setattr(
-        "solstone.think.cortex_client.get_use_log_status", lambda uid: "running"
-    )
-
     use_id = cortex_request(prompt="Test", name="chat", provider="openai")
 
     # Verify use_id is a string timestamp
@@ -128,11 +98,8 @@ def test_cortex_request_returns_agent_id(callosum_server, monkeypatch):
     assert len(use_id) == 13  # Millisecond timestamp
 
 
-def test_cortex_request_uses_explicit_use_id(callosum_listener, monkeypatch):
-    messages = callosum_listener
-    monkeypatch.setattr(
-        "solstone.think.cortex_client.get_use_log_status", lambda uid: "running"
-    )
+def test_cortex_request_uses_explicit_use_id(sent_callosum_messages):
+    messages = sent_callosum_messages
 
     use_id = cortex_request(
         prompt="Test prompt",
@@ -141,24 +108,16 @@ def test_cortex_request_uses_explicit_use_id(callosum_listener, monkeypatch):
         use_id="1713629000000",
     )
 
-    time.sleep(0.2)
-
     assert use_id == "1713629000000"
     assert messages[-1]["use_id"] == "1713629000000"
 
 
-def test_cortex_request_unique_agent_ids(callosum_server, monkeypatch):
+def test_cortex_request_unique_agent_ids(sent_callosum_messages):
     """Test that cortex_request generates unique agent IDs."""
-    _ = callosum_server  # Needed for side effects only
-    monkeypatch.setattr(
-        "solstone.think.cortex_client.get_use_log_status", lambda uid: "running"
-    )
-
     agent_ids = []
     for i in range(3):
         use_id = cortex_request(prompt=f"Test {i}", name="chat", provider="openai")
         agent_ids.append(use_id)
-        time.sleep(0.002)
 
     # All agent IDs should be unique
     assert len(set(agent_ids)) == 3
@@ -791,12 +750,15 @@ def test_wait_for_agents_already_complete(tmp_path, monkeypatch):
     assert timed_out == []
 
 
-def test_wait_for_agents_event_completion(callosum_server):
+def test_wait_for_agents_event_completion(
+    tmp_path, monkeypatch, fake_callosum_listener
+):
     """Test wait_for_uses completes when finish event is received."""
-    tmp_path = callosum_server
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     talents_dir = tmp_path / "talents"
     unified_dir = talents_dir / "chat"
-    unified_dir.mkdir(exist_ok=True)
+    unified_dir.mkdir(parents=True)
+    (tmp_path / "health").mkdir()
 
     use_id = "1234567890123"
 
@@ -809,19 +771,13 @@ def test_wait_for_agents_event_completion(callosum_server):
     waiter = threading.Thread(target=wait_thread)
     waiter.start()
 
-    # Give the waiter time to set up listener
-    time.sleep(0.2)
+    callbacks, listener_started = fake_callosum_listener
+    assert listener_started.wait(0.5)
 
     # Create the completed file and emit finish event
     (unified_dir / f"{use_id}.jsonl").write_text('{"event": "finish"}\n')
 
-    # Emit finish event via Callosum
-    client = CallosumConnection()
-    client.start()
-    time.sleep(0.1)
-    client.emit("cortex", "finish", use_id=use_id, result="done")
-    time.sleep(0.2)
-    client.stop()
+    callbacks[0]({"tract": "cortex", "event": "finish", "use_id": use_id})
 
     waiter.join(timeout=3)
 
@@ -829,12 +785,13 @@ def test_wait_for_agents_event_completion(callosum_server):
     assert result["timed_out"] == []
 
 
-def test_wait_for_agents_error_event(callosum_server):
+def test_wait_for_agents_error_event(tmp_path, monkeypatch, fake_callosum_listener):
     """Test wait_for_uses completes on error event too."""
-    tmp_path = callosum_server
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     talents_dir = tmp_path / "talents"
     unified_dir = talents_dir / "chat"
-    unified_dir.mkdir(exist_ok=True)
+    unified_dir.mkdir(parents=True)
+    (tmp_path / "health").mkdir()
 
     use_id = "1234567890124"
 
@@ -845,17 +802,13 @@ def test_wait_for_agents_error_event(callosum_server):
 
     waiter = threading.Thread(target=wait_thread)
     waiter.start()
-    time.sleep(0.2)
+    callbacks, listener_started = fake_callosum_listener
+    assert listener_started.wait(0.5)
 
     # Create completed file and emit error event
     (unified_dir / f"{use_id}.jsonl").write_text('{"event": "error"}\n')
 
-    client = CallosumConnection()
-    client.start()
-    time.sleep(0.1)
-    client.emit("cortex", "error", use_id=use_id, error="something failed")
-    time.sleep(0.2)
-    client.stop()
+    callbacks[0]({"tract": "cortex", "event": "error", "use_id": use_id})
 
     waiter.join(timeout=3)
 
@@ -884,7 +837,7 @@ def test_wait_for_agents_initial_file_check(tmp_path, monkeypatch):
     assert timed_out == []
 
 
-def test_wait_for_agents_timeout_actual(tmp_path, monkeypatch):
+def test_wait_for_agents_timeout(tmp_path, monkeypatch, fake_callosum_listener):
     """Test wait_for_uses times out for agents that never complete."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     talents_dir = tmp_path / "talents"
@@ -897,18 +850,19 @@ def test_wait_for_agents_timeout_actual(tmp_path, monkeypatch):
     # Create active file (not completed)
     (unified_dir / f"{use_id}_active.jsonl").write_text('{"event": "start"}\n')
 
-    completed, timed_out = wait_for_uses([use_id], timeout=1)
+    completed, timed_out = wait_for_uses([use_id], timeout=0)
 
     assert completed == {}
     assert timed_out == [use_id]
 
 
-def test_wait_for_agents_partial(callosum_server):
+def test_wait_for_agents_partial(tmp_path, monkeypatch, fake_callosum_listener):
     """Test wait_for_uses with some completing and some timing out."""
-    tmp_path = callosum_server
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     talents_dir = tmp_path / "talents"
     unified_dir = talents_dir / "chat"
-    unified_dir.mkdir(exist_ok=True)
+    unified_dir.mkdir(parents=True)
+    (tmp_path / "health").mkdir()
 
     completing_agent = "1111"
     timeout_agent = "2222"
@@ -920,22 +874,18 @@ def test_wait_for_agents_partial(callosum_server):
 
     def wait_thread():
         result["completed"], result["timed_out"] = wait_for_uses(
-            [completing_agent, timeout_agent], timeout=1
+            [completing_agent, timeout_agent], timeout=0.1
         )
 
     waiter = threading.Thread(target=wait_thread)
     waiter.start()
-    time.sleep(0.2)
+    callbacks, listener_started = fake_callosum_listener
+    assert listener_started.wait(0.5)
 
     # Complete one agent
     (unified_dir / f"{completing_agent}.jsonl").write_text('{"event": "finish"}\n')
 
-    client = CallosumConnection()
-    client.start()
-    time.sleep(0.1)
-    client.emit("cortex", "finish", use_id=completing_agent, result="done")
-    time.sleep(0.1)
-    client.stop()
+    callbacks[0]({"tract": "cortex", "event": "finish", "use_id": completing_agent})
 
     waiter.join(timeout=5)
 
@@ -1188,7 +1138,7 @@ def test_wait_for_uses_unreadable_sibling_does_not_block_terminal_sibling(
 
     monkeypatch.setattr(cc, "read_use_events", spy)
 
-    completed, timed_out = wait_for_uses([terminal_use, unreadable_use], timeout=1)
+    completed, timed_out = wait_for_uses([terminal_use, unreadable_use], timeout=0)
 
     assert completed == {terminal_use: "finish"}
     assert timed_out == [unreadable_use]
