@@ -103,6 +103,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         # Sole ops/runtime writer of health/catchup-state.json; uses hold_lock for cross-process RMW.
         "solstone/think/catchup_state.py",
         "solstone/think/day_accumulator.py",
+        "solstone/think/entities/history.py",
         "solstone/think/entities/journal.py",
         "solstone/think/entities/merge.py",
         "solstone/think/entities/observations.py",

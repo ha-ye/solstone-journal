@@ -10,6 +10,7 @@ They capture useful information like preferences, expertise, relationships,
 and biographical facts that help with future interactions.
 """
 
+import copy
 import json
 import random
 import time
@@ -18,7 +19,12 @@ from typing import Any, Iterator
 
 from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.relationships import entity_memory_path
-from solstone.think.journal_io import LockTimeout, atomic_replace, hold_lock
+from solstone.think.journal_io import (
+    LockTimeout,
+    atomic_replace,
+    contained_path,
+    hold_lock,
+)
 from solstone.think.utils import get_journal, now_ms
 
 
@@ -170,6 +176,174 @@ def save_observations(
         json.dumps(obs, ensure_ascii=False) + "\n" for obs in observations
     )
     atomic_replace(path, content)
+
+
+def apply_entity_merge_observation_inverse(
+    *,
+    target_id: str,
+    source_id: str,
+    facet_entries: list[dict[str, Any]],
+    relation_entries: list[dict[str, Any]],
+    active_facet_entries: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Undo merge observation changes under observation-file owner locks."""
+
+    removed = _remove_merge_supported_observations(
+        target_id=target_id,
+        facet_entries=facet_entries,
+        active_facet_entries=active_facet_entries,
+    )
+    rewrites = _restore_observation_relation_targets(
+        source_id=source_id,
+        target_id=target_id,
+        relation_entries=relation_entries,
+    )
+    return {"observations_removed": removed, "relations_rewritten": rewrites}
+
+
+def _remove_merge_supported_observations(
+    *,
+    target_id: str,
+    facet_entries: list[dict[str, Any]],
+    active_facet_entries: list[dict[str, Any]],
+) -> int:
+    active_keys_by_facet: dict[str, set[tuple[Any, Any]]] = {}
+    for entry in active_facet_entries:
+        facet = str(entry.get("facet"))
+        for item in entry.get("observations", []):
+            active_keys_by_facet.setdefault(facet, set()).add(
+                tuple(item.get("key", []))
+            )
+
+    removed = 0
+    for entry in facet_entries:
+        if entry.get("kind") == "move":
+            # The source relationship snapshot restores the source observations;
+            # target-side moved observations are removed by key, preserving later
+            # owner appends to the same file.
+            pass
+        facet = str(entry["facet"])
+        remove_keys = {
+            tuple(item.get("key", []))
+            for item in entry.get("observations", [])
+            if item.get("delta_applied")
+            and not item.get("target_preexisting")
+            and tuple(item.get("key", [])) not in active_keys_by_facet.get(facet, set())
+        }
+        if not remove_keys:
+            continue
+        path = observations_file_path(facet, target_id)
+        with hold_lock(path):
+            rows = _read_observation_rows_strict(path)
+            next_rows = [
+                row for row in rows if _observation_key(row) not in remove_keys
+            ]
+            missing = len(rows) - len(next_rows)
+            if missing != len(remove_keys):
+                raise ValueError(
+                    "observation inverse locator did not match expected rows"
+                )
+            _write_observation_rows(path, next_rows)
+            removed += missing
+    return removed
+
+
+def _restore_observation_relation_targets(
+    *,
+    source_id: str,
+    target_id: str,
+    relation_entries: list[dict[str, Any]],
+) -> int:
+    journal = Path(get_journal())
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for entry in relation_entries:
+        by_path.setdefault(str(entry["path"]), []).append(entry)
+
+    rewritten = 0
+    for path_rel, entries in by_path.items():
+        path = contained_path(journal, path_rel)
+        with hold_lock(path):
+            rows = _read_observation_rows_strict(path)
+            changed = False
+            for entry in entries:
+                row = _match_observation_relation_inverse_row(
+                    rows,
+                    entry,
+                    source_id=source_id,
+                    target_id=target_id,
+                )
+                relation = row.get("relation")
+                if not isinstance(relation, dict):
+                    raise ValueError("observation relation inverse row has no relation")
+                relation["target_entity_id"] = source_id
+                rewritten += 1
+                changed = True
+            if changed:
+                _write_observation_rows(path, rows)
+    return rewritten
+
+
+def _match_observation_relation_inverse_row(
+    rows: list[dict[str, Any]],
+    entry: dict[str, Any],
+    *,
+    source_id: str,
+    target_id: str,
+) -> dict[str, Any]:
+    preimage = entry.get("row_preimage")
+    if not isinstance(preimage, dict):
+        raise ValueError("observation relation inverse row_preimage missing")
+    expected = copy.deepcopy(preimage)
+    relation = expected.get("relation")
+    if not isinstance(relation, dict) or relation.get("target_entity_id") != source_id:
+        raise ValueError("observation relation inverse preimage is invalid")
+    relation["target_entity_id"] = target_id
+    matches = [row for row in rows if row == expected]
+    if len(matches) != 1:
+        raise ValueError(
+            "observation relation inverse locator did not match exactly one row"
+        )
+    return matches[0]
+
+
+def _read_observation_rows_strict(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line_num, line in enumerate(handle, 1):
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(
+                    f"malformed observation row {line_num} in {path}"
+                ) from exc
+            if not isinstance(row, dict):
+                raise ValueError(
+                    f"observation row {line_num} in {path} is not an object"
+                )
+            rows.append(row)
+    return rows
+
+
+def _write_observation_rows(path: Path, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        path.unlink(missing_ok=True)
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+        return
+    atomic_replace(
+        path,
+        "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows),
+    )
+
+
+def _observation_key(item: dict[str, Any]) -> tuple[Any, Any]:
+    return (item.get("content", ""), item.get("observed_at"))
 
 
 def add_observation(

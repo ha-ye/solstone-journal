@@ -523,21 +523,28 @@ def test_fast_path_skips_unrelated_files(speakers_env):
     assert labels_path.stat().st_mtime_ns == mtime_before
 
 
-def test_corrupted_labels_logged_not_aborted(speakers_env):
-    """Corrupted speaker_labels.json is logged as error but merge continues."""
+def test_corrupted_labels_fails_preflight_unchanged(speakers_env):
+    """Corrupted speaker_labels.json fails strict merge preflight unchanged."""
     env = speakers_env()
-    env.create_entity("Corrupt Alias")
-    env.create_entity("Corrupt Canon")
+    source_dir = env.create_entity("Corrupt Alias")
+    target_dir = env.create_entity("Corrupt Canon")
+    source_before = (source_dir / "entity.json").read_bytes()
+    target_before = (target_dir / "entity.json").read_bytes()
 
     # Write corrupted file containing the alias_id string
     agents_dir = env.journal / "20240101" / STREAM / "143022_300" / "talents"
     agents_dir.mkdir(parents=True, exist_ok=True)
-    (agents_dir / "speaker_labels.json").write_text("corrupt_alias {not valid json")
+    labels_path = agents_dir / "speaker_labels.json"
+    labels_path.write_text("corrupt_alias {not valid json")
+    labels_before = labels_path.read_bytes()
 
     result = merge_names("Corrupt Alias", "Corrupt Canon")
 
-    assert result["merged"] is True
-    assert len(result["errors"]) == 1
+    assert "error" in result
+    assert "speaker_labels.json" in result["error"]
+    assert (source_dir / "entity.json").read_bytes() == source_before
+    assert (target_dir / "entity.json").read_bytes() == target_before
+    assert labels_path.read_bytes() == labels_before
 
 
 # ---------------------------------------------------------------------------

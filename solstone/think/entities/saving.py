@@ -24,6 +24,7 @@ from solstone.think.entities.errors import (
     EntityNotFoundError,
     EntityWriteError,
 )
+from solstone.think.entities.history import trust_operation_lock
 from solstone.think.entities.journal import (
     create_journal_entity,
     load_journal_entity,
@@ -211,8 +212,9 @@ def _locked_attached(
     last_error: Exception | None = None
     for attempt in range(max_retries):
         try:
-            with hold_lock(attached_store_lock_path(facet)):
-                return fn()
+            with trust_operation_lock():
+                with hold_lock(attached_store_lock_path(facet)):
+                    return fn()
         except EntityWriteError:
             raise
         except OSError as exc:
