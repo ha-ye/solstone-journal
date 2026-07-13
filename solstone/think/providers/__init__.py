@@ -277,7 +277,11 @@ def validate_model(provider: str, model: str, api_key: str) -> dict:
     Returns
     -------
     dict
-        {"valid": True} or {"valid": False, "error": "..."}.
+        Success returns {"valid": True}. Failure returns
+        {"valid": False, "error": <str>, "reason_code": <str>}; reason_code is
+        "model_not_found" when the provider reports the model id is unknown to
+        this key, otherwise a classify_provider_error code such as
+        "provider_key_invalid".
 
     Raises
     ------
