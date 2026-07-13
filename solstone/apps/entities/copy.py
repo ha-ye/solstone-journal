@@ -16,6 +16,74 @@ ENT_DETECTED_EMPTY = "nothing detected here yet. as sol experiences your day in 
 ENT_CARDS_EMPTY = "no entities in this facet yet. anything sol detects below, you can star to keep. or add one yourself."
 ENT_OBS_EMPTY = "no observations for {name} yet."
 ENT_OBS_LOAD_FAILED = "couldn't load observations. try again."
+ENT_CONN_WITH_YOU_EYEBROW = "with you"
+ENT_CONN_WITH_YOU_SUMMARY = "{n} moments together · latest {kind} ({day})"
+ENT_CONN_WITH_YOU_SUMMARY_ONE = "1 moment together · latest {kind} ({day})"
+ENT_CONN_WITH_YOU_TOGGLE = "the moments behind this ›"
+ENT_CONN_WITH_YOU_FAILED = "couldn't check your own history with this entity just now."
+ENT_CONN_SUMMARY = "{s} with direct evidence · {a} from shared events only"
+ENT_CONN_EVENTS_ONLY = "events only"
+ENT_CONN_ROW_META = "{n} moments · {day}"
+ENT_CONN_ROW_META_ATTENDANCE = "{n} events together · {day}"
+ENT_CONN_ROW_META_ONE = "1 moment · {day}"
+ENT_CONN_ROW_META_ONE_ATTENDANCE = "1 event together · {day}"
+ENT_CONN_EVIDENCE_CAPTION = "the moments behind this — evidence, not a conclusion"
+ENT_CONN_EVIDENCE_MORE = "showing {k} of {n} — show more"
+ENT_CONN_EVIDENCE_VIEW_ENTITY = "view entity →"
+ENT_CONN_EVIDENCE_FAILED = "couldn't load these moments. try again."
+ENT_CONN_UPCOMING = " (upcoming)"
+ENT_CONN_EMPTY = (
+    "no connections recorded yet — they appear as sol notices who and what this "
+    "entity shows up with."
+)
+ENT_CONN_INDEX_UNAVAILABLE = "the connections index hasn't been built yet."
+ENT_CONN_INDEX_ACTION = "check system health →"
+ENT_CONN_AMBIGUOUS = "sol isn't sure which entity this is yet."
+ENT_CONN_LOAD_FAILED = "couldn't load connections. try again."
+ENT_CONN_KIND_WORDS = {
+    "works-with": "works with",
+    "works-at": "works at",
+    "reports-to": "reports to",
+    "family-of": "family",
+    "knows": "knows",
+    "uses": "uses",
+    "created": "created",
+    "decided-with": "decided together",
+    "committed-to": "committed",
+    "spoke-with": "spoke",
+    "mentioned": "mentioned",
+    "messaged-with": "messaged",
+    "scheduled-with": "scheduled",
+    "party-of": "party to",
+    "other": "related",
+    "attended-with": "events",
+    "co-present": "around together",
+}
+ENT_CONN_KIND_CHIP_WORDS = {
+    "committed-to": "commitments",
+    "mentioned": "mentions",
+}
+ENT_CONN_SOURCE_WORDS = {
+    "event-legacy": "older calendar events",
+    "co-presence": "shared moments",
+    "participation": "activity records",
+    "commitment": "commitments",
+    "closure": "commitments",
+    "decision": "decisions",
+    "relation": "what sol has learned",
+    "observation": "what sol has learned",
+    "speaker": "conversation",
+    "mention": "conversation",
+    "messaging": "messages",
+    "calendar": "calendar events",
+    "document": "documents",
+}
+ENT_CONN_SOURCE_WORD_FALLBACK = "what sol has learned"
+ENT_CONN_LABEL_FALLBACKS = {
+    "spoke-with": "a conversation",
+    "co-present": "time in the same place",
+    "mentioned": "came up in conversation",
+}
 
 
 def entities_copy_payload() -> dict[str, Any]:
@@ -28,11 +96,13 @@ def entities_copy_payload() -> dict[str, Any]:
 
 
 def entities_copy_values() -> list[str]:
-    """Return all verbatim copy values, flattening list constants."""
+    """Return all verbatim copy values, flattening list and dict constants."""
     values: list[str] = []
     for value in entities_copy_payload().values():
         if isinstance(value, str):
             values.append(value)
         elif isinstance(value, list):
             values.extend(item for item in value if isinstance(item, str))
+        elif isinstance(value, dict):
+            values.extend(item for item in value.values() if isinstance(item, str))
     return values

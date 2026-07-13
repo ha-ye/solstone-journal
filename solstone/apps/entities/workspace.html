@@ -1175,6 +1175,252 @@ tr:hover .entity-delete-btn {
   margin-bottom: 0.5em;
 }
 
+.entity-conn-state {
+  color: #6c757d;
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.entity-conn-state-link {
+  color: var(--facet-color, var(--orange-ink));
+  font-style: normal;
+  text-decoration: none;
+}
+
+.entity-conn-state-link:hover {
+  text-decoration: underline;
+}
+
+.entity-conn-with-you {
+  margin-bottom: 1em;
+}
+
+.entity-conn-with-you:empty {
+  margin-bottom: 0;
+}
+
+.entity-conn-with-you-card {
+  background: #f8f9fa;
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  padding: 0.9em 1em;
+}
+
+.entity-conn-with-you-eyebrow {
+  color: #6c757d;
+  font-size: 0.78em;
+  font-weight: 600;
+  margin-bottom: 0.35em;
+  text-transform: uppercase;
+}
+
+.entity-conn-with-you-summary {
+  color: #212529;
+  font-weight: 500;
+  margin-bottom: 0.6em;
+}
+
+.entity-conn-summary {
+  color: #6c757d;
+  font-size: 0.85em;
+  margin-bottom: 0.8em;
+}
+
+.entity-conn-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65em;
+}
+
+.entity-conn-row {
+  border: 1px solid #e9ecef;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.entity-conn-row-head,
+.entity-conn-with-you-toggle {
+  align-items: center;
+  background: #f8f9fa;
+  border: 0;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font-family: inherit;
+  font-size: inherit;
+  gap: 0.75em;
+  padding: 0.75em 1em;
+  text-align: left;
+  width: 100%;
+}
+
+.entity-conn-with-you-toggle {
+  background: transparent;
+  color: var(--facet-color, var(--orange-ink));
+  font-size: 0.9em;
+  padding: 0;
+  width: auto;
+}
+
+.entity-conn-row-head:hover {
+  background: #fff;
+}
+
+.entity-conn-row-head:focus-visible,
+.entity-conn-with-you-toggle:focus-visible,
+.entity-conn-evidence-more:focus-visible,
+.entity-conn-view-link:focus-visible,
+.entity-conn-state-link:focus-visible,
+.entity-conn-evidence-date:focus-visible {
+  outline: 2px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.entity-conn-chevron {
+  color: #adb5bd;
+  flex: 0 0 auto;
+  transform: rotate(0deg);
+  transition: transform 0.15s;
+}
+
+.entity-conn-row-head[aria-expanded="true"] .entity-conn-chevron {
+  transform: rotate(90deg);
+}
+
+.entity-conn-name {
+  color: #212529;
+  flex: 1 1 auto;
+  font-weight: 500;
+  min-width: 0;
+}
+
+.entity-conn-meta {
+  color: #6c757d;
+  flex: 0 0 auto;
+  font-size: 0.85em;
+}
+
+.entity-conn-chip-list {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.35em;
+}
+
+.entity-conn-chip {
+  background: color-mix(in srgb, var(--facet-color, var(--orange)) 12%, white);
+  border: 1px solid color-mix(in srgb, var(--facet-color, var(--orange)) 25%, white);
+  border-radius: 999px;
+  color: #495057;
+  font-size: 0.75em;
+  line-height: 1;
+  padding: 0.3em 0.55em;
+}
+
+.entity-conn-chip-event-only {
+  background: transparent;
+  border-style: dashed;
+}
+
+.entity-conn-evidence {
+  background: #fff;
+  border-top: 1px solid #e9ecef;
+  padding: 0.85em 1em 1em;
+}
+
+.entity-conn-evidence[hidden] {
+  display: none;
+}
+
+.entity-conn-evidence-caption {
+  color: #6c757d;
+  font-size: 0.82em;
+  margin-bottom: 0.65em;
+}
+
+.entity-conn-evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45em;
+}
+
+.entity-conn-evidence-row {
+  align-items: baseline;
+  color: #212529;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35em;
+  line-height: 1.4;
+}
+
+.entity-conn-evidence-row-upcoming {
+  color: #6c757d;
+  font-style: italic;
+}
+
+.entity-conn-evidence-failed {
+  color: #6c757d;
+  font-size: 0.9em;
+  font-style: italic;
+  margin-top: 0.8em;
+}
+
+.entity-conn-evidence-date {
+  color: var(--facet-color, var(--orange-ink));
+  font-size: 0.88em;
+  text-decoration: none;
+}
+
+.entity-conn-evidence-date:hover {
+  text-decoration: underline;
+}
+
+.entity-conn-evidence-kind,
+.entity-conn-evidence-source {
+  color: #6c757d;
+  font-size: 0.88em;
+}
+
+.entity-conn-evidence-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.entity-conn-evidence-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75em;
+  margin-top: 0.8em;
+}
+
+.entity-conn-evidence-more {
+  background: transparent;
+  border: 0;
+  color: var(--facet-color, var(--orange-ink));
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.9em;
+  padding: 0;
+}
+
+.entity-conn-view-link {
+  color: var(--facet-color, var(--orange-ink));
+  font-size: 0.9em;
+  text-decoration: none;
+}
+
+.entity-conn-view-link:hover,
+.entity-conn-evidence-more:hover {
+  text-decoration: underline;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .entity-conn-chevron {
+    transition: none;
+  }
+}
+
 /* ── Responsive: Tablet (≤768px) ── */
 @media (max-width: 768px) {
   .entity-cards-grid {
@@ -1276,6 +1522,28 @@ tr:hover .entity-delete-btn {
   .entity-detail-section {
     padding: 1em;
   }
+
+  .entity-conn-row-head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .entity-conn-name {
+    flex-basis: calc(100% - 1.75em);
+  }
+
+  .entity-conn-meta {
+    flex-basis: 100%;
+    margin-left: 1.75em;
+  }
+
+  .entity-conn-chip-list {
+    margin-left: 1.75em;
+  }
+
+  .entity-conn-evidence-label {
+    flex-basis: 100%;
+  }
 }
 
 /* ── Presentation mode (?present=1) — back-row legibility on a projector ── */
@@ -1371,6 +1639,11 @@ body.presentation-mode .entity-desc { color: #4b5563; }
     <div class="entity-detail-section">
       <h4>facets</h4>
       <div id="journal-detail-facets"></div>
+    </div>
+
+    <div class="entity-detail-section">
+      <h4>connections</h4>
+      <div id="journal-detail-connections"></div>
     </div>
 
     <div class="entity-detail-section">
@@ -1478,6 +1751,11 @@ body.presentation-mode .entity-desc { color: #4b5563; }
     </div>
 
     <div class="entity-detail-section">
+      <h4>connections</h4>
+      <div id="detail-connections"></div>
+    </div>
+
+    <div class="entity-detail-section">
       <h4>observations</h4>
       <div id="detail-observations"></div>
     </div>
@@ -1572,6 +1850,7 @@ body.presentation-mode .entity-desc { color: #4b5563; }
 
 <script>
 let ENT_COPY = {};
+let ATTENDANCE_KINDS = new Set();
 let currentFacet = window.selectedFacet;
 let entitiesData = null;
 let detectedPage = 1;
@@ -1728,6 +2007,519 @@ function getEntityDisplayDate(entity) {
   return null;
 }
 
+const ENTITY_CONN_PAGE_SIZE = 8;
+
+function entityConnCopyMap(name) {
+  const value = ENT_COPY[name];
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+
+function entityConnKindWord(kind) {
+  const words = entityConnCopyMap('ENT_CONN_KIND_WORDS');
+  return words[kind] || kind || '';
+}
+
+function entityConnChipWord(kind) {
+  const chips = entityConnCopyMap('ENT_CONN_KIND_CHIP_WORDS');
+  return chips[kind] || entityConnKindWord(kind);
+}
+
+function entityConnSourceWord(source) {
+  const words = entityConnCopyMap('ENT_CONN_SOURCE_WORDS');
+  return words[source] || ENT_COPY.ENT_CONN_SOURCE_WORD_FALLBACK || '';
+}
+
+function entityConnEvidenceLabel(row) {
+  const rawLabel = row?.label;
+  const label = rawLabel === null || rawLabel === undefined ? '' : String(rawLabel).trim();
+  if (label) return label;
+  const fallbacks = entityConnCopyMap('ENT_CONN_LABEL_FALLBACKS');
+  return fallbacks[row?.kind] || entityConnKindWord(row?.kind);
+}
+
+function isEntityConnUpcoming(day, referenceDay) {
+  return /^\d{8}$/.test(day || '') && /^\d{8}$/.test(referenceDay || '') && day > referenceDay;
+}
+
+function formatEntityConnDay(day, referenceDay) {
+  if (!day) return '';
+  if (!/^\d{8}$/.test(day)) return day;
+  const date = parseYYYYMMDD(day);
+  let label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  if (/^\d{8}$/.test(referenceDay || '')) {
+    const reference = parseYYYYMMDD(referenceDay);
+    if (date.getFullYear() !== reference.getFullYear()) {
+      label += " '" + String(date.getFullYear()).slice(-2);
+    }
+    if (isEntityConnUpcoming(day, referenceDay)) {
+      label += ENT_COPY.ENT_CONN_UPCOMING || '';
+    }
+  }
+  return label;
+}
+
+async function fetchEntityConnJson(url) {
+  const response = await fetch(url);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(body.error || body.detail || response.statusText);
+    error.status = response.status;
+    error.body = body;
+    throw error;
+  }
+  return body;
+}
+
+function loadEntityNetwork(entityId) {
+  const query = new URLSearchParams({
+    entity: entityId,
+    limit: '15',
+    evidence_limit: '1',
+  });
+  return fetchEntityConnJson(`/app/entities/api/network?${query.toString()}`);
+}
+
+function loadWithYouHistory(entityId) {
+  const query = new URLSearchParams({
+    entity: entityId,
+    limit: String(ENTITY_CONN_PAGE_SIZE),
+  });
+  return fetchEntityConnJson(`/app/entities/api/history?${query.toString()}`);
+}
+
+function loadConnectionHistory(entityId, peerId, offset) {
+  const query = new URLSearchParams({
+    entity: entityId,
+    peer: peerId,
+    limit: String(ENTITY_CONN_PAGE_SIZE),
+    offset: String(offset || 0),
+  });
+  return fetchEntityConnJson(`/app/entities/api/history?${query.toString()}`);
+}
+
+function isCurrentConnectionEntity(entityId) {
+  return currentDetailEntity?.id === entityId;
+}
+
+async function renderConnectionsSection(entityId, containerId, isPrincipal) {
+  const container = document.getElementById(containerId);
+  if (!container || !entityId) return;
+  container.innerHTML = '<span class="observations-empty">loading...</span>';
+
+  try {
+    const network = await loadEntityNetwork(entityId);
+    if (!isCurrentConnectionEntity(entityId)) return;
+    if (network.resolved === null) {
+      renderConnectionsAmbiguous(container);
+      return;
+    }
+
+    const referenceDay = network.reference_day || '';
+    const neighbors = Array.isArray(network.neighbors) ? network.neighbors : [];
+    const withYouSlot = renderConnectionsNetwork(container, entityId, neighbors, referenceDay, isPrincipal);
+    let hasWithYou = false;
+
+    if (!isPrincipal && withYouSlot) {
+      try {
+        const history = await loadWithYouHistory(entityId);
+        if (!isCurrentConnectionEntity(entityId)) return;
+        hasWithYou = renderWithYouBlock(withYouSlot, entityId, history, referenceDay);
+      } catch (error) {
+        if (!isCurrentConnectionEntity(entityId)) return;
+        console.error('Error loading owner connection history:', error);
+        renderWithYouFailure(withYouSlot);
+        hasWithYou = true;
+      }
+    }
+
+    if (neighbors.length === 0 && !hasWithYou) {
+      renderConnectionsEmpty(container);
+    }
+  } catch (error) {
+    if (!isCurrentConnectionEntity(entityId)) return;
+    console.error('Error loading connections:', error);
+    if (error?.status === 503 && error?.body?.reason_code === 'edge_index_unavailable') {
+      renderConnectionsIndexUnavailable(container);
+      return;
+    }
+    renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal);
+  }
+}
+
+function renderConnectionsState(container, message) {
+  container.innerHTML = '';
+  const state = document.createElement('div');
+  state.className = 'entity-conn-state';
+  state.textContent = message;
+  container.appendChild(state);
+}
+
+function renderConnectionsEmpty(container) {
+  renderConnectionsState(container, ENT_COPY.ENT_CONN_EMPTY || '');
+}
+
+function renderConnectionsAmbiguous(container) {
+  renderConnectionsState(container, ENT_COPY.ENT_CONN_AMBIGUOUS || '');
+}
+
+function renderConnectionsIndexUnavailable(container) {
+  container.innerHTML = '';
+  const state = document.createElement('div');
+  state.className = 'entity-conn-state';
+  state.appendChild(document.createTextNode(ENT_COPY.ENT_CONN_INDEX_UNAVAILABLE || ''));
+  state.appendChild(document.createTextNode(' '));
+  const link = document.createElement('a');
+  link.className = 'entity-conn-state-link';
+  link.href = '/app/health';
+  link.textContent = ENT_COPY.ENT_CONN_INDEX_ACTION || '';
+  state.appendChild(link);
+  container.appendChild(state);
+}
+
+function renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal) {
+  container.innerHTML = window.SurfaceState.error({
+    heading: ENT_COPY.ENT_CONN_LOAD_FAILED,
+    desc: '',
+    retry: true,
+    reportable: false,
+    headingLevel: 'h3',
+  });
+  const retryBtn = container.querySelector('.surface-state-retry');
+  if (retryBtn) retryBtn.onclick = () => renderConnectionsSection(entityId, containerId, isPrincipal);
+}
+
+function renderConnectionsNetwork(container, entityId, neighbors, referenceDay, isPrincipal) {
+  container.innerHTML = '';
+  const withYouSlot = document.createElement('div');
+  withYouSlot.className = 'entity-conn-with-you';
+  if (!isPrincipal) {
+    container.appendChild(withYouSlot);
+  }
+
+  if (neighbors.length > 0) {
+    const summary = document.createElement('div');
+    summary.className = 'entity-conn-summary';
+    const directCount = neighbors.filter(neighbor => (
+      neighbor.evidence_class === 'semantic' || neighbor.evidence_class === 'mixed'
+    )).length;
+    const attendanceCount = neighbors.filter(neighbor => neighbor.evidence_class === 'attendance').length;
+    summary.textContent = (ENT_COPY.ENT_CONN_SUMMARY || '')
+      .replace('{s}', String(directCount))
+      .replace('{a}', String(attendanceCount));
+    container.appendChild(summary);
+
+    const list = document.createElement('div');
+    list.className = 'entity-conn-list';
+    neighbors.forEach(neighbor => {
+      list.appendChild(renderConnectionNeighborRow(entityId, neighbor, referenceDay));
+    });
+    container.appendChild(list);
+  }
+
+  return withYouSlot;
+}
+
+function renderWithYouBlock(container, entityId, history, referenceDay) {
+  container.innerHTML = '';
+  const total = Number(history?.total || 0);
+  const rows = Array.isArray(history?.evidence) ? history.evidence : [];
+  if (total <= 0 || rows.length === 0) return false;
+
+  const card = document.createElement('div');
+  card.className = 'entity-conn-with-you-card';
+
+  const eyebrow = document.createElement('div');
+  eyebrow.className = 'entity-conn-with-you-eyebrow';
+  eyebrow.textContent = ENT_COPY.ENT_CONN_WITH_YOU_EYEBROW || '';
+  card.appendChild(eyebrow);
+
+  const latest = rows[0];
+  const summary = document.createElement('div');
+  summary.className = 'entity-conn-with-you-summary';
+  const summaryTemplate = total === 1
+    ? ENT_COPY.ENT_CONN_WITH_YOU_SUMMARY_ONE
+    : ENT_COPY.ENT_CONN_WITH_YOU_SUMMARY;
+  summary.textContent = (summaryTemplate || '')
+    .replace('{n}', String(total))
+    .replace('{kind}', entityConnKindWord(latest.kind))
+    .replace('{day}', formatEntityConnDay(latest.day, referenceDay));
+  card.appendChild(summary);
+
+  const toggle = document.createElement('button');
+  toggle.type = 'button';
+  toggle.className = 'entity-conn-with-you-toggle';
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.textContent = ENT_COPY.ENT_CONN_WITH_YOU_TOGGLE || '';
+  card.appendChild(toggle);
+
+  const pane = document.createElement('div');
+  pane.className = 'entity-conn-evidence';
+  pane.hidden = true;
+  card.appendChild(pane);
+
+  toggle.onclick = () => {
+    const open = pane.hidden;
+    pane.hidden = !open;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open && pane.dataset.loaded !== 'true') {
+      renderEvidencePane(pane, entityId, history.peer_id, history, referenceDay, false);
+    }
+  };
+
+  container.appendChild(card);
+  return true;
+}
+
+function renderWithYouFailure(container) {
+  renderConnectionsState(container, ENT_COPY.ENT_CONN_WITH_YOU_FAILED || '');
+}
+
+function renderConnectionNeighborRow(entityId, neighbor, referenceDay) {
+  const row = document.createElement('div');
+  row.className = 'entity-conn-row';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'entity-conn-row-head';
+  button.setAttribute('aria-expanded', 'false');
+
+  const chevron = document.createElement('span');
+  chevron.className = 'entity-conn-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  chevron.textContent = '›';
+  button.appendChild(chevron);
+
+  const name = document.createElement('span');
+  name.className = 'entity-conn-name';
+  name.textContent = neighbor.name || neighbor.entity_id || '';
+  button.appendChild(name);
+
+  const chips = renderConnectionKindChips(neighbor);
+  if (chips) button.appendChild(chips);
+
+  const meta = document.createElement('span');
+  meta.className = 'entity-conn-meta';
+  meta.textContent = entityConnRowMeta(neighbor, referenceDay);
+  button.appendChild(meta);
+  row.appendChild(button);
+
+  const pane = document.createElement('div');
+  pane.className = 'entity-conn-evidence';
+  pane.hidden = true;
+  row.appendChild(pane);
+
+  button.onclick = () => toggleConnectionEvidence(entityId, neighbor.entity_id, pane, referenceDay, button);
+
+  return row;
+}
+
+function renderConnectionKindChips(neighbor) {
+  const wrap = document.createElement('span');
+  wrap.className = 'entity-conn-chip-list';
+
+  if (neighbor.evidence_class === 'attendance') {
+    const chip = document.createElement('span');
+    chip.className = 'entity-conn-chip entity-conn-chip-event-only';
+    chip.textContent = ENT_COPY.ENT_CONN_EVENTS_ONLY || '';
+    wrap.appendChild(chip);
+    return wrap;
+  }
+
+  const kinds = neighbor.kinds && typeof neighbor.kinds === 'object' ? neighbor.kinds : {};
+  Object.keys(kinds)
+    .filter(kind => !ATTENDANCE_KINDS.has(kind))
+    .sort((left, right) => {
+      const leftWeight = Number(kinds[left]?.weighted || 0);
+      const rightWeight = Number(kinds[right]?.weighted || 0);
+      return rightWeight - leftWeight || left.localeCompare(right);
+    })
+    .slice(0, 3)
+    .forEach(kind => {
+      const chip = document.createElement('span');
+      chip.className = 'entity-conn-chip';
+      chip.textContent = entityConnChipWord(kind);
+      wrap.appendChild(chip);
+    });
+
+  return wrap.childNodes.length > 0 ? wrap : null;
+}
+
+function entityConnRowMeta(neighbor, referenceDay) {
+  const count = Number(neighbor.count || 0);
+  const day = formatEntityConnDay(neighbor.last_seen, referenceDay);
+  if (neighbor.evidence_class === 'attendance') {
+    if (count === 1) {
+      return (ENT_COPY.ENT_CONN_ROW_META_ONE_ATTENDANCE || '')
+        .replace('{day}', day);
+    }
+    return (ENT_COPY.ENT_CONN_ROW_META_ATTENDANCE || '')
+      .replace('{n}', String(count))
+      .replace('{day}', day);
+  }
+  if (count === 1) {
+    return (ENT_COPY.ENT_CONN_ROW_META_ONE || '')
+      .replace('{day}', day);
+  }
+  return (ENT_COPY.ENT_CONN_ROW_META || '')
+    .replace('{n}', String(count))
+    .replace('{day}', day);
+}
+
+async function toggleConnectionEvidence(entityId, peerId, pane, referenceDay, button) {
+  const open = pane.hidden;
+  pane.hidden = !open;
+  button.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (!open || pane.dataset.loaded === 'true') return;
+
+  loadInitialConnectionEvidence(entityId, peerId, pane, referenceDay);
+}
+
+async function loadInitialConnectionEvidence(entityId, peerId, pane, referenceDay) {
+  pane.innerHTML = '<span class="observations-empty">loading...</span>';
+  try {
+    const history = await loadConnectionHistory(entityId, peerId, 0);
+    if (!isCurrentConnectionEntity(entityId)) return;
+    renderEvidencePane(pane, entityId, peerId, history, referenceDay, true);
+  } catch (error) {
+    if (!isCurrentConnectionEntity(entityId)) return;
+    console.error('Error loading connection evidence:', error);
+    renderEvidenceFetchFailed(pane, () => loadInitialConnectionEvidence(entityId, peerId, pane, referenceDay));
+  }
+}
+
+function renderEvidencePane(pane, entityId, peerId, history, referenceDay, showViewLink) {
+  pane.innerHTML = '';
+  pane.dataset.loaded = 'true';
+  pane.dataset.offset = '0';
+  pane.dataset.total = String(history?.total || 0);
+
+  const caption = document.createElement('div');
+  caption.className = 'entity-conn-evidence-caption';
+  caption.textContent = ENT_COPY.ENT_CONN_EVIDENCE_CAPTION || '';
+  pane.appendChild(caption);
+
+  const list = document.createElement('div');
+  list.className = 'entity-conn-evidence-list';
+  pane.appendChild(list);
+
+  appendEvidenceRows(list, history?.evidence || [], referenceDay);
+  pane.dataset.offset = String((history?.evidence || []).length);
+  renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLink);
+}
+
+function appendEvidenceRows(list, rows, referenceDay) {
+  rows.forEach(row => {
+    const item = document.createElement('div');
+    item.className = 'entity-conn-evidence-row';
+    if (isEntityConnUpcoming(row.day, referenceDay)) {
+      item.classList.add('entity-conn-evidence-row-upcoming');
+    }
+
+    if (/^\d{8}$/.test(row.day || '')) {
+      const date = document.createElement('a');
+      date.className = 'entity-conn-evidence-date';
+      date.href = `/app/sol/${row.day}`;
+      date.textContent = formatEntityConnDay(row.day, referenceDay);
+      item.appendChild(date);
+    } else {
+      const date = document.createElement('span');
+      date.className = 'entity-conn-evidence-date';
+      date.textContent = formatEntityConnDay(row.day, referenceDay);
+      item.appendChild(date);
+    }
+
+    item.appendChild(document.createTextNode(' · '));
+    const kind = document.createElement('span');
+    kind.className = 'entity-conn-evidence-kind';
+    kind.textContent = entityConnKindWord(row.kind);
+    item.appendChild(kind);
+
+    item.appendChild(document.createTextNode(' · '));
+    const label = document.createElement('span');
+    label.className = 'entity-conn-evidence-label';
+    label.textContent = entityConnEvidenceLabel(row);
+    item.appendChild(label);
+
+    item.appendChild(document.createTextNode(' · '));
+    const source = document.createElement('span');
+    source.className = 'entity-conn-evidence-source';
+    source.textContent = entityConnSourceWord(row.source);
+    item.appendChild(source);
+
+    list.appendChild(item);
+  });
+}
+
+function clearEvidenceTrailingControls(pane) {
+  pane.querySelector('.entity-conn-evidence-actions')?.remove();
+  pane.querySelector('.entity-conn-evidence-failed')?.remove();
+}
+
+function renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLink) {
+  clearEvidenceTrailingControls(pane);
+  const total = Number(pane.dataset.total || 0);
+  const offset = Number(pane.dataset.offset || 0);
+  const actions = document.createElement('div');
+  actions.className = 'entity-conn-evidence-actions';
+
+  if (offset < total) {
+    const more = document.createElement('button');
+    more.type = 'button';
+    more.className = 'entity-conn-evidence-more';
+    more.textContent = (ENT_COPY.ENT_CONN_EVIDENCE_MORE || '')
+      .replace('{k}', String(offset))
+      .replace('{n}', String(total));
+    more.onclick = async () => {
+      more.disabled = true;
+      try {
+        const history = await loadConnectionHistory(entityId, peerId, offset);
+        if (!isCurrentConnectionEntity(entityId)) return;
+        const rows = Array.isArray(history.evidence) ? history.evidence : [];
+        appendEvidenceRows(pane.querySelector('.entity-conn-evidence-list'), rows, referenceDay);
+        pane.dataset.offset = String(offset + rows.length);
+        pane.dataset.total = String(history.total || total);
+        renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLink);
+      } catch (error) {
+        if (!isCurrentConnectionEntity(entityId)) return;
+        console.error('Error loading more connection evidence:', error);
+        more.disabled = false;
+        renderEvidenceFetchFailed(pane, () => more.onclick(), true);
+      }
+    };
+    actions.appendChild(more);
+  }
+
+  if (showViewLink && peerId) {
+    const view = document.createElement('a');
+    view.href = `#${peerId}`;
+    view.className = 'entity-conn-view-link';
+    view.textContent = ENT_COPY.ENT_CONN_EVIDENCE_VIEW_ENTITY || '';
+    view.onclick = (event) => {
+      event.preventDefault();
+      navigateToEntity(peerId);
+    };
+    actions.appendChild(view);
+  }
+
+  if (actions.childNodes.length > 0) {
+    pane.appendChild(actions);
+  }
+}
+
+function renderEvidenceFetchFailed(pane, retryFn, append) {
+  if (!append) pane.innerHTML = '';
+  clearEvidenceTrailingControls(pane);
+  const state = document.createElement('div');
+  state.className = 'entity-conn-state entity-conn-evidence-failed';
+  const retry = document.createElement('button');
+  retry.type = 'button';
+  retry.className = 'entity-conn-evidence-more';
+  retry.textContent = ENT_COPY.ENT_CONN_EVIDENCE_FAILED || '';
+  retry.onclick = retryFn;
+  state.appendChild(retry);
+  pane.appendChild(state);
+}
+
 // Listen for facet changes
 window.addEventListener('facet.switch', (e) => {
   currentFacet = e.detail.facet;
@@ -1795,12 +2587,14 @@ function showDetailView(entityId) {
 
 function showFacetDetailView(entityId) {
   // Show loading state
+  currentDetailEntity = null;
   document.getElementById('detail-name').textContent = 'loading...';
   document.getElementById('detail-allfacets-name').textContent = 'loading...';
   document.getElementById('detail-type').textContent = '';
   document.getElementById('detail-aka').textContent = '';
   document.getElementById('detail-indicators').innerHTML = '';
   document.getElementById('detail-description-container').innerHTML = '<span class="entity-desc-display empty">loading...</span>';
+  document.getElementById('detail-connections').innerHTML = '<span class="observations-empty">loading...</span>';
   document.getElementById('detail-observations').innerHTML = '<span class="observations-empty">loading...</span>';
 
   // Fetch entity details
@@ -1843,11 +2637,13 @@ function showFacetDetailView(entityId) {
 
 function showJournalDetailView(entityId) {
   // Show loading state
+  currentDetailEntity = null;
   document.getElementById('journal-detail-name').textContent = 'loading...';
   document.getElementById('journal-detail-type').textContent = '';
   document.getElementById('journal-detail-aka').textContent = '';
   document.getElementById('journal-detail-indicators').innerHTML = '';
   document.getElementById('journal-detail-facets').innerHTML = '<span class="observations-empty">loading...</span>';
+  document.getElementById('journal-detail-connections').innerHTML = '<span class="observations-empty">loading...</span>';
 
   // Fetch journal entity details
   fetch(`api/journal/entity/${encodeURIComponent(entityId)}`)
@@ -2084,6 +2880,8 @@ function renderJournalDetailView(entity) {
       list.appendChild(row);
     });
   }
+
+  renderConnectionsSection(entity.id, 'journal-detail-connections', isPrincipal);
 
   // Edit form
   document.getElementById('journal-detail-edit-name').value = entity.name || '';
@@ -2408,6 +3206,8 @@ function renderDetailView(entity, observations) {
 
   // Description
   renderDescriptionSection(entity);
+
+  renderConnectionsSection(entity.id, 'detail-connections', isPrincipal);
 
   // Observations
   const obsContainer = document.getElementById('detail-observations');
@@ -2796,6 +3596,7 @@ async function loadEntitiesState() {
   try {
     const state = await window.apiJson('/app/entities/api/state');
     ENT_COPY = state.entities_copy || {};
+    ATTENDANCE_KINDS = new Set(state.attendance_kinds || []);
     return true;
   } catch (err) {
     window.logError(err, { context: 'entities: state failed' });
