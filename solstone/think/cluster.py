@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from collections.abc import Collection
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Final
+from typing import Any
 
 from solstone.observe.screen import format_screen_text
 from solstone.think.data_state import (
@@ -17,7 +17,7 @@ from solstone.think.data_state import (
     derive_modality_state,
     read_processing_record,
 )
-from solstone.think.importers.health_schema import DEFAULT_HEALTH_IMPORT_STREAM
+from solstone.think.importers.health_schema import HEALTH_CARD_STREAMS
 from solstone.think.media import (
     AUDIO_EXTENSIONS,
     IMAGE_EXTENSIONS,
@@ -33,9 +33,9 @@ from .utils import day_from_path, day_path
 # already-indexed health records. They must stay out of sense/entities/facets so
 # the system does not mine its own summaries back into entities. Other
 # markdown-only imports, such as owner notes, Kindle, ICS, or text, are real
-# owner thought and must enter think. Future health day-card streams join by
-# adding one entry here.
-HEALTH_CARD_STREAMS: Final = frozenset({DEFAULT_HEALTH_IMPORT_STREAM})
+# owner thought and must enter think. This set is derived from the health
+# source-family registry in health_schema; registering a card stream there is
+# the only edit a new health source needs.
 
 
 def _date_str(day_dir: str) -> str:

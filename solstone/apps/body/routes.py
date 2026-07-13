@@ -47,6 +47,7 @@ from solstone.think.importers.health_schema import (
     friendly_contributor_name,
     friendly_type_name,
     friendly_unit_label,
+    health_card_stream,
     merge_sleep_sessions,
     pick_day_sleep,
     pick_main_session,
@@ -59,7 +60,7 @@ body_bp = Blueprint("app:body", __name__, url_prefix="/app/body")
 
 DAY_RE = re.compile(r"^\d{8}$")
 MONTH_RE = re.compile(r"^\d{4}-\d{2}$")
-DAY_SUMMARY_STREAM = "import.apple_health"
+DAY_SUMMARY_STREAM = health_card_stream(SOURCE_APPLE_HEALTH)
 DAY_SUMMARY_FILE = "day_summary_transcript.md"
 
 # Day-curve readings further apart than this render as separate curve

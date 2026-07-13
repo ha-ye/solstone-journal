@@ -3,6 +3,12 @@
 
 from pathlib import Path
 
+from solstone.think.importers import health_schema
+
+
+def _apple_health_card_stream() -> str:
+    return health_schema.health_card_stream(health_schema.SOURCE_APPLE_HEALTH)
+
 
 def test_workspace_html_single_purge_notice_emission():
     workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
@@ -49,7 +55,7 @@ def test_workspace_html_wires_body_window_panel_and_strip():
     assert "seg.think, seg" in text
     assert ".join('\\n')" in text
     assert "Open full Body day" in text
-    assert "import.apple_health" in text
+    assert _apple_health_card_stream() in text
 
     body_events_css = text.split(".tr-body-events {", 1)[1].split("}", 1)[0]
     assert "left: 104px" not in body_events_css

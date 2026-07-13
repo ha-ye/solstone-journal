@@ -48,6 +48,8 @@ Apple Health records are assigned to the local calendar day encoded in each reco
 
 ## Import Streams
 
+The declaring registry is `health_schema.HEALTH_CARD_STREAM_BY_FAMILY`.
+
 The Apple Health summary stream name is `import.apple_health`.
 
 Later source-specific streams can be added only after privacy preflight and save-mode tests exist:

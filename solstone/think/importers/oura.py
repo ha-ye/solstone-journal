@@ -86,6 +86,7 @@ from solstone.think.importers.health_dedupe import (
 from solstone.think.importers.health_schema import (
     SOURCE_OURA_API,
     HealthRecordIdentity,
+    health_card_stream,
     health_record_dedupe_key,
     health_value_hash,
 )
@@ -104,7 +105,7 @@ from solstone.think.importers.sync import load_sync_state, save_sync_state
 logger = logging.getLogger(__name__)
 
 NORMALIZED_SCHEMA: Final = "solstone.health.oura.v1"
-IMPORT_STREAM: Final = "import.oura"
+IMPORT_STREAM: Final = health_card_stream(SOURCE_OURA_API)
 SYNC_BACKEND_NAME: Final = "oura"
 SYNC_STATE_SCHEMA: Final = "solstone.import_sync.oura.v1"
 # Journal-config section holding the Oura OAuth material (client_id,

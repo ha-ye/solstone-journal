@@ -23,6 +23,10 @@ from solstone.think.importers import health_schema
 BODY_ROOT = Path(body_routes.__file__).resolve().parent
 
 
+def _apple_health_card_stream() -> str:
+    return health_schema.health_card_stream(health_schema.SOURCE_APPLE_HEALTH)
+
+
 def _workspace_source() -> str:
     return (BODY_ROOT / "workspace.html").read_text(encoding="utf-8")
 
@@ -291,6 +295,7 @@ def _seed_import(
 
 def _seed_health_import(journal: Path) -> None:
     import_id = "20260703_120000"
+    card_stream = _apple_health_card_stream()
     _write_json(
         journal / "imports" / import_id / "manifest.json",
         {
@@ -304,7 +309,7 @@ def _seed_health_import(journal: Path) -> None:
                     journal
                     / "chronicle"
                     / "20260703"
-                    / "import.apple_health"
+                    / card_stream
                     / "000000_300"
                     / "day_summary_transcript.md"
                 )
@@ -389,7 +394,7 @@ def _seed_health_import(journal: Path) -> None:
         journal
         / "chronicle"
         / "20260703"
-        / "import.apple_health"
+        / _apple_health_card_stream()
         / "000000_300"
         / "day_summary_transcript.md"
     )

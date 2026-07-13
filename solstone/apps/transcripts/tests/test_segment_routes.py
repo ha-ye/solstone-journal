@@ -33,6 +33,7 @@ from solstone.apps.transcripts.tests._media_helpers import (
 )
 from solstone.observe.processing_record import STATE_EMPTY
 from solstone.think.data_state import ANALYZING_STALE_SECONDS
+from solstone.think.importers import health_schema
 
 # 20260304 is the canonical fully-analyzed reference day; see
 # tests/fixtures/journal/chronicle/20260304/README.md and
@@ -40,6 +41,10 @@ from solstone.think.data_state import ANALYZING_STALE_SECONDS
 FIXTURE_DAY = "20260304"
 FIXTURE_STREAM = "default"
 FIXTURE_SEGMENT = "090000_300"
+
+
+def _apple_health_card_stream() -> str:
+    return health_schema.health_card_stream(health_schema.SOURCE_APPLE_HEALTH)
 
 
 class _FakeDeferredDeletes:
@@ -585,7 +590,7 @@ def test_segment_content_happy_path_returns_segment_payload(client):
 
 def test_markdown_only_import_segment_lists_as_markdown(client, journal_copy):
     day = "20990114"
-    stream = "import.apple_health"
+    stream = _apple_health_card_stream()
     segment = "000000_300"
     segment_dir = journal_copy / "chronicle" / day / stream / segment
     segment_dir.mkdir(parents=True)
@@ -617,7 +622,7 @@ def test_markdown_only_import_segment_lists_as_markdown(client, journal_copy):
 
 def test_markdown_only_import_segment_renders_markdown_chunk(client, journal_copy):
     day = "20990114"
-    stream = "import.apple_health"
+    stream = _apple_health_card_stream()
     segment = "000000_300"
     segment_dir = journal_copy / "chronicle" / day / stream / segment
     segment_dir.mkdir(parents=True)
