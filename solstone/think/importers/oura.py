@@ -90,13 +90,15 @@ from solstone.think.importers.health_schema import (
     health_value_hash,
 )
 from solstone.think.importers.pre_save_gate import (
+    PreSaveGateDecision,
     RawRetentionDecision,
     ScheduledSyncConsent,
     enforce_oura_sync_gate,
     enforce_pre_save_gate,
-    read_oura_sync_approval,
 )
 from solstone.think.importers.shared import (
+    ImportLockTimeout,
+    hold_private_import_lock,
     write_content_manifest,
     write_json_file,
     write_jsonl_records,
@@ -115,6 +117,7 @@ SYNC_STATE_SCHEMA: Final = "solstone.import_sync.oura.v1"
 # Read-only here; writes route through oura_auth -> journal_config (L2).
 OAUTH_CONFIG_KEY: Final = "oura"
 DESIGN_DOC: Final = "docs/design/oura-import.md"
+OURA_SYNC_LOCK_TIMEOUT: Final = 10.0
 
 API_BASE_URL: Final = "https://api.ouraring.com/v2/usercollection"
 SOURCE_LABEL: Final = "Oura (API)"
@@ -270,6 +273,35 @@ class OuraEndpointUnauthorized(OuraApiError):
 
 class OuraSyncStateError(RuntimeError):
     """Raised when the sync cursor at imports/oura.json is unusable."""
+
+
+class OuraSyncLockError(RuntimeError):
+    """Raised when another Oura save-mode sync owns this journal's lock."""
+
+    exit_code = 75
+
+    def __init__(self, *, journal_root: Path, lock_path: Path, timeout: float) -> None:
+        self.journal_root = Path(journal_root)
+        self.lock_path = Path(lock_path)
+        self.timeout = timeout
+        super().__init__(self.format_text())
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "error": "oura_sync_lock_timeout",
+            "journal_root": str(self.journal_root),
+            "lock_path": str(self.lock_path),
+            "timeout_seconds": self.timeout,
+        }
+
+    def format_text(self) -> str:
+        return (
+            "Oura sync save could not acquire the journal lock.\n"
+            f"Journal: {self.journal_root}\n"
+            f"Lock path: {self.lock_path}\n"
+            f"Timeout: {self.timeout:g}s\n"
+            "Another save-mode Oura sync is running; retry after it finishes."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1442,22 +1474,70 @@ class OuraSyncBackend:
         confirm_health_save: bool = False,
         client: OuraApiClient | None = None,
         today: dt.date | None = None,
+        now: dt.datetime | None = None,
     ) -> dict[str, Any]:
         journal_root = Path(journal_root)
         if window_days is not None and window_days < 1:
             raise ValueError("window_days must be a positive number of days")
 
-        # Gate before anything else in save mode — before the first fetch,
-        # long before the first write. Catalog mode writes nothing (no
-        # cursor), so it needs no approval.
-        _gate_decision = None
-        if not dry_run:
-            _gate_decision = enforce_oura_sync_gate(
+        if dry_run:
+            return self._sync_unlocked(
                 journal_root,
-                confirm_health_save=confirm_health_save,
-                scheduled=scheduled,
+                dry_run=True,
+                window_days=window_days,
+                client=client,
+                today=today,
             )
 
+        # Read-only gate first: an initially invalid artifact creates
+        # nothing, not even imports/oura.json.lock.
+        enforce_oura_sync_gate(
+            journal_root,
+            confirm_health_save=confirm_health_save,
+            scheduled=scheduled,
+            now=now,
+        )
+        lock_path = journal_root / "imports" / f"{SYNC_BACKEND_NAME}.json"
+        try:
+            with hold_private_import_lock(
+                lock_path,
+                timeout=OURA_SYNC_LOCK_TIMEOUT,
+            ):
+                gate_decision = enforce_oura_sync_gate(
+                    journal_root,
+                    confirm_health_save=confirm_health_save,
+                    scheduled=scheduled,
+                    now=now,
+                )
+                # Lock ordering: save-mode Oura holds the health sync
+                # lock first, then token refresh may briefly take the
+                # config lock through journal_config. There is no inverse
+                # path: config writes do not acquire this health lock.
+                return self._sync_unlocked(
+                    journal_root,
+                    dry_run=False,
+                    window_days=window_days,
+                    client=client,
+                    today=today,
+                    gate_decision=gate_decision,
+                )
+        except ImportLockTimeout as exc:
+            raise OuraSyncLockError(
+                journal_root=journal_root,
+                lock_path=exc.path,
+                timeout=exc.timeout,
+            ) from None
+
+    def _sync_unlocked(
+        self,
+        journal_root: Path,
+        *,
+        dry_run: bool,
+        window_days: int | None = None,
+        client: OuraApiClient | None = None,
+        today: dt.date | None = None,
+        gate_decision: PreSaveGateDecision | None = None,
+    ) -> dict[str, Any]:
         state = _load_cursor_state(journal_root)
         # Oura day fields are wearer-local; the local date is the best
         # available "newest day". Windows over-fetch and upserts are
@@ -1522,8 +1602,8 @@ class OuraSyncBackend:
                 errors=errors,
             )
 
-        assert _gate_decision is not None
-        assert _gate_decision.raw_retention is not None
+        assert gate_decision is not None
+        assert gate_decision.raw_retention is not None
 
         # Quiet-run check: classify the fetch against the dedupe ledger
         # BEFORE allocating an import id or writing anything. Dedupe keys
@@ -1567,10 +1647,9 @@ class OuraSyncBackend:
                 months=[],
                 cron_hint=_scheduled_cron_hint(
                     journal_root,
-                    scheduled_sync=_gate_decision.scheduled_sync,
-                    read_artifact=False,
+                    scheduled_sync=gate_decision.scheduled_sync,
                 ),
-                raw_retention=_gate_decision.raw_retention.value,
+                raw_retention=gate_decision.raw_retention.value,
                 quiet_run=True,
                 errors=errors,
             )
@@ -1578,7 +1657,7 @@ class OuraSyncBackend:
         import_id = _new_import_id(journal_root)
         raw_ref_root = (
             f"imports/{import_id}/raw/oura"
-            if _gate_decision.raw_retention == RawRetentionDecision.RETAIN_PARSED
+            if gate_decision.raw_retention == RawRetentionDecision.RETAIN_PARSED
             else None
         )
         items = normalize_bundle(
@@ -1594,7 +1673,7 @@ class OuraSyncBackend:
             raw_pages=raw_pages,
             bundle=bundle,
             windows=windows,
-            retention=_gate_decision.raw_retention,
+            retention=gate_decision.raw_retention,
         )
 
         # The cursor advances only after every bundle write succeeded; a
@@ -1614,8 +1693,7 @@ class OuraSyncBackend:
 
         cron_hint = _scheduled_cron_hint(
             journal_root,
-            scheduled_sync=_gate_decision.scheduled_sync,
-            read_artifact=False,
+            scheduled_sync=gate_decision.scheduled_sync,
         )
         return _sync_result(
             dry_run=False,
@@ -1628,7 +1706,7 @@ class OuraSyncBackend:
             updated=saved["updated"],
             months=saved["months"],
             cron_hint=cron_hint,
-            raw_retention=_gate_decision.raw_retention.value,
+            raw_retention=gate_decision.raw_retention.value,
             errors=errors,
         )
 
@@ -2091,7 +2169,6 @@ def _scheduled_cron_hint(
     journal_root: Path,
     *,
     scheduled_sync: ScheduledSyncConsent | None = None,
-    read_artifact: bool = True,
 ) -> str | None:
     """The exact crontab line to suggest when scheduled consent exists.
 
@@ -2101,17 +2178,8 @@ def _scheduled_cron_hint(
     """
 
     if scheduled_sync is None:
-        if not read_artifact:
-            return None
-        artifact = read_oura_sync_approval(journal_root)
-        if not isinstance(artifact, dict):
-            return None
-        consent = artifact.get("scheduled_sync")
-        if not isinstance(consent, dict) or consent.get("approved") is not True:
-            return None
-        cadence = str(consent.get("cadence") or "")
-    else:
-        cadence = scheduled_sync.cadence
+        return None
+    cadence = scheduled_sync.cadence
     hours = _cadence_hours(cadence)
     # The host-side importer CLI (`journal importer`) is the sync surface;
     # the thin `sol import` client rejects --sync on purpose.

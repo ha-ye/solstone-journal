@@ -11,6 +11,9 @@ import json
 import os
 import sqlite3
 import stat
+import subprocess
+import sys
+import time
 from contextlib import contextmanager
 from dataclasses import replace
 from importlib import import_module
@@ -186,6 +189,25 @@ def _temporary_umask(mask: int):
 
 def _mode(path: Path) -> int:
     return stat.S_IMODE(path.stat().st_mode)
+
+
+def _wait_for_path(path: Path, *, timeout: float = 5.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"timed out waiting for {path}")
+
+
+def _subprocess_env() -> dict[str, str]:
+    env = os.environ.copy()
+    repo_root = Path(__file__).resolve().parents[1]
+    existing = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(repo_root) if not existing else f"{repo_root}{os.pathsep}{existing}"
+    )
+    return env
 
 
 def _imports_contents(journal: Path) -> list[str]:
@@ -1765,8 +1787,178 @@ def test_oura_sync_private_modes_under_permissive_umask(
         import_dir / "content_manifest.jsonl",
         import_dir / "fetch_windows.json",
         journal / "imports" / "oura.json",
+        journal / "imports" / "oura.json.lock",
     ):
         assert _mode(file_path) == 0o600
+
+
+def test_overlapping_save_sync_loser_gets_structured_lock_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    ready = tmp_path / "slow-sync-ready"
+    child_code = f"""
+import datetime as dt
+import time
+from pathlib import Path
+
+from solstone.think.importers import oura
+
+
+class SlowClient:
+    def __init__(self):
+        self.signaled = False
+
+    def fetch_endpoint(self, endpoint, *, start_day, end_day):
+        if not self.signaled:
+            Path({str(ready)!r}).write_text("fetching", encoding="utf-8")
+            self.signaled = True
+            time.sleep(1.5)
+        return oura.OuraFetchResult(items=[], pages=[], requests=1)
+
+
+oura.backend.sync(
+    Path({str(journal)!r}),
+    dry_run=False,
+    confirm_health_save=True,
+    client=SlowClient(),
+    today=dt.date(2026, 1, 10),
+)
+"""
+    child = subprocess.Popen(
+        [sys.executable, "-c", child_code],
+        cwd=Path(__file__).resolve().parents[1],
+        env=_subprocess_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_path(ready)
+        monkeypatch.setattr(oura, "OURA_SYNC_LOCK_TIMEOUT", 0.2)
+
+        with pytest.raises(oura.OuraSyncLockError) as exc_info:
+            oura.backend.sync(
+                journal,
+                dry_run=False,
+                confirm_health_save=True,
+                client=_canned_client(_fixture_transport()),
+                today=dt.date(2026, 1, 10),
+            )
+
+        payload = exc_info.value.to_dict()
+        text = exc_info.value.format_text()
+        assert payload["error"] == "oura_sync_lock_timeout"
+        assert payload["journal_root"] == str(journal)
+        assert payload["lock_path"] == str(journal / "imports" / "oura.json")
+        assert payload["timeout_seconds"] == 0.2
+        assert str(journal) in text
+        assert str(journal / "imports" / "oura.json") in text
+        for forbidden in (
+            "Bearer",
+            "access_token",
+            "refresh_token",
+            "api.ouraring",
+            "daily_readiness",
+        ):
+            assert forbidden not in text
+    finally:
+        stdout, stderr = child.communicate(timeout=10)
+    assert child.returncode == 0, stdout + stderr
+
+
+def test_in_lock_gate_rechecks_artifact_before_fetch_after_wait(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    lock_path = journal / "imports" / "oura.json"
+    ready = tmp_path / "lock-ready"
+    release = tmp_path / "release-lock"
+    fetched = tmp_path / "fetch-called"
+    invalidator_done = tmp_path / "invalidated"
+
+    holder_code = f"""
+import time
+from pathlib import Path
+
+from solstone.think.importers.shared import hold_private_import_lock
+
+with hold_private_import_lock(Path({str(lock_path)!r}), timeout=5.0):
+    Path({str(ready)!r}).write_text("locked", encoding="utf-8")
+    release = Path({str(release)!r})
+    while not release.exists():
+        time.sleep(0.02)
+"""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", holder_code],
+        cwd=Path(__file__).resolve().parents[1],
+        env=_subprocess_env(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    invalidator_code = f"""
+import json
+import time
+from pathlib import Path
+
+artifact_path = Path({str(oura_sync_approval_path_for_journal(journal))!r})
+time.sleep(0.4)
+artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+artifact["raw_retention"]["decision"] = "retain_raw_pages"
+artifact_path.write_text(json.dumps(artifact), encoding="utf-8")
+Path({str(invalidator_done)!r}).write_text("invalidated", encoding="utf-8")
+Path({str(release)!r}).write_text("release", encoding="utf-8")
+"""
+
+    class MarkerClient:
+        def fetch_endpoint(self, endpoint, *, start_day, end_day):
+            fetched.write_text(endpoint, encoding="utf-8")
+            return oura.OuraFetchResult(items=[], pages=[], requests=1)
+
+    try:
+        _wait_for_path(ready)
+        invalidator = subprocess.Popen(
+            [sys.executable, "-c", invalidator_code],
+            cwd=Path(__file__).resolve().parents[1],
+            env=_subprocess_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        with pytest.raises(PreSaveGateError) as exc_info:
+            oura.backend.sync(
+                journal,
+                dry_run=False,
+                confirm_health_save=True,
+                client=MarkerClient(),
+                today=dt.date(2026, 1, 10),
+                now=dt.datetime(2026, 7, 13, 12, 0, tzinfo=dt.UTC),
+            )
+
+        invalidator_stdout, invalidator_stderr = invalidator.communicate(timeout=10)
+        assert invalidator.returncode == 0, invalidator_stdout + invalidator_stderr
+    finally:
+        release.write_text("release", encoding="utf-8")
+        holder_stdout, holder_stderr = holder.communicate(timeout=10)
+
+    assert holder.returncode == 0, holder_stdout + holder_stderr
+    payload = exc_info.value.to_dict()
+    assert payload["gate_reason"] == "raw_retention_decision_invalid"
+    assert payload["invalid_fields"] == ["raw_retention.decision"]
+    assert not fetched.exists()
+    assert invalidator_done.exists()
+    contents = _imports_contents(journal)
+    assert "imports/oura.json.lock" in contents
+    assert "imports/oura.json" not in contents
+    assert not any(entry.startswith("imports/2026") for entry in contents)
+    assert "imports/health-dedupe.sqlite" not in contents
 
 
 def test_window_days_overrides_first_sync_window(tmp_path: Path, monkeypatch):
@@ -1895,6 +2087,7 @@ def test_catalog_sync_writes_nothing_and_needs_no_approval(tmp_path: Path, monke
     assert result["available"] == _SYNC_ROW_COUNT
     # Nothing written: no bundle, no dedupe DB, no cursor.
     assert not (journal / "imports").exists()
+    assert not (journal / "imports" / "oura.json.lock").exists()
 
 
 def test_sync_save_without_artifact_blocks_before_any_fetch(
@@ -2034,11 +2227,6 @@ def test_save_sync_cron_hint_uses_gate_decision_without_rereading_artifact(
     artifact = _sync_artifact(journal)
     artifact["scheduled_sync"] = _scheduled_sync_consent()
     _write_sync_artifact(journal, artifact)
-    monkeypatch.setattr(
-        oura,
-        "read_oura_sync_approval",
-        lambda _journal: pytest.fail("save-mode sync must not reread approval"),
-    )
 
     result = oura.backend.sync(
         journal,
@@ -2048,6 +2236,7 @@ def test_save_sync_cron_hint_uses_gate_decision_without_rereading_artifact(
         today=dt.date(2026, 1, 10),
     )
 
+    assert not hasattr(oura, "read_oura_sync_approval")
     assert result["cron_hint"].startswith("0 */6 * * * ")
 
 
@@ -2119,7 +2308,13 @@ def _imports_stat_snapshot(
         # sqlite connection artifacts (see _imports_contents): the ledger's
         # sidecars and its own header mtime move whenever any connection
         # opens it — not import writes.
-        if path.name.endswith(("-shm", "-wal")) or path.name == "health-dedupe.sqlite":
+        # The Oura sync lock sidecar is also metadata: every save-mode run
+        # opens it to prove cross-process exclusion.
+        if (
+            rel == "imports/oura.json.lock"
+            or path.name.endswith(("-shm", "-wal"))
+            or path.name == "health-dedupe.sqlite"
+        ):
             continue
         stat = path.stat()
         snapshot[rel] = (stat.st_mtime_ns, stat.st_size if path.is_file() else None)
@@ -2971,6 +3166,34 @@ def test_cli_sync_prints_cron_hint_when_scheduled_consent_exists(
     out = capsys.readouterr().out
     assert "Crontab line (not installed):" in out
     assert "importer --sync oura --save --scheduled" in out
+
+
+def test_cli_sync_lock_timeout_prints_typed_message(
+    tmp_path: Path, monkeypatch, capsys
+):
+    journal = _use_journal(tmp_path, monkeypatch)
+    cli = import_module("solstone.think.importers.cli")
+    lock_path = journal / "imports" / "oura.json"
+
+    def busy_sync(_journal_root: Path, **_kwargs):
+        raise oura.OuraSyncLockError(
+            journal_root=journal,
+            lock_path=lock_path,
+            timeout=0.2,
+        )
+
+    monkeypatch.setattr(oura.backend, "sync", busy_sync)
+
+    with pytest.raises(SystemExit) as exc_info:
+        cli._run_sync("oura", dry_run=False, confirm_health_save=True)
+
+    assert exc_info.value.code == oura.OuraSyncLockError.exit_code
+    out = capsys.readouterr().out
+    assert "Oura sync save could not acquire the journal lock." in out
+    assert str(journal) in out
+    assert str(lock_path) in out
+    assert "Traceback" not in out
+    assert "Bearer" not in out
 
 
 # ---------------------------------------------------------------------------

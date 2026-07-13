@@ -11,10 +11,13 @@ import os
 import shutil
 import tempfile
 from collections.abc import Iterable
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Final
 
 from solstone.think.journal_io import atomic_replace, install_file, write_text
+from solstone.think.journal_io.errors import LockTimeout
+from solstone.think.journal_io.locking import hold_lock
 from solstone.think.media import MIME_TYPES
 from solstone.think.utils import day_path, get_journal, now_ms
 
@@ -22,6 +25,39 @@ logger = logging.getLogger(__name__)
 
 PRIVATE_IMPORT_FILE_MODE: Final = 0o600
 PRIVATE_IMPORT_DIR_MODE: Final = 0o700
+
+
+class ImportLockTimeout(RuntimeError):
+    """Raised when an imports-owned sidecar lock cannot be acquired."""
+
+    path: Path
+    timeout: float
+
+    def __init__(self, path: Path, timeout: float) -> None:
+        super().__init__(f"could not acquire import lock for {path} within {timeout}s")
+        self.path = path
+        self.timeout = timeout
+
+
+@contextmanager
+def hold_private_import_lock(
+    path: Path,
+    *,
+    timeout: float = 10.0,
+    poll_interval: float = 0.05,
+):
+    """Hold a private sidecar lock for imports-owned state."""
+
+    try:
+        with hold_lock(
+            path,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            mode=PRIVATE_IMPORT_FILE_MODE,
+        ):
+            yield
+    except LockTimeout as exc:
+        raise ImportLockTimeout(exc.path, exc.timeout) from None
 
 
 def ensure_private_import_dir(path: Path) -> Path:

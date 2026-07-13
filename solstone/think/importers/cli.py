@@ -273,6 +273,7 @@ def _run_sync(
     """Run sync for a named backend and print results."""
     import inspect
 
+    from solstone.think.importers.oura import OuraSyncLockError
     from solstone.think.importers.plaud import format_size
     from solstone.think.importers.pre_save_gate import PreSaveGateError
     from solstone.think.importers.sync import get_syncable_backends, load_sync_state
@@ -313,6 +314,9 @@ def _run_sync(
     except PreSaveGateError as e:
         # Health-gated sync backends (oura) fail closed with a
         # traceback-free, owner-facing explanation.
+        print(e.format_text())
+        raise SystemExit(e.exit_code)
+    except OuraSyncLockError as e:
         print(e.format_text())
         raise SystemExit(e.exit_code)
     except ValueError as e:
