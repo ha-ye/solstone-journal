@@ -124,6 +124,7 @@
     "google": false,
     "openai": false
   },
+  "byo_models": {},
   "cogitate": {
     "model": "gpt-5.4-mini",
     "provider": "openai"
@@ -149,6 +150,59 @@
     "enabled": false,
     "endpoint_url": "",
     "served_model_id": ""
+  },
+  "model_tiers": {
+    "anthropic": [
+      {
+        "label": "Claude Haiku",
+        "model": "claude-haiku-4-5",
+        "tier": "lite"
+      },
+      {
+        "label": "Claude Opus",
+        "model": "claude-opus-4-8",
+        "tier": "top"
+      },
+      {
+        "label": "Claude Sonnet",
+        "model": "claude-sonnet-5",
+        "tier": "mid"
+      }
+    ],
+    "google": [
+      {
+        "label": "Gemini Flash Latest",
+        "model": "gemini-flash-latest",
+        "tier": "mid"
+      },
+      {
+        "label": "Gemini Flash Lite Latest",
+        "model": "gemini-flash-lite-latest",
+        "tier": "lite"
+      },
+      {
+        "label": "Gemini Pro Latest",
+        "model": "gemini-pro-latest",
+        "tier": "top"
+      }
+    ],
+    "openai": [
+      {
+        "label": "GPT mini",
+        "model": "gpt-5.4-mini",
+        "tier": "mid"
+      },
+      {
+        "label": "GPT nano",
+        "model": "gpt-5.4-nano",
+        "tier": "lite"
+      },
+      {
+        "label": "GPT",
+        "model": "gpt-5.5",
+        "tier": "top"
+      }
+    ]
   },
   "provider_status": {
     "anthropic": {

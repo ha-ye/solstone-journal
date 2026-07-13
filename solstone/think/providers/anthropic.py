@@ -468,9 +468,32 @@ def validate_key(api_key: str) -> dict:
         }
 
 
+def validate_model(model: str, api_key: str) -> dict:
+    """Validate that an Anthropic API key can retrieve a model."""
+    import anthropic
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key, timeout=10)
+        client.models.retrieve(model)
+        return {"valid": True}
+    except anthropic.NotFoundError as e:
+        return {
+            "valid": False,
+            "error": str(e),
+            "reason_code": "model_not_found",
+        }
+    except Exception as e:
+        return {
+            "valid": False,
+            "error": str(e),
+            "reason_code": classify_provider_error(e, "anthropic"),
+        }
+
+
 __all__ = [
     "run_generate",
     "run_agenerate",
     "list_models",
     "validate_key",
+    "validate_model",
 ]

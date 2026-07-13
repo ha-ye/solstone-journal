@@ -4,14 +4,16 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import get_args
 
 import pytest
 
 from solstone.apps.thinking import routes
 from solstone.apps.thinking.local_bootstrap import LOCAL_MODEL_SPECS
+from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.convey import create_app
-from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER
+from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER, resolve_provider
 from solstone.think.providers.install_state import InstallState
 from solstone.think.providers.state import ProviderState
 
@@ -320,6 +322,52 @@ def test_byo_gemini_key_write_succeeds_when_scout_enabled(
     assert config["env"]["GOOGLE_API_KEY"] == "manual-key"
 
 
+def test_key_clear_pops_remembered_byo_model(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["byo_models"] = {
+        "google": "gemini-pro-latest",
+        "openai": "gpt-5.5",
+    }
+    _write_config(journal_path, config)
+
+    response = client.put(
+        "/app/thinking/api/keys",
+        json={"env_var": "GOOGLE_API_KEY", "value": ""},
+    )
+
+    assert response.status_code == 200
+    stored = json.loads(config_path.read_text())
+    assert stored["providers"]["byo_models"] == {"openai": "gpt-5.5"}
+
+
+def test_key_save_preserves_remembered_byo_model(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["byo_models"] = {"openai": "gpt-5.5"}
+    _write_config(journal_path, config)
+    monkeypatch.setattr(
+        "solstone.apps.thinking.routes.validate_key",
+        lambda _provider, _api_key: {"valid": True},
+    )
+
+    response = client.put(
+        "/app/thinking/api/keys",
+        json={"env_var": "OPENAI_API_KEY", "value": "manual-openai-key"},
+    )
+
+    assert response.status_code == 200
+    stored = json.loads(config_path.read_text())
+    assert stored["providers"]["byo_models"] == {"openai": "gpt-5.5"}
+
+
 def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
     settings_client_with_journal, monkeypatch
 ):
@@ -447,6 +495,34 @@ def test_providers_payload_omits_auth(settings_client):
     assert response.status_code == 200
     payload = response.get_json()
     assert "auth" not in payload
+
+
+def test_providers_payload_includes_model_tiers_and_byo_models_as_is(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["byo_models"] = {
+        "google": "gemini-pro-latest",
+        "unexpected": "kept-as-is",
+    }
+    _write_config(journal_path, config)
+
+    response = client.get("/app/thinking/api/providers")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["model_tiers"] == MODEL_TIERS
+    assert payload["byo_models"] == {
+        "google": "gemini-pro-latest",
+        "unexpected": "kept-as-is",
+    }
+
+
+def test_think_layer_does_not_import_thinking_model_tiers():
+    for path in Path("solstone/think").rglob("*.py"):
+        assert "model_tiers" not in path.read_text(encoding="utf-8"), path
 
 
 def test_providers_payload_includes_secret_free_local_override(
@@ -641,6 +717,205 @@ def test_byo_local_with_override_succeeds_and_rederives_byo(
     assert payload["cogitate"]["provider"] == "local"
 
 
+def test_byo_endpoint_switch_never_remembers_local_model(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/v1",
+        "served_model_id": "served-model",
+    }
+    _write_config(journal_path, config)
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.probe_local_endpoint",
+        lambda _endpoint, timeout_s=1.0: (True, None),
+    )
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": "local"},
+    )
+
+    assert response.status_code == 200
+    stored = json.loads(config_path.read_text())
+    assert "local" not in stored["providers"].get("byo_models", {})
+
+
+def test_byo_lane_with_top_level_model_writes_types_and_memory(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "anthropic",
+            "model": "claude-opus-4-8",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["generate"] == {
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+    }
+    assert payload["cogitate"] == {
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+    }
+    assert payload["byo_models"]["anthropic"] == "claude-opus-4-8"
+
+    stored = json.loads(config_path.read_text())
+    assert stored["providers"]["generate"] == {
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+    }
+    assert stored["providers"]["cogitate"] == {
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+    }
+    assert stored["providers"]["byo_models"]["anthropic"] == "claude-opus-4-8"
+
+
+@pytest.mark.parametrize(
+    ("payload", "detail"),
+    [
+        (
+            {"model": "gemini-pro-latest"},
+            "model is only valid with lane=byo.",
+        ),
+        (
+            {"lane": "local", "model": "gemini-pro-latest"},
+            "model is only valid with lane=byo for cloud providers.",
+        ),
+        (
+            {"lane": "byo", "provider": "google", "model": ""},
+            "model must be a non-empty string.",
+        ),
+    ],
+)
+def test_top_level_model_rejects_invalid_provider_updates(
+    settings_client_with_journal,
+    payload,
+    detail,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    before = config_path.read_bytes()
+
+    response = client.put("/app/thinking/api/providers", json=payload)
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["reason_code"] == "invalid_config_value"
+    assert body["detail"] == detail
+    assert config_path.read_bytes() == before
+
+
+def test_top_level_model_rejects_byo_local_endpoint_provider(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["local"] = {
+        "endpoint_url": "http://host.test:8080/v1",
+        "served_model_id": "served-model",
+    }
+    _write_config(journal_path, config)
+    before = config_path.read_bytes()
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.probe_local_endpoint",
+        lambda _endpoint, timeout_s=1.0: (True, None),
+    )
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "local",
+            "model": "local/qwen3.5-4b",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.get_json()
+    assert body["reason_code"] == "invalid_config_value"
+    assert body["detail"] == (
+        "model is only valid with cloud BYO providers: anthropic, google, openai."
+    )
+    assert config_path.read_bytes() == before
+
+
+def test_byo_lane_fills_remembered_model_after_hygiene_pop(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["generate"] = {
+        "provider": "google",
+        "model": "gemini-pro-latest",
+    }
+    config["providers"]["cogitate"] = {
+        "provider": "google",
+        "model": "gemini-pro-latest",
+    }
+    config["providers"]["byo_models"] = {"anthropic": "claude-opus-4-8"}
+    _write_config(journal_path, config)
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": "anthropic"},
+    )
+
+    assert response.status_code == 200
+    stored = json.loads(config_path.read_text())
+    assert stored["providers"]["generate"] == {
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+    }
+    assert stored["providers"]["cogitate"] == {
+        "provider": "anthropic",
+        "model": "claude-opus-4-8",
+    }
+
+
+def test_byo_lane_remembered_model_does_not_overwrite_present_model(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["generate"] = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+    }
+    config["providers"]["cogitate"] = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+    }
+    config["providers"]["byo_models"] = {"anthropic": "claude-opus-4-8"}
+    _write_config(journal_path, config)
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": "anthropic"},
+    )
+
+    assert response.status_code == 200
+    stored = json.loads(config_path.read_text())
+    assert stored["providers"]["generate"]["model"] == "claude-sonnet-4-6"
+    assert stored["providers"]["cogitate"]["model"] == "claude-sonnet-4-6"
+
+
 def test_lane_switch_to_confidential_rejects_without_config_write(
     settings_client_with_journal,
 ):
@@ -690,6 +965,92 @@ def test_lane_switch_to_confidential_rejects_without_config_write(
     assert payload["active_lane"]["lane"] == "confidential"
     assert payload["generate"]["provider"] == "local"
     assert payload["cogitate"]["provider"] == "local"
+
+
+def test_switch_from_byo_model_to_local_resolves_local_default(
+    settings_client_with_journal,
+):
+    client, _journal_path = settings_client_with_journal
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={
+            "lane": "byo",
+            "provider": "google",
+            "model": "gemini-pro-latest",
+        },
+    )
+    assert response.status_code == 200
+
+    response = client.put("/app/thinking/api/providers", json={"lane": "local"})
+
+    assert response.status_code == 200
+    assert resolve_provider("generate") == ("local", LOCAL_MODEL)
+
+
+def test_switch_to_cloud_without_memory_resolves_provider_default(
+    settings_client_with_journal,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["generate"] = {
+        "provider": "google",
+        "model": "gemini-pro-latest",
+    }
+    config["providers"]["cogitate"] = {
+        "provider": "google",
+        "model": "gemini-pro-latest",
+    }
+    config["providers"].pop("byo_models", None)
+    _write_config(journal_path, config)
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "byo", "provider": "anthropic"},
+    )
+
+    assert response.status_code == 200
+    assert resolve_provider("generate") == ("anthropic", "claude-sonnet-4-6")
+
+
+def test_legacy_explicit_model_resolves_without_ui_interaction(
+    settings_client_with_journal,
+):
+    _client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["generate"] = {
+        "provider": "openai",
+        "model": "gpt-5.5",
+    }
+    _write_config(journal_path, config)
+
+    assert resolve_provider("generate") == ("openai", "gpt-5.5")
+
+
+def test_confidential_lane_preserves_byo_models(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    config = json.loads(config_path.read_text())
+    config["providers"]["byo_models"] = {"openai": "gpt-5.5"}
+    _write_config(journal_path, config)
+    monkeypatch.setattr(
+        "solstone.apps.thinking.routes.spp.confidential_provenance",
+        lambda: {"configured": True},
+    )
+
+    response = client.put(
+        "/app/thinking/api/providers",
+        json={"lane": "confidential"},
+    )
+
+    assert response.status_code == 200
+    stored = json.loads(config_path.read_text())
+    assert stored["providers"]["byo_models"] == {"openai": "gpt-5.5"}
 
 
 def test_lane_for_provider_derives_confidential_from_local_endpoint_provenance():

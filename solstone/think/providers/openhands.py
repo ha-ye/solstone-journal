@@ -1441,3 +1441,8 @@ def list_models(provider: str) -> list[dict]:
 def validate_key(provider: str, api_key: str) -> dict:
     module = import_module(_GENERATE_MODULES[provider])
     return module.validate_key(api_key)
+
+
+def validate_model(provider: str, model: str, api_key: str) -> dict:
+    module = import_module(_GENERATE_MODULES[provider])
+    return module.validate_model(model, api_key)

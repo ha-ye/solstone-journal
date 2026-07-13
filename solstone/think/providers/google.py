@@ -163,6 +163,15 @@ _VERTEX_MODEL_ALIASES: dict[str, str] = {
 }
 
 
+def _resolve_model_for_backend(model: str, backend: str | None) -> str:
+    """Substitute backend-specific identifiers for known provider aliases."""
+    if model not in _VERTEX_MODEL_ALIASES:
+        return model
+    if backend != "vertex":
+        return model
+    return _VERTEX_MODEL_ALIASES[model]
+
+
 def _resolve_model_for_vertex(model: str) -> str:
     """Substitute Vertex-resolvable identifiers for AI-Studio-only aliases.
 
@@ -170,11 +179,7 @@ def _resolve_model_for_vertex(model: str) -> str:
     alias on Vertex. See :data:`_VERTEX_MODEL_ALIASES` for the mapping and the
     rationale comment above it.
     """
-    if model not in _VERTEX_MODEL_ALIASES:
-        return model
-    if _active_backend() != "vertex":
-        return model
-    return _VERTEX_MODEL_ALIASES[model]
+    return _resolve_model_for_backend(model, _active_backend())
 
 
 def get_or_create_client(client: genai.Client | None = None) -> genai.Client:
@@ -683,6 +688,41 @@ def validate_key(api_key: str) -> dict:
         }
 
 
+def validate_model(model: str, api_key: str) -> dict:
+    """Validate that a Google API key can retrieve a model."""
+    from google import genai
+    from google.genai import types
+    from google.genai.errors import ClientError
+
+    try:
+        backend = _probe_backend(api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(timeout=10000),
+            vertexai=backend == "vertex",
+        )
+        client.models.get(model=_resolve_model_for_backend(model, backend))
+        return {"valid": True}
+    except ClientError as e:
+        if e.code == 404:
+            return {
+                "valid": False,
+                "error": str(e),
+                "reason_code": "model_not_found",
+            }
+        return {
+            "valid": False,
+            "error": str(e),
+            "reason_code": classify_provider_error(e, "google"),
+        }
+    except Exception as e:
+        return {
+            "valid": False,
+            "error": str(e),
+            "reason_code": classify_provider_error(e, "google"),
+        }
+
+
 def validate_vertex_credentials(
     creds_path: str,
 ) -> dict:
@@ -731,8 +771,10 @@ __all__ = [
     "_detect_backend",
     "_get_effective_backend",
     "_active_backend",
+    "_resolve_model_for_backend",
     "_resolve_model_for_vertex",
     "list_models",
     "validate_key",
+    "validate_model",
     "validate_vertex_credentials",
 ]

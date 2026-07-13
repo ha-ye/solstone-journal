@@ -20,6 +20,7 @@ from flask import Blueprint, current_app, jsonify, request
 from solstone.apps.thinking import copy as thinking_copy
 from solstone.apps.thinking import local_bootstrap, scout_lane
 from solstone.apps.thinking.copy import thinking_copy_payload
+from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.apps.thinking.vertex_credentials import (
     delete_vertex_credentials,
     save_vertex_credentials,
@@ -56,6 +57,7 @@ from solstone.think.providers import (
     build_provider_status,
     get_provider_list,
     validate_key,
+    validate_model,
 )
 from solstone.think.providers.google import validate_vertex_credentials
 from solstone.think.providers.local_endpoint import (
@@ -96,6 +98,10 @@ AI_ENV_TO_PROVIDER = {
     "OPENAI_API_KEY": "openai",
 }
 AI_PROVIDERS = frozenset(AI_ENV_TO_PROVIDER.values())
+AI_PROVIDER_TO_ENV = {
+    provider: env_var for env_var, provider in AI_ENV_TO_PROVIDER.items()
+}
+CLOUD_BYO_PROVIDERS = frozenset({"anthropic", "google", "openai"})
 LANES = {"byo", "confidential", "local"}
 GENERIC_THINKING_ERROR = (
     "something went wrong - try again, and if it persists, check the health dashboard"
@@ -459,6 +465,38 @@ def _compute_ai_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     return key_validation
 
 
+def _stored_api_key(config: dict[str, Any], provider: str) -> str:
+    env_config = config.get("env", {})
+    if not isinstance(env_config, dict):
+        return ""
+    return str(env_config.get(AI_PROVIDER_TO_ENV[provider]) or "").strip()
+
+
+def _validate_cloud_byo_provider(provider: Any) -> str | Any:
+    if provider not in CLOUD_BYO_PROVIDERS:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail=(
+                f"Invalid provider: {provider}. "
+                f"Must be one of: {', '.join(sorted(CLOUD_BYO_PROVIDERS))}"
+            ),
+        )
+    return str(provider)
+
+
+def _validate_top_level_model(
+    model: Any,
+    *,
+    error_code: str = INVALID_CONFIG_VALUE,
+) -> str | Any:
+    if not isinstance(model, str) or not model.strip():
+        return error_response(
+            error_code,
+            detail="model must be a non-empty string.",
+        )
+    return model.strip()
+
+
 def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, Any]:
     providers_config = config.get("providers", {})
     if not isinstance(providers_config, dict):
@@ -499,6 +537,8 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         ),
         "generate": type_settings["generate"],
         "cogitate": type_settings["cogitate"],
+        "model_tiers": MODEL_TIERS,
+        "byo_models": providers_config.get("byo_models", {}),
         "api_keys": _api_key_status(config),
         "key_validation": _filtered_ai_key_validation(config),
         "local": local_status,
@@ -756,6 +796,9 @@ def keys() -> Any:
                 env.pop(env_var, None)
                 os.environ.pop(env_var, None)
                 key_validation.pop(provider, None)
+                byo_models = providers_config.get("byo_models")
+                if isinstance(byo_models, dict):
+                    byo_models.pop(provider, None)
             write_journal_config(config)
 
         if old_value != (str(value or "").strip() or None):
@@ -801,6 +844,50 @@ def validate_all_keys() -> Any:
         return jsonify({"success": True, "key_validation": key_validation})
     except Exception:
         logger.exception("error validating thinking keys")
+        return _thinking_operation_failed()
+
+
+@thinking_bp.route("/api/validate-model", methods=["POST"])
+def validate_model_route() -> Any:
+    """Validate that a stored provider key can see a model."""
+
+    try:
+        request_data = request.get_json(silent=True)
+        if not isinstance(request_data, dict) or not request_data:
+            return error_response(MISSING_REQUEST_BODY, detail="No data provided")
+
+        provider = _validate_cloud_byo_provider(request_data.get("provider"))
+        if not isinstance(provider, str):
+            return provider
+
+        model = _validate_top_level_model(
+            request_data.get("model"),
+            error_code=INVALID_REQUEST_VALUE,
+        )
+        if not isinstance(model, str):
+            return model
+
+        config = get_journal_config()
+        api_key = _stored_api_key(config, provider)
+        if not api_key:
+            payload = {
+                "valid": False,
+                "provider": provider,
+                "model": model,
+                "reason_code": "key_missing",
+                "error": "No stored API key for provider.",
+            }
+            return jsonify(payload)
+
+        result = validate_model(provider, model, api_key)
+        payload = {
+            **result,
+            "provider": provider,
+            "model": model,
+        }
+        return jsonify(payload)
+    except Exception:
+        logger.exception("error validating thinking model")
         return _thinking_operation_failed()
 
 
@@ -1003,6 +1090,48 @@ def _validate_provider(provider: Any, field: str = "provider") -> str | Any:
     return str(provider)
 
 
+def _remember_byo_model(
+    config: dict[str, Any],
+    old_providers: dict[str, Any],
+    changed_fields: dict[str, Any],
+    provider: str,
+    model: str,
+) -> None:
+    byo_models = config["providers"].setdefault("byo_models", {})
+    old_model = old_providers.get("byo_models", {}).get(provider)
+    if old_model != model:
+        changed_fields[f"byo_models.{provider}"] = {
+            "old": old_model,
+            "new": model,
+        }
+    byo_models[provider] = model
+
+
+def _fill_remembered_byo_model(
+    config: dict[str, Any],
+    old_providers: dict[str, Any],
+    changed_fields: dict[str, Any],
+    agent_type: str,
+) -> None:
+    type_config = config["providers"].get(agent_type, {})
+    if not isinstance(type_config, dict) or "model" in type_config:
+        return
+    provider = type_config.get("provider")
+    if provider not in CLOUD_BYO_PROVIDERS:
+        return
+    model = config["providers"].get("byo_models", {}).get(provider)
+    if not isinstance(model, str) or not model.strip():
+        return
+    model = model.strip()
+    old_type = old_providers.get(agent_type, {})
+    if old_type.get("model") != model:
+        changed_fields[f"{agent_type}.model"] = {
+            "old": old_type.get("model"),
+            "new": model,
+        }
+    type_config["model"] = model
+
+
 def _apply_type_update(
     config: dict[str, Any],
     old_providers: dict[str, Any],
@@ -1024,6 +1153,13 @@ def _apply_type_update(
                 "new": provider,
             }
         config["providers"][agent_type]["provider"] = provider
+        if old_type.get("provider") != provider and "model" not in type_data:
+            old_model = config["providers"][agent_type].pop("model", None)
+            if old_model is not None:
+                changed_fields[f"{agent_type}.model"] = {
+                    "old": old_model,
+                    "new": None,
+                }
 
     if "tier" in type_data:
         return error_response(
@@ -1126,12 +1262,43 @@ def update_providers() -> Any:
                     "for disabled/extract toggles."
                 ),
             )
+        if "model" in request_data and "lane" not in request_data:
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail="model is only valid with lane=byo.",
+            )
 
         if "lane" in request_data:
             provider = _lane_provider(request_data)
             if not isinstance(provider, str):
                 return provider
             lane_update = {"provider": provider}
+            has_top_level_model = "model" in request_data
+            if has_top_level_model:
+                if request_data["lane"] != "byo":
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail="model is only valid with lane=byo for cloud providers.",
+                    )
+                if provider not in CLOUD_BYO_PROVIDERS:
+                    return error_response(
+                        INVALID_CONFIG_VALUE,
+                        detail=(
+                            "model is only valid with cloud BYO providers: "
+                            "anthropic, google, openai."
+                        ),
+                    )
+                model = _validate_top_level_model(request_data["model"])
+                if not isinstance(model, str):
+                    return model
+                lane_update["model"] = model
+                _remember_byo_model(
+                    config,
+                    old_providers,
+                    changed_fields,
+                    provider,
+                    model,
+                )
             for agent_type in ("generate", "cogitate"):
                 error = _apply_type_update(
                     config,
@@ -1142,6 +1309,13 @@ def update_providers() -> Any:
                 )
                 if error is not None:
                     return error
+                if not has_top_level_model:
+                    _fill_remembered_byo_model(
+                        config,
+                        old_providers,
+                        changed_fields,
+                        agent_type,
+                    )
 
         for agent_type in ("generate", "cogitate"):
             if agent_type not in request_data:

@@ -262,6 +262,32 @@ def validate_key(provider: str, api_key: str) -> dict:
     return module.validate_key(provider, api_key)
 
 
+def validate_model(provider: str, model: str, api_key: str) -> dict:
+    """Validate that a provider API key can see a specific model.
+
+    Parameters
+    ----------
+    provider
+        Provider name (e.g., "google", "openai", "anthropic").
+    model
+        Provider-native model identifier to probe.
+    api_key
+        The API key string to validate against.
+
+    Returns
+    -------
+    dict
+        {"valid": True} or {"valid": False, "error": "..."}.
+
+    Raises
+    ------
+    ValueError
+        If the provider is not registered.
+    """
+    module = get_provider_module(provider)
+    return module.validate_model(provider, model, api_key)
+
+
 __all__ = [
     "PROVIDER_REGISTRY",
     "PROVIDER_METADATA",
@@ -270,5 +296,6 @@ __all__ = [
     "build_provider_status",
     "get_provider_models",
     "validate_key",
+    "validate_model",
     "managed_provider_env_keys",
 ]
