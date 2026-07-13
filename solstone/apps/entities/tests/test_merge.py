@@ -17,6 +17,7 @@ from typer.testing import CliRunner
 from solstone.apps.entities.call import app as entities_app
 from solstone.think.convey_client import ConveyClient
 from solstone.think.entities import merge as merge_mod
+from solstone.think.entities.history import iter_entity_history
 from solstone.think.entities.journal import load_journal_entity
 from solstone.think.indexer.edges import insert_edges, rebuild_edges
 from solstone.think.indexer.journal import get_journal_index
@@ -881,10 +882,13 @@ def test_merge_then_rebuild_converges_all_edge_source_kinds(speakers_env):
     assert _edge_hash(env) == first_hash
 
 
-def test_merge_commit_continues_when_edge_fold_fails(speakers_env, monkeypatch):
+def test_merge_commit_rolls_back_when_edge_fold_fails(speakers_env, monkeypatch):
     env = speakers_env()
     env.create_entity("Edge Failure Source")
     env.create_entity("Edge Failure Target")
+    source_before = _entity_path(env, "edge_failure_source").read_bytes()
+    target_before = _entity_path(env, "edge_failure_target").read_bytes()
+    index_before = _edge_hash(env)
 
     def fail_fold(*args, **kwargs):
         raise sqlite3.OperationalError("boom")
@@ -897,37 +901,47 @@ def test_merge_commit_continues_when_edge_fold_fails(speakers_env, monkeypatch):
         commit=True,
     )
 
-    assert result["merged"] is True
-    assert result["edges"] == {
-        "rows_folded": 0,
-        "self_edges_dropped": 0,
+    assert result == {
         "error": "boom",
+        "failed_phase": "edges",
+        "source_id": "edge_failure_source",
+        "target_id": "edge_failure_target",
     }
-    assert load_journal_entity("edge_failure_source") is None
-    audit_entries = [
-        json.loads(line)
-        for line in _audit_log_path(env).read_text(encoding="utf-8").splitlines()
-        if line.strip()
+    assert _entity_path(env, "edge_failure_source").read_bytes() == source_before
+    assert _entity_path(env, "edge_failure_target").read_bytes() == target_before
+    assert load_journal_entity("edge_failure_source") is not None
+    assert _edge_hash(env) == index_before
+    assert not _audit_log_path(env).exists()
+    assert not [
+        event
+        for event in iter_entity_history("edge_failure_target")
+        if event["kind"] == "merge"
     ]
-    assert audit_entries[-1]["counts"]["edges"] == {
-        "rows_folded": 0,
-        "self_edges_dropped": 0,
-        "error": "boom",
-    }
 
 
-def test_merge_facet_move_writes_target_before_source_delete_on_cleanup_failure(
+def test_merge_cleanup_failure_rolls_back_to_pre_operation_bytes(
     speakers_env,
     monkeypatch,
 ):
     env = speakers_env()
     env.create_entity("Cleanup Alias")
     env.create_entity("Cleanup Canon")
+    source_before = _entity_path(env, "cleanup_alias").read_bytes()
+    target_before = _entity_path(env, "cleanup_canon").read_bytes()
     source_rel_dir = env.create_facet_relationship(
         "work",
         "cleanup_alias",
         description="Source relationship",
     )
+    source_rel_before = {
+        path.relative_to(source_rel_dir).as_posix(): path.read_bytes()
+        for path in source_rel_dir.rglob("*")
+        if path.is_file()
+    }
+    target_rel_path = (
+        env.journal / "facets" / "work" / "entities" / "cleanup_canon" / "entity.json"
+    )
+    assert not target_rel_path.exists()
 
     def fail_cleanup(*args, **kwargs):
         raise RuntimeError("cleanup boom")
@@ -941,15 +955,21 @@ def test_merge_facet_move_writes_target_before_source_delete_on_cleanup_failure(
 
     result = merge_mod.merge_entity("cleanup_alias", "cleanup_canon", commit=True)
 
+    assert result["error"] == "cleanup boom"
     assert result["failed_phase"] == "cleanup"
-    target_rel_path = (
-        env.journal / "facets" / "work" / "entities" / "cleanup_canon" / "entity.json"
-    )
-    assert _read_json(target_rel_path)["entity_id"] == "cleanup_canon"
+    assert _entity_path(env, "cleanup_alias").read_bytes() == source_before
+    assert _entity_path(env, "cleanup_canon").read_bytes() == target_before
     assert source_rel_dir.exists()
+    assert {
+        path.relative_to(source_rel_dir).as_posix(): path.read_bytes()
+        for path in source_rel_dir.rglob("*")
+        if path.is_file()
+    } == source_rel_before
+    assert not target_rel_path.exists()
+    assert not _audit_log_path(env).exists()
 
 
-def test_merge_commit_failure_reports_failed_phase_and_resume_marker(
+def test_merge_commit_failure_rolls_back_without_resume_marker(
     speakers_env,
     monkeypatch,
 ):
@@ -957,6 +977,8 @@ def test_merge_commit_failure_reports_failed_phase_and_resume_marker(
     env.create_entity("Failure Source")
     env.create_entity("Failure Target")
     env.create_segment("20240101", "143022_300", ["mic_audio"])
+    source_before = _entity_path(env, "failure_source").read_bytes()
+    target_before = _entity_path(env, "failure_target").read_bytes()
     env.create_speaker_labels(
         "20240101",
         "143022_300",
@@ -969,6 +991,8 @@ def test_merge_commit_failure_reports_failed_phase_and_resume_marker(
             }
         ],
     )
+    labels_path = _labels_path(env, "20240101", "143022_300")
+    labels_before = labels_path.read_bytes()
 
     def fail_segments(*args, **kwargs):
         raise RuntimeError("segment boom")
@@ -979,12 +1003,16 @@ def test_merge_commit_failure_reports_failed_phase_and_resume_marker(
 
     assert result["error"] == "segment boom"
     assert result["failed_phase"] == "segments"
-    assert "recovery" in result
+    assert "recovery" not in result
     assert result["source_id"] == "failure_source"
     assert result["target_id"] == "failure_target"
     source = load_journal_entity("failure_source")
     assert source is not None
-    assert source["merged_into"] == "failure_target"
+    assert "merged_into" not in source
+    assert _entity_path(env, "failure_source").read_bytes() == source_before
+    assert _entity_path(env, "failure_target").read_bytes() == target_before
+    assert labels_path.read_bytes() == labels_before
+    assert not _audit_log_path(env).exists()
 
 
 def test_merge_segment_rewrites_use_owner_byte_shapes(speakers_env):

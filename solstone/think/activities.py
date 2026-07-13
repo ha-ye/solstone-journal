@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from solstone.think.edge_sources import EdgeContext
-from solstone.think.journal_io import atomic_replace, hold_lock
+from solstone.think.journal_io import atomic_replace, contained_path, hold_lock
 from solstone.think.utils import get_journal, segment_parse
 
 logger = logging.getLogger(__name__)
@@ -955,6 +955,111 @@ def remap_activity_entity_ids(
             result["files_rewritten"] += 1
 
     return result
+
+
+def apply_entity_merge_activity_inverse(
+    entries: list[dict[str, Any]],
+    *,
+    source_id: str,
+    target_id: str,
+) -> dict[str, Any]:
+    """Undo recorded entity-id rewrites in activity records under owner locks.
+
+    Each entry is matched by record id plus a recorded preimage for the list item
+    or active entity occurrence. A stale or shifted locator raises instead of
+    rewriting the wrong row.
+    """
+
+    result: dict[str, Any] = {
+        "records_rewritten": 0,
+        "fields_rewritten": 0,
+        "files_scanned": 0,
+        "files_rewritten": 0,
+        "errors": [],
+    }
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        by_path.setdefault(str(entry["path"]), []).append(entry)
+
+    journal = Path(get_journal())
+    for path_rel, path_entries in by_path.items():
+        path = contained_path(journal, path_rel)
+        file_fields = 0
+        file_records: set[Any] = set()
+
+        def modify(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            nonlocal file_fields
+            updated = copy.deepcopy(rows)
+            for entry in path_entries:
+                record = _find_activity_record_for_inverse(updated, entry)
+                if _apply_activity_inverse_entry(record, entry, source_id, target_id):
+                    file_fields += 1
+                    file_records.add(entry.get("record_id"))
+            return updated
+
+        locked_modify(path, modify)
+        result["files_scanned"] += 1
+        if file_fields:
+            result["files_rewritten"] += 1
+            result["fields_rewritten"] += file_fields
+            result["records_rewritten"] += len(file_records)
+
+    return result
+
+
+def _find_activity_record_for_inverse(
+    rows: list[dict[str, Any]], entry: dict[str, Any]
+) -> dict[str, Any]:
+    record_id = entry.get("record_id")
+    matches = [row for row in rows if row.get("id") == record_id]
+    if not matches:
+        raise ValueError(f"activity inverse locator missing record id {record_id!r}")
+    if len(matches) > 1:
+        raise ValueError(f"activity inverse locator is ambiguous for {record_id!r}")
+    return matches[0]
+
+
+def _apply_activity_inverse_entry(
+    record: dict[str, Any],
+    entry: dict[str, Any],
+    source_id: str,
+    target_id: str,
+) -> bool:
+    field_path = entry.get("field_path", [])
+    if field_path[:1] == ["active_entities"]:
+        values = record.get("active_entities")
+        if not isinstance(values, list):
+            raise ValueError("activity inverse active_entities locator missing list")
+        occurrence = int(entry.get("occurrence", 0))
+        seen = 0
+        for index, value in enumerate(values):
+            if value != target_id:
+                continue
+            if seen == occurrence:
+                values[index] = source_id
+                return True
+            seen += 1
+        raise ValueError("activity inverse active_entities preimage not found")
+
+    if len(field_path) != 3:
+        raise ValueError(f"activity inverse field_path is invalid: {field_path!r}")
+    list_field = str(field_path[0])
+    id_field = str(field_path[2])
+    items = record.get(list_field)
+    if not isinstance(items, list):
+        raise ValueError(f"activity inverse locator missing list {list_field!r}")
+    item_preimage = entry.get("item_preimage")
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        expected = copy.deepcopy(item_preimage)
+        if not isinstance(expected, dict):
+            raise ValueError("activity inverse item preimage missing")
+        expected[id_field] = target_id
+        if item == expected:
+            item[id_field] = source_id
+            return True
+    raise ValueError("activity inverse item preimage not found")
 
 
 def append_edit(

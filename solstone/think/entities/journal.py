@@ -16,7 +16,11 @@ from pathlib import Path
 from typing import Any
 
 from solstone.think.entities.core import EntityDict, get_identity_names
-from solstone.think.journal_io import atomic_replace
+from solstone.think.entities.history import (
+    EntityOperationContext,
+    save_entity_identity_with_history,
+    trust_operation_lock,
+)
 from solstone.think.utils import get_journal, now_ms
 
 
@@ -57,25 +61,25 @@ def load_journal_entity(entity_id: str) -> EntityDict | None:
         return None
 
 
-def save_journal_entity(entity: EntityDict) -> None:
-    """Save a journal-level entity using atomic write.
+def save_journal_entity(
+    entity: EntityDict,
+    *,
+    operation: EntityOperationContext | None = None,
+) -> None:
+    """Save a journal-level entity and append durable identity history.
 
     The entity must have an 'id' field. Creates the directory if needed.
 
     Args:
         entity: Entity dict with id, name, type, aka (optional), is_principal (optional),
                 created_at fields.
+        operation: Optional explicit history operation context. Defaults to a
+            regular create/update event.
 
     Raises:
         ValueError: If entity has no id field
     """
-    entity_id = entity.get("id")
-    if not entity_id:
-        raise ValueError("Entity must have an 'id' field")
-
-    path = journal_entity_path(entity_id)
-    content = json.dumps(entity, ensure_ascii=False, indent=2) + "\n"
-    atomic_replace(path, content)
+    save_entity_identity_with_history(entity, operation=operation)
 
 
 def scan_journal_entities() -> list[str]:
@@ -189,26 +193,27 @@ def create_journal_entity(
     Returns:
         The newly-created and persisted entity dict.
     """
-    entity: EntityDict = {
-        "id": entity_id,
-        "name": name,
-        "type": entity_type,
-        "created_at": now_ms(),
-    }
-    if aka:
-        entity["aka"] = aka
-    if emails:
-        entity["emails"] = [e.lower() for e in emails]
+    with trust_operation_lock():
+        entity: EntityDict = {
+            "id": entity_id,
+            "name": name,
+            "type": entity_type,
+            "created_at": now_ms(),
+        }
+        if aka:
+            entity["aka"] = aka
+        if emails:
+            entity["emails"] = [e.lower() for e in emails]
 
-    if (
-        not skip_principal
-        and _should_be_principal(name, aka)
-        and not has_journal_principal()
-    ):
-        entity["is_principal"] = True
+        if (
+            not skip_principal
+            and _should_be_principal(name, aka)
+            and not has_journal_principal()
+        ):
+            entity["is_principal"] = True
 
-    save_journal_entity(entity)
-    return entity
+        save_journal_entity(entity)
+        return entity
 
 
 def block_journal_entity(entity_id: str) -> dict[str, Any]:

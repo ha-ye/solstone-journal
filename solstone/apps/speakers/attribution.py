@@ -49,11 +49,18 @@ from solstone.think.entities.journal import (
 from solstone.think.journal_io import (
     MalformedPolicy,
     atomic_replace,
+    contained_path,
     hold_lock,
     read_json,
     write_json,
 )
-from solstone.think.utils import day_path, now_ms, segment_path, segment_start_ts_ms
+from solstone.think.utils import (
+    day_path,
+    get_journal,
+    now_ms,
+    segment_path,
+    segment_start_ts_ms,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -658,6 +665,145 @@ def remap_speaker_corrections_for_entity_merge(
 
         atomic_replace(path, json.dumps({"corrections": corrections}, indent=2))
         return changed_entries
+
+
+def apply_entity_merge_segment_inverse(
+    entries: list[dict[str, Any]],
+    *,
+    source_id: str,
+    target_id: str,
+) -> dict[str, int]:
+    """Undo recorded speaker label/correction rewrites under owner locks."""
+
+    counts = {"labels_rewritten": 0, "corrections_rewritten": 0, "files_rewritten": 0}
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    for entry in entries:
+        by_path.setdefault(str(entry["path"]), []).append(entry)
+
+    journal = Path(get_journal())
+    for path_rel, path_entries in by_path.items():
+        path = contained_path(journal, path_rel)
+        if path.name == "speaker_labels.json":
+            if _apply_speaker_label_inverse_file(
+                path, path_entries, source_id=source_id, target_id=target_id
+            ):
+                counts["labels_rewritten"] += 1
+                counts["files_rewritten"] += 1
+        elif path.name == "speaker_corrections.json":
+            if _apply_speaker_correction_inverse_file(
+                path, path_entries, source_id=source_id, target_id=target_id
+            ):
+                counts["corrections_rewritten"] += 1
+                counts["files_rewritten"] += 1
+        else:
+            raise ValueError(f"unsupported speaker inverse path: {path_rel}")
+    return counts
+
+
+def _apply_speaker_label_inverse_file(
+    path: Path,
+    entries: list[dict[str, Any]],
+    *,
+    source_id: str,
+    target_id: str,
+) -> bool:
+    with hold_lock(path):
+        current = read_json(path, on_error=MalformedPolicy.RAISE, default=None)
+        if not isinstance(current, dict):
+            raise ValueError(f"speaker label inverse path is not an object: {path}")
+        labels = current.get("labels")
+        if not isinstance(labels, list):
+            raise ValueError(f"speaker label inverse path has no labels list: {path}")
+        changed = False
+        for entry in entries:
+            row = _match_speaker_inverse_row(
+                labels,
+                entry,
+                fields=("speaker",),
+                source_id=source_id,
+                target_id=target_id,
+            )
+            row["speaker"] = source_id
+            changed = True
+        if changed:
+            write_json(path, current)
+        return changed
+
+
+def _apply_speaker_correction_inverse_file(
+    path: Path,
+    entries: list[dict[str, Any]],
+    *,
+    source_id: str,
+    target_id: str,
+) -> bool:
+    with hold_lock(path):
+        current = read_json(path, on_error=MalformedPolicy.RAISE, default=None)
+        if not isinstance(current, dict):
+            raise ValueError(
+                f"speaker correction inverse path is not an object: {path}"
+            )
+        corrections = current.get("corrections")
+        if not isinstance(corrections, list):
+            raise ValueError(
+                f"speaker correction inverse path has no corrections list: {path}"
+            )
+        changed = False
+        for group in _group_speaker_inverse_entries(entries):
+            row = _match_speaker_inverse_row(
+                corrections,
+                group,
+                fields=tuple(group["fields"]),
+                source_id=source_id,
+                target_id=target_id,
+            )
+            for field in group["fields"]:
+                row[field] = source_id
+                changed = True
+        if changed:
+            atomic_replace(path, json.dumps({"corrections": corrections}, indent=2))
+        return changed
+
+
+def _group_speaker_inverse_entries(
+    entries: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    grouped: dict[str, dict[str, Any]] = {}
+    for entry in entries:
+        preimage = entry.get("row_preimage")
+        key = json.dumps(preimage, sort_keys=True, ensure_ascii=False)
+        group = grouped.setdefault(
+            key,
+            {
+                "row_preimage": preimage,
+                "row_key": entry.get("row_key"),
+                "fields": [],
+            },
+        )
+        group["fields"].append(entry["field"])
+    return list(grouped.values())
+
+
+def _match_speaker_inverse_row(
+    rows: list[Any],
+    entry: dict[str, Any],
+    *,
+    fields: tuple[str, ...],
+    source_id: str,
+    target_id: str,
+) -> dict[str, Any]:
+    preimage = entry.get("row_preimage")
+    if not isinstance(preimage, dict):
+        raise ValueError("speaker inverse entry is missing row_preimage")
+    expected = dict(preimage)
+    for field in fields:
+        if expected.get(field) != source_id:
+            raise ValueError("speaker inverse preimage does not contain source id")
+        expected[field] = target_id
+    matches = [row for row in rows if isinstance(row, dict) and row == expected]
+    if len(matches) != 1:
+        raise ValueError("speaker inverse locator did not match exactly one row")
+    return matches[0]
 
 
 def _label_sentence_id(label: dict) -> int | None:

@@ -54,6 +54,16 @@ from solstone.think.entities.errors import (
 # Formatting (for indexer)
 from solstone.think.entities.formatting import format_entities, format_observations
 
+# Entity history
+from solstone.think.entities.history import (
+    EntityHistoryError,
+    EntityHistoryRepairRequired,
+    EntityOperationContext,
+    iter_entity_history,
+    load_entity_history_event,
+    restore_journal_entity_version,
+)
+
 # Journal-level entity management
 from solstone.think.entities.journal import (
     block_journal_entity,
@@ -93,7 +103,7 @@ from solstone.think.entities.matching import (
     resolve_journal_entity,
     validate_aka_uniqueness,
 )
-from solstone.think.entities.merge import merge_entity
+from solstone.think.entities.merge import merge_entity, undo_entity_merge
 
 # Observations
 from solstone.think.entities.observations import (
@@ -156,6 +166,13 @@ __all__ = [
     "EntityExistsError",
     "EntityNotFoundError",
     "EntityWriteError",
+    # History
+    "EntityHistoryError",
+    "EntityHistoryRepairRequired",
+    "EntityOperationContext",
+    "iter_entity_history",
+    "load_entity_history_event",
+    "restore_journal_entity_version",
     # Journal
     "block_journal_entity",
     "create_journal_entity",
@@ -187,6 +204,7 @@ __all__ = [
     "load_entity_names",
     "load_recent_entity_names",
     "merge_entity",
+    "undo_entity_merge",
     "parse_entity_file",
     # Saving
     "add_entity_aka",

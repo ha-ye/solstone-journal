@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import os
@@ -932,6 +934,80 @@ def fold_entity_edges(
         raise
     finally:
         conn.close()
+
+
+def fold_entity_edges_for_recorded_merge(
+    source_id: str,
+    target_id: str,
+    journal: str,
+) -> dict[str, int]:
+    """Fold merge endpoints and rebuild when the current index is source-derived."""
+
+    should_rebuild = _edge_rows_all_from_sources(journal)
+    result = fold_entity_edges(source_id, target_id)
+    if should_rebuild:
+        rebuild = rebuild_edges(journal)
+        if rebuild.get("failed"):
+            raise sqlite3.DatabaseError(f"edge rebuild failed after fold: {rebuild}")
+    return result
+
+
+def rebuild_edges_for_recorded_merge_undo(journal: str) -> str:
+    """Rebuild edge tables for recorded-merge undo and return a row fingerprint."""
+
+    result = rebuild_edges(journal)
+    if result.get("failed"):
+        raise sqlite3.DatabaseError(f"edge rebuild failed: {result}")
+    return fingerprint_edge_rows(journal)
+
+
+def fingerprint_edge_rows(journal: str) -> str:
+    """Return a deterministic fingerprint of current edge rows."""
+
+    from solstone.think.indexer.journal import get_journal_index
+
+    columns = [
+        "src",
+        "dst",
+        "kind",
+        "directed",
+        "src_name",
+        "dst_name",
+        "day",
+        "facet",
+        "source",
+        "path",
+        "anchor",
+        "label",
+        "ts",
+        "weight",
+    ]
+    conn, _ = get_journal_index(journal)
+    try:
+        rows = [
+            list(row) for row in conn.execute(f"SELECT {', '.join(columns)} FROM edges")
+        ]
+        rows.sort(
+            key=lambda row: json.dumps(row, ensure_ascii=True, separators=(",", ":"))
+        )
+        payload = json.dumps(rows, ensure_ascii=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    finally:
+        conn.close()
+
+
+def _edge_rows_all_from_sources(journal: str) -> bool:
+    from solstone.think.indexer.journal import get_journal_index
+
+    conn, _ = get_journal_index(journal)
+    try:
+        rows = [row[0] for row in conn.execute("SELECT DISTINCT path FROM edges")]
+    finally:
+        conn.close()
+    if not rows:
+        return False
+    discovered = set(discover_edge_files(journal))
+    return all(path in discovered for path in rows)
 
 
 def discover_edge_files(journal: str) -> dict[str, str]:

@@ -13,6 +13,7 @@ Note: Voiceprints are stored at journal level (entities/<id>/voiceprints.npz)
 since they are identity-specific, not facet-specific.
 """
 
+import copy
 import json
 import shutil
 from pathlib import Path
@@ -20,7 +21,12 @@ from typing import Any
 
 from solstone.think.entities.core import EntityDict, entity_slug
 from solstone.think.entities.errors import EntityExistsError, EntityNotFoundError
-from solstone.think.journal_io import atomic_replace
+from solstone.think.journal_io import (
+    MalformedPolicy,
+    atomic_replace,
+    hold_lock,
+    read_json,
+)
 from solstone.think.utils import get_journal
 
 
@@ -84,6 +90,111 @@ def save_facet_relationship(
 
     content = json.dumps(relationship, ensure_ascii=False, indent=2) + "\n"
     atomic_replace(path, content)
+
+
+def apply_entity_merge_relationship_inverse(
+    *,
+    target_id: str,
+    entries: list[dict[str, Any]],
+    active_entries: list[dict[str, Any]],
+    merge_seq: int,
+) -> None:
+    """Undo recorded facet relationship merge contributions under owner locks."""
+
+    for entry in entries:
+        facet = str(entry["facet"])
+        if entry.get("kind") == "move":
+            _remove_moved_relationship(facet, target_id, entry)
+            continue
+        path = facet_relationship_path(facet, target_id)
+        with hold_lock(path):
+            rel = read_json(path, on_error=MalformedPolicy.RAISE, default=None)
+            if not isinstance(rel, dict):
+                raise ValueError(f"facet relationship inverse target missing: {path}")
+            _replay_facet_scalars(
+                rel,
+                facet,
+                entry.get("scalar_support", []),
+                active_entries,
+                merge_seq,
+            )
+            rel["entity_id"] = target_id
+            atomic_replace(path, json.dumps(rel, ensure_ascii=False, indent=2) + "\n")
+
+
+def _remove_moved_relationship(
+    facet: str,
+    target_id: str,
+    entry: dict[str, Any],
+) -> None:
+    path = facet_relationship_path(facet, target_id)
+    with hold_lock(path):
+        current = read_json(path, on_error=MalformedPolicy.RAISE, default=None)
+        expected = copy.deepcopy(entry.get("relationship"))
+        if isinstance(expected, dict):
+            expected["entity_id"] = target_id
+        if current != expected:
+            raise ValueError(
+                "facet relationship inverse locator did not match preimage"
+            )
+        path.unlink(missing_ok=False)
+        try:
+            path.parent.rmdir()
+        except OSError:
+            pass
+
+
+def _replay_facet_scalars(
+    rel: dict[str, Any],
+    facet: str,
+    support: list[dict[str, Any]],
+    active_entries: list[dict[str, Any]],
+    merge_seq: int,
+) -> None:
+    for entry in support:
+        field = entry["field"]
+        if entry.get("target_prevalue_missing"):
+            value: Any = None
+            missing = True
+        else:
+            value = copy.deepcopy(entry["target_prevalue"])
+            missing = False
+        for active in active_entries:
+            if int(active.get("_commit_seq") or 0) <= merge_seq:
+                continue
+            if active.get("facet") != facet:
+                continue
+            for other in active.get("scalar_support", []):
+                if other.get("field") != field:
+                    continue
+                value, missing = _replay_facet_scalar_contribution(
+                    field, value, missing, other.get("source_value")
+                )
+        if missing:
+            rel.pop(field, None)
+        else:
+            rel[field] = value
+
+
+def _replay_facet_scalar_contribution(
+    field: str,
+    current_value: Any,
+    current_missing: bool,
+    source_value: Any,
+) -> tuple[Any, bool]:
+    if source_value in (None, "", [], {}):
+        return current_value, current_missing
+    if field == "attached_at":
+        if current_missing or source_value < current_value:
+            return copy.deepcopy(source_value), False
+        return current_value, current_missing
+    if field in {"updated_at", "last_seen"}:
+        if current_missing or source_value > current_value:
+            return copy.deepcopy(source_value), False
+        return current_value, current_missing
+    if current_missing:
+        return copy.deepcopy(source_value), False
+    return current_value, current_missing
 
 
 def scan_facet_relationships(facet: str) -> list[str]:

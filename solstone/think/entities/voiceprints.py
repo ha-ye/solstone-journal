@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from solstone.think.entities.journal import (
     ensure_journal_entity_memory,
@@ -159,6 +159,86 @@ def rewrite_voiceprint_metadata(
 
     update_npz(npz_path, transform, expected_keys=VOICEPRINT_KEYS)
     return updates
+
+
+def apply_entity_merge_voiceprint_inverse(
+    entity_id: str,
+    support: list[dict[str, Any]],
+    active_support: list[list[dict[str, Any]]],
+) -> int:
+    """Remove merge-added voiceprints under the voiceprint npz owner lock."""
+
+    active_keys = {
+        tuple(entry.get("key", [])) for section in active_support for entry in section
+    }
+    removable = [
+        entry
+        for entry in support
+        if entry.get("delta_applied")
+        and not entry.get("target_preexisting")
+        and tuple(entry.get("key", [])) not in active_keys
+    ]
+    if not removable:
+        return 0
+
+    try:
+        folder = journal_entity_memory_path(entity_id)
+    except (RuntimeError, ValueError) as exc:
+        raise ValueError(f"voiceprint inverse target not found: {entity_id}") from exc
+    npz_path = folder / "voiceprints.npz"
+    if not npz_path.exists():
+        raise ValueError(f"voiceprint inverse target file not found: {npz_path}")
+
+    removed = 0
+
+    def transform(current: dict[str, np.ndarray]) -> dict[str, np.ndarray] | None:
+        import numpy as np
+
+        nonlocal removed
+        embeddings = current.get("embeddings")
+        metadata_arr = current.get("metadata")
+        if embeddings is None or metadata_arr is None:
+            raise MalformedDataError(npz_path)
+        metadata = [json.loads(str(item)) for item in metadata_arr]
+        remove_indexes: set[int] = set()
+        for entry in removable:
+            key = tuple(entry.get("key", []))
+            expected_meta = entry.get("metadata")
+            matches = [
+                index
+                for index, meta in enumerate(metadata)
+                if _voiceprint_key(meta) == key and meta == expected_meta
+            ]
+            if len(matches) != 1:
+                raise ValueError(
+                    "voiceprint inverse locator did not match exactly one row"
+                )
+            remove_indexes.add(matches[0])
+        keep_indexes = [
+            index for index in range(len(metadata)) if index not in remove_indexes
+        ]
+        removed = len(remove_indexes)
+        if not keep_indexes:
+            return {}
+        return {
+            "embeddings": embeddings[keep_indexes],
+            "metadata": np.asarray(
+                [json.dumps(metadata[index]) for index in keep_indexes],
+                dtype=str,
+            ),
+        }
+
+    update_npz(npz_path, transform, expected_keys=VOICEPRINT_KEYS)
+    return removed
+
+
+def _voiceprint_key(meta: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+    return (
+        meta.get("day"),
+        meta.get("segment_key"),
+        meta.get("source"),
+        meta.get("sentence_id"),
+    )
 
 
 def voiceprint_file_path(entity_id: str) -> Path:
