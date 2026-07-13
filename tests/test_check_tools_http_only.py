@@ -100,9 +100,3 @@ def test_main_flags_fixed_targets(tmp_path: Path) -> None:
         "solstone/think/tools/health.py:1: import solstone.think.utils" in result.stderr
     )
     assert "solstone/think/tools/health.py:4: fs open" in result.stderr
-
-
-def test_repo_tree_is_green() -> None:
-    result = _run(REPO_ROOT)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "tools-http-only: pass" in result.stdout

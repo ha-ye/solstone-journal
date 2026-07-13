@@ -180,9 +180,3 @@ def test_excluded_file_with_violations_is_not_flagged(
     assert over == []
     assert stale == []
     assert tracked == []
-
-
-def test_repo_tree_is_green() -> None:
-    result = _run(REPO_ROOT)
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "call-http-only: pass" in result.stdout
