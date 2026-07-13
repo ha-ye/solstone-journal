@@ -36,6 +36,7 @@ class ImportResult:
     principal_collision: dict[str, Any] | None = None
     merge_log_path: str | None = None
     merge_staging_path: str | None = None
+    raw_retention: str | None = None
 
 
 @runtime_checkable

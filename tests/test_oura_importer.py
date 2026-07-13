@@ -1621,6 +1621,7 @@ def test_first_sync_save_writes_bundle_dedupe_and_cursor(tmp_path: Path, monkeyp
     assert manifest["source_type"] == SOURCE_OURA_API
     assert manifest["entry_count"] == _SYNC_ROW_COUNT
     assert manifest["days_affected"] == ["20260102", "20260103"]
+    assert manifest["raw_retention"] == RawRetentionDecision.RETAIN_PARSED.value
     content_lines = (import_dir / "content_manifest.jsonl").read_text().splitlines()
     assert json.loads(content_lines[0])["type"] == "health_normalized_month"
 
@@ -1666,6 +1667,58 @@ def test_first_sync_save_writes_bundle_dedupe_and_cursor(tmp_path: Path, monkeyp
     assert result["imported"] == 0  # updated
     assert result["source_label"] == "Oura (API)"
     assert "cron_hint" not in result
+
+
+@pytest.mark.parametrize(
+    ("retention", "expect_raw_pages"),
+    [
+        (RawRetentionDecision.RETAIN_PARSED, True),
+        (RawRetentionDecision.DISCARD, False),
+    ],
+)
+def test_oura_sync_applies_raw_retention_choice(
+    tmp_path: Path,
+    monkeypatch,
+    retention: RawRetentionDecision,
+    expect_raw_pages: bool,
+) -> None:
+    journal = _use_journal(tmp_path, monkeypatch)
+    _write_sync_artifact(
+        journal,
+        _sync_artifact(journal, raw_retention_decision=retention.value),
+    )
+
+    result = oura.backend.sync(
+        journal,
+        dry_run=False,
+        confirm_health_save=True,
+        client=_canned_client(_fixture_transport()),
+        today=dt.date(2026, 1, 10),
+    )
+
+    import_dir = journal / "imports" / result["import_id"]
+    raw_dir = import_dir / "raw"
+    rows = [
+        json.loads(line)
+        for line in (import_dir / "normalized" / "2026-01.jsonl")
+        .read_text()
+        .splitlines()
+    ]
+    manifest = json.loads((import_dir / "manifest.json").read_text())
+    dedupe_row = get_health_dedupe_record(journal, rows[0]["dedupe_key"])
+
+    assert result["raw_retention"] == retention.value
+    assert manifest["raw_retention"] == retention.value
+    assert dedupe_row is not None
+    if expect_raw_pages:
+        assert (raw_dir / "oura" / "daily_readiness.jsonl").is_file()
+        assert rows[0]["raw_ref"].startswith(f"imports/{result['import_id']}/raw/oura#")
+        assert dedupe_row["raw_ref"] == rows[0]["raw_ref"]
+    else:
+        assert not raw_dir.exists()
+        assert all("raw_ref" not in row for row in rows)
+        assert dedupe_row["raw_ref"] is None
+        assert "raw/" not in json.dumps(manifest)
 
 
 def test_oura_sync_private_modes_under_permissive_umask(

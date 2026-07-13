@@ -185,6 +185,21 @@ def test_apple_health_save_missing_artifact_blocks_before_setup(
     assert not (journal / "imports" / "20260102_123000").exists()
 
 
+def test_blocked_health_gate_creates_no_directories(tmp_path: Path):
+    journal = tmp_path / "missing-journal"
+
+    with pytest.raises(PreSaveGateError) as exc_info:
+        enforce_pre_save_gate(
+            "apple_health",
+            dry_run=False,
+            confirm_health_save=True,
+            journal_root=journal,
+        )
+
+    assert exc_info.value.to_dict()["gate_reason"] == "missing_approval_artifact"
+    assert not journal.exists()
+
+
 def test_cli_apple_health_save_missing_artifact_blocks_before_setup(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

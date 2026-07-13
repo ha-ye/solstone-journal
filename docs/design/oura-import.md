@@ -129,14 +129,17 @@ Mirrors `apple_health` exactly; all writes live under `imports/**` plus (optiona
 
 ```
 imports/<import_id>/
-  raw/oura/<endpoint>/<NNNN>.json      # verbatim API page documents (save phase)
+  raw/oura/<endpoint>.jsonl            # verbatim API pages when raw_retention=retain_parsed
   normalized/<YYYY-MM>.jsonl           # monthly shards, schema solstone.health.oura.v1
   manifest.json                        # shared.write_manifest, source_type "oura"
   content_manifest.jsonl               # shared.write_content_manifest
+  fetch_windows.json                   # fetched window evidence for the chunker
 imports/health-dedupe.sqlite           # shared dedupe DB (existing)
 imports/oura.json                      # sync cursor (phase O3; never tokens)
 chronicle/<day>/import.oura/000000_300/day_summary_transcript.md   # optional, save phase
 ```
+
+Importer-owned files under `imports/` are private (`0600`) and importer-owned directories under `imports/` are created or repaired as `0700`. Oura API sync applies the validated `raw_retention.decision`: `retain_parsed` keeps raw API pages, while `discard` writes no raw page JSONL and stores no new `raw_ref` values.
 
 **Normalized row** (implemented in the skeleton):
 

@@ -9,7 +9,7 @@ The current Apple Health importer supports a gated synthetic/test-week save path
 - Preview Apple Health `export.xml` data from a directory or zip.
 - Filter previews and save runs with `--date-from YYYY-MM-DD` and `--date-to YYYY-MM-DD`.
 - Require the health pre-save gate before any non-dry-run Apple Health write.
-- Install the source export under `imports/<id>/raw/`.
+- Apply the approved raw-retention decision before installing raw source material.
 - Write normalized monthly JSONL under `imports/<id>/normalized/`.
 - Keep importer-owned record dedupe in `imports/health-dedupe.sqlite`.
 - Optionally write small factual day-summary transcript files with `--with-day-summaries`.
@@ -18,9 +18,13 @@ The live journal and real Apple Health export remain outside automated tests. Us
 
 ## Apple Health Local Save Path
 
-Apple Health has a concrete importer save path for orchestrated use after privacy preflight. The importer writes only under the provided `journal_root`: raw source material under `imports/<id>/raw/`, normalized monthly JSONL under `imports/<id>/normalized/`, importer-owned dedupe rows in `imports/health-dedupe.sqlite`, and optional factual day-summary transcript files under `chronicle/YYYYMMDD/import.apple_health/000000_300/`.
+Apple Health has a concrete importer save path for orchestrated use after privacy preflight. The importer writes only under the provided `journal_root`: approved raw source material under `imports/<id>/raw/`, normalized monthly JSONL under `imports/<id>/normalized/`, importer-owned dedupe rows in `imports/health-dedupe.sqlite`, and optional factual day-summary transcript files under `chronicle/YYYYMMDD/import.apple_health/000000_300/`.
 
 Dense normalized JSONL shards are not returned in `ImportResult.files_created`; only optional day-summary transcript files are returned there so indexers do not ingest per-sample health rows.
+
+Raw retention is enforced from the validated gate decision. `discard` writes no `raw/` directory and normalized rows carry no `raw_ref`. `retain_parsed` installs only `raw/export.xml` for Apple Health, whether the input was a zip or an export directory. `retain_complete` is the only Apple Health branch that copies the original zip or full export tree. Oura API sync accepts `discard` and `retain_parsed`: parsed retention keeps the raw API page JSONL files, while discard writes normalized shards, manifests, dedupe rows, fetch windows, and cursor state without raw page files or raw refs.
+
+All files written under `imports/` by the shared importer writers are installed as `0600`. Import-owned directories under `imports/` are created or repaired as `0700`. The approval-artifact directory `imports/_approvals/` remains manually owner-managed and is not created or repaired by the read-only gate.
 
 ## Source Strategy
 

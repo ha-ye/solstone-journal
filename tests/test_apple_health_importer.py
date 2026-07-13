@@ -29,7 +29,10 @@ from solstone.think.importers.health_schema import (
     pick_day_sleep,
     pick_main_session,
 )
-from solstone.think.importers.pre_save_gate import PreSaveGateError
+from solstone.think.importers.pre_save_gate import (
+    PreSaveGateError,
+    RawRetentionDecision,
+)
 from tests.conftest import write_health_approval_artifact
 
 FIXTURE_ROOT = (
@@ -84,8 +87,22 @@ Glucose 105 mg/dL, 1 workout.
 """
 
 
-def _process_with_approval(path: Path, journal: Path, **kwargs: Any) -> ImportResult:
-    write_health_approval_artifact(journal, importers=["apple_health"])
+def _process_with_approval(
+    path: Path,
+    journal: Path,
+    *,
+    raw_retention_decision: str = RawRetentionDecision.RETAIN_PARSED.value,
+    unparsed_sensitive_modalities_acknowledged: bool | None = None,
+    **kwargs: Any,
+) -> ImportResult:
+    write_health_approval_artifact(
+        journal,
+        importers=["apple_health"],
+        raw_retention_decision=raw_retention_decision,
+        unparsed_sensitive_modalities_acknowledged=(
+            unparsed_sensitive_modalities_acknowledged
+        ),
+    )
     return AppleHealthImporter().process(
         path,
         journal,
@@ -347,14 +364,7 @@ def test_save_mode_writes_raw_source_normalized_rows_and_dedupe_to_journal_root(
         date_to="20260102",
     )
 
-    raw_export = (
-        journal
-        / "imports"
-        / "20260103_120000"
-        / "raw"
-        / "apple_health_export"
-        / "export.xml"
-    )
+    raw_export = journal / "imports" / "20260103_120000" / "raw" / "export.xml"
     normalized = (
         journal / "imports" / "20260103_120000" / "normalized" / "2026-01.jsonl"
     )
@@ -372,6 +382,9 @@ def test_save_mode_writes_raw_source_normalized_rows_and_dedupe_to_journal_root(
     assert result.segments is None
     assert result.date_range == ("20260102", "20260102")
     assert raw_export.read_text(encoding="utf-8").startswith("<?xml")
+    assert glucose_row["raw_ref"].startswith(
+        "imports/20260103_120000/raw/export.xml#record-"
+    )
     assert {row["day"] for row in rows} == {"20260102"}
     assert {row["kind"] for row in rows} == {"record", "workout"}
     assert all(row["import_id"] == "20260103_120000" for row in rows)
@@ -380,6 +393,109 @@ def test_save_mode_writes_raw_source_normalized_rows_and_dedupe_to_journal_root(
     assert dedupe_row["normalized_ref"] == glucose_row["normalized_ref"]
     assert dedupe_row["raw_ref"] == glucose_row["raw_ref"]
     assert not live_journal.exists()
+
+
+@pytest.mark.parametrize(
+    ("source_path", "source_label"),
+    [(ZIP_FIXTURE, "zip"), (FIXTURE_ROOT, "directory")],
+)
+@pytest.mark.parametrize(
+    "retention",
+    [
+        RawRetentionDecision.DISCARD,
+        RawRetentionDecision.RETAIN_PARSED,
+        RawRetentionDecision.RETAIN_COMPLETE,
+    ],
+)
+def test_apple_health_retention_branches_for_zip_and_directory_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_path: Path,
+    source_label: str,
+    retention: RawRetentionDecision,
+) -> None:
+    journal = tmp_path / f"journal-{source_label}-{retention.value}"
+    import_id = f"20260103_12{len(source_label):02d}{len(retention.value):02d}"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    result = _process_with_approval(
+        source_path,
+        journal,
+        import_id=import_id,
+        dry_run=False,
+        date_from="2026-01-02",
+        date_to="2026-01-02",
+        raw_retention_decision=retention.value,
+        unparsed_sensitive_modalities_acknowledged=(
+            True if retention == RawRetentionDecision.RETAIN_COMPLETE else None
+        ),
+    )
+
+    import_dir = journal / "imports" / import_id
+    files = _relative_files(import_dir)
+    shard = import_dir / "normalized" / "2026-01.jsonl"
+    rows = _read_jsonl(shard)
+    manifest = json.loads((import_dir / "manifest.json").read_text())
+    dedupe_row = get_health_dedupe_record(journal, rows[0]["dedupe_key"])
+
+    assert result.raw_retention == retention.value
+    assert manifest["raw_retention"] == retention.value
+    assert dedupe_row is not None
+
+    if retention == RawRetentionDecision.DISCARD:
+        assert not (import_dir / "raw").exists()
+        assert all("raw_ref" not in row for row in rows)
+        assert dedupe_row["raw_ref"] is None
+        assert "raw/" not in json.dumps(manifest)
+        return
+
+    assert all(row["raw_ref"] == dedupe_row["raw_ref"] for row in rows[:1])
+    assert all("raw_ref" in row for row in rows)
+    if retention == RawRetentionDecision.RETAIN_PARSED:
+        assert "raw/export.xml" in files
+        assert not any(
+            "workout-routes" in file
+            or "electrocardiograms" in file
+            or file.endswith("export_cda.xml")
+            for file in files
+        )
+        assert rows[0]["raw_ref"].startswith(f"imports/{import_id}/raw/export.xml#")
+    else:
+        if source_label == "zip":
+            assert f"raw/{ZIP_FIXTURE.name}" in files
+            assert rows[0]["raw_ref"].startswith(
+                f"imports/{import_id}/raw/{ZIP_FIXTURE.name}#"
+            )
+        else:
+            assert "raw/apple_health_export/export.xml" in files
+            assert "raw/apple_health_export/workout-routes/synthetic-route.gpx" in files
+            assert rows[0]["raw_ref"].startswith(
+                f"imports/{import_id}/raw/apple_health_export/export.xml#"
+            )
+
+
+def test_apple_health_retain_parsed_excludes_cda_and_ecg_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    _process_with_approval(
+        DTD_FIXTURE_ROOT,
+        journal,
+        import_id="20260412_120000",
+        dry_run=False,
+        raw_retention_decision=RawRetentionDecision.RETAIN_PARSED.value,
+    )
+
+    files = _relative_files(journal / "imports" / "20260412_120000")
+
+    assert "raw/export.xml" in files
+    assert not any(
+        "electrocardiograms" in file or file.endswith("export_cda.xml")
+        for file in files
+    )
 
 
 def test_apple_health_save_repairs_private_import_modes_under_permissive_umask(
@@ -420,6 +536,58 @@ def test_apple_health_save_repairs_private_import_modes_under_permissive_umask(
         Path(result.files_created[0]),
     ):
         assert _mode(file_path) == 0o600
+
+
+def test_apple_health_discard_update_preserves_historic_dedupe_raw_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    _process_with_approval(
+        FIXTURE_ROOT,
+        journal,
+        import_id="20260103_120000",
+        dry_run=False,
+        date_from="2026-01-02",
+        date_to="2026-01-02",
+        raw_retention_decision=RawRetentionDecision.RETAIN_PARSED.value,
+    )
+    first_rows = _read_jsonl(
+        journal / "imports" / "20260103_120000" / "normalized" / "2026-01.jsonl"
+    )
+    first_glucose = next(
+        row
+        for row in first_rows
+        if row["record_type"] == "HKQuantityTypeIdentifierBloodGlucose"
+    )
+    historic_raw_ref = first_glucose["raw_ref"]
+
+    _process_with_approval(
+        FIXTURE_ROOT,
+        journal,
+        import_id="20260104_120000",
+        dry_run=False,
+        date_from="2026-01-02",
+        date_to="2026-01-02",
+        raw_retention_decision=RawRetentionDecision.DISCARD.value,
+    )
+    second_rows = _read_jsonl(
+        journal / "imports" / "20260104_120000" / "normalized" / "2026-01.jsonl"
+    )
+    second_glucose = next(
+        row
+        for row in second_rows
+        if row["record_type"] == "HKQuantityTypeIdentifierBloodGlucose"
+    )
+    dedupe_row = get_health_dedupe_record(journal, second_glucose["dedupe_key"])
+
+    assert "raw_ref" not in second_glucose
+    assert not (journal / "imports" / "20260104_120000" / "raw").exists()
+    assert dedupe_row is not None
+    assert dedupe_row["raw_ref"] == historic_raw_ref
+    assert dedupe_row["raw_ref"].startswith("imports/20260103_120000/raw/export.xml#")
 
 
 def test_workout_statistics_children_land_in_metadata_without_changing_dedupe(

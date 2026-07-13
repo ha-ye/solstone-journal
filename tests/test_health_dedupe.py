@@ -261,6 +261,47 @@ def test_existing_broad_dedupe_db_is_repaired_on_open(tmp_path: Path):
     assert _mode(db_path.parent) == 0o700
 
 
+def test_batch_upsert_with_null_raw_ref_preserves_historic_raw_ref(tmp_path: Path):
+    key = "sha256:historic-raw-ref"
+    historic_raw_ref = "imports/20260103_120000/raw/export.xml#record-4"
+    upsert_health_dedupe_records(
+        tmp_path,
+        [
+            HealthDedupeRecord(
+                dedupe_key=key,
+                source_family="apple_health",
+                record_type="HKQuantityTypeIdentifierBloodGlucose",
+                start_time="2026-01-02T12:30:00-07:00",
+                first_import_id="20260103_120000",
+                last_seen_import_id="20260103_120000",
+                raw_ref=historic_raw_ref,
+            )
+        ],
+    )
+
+    upsert_health_dedupe_records(
+        tmp_path,
+        [
+            HealthDedupeRecord(
+                dedupe_key=key,
+                source_family="apple_health",
+                record_type="HKQuantityTypeIdentifierBloodGlucose",
+                start_time="2026-01-02T12:30:00-07:00",
+                first_import_id="20260104_120000",
+                last_seen_import_id="20260104_120000",
+                normalized_ref="imports/20260104_120000/normalized/2026-01.jsonl#L1",
+                raw_ref=None,
+            )
+        ],
+    )
+
+    row = get_health_dedupe_record(tmp_path, key)
+
+    assert row is not None
+    assert row["raw_ref"] == historic_raw_ref
+    assert row["last_seen_import_id"] == "20260104_120000"
+
+
 def test_upsert_health_dedupe_records_handles_duplicate_keys_in_batch(tmp_path: Path):
     result = upsert_health_dedupe_records(
         tmp_path,

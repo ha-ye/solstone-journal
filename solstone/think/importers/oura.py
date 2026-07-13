@@ -90,6 +90,7 @@ from solstone.think.importers.health_schema import (
     health_value_hash,
 )
 from solstone.think.importers.pre_save_gate import (
+    RawRetentionDecision,
     ScheduledSyncConsent,
     enforce_oura_sync_gate,
     enforce_pre_save_gate,
@@ -461,7 +462,7 @@ def normalize_bundle(
     bundle: Mapping[str, Iterable[Mapping[str, Any]]],
     *,
     import_id: str,
-    raw_ref_root: str,
+    raw_ref_root: str | None,
     owner_timezone: dt.tzinfo | None = None,
 ) -> list[OuraNormalizedItem]:
     """Normalize parsed endpoint items into rows with stable dedupe keys."""
@@ -470,7 +471,11 @@ def normalize_bundle(
     items: list[OuraNormalizedItem] = []
     for endpoint in sorted(bundle):
         for index, item in enumerate(bundle[endpoint], start=1):
-            raw_ref = f"{raw_ref_root}#{endpoint}-{index}"
+            raw_ref = (
+                f"{raw_ref_root}#{endpoint}-{index}"
+                if raw_ref_root is not None
+                else None
+            )
             items.extend(
                 _normalize_item(
                     endpoint,
@@ -488,7 +493,7 @@ def _normalize_item(
     item: dict[str, Any],
     *,
     import_id: str,
-    raw_ref: str,
+    raw_ref: str | None,
     owner_timezone: dt.tzinfo,
 ) -> list[OuraNormalizedItem]:
     day = parse_oura_day(item.get(_DOCUMENT_DAY_FIELDS.get(endpoint, "day"))) or ""
@@ -872,7 +877,7 @@ def _build_item(
     unit: str | None,
     metadata: dict[str, Any],
     import_id: str,
-    raw_ref: str,
+    raw_ref: str | None,
 ) -> OuraNormalizedItem:
     dedupe_key = health_record_dedupe_key(
         HealthRecordIdentity(
@@ -1518,6 +1523,7 @@ class OuraSyncBackend:
             )
 
         assert _gate_decision is not None
+        assert _gate_decision.raw_retention is not None
 
         # Quiet-run check: classify the fetch against the dedupe ledger
         # BEFORE allocating an import id or writing anything. Dedupe keys
@@ -1564,15 +1570,21 @@ class OuraSyncBackend:
                     scheduled_sync=_gate_decision.scheduled_sync,
                     read_artifact=False,
                 ),
+                raw_retention=_gate_decision.raw_retention.value,
                 quiet_run=True,
                 errors=errors,
             )
 
         import_id = _new_import_id(journal_root)
+        raw_ref_root = (
+            f"imports/{import_id}/raw/oura"
+            if _gate_decision.raw_retention == RawRetentionDecision.RETAIN_PARSED
+            else None
+        )
         items = normalize_bundle(
             bundle,
             import_id=import_id,
-            raw_ref_root=f"imports/{import_id}/raw/oura",
+            raw_ref_root=raw_ref_root,
             owner_timezone=owner_timezone,
         )
         saved = _save_sync_bundle(
@@ -1582,6 +1594,7 @@ class OuraSyncBackend:
             raw_pages=raw_pages,
             bundle=bundle,
             windows=windows,
+            retention=_gate_decision.raw_retention,
         )
 
         # The cursor advances only after every bundle write succeeded; a
@@ -1615,6 +1628,7 @@ class OuraSyncBackend:
             updated=saved["updated"],
             months=saved["months"],
             cron_hint=cron_hint,
+            raw_retention=_gate_decision.raw_retention.value,
             errors=errors,
         )
 
@@ -1715,6 +1729,7 @@ def _sync_result(
     updated: int,
     months: list[str],
     cron_hint: str | None,
+    raw_retention: str | None = None,
     known_rows: int = 0,
     quiet_run: bool = False,
     errors: list[str] | None = None,
@@ -1766,6 +1781,8 @@ def _sync_result(
         result["import_id"] = import_id
     if cron_hint is not None:
         result["cron_hint"] = cron_hint
+    if raw_retention is not None:
+        result["raw_retention"] = raw_retention
     return result
 
 
@@ -1965,6 +1982,7 @@ def _save_sync_bundle(
     raw_pages: Mapping[str, list[dict[str, Any]]],
     bundle: Mapping[str, list[dict[str, Any]]],
     windows: Mapping[str, tuple[str, str]],
+    retention: RawRetentionDecision,
 ) -> dict[str, Any]:
     """Write one sync run's import bundle, mirroring apple_health save mode.
 
@@ -1978,12 +1996,13 @@ def _save_sync_bundle(
     # Raw page documents land first so every row's raw_ref points at bytes
     # that already exist: one JSONL per endpoint, one verbatim API page
     # per line, under imports/<id>/raw/oura/.
-    for endpoint in sorted(raw_pages):
-        pages = raw_pages[endpoint]
-        if pages:
-            write_jsonl_records(
-                import_dir / "raw" / "oura" / f"{endpoint}.jsonl", pages
-            )
+    if retention == RawRetentionDecision.RETAIN_PARSED:
+        for endpoint in sorted(raw_pages):
+            pages = raw_pages[endpoint]
+            if pages:
+                write_jsonl_records(
+                    import_dir / "raw" / "oura" / f"{endpoint}.jsonl", pages
+                )
 
     normalized_by_month: dict[str, list[dict[str, Any]]] = defaultdict(list)
     dedupe_records: list[HealthDedupeRecord] = []
@@ -2035,12 +2054,14 @@ def _save_sync_bundle(
         len(items),
         files_created=[],
         days_affected=sorted(days),
+        raw_retention=retention.value,
     )
 
     return {
         "inserted": dedupe_result.inserted,
         "updated": dedupe_result.updated,
         "months": [path.stem for path in normalized_paths],
+        "raw_retention": retention.value,
     }
 
 

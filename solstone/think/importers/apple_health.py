@@ -31,9 +31,13 @@ from solstone.think.importers.health_schema import (
     health_value_hash,
     pick_day_sleep,
 )
-from solstone.think.importers.pre_save_gate import enforce_pre_save_gate
+from solstone.think.importers.pre_save_gate import (
+    RawRetentionDecision,
+    enforce_pre_save_gate,
+)
 from solstone.think.importers.shared import (
     install_source_file,
+    install_source_stream,
     windowed_source_hash,
     write_content_manifest,
     write_jsonl_records,
@@ -258,6 +262,7 @@ class AppleHealthImporter:
                 summary=f"Dry run only: {preview.summary}",
                 date_range=preview.date_range,
             )
+        assert _gate_decision.raw_retention is not None
 
         resolved_import_id = import_id or dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         result = _save_export(
@@ -267,6 +272,7 @@ class AppleHealthImporter:
             date_window=date_window,
             with_day_summaries=with_day_summaries,
             progress_callback=progress_callback,
+            retention=_gate_decision.raw_retention,
         )
         return ImportResult(
             entries_written=result["entries_written"],
@@ -276,6 +282,7 @@ class AppleHealthImporter:
             summary=result["summary"],
             segments=result["segments"] or None,
             date_range=result["date_range"],
+            raw_retention=result["raw_retention"],
         )
 
 
@@ -524,10 +531,11 @@ def _save_export(
     date_window: _DateWindow,
     with_day_summaries: bool,
     progress_callback: Callable | None,
+    retention: RawRetentionDecision,
 ) -> dict[str, Any]:
     journal_root = Path(journal_root)
     import_dir = Path(journal_root) / "imports" / import_id
-    raw_ref = _install_raw_source(path, import_dir)
+    raw_ref = _install_raw_source(path, import_dir, retention)
     normalized_items = _parse_normalized_items(
         path,
         import_id=import_id,
@@ -591,6 +599,7 @@ def _save_export(
         len(normalized_items),
         files_created,
         days_affected=sorted(summaries),
+        raw_retention=retention.value,
     )
 
     date_range = _date_range_from_days(summaries)
@@ -599,6 +608,7 @@ def _save_export(
         "files_created": files_created,
         "segments": segments,
         "date_range": date_range,
+        "raw_retention": retention.value,
         "summary": (
             "Saved Apple Health import: "
             f"records={len(normalized_items)}, "
@@ -651,8 +661,35 @@ def _write_day_summaries(
     return files, segments
 
 
-def _install_raw_source(path: Path, import_dir: Path) -> str:
+def _install_raw_source(
+    path: Path,
+    import_dir: Path,
+    retention: RawRetentionDecision,
+) -> str | None:
+    if retention == RawRetentionDecision.DISCARD:
+        return None
+
     raw_dir = import_dir / "raw"
+    if retention == RawRetentionDecision.RETAIN_PARSED:
+        raw_path = raw_dir / "export.xml"
+        if path.is_file():
+            with zipfile.ZipFile(path) as archive:
+                member = _find_export_xml_in_zip(archive.namelist())
+                if member is None:
+                    raise FileNotFoundError(
+                        f"No Apple Health export.xml found in {path}"
+                    )
+                with archive.open(member) as handle:
+                    install_source_stream(handle, raw_path)
+        else:
+            export_xml = _find_export_xml_in_directory(path)
+            if export_xml is None:
+                raise FileNotFoundError(
+                    f"No Apple Health export.xml found under {path}"
+                )
+            install_source_file(export_xml, raw_path)
+        return f"imports/{import_dir.name}/raw/export.xml"
+
     if path.is_file():
         raw_path = raw_dir / path.name
         install_source_file(path, raw_path)
@@ -674,7 +711,7 @@ def _parse_normalized_items(
     *,
     import_id: str,
     date_window: _DateWindow,
-    raw_ref: str,
+    raw_ref: str | None,
     progress_callback: Callable | None,
 ) -> list[_NormalizedItem]:
     items: list[_NormalizedItem] = []
@@ -703,12 +740,17 @@ def _parse_normalized_items(
                     if elem.tag == "Workout":
                         for key, value in _workout_statistics_metadata(elem).items():
                             metadata.setdefault(key, value)
+                    item_raw_ref = (
+                        f"{raw_ref}#{elem.tag.lower()}-{scanned}"
+                        if raw_ref is not None
+                        else None
+                    )
                     items.append(
                         _normalize_element(
                             elem.tag,
                             attrib,
                             import_id=import_id,
-                            raw_ref=f"{raw_ref}#{elem.tag.lower()}-{scanned}",
+                            raw_ref=item_raw_ref,
                             day=day or "",
                             metadata=metadata,
                             identity_metadata=identity_metadata,
@@ -739,7 +781,7 @@ def _normalize_element(
     attrib: dict[str, str],
     *,
     import_id: str,
-    raw_ref: str,
+    raw_ref: str | None,
     day: str,
     metadata: dict[str, str] | None = None,
     identity_metadata: dict[str, str] | None = None,
