@@ -4,6 +4,7 @@
 """Tests for empty-result handling in process_audio."""
 
 import argparse
+import datetime
 import json
 import logging
 from unittest.mock import MagicMock, patch
@@ -11,9 +12,19 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from solstone.observe.processing_record import REASON_NO_DECODABLE_AUDIO, STATE_EMPTY
+from solstone.observe.processing_record import (
+    HANDLER_TRANSCRIBE,
+    REASON_NO_DECODABLE_AUDIO,
+    SCHEMA,
+    STATE_EMPTY,
+)
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
+from solstone.think.data_state import (
+    DataState,
+    derive_modality_state,
+    read_processing_record,
+)
 
 SOUND_TAGS = {
     "engine": "ced.cpp v0.1.0",
@@ -81,6 +92,21 @@ def _backend_module() -> MagicMock:
 
 def _read_header(jsonl_path):
     return json.loads(jsonl_path.read_text(encoding="utf-8").splitlines()[0])
+
+
+def _read_jsonl_lines(jsonl_path):
+    return jsonl_path.read_text(encoding="utf-8").splitlines()
+
+
+def _assert_empty_record(header, *, input_size=None):
+    record = header["_solstone_processing"]
+    assert record["schema"] == SCHEMA
+    assert record["state"] == STATE_EMPTY
+    assert record["reason_code"] == REASON_NO_DECODABLE_AUDIO
+    assert record["handler"] == HANDLER_TRANSCRIBE
+    if input_size is not None:
+        assert record["input_size"] == input_size
+    return record
 
 
 def test_process_audio_speech_writes_sound_tags_and_keeps_audio(
@@ -152,7 +178,11 @@ def test_empty_statements_filter_path(raw_path, audio_buffer, vad_result):
         process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     assert not raw_path.exists()
-    assert not raw_path.with_suffix(".jsonl").exists()
+    jsonl_path = raw_path.with_suffix(".jsonl")
+    assert jsonl_path.exists()
+    header = _read_header(jsonl_path)
+    _assert_empty_record(header)
+    assert "sound_tags" not in header
     assert mock_send.call_args.args[:2] == ("observe", "transcribed")
     assert mock_send.call_args.kwargs["outcome"] == "filtered"
 
@@ -198,7 +228,7 @@ def test_empty_statements_preserve_path(raw_path, audio_buffer, vad_result):
     assert mock_send.call_args.kwargs["outcome"] == "preserved"
 
 
-def test_empty_statements_salient_writes_empty_jsonl_then_deletes_audio(
+def test_empty_statements_with_tags_writes_empty_jsonl_then_deletes_audio(
     raw_path,
     audio_buffer,
     vad_result,
@@ -237,7 +267,7 @@ def test_empty_statements_salient_writes_empty_jsonl_then_deletes_audio(
     assert mock_send.call_args.kwargs["outcome"] == "filtered"
 
 
-def test_empty_statements_non_salient_deletes_without_jsonl(
+def test_empty_statements_non_salient_writes_empty_record_then_deletes_audio(
     raw_path,
     audio_buffer,
     vad_result,
@@ -270,7 +300,11 @@ def test_empty_statements_non_salient_deletes_without_jsonl(
         )
 
     assert not raw_path.exists()
-    assert not raw_path.with_suffix(".jsonl").exists()
+    jsonl_path = raw_path.with_suffix(".jsonl")
+    assert jsonl_path.exists()
+    header = _read_header(jsonl_path)
+    _assert_empty_record(header)
+    assert header["sound_tags"] == SILENCE_SOUND_TAGS
     assert mock_send.call_args.kwargs["outcome"] == "filtered"
 
 
@@ -355,7 +389,7 @@ def test_vad_no_speech_preserve_path_writes_empty_record(
     assert mock_send.call_args.kwargs["outcome"] == "preserved"
 
 
-def test_vad_no_speech_salient_writes_empty_jsonl_then_deletes_audio(
+def test_vad_no_speech_with_tags_writes_empty_jsonl_then_deletes_audio(
     raw_path,
     no_speech_vad_result,
 ):
@@ -387,7 +421,7 @@ def test_vad_no_speech_salient_writes_empty_jsonl_then_deletes_audio(
     assert mock_send.call_args.kwargs["outcome"] == "filtered"
 
 
-def test_vad_no_speech_non_salient_deletes_without_jsonl(
+def test_vad_no_speech_non_salient_writes_empty_record_then_deletes_audio(
     raw_path,
     no_speech_vad_result,
 ):
@@ -416,7 +450,11 @@ def test_vad_no_speech_non_salient_deletes_without_jsonl(
         )
 
     assert not raw_path.exists()
-    assert not raw_path.with_suffix(".jsonl").exists()
+    jsonl_path = raw_path.with_suffix(".jsonl")
+    assert jsonl_path.exists()
+    header = _read_header(jsonl_path)
+    _assert_empty_record(header)
+    assert header["sound_tags"] == SILENCE_SOUND_TAGS
     assert mock_send.call_args.kwargs["outcome"] == "filtered"
 
 
@@ -454,7 +492,7 @@ def test_vad_no_speech_write_failure_preserves_audio(
     assert not raw_path.with_suffix(".jsonl").exists()
 
 
-def test_vad_no_speech_tagger_raise_degrades_to_existing_filter_path(
+def test_vad_no_speech_tagger_raise_writes_empty_record_without_tags(
     raw_path,
     no_speech_vad_result,
     caplog: pytest.LogCaptureFixture,
@@ -485,7 +523,11 @@ def test_vad_no_speech_tagger_raise_degrades_to_existing_filter_path(
         )
 
     assert not raw_path.exists()
-    assert not raw_path.with_suffix(".jsonl").exists()
+    jsonl_path = raw_path.with_suffix(".jsonl")
+    assert jsonl_path.exists()
+    header = _read_header(jsonl_path)
+    _assert_empty_record(header)
+    assert "sound_tags" not in header
     assert mock_send.call_args.kwargs["outcome"] == "filtered"
     warnings = [
         record
@@ -494,6 +536,114 @@ def test_vad_no_speech_tagger_raise_degrades_to_existing_filter_path(
         and "sound tagging failed" in record.message
     ]
     assert len(warnings) == 1
+
+
+@pytest.mark.parametrize(
+    ("branch", "sound_tags"),
+    [
+        pytest.param("empty_statements", SOUND_TAGS, id="empty-statements-tags"),
+        pytest.param("empty_statements", None, id="empty-statements-no-tags"),
+        pytest.param("vad_no_speech", SOUND_TAGS, id="vad-no-speech-tags"),
+        pytest.param("vad_no_speech", None, id="vad-no-speech-no-tags"),
+    ],
+)
+def test_filtered_raw_deletion_leaves_terminal_processing_record(
+    raw_path,
+    audio_buffer,
+    vad_result,
+    no_speech_vad_result,
+    branch,
+    sound_tags,
+):
+    raw_path.write_bytes(b"raw audio bytes")
+    input_size = raw_path.stat().st_size
+
+    if branch == "empty_statements":
+        from solstone.observe.transcribe.main import process_audio
+
+        with (
+            patch(
+                "solstone.observe.transcribe.main.get_config",
+                return_value={"transcribe": {"preserve_all": False}},
+            ),
+            patch(
+                "solstone.observe.transcribe.main.get_journal",
+                return_value=str(raw_path.parents[4]),
+            ),
+            patch("solstone.observe.transcribe.main.stt_transcribe", return_value=[]),
+            patch(
+                "solstone.observe.transcribe.main.get_backend",
+                return_value=_backend_module(),
+            ),
+            patch("solstone.observe.transcribe.main.callosum_send"),
+        ):
+            process_audio(
+                raw_path,
+                audio_buffer,
+                vad_result,
+                {},
+                backend="parakeet",
+                sound_tags=sound_tags,
+            )
+    else:
+        from solstone.observe.transcribe.main import _process_one
+
+        args = argparse.Namespace(backend=None, cpu=False, model=None, redo=False)
+        with (
+            patch(
+                "solstone.observe.transcribe.main.load_audio",
+                return_value=np.zeros(10 * SAMPLE_RATE, dtype=np.float32),
+            ),
+            patch("solstone.observe.vad.run_vad", return_value=no_speech_vad_result),
+            patch(
+                "solstone.observe.transcribe.main.tag_audio", return_value=sound_tags
+            ),
+            patch("solstone.observe.transcribe.main.callosum_send"),
+        ):
+            _process_one(
+                raw_path,
+                args,
+                {"preserve_all": False},
+                "parakeet",
+                [],
+            )
+
+    jsonl_path = raw_path.with_suffix(".jsonl")
+    assert not raw_path.exists()
+    assert jsonl_path.exists()
+    lines = _read_jsonl_lines(jsonl_path)
+    assert len(lines) == 1
+
+    header = json.loads(lines[0])
+    record = _assert_empty_record(header, input_size=input_size)
+    attempted_at = record["attempted_at"]
+    assert isinstance(attempted_at, str)
+    datetime.datetime.strptime(attempted_at, "%Y-%m-%dT%H:%M:%SZ")
+    assert record == {
+        "schema": SCHEMA,
+        "state": STATE_EMPTY,
+        "reason_code": REASON_NO_DECODABLE_AUDIO,
+        "handler": HANDLER_TRANSCRIBE,
+        "attempted_at": attempted_at,
+        "input_size": input_size,
+    }
+    if sound_tags is None:
+        assert "sound_tags" not in header
+    else:
+        assert header["sound_tags"] == sound_tags
+
+    assert read_processing_record([header]) == record
+    assert (
+        derive_modality_state(
+            raw_path.parent,
+            "audio",
+            has_chunks=False,
+            has_jsonl=True,
+            has_raw=False,
+            record=record,
+        )
+        == DataState.EMPTY.value
+    )
 
 
 def test_backend_raise_propagates(raw_path, audio_buffer, vad_result):

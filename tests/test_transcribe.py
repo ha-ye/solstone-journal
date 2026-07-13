@@ -720,7 +720,12 @@ def test_process_audio_records_analyzed_processing(tmp_path):
     assert len(jsonl_path.read_text().splitlines()) >= 2
 
 
-def test_process_audio_silent_filtered_writes_no_processing_record(tmp_path):
+def test_process_audio_silent_filtered_writes_empty_record(tmp_path):
+    from solstone.observe.processing_record import (
+        HANDLER_TRANSCRIBE,
+        REASON_NO_DECODABLE_AUDIO,
+        STATE_EMPTY,
+    )
     from solstone.observe.transcribe.main import process_audio
 
     raw_path = (
@@ -758,7 +763,14 @@ def test_process_audio_silent_filtered_writes_no_processing_record(tmp_path):
     ):
         process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
-    assert not raw_path.with_suffix(".jsonl").exists()
+    jsonl_path = raw_path.with_suffix(".jsonl")
+    assert jsonl_path.exists()
+    header = json.loads(jsonl_path.read_text(encoding="utf-8").splitlines()[0])
+    record = header["_solstone_processing"]
+    assert record["state"] == STATE_EMPTY
+    assert record["reason_code"] == REASON_NO_DECODABLE_AUDIO
+    assert record["handler"] == HANDLER_TRANSCRIBE
+    assert record["input_size"] == 1024
     assert not raw_path.exists()
     assert mock_send.call_args.kwargs["outcome"] == "filtered"
 

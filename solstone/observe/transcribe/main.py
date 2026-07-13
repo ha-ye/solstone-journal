@@ -103,7 +103,7 @@ from solstone.observe.transcribe.resource import (
     resolve_stt_backend_choice,
     stt_local_floor_bytes,
 )
-from solstone.observe.transcribe.sound_tags import is_salient, tag_audio
+from solstone.observe.transcribe.sound_tags import tag_audio
 from solstone.observe.utils import (
     SAMPLE_RATE,
     AudioDecodeError,
@@ -987,43 +987,32 @@ def process_audio(
                 vad_result.speech_duration,
                 vad_result.duration,
             )
+            _write_empty_processing_jsonl(
+                raw_path,
+                jsonl_path,
+                model_info=model_info,
+                observer=observer,
+                vad_result=vad_result,
+                segment_meta=segment_meta,
+                backend=resolved_backend,
+                sound_tags=sound_tags,
+            )
             if preserve_all:
                 outcome = "preserved"
-                _write_empty_processing_jsonl(
-                    raw_path,
-                    jsonl_path,
-                    model_info=model_info,
-                    observer=observer,
-                    vad_result=vad_result,
-                    segment_meta=segment_meta,
-                    backend=resolved_backend,
-                    sound_tags=sound_tags,
-                )
                 logging.info(
                     f"No speech detected in {raw_path}, preserving file "
                     f"(preserve_all=true, VAD: {vad_result.speech_duration:.1f}s "
                     f"of {vad_result.duration:.1f}s)"
                 )
-            elif sound_tags is not None and is_salient(sound_tags["tags"]):
-                outcome = "filtered"
-                _write_empty_processing_jsonl(
-                    raw_path,
-                    jsonl_path,
-                    model_info=model_info,
-                    observer=observer,
-                    vad_result=vad_result,
-                    segment_meta=segment_meta,
-                    backend=resolved_backend,
-                    sound_tags=sound_tags,
-                )
-                logging.info(
-                    "No speech detected in %s, wrote salient sound metadata before removing file",
-                    raw_path,
-                )
-                raw_path.unlink()
             else:
                 outcome = "filtered"
-                logging.info(f"No speech detected in {raw_path}, removing file")
+                logging.info(
+                    "No speech detected in %s, wrote terminal empty marker before "
+                    "removing file (VAD: %.1fs speech of %.1fs)",
+                    raw_path,
+                    vad_result.speech_duration,
+                    vad_result.duration,
+                )
                 raw_path.unlink()
 
             _emit_transcribed(
@@ -1385,46 +1374,32 @@ def _process_one(
         segment = get_segment_key(audio_path)
         event = _build_base_event(audio_path, vad_result, segment, observer)
 
+        _write_empty_processing_jsonl(
+            audio_path,
+            _get_jsonl_path(audio_path),
+            model_info={},
+            observer=observer,
+            vad_result=vad_result,
+            segment_meta=None,
+            backend=None,
+            sound_tags=sound_tags,
+        )
         if preserve_all:
             outcome = "preserved"
-            _write_empty_processing_jsonl(
-                audio_path,
-                _get_jsonl_path(audio_path),
-                model_info={},
-                observer=observer,
-                vad_result=vad_result,
-                segment_meta=None,
-                backend=None,
-                sound_tags=sound_tags,
-            )
             logging.info(
                 f"Insufficient speech in {audio_path}, preserving file "
                 f"(preserve_all=true, VAD: {vad_result.speech_duration:.1f}s "
                 f"of {vad_result.duration:.1f}s, threshold: {min_speech_seconds:.1f}s)"
             )
-        elif sound_tags is not None and is_salient(sound_tags["tags"]):
-            outcome = "filtered"
-            _write_empty_processing_jsonl(
-                audio_path,
-                _get_jsonl_path(audio_path),
-                model_info={},
-                observer=observer,
-                vad_result=vad_result,
-                segment_meta=None,
-                backend=None,
-                sound_tags=sound_tags,
-            )
-            logging.info(
-                "Insufficient speech in %s, wrote salient sound metadata before removing file",
-                audio_path,
-            )
-            audio_path.unlink()
         else:
             outcome = "filtered"
             logging.info(
-                f"Insufficient speech in {audio_path}, removing file "
-                f"(VAD: {vad_result.speech_duration:.1f}s of {vad_result.duration:.1f}s, "
-                f"threshold: {min_speech_seconds:.1f}s)"
+                "Insufficient speech in %s, wrote terminal empty marker before "
+                "removing file (VAD: %.1fs of %.1fs, threshold: %.1fs)",
+                audio_path,
+                vad_result.speech_duration,
+                vad_result.duration,
+                min_speech_seconds,
             )
             audio_path.unlink()
 

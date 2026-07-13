@@ -12,6 +12,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from solstone.observe.vad import VadResult
+
 
 def _args(backend: str | None = None) -> argparse.Namespace:
     return argparse.Namespace(backend=backend, cpu=False, model=None, redo=False)
@@ -30,15 +32,18 @@ def test_main_accepts_journal_relative_path(tmp_path, monkeypatch):
     )
 
     mock_load = MagicMock(return_value=MagicMock())
-    mock_vad_result = MagicMock()
-    mock_vad_result.has_speech = False
-    mock_vad_result.speech_duration = 0.0
-    mock_vad_result.duration = 5.0
+    mock_vad_result = VadResult(
+        duration=5.0,
+        speech_duration=0.0,
+        has_speech=False,
+        speech_segments=[],
+    )
     mock_vad = MagicMock(return_value=mock_vad_result)
 
     with (
         patch("solstone.observe.transcribe.main.load_audio", mock_load),
         patch("solstone.observe.vad.run_vad", mock_vad),
+        patch("solstone.observe.transcribe.main.tag_audio", return_value=None),
         patch("solstone.observe.transcribe.main.callosum_send"),
         patch(
             "solstone.observe.transcribe.main.get_segment_key",

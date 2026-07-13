@@ -14,7 +14,7 @@ event carries. Two rules govern everything here:
 
 | Exit | Meaning | Input file | Output |
 |------|---------|-----------|--------|
-| `0` | Work is done. Either a transcript was written, or the clip was silence-filtered / preserved by policy. | Consumed or preserved per policy | `.jsonl` (+ `.npz`) written, or deliberately not written for filtered silence |
+| `0` | Work is done. Either a transcript was written, or the clip was silence-filtered / preserved by policy. | Consumed or preserved per policy | Transcript `.jsonl` (+ `.npz`) written, or a header-only terminal `.jsonl` record written for filtered silence before raw removal |
 | `69` (`EXIT_PROVIDER_BLOCKED`) | **Honest deferral.** The STT provider could not do the work. Nothing was attempted downstream, nothing was written. | **Preserved on disk** | None |
 | `1` | Hard failure. Something broke that a retry will not fix on its own. | Preserved on disk | None |
 

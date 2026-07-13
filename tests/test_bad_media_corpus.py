@@ -520,10 +520,17 @@ def test_ac3_silent_audio_records_empty_no_stt(segment_journal, monkeypatch):
         preserve_all=False,
     )
 
-    assert filtered_record is None
+    assert filtered_record is not None
+    _assert_processing_record(
+        filtered_record,
+        state=STATE_EMPTY,
+        reason_code=REASON_NO_DECODABLE_AUDIO,
+        handler=HANDLER_TRANSCRIBE,
+    )
     assert filtered_stt.call_count == 0
     assert not filter_audio.exists()
-    assert not filtered_jsonl.exists()
+    assert filtered_jsonl.exists()
+    assert len(filtered_jsonl.read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
