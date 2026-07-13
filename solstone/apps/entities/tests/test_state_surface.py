@@ -144,7 +144,7 @@ def test_connection_network_states_are_statically_distinguishable(html):
     assert "error?.body?.reason_code === 'edge_index_unavailable'" in section
     assert "renderConnectionsIndexUnavailable(container);" in section
     assert (
-        "renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal, error);"
+        "renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal);"
         in section
     )
 
@@ -211,6 +211,37 @@ def test_connection_fetch_urls_and_reference_day_threading(html):
     )
     assert "pane.dataset.offset = String(offset + rows.length);" in actions
     assert "navigateToEntity(peerId);" in actions
+
+
+def test_connection_async_writes_are_current_entity_guarded(html):
+    guard = _function_body(html, "isCurrentConnectionEntity")
+    section = _function_body(html, "renderConnectionsSection")
+    initial = _function_body(html, "loadInitialConnectionEvidence")
+    actions = _function_body(html, "renderEvidenceActions")
+    facet_show = _function_body(html, "showFacetDetailView")
+    journal_show = _function_body(html, "showJournalDetailView")
+
+    assert "return currentDetailEntity?.id === entityId;" in guard
+    assert "currentDetailEntity = null;" in facet_show
+    assert "currentDetailEntity = null;" in journal_show
+    assert section.count("if (!isCurrentConnectionEntity(entityId)) return;") >= 3
+    assert initial.count("if (!isCurrentConnectionEntity(entityId)) return;") == 2
+    assert actions.count("if (!isCurrentConnectionEntity(entityId)) return;") == 2
+
+
+def test_connection_evidence_trailing_controls_are_cleared(html):
+    clear = _function_body(html, "clearEvidenceTrailingControls")
+    actions = _function_body(html, "renderEvidenceActions")
+    failed = _function_body(html, "renderEvidenceFetchFailed")
+
+    assert "pane.querySelector('.entity-conn-evidence-actions')?.remove();" in clear
+    assert "pane.querySelector('.entity-conn-evidence-failed')?.remove();" in clear
+    assert "clearEvidenceTrailingControls(pane);" in actions
+    assert "clearEvidenceTrailingControls(pane);" in failed
+    assert (
+        "pane.querySelector('.entity-conn-evidence-actions')?.remove();" not in actions
+    )
+    assert "pane.querySelector('.entity-conn-evidence-failed')?.remove();" not in failed
 
 
 def test_connection_singular_row_meta_keeps_day_label(html):

@@ -1283,8 +1283,7 @@ tr:hover .entity-delete-btn {
   transition: transform 0.15s;
 }
 
-.entity-conn-row-head[aria-expanded="true"] .entity-conn-chevron,
-.entity-conn-with-you-toggle[aria-expanded="true"] .entity-conn-chevron {
+.entity-conn-row-head[aria-expanded="true"] .entity-conn-chevron {
   transform: rotate(90deg);
 }
 
@@ -1357,6 +1356,13 @@ tr:hover .entity-delete-btn {
 .entity-conn-evidence-row-upcoming {
   color: #6c757d;
   font-style: italic;
+}
+
+.entity-conn-evidence-failed {
+  color: #6c757d;
+  font-size: 0.9em;
+  font-style: italic;
+  margin-top: 0.8em;
 }
 
 .entity-conn-evidence-date {
@@ -2091,6 +2097,10 @@ function loadConnectionHistory(entityId, peerId, offset) {
   return fetchEntityConnJson(`/app/entities/api/history?${query.toString()}`);
 }
 
+function isCurrentConnectionEntity(entityId) {
+  return currentDetailEntity?.id === entityId;
+}
+
 async function renderConnectionsSection(entityId, containerId, isPrincipal) {
   const container = document.getElementById(containerId);
   if (!container || !entityId) return;
@@ -2098,6 +2108,7 @@ async function renderConnectionsSection(entityId, containerId, isPrincipal) {
 
   try {
     const network = await loadEntityNetwork(entityId);
+    if (!isCurrentConnectionEntity(entityId)) return;
     if (network.resolved === null) {
       renderConnectionsAmbiguous(container);
       return;
@@ -2111,8 +2122,10 @@ async function renderConnectionsSection(entityId, containerId, isPrincipal) {
     if (!isPrincipal && withYouSlot) {
       try {
         const history = await loadWithYouHistory(entityId);
+        if (!isCurrentConnectionEntity(entityId)) return;
         hasWithYou = renderWithYouBlock(withYouSlot, entityId, history, referenceDay);
       } catch (error) {
+        if (!isCurrentConnectionEntity(entityId)) return;
         console.error('Error loading owner connection history:', error);
         renderWithYouFailure(withYouSlot);
         hasWithYou = true;
@@ -2123,12 +2136,13 @@ async function renderConnectionsSection(entityId, containerId, isPrincipal) {
       renderConnectionsEmpty(container);
     }
   } catch (error) {
+    if (!isCurrentConnectionEntity(entityId)) return;
     console.error('Error loading connections:', error);
     if (error?.status === 503 && error?.body?.reason_code === 'edge_index_unavailable') {
       renderConnectionsIndexUnavailable(container);
       return;
     }
-    renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal, error);
+    renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal);
   }
 }
 
@@ -2162,7 +2176,7 @@ function renderConnectionsIndexUnavailable(container) {
   container.appendChild(state);
 }
 
-function renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal, error) {
+function renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal) {
   container.innerHTML = window.SurfaceState.error({
     heading: ENT_COPY.ENT_CONN_LOAD_FAILED,
     desc: '',
@@ -2364,8 +2378,10 @@ async function loadInitialConnectionEvidence(entityId, peerId, pane, referenceDa
   pane.innerHTML = '<span class="observations-empty">loading...</span>';
   try {
     const history = await loadConnectionHistory(entityId, peerId, 0);
+    if (!isCurrentConnectionEntity(entityId)) return;
     renderEvidencePane(pane, entityId, peerId, history, referenceDay, true);
   } catch (error) {
+    if (!isCurrentConnectionEntity(entityId)) return;
     console.error('Error loading connection evidence:', error);
     renderEvidenceFetchFailed(pane, () => loadInitialConnectionEvidence(entityId, peerId, pane, referenceDay));
   }
@@ -2434,8 +2450,13 @@ function appendEvidenceRows(list, rows, referenceDay) {
   });
 }
 
-function renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLink) {
+function clearEvidenceTrailingControls(pane) {
   pane.querySelector('.entity-conn-evidence-actions')?.remove();
+  pane.querySelector('.entity-conn-evidence-failed')?.remove();
+}
+
+function renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLink) {
+  clearEvidenceTrailingControls(pane);
   const total = Number(pane.dataset.total || 0);
   const offset = Number(pane.dataset.offset || 0);
   const actions = document.createElement('div');
@@ -2452,12 +2473,14 @@ function renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLin
       more.disabled = true;
       try {
         const history = await loadConnectionHistory(entityId, peerId, offset);
+        if (!isCurrentConnectionEntity(entityId)) return;
         const rows = Array.isArray(history.evidence) ? history.evidence : [];
         appendEvidenceRows(pane.querySelector('.entity-conn-evidence-list'), rows, referenceDay);
         pane.dataset.offset = String(offset + rows.length);
         pane.dataset.total = String(history.total || total);
         renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLink);
       } catch (error) {
+        if (!isCurrentConnectionEntity(entityId)) return;
         console.error('Error loading more connection evidence:', error);
         more.disabled = false;
         renderEvidenceFetchFailed(pane, () => more.onclick(), true);
@@ -2485,7 +2508,7 @@ function renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLin
 
 function renderEvidenceFetchFailed(pane, retryFn, append) {
   if (!append) pane.innerHTML = '';
-  pane.querySelector('.entity-conn-evidence-failed')?.remove();
+  clearEvidenceTrailingControls(pane);
   const state = document.createElement('div');
   state.className = 'entity-conn-state entity-conn-evidence-failed';
   const retry = document.createElement('button');
@@ -2564,6 +2587,7 @@ function showDetailView(entityId) {
 
 function showFacetDetailView(entityId) {
   // Show loading state
+  currentDetailEntity = null;
   document.getElementById('detail-name').textContent = 'loading...';
   document.getElementById('detail-allfacets-name').textContent = 'loading...';
   document.getElementById('detail-type').textContent = '';
@@ -2613,6 +2637,7 @@ function showFacetDetailView(entityId) {
 
 function showJournalDetailView(entityId) {
   // Show loading state
+  currentDetailEntity = null;
   document.getElementById('journal-detail-name').textContent = 'loading...';
   document.getElementById('journal-detail-type').textContent = '';
   document.getElementById('journal-detail-aka').textContent = '';
