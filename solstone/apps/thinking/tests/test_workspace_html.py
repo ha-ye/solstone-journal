@@ -78,6 +78,12 @@ def test_workspace_renders_each_lane(settings_env):
     assert 'id="confidentialEnable"' in html
     assert 'id="confidentialRecheck"' in html
     assert 'id="confidentialDisable"' in html
+    assert 'id="confidentialAudioRow"' in html
+    assert 'for="confidentialAudioToggle"' in html
+    assert 'type="checkbox" id="confidentialAudioToggle"' in html
+    assert 'id="confidentialAudioDescription"' in html
+    assert 'id="confidentialAudioNote"' in html
+    assert 'id="confidentialAudioDeferral"' in html
     assert 'id="confidentialLaneMore"' in html
     assert 'id="lane-detail-confidential"' in html
     assert 'data-open-view="byo-setup"' in html
@@ -331,13 +337,49 @@ def test_thinking_deck_copy_constants() -> None:
         ),
     }
     assert thinking_copy.CONFIDENTIAL_MORE_LABEL == "how it works →"
+    assert not hasattr(thinking_copy, "CONFIDENTIAL_TRUST_EGRESS")
+    assert thinking_copy.CONFIDENTIAL_LANE_EGRESS == (
+        "when it's on, the thinking leaves your device — text, images, and "
+        "(with the audio switch on, its default) your recordings for "
+        "transcription. your journal itself never leaves."
+    )
+    assert thinking_copy.CONFIDENTIAL_SETUP_EGRESS_AUDIO_ON == (
+        "what leaves your device: the text and images sol needs a model to "
+        "work through, and your audio recordings for transcription. your "
+        "journal itself never leaves."
+    )
+    assert thinking_copy.CONFIDENTIAL_SETUP_EGRESS_AUDIO_OFF == (
+        "what leaves your device: the text and images sol needs a model to "
+        "work through. your recordings stay on your device — speech becomes "
+        "text there."
+    )
+    assert thinking_copy.CONFIDENTIAL_AUDIO == {
+        "label": "transcribe audio on the service",
+        "on": (
+            "your recordings are transcribed on the service — sent over the "
+            "verified channel, processed, and not kept. on while confidential "
+            "processing is in use."
+        ),
+        "off": "speech becomes text on your device. your recordings don't leave.",
+        "note": "turn it off any time — it takes effect on the next recording.",
+        "deferral": (
+            "transcription is waiting — nothing is sent until your journal "
+            "verifies the service. recordings stay on your device and "
+            "transcribe once the check passes."
+        ),
+    }
     assert thinking_copy.CONFIDENTIAL_TRUST_BEATS == {
         "heading": "confidential processing",
         "sub": "operated by sol pbc",
-        "egress": (
-            "only the thinking leaves — the text and images sol works through. "
-            "your journal stays on this computer, and your recordings stay here "
-            "too (speech becomes text on your device first)."
+        "egress_audio_on": (
+            "what leaves your device: the text and images sol needs a model to "
+            "work through, and your audio recordings for transcription. your "
+            "journal itself never leaves."
+        ),
+        "egress_audio_off": (
+            "what leaves your device: the text and images sol needs a model to "
+            "work through. your recordings stay on your device — speech "
+            "becomes text there."
         ),
         "claims": "no content is retained · no human reviews it · nothing is used to train",
         "attestation": (
@@ -354,7 +396,7 @@ def test_thinking_deck_copy_constants() -> None:
         "heading": thinking_copy.CONFIDENTIAL_TRUST_HEADING,
         "sub": thinking_copy.CONFIDENTIAL_TRUST_SUB,
         "mechanism": thinking_copy.CONFIDENTIAL_TRUST_SUBSTRATE,
-        "egress": thinking_copy.CONFIDENTIAL_TRUST_EGRESS,
+        "egress": thinking_copy.CONFIDENTIAL_LANE_EGRESS,
         "claims": thinking_copy.CONFIDENTIAL_TRUST_CLAIMS,
         "attestation": thinking_copy.CONFIDENTIAL_TRUST_FAIL_CLOSED,
         "early_access": "confidential processing is coming — scouts get it first.",
@@ -392,6 +434,7 @@ def test_thinking_copy_payload_carries_confidential_lane_detail() -> None:
     assert payload["confidential"]["setup"] == {
         "trust_beats": dict(thinking_copy.CONFIDENTIAL_SETUP["trust_beats"])
     }
+    assert payload["confidential"]["audio"] == dict(thinking_copy.CONFIDENTIAL_AUDIO)
     assert payload["confidential"]["attestation_states"] == dict(
         thinking_copy.CONFIDENTIAL_ATTESTATION_STATES
     )
@@ -479,5 +522,11 @@ def test_thinking_copy_avoids_banned_absolute_claims() -> None:
     combined += "\n" + owner_surface_text(WORKSPACE)
     combined += "\n" + owner_surface_text(STATIC)
 
-    phrase = "never " + "sees"
-    assert re.search(rf"\b{re.escape(phrase)}\b", combined, re.IGNORECASE) is None
+    for phrase in (
+        "never " + "sees",
+        "recordings stay here",
+        "audio never leaves",
+        "never your audio",
+        "speech becomes text on your device first",
+    ):
+        assert re.search(rf"\b{re.escape(phrase)}\b", combined, re.IGNORECASE) is None

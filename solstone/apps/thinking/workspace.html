@@ -417,6 +417,42 @@
       margin-top: 9px;
     }
 
+    .thinking-workspace .confidential-audio-row {
+      border: 1px solid var(--hairline);
+      border-radius: var(--radius-sm);
+      background: var(--paper);
+      display: grid;
+      gap: 7px;
+      margin-top: 10px;
+      padding: 11px 13px;
+    }
+
+    .thinking-workspace .confidential-audio-control {
+      align-items: center;
+      color: var(--ink);
+      cursor: pointer;
+      display: flex;
+      font-weight: 650;
+      gap: 10px;
+    }
+
+    .thinking-workspace .confidential-audio-toggle {
+      accent-color: var(--orange);
+      flex: 0 0 auto;
+      height: 1.15rem;
+      width: 1.15rem;
+    }
+
+    .thinking-workspace .confidential-audio-description,
+    .thinking-workspace .confidential-audio-note {
+      color: var(--muted);
+      line-height: 1.45;
+    }
+
+    .thinking-workspace .confidential-audio-note {
+      font-size: 0.82rem;
+    }
+
     .thinking-workspace .switchflow {
       align-items: center;
       display: grid;
@@ -590,6 +626,15 @@
             <div class="lanedetail-heading" id="confidentialTrustHeading"></div>
             <div class="lanedetail-sub" id="confidentialTrustSub"></div>
             <div class="lanedetail-line" id="confidentialTrustEgress"></div>
+            <div class="confidential-audio-row" id="confidentialAudioRow" hidden>
+              <label class="confidential-audio-control" for="confidentialAudioToggle">
+                <input class="confidential-audio-toggle" type="checkbox" id="confidentialAudioToggle">
+                <span id="confidentialAudioLabel"></span>
+              </label>
+              <div class="confidential-audio-description" id="confidentialAudioDescription"></div>
+              <div class="confidential-audio-note" id="confidentialAudioNote"></div>
+            </div>
+            <div class="lanedetail-line" id="confidentialAudioDeferral" hidden></div>
             <div class="lanedetail-claims" id="confidentialTrustClaims"></div>
             <div class="lanedetail-line" id="confidentialTrustFailClosed"></div>
             <div class="lanedetail-line" id="confidentialTrustSubstrate"></div>

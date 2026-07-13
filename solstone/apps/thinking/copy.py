@@ -35,17 +35,36 @@ LANES = [
 ]
 CONFIDENTIAL_TRUST_HEADING = "confidential processing"
 CONFIDENTIAL_TRUST_SUB = "operated by sol pbc"
-CONFIDENTIAL_TRUST_EGRESS = "only the thinking leaves — the text and images sol works through. your journal stays on this computer, and your recordings stay here too (speech becomes text on your device first)."
+CONFIDENTIAL_LANE_EGRESS = "when it's on, the thinking leaves your device — text, images, and (with the audio switch on, its default) your recordings for transcription. your journal itself never leaves."
+CONFIDENTIAL_SETUP_EGRESS_AUDIO_ON = "what leaves your device: the text and images sol needs a model to work through, and your audio recordings for transcription. your journal itself never leaves."
+CONFIDENTIAL_SETUP_EGRESS_AUDIO_OFF = "what leaves your device: the text and images sol needs a model to work through. your recordings stay on your device — speech becomes text there."
 CONFIDENTIAL_TRUST_CLAIMS = (
     "no content is retained · no human reviews it · nothing is used to train"
 )
 CONFIDENTIAL_TRUST_FAIL_CLOSED = "your journal must verify the service before anything is sent — if it can't verify, it doesn't send."
 CONFIDENTIAL_TRUST_SUBSTRATE = "sol pbc runs the model itself on confidential GPUs in Microsoft Azure. the hardware boundary keeps the cloud host excluded from what's processed — no third-party AI provider is in the path."
 CONFIDENTIAL_EARLY_ACCESS = "confidential processing is coming — scouts get it first."
+CONFIDENTIAL_AUDIO_LABEL = "transcribe audio on the service"
+CONFIDENTIAL_AUDIO_ON = "your recordings are transcribed on the service — sent over the verified channel, processed, and not kept. on while confidential processing is in use."
+CONFIDENTIAL_AUDIO_OFF = (
+    "speech becomes text on your device. your recordings don't leave."
+)
+CONFIDENTIAL_AUDIO_NOTE = (
+    "turn it off any time — it takes effect on the next recording."
+)
+CONFIDENTIAL_AUDIO_DEFERRAL = "transcription is waiting — nothing is sent until your journal verifies the service. recordings stay on your device and transcribe once the check passes."
+CONFIDENTIAL_AUDIO = {
+    "label": CONFIDENTIAL_AUDIO_LABEL,
+    "on": CONFIDENTIAL_AUDIO_ON,
+    "off": CONFIDENTIAL_AUDIO_OFF,
+    "note": CONFIDENTIAL_AUDIO_NOTE,
+    "deferral": CONFIDENTIAL_AUDIO_DEFERRAL,
+}
 CONFIDENTIAL_TRUST_BEATS = {
     "heading": CONFIDENTIAL_TRUST_HEADING,
     "sub": CONFIDENTIAL_TRUST_SUB,
-    "egress": CONFIDENTIAL_TRUST_EGRESS,
+    "egress_audio_on": CONFIDENTIAL_SETUP_EGRESS_AUDIO_ON,
+    "egress_audio_off": CONFIDENTIAL_SETUP_EGRESS_AUDIO_OFF,
     "claims": CONFIDENTIAL_TRUST_CLAIMS,
     "attestation": CONFIDENTIAL_TRUST_FAIL_CLOSED,
     "substrate": CONFIDENTIAL_TRUST_SUBSTRATE,
@@ -54,7 +73,7 @@ CONFIDENTIAL_LANE_DETAIL = {
     "heading": CONFIDENTIAL_TRUST_HEADING,
     "sub": CONFIDENTIAL_TRUST_SUB,
     "mechanism": CONFIDENTIAL_TRUST_SUBSTRATE,
-    "egress": CONFIDENTIAL_TRUST_EGRESS,
+    "egress": CONFIDENTIAL_LANE_EGRESS,
     "claims": CONFIDENTIAL_TRUST_CLAIMS,
     "attestation": CONFIDENTIAL_TRUST_FAIL_CLOSED,
     "early_access": CONFIDENTIAL_EARLY_ACCESS,
@@ -275,6 +294,7 @@ def thinking_copy_payload() -> dict[str, Any]:
             "setup": {
                 "trust_beats": dict(CONFIDENTIAL_SETUP["trust_beats"]),
             },
+            "audio": dict(CONFIDENTIAL_AUDIO),
             "attestation_states": dict(CONFIDENTIAL_ATTESTATION_STATES),
             "operation_states": dict(CONFIDENTIAL_OPERATION_STATES),
             "actions": dict(CONFIDENTIAL_ACTIONS),
