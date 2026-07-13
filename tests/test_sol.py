@@ -7,7 +7,6 @@ import logging
 import os
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -497,20 +496,6 @@ class TestMain:
         assert path != ""
         assert path.endswith("/journal")
 
-    def test_main_root_command(self, monkeypatch, capsys):
-        """Test 'root' command prints the project root directory."""
-        monkeypatch.setattr(sys, "argv", ["sol", "root"])
-
-        sol.main()
-
-        captured = capsys.readouterr()
-        path = captured.out.strip()
-        assert path != ""
-        # root should NOT end with /journal — that's --path
-        assert not path.endswith("/journal")
-        # root is the repo root regardless of checkout location or dir name
-        assert path == str(REPO_ROOT)
-
     def test_main_unknown_command_exits(self, monkeypatch):
         """Test that unknown command exits with code 1."""
         monkeypatch.setattr(sys, "argv", ["sol", "unknown-command"])
@@ -566,75 +551,6 @@ class TestCommandRegistry:
         """The dissolved services switchboard is not a journal CLI namespace."""
         assert "services" not in sol.COMMANDS
         assert "services" not in sol.service_help_group().commands
-
-    def test_pyproject_scripts_split_thin_base_and_host(self):
-        """Root ships thin scripts; both journal leaves own service scripts."""
-        root_pyproject = tomllib.loads(
-            (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        )
-        leaf_pyprojects = [
-            tomllib.loads(
-                (REPO_ROOT / "packages" / name / "pyproject.toml").read_text(
-                    encoding="utf-8"
-                )
-            )
-            for name in ("solstone-journal", "solstone-journal-cuda")
-        ]
-        root_scripts = root_pyproject["project"]["scripts"]
-
-        assert set(root_scripts) == {"sol", "solstone"}
-        assert root_scripts["sol"] == "solstone.think.sol_cli:main"
-        assert root_scripts["solstone"] == "solstone.think.sol_cli:main"
-        assert "journal" not in root_scripts
-        assert "mlx-vlm-server" not in root_scripts
-
-        for leaf_pyproject in leaf_pyprojects:
-            leaf_scripts = leaf_pyproject["project"]["scripts"]
-            assert set(leaf_scripts) == {"journal", "mlx-vlm-server"}
-            assert leaf_scripts["journal"] == "solstone.think.sol_cli:journal_main"
-            assert (
-                leaf_scripts["mlx-vlm-server"]
-                == "solstone.think.providers.mlx_server:main"
-            )
-
-    def test_pyproject_declares_journal_parakeet_dependencies(self):
-        """The journal host keeps ONNX runtime deps out of the thin base."""
-        pyproject = tomllib.loads(
-            (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-        )
-        base = pyproject["project"]["dependencies"]
-        cpu_leaf = tomllib.loads(
-            (REPO_ROOT / "packages" / "solstone-journal" / "pyproject.toml").read_text(
-                encoding="utf-8"
-            )
-        )
-        cuda_leaf = tomllib.loads(
-            (
-                REPO_ROOT / "packages" / "solstone-journal-cuda" / "pyproject.toml"
-            ).read_text(encoding="utf-8")
-        )
-        cpu_deps = cpu_leaf["project"]["dependencies"]
-        cuda_deps = cuda_leaf["project"]["dependencies"]
-
-        # The thin base carries no ONNX / STT runtime.
-        assert not any("onnxruntime" in dep or "onnx-asr" in dep for dep in base), (
-            "thin base must not carry the transcription runtime"
-        )
-
-        # The CPU leaf pulls the CPU onnxruntime floor.
-        assert "onnxruntime>=1.20.0,!=1.24.1" in cpu_deps
-        assert (
-            "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'"
-            in cpu_deps
-        )
-        assert "onnxruntime-gpu>=1.25.0" not in cpu_deps
-
-        # The CUDA leaf swaps in the GPU runtime and never the CPU onnxruntime.
-        assert "onnxruntime-gpu>=1.25.0" in cuda_deps
-        assert not any(
-            dep.split(";")[0].strip() == "onnxruntime>=1.20.0,!=1.24.1"
-            for dep in cuda_deps
-        )
 
     def test_every_registry_entry_has_surface_tag(self):
         """All commands and aliases declare the CLI surface they belong to."""

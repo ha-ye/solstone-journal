@@ -31,8 +31,7 @@ PYTHON := $(VENV_PY)
 # (which correctly skips non-x86_64 Linux) ever runs. Gating on x86_64 also
 # keeps this coherent with the STT arch decision (aarch64-linux uses the
 # parakeet.cpp CPU/Vulkan bundle). Everything non-x86_64 falls to the CPU
-# `journal-cpu` group, whose onnxruntime has aarch64 wheels. Guarded by
-# tests/test_makefile_journal_extra.py.
+# `journal-cpu` group, whose onnxruntime has aarch64 wheels.
 JOURNAL_VARIANT ?= $(shell if [ "$$(uname -m)" = "x86_64" ] && nvidia-smi -L >/dev/null 2>&1; then echo cuda; else echo cpu; fi)
 
 # Dev install groups: install exactly ONE journal leaf for this host.
