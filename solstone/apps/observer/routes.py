@@ -681,7 +681,7 @@ def check_matched_files_held(
     history record before checking disk truth. Both "present" and "processed"
     count as held; only "missing" requires healing.
     """
-    day_dir = day_path(day)
+    day_dir = day_path(day, create=False)
     records = load_history(key_prefix, day)
     latest: dict[str, tuple[str, str, str, object]] = {}
 
@@ -1380,7 +1380,7 @@ def ingest_segments(day: str) -> Any:
         return _respond_observer_segments([], client_pv=client_pv)
 
     # Get day directory for file verification
-    day_dir = day_path(day)
+    day_dir = day_path(day, create=False)
 
     # Determine fallback stream for records that don't carry their own. A registered
     # observer's locked stream is authoritative (ignores the ?stream= query param);

@@ -23,6 +23,7 @@ from solstone.apps.observer.routes import (
     _classify_observer_freshness,
 )
 from solstone.apps.observer.utils import (
+    append_history_record,
     list_observers,
     sanitize_validation_summary,
     save_observer,
@@ -2169,6 +2170,36 @@ def test_protocol_version_single_source(observer_env, monkeypatch):
     )
     assert resp.status_code == 200
     assert isinstance(resp.get_json(), list)
+
+
+def test_segments_endpoint_does_not_create_missing_day_directory(observer_env):
+    """A read-only listing must not create the chronicle day directory."""
+    env = observer_env()
+    key = _create_observer(env, "segments-no-day-create-test")
+    observer = _observer_record()
+    day = "20250104"
+    day_dir = _day_dir(env, day)
+    assert not day_dir.exists()
+    append_history_record(
+        observer["filename_prefix"],
+        day,
+        {"type": "observed", "segment": "120000_300"},
+    )
+
+    resp = env.client.get(
+        f"/app/observer/ingest/segments/{day}",
+        headers={
+            "Authorization": f"Bearer {key}",
+            "X-Solstone-Protocol-Version": str(OBSERVER_PROTOCOL_VERSION),
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["items"] == []
+    assert body["total"] == 0
+    assert body["protocol_version"] == OBSERVER_PROTOCOL_VERSION
+    assert not day_dir.exists()
 
 
 def test_segments_endpoint_shows_collision(observer_env):

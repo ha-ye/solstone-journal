@@ -250,7 +250,7 @@ Filename-stem constraint:
 
 Operational caveats:
 
-- Duplicate submissions short-circuit with `status="duplicate"` and do not emit `observe.observing` (`solstone/apps/observer/routes.py:369-395`, `solstone/apps/observer/routes.py:604-605`, `solstone/apps/observer/tests/test_routes.py:1276-1368`).
+- Duplicate submissions short-circuit with `status="duplicate"` and do not emit `observe.observing` (`solstone.apps.observer.routes._process_ingest_files`, `test_ingest_duplicate_segment_returns_duplicate_status`, `test_ingest_duplicate_does_not_emit_event`).
 - Segment listings can mark raw media as `processed` when journal-side processing
   terminally consumed the recorded file and left same-stem sidecar proof. That is
   proven-held for duplicate gating and confirm-before-delete, so re-uploading the
