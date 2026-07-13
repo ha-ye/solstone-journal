@@ -27,9 +27,14 @@ def _node_script(body: str) -> str:
         extract_js_function(source, "preselectByoModel"),
         extract_js_function(source, "byoTierRows"),
         extract_js_function(source, "byoModelLabel"),
+        extract_js_function(source, "byoCustomText"),
+        extract_js_function(source, "byoCustomShowsChecked"),
+        extract_js_function(source, "byoSaveDisabled"),
+        extract_js_function(source, "byoCustomInputDraft"),
         extract_js_function(source, "runByoKeyCheckFlow"),
         extract_js_function(source, "runByoModelSaveFlow"),
         extract_js_function(source, "runByoCustomProbeFlow"),
+        extract_js_function(source, "changeByoProvider"),
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
         "const text = copy.byo_setup;",
@@ -373,6 +378,115 @@ main().catch((error) => { console.error(error.stack || error); process.exit(1); 
     )
 
 
+def test_byo_custom_preselection_requires_probe() -> None:
+    _run_node(
+        _node_script(
+            """
+const selected = 'remembered-custom-id';
+const customText = byoCustomText(selected, true, '');
+
+assert(customText === selected, 'custom preselection should hydrate the custom text');
+assert(byoCustomShowsChecked(customText, '') === false, 'custom preselection should not show checked without a probe');
+assert(byoSaveDisabled(selected, true, '') === true, 'custom preselection should keep save disabled until probe');
+assert(byoSaveDisabled(selected, true, selected) === false, 'matching probe should enable save');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_byo_custom_editing_clears_probe_state() -> None:
+    _run_node(
+        _node_script(
+            """
+const selected = 'custom-pass';
+
+assert(byoCustomShowsChecked('custom-pass', 'custom-pass') === true, 'matching probe should show checked');
+assert(byoSaveDisabled(selected, true, 'custom-pass') === false, 'matching probe should enable save');
+
+const cleared = byoCustomInputDraft('');
+assert(cleared.customModel === '', 'cleared draft should clear custom text');
+assert(cleared.checkedModel === '', 'cleared draft should clear probe flag');
+assert(cleared.selectedModel === '', 'cleared draft should clear selected model');
+assert(byoCustomText(cleared.selectedModel, true, cleared.customModel) === '', 'cleared draft should not rehydrate old text');
+assert(byoCustomShowsChecked(cleared.customModel, cleared.checkedModel) === false, 'cleared draft should hide checked');
+assert(byoSaveDisabled(cleared.selectedModel, true, cleared.checkedModel) === true, 'cleared draft should disable save');
+
+const changed = byoCustomInputDraft('different-id');
+assert(changed.customModel === 'different-id', 'changed draft should carry text');
+assert(changed.checkedModel === '', 'changed draft should clear probe flag');
+assert(changed.selectedModel === 'different-id', 'changed draft should select new candidate');
+assert(byoCustomShowsChecked(changed.customModel, changed.checkedModel) === false, 'changed draft should hide checked');
+assert(byoSaveDisabled(changed.selectedModel, true, changed.checkedModel) === true, 'changed draft should disable save until reprobe');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_byo_provider_change_resets_draft_state() -> None:
+    _run_node(
+        _node_script(
+            """
+const state = {
+  selectedByoProvider: 'anthropic',
+  byoSelectedModel: 'old-model',
+  byoCustomOpen: true,
+  byoCustomModel: 'old-custom',
+  byoCustomCheckedModel: 'old-custom',
+  byoMode: 'model',
+};
+const nodes = {
+  byoProvider: {value: 'anthropic'},
+  byoKeyInput: {value: 'secret-key'},
+  byoCustomModel: {value: 'old-custom'},
+};
+let renderByoCalls = 0;
+let renderMainLanesCalls = 0;
+
+function $(id) {
+  return nodes[id] || null;
+}
+function defaultByoProvider() {
+  return 'anthropic';
+}
+function setSelectedByoProvider(provider) {
+  state.selectedByoProvider = provider || defaultByoProvider();
+  const select = $('byoProvider');
+  if (select) select.value = state.selectedByoProvider;
+}
+function resetByoDraft() {
+  state.byoSelectedModel = '';
+  state.byoCustomOpen = false;
+  state.byoCustomModel = '';
+  state.byoCustomCheckedModel = '';
+}
+function renderByo() {
+  renderByoCalls += 1;
+}
+function renderMainLanes() {
+  renderMainLanesCalls += 1;
+}
+
+changeByoProvider('openai');
+
+assert(state.selectedByoProvider === 'openai', 'provider should update');
+assert(nodes.byoProvider.value === 'openai', 'hidden select should update');
+assert(state.byoSelectedModel === '', 'selected model should reset');
+assert(state.byoCustomOpen === false, 'custom row state should reset');
+assert(state.byoCustomModel === '', 'custom text should reset');
+assert(state.byoCustomCheckedModel === '', 'probe flag should reset');
+assert(state.byoMode === 'paste', 'provider change should land on paste mode');
+assert(nodes.byoKeyInput.value === '', 'key input should clear');
+assert(nodes.byoCustomModel.value === '', 'custom input should clear');
+assert(renderByoCalls === 1, 'provider change should render byo');
+assert(renderMainLanesCalls === 1, 'provider change should render main lanes');
+console.log('PASS');
+"""
+        )
+    )
+
+
 def test_byo_model_save_probes_before_writing() -> None:
     _run_node(
         _node_script(
@@ -394,7 +508,6 @@ async function main() {
     provider: 'anthropic',
     providerName: 'Claude',
     model: 'model-one',
-    label: 'Model One',
     text,
     setMode: (next) => { mode = next; },
     renderFn: () => { renders += 1; },
@@ -422,7 +535,6 @@ async function main() {
     provider: 'anthropic',
     providerName: 'Claude',
     model: 'model-two',
-    label: 'Model Two',
     text,
     setMode: (next) => { mode = next; },
     renderFn: () => { renders += 1; },
@@ -446,7 +558,6 @@ async function main() {
     provider: 'anthropic',
     providerName: 'Claude',
     model: 'model-three',
-    label: 'Model Three',
     text,
     setMode: (next) => { mode = next; },
     renderFn: () => { renders += 1; },
