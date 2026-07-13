@@ -442,6 +442,56 @@ def test_confidential_cogitate_stops_before_any_provider_dispatch(
     establish.assert_called_once()
 
 
+def test_confidential_local_lane_stops_before_any_provider_dispatch(
+    tmp_path,
+    monkeypatch,
+):
+    _empty_journal(tmp_path, monkeypatch)
+    config = _confidential_config()
+    config["providers"] = {
+        "generate": {"provider": "local"},
+        "cogitate": {"provider": "local"},
+    }
+    _write_journal_config(tmp_path, config)
+    establish = _install_failing_confidential_transport(monkeypatch)
+    mocks = _cloud_call_mocks(monkeypatch)
+    local_generate = Mock(side_effect=AssertionError("local generate dispatched"))
+    local_agenerate = Mock(side_effect=AssertionError("local agenerate dispatched"))
+    local_cogitate = Mock(side_effect=AssertionError("local cogitate dispatched"))
+    local_connect = Mock(side_effect=AssertionError("local server connect attempted"))
+    httpx_post = Mock(side_effect=AssertionError("local endpoint call attempted"))
+    httpx_get = Mock(side_effect=AssertionError("endpoint probe attempted"))
+    monkeypatch.setattr("solstone.think.providers.local.run_generate", local_generate)
+    monkeypatch.setattr("solstone.think.providers.local.run_agenerate", local_agenerate)
+    monkeypatch.setattr("solstone.think.providers.local.run_cogitate", local_cogitate)
+    monkeypatch.setattr("solstone.think.providers.local_server.connect", local_connect)
+    monkeypatch.setattr("httpx.post", httpx_post)
+    monkeypatch.setattr("httpx.get", httpx_get)
+
+    with pytest.raises(AttestationFailedError) as generate_exc:
+        models.generate("hello", "any.context")
+    _assert_attestation_failed(generate_exc.value)
+
+    with pytest.raises(AttestationFailedError) as cogitate_exc:
+        asyncio.run(
+            talents._execute_with_tools(
+                {"provider": "local", "model": LOCAL_MODEL, "type": "cogitate"},
+                lambda _event: None,
+            )
+        )
+    _assert_attestation_failed(cogitate_exc.value)
+
+    for mock in mocks:
+        mock.assert_not_called()
+    local_generate.assert_not_called()
+    local_agenerate.assert_not_called()
+    local_cogitate.assert_not_called()
+    local_connect.assert_not_called()
+    httpx_post.assert_not_called()
+    httpx_get.assert_not_called()
+    assert establish.call_count == 2
+
+
 def test_confidential_readiness_probe_fails_closed_before_endpoint_get(
     tmp_path,
     monkeypatch,
