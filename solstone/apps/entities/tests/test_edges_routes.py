@@ -74,7 +74,27 @@ def test_network_route_returns_loader_payload_for_facetless_name(indexed_client)
     assert data["evidence_limit"] == 1
     assert data["total_neighbors"] >= 1
     assert len(data["neighbors"]) == 1
+    assert data["neighbors"][0]["evidence_class"] in {
+        "attendance",
+        "semantic",
+        "mixed",
+    }
     assert data["neighbors"][0]["evidence"]
+
+
+def test_overview_route_returns_evidence_class_per_entity(indexed_client):
+    response = indexed_client.get(
+        "/app/entities/api/overview",
+        query_string={"limit": "2"},
+    )
+
+    data = response.get_json()
+    assert response.status_code == 200
+    assert data["entities"]
+    assert all(
+        entity["evidence_class"] in {"attendance", "semantic", "mixed"}
+        for entity in data["entities"]
+    )
 
 
 def test_network_route_facet_resolution_returns_journal_entity_id(indexed_client):

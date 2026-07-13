@@ -76,6 +76,8 @@ KIND_WEIGHTS = {
     "co-present": 1,
 }
 """Relationship-strength weights; commitments outweigh passive co-presence."""
+ATTENDANCE_KINDS = frozenset({"attended-with", "co-present", "scheduled-with"})
+"""Relationship kinds that represent attendance or passive co-presence."""
 HALF_LIFE_DAYS = 90.0
 """Edge score half-life in days; 90-day-old evidence contributes half weight."""
 
@@ -320,6 +322,28 @@ def _filter_payload(
     return sql, params, filters
 
 
+def _with_ranking_day_cap(
+    filters_sql: str,
+    filter_params: dict[str, Any],
+    reference_day: str,
+) -> tuple[str, dict[str, Any]]:
+    params = {**filter_params, "ranking_ref_day": reference_day}
+    # NULL days are undated evidence, not future evidence; SQLite would drop
+    # them from a bare day comparison.
+    return (
+        filters_sql + "\n  AND (day IS NULL OR day <= :ranking_ref_day)",
+        params,
+    )
+
+
+def _evidence_class(kinds: dict[str, Any]) -> str:
+    has_attendance = any(kind in ATTENDANCE_KINDS for kind in kinds)
+    has_semantic = any(kind not in ATTENDANCE_KINDS for kind in kinds)
+    if has_attendance and has_semantic:
+        return "mixed"
+    return "attendance" if has_attendance else "semantic"
+
+
 def _validate_limit(name: str, value: int) -> None:
     if value < 0:
         raise ValueError(f"{name} must be >= 0")
@@ -537,6 +561,11 @@ def load_entity_network(
         day_to=day_to,
     )
     ref_day = _reference_day(reference_day)
+    ranking_filters_sql, ranking_filter_params = _with_ranking_day_cap(
+        filters_sql,
+        filter_params,
+        ref_day,
+    )
     reference = _parse_day(ref_day)
 
     # Local import avoids adding an entities.journal dependency to indexer import.
@@ -560,16 +589,16 @@ SELECT
 FROM edges
 WHERE (src = :entity_id OR dst = :entity_id)
   AND (CASE WHEN src = :entity_id THEN dst ELSE src END) != :entity_id
-  {filters_sql}
+  {ranking_filters_sql}
 GROUP BY peer, kind, day
             """,
-            {"entity_id": entity_id, **filter_params},
+            {"entity_id": entity_id, **ranking_filter_params},
         ).fetchall()
         names = _load_peer_names(
             conn,
             entity_id,
-            filters_sql=filters_sql,
-            filter_params=filter_params,
+            filters_sql=ranking_filters_sql,
+            filter_params=ranking_filter_params,
         )
 
         neighbors: dict[str, dict[str, Any]] = {}
@@ -619,14 +648,16 @@ GROUP BY peer, kind, day
             neighbors.values(),
             key=lambda item: (-item["score"], item["entity_id"]),
         )
+        for neighbor in ordered:
+            neighbor["evidence_class"] = _evidence_class(neighbor["kinds"])
         limited = ordered[:limit]
         for neighbor in limited:
             neighbor["evidence"] = _load_evidence_rows(
                 conn,
                 entity_id,
                 neighbor["entity_id"],
-                filters_sql=filters_sql,
-                filter_params=filter_params,
+                filters_sql=ranking_filters_sql,
+                filter_params=ranking_filter_params,
                 limit=evidence_limit,
             )
 
@@ -723,6 +754,11 @@ def load_network_overview(
         day_to=day_to,
     )
     ref_day = _reference_day(reference_day)
+    ranking_filters_sql, ranking_filter_params = _with_ranking_day_cap(
+        filters_sql,
+        filter_params,
+        ref_day,
+    )
     reference = _parse_day(ref_day)
     conn = _open_edges_reader()
     try:
@@ -732,9 +768,9 @@ def load_network_overview(
 SELECT COUNT(*) AS total
 FROM edges
 WHERE 1 = 1
-  {filters_sql}
+  {ranking_filters_sql}
                 """,
-                filter_params,
+                ranking_filter_params,
             ).fetchone()["total"]
         )
         kind_rows = conn.execute(
@@ -742,10 +778,10 @@ WHERE 1 = 1
 SELECT kind, day, COUNT(*) AS count, SUM(weight) AS weight_sum
 FROM edges
 WHERE 1 = 1
-  {filters_sql}
+  {ranking_filters_sql}
 GROUP BY kind, day
             """,
-            filter_params,
+            ranking_filter_params,
         ).fetchall()
         global_kinds: dict[str, dict[str, Any]] = {}
         for row in kind_rows:
@@ -765,24 +801,24 @@ WITH endpoint_edges AS (
   SELECT src AS entity_id, kind, day, weight
   FROM edges
   WHERE 1 = 1
-  {filters_sql}
+  {ranking_filters_sql}
   UNION ALL
   SELECT dst AS entity_id, kind, day, weight
   FROM edges
   WHERE 1 = 1
     AND dst != src
-  {filters_sql}
+  {ranking_filters_sql}
 )
 SELECT entity_id, kind, day, COUNT(*) AS count, SUM(weight) AS weight_sum
 FROM endpoint_edges
 GROUP BY entity_id, kind, day
             """,
-            filter_params,
+            ranking_filter_params,
         ).fetchall()
         names = _load_endpoint_names(
             conn,
-            filters_sql=filters_sql,
-            filter_params=filter_params,
+            filters_sql=ranking_filters_sql,
+            filter_params=ranking_filter_params,
         )
         entities: dict[str, dict[str, Any]] = {}
         for row in entity_rows:
@@ -813,6 +849,9 @@ GROUP BY entity_id, kind, day
                     entity["first_seen"] = day
                 if entity["last_seen"] is None or day > entity["last_seen"]:
                     entity["last_seen"] = day
+
+        for entity in entities.values():
+            entity["evidence_class"] = _evidence_class(entity["kinds"])
 
         ordered_entities = sorted(
             entities.values(),

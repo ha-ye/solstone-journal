@@ -222,6 +222,40 @@ def test_resolution_failure_json_is_route_payload(indexed_entities_client) -> No
     assert "Error:" not in result.output
 
 
+def test_network_json_includes_evidence_class(indexed_entities_client: Path) -> None:
+    expected = _route_payload(
+        indexed_entities_client,
+        "/app/entities/api/network",
+        {
+            "entity": "romeo_montague",
+            "limit": "1",
+            "evidence_limit": "1",
+        },
+    )
+    result = runner.invoke(
+        entities_app,
+        [
+            "network",
+            "romeo_montague",
+            "--limit",
+            "1",
+            "--evidence-limit",
+            "1",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.output)
+    assert data == expected
+    assert data["neighbors"]
+    assert data["neighbors"][0]["evidence_class"] in {
+        "attendance",
+        "semantic",
+        "mixed",
+    }
+
+
 def test_history_json_is_route_payload(indexed_entities_client: Path) -> None:
     expected = _route_payload(
         indexed_entities_client,
@@ -275,6 +309,11 @@ def test_kinds_accepts_comma_and_repeat_forms(indexed_entities_client) -> None:
         "spoke-with",
         "mentioned",
     ]
+    assert data["entities"]
+    assert all(
+        entity["evidence_class"] in {"attendance", "semantic", "mixed"}
+        for entity in data["entities"]
+    )
 
 
 def test_unbuilt_index_message_survives_real_client(

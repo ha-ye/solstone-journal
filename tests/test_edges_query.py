@@ -364,41 +364,176 @@ def test_entity_network_ranks_by_weighted_decayed_score(edges_journal):
     assert network["neighbors"][1]["score"] == pytest.approx(2.0)
 
 
-def test_future_scheduled_edges_score_like_reference_day(edges_journal):
+def test_future_dated_rows_do_not_affect_ranked_network_or_evidence_preview(
+    edges_journal,
+):
     scan_journal(str(edges_journal), full=True)
     _insert(
         edges_journal,
         [
             _row(
-                "edge_future_self",
-                "edge_future_peer",
-                "scheduled-with",
-                "future/scheduled.jsonl",
-                day="20260601",
+                "edge_future_cap_self",
+                "edge_future_cap_peer",
+                "spoke-with",
+                "future-cap/past-spoke.jsonl",
+                day="20260515",
+                label="past-spoke",
                 weight=1,
             ),
             _row(
-                "edge_future_self",
-                "edge_reference_peer",
+                "edge_future_cap_self",
+                "edge_future_cap_peer",
+                "co-present",
+                "future-cap/past-co.jsonl",
+                day="20260520",
+                label="past-co",
+                weight=2,
+            ),
+            _row(
+                "edge_future_cap_self",
+                "edge_future_cap_peer",
+                "spoke-with",
+                "future-cap/future-spoke.jsonl",
+                day="20260601",
+                label="future-spoke",
+                weight=10,
+            ),
+            _row(
+                "edge_future_cap_self",
+                "edge_future_cap_peer",
+                "co-present",
+                "future-cap/future-co.jsonl",
+                day="20260602",
+                label="future-co",
+                weight=10,
+            ),
+        ],
+    )
+
+    network = load_entity_network(
+        "edge_future_cap_self",
+        reference_day="20260530",
+        evidence_limit=10,
+    )
+
+    assert network["total_neighbors"] == 1
+    [neighbor] = network["neighbors"]
+    expected_score = (4 * _half_life_decay(15)) + (2 * _half_life_decay(10))
+    assert neighbor["entity_id"] == "edge_future_cap_peer"
+    assert neighbor["score"] == pytest.approx(expected_score)
+    assert neighbor["count"] == 2
+    assert neighbor["last_seen"] == "20260520"
+    assert neighbor["kinds"]["spoke-with"]["count"] == 1
+    assert neighbor["kinds"]["spoke-with"]["weighted"] == pytest.approx(
+        4 * _half_life_decay(15)
+    )
+    assert neighbor["kinds"]["co-present"]["count"] == 1
+    assert neighbor["kinds"]["co-present"]["weighted"] == pytest.approx(
+        2 * _half_life_decay(10)
+    )
+    assert [row["label"] for row in neighbor["evidence"]] == [
+        "past-co",
+        "past-spoke",
+    ]
+
+
+def test_future_dated_rows_are_absent_from_ranked_network_and_overview(
+    edges_journal,
+):
+    scan_journal(str(edges_journal), full=True)
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_future_only_self",
+                "edge_future_only_peer",
                 "scheduled-with",
-                "future/reference.jsonl",
+                "future-absent/future-only.jsonl",
+                day="20260601",
+                facet="future-absent",
+                weight=1,
+            ),
+            _row(
+                "edge_future_overview_a",
+                "edge_future_overview_b",
+                "scheduled-with",
+                "future-absent/historical.jsonl",
                 day="20260430",
+                facet="future-absent",
                 weight=1,
             ),
         ],
     )
 
     network = load_entity_network(
-        "edge_future_self",
-        kinds=["scheduled-with"],
+        "edge_future_only_self",
+        facet="future-absent",
         reference_day="20260430",
     )
-    by_peer = {row["entity_id"]: row for row in network["neighbors"]}
-
-    assert by_peer["edge_future_peer"]["score"] == pytest.approx(
-        by_peer["edge_reference_peer"]["score"]
+    overview = load_network_overview(
+        facet="future-absent",
+        reference_day="20260430",
     )
-    assert by_peer["edge_future_peer"]["score"] == pytest.approx(2.0)
+
+    assert network["total_neighbors"] == 0
+    assert network["neighbors"] == []
+    assert overview["totals"] == {"edges": 1, "entities": 2}
+    assert set(overview["kinds"]) == {"scheduled-with"}
+    assert overview["kinds"]["scheduled-with"] == {"count": 1, "weighted": 2.0}
+    assert {row["entity_id"] for row in overview["entities"]} == {
+        "edge_future_overview_a",
+        "edge_future_overview_b",
+    }
+
+
+def test_future_dated_rows_remain_in_pair_history(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_future_history_self",
+                "edge_future_history_peer",
+                "spoke-with",
+                "future-history/past.jsonl",
+                day="20260515",
+                label="past",
+            ),
+            _row(
+                "edge_future_history_self",
+                "edge_future_history_peer",
+                "spoke-with",
+                "future-history/future-a.jsonl",
+                day="20260601",
+                label="future-a",
+            ),
+            _row(
+                "edge_future_history_self",
+                "edge_future_history_peer",
+                "spoke-with",
+                "future-history/future-b.jsonl",
+                day="20260602",
+                label="future-b",
+            ),
+        ],
+    )
+
+    page = load_edge_evidence(
+        "edge_future_history_self",
+        "edge_future_history_peer",
+    )
+
+    assert page["total"] == 3
+    assert [row["day"] for row in page["evidence"]] == [
+        "20260602",
+        "20260601",
+        "20260515",
+    ]
+    assert [row["label"] for row in page["evidence"]] == [
+        "future-b",
+        "future-a",
+        "past",
+    ]
 
 
 def test_entity_network_ranking_for_semantic_scheduled_and_copresent_kinds(
@@ -450,6 +585,146 @@ def test_entity_network_ranking_for_semantic_scheduled_and_copresent_kinds(
         "count": 1,
         "weighted": 1.0,
     }
+
+
+def test_null_day_rows_contribute_to_ranked_network_and_overview(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_null_rank_self",
+                "edge_null_rank_peer",
+                "committed-to",
+                "null-rank/commit.jsonl",
+                day=None,
+                facet="null-rank",
+                weight=1,
+            ),
+        ],
+    )
+
+    network = load_entity_network(
+        "edge_null_rank_self",
+        facet="null-rank",
+        reference_day="20260430",
+    )
+    overview = load_network_overview(
+        facet="null-rank",
+        reference_day="20260430",
+    )
+
+    [neighbor] = network["neighbors"]
+    assert network["total_neighbors"] == 1
+    assert neighbor["count"] == 1
+    assert neighbor["score"] == pytest.approx(5.0)
+    assert neighbor["kinds"]["committed-to"] == {"count": 1, "weighted": 5.0}
+    assert neighbor["first_seen"] is None
+    assert neighbor["last_seen"] is None
+    assert overview["totals"] == {"edges": 1, "entities": 2}
+    assert overview["kinds"]["committed-to"] == {"count": 1, "weighted": 5.0}
+    assert {row["entity_id"] for row in overview["entities"]} == {
+        "edge_null_rank_peer",
+        "edge_null_rank_self",
+    }
+    assert all(row["score"] == pytest.approx(5.0) for row in overview["entities"])
+
+
+@pytest.mark.parametrize(
+    ("kinds", "expected"),
+    [
+        ({}, "semantic"),
+        ({"co-present": {}}, "attendance"),
+        ({"works-with": {}}, "semantic"),
+        ({"co-present": {}, "works-with": {}}, "mixed"),
+    ],
+)
+def test_evidence_class_helper(kinds, expected):
+    assert edge_index._evidence_class(kinds) == expected
+
+
+def test_evidence_class_on_ranked_items_and_future_semantic_boundary(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    _insert(
+        edges_journal,
+        [
+            _row(
+                "edge_class_self",
+                "edge_class_attendance",
+                "co-present",
+                "class/attendance.jsonl",
+                day="20260530",
+                facet="class-test",
+            ),
+            _row(
+                "edge_class_self",
+                "edge_class_semantic",
+                "works-with",
+                "class/semantic.jsonl",
+                day="20260530",
+                facet="class-test",
+            ),
+            _row(
+                "edge_class_self",
+                "edge_class_mixed",
+                "co-present",
+                "class/mixed-attendance.jsonl",
+                day="20260530",
+                facet="class-test",
+            ),
+            _row(
+                "edge_class_self",
+                "edge_class_mixed",
+                "works-with",
+                "class/mixed-semantic.jsonl",
+                day="20260530",
+                facet="class-test",
+            ),
+            _row(
+                "edge_class_self",
+                "edge_class_future_semantic",
+                "co-present",
+                "class/boundary-attendance.jsonl",
+                day="20260530",
+                facet="class-test",
+            ),
+            _row(
+                "edge_class_self",
+                "edge_class_future_semantic",
+                "works-with",
+                "class/boundary-future-semantic.jsonl",
+                day="20260601",
+                facet="class-test",
+            ),
+        ],
+    )
+
+    network = load_entity_network(
+        "edge_class_self",
+        facet="class-test",
+        reference_day="20260530",
+    )
+    overview = load_network_overview(
+        facet="class-test",
+        reference_day="20260530",
+    )
+    network_classes = {
+        row["entity_id"]: row["evidence_class"] for row in network["neighbors"]
+    }
+    overview_classes = {
+        row["entity_id"]: row["evidence_class"] for row in overview["entities"]
+    }
+
+    assert network_classes == {
+        "edge_class_attendance": "attendance",
+        "edge_class_future_semantic": "attendance",
+        "edge_class_mixed": "mixed",
+        "edge_class_semantic": "semantic",
+    }
+    assert overview_classes["edge_class_attendance"] == "attendance"
+    assert overview_classes["edge_class_future_semantic"] == "attendance"
+    assert overview_classes["edge_class_mixed"] == "mixed"
+    assert overview_classes["edge_class_semantic"] == "semantic"
 
 
 def test_edge_evidence_total_pagination_and_stable_newest_order(edges_journal):
