@@ -89,15 +89,17 @@ const calls = [];
 const messages = [];
 let refreshes = 0;
 let rerenders = 0;
-let fail = false;
+let failPut = false;
+let failRefresh = false;
 
 async function api(path, options) {
   calls.push({path, options});
-  if (fail) throw new Error('route detail');
+  if (failPut) throw new Error('put detail');
   return {success: true};
 }
 async function refreshProviders() {
   refreshes += 1;
+  if (failRefresh) throw new Error('refresh detail');
 }
 function setMessage(id, message, tone = '') {
   messages.push({id, message, tone});
@@ -105,44 +107,62 @@ function setMessage(id, message, tone = '') {
 function renderConfidentialSetup() {
   rerenders += 1;
 }
+function reset() {
+  calls.length = 0;
+  messages.length = 0;
+  refreshes = 0;
+  rerenders = 0;
+  failPut = false;
+  failRefresh = false;
+}
+function assertConfigCall(call, enabled, label) {
+  assert(call.path === '/app/settings/api/config', `${label} settings URL`);
+  assert(call.options.method === 'PUT', `${label} settings method`);
+  assert(
+    JSON.stringify(JSON.parse(call.options.body)) === JSON.stringify({
+      section: 'transcribe',
+      data: {confidential_audio: enabled},
+    }),
+    `${label} settings body`,
+  );
+}
 
 async function main() {
   await setConfidentialAudio(false);
 
   assert(calls.length === 1, 'success call count');
-  assert(calls[0].path === '/app/settings/api/config', 'settings URL');
-  assert(calls[0].options.method === 'PUT', 'settings method');
-  assert(
-    JSON.stringify(JSON.parse(calls[0].options.body)) === JSON.stringify({
-      section: 'transcribe',
-      data: {confidential_audio: false},
-    }),
-    'settings body',
-  );
+  assertConfigCall(calls[0], false, 'success');
   assert(refreshes === 1, 'refresh after success');
   assert(rerenders === 0, 'no snapback on success');
   assert(JSON.stringify(messages) === JSON.stringify([
     {id: 'confidentialLaneOperation', message: '', tone: ''},
   ]), 'success clears status');
 
-  fail = true;
-  messages.length = 0;
+  reset();
+  failPut = true;
   await setConfidentialAudio(true);
 
-  assert(calls.length === 2, 'error call count');
-  assert(
-    JSON.stringify(JSON.parse(calls[1].options.body)) === JSON.stringify({
-      section: 'transcribe',
-      data: {confidential_audio: true},
-    }),
-    'error body',
-  );
-  assert(refreshes === 1, 'no refresh after error');
-  assert(rerenders === 1, 'snapback after error');
+  assert(calls.length === 1, 'put error call count');
+  assertConfigCall(calls[0], true, 'put error');
+  assert(refreshes === 0, 'no refresh after put error');
+  assert(rerenders === 1, 'snapback after put error');
   assert(JSON.stringify(messages) === JSON.stringify([
     {id: 'confidentialLaneOperation', message: '', tone: ''},
-    {id: 'confidentialLaneOperation', message: 'route detail', tone: 'error'},
-  ]), 'error surfaces message');
+    {id: 'confidentialLaneOperation', message: 'put detail', tone: 'error'},
+  ]), 'put error surfaces message');
+
+  reset();
+  failRefresh = true;
+  await setConfidentialAudio(true);
+
+  assert(calls.length === 1, 'refresh error call count');
+  assertConfigCall(calls[0], true, 'refresh error');
+  assert(refreshes === 1, 'refresh attempted after put success');
+  assert(rerenders === 0, 'no stale snapback after refresh error');
+  assert(JSON.stringify(messages) === JSON.stringify([
+    {id: 'confidentialLaneOperation', message: '', tone: ''},
+    {id: 'confidentialLaneOperation', message: 'refresh detail', tone: 'error'},
+  ]), 'refresh error surfaces message');
   console.log('PASS');
 }
 main().catch((error) => { console.error(error.stack || error); process.exit(1); });

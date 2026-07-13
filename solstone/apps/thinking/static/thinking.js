@@ -1770,10 +1770,17 @@
           data: {confidential_audio: enabled},
         }),
       });
-      await refreshProviders();
     } catch (err) {
+      // The write never landed, so authoritative state is unchanged.
       setMessage('confidentialLaneOperation', err.message, 'error');
       renderConfidentialSetup();
+      return;
+    }
+    try {
+      await refreshProviders();
+    } catch (err) {
+      // The write landed but the re-read failed; stale payload may under-claim what leaves.
+      setMessage('confidentialLaneOperation', err.message, 'error');
     }
   }
 
