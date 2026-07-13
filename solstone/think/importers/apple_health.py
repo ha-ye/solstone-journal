@@ -245,7 +245,7 @@ class AppleHealthImporter:
     ) -> ImportResult:
         # Save mode fails closed before any parse or write, root-explicit
         # against the journal this call would actually write.
-        _gate_decision = enforce_pre_save_gate(
+        gate_decision = enforce_pre_save_gate(
             self,
             dry_run=dry_run,
             confirm_health_save=confirm_health_save,
@@ -262,7 +262,7 @@ class AppleHealthImporter:
                 summary=f"Dry run only: {preview.summary}",
                 date_range=preview.date_range,
             )
-        assert _gate_decision.raw_retention is not None
+        assert gate_decision.raw_retention is not None
 
         resolved_import_id = import_id or dt.datetime.now().strftime("%Y%m%d_%H%M%S")
         result = _save_export(
@@ -272,7 +272,7 @@ class AppleHealthImporter:
             date_window=date_window,
             with_day_summaries=with_day_summaries,
             progress_callback=progress_callback,
-            retention=_gate_decision.raw_retention,
+            retention=gate_decision.raw_retention,
         )
         return ImportResult(
             entries_written=result["entries_written"],

@@ -109,7 +109,6 @@ from solstone.think.importers.sync import load_sync_state, save_sync_state
 logger = logging.getLogger(__name__)
 
 NORMALIZED_SCHEMA: Final = "solstone.health.oura.v1"
-IMPORT_STREAM: Final = "import.oura"
 SYNC_BACKEND_NAME: Final = "oura"
 SYNC_STATE_SCHEMA: Final = "solstone.import_sync.oura.v1"
 # Journal-config section holding the Oura OAuth material (client_id,

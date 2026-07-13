@@ -9,6 +9,7 @@ import datetime as dt
 import os
 import sqlite3
 from collections.abc import Iterable
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -120,9 +121,10 @@ def ensure_health_dedupe_db(journal_root: Path) -> Path:
 
     db_path = health_dedupe_db_path(journal_root)
     _precreate_private_sqlite_db(db_path)
-    with sqlite3.connect(db_path) as conn:
-        _ensure_health_dedupe_schema(conn)
-        _repair_sqlite_file_modes(db_path)
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            _ensure_health_dedupe_schema(conn)
+            _repair_sqlite_file_modes(db_path)
     return db_path
 
 
@@ -137,7 +139,7 @@ def get_health_dedupe_record(
         return None
     _repair_sqlite_file_modes(db_path)
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.row_factory = sqlite3.Row
         row = conn.execute(
             "SELECT * FROM health_dedupe WHERE dedupe_key = ?",
@@ -160,73 +162,74 @@ def upsert_health_dedupe_record(
     first_import_id = record.first_import_id or record.last_seen_import_id
     last_seen_import_id = record.last_seen_import_id or record.first_import_id
 
-    with sqlite3.connect(db_path) as conn:
-        _repair_sqlite_file_modes(db_path)
-        insert_result = conn.execute(
-            """
-            INSERT INTO health_dedupe (
-                dedupe_key,
-                source_family,
-                source_record_id,
-                record_type,
-                start_time,
-                end_time,
-                value_hash,
-                first_import_id,
-                last_seen_import_id,
-                normalized_ref,
-                raw_ref,
-                created_at,
-                updated_at
+    with closing(sqlite3.connect(db_path)) as conn:
+        with conn:
+            _repair_sqlite_file_modes(db_path)
+            insert_result = conn.execute(
+                """
+                INSERT INTO health_dedupe (
+                    dedupe_key,
+                    source_family,
+                    source_record_id,
+                    record_type,
+                    start_time,
+                    end_time,
+                    value_hash,
+                    first_import_id,
+                    last_seen_import_id,
+                    normalized_ref,
+                    raw_ref,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(dedupe_key) DO NOTHING
+                """,
+                (
+                    record.dedupe_key,
+                    record.source_family,
+                    record.source_record_id,
+                    record.record_type,
+                    record.start_time,
+                    record.end_time,
+                    record.value_hash,
+                    first_import_id,
+                    last_seen_import_id,
+                    record.normalized_ref,
+                    record.raw_ref,
+                    now,
+                    now,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(dedupe_key) DO NOTHING
-            """,
-            (
-                record.dedupe_key,
-                record.source_family,
-                record.source_record_id,
-                record.record_type,
-                record.start_time,
-                record.end_time,
-                record.value_hash,
-                first_import_id,
-                last_seen_import_id,
-                record.normalized_ref,
-                record.raw_ref,
-                now,
-                now,
-            ),
-        )
-        if insert_result.rowcount == 1:
-            return True
+            if insert_result.rowcount == 1:
+                return True
 
-        conn.execute(
-            """
-            UPDATE health_dedupe
-            SET
-                source_record_id = COALESCE(?, source_record_id),
-                start_time = ?,
-                end_time = ?,
-                last_seen_import_id = ?,
-                value_hash = COALESCE(?, value_hash),
-                normalized_ref = COALESCE(?, normalized_ref),
-                raw_ref = COALESCE(?, raw_ref),
-                updated_at = ?
-            WHERE dedupe_key = ?
-            """,
-            (
-                record.source_record_id,
-                record.start_time,
-                record.end_time,
-                last_seen_import_id,
-                record.value_hash,
-                record.normalized_ref,
-                record.raw_ref,
-                now,
-                record.dedupe_key,
-            ),
-        )
+            conn.execute(
+                """
+                UPDATE health_dedupe
+                SET
+                    source_record_id = COALESCE(?, source_record_id),
+                    start_time = ?,
+                    end_time = ?,
+                    last_seen_import_id = ?,
+                    value_hash = COALESCE(?, value_hash),
+                    normalized_ref = COALESCE(?, normalized_ref),
+                    raw_ref = COALESCE(?, raw_ref),
+                    updated_at = ?
+                WHERE dedupe_key = ?
+                """,
+                (
+                    record.source_record_id,
+                    record.start_time,
+                    record.end_time,
+                    last_seen_import_id,
+                    record.value_hash,
+                    record.normalized_ref,
+                    record.raw_ref,
+                    now,
+                    record.dedupe_key,
+                ),
+            )
     return False
 
 
@@ -246,7 +249,7 @@ def upsert_health_dedupe_records(
     batch = tuple(records)
     now = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
 
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         _repair_sqlite_file_modes(db_path)
         conn.execute("BEGIN")

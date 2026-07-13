@@ -1,11 +1,13 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import gc
 import os
 import sqlite3
 import stat
 import time
-from contextlib import contextmanager
+import warnings
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 import pytest
@@ -205,7 +207,7 @@ def test_upsert_health_dedupe_records_batches_in_wal_mode(tmp_path: Path):
     assert existing_row["normalized_ref"] == "import.apple_health/20260102/123000"
     assert new_row is not None
     assert new_row["source_record_id"] == "heart-rate-1"
-    with sqlite3.connect(health_dedupe_db_path(tmp_path)) as conn:
+    with closing(sqlite3.connect(health_dedupe_db_path(tmp_path))) as conn:
         journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert journal_mode == "wal"
 
@@ -217,7 +219,7 @@ def test_dedupe_db_and_wal_sidecars_are_private_while_connection_is_live(
         upsert_health_dedupe_records(tmp_path, _synthetic_dedupe_records(1))
 
     db_path = health_dedupe_db_path(tmp_path)
-    with sqlite3.connect(db_path) as conn:
+    with closing(sqlite3.connect(db_path)) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute(
             """
@@ -300,6 +302,23 @@ def test_batch_upsert_with_null_raw_ref_preserves_historic_raw_ref(tmp_path: Pat
     assert row is not None
     assert row["raw_ref"] == historic_raw_ref
     assert row["last_seen_import_id"] == "20260104_120000"
+
+
+def test_dedupe_connections_close_without_resource_warnings(tmp_path: Path):
+    gc.collect()
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+
+        ensure_health_dedupe_db(tmp_path)
+        upsert_health_dedupe_record(tmp_path, _synthetic_dedupe_records(1)[0])
+        upsert_health_dedupe_records(tmp_path, _synthetic_dedupe_records(2))
+        assert get_health_dedupe_record(tmp_path, "sha256:synthetic-00000") is not None
+        gc.collect()
+
+    resource_warnings = [
+        warning for warning in caught if issubclass(warning.category, ResourceWarning)
+    ]
+    assert resource_warnings == []
 
 
 def test_upsert_health_dedupe_records_handles_duplicate_keys_in_batch(tmp_path: Path):

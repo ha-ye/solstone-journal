@@ -51,7 +51,7 @@ Endpoint names below are from model knowledge of the v2 API; **verify each again
 
 Other API facts to verify live at O2: OAuth2 endpoints (`cloud.ouraring.com/oauth/authorize`, `api.ouraring.com/oauth/token` ⚠), scopes (`daily heartrate workout tag session spo2 stress heart_health metabolic`), rate limit (historically 5000 requests / 5 min ⚠), the no-auth sandbox (`/v2/sandbox/usercollection/*` ⚠), personal-access-token deprecation status ⚠, webhook subscription API ⚠.
 
-**Skeleton scope (implemented):** `daily_sleep`, `daily_readiness` (+ split-out `temperature_deviation` rows), `daily_resilience`, `daily_stress`, `daily_spo2`, `sleep`. That is exactly the "scores + stages" slice the day pages need and the AH mirror can't provide.
+**Original skeleton scope:** `daily_sleep`, `daily_readiness` (+ split-out `temperature_deviation` rows), `daily_resilience`, `daily_stress`, `daily_spo2`, `sleep`. The shipped sync scope is broader; see §5 for the current OAuth scope set and §9a for the later granted-scope endpoint additions.
 
 ### Do we still need the pending Oura export?
 
