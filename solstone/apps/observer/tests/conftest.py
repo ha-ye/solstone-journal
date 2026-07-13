@@ -10,6 +10,7 @@ bootstrap below lets app-only test runs load common test harness helpers.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -20,13 +21,35 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+@pytest.fixture(scope="module")
+def observer_app():
+    """Build the route registry once; per-test fixtures still isolate journals."""
+    from solstone.convey import create_app
+
+    previous = os.environ.get("SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES")
+    os.environ["SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES"] = "1"
+    try:
+        app = create_app()
+    finally:
+        if previous is None:
+            os.environ.pop("SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES", None)
+        else:
+            os.environ["SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES"] = previous
+    app.config["TESTING"] = True
+    return app
+
+
 @pytest.fixture
-def observer_env(tmp_path, monkeypatch):
+def observer_env(tmp_path, monkeypatch, observer_app):
     """Create a temporary journal for observer app testing.
 
     Returns a factory function that sets up the environment and returns
     the Flask test client along with the journal path.
     """
+
+    from solstone.convey import state
+
+    original_journal_root = state.journal_root
 
     def _create():
         journal = tmp_path / "journal"
@@ -46,19 +69,16 @@ def observer_env(tmp_path, monkeypatch):
 
         # Set environment
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-
-        # Create Flask test client
-        from solstone.convey import create_app
-
-        app = create_app(journal=str(journal))
-        client = app.test_client()
+        state.journal_root = str(journal)
+        client = observer_app.test_client()
 
         class Env:
             def __init__(self):
                 self.journal = journal
                 self.client = client
-                self.app = app
+                self.app = observer_app
 
         return Env()
 
-    return _create
+    yield _create
+    state.journal_root = original_journal_root

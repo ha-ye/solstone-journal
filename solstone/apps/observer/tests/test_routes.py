@@ -1143,7 +1143,7 @@ def test_ingest_mixed_segment_stores_all_sources(observer_env):
     }
 
 
-def test_ingest_reuses_cached_contract_bundle(observer_env, monkeypatch):
+def test_ingest_reuses_startup_contract_bundle(observer_env, monkeypatch):
     from solstone.think.contract import journal as contract_journal
 
     real = contract_journal.build_bundle
@@ -1180,7 +1180,7 @@ def test_ingest_reuses_cached_contract_bundle(observer_env, monkeypatch):
         assert resp.status_code == 200
         assert resp.get_json()["status"] == "ok"
 
-    assert calls["count"] == 1
+    assert calls["count"] == 0
     assert (
         env.app.config["JOURNAL_CONTRACT_BUNDLE"]["contract"]
         == "solstone-journal-at-rest"
