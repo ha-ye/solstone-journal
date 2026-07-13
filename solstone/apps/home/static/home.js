@@ -440,7 +440,7 @@
     const text = String(day || '');
     if (!/^\d{8}$/.test(text)) return text;
     const date = new Date(Number(text.slice(0, 4)), Number(text.slice(4, 6)) - 1, Number(text.slice(6, 8)));
-    let label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    let label = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }).toLowerCase();
     const reference = String(referenceDay || '');
     if (/^\d{8}$/.test(reference) && text.slice(0, 4) !== reference.slice(0, 4)) {
       label += " '" + text.slice(2, 4);
