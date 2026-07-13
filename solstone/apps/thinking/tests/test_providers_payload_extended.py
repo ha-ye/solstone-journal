@@ -12,7 +12,6 @@ import pytest
 from solstone.apps.thinking import routes
 from solstone.apps.thinking.local_bootstrap import LOCAL_MODEL_SPECS
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
-from solstone.convey import create_app
 from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER, resolve_provider
 from solstone.think.providers.install_state import InstallState
 from solstone.think.providers.state import ProviderState
@@ -31,26 +30,27 @@ REMOVED_PROVIDER = "mlx"
 
 
 @pytest.fixture
-def settings_client(settings_env):
-    client, _journal_path = _settings_client_with_journal(settings_env)
+def settings_client(settings_env, thinking_app):
+    client, _journal_path = _settings_client_with_journal(settings_env, thinking_app)
     return client
 
 
 @pytest.fixture
-def settings_client_with_journal(settings_env):
-    return _settings_client_with_journal(settings_env)
+def settings_client_with_journal(settings_env, thinking_app):
+    return _settings_client_with_journal(settings_env, thinking_app)
 
 
-def _settings_client_with_journal(settings_env):
+def _settings_client_with_journal(settings_env, thinking_app):
+    from solstone.convey import state
+
     journal_path, config = settings_env()
     config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
     )
-    app = create_app(str(journal_path))
-    app.config["TESTING"] = True
-    return app.test_client(), journal_path
+    state.journal_root = str(journal_path)
+    return thinking_app.test_client(), journal_path
 
 
 def _write_config(journal_path, config: dict) -> None:
@@ -152,6 +152,7 @@ def test_get_providers_reports_byo_when_split_cloud_providers_share_lane(
 def test_get_providers_reports_none_lane_when_no_engine_selected(
     settings_env,
     monkeypatch,
+    thinking_app,
 ):
     journal_path, config = settings_env(
         {
@@ -164,7 +165,7 @@ def test_get_providers_reports_none_lane_when_no_engine_selected(
         "solstone.think.providers.state.local_runtime_ready", lambda: False
     )
     client, _journal_path = _settings_client_with_journal(
-        lambda: (journal_path, config)
+        lambda: (journal_path, config), thinking_app
     )
 
     response = client.get("/app/thinking/api/providers")

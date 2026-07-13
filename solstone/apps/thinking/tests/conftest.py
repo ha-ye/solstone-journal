@@ -6,16 +6,46 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
 from solstone.think.services import operations, spp
 
 
+@pytest.fixture(scope="module")
+def thinking_app():
+    """Build the route registry once; per-test fixtures still isolate journals."""
+    from solstone.convey import create_app
+    from solstone.think.voice.runtime import stop_all_voice_runtime
+
+    previous = os.environ.get("SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES")
+    os.environ["SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES"] = "1"
+    try:
+        app = create_app()
+    finally:
+        if previous is None:
+            os.environ.pop("SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES", None)
+        else:
+            os.environ["SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES"] = previous
+    app.config["TESTING"] = True
+    yield app
+    stop_all_voice_runtime()
+
+
 @pytest.fixture(autouse=True)
 def _skip_supervisor_check(monkeypatch):
     """Allow app CLI tests to run without a live solstone supervisor."""
     monkeypatch.setenv("SOL_SKIP_SUPERVISOR_CHECK", "1")
+
+
+@pytest.fixture(autouse=True)
+def _restore_convey_journal_root():
+    from solstone.convey import state
+
+    original_journal_root = state.journal_root
+    yield
+    state.journal_root = original_journal_root
 
 
 @pytest.fixture(autouse=True)

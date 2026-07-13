@@ -25,6 +25,7 @@ if str(ROOT) not in sys.path:
 def observer_app():
     """Build the route registry once; per-test fixtures still isolate journals."""
     from solstone.convey import create_app
+    from solstone.think.voice.runtime import stop_all_voice_runtime
 
     previous = os.environ.get("SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES")
     os.environ["SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES"] = "1"
@@ -36,7 +37,8 @@ def observer_app():
         else:
             os.environ["SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES"] = previous
     app.config["TESTING"] = True
-    return app
+    yield app
+    stop_all_voice_runtime()
 
 
 @pytest.fixture
