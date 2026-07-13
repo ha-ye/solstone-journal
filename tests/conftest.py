@@ -2,9 +2,11 @@
 # Copyright (c) 2026 sol pbc
 
 import importlib
+import json
 import os
 import sys
 import types
+from collections.abc import Sequence
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -94,6 +96,46 @@ from solstone.think.utils import now_ms
 from solstone.think.voice import brain as voice_brain
 from solstone.think.voice.runtime import stop_all_voice_runtime
 from tests._baseline_harness import copytree_tracked
+
+
+def write_health_approval_artifact(
+    journal_root: Path,
+    *,
+    importers: Sequence[str],
+) -> Path:
+    from solstone.think.importers.pre_save_gate import (
+        APPROVAL_SCHEMA,
+        CHECKLIST_DESTINATIONS,
+        CHECKLIST_VERSION,
+        approval_path_for_journal,
+    )
+
+    resolved = journal_root.resolve()
+    approval_path = approval_path_for_journal(resolved)
+    approval_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact = {
+        "schema": APPROVAL_SCHEMA,
+        "checklist_version": CHECKLIST_VERSION,
+        "approved_by": "Test Owner",
+        "approved_at": "2026-07-03T23:22:00-06:00",
+        "journal_root": str(resolved),
+        "approved_importers": list(importers),
+        "replication_destinations": {
+            destination: {
+                "decision": "approved" if destination == "time_machine" else "excluded",
+                "notes": "Synthetic test decision.",
+            }
+            for destination in CHECKLIST_DESTINATIONS
+        },
+        "raw_retention": {
+            "decision": "retain_compressed_zip",
+            "notes": "Synthetic test decision.",
+        },
+        "requires_per_run_confirmation": True,
+        "no_real_health_data_in_artifact": True,
+    }
+    approval_path.write_text(json.dumps(artifact), encoding="utf-8")
+    return approval_path
 
 
 @pytest.fixture(autouse=True)

@@ -9,7 +9,7 @@ from collections import Counter, defaultdict
 from collections.abc import Collection
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from solstone.observe.screen import format_screen_text
 from solstone.think.data_state import (
@@ -17,11 +17,25 @@ from solstone.think.data_state import (
     derive_modality_state,
     read_processing_record,
 )
-from solstone.think.media import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
+from solstone.think.importers.health_schema import DEFAULT_HEALTH_IMPORT_STREAM
+from solstone.think.media import (
+    AUDIO_EXTENSIONS,
+    IMAGE_EXTENSIONS,
+    PDF_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+)
 from solstone.think.talent_outputs import iter_talent_text_projections
 
 from .streams import read_segment_stream
 from .utils import day_from_path, day_path
+
+# These streams contain derived health day-summary cards, restated from
+# already-indexed health records. They must stay out of sense/entities/facets so
+# the system does not mine its own summaries back into entities. Other
+# markdown-only imports, such as owner notes, Kindle, ICS, or text, are real
+# owner thought and must enter think. Future health day-card streams join by
+# adding one entry here.
+HEALTH_CARD_STREAMS: Final = frozenset({DEFAULT_HEALTH_IMPORT_STREAM})
 
 
 def _date_str(day_dir: str) -> str:
@@ -498,8 +512,48 @@ def _has_raw_media(paths: Collection[Path], extensions: Collection[str]) -> bool
     return any(path.suffix.lower() in extensions for path in paths)
 
 
+def _markdown_transcript_files(seg_path: Path) -> list[Path]:
+    return sorted(
+        {
+            path
+            for pattern in ("*_transcript.md", "imported.md")
+            for path in seg_path.glob(pattern)
+            if path.is_file()
+        }
+    )
+
+
+def _is_markdown_only_health_segment(stream: str, seg_path: Path) -> bool:
+    if stream not in HEALTH_CARD_STREAMS:
+        return False
+    if not any(
+        _has_nonempty_text(path) for path in _markdown_transcript_files(seg_path)
+    ):
+        return False
+    for pattern in (
+        "audio.jsonl",
+        "*_audio.jsonl",
+        "*_transcript.jsonl",
+        "screen.jsonl",
+        "*_screen.jsonl",
+    ):
+        if any(path.is_file() for path in seg_path.glob(pattern)):
+            return False
+    raw_media_paths = [path for path in seg_path.iterdir() if path.is_file()]
+    content_extensions = (
+        tuple(AUDIO_EXTENSIONS)
+        + tuple(VIDEO_EXTENSIONS)
+        + tuple(IMAGE_EXTENSIONS)
+        + tuple(PDF_EXTENSIONS)
+    )
+    return not _has_raw_media(raw_media_paths, content_extensions)
+
+
 def _detect_data_state(seg_path: Path) -> dict[str, str]:
     """Detect cheap per-modality data state for a segment directory."""
+    if _is_markdown_only_health_segment(seg_path.parent.name, seg_path):
+        return {"markdown": DataState.ANALYZED.value}
+
     state: dict[str, str] = {}
     raw_media_paths = [path for path in seg_path.iterdir() if path.is_file()]
 
@@ -511,14 +565,7 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
             if path.is_file()
         }
     )
-    audio_md_files = sorted(
-        {
-            path
-            for pattern in ("*_transcript.md", "imported.md")
-            for path in seg_path.glob(pattern)
-            if path.is_file()
-        }
-    )
+    audio_md_files = _markdown_transcript_files(seg_path)
     audio_analyzed = any(
         _jsonl_has_marker_row(path, "start") for path in audio_jsonl_files
     ) or any(_has_nonempty_text(path) for path in audio_md_files)
@@ -614,7 +661,11 @@ def scan_day(
         start_time, end_time = segment_parse(seg_path.name)
 
         data_state = _detect_data_state(seg_path) if start_time else {}
-        types = [modality for modality in ("audio", "screen") if modality in data_state]
+        types = [
+            modality
+            for modality in ("audio", "screen", "markdown")
+            if modality in data_state
+        ]
 
         if start_time and types:
             dt = datetime.combine(day_date, start_time)

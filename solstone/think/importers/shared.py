@@ -10,6 +10,7 @@ import logging
 import os
 import shutil
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Callable
 
@@ -300,6 +301,23 @@ def write_markdown_segments(
     return created_files, segments
 
 
+def write_markdown_segment_file(
+    journal_root: Path,
+    day: str,
+    stream: str,
+    segment_key: str,
+    filename: str,
+    content: str,
+) -> Path:
+    """Write one markdown transcript segment under an explicit journal root."""
+
+    segment_dir = Path(journal_root) / "chronicle" / day / stream / segment_key
+    segment_dir.mkdir(parents=True, exist_ok=True)
+    md_path = segment_dir / filename
+    write_text(md_path, content + "\n")
+    return md_path
+
+
 def install_source_file(src: Path, dest: Path) -> None:
     """Install an original source file onto dest atomically, preserving mtime.
 
@@ -587,6 +605,24 @@ def hash_source(path: Path) -> str:
     return h.hexdigest()
 
 
+def windowed_source_hash(
+    path: Path, date_from: str | None = None, date_to: str | None = None
+) -> str:
+    """Source hash for whole-source dedupe, made window-aware.
+
+    A date-windowed save normalizes only a slice of the source, so a
+    different window over the same file must not be reported as already
+    imported. The window joins the recorded identity; an identical window
+    still dedupes, and unwindowed imports keep the plain content hash.
+    """
+    base = hash_source(path)
+    if date_from or date_to:
+        start = (date_from or "").replace("-", "") or "open"
+        end = (date_to or "").replace("-", "") or "open"
+        return f"{base}#window:{start}:{end}"
+    return base
+
+
 def write_manifest(
     journal_root: Path,
     import_id: str,
@@ -691,9 +727,12 @@ def _entry_content_key(entry: dict) -> str:
 def write_content_manifest(
     import_id: str,
     entries: list[dict[str, Any]],
+    journal_root: Path | None = None,
 ) -> Path:
     """Write content_manifest.jsonl for an import."""
-    journal_root = Path(get_journal())
+    journal_root = (
+        Path(journal_root) if journal_root is not None else Path(get_journal())
+    )
     manifest_dir = journal_root / "imports" / import_id
     manifest_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_dir / "content_manifest.jsonl"
@@ -702,6 +741,15 @@ def write_content_manifest(
     atomic_replace(manifest_path, "\n".join(lines) + "\n" if lines else "")
 
     return manifest_path
+
+
+def write_jsonl_records(path: Path, rows: Iterable[dict[str, Any]]) -> Path:
+    """Write JSONL rows through the importer-owned journal IO primitive."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps(row, sort_keys=True) for row in rows]
+    atomic_replace(path, "\n".join(lines) + "\n" if lines else "")
+    return path
 
 
 def map_items_to_segments(

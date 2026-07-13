@@ -158,5 +158,6 @@ def test_sandbox_redirect_uses_service_log_not_supervisor_log():
     end = text.index("sandbox-stop:", start)
     sandbox_block = text[start:end]
 
-    assert '> "$$SANDBOX_JOURNAL/health/service.log" 2>&1 &' in sandbox_block
-    assert '> "$$SANDBOX_JOURNAL/health/supervisor.log" 2>&1 &' not in sandbox_block
+    assert 'SANDBOX_LOG="$$SANDBOX_JOURNAL/health/service.log"' in sandbox_block
+    assert "stderr=subprocess.STDOUT" in sandbox_block
+    assert 'SANDBOX_LOG="$$SANDBOX_JOURNAL/health/supervisor.log"' not in sandbox_block

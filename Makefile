@@ -161,13 +161,11 @@ sandbox: .installed
 	cp -r tests/fixtures/journal/* "$$SANDBOX_JOURNAL/"; \
 	echo "$$SANDBOX_JOURNAL" > .sandbox.journal; \
 	echo "Sandbox journal: $$SANDBOX_JOURNAL"; \
-	# Boot supervisor in background \
-	SOLSTONE_JOURNAL="$$SANDBOX_JOURNAL" PATH=$(CURDIR)/$(VENV_BIN):$$PATH \
-		$(VENV_BIN)/journal supervisor 0 --no-daily \
-		> "$$SANDBOX_JOURNAL/health/service.log" 2>&1 & \
-	echo $$! > .sandbox.pid; \
+	: "Boot supervisor in background"; \
+	SOLSTONE_JOURNAL="$$SANDBOX_JOURNAL" SANDBOX_PATH="$(CURDIR)/$(VENV_BIN):$$PATH" SANDBOX_LOG="$$SANDBOX_JOURNAL/health/service.log" JOURNAL_BIN="$(CURDIR)/$(VENV_BIN)/journal" \
+		$(VENV_PY) -c 'import os, subprocess; log = open(os.environ["SANDBOX_LOG"], "ab", buffering=0); env = os.environ.copy(); env["PATH"] = os.environ["SANDBOX_PATH"]; proc = subprocess.Popen([os.environ["JOURNAL_BIN"], "supervisor", "0", "--no-daily"], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=env, start_new_session=True); print(proc.pid)' > .sandbox.pid; \
 	echo "Supervisor PID: $$(cat .sandbox.pid)"; \
-	# Poll for readiness \
+	: "Poll for readiness"; \
 	echo "Waiting for services..."; \
 	READY=false; \
 	for i in $$(seq 1 20); do \
@@ -199,7 +197,7 @@ sandbox-stop:
 	PID=$$(cat .sandbox.pid); \
 	echo "Stopping supervisor (PID $$PID)..."; \
 	kill "$$PID" 2>/dev/null || true; \
-	# Wait up to 5s for clean shutdown \
+	: "Wait up to 5s for clean shutdown"; \
 	for i in $$(seq 1 10); do \
 		kill -0 "$$PID" 2>/dev/null || break; \
 		sleep 0.5; \
