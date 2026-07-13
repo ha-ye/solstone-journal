@@ -11,6 +11,7 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 - sol now keeps one active brain for each lane instead of switching providers behind the scenes. old tier, context-routing, and backup keys are left in your config untouched, but they no longer steer model choice.
 - paths that used to be pinned to lite-class models now use the single model chosen for that lane. for byo-token owners this can raise per-token cost on those paths; local-lane installs are unaffected.
 - a legacy config with both `tier` and `model` now honors the model you named instead of ignoring it.
+- an engine you bring yourself now shares the same request limit as sol's bundled engine, 2 running at once by default, so a sudden burst of work can't overwhelm a shared machine. if your setup has real capacity to spare, raise `providers.local.parallel_slots` in your config to use more of it. reported by Dave Smith.
 
 ### Fixed
 
