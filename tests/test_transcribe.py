@@ -649,6 +649,12 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
 
 
 def test_process_audio_records_analyzed_processing(tmp_path):
+    from solstone.observe.processing_record import (
+        HANDLER_TRANSCRIBE,
+        REASON_OK,
+        SCHEMA,
+        STATE_ANALYZED,
+    )
     from solstone.observe.transcribe.main import process_audio
 
     raw_path = (
@@ -710,10 +716,10 @@ def test_process_audio_records_analyzed_processing(tmp_path):
     jsonl_path = raw_path.with_suffix(".jsonl")
     header = json.loads(jsonl_path.read_text().splitlines()[0])
     assert header["_solstone_processing"] == {
-        "schema": "solstone.processing.v1",
-        "state": "analyzed",
-        "reason_code": "ok",
-        "handler": "transcribe",
+        "schema": SCHEMA,
+        "state": STATE_ANALYZED,
+        "reason_code": REASON_OK,
+        "handler": HANDLER_TRANSCRIBE,
         "attempted_at": "2026-06-30T12:00:00Z",
         "input_size": 2048,
     }

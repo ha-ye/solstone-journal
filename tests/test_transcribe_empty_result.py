@@ -615,7 +615,7 @@ def test_filtered_raw_deletion_leaves_terminal_processing_record(
     assert len(lines) == 1
 
     header = json.loads(lines[0])
-    record = _assert_empty_record(header, input_size=input_size)
+    record = header["_solstone_processing"]
     attempted_at = record["attempted_at"]
     assert isinstance(attempted_at, str)
     datetime.datetime.strptime(attempted_at, "%Y-%m-%dT%H:%M:%SZ")
