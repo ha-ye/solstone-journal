@@ -114,7 +114,9 @@ def test_restore_success_normalizes_key_assembles_env_and_reindexes(
     calls: list[tuple[list[str], dict[str, Any]]] = []
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        order.append(args[0])
+        order.append(
+            next(arg for arg in args if arg in {"snapshots", "restore", "check"})
+        )
         calls.append((args, kwargs))
         return next(responses)
 
@@ -458,7 +460,9 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
     real_set_recovery_key_confirmed = restore.set_recovery_key_confirmed
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        order.append(args[0])
+        order.append(
+            next(arg for arg in args if arg in {"snapshots", "restore", "check"})
+        )
         calls.append((args, kwargs))
         return next(responses)
 
@@ -484,6 +488,7 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
         return True
 
     monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(restore, "ensure_rclone", lambda: Path("/rclone"))
     monkeypatch.setattr(restore, "run_restic", fake_run_restic)
     monkeypatch.setattr(
         restore,
@@ -526,6 +531,14 @@ def test_restore_operated_success_persists_mode_and_key_without_destination(
     assert calls[0][1]["backend_env"]["AWS_CONTAINER_CREDENTIALS_FULL_URI"].startswith(
         "http://127.0.0.1:"
     )
+    assert calls[0][0][:4] == [
+        "-o",
+        "rclone.program=/rclone",
+        "-o",
+        "rclone.args=serve restic --stdio --append-only --config /dev/null",
+    ]
+    assert calls[0][1]["repository"] == ("rclone:spb:journal-backups/users/acct/inst/")
+    assert calls[0][1]["backend_env"]["RCLONE_CONFIG_SPB_ENV_AUTH"] == "true"
     config = _read_config(tmp_path)
     serialized = json.dumps(config)
     assert config["backup"]["mode"] == "operated"
@@ -574,6 +587,34 @@ def test_restore_operated_invalid_key_persists_nothing(
     assert _read_config(tmp_path) == original_config
 
 
+def test_restore_operated_rclone_unavailable_persists_nothing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    original_config = {"backup": {"daily_key": "daily-secret"}}
+    _write_config(tmp_path, original_config)
+    monkeypatch.setattr(
+        restore,
+        "ensure_rclone",
+        lambda: (_ for _ in ()).throw(RuntimeError("missing")),
+    )
+    monkeypatch.setattr(
+        restore,
+        "ensure_restic",
+        lambda: pytest.fail("restic should not be resolved"),
+    )
+
+    result = restore.restore_journal_operated(
+        _operated_binding(),
+        _operated_credentials(),
+        "A" * 64,
+    )
+
+    assert result.reason_code == "rclone_unavailable"
+    assert _read_config(tmp_path) == original_config
+
+
 def test_restore_operated_restic_failure_persists_nothing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -582,6 +623,7 @@ def test_restore_operated_restic_failure_persists_nothing(
     original_config = {"backup": {"daily_key": "daily-secret"}}
     _write_config(tmp_path, original_config)
     monkeypatch.setattr(restore, "ensure_restic", lambda: Path("/restic"))
+    monkeypatch.setattr(restore, "ensure_rclone", lambda: Path("/rclone"))
     monkeypatch.setattr(restore, "run_restic", lambda args, **kwargs: _result(12))
     monkeypatch.setattr(
         restore,

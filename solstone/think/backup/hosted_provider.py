@@ -12,6 +12,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 from solstone.think.backup.destination import Destination
 from solstone.think.backup.hosted import (
@@ -29,6 +30,7 @@ _CREDENTIAL_PATH = "/credentials"
 class HostedResticSession:
     destination: Destination
     backend_env: Mapping[str, str]
+    global_options: tuple[str, ...] = ()
 
 
 class _CredentialState:
@@ -102,12 +104,12 @@ class _CredentialHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def hosted_restic_session(
+def _credential_provider(
     binding: HostedBinding,
     *,
     scope: str,
     initial_credentials: HostedCredentials | None = None,
-) -> Iterator[HostedResticSession]:
+) -> Iterator[tuple[HostedCredentials, dict[str, str]]]:
     credentials = initial_credentials or fetch_hosted_credentials(binding, scope=scope)
     authorization_token = secrets.token_urlsafe(32)
     state = _CredentialState(binding, scope, credentials)
@@ -121,13 +123,9 @@ def hosted_restic_session(
     thread.start()
     host, port = server.server_address
     try:
-        yield HostedResticSession(
-            destination=Destination(
-                repository=operated_repository(binding, credentials),
-                backend="s3",
-                credentials={},
-            ),
-            backend_env={
+        yield (
+            credentials,
+            {
                 "AWS_CONTAINER_CREDENTIALS_FULL_URI": (
                     f"http://{host}:{port}{_CREDENTIAL_PATH}"
                 ),
@@ -140,4 +138,68 @@ def hosted_restic_session(
         thread.join()
 
 
-__all__ = ["HostedResticSession", "hosted_restic_session"]
+@contextmanager
+def hosted_restic_session(
+    binding: HostedBinding,
+    *,
+    scope: str,
+    initial_credentials: HostedCredentials | None = None,
+) -> Iterator[HostedResticSession]:
+    with _credential_provider(
+        binding,
+        scope=scope,
+        initial_credentials=initial_credentials,
+    ) as (credentials, provider_env):
+        yield HostedResticSession(
+            destination=Destination(
+                repository=operated_repository(binding, credentials),
+                backend="s3",
+                credentials={},
+            ),
+            backend_env=provider_env,
+        )
+
+
+@contextmanager
+def hosted_append_only_restic_session(
+    binding: HostedBinding,
+    *,
+    rclone_path: Path,
+    initial_credentials: HostedCredentials | None = None,
+) -> Iterator[HostedResticSession]:
+    """Serve an operated repo through rclone's lock-aware append-only adapter."""
+    with _credential_provider(
+        binding,
+        scope="maintenance",
+        initial_credentials=initial_credentials,
+    ) as (credentials, provider_env):
+        backend_env = {
+            **provider_env,
+            "RCLONE_CONFIG_SPB_TYPE": "s3",
+            "RCLONE_CONFIG_SPB_PROVIDER": "Cloudflare",
+            "RCLONE_CONFIG_SPB_ENV_AUTH": "true",
+            "RCLONE_CONFIG_SPB_ENDPOINT": credentials.endpoint,
+            "RCLONE_CONFIG_SPB_REGION": "auto",
+            "RCLONE_CONFIG_SPB_NO_CHECK_BUCKET": "true",
+        }
+        yield HostedResticSession(
+            destination=Destination(
+                repository=f"rclone:spb:{binding.bucket}/{binding.prefix}",
+                backend="rclone",
+                credentials={},
+            ),
+            backend_env=backend_env,
+            global_options=(
+                "-o",
+                f"rclone.program={rclone_path}",
+                "-o",
+                "rclone.args=serve restic --stdio --append-only --config /dev/null",
+            ),
+        )
+
+
+__all__ = [
+    "HostedResticSession",
+    "hosted_append_only_restic_session",
+    "hosted_restic_session",
+]

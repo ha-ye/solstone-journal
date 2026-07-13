@@ -415,6 +415,73 @@ def test_run_backup_restic_unavailable_records_error(
     )
 
 
+def test_operated_backup_rclone_unavailable_records_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(
+        engine,
+        "ensure_rclone",
+        Mock(side_effect=RuntimeError("download failed")),
+    )
+    monkeypatch.setattr(
+        engine,
+        "fetch_hosted_credentials",
+        Mock(
+            return_value=HostedCredentials(
+                access_key_id="AKID",
+                secret_access_key="SAK",
+                session_token="SESS",
+                endpoint="https://acct.r2.cloudflarestorage.com",
+                expires_at="2026-07-13T12:00:00Z",
+            )
+        ),
+    )
+    run_restic = Mock()
+    record_backup_result = Mock()
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine.time, "time", lambda: 790)
+
+    result = engine.run_backup()
+
+    assert result == engine.BackupResult(
+        status="error",
+        snapshot_id=None,
+        error_reason="rclone_unavailable",
+    )
+    run_restic.assert_not_called()
+    record_backup_result.assert_called_once_with(
+        status="error",
+        time=790,
+        snapshot_id=None,
+        error_reason="rclone_unavailable",
+    )
+
+
 def test_run_prune_unlocks_then_forgets_with_prune_and_repack_bound(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -676,12 +743,14 @@ def test_operated_backup_fetches_creds_and_builds_repo(
 
     monkeypatch.setattr(engine, "fetch_hosted_credentials", fake_fetch)
     monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "ensure_rclone", Mock(return_value=Path("/rclone")))
     monkeypatch.setattr(engine, "run_restic", fake_run_restic)
 
     result = engine.run_backup()
 
     assert result.status == "ok"
-    backup_call = next(call for call in calls if call[0][0] == "backup")
+    backup_call = next(call for call in calls if "backup" in call[0])
+    backup_args = backup_call[0]
     backup_kwargs = backup_call[1]
     backend_env = backup_kwargs["backend_env"]
     assert backend_env["AWS_CONTAINER_CREDENTIALS_FULL_URI"].startswith(
@@ -690,13 +759,20 @@ def test_operated_backup_fetches_creds_and_builds_repo(
     assert backend_env["AWS_CONTAINER_AUTHORIZATION_TOKEN"]
     for secret in ("AKID", "SAK", "SESS"):
         assert secret not in json.dumps(backend_env)
-    assert (
-        backup_kwargs["repository"]
-        == "s3:https://acct.r2.cloudflarestorage.com/bkt/users/acct/inst"
-    )
+    assert backup_kwargs["repository"] == "rclone:spb:bkt/users/acct/inst"
+    assert backup_args[:4] == [
+        "-o",
+        "rclone.program=/rclone",
+        "-o",
+        "rclone.args=serve restic --stdio --append-only --config /dev/null",
+    ]
+    assert backup_args[4] == "backup"
+    assert backend_env["RCLONE_CONFIG_SPB_TYPE"] == "s3"
+    assert backend_env["RCLONE_CONFIG_SPB_PROVIDER"] == "Cloudflare"
+    assert backend_env["RCLONE_CONFIG_SPB_ENV_AUTH"] == "true"
     for secret in ("AKID", "SAK", "SESS"):
         assert secret not in backup_kwargs["repository"]
-    assert captured["scope"] == "backup"
+    assert captured["scope"] == "maintenance"
 
 
 def test_operated_prune_requests_maintenance_scope(
@@ -952,9 +1028,9 @@ def test_operated_does_not_persist_or_log_secrets(
         )
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
-        if args == ["unlock"]:
+        if "unlock" in args:
             return _restic_result(0, args=args, text=secret_text)
-        if args and args[0] == "backup":
+        if "backup" in args:
             return _restic_result(
                 0,
                 parsed_json={"message_type": "summary", "snapshot_id": "snap1"},
@@ -965,6 +1041,7 @@ def test_operated_does_not_persist_or_log_secrets(
 
     monkeypatch.setattr(engine, "fetch_hosted_credentials", fake_fetch)
     monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "ensure_rclone", Mock(return_value=Path("/rclone")))
     monkeypatch.setattr(engine, "run_restic", fake_run_restic)
     caplog.set_level(logging.WARNING, logger="solstone.backup.engine")
 

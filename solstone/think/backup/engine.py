@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,8 +24,13 @@ from solstone.think.backup.hosted import (
     load_hosted_binding,
     operated_destination,
 )
-from solstone.think.backup.hosted_provider import hosted_restic_session
+from solstone.think.backup.hosted_provider import (
+    HostedResticSession,
+    hosted_append_only_restic_session,
+    hosted_restic_session,
+)
 from solstone.think.backup.install import ensure_restic
+from solstone.think.backup.rclone_install import ensure_rclone
 from solstone.think.backup.runner import (
     reason_for_returncode,
     run_restic,
@@ -98,10 +103,15 @@ class _Runtime:
     restic_path: Path
     binding: HostedBinding | None = None
     hosted_credentials: HostedCredentials | None = None
+    rclone_path: Path | None = None
 
 
 class _ResticUnavailable(RuntimeError):
     """Raised when the pinned restic binary cannot be acquired."""
+
+
+class _RcloneUnavailable(RuntimeError):
+    """Raised when the hosted append-only adapter cannot be acquired."""
 
 
 def _resolve_runtime(scope: str) -> _Runtime | None:
@@ -117,7 +127,8 @@ def _resolve_runtime(scope: str) -> _Runtime | None:
         binding = load_hosted_binding()
         if binding is None:
             return None
-        creds = fetch_hosted_credentials(binding, scope=scope)
+        credential_scope = "maintenance" if scope == "backup" else scope
+        creds = fetch_hosted_credentials(binding, scope=credential_scope)
         destination = operated_destination(binding, creds)
     else:
         binding = None
@@ -131,12 +142,21 @@ def _resolve_runtime(scope: str) -> _Runtime | None:
     except Exception as exc:
         raise _ResticUnavailable from exc
 
+    if binding is not None and scope == "backup":
+        try:
+            rclone_path = ensure_rclone()
+        except Exception as exc:
+            raise _RcloneUnavailable from exc
+    else:
+        rclone_path = None
+
     return _Runtime(
         destination=destination,
         keys=keys,
         restic_path=restic_path,
         binding=binding,
         hosted_credentials=creds,
+        rclone_path=rclone_path,
     )
 
 
@@ -170,21 +190,42 @@ def _runtime_backend(
     *,
     scope: str,
     operation: str,
-) -> Iterator[tuple[Destination, Mapping[str, str | None]] | None]:
+) -> Iterator[HostedResticSession | None]:
     if runtime.binding is not None and runtime.hosted_credentials is not None:
+        if scope == "backup":
+            if runtime.rclone_path is None:
+                yield None
+                return
+            with hosted_append_only_restic_session(
+                runtime.binding,
+                rclone_path=runtime.rclone_path,
+                initial_credentials=runtime.hosted_credentials,
+            ) as session:
+                yield session
+            return
         with hosted_restic_session(
             runtime.binding,
             scope=scope,
             initial_credentials=runtime.hosted_credentials,
         ) as session:
-            yield session.destination, session.backend_env
+            yield session
         return
 
     backend_env = _assemble_backend_env(runtime.destination, operation=operation)
     if backend_env is None:
         yield None
         return
-    yield runtime.destination, backend_env
+    yield HostedResticSession(
+        destination=runtime.destination,
+        backend_env=backend_env,
+    )
+
+
+def _session_args(
+    session: HostedResticSession,
+    args: list[str],
+) -> list[str]:
+    return [*session.global_options, *args]
 
 
 def _backup_timeout() -> int:
@@ -201,15 +242,14 @@ def _backup_timeout() -> int:
 
 def _recover_stale_lock(
     runtime: _Runtime,
-    destination: Destination,
-    backend_env: Mapping[str, str | None],
+    session: HostedResticSession,
 ) -> None:
     result = run_restic(
-        ["unlock"],
-        repository=destination.repository,
+        _session_args(session, ["unlock"]),
+        repository=session.destination.repository,
         password=runtime.keys.daily_key,
         restic_path=runtime.restic_path,
-        backend_env=backend_env,
+        backend_env=session.backend_env,
         timeout=UNLOCK_TIMEOUT_SECONDS,
     )
     if result.returncode == 0:
@@ -266,6 +306,13 @@ def run_backup() -> BackupResult:
             "restic_unavailable",
         )
         return _record_backup_error(reason="restic_unavailable")
+    except _RcloneUnavailable:
+        logger.warning(
+            "backup completed returncode=%s reason_code=%s",
+            None,
+            "rclone_unavailable",
+        )
+        return _record_backup_error(reason="rclone_unavailable")
 
     if runtime is None:
         return BackupResult(status="skipped", snapshot_id=None, error_reason=None)
@@ -273,14 +320,13 @@ def run_backup() -> BackupResult:
     with _runtime_backend(runtime, scope="backup", operation="run") as backend:
         if backend is None:
             return _record_backup_error(reason="failed")
-        destination, backend_env = backend
-        _recover_stale_lock(runtime, destination, backend_env)
+        _recover_stale_lock(runtime, backend)
         result = run_restic(
-            _backup_args(),
-            repository=destination.repository,
+            _session_args(backend, _backup_args()),
+            repository=backend.destination.repository,
             password=runtime.keys.daily_key,
             restic_path=runtime.restic_path,
-            backend_env=backend_env,
+            backend_env=backend.backend_env,
             json=True,
             timeout=_backup_timeout(),
         )
@@ -342,26 +388,28 @@ def run_prune() -> PruneResult:
     with _runtime_backend(runtime, scope="maintenance", operation="prune") as backend:
         if backend is None:
             return _record_prune_error(reason="failed")
-        destination, backend_env = backend
-        _recover_stale_lock(runtime, destination, backend_env)
+        _recover_stale_lock(runtime, backend)
         retention = get_backup_config()["retention"]
         result = run_restic(
-            [
-                "forget",
-                "--keep-hourly",
-                str(retention.get("hourly", 24)),
-                "--keep-daily",
-                str(retention.get("daily", 7)),
-                "--keep-weekly",
-                str(retention.get("weekly", 4)),
-                "--keep-monthly",
-                str(retention.get("monthly", 12)),
-                "--prune",
-            ],
-            repository=destination.repository,
+            _session_args(
+                backend,
+                [
+                    "forget",
+                    "--keep-hourly",
+                    str(retention.get("hourly", 24)),
+                    "--keep-daily",
+                    str(retention.get("daily", 7)),
+                    "--keep-weekly",
+                    str(retention.get("weekly", 4)),
+                    "--keep-monthly",
+                    str(retention.get("monthly", 12)),
+                    "--prune",
+                ],
+            ),
+            repository=backend.destination.repository,
             password=runtime.keys.daily_key,
             restic_path=runtime.restic_path,
-            backend_env=backend_env,
+            backend_env=backend.backend_env,
             timeout=PRUNE_TIMEOUT_SECONDS,
             max_repack_size=PRUNE_MAX_REPACK_SIZE,
         )

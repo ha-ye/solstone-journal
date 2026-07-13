@@ -12,9 +12,10 @@ from typing import Any
 
 from solstone.think.backup.destination import Destination, assemble_backend_env
 from solstone.think.backup.hosted import HostedBinding, HostedCredentials
-from solstone.think.backup.hosted_provider import hosted_restic_session
+from solstone.think.backup.hosted_provider import hosted_append_only_restic_session
 from solstone.think.backup.install import ensure_restic
 from solstone.think.backup.keys import parse_recovery_key
+from solstone.think.backup.rclone_install import ensure_rclone
 from solstone.think.backup.runner import (
     reason_for_returncode,
     run_restic,
@@ -92,6 +93,7 @@ def _run_restore(
     persist: Callable[[str], None],
     *,
     backend_env: Mapping[str, str | None] | None = None,
+    global_options: tuple[str, ...] = (),
 ) -> RestoreResult:
     try:
         canonical = parse_recovery_key(entered_recovery_key)
@@ -110,7 +112,7 @@ def _run_restore(
         return _restore_error("restic_unavailable")
 
     snapshots = run_restic(
-        ["snapshots", "latest"],
+        [*global_options, "snapshots", "latest"],
         repository=destination.repository,
         password=canonical,
         restic_path=restic_path,
@@ -130,7 +132,13 @@ def _run_restore(
 
     journal = get_journal()
     restore = run_restic(
-        ["restore", f"latest:{original_path}", "--target", str(journal)],
+        [
+            *global_options,
+            "restore",
+            f"latest:{original_path}",
+            "--target",
+            str(journal),
+        ],
         repository=destination.repository,
         password=canonical,
         restic_path=restic_path,
@@ -146,7 +154,7 @@ def _run_restore(
 
     restored_size = _bytes_restored(restore.json)
     check = run_restic(
-        ["check"],
+        [*global_options, "check"],
         repository=destination.repository,
         password=canonical,
         restic_path=restic_path,
@@ -207,14 +215,24 @@ def restore_journal_operated(
     initial_credentials: HostedCredentials,
     entered_recovery_key: str,
 ) -> RestoreResult:
+    try:
+        parse_recovery_key(entered_recovery_key)
+    except ValueError:
+        return _restore_error("invalid_key")
+
     def persist(canonical: str) -> None:
         set_mode("operated")
         set_recovery_key(canonical)
         set_recovery_key_confirmed(True)
 
-    with hosted_restic_session(
+    try:
+        rclone_path = ensure_rclone()
+    except Exception:
+        return _restore_error("rclone_unavailable")
+
+    with hosted_append_only_restic_session(
         binding,
-        scope="backup",
+        rclone_path=rclone_path,
         initial_credentials=initial_credentials,
     ) as session:
         return _run_restore(
@@ -222,6 +240,7 @@ def restore_journal_operated(
             entered_recovery_key,
             persist,
             backend_env=session.backend_env,
+            global_options=session.global_options,
         )
 
 

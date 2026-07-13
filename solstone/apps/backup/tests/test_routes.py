@@ -523,6 +523,7 @@ def test_restore_hosted_approved_works_without_local_keys(
     restore_journal_operated = Mock(
         return_value=SimpleNamespace(status="ok", reason_code=None)
     )
+    fetch_hosted_credentials = Mock(return_value=_creds())
     monkeypatch.setattr(
         backup_routes,
         "run_spb_handoff",
@@ -531,7 +532,7 @@ def test_restore_hosted_approved_works_without_local_keys(
     monkeypatch.setattr(
         backup_routes,
         "fetch_hosted_credentials",
-        Mock(return_value=_creds()),
+        fetch_hosted_credentials,
     )
     monkeypatch.setattr(backup_routes, "save_hosted_binding", save_hosted_binding)
     monkeypatch.setattr(
@@ -550,6 +551,7 @@ def test_restore_hosted_approved_works_without_local_keys(
     assert response.get_json()["operation"]["portal_url"] == CONSENT_URL
     assert final["reason_code"] is None
     save_hosted_binding.assert_called_once_with(binding)
+    fetch_hosted_credentials.assert_called_once_with(binding, scope="maintenance")
     restore_journal_operated.assert_called_once_with(binding, _creds(), "A" * 64)
 
 
