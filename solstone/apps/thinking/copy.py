@@ -132,7 +132,6 @@ ACTION_LABELS = {
     "switch": "Use This Lane",
     "save_key": "Save Key",
     "clear_key": "Clear Key",
-    "validate": "Validate",
     "install": "Install",
     "refresh": "Refresh",
     "check": "Check",
@@ -145,7 +144,7 @@ GLANCE = {
     },
     "byo_key": {
         "value": "your own key · {provider}",
-        "detail": "a key you added — stays in your journal, never shared",
+        "detail": "thinking with {model} — a key you added, stays in your journal, never shared",
     },
     "byo_endpoint": {
         "value": "your own endpoint",
@@ -217,6 +216,47 @@ BYO_SETUP = {
     "scout_provenance": (
         "covered through the scout program — the key stays in your journal."
     ),
+    "paste_cta": "check this key →",
+    "checking_key": "checking your key with {provider}…",
+    "key_ok_strip": "your {provider} key works — checked {when}",
+    "check_again": "check again",
+    "use_different_key": "use a different key",
+    "key_failed": (
+        "this key didn't work — {reason}. paste a different key, or fix it with "
+        "{provider} and check again."
+    ),
+    "reason_rejected": "{provider} didn't accept it",
+    "reason_quota": "{provider} says it's out of quota right now",
+    "reason_network": "couldn't reach {provider} — check your connection",
+    "reason_unknown": "{provider} couldn't be checked",
+    "model_heading": "pick the model your key uses",
+    "model_sub": (
+        "three sizes from {provider} — or name one yourself. you can change this "
+        "anytime."
+    ),
+    "tier_blurb_top": (
+        "the most capable — for the heaviest thinking, at the highest cost on your key."
+    ),
+    "tier_blurb_mid": "capable and quick — the middle of the range.",
+    "tier_blurb_lite": (
+        "light and quick — solstone tunes sol's thinking for small models, so this "
+        "one does the job well. it's also the least expensive on your key."
+    ),
+    "tier_tag_suggested": "suggested",
+    "tier_tag_current": "current",
+    "custom_toggle": "or name a specific model",
+    "custom_label": "model id",
+    "custom_check": "check it",
+    "custom_checking": "asking {provider} about {model}…",
+    "custom_ok": "✓ {model} answered — you can use it",
+    "custom_not_found": '{provider} doesn\'t offer "{model}" to this key.',
+    "custom_cost_note": (
+        "a model we don't recognize still works — sol just may not be able to show "
+        "what it costs per use yet."
+    ),
+    "model_save": "think with {label}",
+    "model_saving": "checking {model} with your key…",
+    "probe_failed_save": "your key works, but {model} didn't answer — {reason}.",
 }
 LANE_SWITCH = {
     "heading": "switch how sol thinks?",

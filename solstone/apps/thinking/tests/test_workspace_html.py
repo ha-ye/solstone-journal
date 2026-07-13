@@ -233,7 +233,10 @@ def test_thinking_deck_copy_constants() -> None:
         },
         "byo_key": {
             "value": "your own key · {provider}",
-            "detail": "a key you added — stays in your journal, never shared",
+            "detail": (
+                "thinking with {model} — a key you added, stays in your journal, "
+                "never shared"
+            ),
         },
         "byo_endpoint": {
             "value": "your own endpoint",
@@ -305,6 +308,48 @@ def test_thinking_deck_copy_constants() -> None:
         "scout_provenance": (
             "covered through the scout program — the key stays in your journal."
         ),
+        "paste_cta": "check this key →",
+        "checking_key": "checking your key with {provider}…",
+        "key_ok_strip": "your {provider} key works — checked {when}",
+        "check_again": "check again",
+        "use_different_key": "use a different key",
+        "key_failed": (
+            "this key didn't work — {reason}. paste a different key, or fix it "
+            "with {provider} and check again."
+        ),
+        "reason_rejected": "{provider} didn't accept it",
+        "reason_quota": "{provider} says it's out of quota right now",
+        "reason_network": "couldn't reach {provider} — check your connection",
+        "reason_unknown": "{provider} couldn't be checked",
+        "model_heading": "pick the model your key uses",
+        "model_sub": (
+            "three sizes from {provider} — or name one yourself. you can change "
+            "this anytime."
+        ),
+        "tier_blurb_top": (
+            "the most capable — for the heaviest thinking, at the highest cost on "
+            "your key."
+        ),
+        "tier_blurb_mid": "capable and quick — the middle of the range.",
+        "tier_blurb_lite": (
+            "light and quick — solstone tunes sol's thinking for small models, so "
+            "this one does the job well. it's also the least expensive on your key."
+        ),
+        "tier_tag_suggested": "suggested",
+        "tier_tag_current": "current",
+        "custom_toggle": "or name a specific model",
+        "custom_label": "model id",
+        "custom_check": "check it",
+        "custom_checking": "asking {provider} about {model}…",
+        "custom_ok": "✓ {model} answered — you can use it",
+        "custom_not_found": '{provider} doesn\'t offer "{model}" to this key.',
+        "custom_cost_note": (
+            "a model we don't recognize still works — sol just may not be able to "
+            "show what it costs per use yet."
+        ),
+        "model_save": "think with {label}",
+        "model_saving": "checking {model} with your key…",
+        "probe_failed_save": ("your key works, but {model} didn't answer — {reason}."),
     }
     assert thinking_copy.LANE_SWITCH == {
         "heading": "switch how sol thinks?",
@@ -458,6 +503,100 @@ def test_thinking_copy_payload_shape_carries_deck_blocks() -> None:
         "phases": dict(thinking_copy.LOCAL_INSTALL["phases"]),
     }
     assert "byo" not in payload
+
+
+def test_thinking_state_serves_byo_model_copy_bytes(settings_env) -> None:
+    journal_path, config = settings_env()
+    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    (journal_path / "config" / "journal.json").write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    app = create_app(str(journal_path))
+    app.config["TESTING"] = True
+
+    response = app.test_client().get("/app/thinking/api/state")
+
+    assert response.status_code == 200
+    served_copy = response.get_json()["copy"]
+    assert served_copy["glance"]["byo_key"]["detail"] == (
+        "thinking with {model} — a key you added, stays in your journal, never shared"
+    )
+    assert {
+        key: served_copy["byo_setup"][key]
+        for key in (
+            "paste_cta",
+            "checking_key",
+            "key_ok_strip",
+            "check_again",
+            "use_different_key",
+            "key_failed",
+            "reason_rejected",
+            "reason_quota",
+            "reason_network",
+            "reason_unknown",
+            "model_heading",
+            "model_sub",
+            "tier_blurb_top",
+            "tier_blurb_mid",
+            "tier_blurb_lite",
+            "tier_tag_suggested",
+            "tier_tag_current",
+            "custom_toggle",
+            "custom_label",
+            "custom_check",
+            "custom_checking",
+            "custom_ok",
+            "custom_not_found",
+            "custom_cost_note",
+            "model_save",
+            "model_saving",
+            "probe_failed_save",
+        )
+    } == {
+        "paste_cta": "check this key →",
+        "checking_key": "checking your key with {provider}…",
+        "key_ok_strip": "your {provider} key works — checked {when}",
+        "check_again": "check again",
+        "use_different_key": "use a different key",
+        "key_failed": (
+            "this key didn't work — {reason}. paste a different key, or fix it "
+            "with {provider} and check again."
+        ),
+        "reason_rejected": "{provider} didn't accept it",
+        "reason_quota": "{provider} says it's out of quota right now",
+        "reason_network": "couldn't reach {provider} — check your connection",
+        "reason_unknown": "{provider} couldn't be checked",
+        "model_heading": "pick the model your key uses",
+        "model_sub": (
+            "three sizes from {provider} — or name one yourself. you can change "
+            "this anytime."
+        ),
+        "tier_blurb_top": (
+            "the most capable — for the heaviest thinking, at the highest cost on "
+            "your key."
+        ),
+        "tier_blurb_mid": "capable and quick — the middle of the range.",
+        "tier_blurb_lite": (
+            "light and quick — solstone tunes sol's thinking for small models, so "
+            "this one does the job well. it's also the least expensive on your key."
+        ),
+        "tier_tag_suggested": "suggested",
+        "tier_tag_current": "current",
+        "custom_toggle": "or name a specific model",
+        "custom_label": "model id",
+        "custom_check": "check it",
+        "custom_checking": "asking {provider} about {model}…",
+        "custom_ok": "✓ {model} answered — you can use it",
+        "custom_not_found": '{provider} doesn\'t offer "{model}" to this key.',
+        "custom_cost_note": (
+            "a model we don't recognize still works — sol just may not be able to "
+            "show what it costs per use yet."
+        ),
+        "model_save": "think with {label}",
+        "model_saving": "checking {model} with your key…",
+        "probe_failed_save": ("your key works, but {model} didn't answer — {reason}."),
+    }
 
 
 def test_thinking_copy_avoids_forbidden_terms() -> None:

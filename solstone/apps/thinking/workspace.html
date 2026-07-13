@@ -170,6 +170,11 @@
       box-shadow: inset 0 0 0 1px var(--orange);
     }
 
+    .thinking-workspace .prov.active {
+      border-color: var(--orange);
+      box-shadow: inset 0 0 0 1px var(--orange);
+    }
+
     .thinking-workspace .lane.greyed {
       cursor: default;
       opacity: 0.68;
@@ -332,6 +337,22 @@
       color: var(--ink);
       padding: 10px 11px;
       width: 100%;
+    }
+
+    .thinking-workspace .tierchoice {
+      align-items: start;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: auto 1fr;
+    }
+
+    .thinking-workspace .tierchoice input {
+      margin-top: 4px;
+    }
+
+    .thinking-workspace .tierbody {
+      display: grid;
+      gap: 8px;
     }
 
     .thinking-workspace .hidden-select {
@@ -772,11 +793,39 @@
         </div>
         <p class="micro" id="byoKeyHint"></p>
         <p class="micro" id="byoTermsLine"></p>
-        <div class="message" id="byoKeyStatus"></div>
+        <div class="message" id="byoKeyStatus" aria-live="polite"></div>
         <div class="actions">
-          <button type="button" class="btn primary" id="byoSaveKey">use this key</button>
+          <button type="button" class="btn primary" id="byoSaveKey">check this key →</button>
           <button type="button" class="btn ghost" id="byoClearKey">clear key</button>
-          <button type="button" class="btn" id="byoValidateKey">validate</button>
+        </div>
+      </section>
+
+      <section class="pastebox" id="byoModelPanel" hidden>
+        <div class="checkstrip" id="byoKeyCheckstrip">
+          <span id="byoKeyCheckstripText"></span>
+          <button type="button" class="checknow" id="byoCheckAgain"></button>
+        </div>
+        <div class="panelbody">
+          <h3 id="byoModelHeading"></h3>
+          <p class="micro" id="byoModelSub"></p>
+        </div>
+        <section class="provgrid" id="byoModelGrid" role="radiogroup" aria-labelledby="byoModelHeading"></section>
+        <button type="button" class="btn ghost" id="byoCustomToggle" aria-expanded="false"></button>
+        <section class="app-onoff" id="byoCustomRow" hidden>
+          <div class="field">
+            <label for="byoCustomModel" id="byoCustomLabel"></label>
+            <input type="text" id="byoCustomModel" autocomplete="off">
+          </div>
+          <div class="inline-actions">
+            <button type="button" class="btn" id="byoCustomCheck"></button>
+          </div>
+          <p class="micro" id="byoCustomCostNote"></p>
+          <div class="message" id="byoCustomStatus" aria-live="polite"></div>
+        </section>
+        <div class="message" id="byoModelStatus" aria-live="polite"></div>
+        <div class="actions">
+          <button type="button" class="btn primary" id="byoModelSave"></button>
+          <button type="button" class="btn ghost" id="byoDifferentKey"></button>
         </div>
       </section>
     </section>

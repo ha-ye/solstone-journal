@@ -14,6 +14,10 @@
     confidentialDetailOpen: false,
     selectedByoProvider: '',
     byoMode: 'pick',
+    byoSelectedModel: '',
+    byoCustomOpen: false,
+    byoCustomModel: '',
+    byoCustomCheckedModel: '',
     pendingSwitchTarget: '',
   };
   let copy = {};
@@ -391,6 +395,198 @@
     return String(template || '').replace(/\{(\w+)\}/g, (_, key) => values[key] ?? '');
   }
 
+  function byoReasonCopy(reasonCode, context, text, provider, model = '') {
+    if (context === 'probe' && reasonCode === 'model_not_found') {
+      return formatCopy(text?.custom_not_found || '', {provider, model});
+    }
+    const reasonKey = {
+      provider_key_invalid: 'reason_rejected',
+      provider_quota_exceeded: 'reason_quota',
+      network_unreachable: 'reason_network',
+      chat_timeout: 'reason_network',
+    }[reasonCode || ''] || 'reason_unknown';
+    return formatCopy(text?.[reasonKey] || text?.reason_unknown || '', {provider, model});
+  }
+
+  function byoModelStepAllowed(provider, validation, scoutEnabled) {
+    return validation?.valid === true && !(scoutEnabled === true && provider === 'google');
+  }
+
+  function byoKeyInputEmpty(value) {
+    return String(value || '').trim() === '';
+  }
+
+  function byoTierList(provider, providersPayload) {
+    const tiers = providersPayload?.model_tiers?.[provider];
+    if (!Array.isArray(tiers)) return [];
+    const rank = {top: 0, mid: 1, lite: 2};
+    return tiers
+      .slice()
+      .sort((left, right) => (rank[left?.tier] ?? 99) - (rank[right?.tier] ?? 99));
+  }
+
+  function preselectByoModel(provider, providersPayload) {
+    const remembered = String(providersPayload?.byo_models?.[provider] || '').trim();
+    if (remembered) return remembered;
+    const generate = providersPayload?.generate || {};
+    const generatedModel = String(generate.model || '').trim();
+    if (generate.provider === provider && generatedModel) return generatedModel;
+    const lite = byoTierList(provider, providersPayload).find((tier) => tier?.tier === 'lite');
+    return String(lite?.model || '').trim();
+  }
+
+  function byoTierRows(provider, providersPayload, activeModel, text) {
+    return byoTierList(provider, providersPayload).map((tier) => {
+      const model = String(tier?.model || '').trim();
+      const rowTier = String(tier?.tier || '').trim();
+      const current = !!model && model === activeModel;
+      return {
+        tier: rowTier,
+        label: String(tier?.label || model || '').trim(),
+        model,
+        blurb: text?.[`tier_blurb_${rowTier}`] || '',
+        tag: current ? text?.tier_tag_current || '' : rowTier === 'lite' ? text?.tier_tag_suggested || '' : '',
+        current,
+      };
+    });
+  }
+
+  function byoModelLabel(provider, model, providersPayload) {
+    const modelId = String(model || '').trim();
+    const tier = byoTierList(provider, providersPayload).find((item) => item?.model === modelId);
+    return String(tier?.label || modelId);
+  }
+
+  async function runByoKeyCheckFlow({
+    apiFn,
+    applyKeys,
+    provider,
+    providerName,
+    envVar,
+    value,
+    text,
+    providersPayload,
+    scoutEnabled,
+    setMode,
+    selectModel,
+    resetDraft,
+    renderFn,
+    showStatus,
+  }) {
+    if (byoKeyInputEmpty(value)) {
+      showStatus(text?.key_hint || '', '');
+      return {status: 'empty'};
+    }
+    showStatus(formatCopy(text?.checking_key || '', {provider: providerName}), '');
+    const result = await apiFn('api/keys', {
+      method: 'PUT',
+      body: JSON.stringify({env_var: envVar, value}),
+    });
+    applyKeys(result);
+    const validation = result?.key_validation?.[provider] || result?.validation || {};
+    if (validation.valid !== true) {
+      resetDraft();
+      setMode('paste');
+      renderFn();
+      const reason = byoReasonCopy(validation.reason_code, 'key', text, providerName);
+      showStatus(formatCopy(text?.key_failed || '', {provider: providerName, reason}), 'error');
+      return {status: 'invalid', validation};
+    }
+    resetDraft();
+    if (byoModelStepAllowed(provider, validation, scoutEnabled)) {
+      selectModel(preselectByoModel(provider, providersPayload));
+      setMode('model');
+      renderFn();
+      return {status: 'model', validation};
+    }
+    setMode('paste');
+    renderFn();
+    return {status: 'checked', validation};
+  }
+
+  async function runByoModelSaveFlow({
+    apiFn,
+    applyProviders,
+    provider,
+    providerName,
+    model,
+    label,
+    text,
+    setMode,
+    renderFn,
+    showStatus,
+  }) {
+    showStatus(formatCopy(text?.model_saving || '', {model}), '');
+    const probe = await apiFn('api/validate-model', {
+      method: 'POST',
+      body: JSON.stringify({provider, model}),
+    });
+    if (probe?.valid !== true) {
+      if (probe?.reason_code === 'key_missing') {
+        setMode('paste');
+        renderFn();
+        const reason = byoReasonCopy(probe.reason_code, 'key', text, providerName, model);
+        showStatus(formatCopy(text?.key_failed || '', {provider: providerName, reason}), 'error');
+        return {status: 'key_missing', probe};
+      }
+      const reason = byoReasonCopy(probe?.reason_code, 'probe', text, providerName, model);
+      const message = probe?.reason_code === 'model_not_found'
+        ? reason
+        : formatCopy(text?.probe_failed_save || '', {provider: providerName, model, reason});
+      showStatus(message, 'error');
+      return {status: 'probe_failed', probe};
+    }
+    try {
+      const providers = await apiFn('api/providers', {
+        method: 'PUT',
+        body: JSON.stringify({lane: 'byo', provider, model}),
+      });
+      applyProviders(providers);
+      renderFn();
+      return {status: 'saved', providers, label};
+    } catch (err) {
+      renderFn();
+      showStatus(err?.message || '', 'error');
+      return {status: 'save_failed', error: err};
+    }
+  }
+
+  async function runByoCustomProbeFlow({
+    apiFn,
+    provider,
+    providerName,
+    model,
+    text,
+    setMode,
+    selectModel,
+    markChecked,
+    renderFn,
+    showStatus,
+  }) {
+    showStatus(formatCopy(text?.custom_checking || '', {provider: providerName, model}), '');
+    const probe = await apiFn('api/validate-model', {
+      method: 'POST',
+      body: JSON.stringify({provider, model}),
+    });
+    if (probe?.valid === true) {
+      markChecked(model);
+      selectModel(model);
+      renderFn();
+      showStatus(formatCopy(text?.custom_ok || '', {model}), 'ok');
+      return {status: 'valid', probe};
+    }
+    if (probe?.reason_code === 'key_missing') {
+      setMode('paste');
+      renderFn();
+      const reason = byoReasonCopy(probe.reason_code, 'key', text, providerName, model);
+      showStatus(formatCopy(text?.key_failed || '', {provider: providerName, reason}), 'error');
+      return {status: 'key_missing', probe};
+    }
+    const reason = byoReasonCopy(probe?.reason_code, 'probe', text, providerName, model);
+    showStatus(reason, 'error');
+    return {status: 'invalid', probe};
+  }
+
   function laneCopy(id) {
     return (copy.lanes || []).find((lane) => lane.id === id) || {};
   }
@@ -670,9 +866,12 @@
     if (brain.kind === 'byo') {
       const key = `byo_${brain.byoKind || 'key'}`;
       const row = glanceCopy[key] || {};
+      const model = brain.byoKind === 'key'
+        ? byoModelLabel(brain.provider, state.providers.generate?.model || '', state.providers)
+        : '';
       setText('thinkingActiveLane', glanceCopy.lane_label || 'sol is thinking with');
-      setText('thinkingActiveValue', formatCopy(row.value, {provider: brain.providerLabel}));
-      setText('thinkingActiveDetail', formatCopy(row.detail, {provider: brain.providerLabel}));
+      setText('thinkingActiveValue', formatCopy(row.value, {provider: brain.providerLabel, model}));
+      setText('thinkingActiveDetail', formatCopy(row.detail, {provider: brain.providerLabel, model}));
     } else if (brain.kind === 'local') {
       const row = glanceCopy.local || {};
       setText('thinkingActiveLane', glanceCopy.lane_label || 'sol is thinking with');
@@ -1132,15 +1331,136 @@
     if (select) select.value = state.selectedByoProvider;
   }
 
+  function resetByoDraft() {
+    state.byoSelectedModel = '';
+    state.byoCustomOpen = false;
+    state.byoCustomModel = '';
+    state.byoCustomCheckedModel = '';
+  }
+
+  function changeByoProvider(provider) {
+    setSelectedByoProvider(provider);
+    resetByoDraft();
+    const keyInput = $('byoKeyInput');
+    if (keyInput) keyInput.value = '';
+    const customInput = $('byoCustomModel');
+    if (customInput) customInput.value = '';
+    state.byoMode = 'paste';
+    renderByo();
+    renderMainLanes();
+  }
+
+  function setByoSelectedModel(model) {
+    state.byoSelectedModel = String(model || '').trim();
+    renderByo();
+  }
+
+  function renderByoModelPanel(provider, validation, byoText) {
+    const providerName = providerLabel(provider);
+    const checked = relativeTime(validation?.timestamp) || relativeTime(new Date().toISOString());
+    const selected = state.byoSelectedModel || preselectByoModel(provider, state.providers);
+    const activeModel = state.providers.generate?.provider === provider ? state.providers.generate?.model || '' : '';
+    const rows = byoTierRows(provider, state.providers, activeModel, byoText);
+    const catalogModels = new Set(rows.map((row) => row.model).filter(Boolean));
+    const selectedIsCustom = !!selected && !catalogModels.has(selected);
+    if (!state.byoSelectedModel && selected) state.byoSelectedModel = selected;
+    if (selectedIsCustom && !state.byoCustomModel) {
+      state.byoCustomModel = selected;
+      state.byoCustomCheckedModel = selected;
+    }
+
+    setText('byoKeyCheckstripText', formatCopy(byoText.key_ok_strip || '', {provider: providerName, when: checked}));
+    setButtonText('byoCheckAgain', byoText.check_again || '');
+    setText('byoModelHeading', byoText.model_heading || '');
+    setText('byoModelSub', formatCopy(byoText.model_sub || '', {provider: providerName}));
+    setButtonText('byoCustomToggle', byoText.custom_toggle || '');
+    $('byoCustomToggle')?.setAttribute('aria-expanded', state.byoCustomOpen ? 'true' : 'false');
+    setHidden('byoCustomRow', !state.byoCustomOpen);
+    setText('byoCustomLabel', byoText.custom_label || '');
+    setButtonText('byoCustomCheck', byoText.custom_check || '');
+    setText('byoCustomCostNote', byoText.custom_cost_note || '');
+    setButtonText('byoDifferentKey', byoText.use_different_key || '');
+
+    const customInput = $('byoCustomModel');
+    if (customInput && document.activeElement !== customInput) {
+      customInput.value = state.byoCustomModel;
+    }
+    const customValue = String(state.byoCustomModel || '').trim();
+    if ($('byoCustomCheck')) {
+      $('byoCustomCheck').disabled = !customValue;
+    }
+    if (customValue && state.byoCustomCheckedModel === customValue) {
+      setMessage('byoCustomStatus', formatCopy(byoText.custom_ok || '', {model: customValue}), 'ok');
+    } else {
+      setMessage('byoCustomStatus', '', '');
+    }
+
+    const grid = $('byoModelGrid');
+    if (grid) {
+      grid.innerHTML = '';
+      rows.forEach((row) => {
+        const card = document.createElement('article');
+        card.className = 'prov';
+        card.classList.toggle('active', row.model === selected);
+        const label = document.createElement('label');
+        label.className = 'tierchoice';
+        const input = document.createElement('input');
+        input.type = 'radio';
+        input.name = 'byoModelChoice';
+        input.value = row.model;
+        input.checked = row.model === selected;
+        input.addEventListener('change', () => setByoSelectedModel(input.value));
+        const body = document.createElement('span');
+        body.className = 'tierbody';
+        const top = document.createElement('span');
+        top.className = 'cardtop';
+        const title = document.createElement('strong');
+        title.textContent = row.label;
+        top.appendChild(title);
+        if (row.tag) {
+          const tag = document.createElement('span');
+          tag.className = `pill${row.current ? ' hot' : ''}`;
+          tag.textContent = row.tag;
+          top.appendChild(tag);
+        }
+        const modelLine = document.createElement('span');
+        modelLine.className = 'meta';
+        modelLine.textContent = row.model;
+        const blurb = document.createElement('span');
+        blurb.textContent = row.blurb;
+        body.appendChild(top);
+        body.appendChild(modelLine);
+        body.appendChild(blurb);
+        label.appendChild(input);
+        label.appendChild(body);
+        card.appendChild(label);
+        grid.appendChild(card);
+      });
+    }
+
+    const selectedLabel = byoModelLabel(provider, selected, state.providers);
+    setButtonText('byoModelSave', formatCopy(byoText.model_save || '', {label: selectedLabel}));
+    if ($('byoModelSave')) {
+      $('byoModelSave').disabled = !selected || (selectedIsCustom && state.byoCustomCheckedModel !== selected);
+    }
+  }
+
   function renderByo() {
     if (!state.selectedByoProvider) setSelectedByoProvider(defaultByoProvider());
     const byoText = copy.byo_setup || {};
     const provider = selectedByoProvider();
     const validation = state.keys.key_validation?.[provider];
     const configured = !!state.keys.api_keys?.[provider];
-    const endpointMode = state.byoMode === 'endpoint';
-    const pickMode = state.byoMode === 'pick';
-    const pasteMode = state.byoMode === 'paste';
+    let mode = state.byoMode;
+    if (mode === 'model' && !byoModelStepAllowed(provider, validation, !!state.providers.scout_enabled)) {
+      resetByoDraft();
+      mode = 'paste';
+      state.byoMode = mode;
+    }
+    const endpointMode = mode === 'endpoint';
+    const pickMode = mode === 'pick';
+    const pasteMode = mode === 'paste';
+    const modelMode = mode === 'model';
 
     setText('byoSetupTitle', activeLaneLabel('byo'));
     setText('byoIntro', byoText.intro || '');
@@ -1154,6 +1474,7 @@
     setText('byoScoutTitle', byoText.scout_heading || '');
     setText('byoScoutAffordance', byoText.scout_sub || '');
     setText('byoScoutTermsLink', byoText.scout_terms_link || '');
+    setButtonText('byoSaveKey', byoText.paste_cta || '');
     document.querySelectorAll('[data-byo-key-link]').forEach((link) => {
       link.textContent = byoText.get_key || '';
     });
@@ -1174,7 +1495,8 @@
     setHidden('byoPickSub', !pickMode);
     setHidden('byoEndpointPanel', !endpointMode);
     setHidden('byoPastePanel', !pasteMode);
-    setText('byoBackLink', pasteMode ? '‹ pick a different provider' : '‹ thinking');
+    setHidden('byoModelPanel', !modelMode);
+    setText('byoBackLink', pasteMode || modelMode ? '‹ pick a different provider' : '‹ thinking');
 
     document.querySelectorAll('[data-provider-card]').forEach((card) => {
       const cardProvider = card.dataset.providerCard;
@@ -1206,20 +1528,30 @@
       }
     }
 
-    $('byoSaveKey').disabled = false;
-    $('byoClearKey').disabled = !configured;
-    if (validation && validation.valid === false) {
+    if ($('byoSaveKey')) $('byoSaveKey').disabled = false;
+    if ($('byoClearKey')) $('byoClearKey').disabled = !configured;
+    if (pasteMode && validation && validation.valid === false) {
+      const reason = byoReasonCopy(validation.reason_code, 'key', byoText, providerLabel(provider));
       setMessage(
         'byoKeyStatus',
-        `${providerLabel(provider)}: ${validation.reason_code || validation.error || 'invalid'}`,
+        formatCopy(byoText.key_failed || '', {provider: providerLabel(provider), reason}),
         'error',
       );
-    } else {
+    } else if (pasteMode && validation && validation.valid === true) {
       setMessage(
         'byoKeyStatus',
-        configured ? `${providerLabel(provider)} key saved — replace, clear, or validate it here` : 'paste a key to use this provider',
-        configured ? 'ok' : '',
+        formatCopy(byoText.key_ok_strip || '', {
+          provider: providerLabel(provider),
+          when: relativeTime(validation.timestamp) || relativeTime(new Date().toISOString()),
+        }),
+        'ok',
       );
+    } else {
+      setMessage('byoKeyStatus', pasteMode ? byoText.key_hint || '' : '', '');
+    }
+    setMessage('byoModelStatus', '', '');
+    if (modelMode) {
+      renderByoModelPanel(provider, validation, byoText);
     }
   }
 
@@ -1787,15 +2119,29 @@
   async function saveByoKey() {
     const provider = laneProvider('byo');
     const value = $('byoKeyInput')?.value || '';
-    const result = await api('api/keys', {
-      method: 'PUT',
-      body: JSON.stringify({env_var: providerEnv[provider], value}),
+    const result = await runByoKeyCheckFlow({
+      apiFn: api,
+      applyKeys: (keys) => {
+        state.keys = keys;
+      },
+      provider,
+      providerName: providerLabel(provider),
+      envVar: providerEnv[provider],
+      value,
+      text: copy.byo_setup || {},
+      providersPayload: state.providers,
+      scoutEnabled: !!state.providers.scout_enabled,
+      setMode: (mode) => {
+        state.byoMode = mode;
+      },
+      selectModel: (model) => {
+        state.byoSelectedModel = model;
+      },
+      resetDraft: resetByoDraft,
+      renderFn: renderByo,
+      showStatus: (message, tone) => setMessage('byoKeyStatus', message, tone),
     });
-    state.keys = result;
-    if ($('byoKeyInput')) $('byoKeyInput').value = '';
-    await switchLane('byo');
-    await Promise.all([refreshProviders(), refreshKeys()]);
-    showView('main');
+    if (result.status !== 'empty' && $('byoKeyInput')) $('byoKeyInput').value = '';
   }
 
   async function clearByoKey() {
@@ -1805,13 +2151,88 @@
       body: JSON.stringify({env_var: providerEnv[provider], value: ''}),
     });
     state.keys = result;
+    if (state.providers.byo_models) delete state.providers.byo_models[provider];
+    resetByoDraft();
+    state.byoMode = 'paste';
+    if ($('byoKeyInput')) $('byoKeyInput').value = '';
     renderAll();
+    await refreshProviders();
   }
 
-  async function validateKeys() {
+  async function recheckByoKey() {
+    const provider = laneProvider('byo');
+    const byoText = copy.byo_setup || {};
+    setMessage('byoModelStatus', formatCopy(byoText.checking_key || '', {provider: providerLabel(provider)}), '');
     const result = await api('api/validate-keys', {method: 'POST'});
     state.keys.key_validation = result.key_validation || {};
-    renderAll();
+    const validation = state.keys.key_validation?.[provider] || {};
+    if (byoModelStepAllowed(provider, validation, !!state.providers.scout_enabled)) {
+      if (!state.byoSelectedModel) state.byoSelectedModel = preselectByoModel(provider, state.providers);
+      state.byoMode = 'model';
+      renderByo();
+      return;
+    }
+    resetByoDraft();
+    state.byoMode = 'paste';
+    renderByo();
+    if (validation.valid === false) {
+      const reason = byoReasonCopy(validation.reason_code, 'key', byoText, providerLabel(provider));
+      setMessage('byoKeyStatus', formatCopy(byoText.key_failed || '', {provider: providerLabel(provider), reason}), 'error');
+    }
+  }
+
+  async function probeByoCustomModel() {
+    const provider = laneProvider('byo');
+    const model = String(state.byoCustomModel || '').trim();
+    if (!model) return;
+    await runByoCustomProbeFlow({
+      apiFn: api,
+      provider,
+      providerName: providerLabel(provider),
+      model,
+      text: copy.byo_setup || {},
+      setMode: (mode) => {
+        state.byoMode = mode;
+      },
+      selectModel: (candidate) => {
+        state.byoSelectedModel = candidate;
+      },
+      markChecked: (candidate) => {
+        state.byoCustomCheckedModel = candidate;
+      },
+      renderFn: renderByo,
+      showStatus: (message, tone) => {
+        const id = state.byoMode === 'paste' ? 'byoKeyStatus' : 'byoCustomStatus';
+        setMessage(id, message, tone);
+      },
+    });
+  }
+
+  async function saveByoModel() {
+    const provider = laneProvider('byo');
+    const model = String(state.byoSelectedModel || '').trim();
+    if (!model) return;
+    const label = byoModelLabel(provider, model, state.providers);
+    const result = await runByoModelSaveFlow({
+      apiFn: api,
+      applyProviders: (providers) => {
+        state.providers = providers;
+      },
+      provider,
+      providerName: providerLabel(provider),
+      model,
+      label,
+      text: copy.byo_setup || {},
+      setMode: (mode) => {
+        state.byoMode = mode;
+      },
+      renderFn: renderByo,
+      showStatus: (message, tone) => setMessage(state.byoMode === 'paste' ? 'byoKeyStatus' : 'byoModelStatus', message, tone),
+    });
+    if (result.status === 'saved') {
+      showView('main');
+      renderAll();
+    }
   }
 
   async function saveAdvanced(agentType, field, value) {
@@ -1910,11 +2331,16 @@
     if (lane === 'byo') {
       const provider = defaultByoProvider();
       setSelectedByoProvider(provider);
-      state.byoMode = provider === 'local'
-        ? 'endpoint'
-        : configuredProviders().length > 0 || activeBrain().kind === 'byo'
-          ? 'paste'
-          : 'pick';
+      resetByoDraft();
+      const validation = state.keys.key_validation?.[provider];
+      if (provider === 'local') {
+        state.byoMode = 'endpoint';
+      } else if (byoModelStepAllowed(provider, validation, !!state.providers.scout_enabled)) {
+        state.byoSelectedModel = preselectByoModel(provider, state.providers);
+        state.byoMode = 'model';
+      } else {
+        state.byoMode = configuredProviders().length > 0 || activeBrain().kind === 'byo' ? 'paste' : 'pick';
+      }
       renderByo();
     }
     showView(`${lane}-setup`);
@@ -1949,21 +2375,21 @@
       if (selectedByoProvider() === 'local') {
         setSelectedByoProvider(configuredProviders()[0] || 'anthropic');
       }
+      resetByoDraft();
       state.byoMode = 'pick';
       renderByo();
       renderMainLanes();
     });
     $('byoModeEndpoint')?.addEventListener('click', () => {
       setSelectedByoProvider('local');
+      resetByoDraft();
       state.byoMode = 'endpoint';
       renderByo();
       renderMainLanes();
     });
     document.querySelectorAll('[data-byo-provider]').forEach((button) => {
       button.addEventListener('click', () => {
-        setSelectedByoProvider(button.dataset.byoProvider);
-        state.byoMode = 'paste';
-        renderByo();
+        changeByoProvider(button.dataset.byoProvider);
       });
     });
     document.querySelectorAll('[data-switch-lane]').forEach((button) => {
@@ -1976,13 +2402,11 @@
       });
     });
     $('byoProvider')?.addEventListener('change', () => {
-      state.selectedByoProvider = $('byoProvider')?.value || defaultByoProvider();
-      state.byoMode = 'paste';
-      renderByo();
-      renderMainLanes();
+      changeByoProvider($('byoProvider')?.value || defaultByoProvider());
     });
     $('byoBackLink')?.addEventListener('click', () => {
-      if (state.byoMode === 'paste') {
+      if (state.byoMode === 'paste' || state.byoMode === 'model') {
+        resetByoDraft();
         state.byoMode = 'pick';
         renderByo();
         return;
@@ -1991,7 +2415,25 @@
     });
     $('byoSaveKey')?.addEventListener('click', () => saveByoKey().catch((err) => setMessage('byoKeyStatus', err.message, 'error')));
     $('byoClearKey')?.addEventListener('click', () => clearByoKey().catch((err) => setMessage('byoKeyStatus', err.message, 'error')));
-    $('byoValidateKey')?.addEventListener('click', () => validateKeys().catch((err) => setMessage('byoKeyStatus', err.message, 'error')));
+    $('byoCheckAgain')?.addEventListener('click', () => recheckByoKey().catch((err) => setMessage('byoModelStatus', err.message, 'error')));
+    $('byoCustomToggle')?.addEventListener('click', () => {
+      state.byoCustomOpen = !state.byoCustomOpen;
+      renderByo();
+    });
+    $('byoCustomModel')?.addEventListener('input', (event) => {
+      state.byoCustomModel = event.target.value || '';
+      state.byoCustomCheckedModel = '';
+      const candidate = String(state.byoCustomModel || '').trim();
+      if (candidate) state.byoSelectedModel = candidate;
+      renderByo();
+    });
+    $('byoCustomCheck')?.addEventListener('click', () => probeByoCustomModel().catch((err) => setMessage('byoCustomStatus', err.message, 'error')));
+    $('byoModelSave')?.addEventListener('click', () => saveByoModel().catch((err) => setMessage('byoModelStatus', err.message, 'error')));
+    $('byoDifferentKey')?.addEventListener('click', () => {
+      resetByoDraft();
+      state.byoMode = 'paste';
+      renderByo();
+    });
     $('scoutEnable')?.addEventListener('click', () => enableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('scoutRefresh')?.addEventListener('click', () => refreshScoutOp().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
     $('scoutDisable')?.addEventListener('click', () => disableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
