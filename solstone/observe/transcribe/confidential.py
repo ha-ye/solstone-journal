@@ -171,7 +171,18 @@ def _model_from_response(response: httpx.Response) -> str | None:
         return payload.strip() or None
     if isinstance(payload, dict):
         model = payload.get("model") or payload.get("id")
-        return str(model).strip() if model else None
+        if model:
+            return str(model).strip() or None
+        data = payload.get("data")
+        if not isinstance(data, list) or not data:
+            return None
+        item = data[0]
+        if not isinstance(item, dict):
+            return None
+        model = item.get("id")
+        if model is None:
+            return None
+        return str(model).strip() or None
     return None
 
 
