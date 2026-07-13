@@ -63,7 +63,7 @@ def write_journal_config(
 def hold_config_lock(journal_path: str | Path | None = None) -> Iterator[None]:
     """Hold the journal config read-modify-write lock."""
 
-    with hold_lock(get_journal_config_path(journal_path)):
+    with hold_lock(get_journal_config_path(journal_path), mode=0o600):
         yield
 
 

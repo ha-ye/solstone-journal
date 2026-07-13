@@ -8,7 +8,10 @@ from __future__ import annotations
 import ast
 import datetime as dt
 import json
+import os
 import sqlite3
+import stat
+from contextlib import contextmanager
 from dataclasses import replace
 from importlib import import_module
 from pathlib import Path
@@ -170,6 +173,19 @@ _SYNC_APPROVAL_ONLY = [
     "imports/_approvals",
     "imports/_approvals/oura_sync_preflight.json",
 ]
+
+
+@contextmanager
+def _temporary_umask(mask: int):
+    old = os.umask(mask)
+    try:
+        yield
+    finally:
+        os.umask(old)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 def _imports_contents(journal: Path) -> list[str]:
@@ -1650,6 +1666,54 @@ def test_first_sync_save_writes_bundle_dedupe_and_cursor(tmp_path: Path, monkeyp
     assert result["imported"] == 0  # updated
     assert result["source_label"] == "Oura (API)"
     assert "cron_hint" not in result
+
+
+def test_oura_sync_private_modes_under_permissive_umask(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    journal = _use_journal(tmp_path, monkeypatch)
+    import_id = "20260110_120000"
+    _write_sync_artifact(journal, _sync_artifact(journal))
+    imports_dir = journal / "imports"
+    stale_bundle = imports_dir / import_id
+    stale_raw = stale_bundle / "raw"
+    stale_normalized = stale_bundle / "normalized"
+    stale_raw.mkdir(parents=True, mode=0o755)
+    stale_normalized.mkdir(parents=True, mode=0o755)
+    for directory in (imports_dir, stale_bundle, stale_raw, stale_normalized):
+        directory.chmod(0o755)
+    monkeypatch.setattr(oura, "_new_import_id", lambda _journal: import_id)
+
+    with _temporary_umask(0o000):
+        result = oura.backend.sync(
+            journal,
+            dry_run=False,
+            confirm_health_save=True,
+            client=_canned_client(_fixture_transport()),
+            today=dt.date(2026, 1, 10),
+        )
+
+    assert result["import_id"] == import_id
+    import_dir = journal / "imports" / import_id
+    for directory in (
+        journal / "imports",
+        import_dir,
+        import_dir / "raw",
+        import_dir / "raw" / "oura",
+        import_dir / "normalized",
+    ):
+        assert _mode(directory) == 0o700
+
+    for file_path in (
+        import_dir / "raw" / "oura" / "daily_readiness.jsonl",
+        import_dir / "normalized" / "2026-01.jsonl",
+        import_dir / "manifest.json",
+        import_dir / "content_manifest.jsonl",
+        import_dir / "fetch_windows.json",
+        journal / "imports" / "oura.json",
+    ):
+        assert _mode(file_path) == 0o600
 
 
 def test_window_days_overrides_first_sync_window(tmp_path: Path, monkeypatch):

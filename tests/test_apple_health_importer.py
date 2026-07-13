@@ -6,9 +6,12 @@ import importlib
 import importlib.util
 import json
 import logging
+import os
 import re
+import stat
 import zipfile
 from collections import Counter
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +91,25 @@ def _process_with_approval(path: Path, journal: Path, **kwargs: Any) -> ImportRe
         journal,
         confirm_health_save=True,
         **kwargs,
+    )
+
+
+@contextmanager
+def _temporary_umask(mask: int):
+    old = os.umask(mask)
+    try:
+        yield
+    finally:
+        os.umask(old)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
+
+
+def _relative_files(root: Path) -> list[str]:
+    return sorted(
+        path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file()
     )
 
 
@@ -358,6 +380,46 @@ def test_save_mode_writes_raw_source_normalized_rows_and_dedupe_to_journal_root(
     assert dedupe_row["normalized_ref"] == glucose_row["normalized_ref"]
     assert dedupe_row["raw_ref"] == glucose_row["raw_ref"]
     assert not live_journal.exists()
+
+
+def test_apple_health_save_repairs_private_import_modes_under_permissive_umask(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    journal = tmp_path / "journal"
+    import_id = "20260103_120000"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    stale_imports = journal / "imports"
+    stale_bundle = stale_imports / import_id
+    stale_bundle.mkdir(parents=True, mode=0o755)
+    stale_bundle.chmod(0o755)
+    stale_imports.chmod(0o755)
+
+    with _temporary_umask(0o000):
+        result = _process_with_approval(
+            FIXTURE_ROOT,
+            journal,
+            import_id=import_id,
+            dry_run=False,
+            date_from="2026-01-02",
+            date_to="2026-01-02",
+            with_day_summaries=True,
+        )
+
+    import_dir = journal / "imports" / import_id
+    assert _mode(journal / "imports") == 0o700
+    assert _mode(import_dir) == 0o700
+    assert _mode(import_dir / "raw") == 0o700
+    assert _mode(import_dir / "normalized") == 0o700
+
+    for file_path in (
+        import_dir / "raw" / "export.xml",
+        import_dir / "normalized" / "2026-01.jsonl",
+        import_dir / "manifest.json",
+        import_dir / "content_manifest.jsonl",
+        Path(result.files_created[0]),
+    ):
+        assert _mode(file_path) == 0o600
 
 
 def test_workout_statistics_children_land_in_metadata_without_changing_dedupe(

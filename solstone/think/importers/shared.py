@@ -12,18 +12,48 @@ import shutil
 import tempfile
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable, Final
 
-from solstone.think.importers.utils import (
-    read_import_metadata,
-    save_import_file,
-    write_import_metadata,
-)
 from solstone.think.journal_io import atomic_replace, install_file, write_text
 from solstone.think.media import MIME_TYPES
 from solstone.think.utils import day_path, get_journal, now_ms
 
 logger = logging.getLogger(__name__)
+
+PRIVATE_IMPORT_FILE_MODE: Final = 0o600
+PRIVATE_IMPORT_DIR_MODE: Final = 0o700
+
+
+def ensure_private_import_dir(path: Path) -> Path:
+    """Create or repair an imports-owned directory as owner-private."""
+
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True, mode=PRIVATE_IMPORT_DIR_MODE)
+    for directory in _import_dir_chain(path):
+        os.chmod(directory, PRIVATE_IMPORT_DIR_MODE)
+    return path
+
+
+def _import_dir_chain(path: Path) -> list[Path]:
+    """Return imports/ and descendants up to path, excluding the journal root."""
+
+    chain: list[Path] = []
+    cursor = Path(path)
+    while True:
+        chain.append(cursor)
+        if cursor.name == "imports":
+            return list(reversed(chain))
+        parent = cursor.parent
+        if parent == cursor:
+            return [path]
+        cursor = parent
+
+
+def _ensure_import_parent_dir(path: Path) -> Path:
+    if "imports" in Path(path).parts:
+        return ensure_private_import_dir(path)
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def _get_relative_path(path: str) -> str:
@@ -40,6 +70,8 @@ def read_provenance(journal_root: Path, import_id: str) -> dict[str, str | None]
 
     Defaults to a CLI-direct import (cli/None/None) when no import.json exists.
     """
+    from solstone.think.importers.utils import read_import_metadata
+
     try:
         meta = read_import_metadata(journal_root, import_id)
     except FileNotFoundError:
@@ -107,7 +139,11 @@ def _write_import_jsonl(
             entry = {**entry, "source": "import"}
         jsonl_lines.append(json.dumps(entry))
 
-    write_text(Path(file_path), "\n".join(jsonl_lines) + "\n")
+    write_text(
+        Path(file_path),
+        "\n".join(jsonl_lines) + "\n",
+        mode=PRIVATE_IMPORT_FILE_MODE,
+    )
 
 
 def write_segment(
@@ -294,7 +330,7 @@ def write_markdown_segments(
         segment_dir = day_path(day) / f"import.{source}" / seg_key
         segment_dir.mkdir(parents=True, exist_ok=True)
         md_path = segment_dir / filename
-        write_text(md_path, render(items) + "\n")
+        write_text(md_path, render(items) + "\n", mode=PRIVATE_IMPORT_FILE_MODE)
         created_files.append(str(md_path))
         segments.append((day, seg_key))
 
@@ -314,7 +350,7 @@ def write_markdown_segment_file(
     segment_dir = Path(journal_root) / "chronicle" / day / stream / segment_key
     segment_dir.mkdir(parents=True, exist_ok=True)
     md_path = segment_dir / filename
-    write_text(md_path, content + "\n")
+    write_text(md_path, content + "\n", mode=PRIVATE_IMPORT_FILE_MODE)
     return md_path
 
 
@@ -326,7 +362,7 @@ def install_source_file(src: Path, dest: Path) -> None:
     (mkstemp-derived), NOT src's mode -- a deliberate, conservative choice for
     arbitrary user-supplied originals (unlike shutil.copy2, which copies mode).
     """
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_import_parent_dir(dest.parent)
     src_mtime = src.stat().st_mtime
     temp_handle = tempfile.NamedTemporaryFile(
         mode="wb", dir=dest.parent, prefix=".tmp_", suffix=".tmp", delete=False
@@ -337,7 +373,7 @@ def install_source_file(src: Path, dest: Path) -> None:
         with open(src, "rb") as src_handle:
             shutil.copyfileobj(src_handle, temp_handle)
         temp_handle.close()
-        install_file(temp_path, dest)
+        install_file(temp_path, dest, mode=PRIVATE_IMPORT_FILE_MODE)
         promoted = True
     finally:
         if not temp_handle.closed:
@@ -346,6 +382,27 @@ def install_source_file(src: Path, dest: Path) -> None:
             temp_path.unlink(missing_ok=True)
     # install_file does not preserve mtime; restore it from the source.
     os.utime(dest, (src_mtime, src_mtime))
+
+
+def install_source_stream(src: BinaryIO, dest: Path) -> None:
+    """Stream a source handle into dest through a private same-directory install."""
+
+    _ensure_import_parent_dir(dest.parent)
+    temp_handle = tempfile.NamedTemporaryFile(
+        mode="wb", dir=dest.parent, prefix=".tmp_", suffix=".tmp", delete=False
+    )
+    temp_path = Path(temp_handle.name)
+    promoted = False
+    try:
+        shutil.copyfileobj(src, temp_handle)
+        temp_handle.close()
+        install_file(temp_path, dest, mode=PRIVATE_IMPORT_FILE_MODE)
+        promoted = True
+    finally:
+        if not temp_handle.closed:
+            temp_handle.close()
+        if not promoted:
+            temp_path.unlink(missing_ok=True)
 
 
 # MIME type mapping for import metadata
@@ -407,6 +464,11 @@ def _setup_import(
     dry_run: bool = False,
 ) -> str:
     """Copy file to imports/ and write metadata. Returns new file path."""
+    from solstone.think.importers.utils import (
+        save_import_file,
+        write_import_metadata,
+    )
+
     journal_root = Path(get_journal())
     import_dir = journal_root / "imports" / timestamp
     filename = os.path.basename(media_path)
@@ -476,7 +538,7 @@ def _setup_file_import(import_id: str) -> Path:
     """Create imports/{import_id}/ directory for file importers."""
     journal_root = Path(get_journal())
     import_dir = journal_root / "imports" / import_id
-    import_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_import_dir(import_dir)
     return import_dir
 
 
@@ -575,7 +637,7 @@ def write_structured_import(
             lines.append(json.dumps(entry))
         content = "\n".join(lines) + "\n"
 
-        atomic_replace(out_path, content)
+        atomic_replace(out_path, content, mode=PRIVATE_IMPORT_FILE_MODE)
 
         created.append(str(out_path))
         logger.info("Wrote %d entries to %s", len(day_entries), out_path)
@@ -634,6 +696,7 @@ def write_manifest(
     imported_via: str = "cli",
     link_id: str | None = None,
     observer_handle: str | None = None,
+    raw_retention: str | None = None,
 ) -> Path:
     """Write an import manifest for deduplication tracking.
 
@@ -659,10 +722,16 @@ def write_manifest(
         "link_id": link_id,
         "observer_handle": observer_handle,
     }
+    if raw_retention is not None:
+        manifest["raw_retention"] = raw_retention
     manifest_dir = journal_root / "imports" / import_id
-    manifest_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_import_dir(manifest_dir)
     manifest_path = manifest_dir / "manifest.json"
-    atomic_replace(manifest_path, json.dumps(manifest, indent=2))
+    atomic_replace(
+        manifest_path,
+        json.dumps(manifest, indent=2),
+        mode=PRIVATE_IMPORT_FILE_MODE,
+    )
     return manifest_path
 
 
@@ -734,21 +803,41 @@ def write_content_manifest(
         Path(journal_root) if journal_root is not None else Path(get_journal())
     )
     manifest_dir = journal_root / "imports" / import_id
-    manifest_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_import_dir(manifest_dir)
     manifest_path = manifest_dir / "content_manifest.jsonl"
 
     lines = [json.dumps(entry) for entry in entries]
-    atomic_replace(manifest_path, "\n".join(lines) + "\n" if lines else "")
+    atomic_replace(
+        manifest_path,
+        "\n".join(lines) + "\n" if lines else "",
+        mode=PRIVATE_IMPORT_FILE_MODE,
+    )
 
     return manifest_path
+
+
+def write_json_file(path: Path, payload: Any) -> Path:
+    """Write a private JSON file under imports/ using the importer primitive."""
+
+    _ensure_import_parent_dir(path.parent)
+    atomic_replace(
+        path,
+        json.dumps(payload, indent=2) + "\n",
+        mode=PRIVATE_IMPORT_FILE_MODE,
+    )
+    return path
 
 
 def write_jsonl_records(path: Path, rows: Iterable[dict[str, Any]]) -> Path:
     """Write JSONL rows through the importer-owned journal IO primitive."""
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_import_parent_dir(path.parent)
     lines = [json.dumps(row, sort_keys=True) for row in rows]
-    atomic_replace(path, "\n".join(lines) + "\n" if lines else "")
+    atomic_replace(
+        path,
+        "\n".join(lines) + "\n" if lines else "",
+        mode=PRIVATE_IMPORT_FILE_MODE,
+    )
     return path
 
 

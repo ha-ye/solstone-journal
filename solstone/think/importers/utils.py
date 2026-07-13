@@ -13,6 +13,10 @@ import json
 import re
 from pathlib import Path
 
+from solstone.think.importers.shared import (
+    PRIVATE_IMPORT_FILE_MODE,
+    ensure_private_import_dir,
+)
 from solstone.think.journal_io import atomic_replace
 from solstone.think.utils import resolve_journal_path
 
@@ -40,13 +44,15 @@ def save_import_file(
     """
     # Create import folder structure: imports/<timestamp>/<filename>
     import_dir = journal_root / "imports" / timestamp
-    import_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_import_dir(import_dir)
 
     # Save the file
     file_path = import_dir / filename
     if source_path != file_path:
         # Copy content if different paths
-        atomic_replace(file_path, source_path.read_bytes())
+        atomic_replace(
+            file_path, source_path.read_bytes(), mode=PRIVATE_IMPORT_FILE_MODE
+        )
 
     return file_path
 
@@ -70,11 +76,11 @@ def save_import_text(
     """
     # Create import folder structure: imports/<timestamp>/<filename>
     import_dir = journal_root / "imports" / timestamp
-    import_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_import_dir(import_dir)
 
     # Save the text
     file_path = import_dir / filename
-    atomic_replace(file_path, content)
+    atomic_replace(file_path, content, mode=PRIVATE_IMPORT_FILE_MODE)
 
     return file_path
 
@@ -110,6 +116,7 @@ def move_import(
         raise FileExistsError(f"Import already exists for timestamp {new_timestamp}")
 
     old_dir.rename(new_dir)
+    ensure_private_import_dir(new_dir)
     return new_dir
 
 
@@ -131,9 +138,13 @@ def write_import_metadata(
         metadata: Metadata dictionary to write
     """
     import_dir = journal_root / "imports" / timestamp
-    import_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_import_dir(import_dir)
     metadata_path = import_dir / "import.json"
-    atomic_replace(metadata_path, json.dumps(metadata, indent=2))
+    atomic_replace(
+        metadata_path,
+        json.dumps(metadata, indent=2),
+        mode=PRIVATE_IMPORT_FILE_MODE,
+    )
 
 
 def read_import_metadata(
@@ -246,7 +257,11 @@ def update_import_metadata_fields(
 
     # Write back if modified
     if updated:
-        atomic_replace(metadata_path, json.dumps(metadata, indent=2))
+        atomic_replace(
+            metadata_path,
+            json.dumps(metadata, indent=2),
+            mode=PRIVATE_IMPORT_FILE_MODE,
+        )
 
     return metadata, updated
 
@@ -686,7 +701,11 @@ def generate_content_manifest(journal_root: Path, timestamp: str) -> Path | None
 
     manifest_path = import_dir / "content_manifest.jsonl"
     lines = [json.dumps(entry) for entry in entries]
-    atomic_replace(manifest_path, "\n".join(lines) + "\n" if lines else "")
+    atomic_replace(
+        manifest_path,
+        "\n".join(lines) + "\n" if lines else "",
+        mode=PRIVATE_IMPORT_FILE_MODE,
+    )
     return manifest_path
 
 
@@ -710,14 +729,18 @@ def save_import_segments(
         day: Day string (YYYYMMDD format)
     """
     import_dir = journal_root / "imports" / timestamp
-    import_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_import_dir(import_dir)
 
     segments_path = import_dir / "segments.json"
     data = {
         "segments": segments,
         "day": day,
     }
-    atomic_replace(segments_path, json.dumps(data, indent=2))
+    atomic_replace(
+        segments_path,
+        json.dumps(data, indent=2),
+        mode=PRIVATE_IMPORT_FILE_MODE,
+    )
 
 
 def load_import_segments(

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 import sqlite3
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -13,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 DEDUPE_DB_RELATIVE_PATH = Path("imports") / "health-dedupe.sqlite"
+_PRIVATE_HEALTH_DB_FILE_MODE = 0o600
+_PRIVATE_IMPORT_DIR_MODE = 0o700
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +47,38 @@ def health_dedupe_db_path(journal_root: Path) -> Path:
     """Return the journal-local health dedupe database path."""
 
     return Path(journal_root) / DEDUPE_DB_RELATIVE_PATH
+
+
+def _ensure_private_imports_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=_PRIVATE_IMPORT_DIR_MODE)
+    os.chmod(path, _PRIVATE_IMPORT_DIR_MODE)
+
+
+def _normalize_private_file(path: Path) -> None:
+    if path.exists():
+        os.chmod(path, _PRIVATE_HEALTH_DB_FILE_MODE)
+
+
+def _precreate_private_sqlite_db(db_path: Path) -> None:
+    _ensure_private_imports_dir(db_path.parent)
+    try:
+        fd = os.open(
+            db_path,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            _PRIVATE_HEALTH_DB_FILE_MODE,
+        )
+    except FileExistsError:
+        _normalize_private_file(db_path)
+        return
+    else:
+        os.close(fd)
+        _normalize_private_file(db_path)
+
+
+def _repair_sqlite_file_modes(db_path: Path) -> None:
+    _normalize_private_file(db_path)
+    _normalize_private_file(Path(f"{db_path}-wal"))
+    _normalize_private_file(Path(f"{db_path}-shm"))
 
 
 def _ensure_health_dedupe_schema(conn: sqlite3.Connection) -> None:
@@ -84,9 +119,10 @@ def ensure_health_dedupe_db(journal_root: Path) -> Path:
     """Create the health dedupe database and return its path."""
 
     db_path = health_dedupe_db_path(journal_root)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _precreate_private_sqlite_db(db_path)
     with sqlite3.connect(db_path) as conn:
         _ensure_health_dedupe_schema(conn)
+        _repair_sqlite_file_modes(db_path)
     return db_path
 
 
@@ -99,6 +135,7 @@ def get_health_dedupe_record(
     db_path = health_dedupe_db_path(journal_root)
     if not db_path.exists():
         return None
+    _repair_sqlite_file_modes(db_path)
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -124,6 +161,7 @@ def upsert_health_dedupe_record(
     last_seen_import_id = record.last_seen_import_id or record.first_import_id
 
     with sqlite3.connect(db_path) as conn:
+        _repair_sqlite_file_modes(db_path)
         insert_result = conn.execute(
             """
             INSERT INTO health_dedupe (
@@ -204,12 +242,13 @@ def upsert_health_dedupe_records(
     """
 
     db_path = health_dedupe_db_path(journal_root)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _precreate_private_sqlite_db(db_path)
     batch = tuple(records)
     now = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
 
     with sqlite3.connect(db_path) as conn:
         conn.execute("PRAGMA journal_mode=WAL")
+        _repair_sqlite_file_modes(db_path)
         conn.execute("BEGIN")
         try:
             _ensure_health_dedupe_schema(conn)
@@ -257,6 +296,7 @@ def upsert_health_dedupe_records(
             conn.rollback()
             raise
         conn.commit()
+        _repair_sqlite_file_modes(db_path)
 
     batch_keys = [record.dedupe_key for record in batch]
     inserted = len(set(batch_keys) - existing_keys)

@@ -97,6 +97,7 @@ from solstone.think.importers.pre_save_gate import (
 )
 from solstone.think.importers.shared import (
     write_content_manifest,
+    write_json_file,
     write_jsonl_records,
     write_manifest,
 )
@@ -2014,21 +2015,16 @@ def _save_sync_bundle(
         _content_manifest_entries(normalized_paths, import_id=import_id),
         journal_root=journal_root,
     )
-    fetch_windows_path = import_dir / "fetch_windows.json"
-    fetch_windows_path.write_text(
-        json.dumps(
-            {
-                "schema": "solstone.oura_fetch_windows.v1",
-                "windows": {ep: list(win) for ep, win in windows.items()},
-                "chunk_limits": {
-                    ep: _MAX_WINDOW_DAYS.get(ep, _DEFAULT_MAX_WINDOW_DAYS)
-                    for ep in SYNC_ENDPOINTS
-                },
+    write_json_file(
+        import_dir / "fetch_windows.json",
+        {
+            "schema": "solstone.oura_fetch_windows.v1",
+            "windows": {ep: list(win) for ep, win in windows.items()},
+            "chunk_limits": {
+                ep: _MAX_WINDOW_DAYS.get(ep, _DEFAULT_MAX_WINDOW_DAYS)
+                for ep in SYNC_ENDPOINTS
             },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
+        },
     )
 
     write_manifest(

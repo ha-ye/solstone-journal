@@ -19,6 +19,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from solstone.think.importers.cli import import_one
+from solstone.think.importers.shared import (
+    PRIVATE_IMPORT_FILE_MODE,
+    ensure_private_import_dir,
+)
 from solstone.think.journal_io import install_file
 
 logger = logging.getLogger(__name__)
@@ -172,7 +176,7 @@ def download_to_file(
     progress_cb: Callable[[], None] | None = None,
 ) -> bool:
     """Stream-download URL to dest_path atomically."""
-    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_import_dir(dest_path.parent)
     tmp_path: pathlib.Path | None = None
     try:
         # Design §4-§5: fail stalled streaming reads and refresh outer progress.
@@ -220,7 +224,7 @@ def download_to_file(
         logger.warning("Plaud download for %s failed: %s", dest_path.name, exc)
         return False
 
-    install_file(tmp_path, dest_path)
+    install_file(tmp_path, dest_path, mode=PRIVATE_IMPORT_FILE_MODE)
     size_info = f" ({total} bytes)" if total else ""
     logger.info("[%s] Saved -> %s%s", dest_path.stem, dest_path, size_info)
     return True
@@ -508,7 +512,7 @@ class PlaudBackend:
 
                 # Download to imports/{timestamp}/
                 import_dir = journal_root / "imports" / ts
-                import_dir.mkdir(parents=True, exist_ok=True)
+                ensure_private_import_dir(import_dir)
                 dest_path = import_dir / safe_name
 
                 # Get temp URL and download

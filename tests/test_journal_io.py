@@ -369,3 +369,13 @@ def test_hold_lock_times_out_with_typed_error(tmp_path) -> None:
     finally:
         fcntl.flock(manual_lock, fcntl.LOCK_UN)
         manual_lock.close()
+
+
+def test_hold_lock_applies_requested_sidecar_mode(tmp_path) -> None:
+    target = tmp_path / "data.json"
+
+    with hold_lock(target, mode=0o600):
+        pass
+
+    lock_path = tmp_path / "data.json.lock"
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600

@@ -5,6 +5,7 @@
 
 import errno
 import fcntl
+import os
 import random
 import time
 from collections.abc import Iterator
@@ -25,6 +26,7 @@ def hold_lock(
     *,
     timeout: float = DEFAULT_LOCK_TIMEOUT,
     poll_interval: float = DEFAULT_LOCK_POLL_INTERVAL,
+    mode: int | None = None,
 ) -> Iterator[None]:
     """Hold an exclusive flock on a stable sidecar for path.
 
@@ -47,6 +49,8 @@ def hold_lock(
     sleep_min = min(LOCK_BACKOFF_MIN, sleep_max)
     lock_file = open(lock_path, "w")
     try:
+        if mode is not None:
+            os.fchmod(lock_file.fileno(), mode)
         while True:
             try:
                 fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)

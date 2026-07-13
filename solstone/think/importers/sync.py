@@ -8,6 +8,10 @@ import logging
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from solstone.think.importers.shared import (
+    PRIVATE_IMPORT_FILE_MODE,
+    ensure_private_import_dir,
+)
 from solstone.think.journal_io import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -50,10 +54,14 @@ def load_sync_state(journal_root: Path, backend: str) -> dict[str, Any] | None:
 def save_sync_state(journal_root: Path, backend: str, state: dict[str, Any]) -> None:
     """Save sync state for a backend with an atomic write."""
     imports_dir = journal_root / "imports"
-    imports_dir.mkdir(parents=True, exist_ok=True)
+    ensure_private_import_dir(imports_dir)
     state_path = imports_dir / f"{backend}.json"
 
-    atomic_replace(state_path, json.dumps(state, indent=2))
+    atomic_replace(
+        state_path,
+        json.dumps(state, indent=2),
+        mode=PRIVATE_IMPORT_FILE_MODE,
+    )
 
 
 def get_syncable_backends() -> list[SyncableBackend]:

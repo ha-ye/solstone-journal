@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+import os
 import sqlite3
+import stat
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -21,6 +24,19 @@ from solstone.think.importers.health_schema import (
     health_record_dedupe_key,
     health_value_hash,
 )
+
+
+@contextmanager
+def _temporary_umask(mask: int):
+    old = os.umask(mask)
+    try:
+        yield
+    finally:
+        os.umask(old)
+
+
+def _mode(path: Path) -> int:
+    return stat.S_IMODE(path.stat().st_mode)
 
 
 def test_dedupe_db_lives_under_imports(tmp_path: Path):
@@ -192,6 +208,57 @@ def test_upsert_health_dedupe_records_batches_in_wal_mode(tmp_path: Path):
     with sqlite3.connect(health_dedupe_db_path(tmp_path)) as conn:
         journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
     assert journal_mode == "wal"
+
+
+def test_dedupe_db_and_wal_sidecars_are_private_while_connection_is_live(
+    tmp_path: Path,
+):
+    with _temporary_umask(0o000):
+        upsert_health_dedupe_records(tmp_path, _synthetic_dedupe_records(1))
+
+    db_path = health_dedupe_db_path(tmp_path)
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO health_dedupe (
+                dedupe_key,
+                source_family,
+                record_type,
+                start_time,
+                first_import_id,
+                last_seen_import_id,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "sha256:sidecar-live-check",
+                "apple_health",
+                "HKQuantityTypeIdentifierStepCount",
+                "2026-01-02T12:00:00-07:00",
+                "synthetic-import",
+                "synthetic-import",
+                "2026-01-02T19:00:00Z",
+                "2026-01-02T19:00:00Z",
+            ),
+        )
+        for path in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+            assert path.exists()
+            assert _mode(path) == 0o600
+
+
+def test_existing_broad_dedupe_db_is_repaired_on_open(tmp_path: Path):
+    db_path = health_dedupe_db_path(tmp_path)
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"")
+    db_path.chmod(0o644)
+
+    ensure_health_dedupe_db(tmp_path)
+
+    assert _mode(db_path) == 0o600
+    assert _mode(db_path.parent) == 0o700
 
 
 def test_upsert_health_dedupe_records_handles_duplicate_keys_in_batch(tmp_path: Path):
