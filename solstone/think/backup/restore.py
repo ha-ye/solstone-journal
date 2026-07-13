@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
 from solstone.think.backup.destination import Destination, assemble_backend_env
+from solstone.think.backup.hosted import HostedBinding, HostedCredentials
+from solstone.think.backup.hosted_provider import hosted_restic_session
 from solstone.think.backup.install import ensure_restic
 from solstone.think.backup.keys import parse_recovery_key
 from solstone.think.backup.runner import (
@@ -31,8 +33,8 @@ from solstone.think.utils import get_journal
 logger = logging.getLogger("solstone.backup.restore")
 
 RESTORE_LIST_TIMEOUT_SECONDS = 5 * 60
-RESTORE_TIMEOUT_SECONDS = 6 * 60 * 60
-RESTORE_CHECK_TIMEOUT_SECONDS = 60 * 60
+RESTORE_TIMEOUT_SECONDS = 48 * 60 * 60
+RESTORE_CHECK_TIMEOUT_SECONDS = 6 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -88,16 +90,19 @@ def _run_restore(
     destination: Destination,
     entered_recovery_key: str,
     persist: Callable[[str], None],
+    *,
+    backend_env: Mapping[str, str | None] | None = None,
 ) -> RestoreResult:
     try:
         canonical = parse_recovery_key(entered_recovery_key)
     except ValueError:
         return _restore_error("invalid_key")
 
-    try:
-        backend_env = assemble_backend_env(destination)
-    except (KeyError, ValueError):
-        return _restore_error("failed")
+    if backend_env is None:
+        try:
+            backend_env = assemble_backend_env(destination)
+        except (KeyError, ValueError):
+            return _restore_error("failed")
 
     try:
         restic_path = ensure_restic()
@@ -198,7 +203,8 @@ def restore_journal(
 
 
 def restore_journal_operated(
-    destination: Destination,
+    binding: HostedBinding,
+    initial_credentials: HostedCredentials,
     entered_recovery_key: str,
 ) -> RestoreResult:
     def persist(canonical: str) -> None:
@@ -206,7 +212,17 @@ def restore_journal_operated(
         set_recovery_key(canonical)
         set_recovery_key_confirmed(True)
 
-    return _run_restore(destination, entered_recovery_key, persist)
+    with hosted_restic_session(
+        binding,
+        scope="backup",
+        initial_credentials=initial_credentials,
+    ) as session:
+        return _run_restore(
+            session.destination,
+            entered_recovery_key,
+            persist,
+            backend_env=session.backend_env,
+        )
 
 
 __all__ = [

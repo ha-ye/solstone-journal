@@ -63,6 +63,7 @@ def _creds() -> HostedCredentials:
         secret_access_key="SAK",
         session_token="SESS",
         endpoint="https://r2.example",
+        expires_at="2026-07-13T12:00:00Z",
     )
 
 
@@ -549,10 +550,7 @@ def test_restore_hosted_approved_works_without_local_keys(
     assert response.get_json()["operation"]["portal_url"] == CONSENT_URL
     assert final["reason_code"] is None
     save_hosted_binding.assert_called_once_with(binding)
-    restore_journal_operated.assert_called_once()
-    destination = restore_journal_operated.call_args.args[0]
-    assert destination.credentials["session_token"] == "SESS"
-    assert restore_journal_operated.call_args.args[1] == "A" * 64
+    restore_journal_operated.assert_called_once_with(binding, _creds(), "A" * 64)
 
 
 def test_restore_hosted_needs_subscription_returns_terminal_phase(

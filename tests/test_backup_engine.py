@@ -262,7 +262,7 @@ def test_run_backup_unlocks_then_calls_restic_with_expected_argv(
                 "AWS_SECRET_ACCESS_KEY": "secret-key",
             },
             "json": True,
-            "timeout": engine.BACKUP_TIMEOUT_SECONDS,
+            "timeout": engine.INITIAL_BACKUP_TIMEOUT_SECONDS,
         },
     )
     record_backup_result.assert_called_once_with(
@@ -661,6 +661,7 @@ def test_operated_backup_fetches_creds_and_builds_repo(
             secret_access_key="SAK",
             session_token="SESS",
             endpoint="https://acct.r2.cloudflarestorage.com",
+            expires_at="2026-07-13T12:00:00Z",
         )
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
@@ -682,11 +683,13 @@ def test_operated_backup_fetches_creds_and_builds_repo(
     assert result.status == "ok"
     backup_call = next(call for call in calls if call[0][0] == "backup")
     backup_kwargs = backup_call[1]
-    assert backup_kwargs["backend_env"] == {
-        "AWS_ACCESS_KEY_ID": "AKID",
-        "AWS_SECRET_ACCESS_KEY": "SAK",
-        "AWS_SESSION_TOKEN": "SESS",
-    }
+    backend_env = backup_kwargs["backend_env"]
+    assert backend_env["AWS_CONTAINER_CREDENTIALS_FULL_URI"].startswith(
+        "http://127.0.0.1:"
+    )
+    assert backend_env["AWS_CONTAINER_AUTHORIZATION_TOKEN"]
+    for secret in ("AKID", "SAK", "SESS"):
+        assert secret not in json.dumps(backend_env)
     assert (
         backup_kwargs["repository"]
         == "s3:https://acct.r2.cloudflarestorage.com/bkt/users/acct/inst"
@@ -736,6 +739,7 @@ def test_operated_prune_requests_maintenance_scope(
             secret_access_key="SAK",
             session_token="SESS",
             endpoint="https://acct.r2.cloudflarestorage.com",
+            expires_at="2026-07-13T12:00:00Z",
         )
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
@@ -751,7 +755,33 @@ def test_operated_prune_requests_maintenance_scope(
     assert result.status == "ok"
     forget_call = next(call for call in calls if call[0][0] == "forget")
     assert captured["scope"] == "maintenance"
-    assert forget_call[1]["backend_env"]["AWS_SESSION_TOKEN"] == "SESS"
+    assert forget_call[1]["backend_env"][
+        "AWS_CONTAINER_CREDENTIALS_FULL_URI"
+    ].startswith("http://127.0.0.1:")
+
+
+def test_backup_timeout_is_long_only_until_first_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config = _valid_backup_config()
+    _write_config(tmp_path, config)
+
+    assert engine._backup_timeout() == engine.INITIAL_BACKUP_TIMEOUT_SECONDS
+
+    config["backup"]["last_backup"] = {
+        "status": "error",
+        "snapshot_id": "partial-snap",
+    }
+    _write_config(tmp_path, config)
+
+    assert engine._backup_timeout() == engine.INITIAL_BACKUP_TIMEOUT_SECONDS
+
+    config["backup"]["last_backup"] = {"status": "ok", "snapshot_id": "snap-1"}
+    _write_config(tmp_path, config)
+
+    assert engine._backup_timeout() == engine.BACKUP_TIMEOUT_SECONDS
 
 
 def _assert_operated_backup_degrades_on_hosted_credential_error(
@@ -918,6 +948,7 @@ def test_operated_does_not_persist_or_log_secrets(
             secret_access_key="SAK-SECRET",
             session_token="SESS-SECRET",
             endpoint="https://acct.r2.cloudflarestorage.com",
+            expires_at="2026-07-13T12:00:00Z",
         )
 
     def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:

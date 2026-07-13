@@ -1180,7 +1180,7 @@ def test_register_baseline_caps_sets_explicit_caps():
         "segment": 4500,
         "indexer": 7200,
         "importer": 3600,
-        backup_partition: 25200,
+        backup_partition: 49 * 60 * 60,
     }
     for name, seconds in expected.items():
         assert queue._effective_cap(name) == seconds

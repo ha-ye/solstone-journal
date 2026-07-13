@@ -11,6 +11,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -25,6 +26,7 @@ from solstone.think.backup.hosted import (
     operated_repository,
     save_hosted_binding,
 )
+from solstone.think.backup.hosted_provider import hosted_restic_session
 
 
 class _FakeResponse:
@@ -64,6 +66,7 @@ def _credentials() -> HostedCredentials:
         secret_access_key="SAK",
         session_token="SESS",
         endpoint="https://acct.r2.cloudflarestorage.com/",
+        expires_at="2026-07-13T12:00:00Z",
     )
 
 
@@ -158,6 +161,7 @@ def test_fetch_hosted_credentials_happy_path(
                     "secret_access_key": "SAK",
                     "session_token": "SESS",
                     "endpoint": "https://acct.r2.cloudflarestorage.com",
+                    "expires_at": "2026-07-13T12:00:00Z",
                 }
             ).encode("utf-8")
         )
@@ -174,6 +178,7 @@ def test_fetch_hosted_credentials_happy_path(
         secret_access_key="SAK",
         session_token="SESS",
         endpoint="https://acct.r2.cloudflarestorage.com",
+        expires_at="2026-07-13T12:00:00Z",
     )
 
 
@@ -275,6 +280,7 @@ def test_repr_redacts_secrets() -> None:
         secret_access_key="SAK-SECRET",
         session_token="SESS-SECRET",
         endpoint="https://acct.r2.cloudflarestorage.com",
+        expires_at="2026-07-13T12:00:00Z",
     )
     rendered = repr(creds)
     for secret in ("AKID-SECRET", "SAK-SECRET", "SESS-SECRET"):
@@ -296,3 +302,57 @@ def test_broker_token_not_logged_on_degrade(
         fetch_hosted_credentials(_binding(broker_token="the-token"), scope="backup")
 
     assert "the-token" not in caplog.text
+
+
+def test_hosted_restic_session_serves_initial_then_renewed_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initial = _credentials()
+    renewed = HostedCredentials(
+        access_key_id="AKID-2",
+        secret_access_key="SAK-2",
+        session_token="SESS-2",
+        endpoint="https://acct.r2.cloudflarestorage.com/",
+        expires_at="2026-07-13T13:00:00Z",
+    )
+    fetch = Mock(return_value=renewed)
+    monkeypatch.setattr(
+        "solstone.think.backup.hosted_provider.fetch_hosted_credentials",
+        fetch,
+    )
+
+    with hosted_restic_session(
+        _binding(prefix="users/acct/inst/"),
+        scope="backup",
+        initial_credentials=initial,
+    ) as session:
+        uri = session.backend_env["AWS_CONTAINER_CREDENTIALS_FULL_URI"]
+        token = session.backend_env["AWS_CONTAINER_AUTHORIZATION_TOKEN"]
+        assert uri.startswith("http://127.0.0.1:")
+        assert session.destination.credentials == {}
+
+        with pytest.raises(urllib.error.HTTPError) as exc_info:
+            urllib.request.urlopen(uri, timeout=1)
+        assert exc_info.value.code == 401
+
+        first_request = urllib.request.Request(
+            uri,
+            headers={"Authorization": token},
+        )
+        with urllib.request.urlopen(first_request, timeout=1) as response:
+            first = json.loads(response.read())
+        assert first == {
+            "AccessKeyId": "AKID",
+            "SecretAccessKey": "SAK",
+            "Token": "SESS",
+            "Expiration": "2026-07-13T12:00:00Z",
+        }
+        fetch.assert_not_called()
+
+        with urllib.request.urlopen(first_request, timeout=1) as response:
+            second = json.loads(response.read())
+        assert second["AccessKeyId"] == "AKID-2"
+        assert second["Expiration"] == "2026-07-13T13:00:00Z"
+        fetch.assert_called_once_with(
+            _binding(prefix="users/acct/inst/"), scope="backup"
+        )

@@ -393,9 +393,8 @@ def _restore_hosted_thunk(
     except HostedCredsUnavailable as exc:
         return OpOutcome("error", exc.reason_code)
 
-    destination = operated_destination(binding, creds)
     save_hosted_binding(binding)
-    restore_result = restore_journal_operated(destination, recovery_key)
+    restore_result = restore_journal_operated(binding, creds, recovery_key)
     return OpOutcome(
         status=restore_result.status,
         reason_code=restore_result.reason_code,
