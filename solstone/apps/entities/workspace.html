@@ -2222,7 +2222,10 @@ function renderWithYouBlock(container, entityId, history, referenceDay) {
   const latest = rows[0];
   const summary = document.createElement('div');
   summary.className = 'entity-conn-with-you-summary';
-  summary.textContent = (ENT_COPY.ENT_CONN_WITH_YOU_SUMMARY || '')
+  const summaryTemplate = total === 1
+    ? ENT_COPY.ENT_CONN_WITH_YOU_SUMMARY_ONE
+    : ENT_COPY.ENT_CONN_WITH_YOU_SUMMARY;
+  summary.textContent = (summaryTemplate || '')
     .replace('{n}', String(total))
     .replace('{kind}', entityConnKindWord(latest.kind))
     .replace('{day}', formatEntityConnDay(latest.day, referenceDay));
@@ -2331,12 +2334,18 @@ function entityConnRowMeta(neighbor, referenceDay) {
   const count = Number(neighbor.count || 0);
   const day = formatEntityConnDay(neighbor.last_seen, referenceDay);
   if (neighbor.evidence_class === 'attendance') {
-    if (count === 1) return ENT_COPY.ENT_CONN_ROW_META_ONE_ATTENDANCE || '';
+    if (count === 1) {
+      return (ENT_COPY.ENT_CONN_ROW_META_ONE_ATTENDANCE || '')
+        .replace('{day}', day);
+    }
     return (ENT_COPY.ENT_CONN_ROW_META_ATTENDANCE || '')
       .replace('{n}', String(count))
       .replace('{day}', day);
   }
-  if (count === 1) return ENT_COPY.ENT_CONN_ROW_META_ONE || '';
+  if (count === 1) {
+    return (ENT_COPY.ENT_CONN_ROW_META_ONE || '')
+      .replace('{day}', day);
+  }
   return (ENT_COPY.ENT_CONN_ROW_META || '')
     .replace('{n}', String(count))
     .replace('{day}', day);

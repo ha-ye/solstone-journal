@@ -104,7 +104,7 @@ def test_connection_mounts_and_renderers_are_shared(html):
 
     assert journal_facets < journal_connections < journal_edit
     assert detail_description < detail_connections < detail_observations
-    assert '<h4>connections</h4>' in html
+    assert "<h4>connections</h4>" in html
 
     assert "const isPrincipal = entity.is_principal === true;" in journal
     assert "const isPrincipal = entity.is_principal === true;" in detail
@@ -112,7 +112,10 @@ def test_connection_mounts_and_renderers_are_shared(html):
         "renderConnectionsSection(entity.id, 'journal-detail-connections', "
         "isPrincipal);"
     ) in journal
-    assert "renderConnectionsSection(entity.id, 'detail-connections', isPrincipal);" in detail
+    assert (
+        "renderConnectionsSection(entity.id, 'detail-connections', isPrincipal);"
+        in detail
+    )
     assert "ATTENDANCE_KINDS = new Set(state.attendance_kinds || []);" in state
 
 
@@ -121,12 +124,18 @@ def test_connection_network_states_are_statically_distinguishable(html):
     unavailable = _function_body(html, "renderConnectionsIndexUnavailable")
     failed = _function_body(html, "renderConnectionsLoadFailed")
 
-    assert "container.innerHTML = '<span class=\"observations-empty\">loading...</span>';" in section
+    assert (
+        "container.innerHTML = '<span class=\"observations-empty\">loading...</span>';"
+        in section
+    )
     assert "const network = await loadEntityNetwork(entityId);" in section
     assert "if (network.resolved === null)" in section
     assert "renderConnectionsAmbiguous(container);" in section
     assert "const referenceDay = network.reference_day || '';" in section
-    assert "renderConnectionsNetwork(container, entityId, neighbors, referenceDay, isPrincipal)" in section
+    assert (
+        "renderConnectionsNetwork(container, entityId, neighbors, referenceDay, isPrincipal)"
+        in section
+    )
     assert "if (!isPrincipal && withYouSlot)" in section
     assert "const history = await loadWithYouHistory(entityId);" in section
     assert "renderWithYouFailure(withYouSlot);" in section
@@ -134,7 +143,10 @@ def test_connection_network_states_are_statically_distinguishable(html):
     assert "renderConnectionsEmpty(container);" in section
     assert "error?.body?.reason_code === 'edge_index_unavailable'" in section
     assert "renderConnectionsIndexUnavailable(container);" in section
-    assert "renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal, error);" in section
+    assert (
+        "renderConnectionsLoadFailed(container, entityId, containerId, isPrincipal, error);"
+        in section
+    )
 
     assert "ENT_COPY.ENT_CONN_INDEX_UNAVAILABLE" in unavailable
     assert "link.href = '/app/health';" in unavailable
@@ -157,6 +169,7 @@ def test_connection_fetch_urls_and_reference_day_threading(html):
     network = _function_body(html, "loadEntityNetwork")
     with_you = _function_body(html, "loadWithYouHistory")
     history = _function_body(html, "loadConnectionHistory")
+    with_you_block = _function_body(html, "renderWithYouBlock")
     initial = _function_body(html, "loadInitialConnectionEvidence")
     pane = _function_body(html, "renderEvidencePane")
     actions = _function_body(html, "renderEvidenceActions")
@@ -174,12 +187,40 @@ def test_connection_fetch_urls_and_reference_day_threading(html):
     assert "peer: peerId" in history
     assert "offset: String(offset || 0)" in history
 
-    assert "renderEvidencePane(pane, entityId, peerId, history, referenceDay, true);" in initial
+    assert "const summaryTemplate = total === 1" in with_you_block
+    assert "? ENT_COPY.ENT_CONN_WITH_YOU_SUMMARY_ONE" in with_you_block
+    assert ": ENT_COPY.ENT_CONN_WITH_YOU_SUMMARY" in with_you_block
+    assert ".replace('{kind}', entityConnKindWord(latest.kind))" in with_you_block
+    assert (
+        ".replace('{day}', formatEntityConnDay(latest.day, referenceDay))"
+        in with_you_block
+    )
+
+    assert (
+        "renderEvidencePane(pane, entityId, peerId, history, referenceDay, true);"
+        in initial
+    )
     assert "appendEvidenceRows(list, history?.evidence || [], referenceDay);" in pane
-    assert "renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLink);" in pane
-    assert "appendEvidenceRows(pane.querySelector('.entity-conn-evidence-list'), rows, referenceDay);" in actions
+    assert (
+        "renderEvidenceActions(pane, entityId, peerId, referenceDay, showViewLink);"
+        in pane
+    )
+    assert (
+        "appendEvidenceRows(pane.querySelector('.entity-conn-evidence-list'), rows, referenceDay);"
+        in actions
+    )
     assert "pane.dataset.offset = String(offset + rows.length);" in actions
     assert "navigateToEntity(peerId);" in actions
+
+
+def test_connection_singular_row_meta_keeps_day_label(html):
+    meta = _function_body(html, "entityConnRowMeta")
+
+    assert "const day = formatEntityConnDay(neighbor.last_seen, referenceDay);" in meta
+    assert "if (count === 1)" in meta
+    assert "ENT_COPY.ENT_CONN_ROW_META_ONE_ATTENDANCE" in meta
+    assert "ENT_COPY.ENT_CONN_ROW_META_ONE" in meta
+    assert ".replace('{day}', day);" in meta
 
 
 def test_connection_formatter_and_label_fallback(html):

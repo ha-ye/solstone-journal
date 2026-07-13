@@ -12,10 +12,10 @@ from solstone.apps.entities import copy as entity_copy
 from solstone.apps.entities.copy import entities_copy_payload, entities_copy_values
 from solstone.think.indexer.edges import ATTENDANCE_KINDS, KINDS
 
-
 EXPECTED_CONN_STRINGS = {
     "ENT_CONN_WITH_YOU_EYEBROW": "with you",
     "ENT_CONN_WITH_YOU_SUMMARY": "{n} moments together · latest {kind} ({day})",
+    "ENT_CONN_WITH_YOU_SUMMARY_ONE": "1 moment together · latest {kind} ({day})",
     "ENT_CONN_WITH_YOU_TOGGLE": "the moments behind this ›",
     "ENT_CONN_WITH_YOU_FAILED": (
         "couldn't check your own history with this entity just now."
@@ -24,8 +24,8 @@ EXPECTED_CONN_STRINGS = {
     "ENT_CONN_EVENTS_ONLY": "events only",
     "ENT_CONN_ROW_META": "{n} moments · {day}",
     "ENT_CONN_ROW_META_ATTENDANCE": "{n} events together · {day}",
-    "ENT_CONN_ROW_META_ONE": "1 moment",
-    "ENT_CONN_ROW_META_ONE_ATTENDANCE": "1 event together",
+    "ENT_CONN_ROW_META_ONE": "1 moment · {day}",
+    "ENT_CONN_ROW_META_ONE_ATTENDANCE": "1 event together · {day}",
     "ENT_CONN_EVIDENCE_CAPTION": (
         "the moments behind this — evidence, not a conclusion"
     ),
