@@ -220,7 +220,7 @@ Removing `email` and `personal` changes only what future authorization requests 
 
 Landed in the skeleton:
 
-- `SENSITIVE_IMPORTERS` is derived from `HEALTH_IMPORTER_REGISTRY` in `health_schema.py` so health importer registration and gate coverage cannot drift.
+- `SENSITIVE_IMPORTERS` is an explicit importer/backend-name gate set: `{"apple_health", "oura"}`. It intentionally does not derive from source-family registries because `oura_api` and `dexcom_clarity` are source families, not approval-artifact importer names.
 - Same approval artifact (`imports/_approvals/health_import_preflight.json`, same `APPROVAL_SCHEMA`/`CHECKLIST_VERSION`): `approved_importers` must include `"oura"`; all five replication-destination decisions and the raw-retention decision apply unchanged to Oura data.
 - Same per-run `--confirm-health-save` requirement; `OuraImporter.process()` enforces the gate itself in save mode (defense in depth alongside the CLI's pre-`process` enforcement), **before** any parse or write, then stops at the phase-O1 seam.
 - Tests prove: missing artifact blocks; artifact without `"oura"` in `approved_importers` blocks (`importer_not_approved`); missing per-run confirmation blocks; a fully approved run still writes nothing (seam); failure payloads leak no fixture paths or values.

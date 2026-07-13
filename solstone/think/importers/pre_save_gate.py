@@ -48,10 +48,9 @@ import json
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from solstone.think.importers.health_schema import (
-    HEALTH_IMPORTER_REGISTRY,
     SOURCE_APPLE_HEALTH,
     SOURCE_OURA,
 )
@@ -75,7 +74,10 @@ CHECKLIST_DESTINATIONS = (
     "other",
 )
 DESTINATION_DECISIONS = {"approved", "excluded"}
-SENSITIVE_IMPORTERS = frozenset(HEALTH_IMPORTER_REGISTRY)
+# Approval artifacts are keyed by importer/backend names, not source families.
+# Do not derive this from KNOWN_SOURCE_FAMILIES: oura_api and dexcom_clarity
+# are source families with no approval-artifact importer name.
+SENSITIVE_IMPORTERS: Final = frozenset({"apple_health", "oura"})
 
 
 class RawRetentionDecision(StrEnum):

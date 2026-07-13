@@ -35,6 +35,7 @@ HEALTH_CARD_STREAMS: Final = frozenset(
     stream for stream in HEALTH_CARD_STREAM_BY_FAMILY.values() if stream is not None
 )
 
+
 class HealthCardStreamError(ValueError):
     """Raised when a health source family cannot write a chronicle card stream."""
 

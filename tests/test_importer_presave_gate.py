@@ -13,12 +13,17 @@ from pathlib import Path
 import pytest
 
 from solstone.think.importers.file_importer import ImportResult
+from solstone.think.importers.health_schema import (
+    SOURCE_DEXCOM_CLARITY,
+    SOURCE_OURA_API,
+)
 from solstone.think.importers.pre_save_gate import (
     APPROVAL_SCHEMA,
     CHECKLIST_DESTINATIONS,
     CHECKLIST_VERSION,
     OURA_SYNC_APPROVAL_SCHEMA,
     OURA_SYNC_CHECKLIST_VERSION,
+    SENSITIVE_IMPORTERS,
     PreSaveGateError,
     RawRetentionDecision,
     approval_path_for_journal,
@@ -160,6 +165,12 @@ def _run_gate_then_save(
         return decision
     setup()
     return process()
+
+
+def test_sensitive_importers_are_importer_names_not_source_families():
+    assert SENSITIVE_IMPORTERS == frozenset({"apple_health", "oura"})
+    assert SOURCE_OURA_API not in SENSITIVE_IMPORTERS
+    assert SOURCE_DEXCOM_CLARITY not in SENSITIVE_IMPORTERS
 
 
 def test_apple_health_save_missing_artifact_blocks_before_setup(

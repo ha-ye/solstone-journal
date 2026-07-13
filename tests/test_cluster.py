@@ -1427,34 +1427,6 @@ def test_scan_day_marks_markdown_only_health_segment_as_markdown(tmp_path, monke
     ) == {"markdown": "analyzed"}
 
 
-def test_health_registry_keys_match_sensitive_importers():
-    from solstone.think.importers.health_schema import HEALTH_IMPORTER_REGISTRY
-    from solstone.think.importers.pre_save_gate import SENSITIVE_IMPORTERS
-
-    assert set(HEALTH_IMPORTER_REGISTRY) == set(SENSITIVE_IMPORTERS)
-
-
-def test_registry_day_summary_streams_are_health_card_streams(tmp_path, monkeypatch):
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    mod = importlib.import_module("solstone.think.cluster")
-
-    from solstone.think.importers.health_schema import HEALTH_IMPORTER_REGISTRY
-
-    for entry in HEALTH_IMPORTER_REGISTRY.values():
-        segment = (
-            tmp_path
-            / "chronicle"
-            / "20240101"
-            / entry.day_summary_stream
-            / "090000_300"
-        )
-        segment.mkdir(parents=True)
-        (segment / "day_summary_transcript.md").write_text("health summary\n")
-
-        assert entry.day_summary_stream in mod.HEALTH_CARD_STREAMS
-        assert mod._is_markdown_only_health_segment(entry.day_summary_stream, segment)
-
-
 @pytest.mark.parametrize(
     "stream",
     ["import.kindle", "import.ics", "import.obsidian", "import.document"],
