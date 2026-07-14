@@ -467,7 +467,7 @@
     renderPanel();
   }
 
-  function openPanel() {
+  function showPanel() {
     state.open = true;
     state.zoom = 'days';
     fetchIndex().then((result) => {
@@ -480,15 +480,15 @@
     renderPanel();
   }
 
-  function closePanel({ restoreFocus = true } = {}) {
+  function hidePanel({ restoreFocus = true } = {}) {
     state.open = false;
     renderPanel();
     if (restoreFocus && state.trigger) state.trigger.focus();
   }
 
   function togglePanel() {
-    if (state.open) closePanel();
-    else openPanel();
+    if (state.open) hidePanel();
+    else showPanel();
   }
 
   function titleLabel() {
@@ -719,7 +719,7 @@
     }
     if (event.key === 'Escape') {
       event.preventDefault();
-      closePanel();
+      hidePanel();
     }
   }
 
@@ -782,7 +782,7 @@
 
   function handleDocumentClick(event) {
     if (!state.open || !state.root) return;
-    if (!state.root.contains(event.target)) closePanel({ restoreFocus: false });
+    if (!state.root.contains(event.target)) hidePanel({ restoreFocus: false });
   }
 
   function isTypingTarget(target) {
