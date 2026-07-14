@@ -159,9 +159,13 @@ def test_raw_input_fingerprint_stability_and_allowlist(journal):
     media_changed = catchup_state.read_raw_input_fingerprint(DAY)
     assert media_changed != original
 
+    (first / "photo.jpg").write_bytes(b"image")
+    image_changed = catchup_state.read_raw_input_fingerprint(DAY)
+    assert image_changed != media_changed
+
     (first / "audio.jsonl").write_text('{"raw":"different.flac"}\n', encoding="utf-8")
     raw_changed = catchup_state.read_raw_input_fingerprint(DAY)
-    assert raw_changed != media_changed
+    assert raw_changed != image_changed
 
     second = _segment(journal, segment="120500_300")
     (second / "conversation_transcript.jsonl").write_text("{}\n", encoding="utf-8")
