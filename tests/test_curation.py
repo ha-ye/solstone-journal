@@ -10,6 +10,7 @@ import pytest
 
 import solstone.think.curation as curation
 from solstone.think.curation import (
+    KIND_ENTITY_AMBIGUITY,
     KIND_SPEAKER_NAME_VARIANT,
     accept_entity_candidate,
     accept_entity_candidate_batch,
@@ -19,6 +20,13 @@ from solstone.think.curation import (
     dismiss_facet_candidate,
     load_open_items,
     merge_preview_fields,
+)
+from solstone.think.entities import (
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
+    record_entity_resolution,
+    undo_entity_merge,
 )
 from solstone.think.entities.journal import load_journal_entity, save_journal_entity
 from solstone.think.entities.review_candidates import (
@@ -65,6 +73,31 @@ def _seed_entities() -> None:
             "aka": [],
         }
     )
+
+
+def test_open_ambiguity_is_a_ranked_curation_item(curation_journal):
+    save_journal_entity(
+        {"id": "sarah_connor", "name": "Sarah Connor", "type": "Person"}
+    )
+    save_journal_entity({"id": "sarah_lee", "name": "Sarah Lee", "type": "Person"})
+    resolution = record_entity_resolution(
+        "Sarah",
+        [load_journal_entity("sarah_connor"), load_journal_entity("sarah_lee")],
+        scope=ResolutionScope.journal(),
+        origin=ResolutionOrigin(lane="test.curation", field="entity"),
+    )
+
+    assert resolution.outcome == EntityResolutionOutcome.AMBIGUOUS
+    item = next(
+        item for item in load_open_items() if item.kind == KIND_ENTITY_AMBIGUITY
+    )
+    assert item.key == resolution.ambiguity_id
+    assert item.name == "Sarah"
+    assert {row["id"] for row in item.evidence["ranked_candidates"]} == {
+        "sarah_connor",
+        "sarah_lee",
+    }
+    assert item.evidence["origins"] == [{"lane": "test.curation", "field": "entity"}]
 
 
 def _entity_candidate_row(
@@ -494,6 +527,40 @@ def test_accept_entity_candidate_error_keeps_status_open(curation_journal):
     assert load_entity_candidates()[0]["status"] == "open"
 
 
+def test_repair_required_merge_state_survives_single_and_batch_results(
+    curation_journal,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _seed_entity_candidate()
+    repair = {
+        "error": {"code": "repair_required", "message": "rollback failed"},
+        "operation_state": "repair_required",
+        "mutation_applied": True,
+        "source_state": {"exists": True},
+        "target_state": {"exists": True},
+        "safe_remediation": "Inspect before retrying.",
+    }
+    monkeypatch.setattr(curation, "merge_entity", lambda *args, **kwargs: repair)
+
+    single = accept_entity_candidate("work", "kognova_inc", "kognova", commit=True)
+    batch = accept_entity_candidate_batch(
+        [
+            {
+                "facet": "work",
+                "source_slug": "kognova_inc",
+                "target_slug": "kognova",
+            }
+        ]
+    )
+
+    assert single["error"] == "rollback failed"
+    assert single["operation_state"] == "repair_required"
+    assert single["mutation_applied"] is True
+    assert single["safe_remediation"] == "Inspect before retrying."
+    assert batch["results"][0]["operation_state"] == "repair_required"
+    assert batch["results"][0]["safe_remediation"] == "Inspect before retrying."
+
+
 def test_dismiss_entity_candidate_sets_watermark_and_is_idempotent(curation_journal):
     _seed_entity_candidate()
 
@@ -540,14 +607,90 @@ def test_accept_entity_candidate_batch_accepts_many_in_order(curation_journal):
         "octo_labs_inc",
     ]
     assert all(
-        set(row) == {"facet", "source_slug", "target_slug", "status", "error"}
+        set(row)
+        == {
+            "facet",
+            "source_slug",
+            "target_slug",
+            "status",
+            "error",
+            "merge_id",
+            "undo",
+        }
         for row in result["results"]
     )
+    assert all(row["merge_id"].startswith("em_") for row in result["results"])
+    assert all(row["undo"]["available"] for row in result["results"])
     assert all(
         "merge" not in row and "candidate" not in row for row in result["results"]
     )
     _assert_folded("kognova_inc", "kognova", "Kognova Inc")
     _assert_folded("octo_labs_inc", "octo_labs", "Octo Labs Inc")
+
+
+def test_batch_merge_undo_one_preserves_later_success_on_same_target(
+    curation_journal,
+):
+    save_journal_entity(
+        {
+            "id": "alpha_inc",
+            "name": "Alpha Inc",
+            "type": "Company",
+            "aka": ["Alpha Alias"],
+        }
+    )
+    save_journal_entity(
+        {
+            "id": "beta_inc",
+            "name": "Beta Inc",
+            "type": "Company",
+            "aka": ["Beta Alias"],
+        }
+    )
+    save_journal_entity(
+        {"id": "anchor", "name": "Anchor", "type": "Company", "aka": []}
+    )
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                source_slug="alpha_inc",
+                target_slug="anchor",
+                source="Alpha Inc",
+                target="Anchor",
+            ),
+            _entity_candidate_row(
+                source_slug="beta_inc",
+                target_slug="anchor",
+                source="Beta Inc",
+                target="Anchor",
+            ),
+        ]
+    )
+
+    batch = accept_entity_candidate_batch(
+        [
+            {
+                "facet": "work",
+                "source_slug": "alpha_inc",
+                "target_slug": "anchor",
+            },
+            {
+                "facet": "work",
+                "source_slug": "beta_inc",
+                "target_slug": "anchor",
+            },
+        ]
+    )
+    undone = undo_entity_merge(batch["results"][0]["merge_id"], caller="test.curation")
+
+    assert undone["undone"] is True
+    assert load_journal_entity("alpha_inc")["name"] == "Alpha Inc"
+    assert load_journal_entity("beta_inc") is None
+    anchor = load_journal_entity("anchor")
+    assert "Beta Inc" in anchor["aka"]
+    assert "Beta Alias" in anchor["aka"]
+    assert "Alpha Inc" not in anchor["aka"]
+    assert "Alpha Alias" not in anchor["aka"]
 
 
 def test_accept_entity_candidate_batch_malformed_first_continues(curation_journal):

@@ -230,7 +230,12 @@ def touch_updated(row: dict[str, Any]) -> None:
     row["updated_at"] = utc_now_iso()
 
 
-def accept_candidate(id_a: str, id_b: str) -> dict[str, Any] | None:
+def accept_candidate(
+    id_a: str,
+    id_b: str,
+    *,
+    merge_id: str | None = None,
+) -> dict[str, Any] | None:
     """Mark one speaker review candidate accepted."""
     row: dict[str, Any] | None = None
 
@@ -240,6 +245,8 @@ def accept_candidate(id_a: str, id_b: str) -> dict[str, Any] | None:
         if existing is None:
             return rows
         existing["status"] = "accepted"
+        if merge_id:
+            existing["merge_id"] = merge_id
         touch_updated(existing)
         row = existing
         return rows

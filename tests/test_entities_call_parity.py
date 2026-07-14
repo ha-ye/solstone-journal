@@ -1108,11 +1108,17 @@ def test_accept_and_dismiss_merge_candidate_statuses(entity_env) -> None:
         "  voice samples moved: 0 added, 0 total\n"
     )
     assert accepted.exit_code == 0
-    assert accepted.stdout == "Accepted merge candidate: kognova_inc -> kognova\n"
-    assert accepted_again.exit_code == 0
-    assert accepted_again.stdout == (
-        "Merge candidate already accepted: kognova_inc -> kognova\n"
+    assert accepted.stdout.startswith(
+        "Accepted merge candidate: kognova_inc -> kognova\n"
+        "Undo with: sol call entities undo-merge em_"
     )
+    assert accepted.stdout.endswith(" --yes\n")
+    assert accepted_again.exit_code == 0
+    assert accepted_again.stdout.startswith(
+        "Merge candidate already accepted: kognova_inc -> kognova\n"
+        "Undo with: sol call entities undo-merge em_"
+    )
+    assert accepted_again.stdout.endswith(" --yes\n")
     assert _candidate_rows(journal)[0]["status"] == "accepted"
 
     _seed_merge_candidate()

@@ -405,6 +405,75 @@ def _echo_merge_preview(fields: dict) -> None:
         typer.echo(f"  segment update errors: {len(errors)}")
 
 
+def _require_yes(yes: bool, action: str) -> None:
+    if not yes:
+        _exit_with(f"Refusing to {action} without --yes.")
+
+
+def _handle_trust_error(err: ConveyClientError, *, json_output: bool) -> None:
+    if json_output and err.payload is not None:
+        typer.echo(json.dumps(err.payload, indent=2, ensure_ascii=False), err=True)
+        raise typer.Exit(1)
+    _handle_entity_error(err)
+
+
+def _handle_merge_json_error(err: ConveyClientError) -> None:
+    """Preserve merge's historical JSON-by-default error shape."""
+    payload = {"error": err.detail or err.error}
+    typer.echo(json.dumps(payload, indent=2, ensure_ascii=False), err=True)
+    raise typer.Exit(1)
+
+
+def _render_ambiguities(rows: list[dict]) -> None:
+    if not rows:
+        typer.echo("No entity ambiguities found.")
+        return
+    for row in rows:
+        scope = row.get("scope") or {}
+        scope_label = str(scope.get("kind") or "")
+        if scope.get("facet"):
+            scope_label += f":{scope['facet']}"
+        typer.echo(
+            f"{row.get('ambiguity_id')}  {row.get('original_query')}  "
+            f"[{row.get('status')}]  scope={scope_label}  "
+            f"tier={row.get('observed_tier')}"
+        )
+        origins = row.get("origins") or []
+        if origins:
+            lanes = ", ".join(
+                sorted(
+                    {
+                        str(origin.get("lane") or "")
+                        for origin in origins
+                        if isinstance(origin, dict) and origin.get("lane")
+                    }
+                )
+            )
+            if lanes:
+                typer.echo(f"  from: {lanes}")
+        for candidate in row.get("ranked_candidates") or []:
+            typer.echo(
+                "  - "
+                f"{_display_entity(candidate.get('id'), candidate.get('name'))} "
+                f"score={candidate.get('score')}"
+            )
+
+
+def _render_entity_versions(body: dict) -> None:
+    rows = body.get("items") or []
+    if not rows:
+        typer.echo(f"No identity history for {body.get('entity_id', 'entity')}.")
+        return
+    for row in rows:
+        label = (
+            f"{row.get('seq')}  {row.get('kind')}  {row.get('ts')}  "
+            f"{row.get('version_id')}"
+        )
+        if row.get("merge_id"):
+            label += f"  merge={row['merge_id']} ({row.get('merge_state')})"
+        typer.echo(label)
+
+
 @app.command("list")
 def list_entities(
     facet: str | None = typer.Argument(None, help="Facet name (or set SOL_FACET)."),
@@ -793,9 +862,20 @@ def accept_merge_candidate(
         return
     if status == "accepted":
         typer.echo(f"Accepted merge candidate: {source_slug} -> {target_slug}")
+        if result.get("merge_id"):
+            typer.echo(
+                f"Undo with: sol call entities undo-merge {result['merge_id']} --yes"
+            )
         return
     if status == "already_accepted":
         typer.echo(f"Merge candidate already accepted: {source_slug} -> {target_slug}")
+        undo = result.get("undo") or {}
+        if undo.get("available"):
+            typer.echo(
+                f"Undo with: sol call entities undo-merge {undo['merge_id']} --yes"
+            )
+        elif undo.get("reason"):
+            typer.echo(f"Undo unavailable: {undo['reason']}")
         return
     typer.echo(f"accept result for {source_slug} -> {target_slug}: {status}")
 
@@ -859,7 +939,7 @@ def merge(
             },
         )
     except ConveyClientError as err:
-        _handle_entity_error(err)
+        _handle_merge_json_error(err)
     if not isinstance(body, dict):
         _exit_with("I couldn't read the journal response.")
     output = json.dumps(body, indent=2, default=str)
@@ -867,6 +947,138 @@ def merge(
         typer.echo(output, err=True)
         raise typer.Exit(1)
     typer.echo(output)
+
+
+@app.command("undo-merge")
+def undo_merge(
+    merge_id: str = typer.Argument(help="Recorded merge id."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm the recorded split."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Undo one recorded entity merge."""
+    _require_yes(yes, "undo this merge")
+    try:
+        body = _request(
+            "POST",
+            f"/app/entities/api/merge/{merge_id}/undo",
+            json_body={},
+        )
+    except ConveyClientError as err:
+        _handle_trust_error(err, json_output=json_output)
+    if not isinstance(body, dict):
+        _exit_with("I couldn't read the journal response.")
+    if json_output:
+        _echo_json(body)
+        return
+    typer.echo(
+        f"Undid {merge_id}: restored {body.get('source_id')} from "
+        f"{body.get('target_id')} (history {body.get('history_version_id')})."
+    )
+
+
+@app.command("ambiguities")
+def list_ambiguities(
+    status: str | None = typer.Option(
+        None,
+        "--status",
+        help="Filter by open or resolved.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """List reviewable entity-resolution ambiguities."""
+    if status not in {None, "open", "resolved"}:
+        _exit_with("Error: --status must be open or resolved.")
+    try:
+        body = _request(
+            "GET",
+            "/app/entities/api/ambiguities",
+            params=_params(status=status),
+        )
+    except ConveyClientError as err:
+        _handle_trust_error(err, json_output=json_output)
+    rows = body.get("items", []) if isinstance(body, dict) else []
+    if json_output:
+        typer.echo(json.dumps(body, indent=2, ensure_ascii=False))
+        return
+    _render_ambiguities(rows)
+
+
+@app.command("resolve-ambiguity")
+def resolve_ambiguity(
+    ambiguity_id: str = typer.Argument(help="Ambiguity id."),
+    entity_id: str = typer.Argument(help="Existing entity id to choose."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm this choice."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Resolve or replace one persisted ambiguity choice."""
+    _require_yes(yes, "resolve this ambiguity")
+    try:
+        body = _request(
+            "POST",
+            f"/app/entities/api/ambiguities/{ambiguity_id}/resolve",
+            json_body={"entity_id": entity_id},
+        )
+    except ConveyClientError as err:
+        _handle_trust_error(err, json_output=json_output)
+    if not isinstance(body, dict):
+        _exit_with("I couldn't read the journal response.")
+    if json_output:
+        _echo_json(body)
+        return
+    ambiguity = body.get("ambiguity") or {}
+    typer.echo(
+        f"Resolved {ambiguity_id} to {entity_id} at {ambiguity.get('resolved_at')}."
+    )
+
+
+@app.command("entity-history")
+def entity_version_history(
+    entity_id: str = typer.Argument(help="Journal entity id."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Show durable identity versions (not relationship history)."""
+    try:
+        body = _request(
+            "GET",
+            f"/app/entities/api/journal/entity/{entity_id}/history",
+        )
+    except ConveyClientError as err:
+        _handle_trust_error(err, json_output=json_output)
+    if not isinstance(body, dict):
+        _exit_with("I couldn't read the journal response.")
+    if json_output:
+        _echo_json(body)
+        return
+    _render_entity_versions(body)
+
+
+@app.command("restore-version")
+def restore_version(
+    entity_id: str = typer.Argument(help="Journal entity id."),
+    version_id: str = typer.Argument(help="Identity version id."),
+    yes: bool = typer.Option(False, "--yes", help="Confirm this restore."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Restore one ordinary identity version."""
+    _require_yes(yes, "restore this identity version")
+    try:
+        body = _request(
+            "POST",
+            f"/app/entities/api/journal/entity/{entity_id}/restore",
+            json_body={"version_id": version_id},
+        )
+    except ConveyClientError as err:
+        _handle_trust_error(err, json_output=json_output)
+    if not isinstance(body, dict):
+        _exit_with("I couldn't read the journal response.")
+    if json_output:
+        _echo_json(body)
+        return
+    event = body.get("event") or {}
+    typer.echo(
+        f"Restored {entity_id} from {version_id}; new history version "
+        f"{event.get('version_id')}."
+    )
 
 
 @app.command("network")

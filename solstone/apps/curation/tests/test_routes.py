@@ -13,6 +13,7 @@ import numpy as np
 
 import solstone.think.curation as curation
 from solstone.apps.curation.copy import CUR_EMPTY_STATE, CUR_HEADING
+from solstone.think.entities import EntityAmbiguityError
 from solstone.think.entities.journal import load_journal_entity, save_journal_entity
 from solstone.think.entities.review_candidates import (
     load_candidates as load_entity_candidates,
@@ -856,13 +857,72 @@ def test_curation_state_payload_shape_includes_nested_evidence(curation_env):
     data = response.get_json()
 
     assert response.status_code == 200
-    assert set(data) == {"copy", "entity_items", "facet_items", "speaker_items"}
+    assert set(data) == {
+        "ambiguity_items",
+        "copy",
+        "entity_items",
+        "facet_items",
+        "speaker_items",
+    }
+    assert data["ambiguity_items"] == []
     assert data["entity_items"] == []
     assert data["speaker_items"] == []
     assert data["facet_items"][0]["evidence"]["samples"] == [
         {"day": "20260602", "stream": "archon", "segment": "090000_300"}
     ]
     assert data["copy"]["CUR_HEADING"] == CUR_HEADING
+
+
+def test_curation_state_fails_closed_on_corrupt_ambiguity_store(
+    curation_env, monkeypatch
+):
+    env = curation_env()
+    from solstone.apps.curation import routes
+
+    monkeypatch.setattr(
+        routes,
+        "load_open_items",
+        lambda: (_ for _ in ()).throw(EntityAmbiguityError("corrupt ambiguity state")),
+    )
+
+    response = env.client.get("/app/curation/api/state")
+
+    assert response.status_code == 500
+    assert response.get_json()["reason_code"] == "entity_operation_failed"
+    assert response.get_json()["detail"] == "corrupt ambiguity state"
+
+
+def test_entity_accept_route_preserves_repair_required_state(curation_env, monkeypatch):
+    env = curation_env()
+    from solstone.apps.curation import routes
+
+    monkeypatch.setattr(
+        routes,
+        "accept_entity_candidate",
+        lambda *args, **kwargs: {
+            "status": "error",
+            "error": "rollback failed",
+            "operation_state": "repair_required",
+            "mutation_applied": True,
+            "source_state": {"exists": True},
+            "target_state": {"exists": True},
+            "safe_remediation": "Inspect before retrying.",
+        },
+    )
+
+    response = env.client.post(
+        "/app/curation/api/entity/accept",
+        json={
+            "facet": "work",
+            "source_slug": "source",
+            "target_slug": "target",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["operation_state"] == "repair_required"
+    assert response.get_json()["mutation_applied"] is True
+    assert response.get_json()["safe_remediation"] == "Inspect before retrying."
 
 
 def test_curation_routes_do_not_use_render_template():

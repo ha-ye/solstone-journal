@@ -53,9 +53,11 @@ from solstone.think.curation import (
 )
 from solstone.think.entities import (
     AkaConflictError,
+    EntityAmbiguityError,
     EntityBlockedError,
     EntityDict,
     EntityExistsError,
+    EntityHistoryError,
     EntityNotFoundError,
     EntityResolutionOutcome,
     ResolutionOrigin,
@@ -72,20 +74,25 @@ from solstone.think.entities import (
     entity_memory_path,
     entity_slug,
     is_valid_entity_type,
+    iter_entity_history,
     last_active_day_for_ts,
     load_all_facet_relationships,
     load_all_journal_entities,
+    load_ambiguities,
     load_detected_entities_recent,
     load_entities,
     load_facet_relationship,
     load_observations,
     merge_entity,
+    record_ambiguity_choice,
     record_entity_resolution,
     resolve_entity,
     resolve_journal_entity,
+    restore_journal_entity_version,
     save_detected_entity,
     save_journal_entity,
     unblock_journal_entity,
+    undo_entity_merge,
     update_detected_entity,
     update_facet_entity_description,
     update_facet_entity_identity,
@@ -231,6 +238,54 @@ def _body_int_or_none(payload: dict[str, Any], name: str) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _undo_descriptor(merge_id: Any) -> dict[str, Any]:
+    value = str(merge_id or "")
+    return {
+        "available": bool(value),
+        "merge_id": value or None,
+        "reason": None if value else "No recorded merge id is available.",
+    }
+
+
+def _entity_operation_error(result: dict[str, Any]) -> Any:
+    """Translate a think-layer merge/undo error to a standard envelope."""
+    error = result.get("error")
+    if isinstance(error, dict) and error.get("code") == "repair_required":
+        return error_response(
+            ENTITY_OPERATION_FAILED,
+            detail=str(error.get("message") or "Entity state requires repair."),
+            extra={
+                key: result.get(key)
+                for key in (
+                    "merge_id",
+                    "source_id",
+                    "target_id",
+                    "failed_phase",
+                    "operation_state",
+                    "mutation_applied",
+                    "source_state",
+                    "target_state",
+                    "safe_remediation",
+                )
+                if key in result
+            },
+        )
+
+    detail = str(error or "Entity operation failed.")
+    lowered = detail.lower()
+    if "already undone" in lowered:
+        return error_response(OPERATION_NO_LONGER_AVAILABLE, detail=detail)
+    if "not found" in lowered:
+        return error_response(ENTITY_NOT_FOUND, detail=detail)
+    if "blocked" in lowered:
+        return error_response(ENTITY_BLOCKED, detail=detail)
+    if "must be different" in lowered or "two principal" in lowered:
+        return error_response(INVALID_REQUEST_VALUE, detail=detail)
+    if "lock" in lowered or "timed out" in lowered or "busy" in lowered:
+        return error_response(ENTITY_BUSY, detail=detail)
+    return error_response(ENTITY_OPERATION_FAILED, detail=detail)
 
 
 def _query_str(name: str) -> str | None:
@@ -917,15 +972,196 @@ def merge_entities_for_call() -> Any:
     assert source_slug is not None
     assert target_slug is not None
 
-    result = merge_entity(
-        source_slug,
-        target_slug,
-        keep_source_as_aka=_body_bool(data, "keep_source_as_aka", default=True),
-        commit=_body_bool(data, "commit"),
-        caller="entities.merge",
-    )
+    try:
+        result = merge_entity(
+            source_slug,
+            target_slug,
+            keep_source_as_aka=_body_bool(data, "keep_source_as_aka", default=True),
+            commit=_body_bool(data, "commit"),
+            caller="entities.merge",
+        )
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+    if "error" in result:
+        return _entity_operation_error(result)
+    if _body_bool(data, "commit"):
+        result["undo"] = _undo_descriptor(result.get("merge_id"))
     coerced = json.loads(json.dumps(result, default=str))
     return jsonify(coerced)
+
+
+@entities_bp.route("/api/merge/<merge_id>/undo", methods=["POST"])
+def undo_entity_merge_for_call(merge_id: str) -> Any:
+    """Undo one recorded entity merge."""
+    try:
+        result = undo_entity_merge(merge_id, caller="entities.merge.undo")
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+    if "error" in result:
+        return _entity_operation_error(result)
+    log_app_action(
+        app="entities",
+        facet=None,
+        action="journal_entity_merge_undo",
+        params={
+            "merge_id": merge_id,
+            "source_id": result.get("source_id"),
+            "target_id": result.get("target_id"),
+        },
+    )
+    return jsonify(json.loads(json.dumps(result, default=str)))
+
+
+def _version_history_payload(entity_id: str) -> dict[str, Any]:
+    events = [dict(event) for event in iter_entity_history(entity_id)]
+    latest_merge_seq = max(
+        (
+            int(event.get("seq") or 0)
+            for event in events
+            if event.get("kind") in {"merge", "merge_undo"}
+        ),
+        default=0,
+    )
+    undone_ids = {
+        str((event.get("operation") or {}).get("undo_of"))
+        for event in events
+        if event.get("kind") == "merge_undo"
+        and isinstance(event.get("operation"), dict)
+    }
+    for event in events:
+        event["restore_available"] = (
+            event.get("kind") not in {"merge", "merge_undo"}
+            and int(event.get("seq") or 0) > latest_merge_seq
+        )
+        operation = event.get("operation")
+        if event.get("kind") != "merge" or not isinstance(operation, dict):
+            continue
+        merge_id = str(operation.get("merge_id") or "")
+        event["merge_id"] = merge_id or None
+        event["merge_state"] = "undone" if merge_id in undone_ids else "open"
+    return {"entity_id": entity_id, "items": events}
+
+
+@entities_bp.route("/api/journal/entity/<entity_id>/history")
+def get_journal_entity_version_history(entity_id: str) -> Any:
+    """List durable identity versions for one journal entity."""
+    if load_journal_entity(entity_id) is None:
+        return error_response(ENTITY_NOT_FOUND, detail=entity_id)
+    try:
+        return jsonify(_version_history_payload(entity_id))
+    except (EntityHistoryError, OSError, ValueError) as exc:
+        return error_response(ENTITY_OPERATION_FAILED, detail=str(exc))
+
+
+@entities_bp.route(
+    "/api/journal/entity/<entity_id>/restore",
+    methods=["POST"],
+)
+def restore_journal_entity_version_for_call(entity_id: str) -> Any:
+    """Restore one ordinary durable identity version."""
+    data = _json_body()
+    version_id, error = _required_body_str(data, "version_id")
+    if error is not None:
+        return error
+    assert version_id is not None
+    if load_journal_entity(entity_id) is None:
+        return error_response(ENTITY_NOT_FOUND, detail=entity_id)
+    try:
+        event = restore_journal_entity_version(
+            entity_id,
+            version_id,
+            caller="entities.restore-version",
+        )
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+    except EntityHistoryError as exc:
+        detail = str(exc)
+        if "was not found" in detail:
+            return error_response(ENTITY_NOT_FOUND, detail=detail)
+        if "recorded-merge undo" in detail or "principal" in detail:
+            return error_response(INVALID_REQUEST_VALUE, detail=detail)
+        return error_response(ENTITY_OPERATION_FAILED, detail=detail)
+    entity = load_journal_entity(entity_id)
+    log_app_action(
+        app="entities",
+        facet=None,
+        action="journal_entity_restore",
+        params={"entity_id": entity_id, "version_id": version_id},
+    )
+    return jsonify({"restored": True, "entity": entity, "event": event})
+
+
+@entities_bp.route("/api/ambiguities")
+def get_entity_ambiguities() -> Any:
+    """List entity ambiguities, failing if the persisted store is corrupt."""
+    status = request.args.get("status")
+    if status not in {None, "", "open", "resolved"}:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="status must be open or resolved",
+        )
+    try:
+        rows = load_ambiguities(strict=True)
+    except EntityAmbiguityError as exc:
+        return error_response(ENTITY_OPERATION_FAILED, detail=str(exc))
+    if status:
+        rows = [row for row in rows if row.get("status") == status]
+    return respond_collection(rows)
+
+
+@entities_bp.route(
+    "/api/ambiguities/<ambiguity_id>/resolve",
+    methods=["POST"],
+)
+def resolve_entity_ambiguity(ambiguity_id: str) -> Any:
+    """Resolve or re-resolve one ambiguity to an existing scoped entity."""
+    data = _json_body()
+    entity_id, error = _required_body_str(data, "entity_id")
+    if error is not None:
+        return error
+    assert entity_id is not None
+    try:
+        rows = load_ambiguities(strict=True)
+        row = next(
+            (item for item in rows if item.get("ambiguity_id") == ambiguity_id),
+            None,
+        )
+        if row is None:
+            return error_response(ENTITY_NOT_FOUND, detail=ambiguity_id)
+        scope_data = row["scope"]
+        if scope_data["kind"] == "journal":
+            scope = ResolutionScope.journal()
+            entities = list(load_all_journal_entities().values())
+        else:
+            facet = str(scope_data["facet"])
+            scope = ResolutionScope.facet_scope(facet)
+            entities = load_entities(facet)
+        query = str(row.get("latest_query") or row.get("original_query") or "")
+        updated = record_ambiguity_choice(
+            query,
+            entity_id,
+            entities,
+            scope=scope,
+            origin=ResolutionOrigin(
+                lane="apps.entities.resolve_ambiguity",
+                field="entity_id",
+            ),
+        )
+    except LockTimeout:
+        return error_response(ENTITY_BUSY)
+    except EntityAmbiguityError as exc:
+        return error_response(INVALID_REQUEST_VALUE, detail=str(exc))
+    chosen = next(
+        (entity for entity in entities if entity.get("id") == entity_id),
+        None,
+    )
+    log_app_action(
+        app="entities",
+        facet=scope.facet,
+        action="entity_ambiguity_resolve",
+        params={"ambiguity_id": ambiguity_id, "entity_id": entity_id},
+    )
+    return jsonify({"ambiguity": updated, "entity": chosen})
 
 
 @entities_bp.route("/api/<facet_name>/observations")

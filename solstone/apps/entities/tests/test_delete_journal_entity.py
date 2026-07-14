@@ -169,6 +169,16 @@ def test_cancel_delete_journal_entity_too_late_after_commit(
     entity_id = "late-delete-test"
     today = datetime.now().strftime("%Y%m%d")
     _create_journal_entity(entity_id)
+    save_journal_entity(
+        {
+            "id": entity_id,
+            "name": "Late Delete Updated",
+            "type": "Person",
+            "aka": ["historical alias"],
+        }
+    )
+    history_dir = journal_copy / "entities" / entity_id / "history"
+    assert history_dir.is_dir()
     delete_response = client.delete(f"/app/entities/api/journal/entity/{entity_id}")
     pending_id = delete_response.get_json()["pending"]
 
@@ -183,6 +193,12 @@ def test_cancel_delete_journal_entity_too_late_after_commit(
         detail="already committed or unknown",
     )
     assert not (journal_copy / "entities" / entity_id).exists()
+    assert not history_dir.exists()
+    history_response = client.get(
+        f"/app/entities/api/journal/entity/{entity_id}/history"
+    )
+    assert history_response.status_code == 404
+    assert history_response.get_json()["reason_code"] == "entity_not_found"
     rows = _action_log_rows(journal_copy, today)
     assert any(
         row["action"] == "journal_entity_delete"

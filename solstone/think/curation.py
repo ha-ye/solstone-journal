@@ -12,6 +12,7 @@ from typing import Any, Callable
 import solstone.think.facet_review_candidates as facet_store
 from solstone.think import speaker_review_candidates as speaker_store
 from solstone.think.entities import review_candidates as entity_store
+from solstone.think.entities.ambiguities import load_ambiguities
 from solstone.think.entities.merge import merge_entity
 from solstone.think.facets import create_facet
 from solstone.think.indexer.edges import load_shared_neighborhood_jaccard
@@ -19,6 +20,7 @@ from solstone.think.journal_io import LockTimeout
 
 KIND_FACET_CANDIDATE = "facet_candidate"
 KIND_ENTITY_MERGE = "entity_merge"
+KIND_ENTITY_AMBIGUITY = "entity_ambiguity"
 KIND_SPEAKER_NAME_VARIANT = "speaker_name_variant"
 NEIGHBORHOOD_WEIGHT = 0.25
 # Entity detection strength is an integer; a sub-1.0 neighborhood contribution
@@ -172,6 +174,40 @@ def _speaker_error(
     }
 
 
+def _merge_error_context(result: dict[str, Any]) -> dict[str, Any]:
+    error = result.get("error")
+    nested_repair = isinstance(error, dict) and error.get("code") == "repair_required"
+    if result.get("operation_state") != "repair_required" and not nested_repair:
+        return {}
+    return {
+        key: result.get(key)
+        for key in (
+            "operation_state",
+            "mutation_applied",
+            "source_state",
+            "target_state",
+            "safe_remediation",
+        )
+        if key in result
+    }
+
+
+def _merge_error_message(result: dict[str, Any]) -> str:
+    error = result.get("error")
+    if isinstance(error, dict):
+        return str(error.get("message") or "entity merge requires repair")
+    return str(error)
+
+
+def _undo_descriptor(merge_id: Any) -> dict[str, Any]:
+    value = str(merge_id or "")
+    return {
+        "available": bool(value),
+        "merge_id": value or None,
+        "reason": None if value else "No recorded merge id is available.",
+    }
+
+
 def load_open_items() -> list[CurationItem]:
     """Load all currently open curation items without mutating journal state."""
     items: list[CurationItem] = []
@@ -246,6 +282,34 @@ def load_open_items() -> list[CurationItem]:
                 evidence=entity_evidence,
                 strength=strength,
                 composite=composite,
+            )
+        )
+
+    for row in load_ambiguities(strict=True):
+        if row.get("status") != "open":
+            continue
+        ambiguity_id = str(row.get("ambiguity_id") or "")
+        query = str(row.get("original_query") or row.get("latest_query") or "")
+        evidence = {
+            "observed_tier": row.get("observed_tier"),
+            "ranked_candidates": row.get("ranked_candidates", []),
+            "origins": row.get("origins", []),
+            "occurrence_count": row.get("occurrence_count", 0),
+        }
+        strength = _int_value(row.get("occurrence_count"))
+        items.append(
+            CurationItem(
+                kind=KIND_ENTITY_AMBIGUITY,
+                key=ambiguity_id,
+                name=query,
+                facet=None,
+                source=query,
+                source_slug=None,
+                target=None,
+                target_slug=None,
+                evidence=evidence,
+                strength=strength,
+                composite=float(strength),
             )
         )
 
@@ -367,7 +431,14 @@ def accept_entity_candidate(
             caller="curation.preview",
         )
         if "error" in result:
-            return _entity_error(facet, source_slug, target_slug, str(result["error"]))
+            response = _entity_error(
+                facet,
+                source_slug,
+                target_slug,
+                _merge_error_message(result),
+            )
+            response.update(_merge_error_context(result))
+            return response
         return {
             "status": "preview",
             "kind": KIND_ENTITY_MERGE,
@@ -376,11 +447,14 @@ def accept_entity_candidate(
         }
 
     if status == "accepted":
+        merge_id = row.get("merge_id")
         return {
             "status": "already_accepted",
             "kind": KIND_ENTITY_MERGE,
             "key": key,
             "candidate": row,
+            "merge_id": merge_id,
+            "undo": _undo_descriptor(merge_id),
         }
     if status != "open":
         return _entity_error(
@@ -397,15 +471,30 @@ def accept_entity_candidate(
         caller="curation.accept",
     )
     if "error" in result:
-        return _entity_error(facet, source_slug, target_slug, str(result["error"]))
+        response = _entity_error(
+            facet,
+            source_slug,
+            target_slug,
+            _merge_error_message(result),
+        )
+        response.update(_merge_error_context(result))
+        return response
 
-    accepted = entity_store.accept_candidate(facet, source_slug, target_slug)
+    merge_id = result.get("merge_id")
+    accepted = entity_store.accept_candidate(
+        facet,
+        source_slug,
+        target_slug,
+        merge_id=str(merge_id or "") or None,
+    )
     return {
         "status": "accepted",
         "kind": KIND_ENTITY_MERGE,
         "key": key,
         "merge": result,
         "candidate": accepted,
+        "merge_id": merge_id,
+        "undo": _undo_descriptor(merge_id),
     }
 
 
@@ -456,6 +545,7 @@ def _run_entity_batch(
     failed = 0
 
     for item in items:
+        result: dict[str, Any] | None = None
         if isinstance(item, dict):
             facet = str(item.get("facet") or "")
             source_slug = str(item.get("source_slug") or "")
@@ -483,15 +573,19 @@ def _run_entity_batch(
         else:
             failed += 1
 
-        results.append(
-            {
-                "facet": facet,
-                "source_slug": source_slug,
-                "target_slug": target_slug,
-                "status": status,
-                "error": error,
-            }
-        )
+        item_result = {
+            "facet": facet,
+            "source_slug": source_slug,
+            "target_slug": target_slug,
+            "status": status,
+            "error": error,
+        }
+        if result is not None and status in success_statuses and "undo" in result:
+            item_result["merge_id"] = result.get("merge_id")
+            item_result["undo"] = result["undo"]
+        if result is not None and result.get("operation_state") == "repair_required":
+            item_result.update(_merge_error_context(result))
+        results.append(item_result)
 
     return results, ok, failed
 
@@ -546,7 +640,13 @@ def accept_speaker_candidate(
             caller="curation.speaker.preview",
         )
         if "error" in result:
-            return _speaker_error(source_id, target_id, str(result["error"]))
+            response = _speaker_error(
+                source_id,
+                target_id,
+                _merge_error_message(result),
+            )
+            response.update(_merge_error_context(result))
+            return response
         return {
             "status": "preview",
             "kind": KIND_SPEAKER_NAME_VARIANT,
@@ -555,11 +655,14 @@ def accept_speaker_candidate(
         }
 
     if status == "accepted":
+        merge_id = row.get("merge_id")
         return {
             "status": "already_accepted",
             "kind": KIND_SPEAKER_NAME_VARIANT,
             "key": key,
             "candidate": row,
+            "merge_id": merge_id,
+            "undo": _undo_descriptor(merge_id),
         }
     if status != "open":
         return _speaker_error(
@@ -576,15 +679,28 @@ def accept_speaker_candidate(
         caller="curation.speaker.accept",
     )
     if "error" in result:
-        return _speaker_error(source_id, target_id, str(result["error"]))
+        response = _speaker_error(
+            source_id,
+            target_id,
+            _merge_error_message(result),
+        )
+        response.update(_merge_error_context(result))
+        return response
 
-    accepted = speaker_store.accept_candidate(source_id, target_id)
+    merge_id = result.get("merge_id")
+    accepted = speaker_store.accept_candidate(
+        source_id,
+        target_id,
+        merge_id=str(merge_id or "") or None,
+    )
     return {
         "status": "accepted",
         "kind": KIND_SPEAKER_NAME_VARIANT,
         "key": key,
         "merge": result,
         "candidate": accepted,
+        "merge_id": merge_id,
+        "undo": _undo_descriptor(merge_id),
     }
 
 

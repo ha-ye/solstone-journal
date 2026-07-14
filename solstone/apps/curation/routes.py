@@ -12,12 +12,14 @@ from flask import Blueprint, Response, current_app, jsonify, request
 from solstone.apps.curation import copy as curation_copy
 from solstone.convey.reasons import (
     ENTITY_BUSY,
+    ENTITY_OPERATION_FAILED,
     INVALID_REQUEST_VALUE,
     MISSING_REQUIRED_FIELD,
 )
 from solstone.convey.utils import error_response, respond_collection
 from solstone.think import speaker_review_candidates
 from solstone.think.curation import (
+    KIND_ENTITY_AMBIGUITY,
     KIND_ENTITY_MERGE,
     KIND_FACET_CANDIDATE,
     KIND_SPEAKER_NAME_VARIANT,
@@ -32,6 +34,7 @@ from solstone.think.curation import (
     load_open_items,
     merge_preview_fields,
 )
+from solstone.think.entities import EntityAmbiguityError
 from solstone.think.facet_review_candidates import load_candidates
 from solstone.think.journal_io import LockTimeout
 
@@ -44,8 +47,11 @@ def index() -> Any:
 
 
 @curation_bp.route("/api/state")
-def api_state() -> Response:
-    items = load_open_items()
+def api_state() -> Response | tuple[Response, int]:
+    try:
+        items = load_open_items()
+    except EntityAmbiguityError as exc:
+        return error_response(ENTITY_OPERATION_FAILED, detail=str(exc))
     return jsonify(
         {
             "facet_items": [
@@ -53,6 +59,9 @@ def api_state() -> Response:
             ],
             "entity_items": [
                 item.to_dict() for item in items if item.kind == KIND_ENTITY_MERGE
+            ],
+            "ambiguity_items": [
+                item.to_dict() for item in items if item.kind == KIND_ENTITY_AMBIGUITY
             ],
             "speaker_items": [
                 item.to_dict()

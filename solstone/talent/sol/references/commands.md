@@ -20,11 +20,11 @@ Guidance: `solstone/apps/activities/talent/activities/SKILL.md`
 
 Triggers: `entity`, `person`, `company`, `relationship`, `who is`, `contact`
 
-Read: `list`, `search`
+Read: `list`, `resolve-ambiguity`, `search`
 
-Write: `accept-merge-candidate`, `attach`, `dismiss-merge-candidate`, `merge`, `merge-candidates`, `move`, `record-merge-candidate`, `update`
+Write: `accept-merge-candidate`, `attach`, `dismiss-merge-candidate`, `merge`, `merge-candidates`, `move`, `record-merge-candidate`, `undo-merge`, `update`
 
-Other: `aka`, `detect`, `history`, `network`, `observations`, `observe`, `overview`
+Other: `aka`, `ambiguities`, `detect`, `entity-history`, `history`, `network`, `observations`, `observe`, `overview`, `restore-version`
 
 Guidance: `solstone/apps/entities/talent/entities/SKILL.md`
 

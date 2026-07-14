@@ -314,9 +314,9 @@ def _load_jsonl_rows(
     return rows
 
 
-def load_ambiguities() -> list[dict[str, Any]]:
-    """Load entity resolution ambiguity rows."""
-    return _load_jsonl_rows(ambiguities_path())
+def load_ambiguities(*, strict: bool = False) -> list[dict[str, Any]]:
+    """Load ambiguity rows, optionally rejecting every corrupt row."""
+    return _load_jsonl_rows(ambiguities_path(), strict=strict)
 
 
 def _save_jsonl_rows(path: Path, rows: list[dict[str, Any]]) -> None:

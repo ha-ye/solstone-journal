@@ -50,11 +50,13 @@ class ConveyClientError(Exception):
         reason_code: str | None = None,
         detail: str | None = None,
         status: int | None = None,
+        payload: dict[str, Any] | None = None,
     ) -> None:
         self.error = error
         self.reason_code = reason_code
         self.detail = detail
         self.status = status
+        self.payload = payload
         super().__init__(error)
 
 
@@ -218,6 +220,7 @@ class ConveyClient:
                 reason_code=parsed.get("reason_code"),
                 detail=parsed.get("detail"),
                 status=status,
+                payload=parsed,
             )
 
         raise ConveyClientError(SERVER_ERROR_MESSAGE, status=status)

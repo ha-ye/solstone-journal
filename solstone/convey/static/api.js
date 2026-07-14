@@ -14,7 +14,8 @@
       correlationId = '',
       timestamp = null,
       reasonCode = null,
-      rawDetail = null
+      rawDetail = null,
+      payload = null
     }) {
       super(serverMessage);
       this.name = 'ApiError';
@@ -29,6 +30,7 @@
       }
       this.reasonCode = reasonCode;
       this.rawDetail = rawDetail;
+      this.payload = payload;
     }
   }
 
@@ -226,7 +228,8 @@
         correlationId,
         timestamp,
         reasonCode,
-        rawDetail
+        rawDetail,
+        payload
       });
       pushApiErrorToConsole(apiError, url, fetchOptions);
       throw apiError;

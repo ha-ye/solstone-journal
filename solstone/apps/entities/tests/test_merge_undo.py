@@ -787,6 +787,39 @@ def test_failure_injection_rolls_back_each_apply_phase(
     assert not _audit_log_path(env).exists()
 
 
+def test_repair_response_does_not_claim_mutation_before_first_write(
+    speakers_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = speakers_env()
+    env.create_entity("Prewrite Source")
+    env.create_entity("Prewrite Target")
+
+    monkeypatch.setattr(
+        merge_mod,
+        "_write_private_payload",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("write failed")),
+    )
+    monkeypatch.setattr(
+        merge_mod._Rollback,
+        "rollback",
+        lambda self: (_ for _ in ()).throw(
+            merge_mod.MergeRepairRequired("rollback verification failed")
+        ),
+    )
+
+    result = merge_mod.merge_entity(
+        "prewrite_source",
+        "prewrite_target",
+        commit=True,
+    )
+
+    assert result["operation_state"] == "repair_required"
+    assert result["mutation_applied"] is False
+    assert result["source_state"]["exists"] is True
+    assert result["target_state"]["exists"] is True
+
+
 def test_history_crash_reconciliation_windows(
     speakers_env,
     monkeypatch: pytest.MonkeyPatch,

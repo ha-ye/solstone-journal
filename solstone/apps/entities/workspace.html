@@ -346,6 +346,60 @@
   color: #495057;
 }
 
+.entity-trust-controls,
+.entity-trust-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.6em;
+}
+
+.entity-trust-controls select {
+  min-width: min(100%, 260px);
+  padding: 0.5em 0.75em;
+  border: 1px solid #ced4da;
+  border-radius: 6px;
+  background: white;
+  font: inherit;
+}
+
+.entity-trust-panel {
+  margin-top: 1em;
+  padding: 0.85em;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  color: #374151;
+}
+
+.entity-trust-panel[hidden] {
+  display: none;
+}
+
+.entity-trust-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65em;
+}
+
+.entity-trust-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1em;
+  padding: 0.7em 0;
+  border-bottom: 1px solid #f0f1f3;
+}
+
+.entity-trust-row:last-child {
+  border-bottom: 0;
+}
+
+.entity-trust-meta {
+  color: #6b7280;
+  font-size: 0.85em;
+  line-height: 1.45;
+}
+
 /* Description section */
 .entity-desc-display {
   color: #212529;
@@ -1648,6 +1702,22 @@ body.presentation-mode .entity-desc { color: #4b5563; }
       <div id="journal-detail-connections"></div>
     </div>
 
+    <div class="entity-detail-section" id="journal-detail-trust-section">
+      <h4 id="journal-detail-trust-heading"></h4>
+      <div id="journal-detail-trust-error" class="error-message" style="display: none;"></div>
+      <div class="entity-trust-controls">
+        <label for="journal-detail-merge-target" id="journal-detail-merge-label"></label>
+        <select id="journal-detail-merge-target"></select>
+        <button type="button" class="btn btn-primary" id="journal-detail-merge-btn"></button>
+      </div>
+      <div class="entity-trust-panel" id="journal-detail-merge-preview" hidden></div>
+      <div class="entity-trust-panel" id="journal-detail-undo-panel" hidden></div>
+      <h4 id="journal-detail-suggestions-heading" style="margin-top: 1.5em;"></h4>
+      <div id="journal-detail-suggestions"></div>
+      <h4 id="journal-detail-history-heading" style="margin-top: 1.5em;"></h4>
+      <div id="journal-detail-history"></div>
+    </div>
+
     <div class="entity-detail-section">
       <h4>edit entity</h4>
       <div id="journal-detail-edit-error" class="error-message" style="display: none;"></div>
@@ -1858,6 +1928,7 @@ let entitiesData = null;
 let detectedPage = 1;
 let journalEntitiesData = null;  // For all-facet mode
 let currentDetailEntity = null;
+let pendingJournalMergeUndo = null;
 const pendingEntities = new Map(); // use_id → { name, element }
 const pendingAgentCallbacks = new Map(); // use_id → callback function
 const ENTITIES_CORTEX_STALL_MS = 2 * 60 * 1000;
@@ -2653,6 +2724,7 @@ function showJournalDetailView(entityId) {
   document.getElementById('journal-detail-indicators').innerHTML = '';
   document.getElementById('journal-detail-facets').innerHTML = '<span class="observations-empty">loading...</span>';
   document.getElementById('journal-detail-connections').innerHTML = '<span class="observations-empty">loading...</span>';
+  resetJournalTrustSurface();
 
   // Fetch journal entity details
   fetch(`api/journal/entity/${encodeURIComponent(entityId)}`)
@@ -2891,12 +2963,303 @@ function renderJournalDetailView(entity) {
   }
 
   renderConnectionsSection(entity.id, 'journal-detail-connections', isPrincipal);
+  renderJournalTrustControls(entity);
+  loadJournalTrustDetails(entity.id);
 
   // Edit form
   document.getElementById('journal-detail-edit-name').value = entity.name || '';
   document.getElementById('journal-detail-edit-type').value = entity.type || 'Person';
   document.getElementById('journal-detail-edit-akas').value = (entity.aka || []).join(', ');
   document.getElementById('journal-detail-edit-error').style.display = 'none';
+}
+
+function entityTrustFormat(template, values) {
+  let result = String(template || '');
+  Object.entries(values).forEach(([key, value]) => {
+    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value ?? ''));
+  });
+  return result;
+}
+
+function entityTrustRepairRequired(err) {
+  return err?.payload?.operation_state === 'repair_required';
+}
+
+function entityTrustErrorMessage(err, fallback) {
+  if (entityTrustRepairRequired(err)) {
+    return entityTrustFormat(ENT_COPY.ENT_TRUST_REPAIR_REQUIRED, {
+      detail: err.rawDetail || err.serverMessage || fallback,
+      remediation: err.payload.safe_remediation || ''
+    }).trim();
+  }
+  return err?.rawDetail || err?.serverMessage || err?.message || fallback;
+}
+
+function entityTrustIdentitySummary(identity) {
+  if (!identity) return ENT_COPY.ENT_TRUST_IDENTITY_NONE || '';
+  return entityTrustFormat(ENT_COPY.ENT_TRUST_IDENTITY_SUMMARY, {
+    name: identity.name || identity.id || '',
+    type: identity.type || '',
+    akas: (identity.aka || []).join(', ')
+  });
+}
+
+function resetJournalTrustSurface() {
+  document.getElementById('journal-detail-trust-heading').textContent = ENT_COPY.ENT_TRUST_HEADING || '';
+  document.getElementById('journal-detail-merge-label').textContent = ENT_COPY.ENT_TRUST_MERGE_LABEL || '';
+  document.getElementById('journal-detail-merge-btn').textContent = ENT_COPY.ENT_TRUST_MERGE_ACTION || '';
+  document.getElementById('journal-detail-suggestions-heading').textContent = ENT_COPY.ENT_TRUST_SUGGESTIONS_HEADING || '';
+  document.getElementById('journal-detail-history-heading').textContent = ENT_COPY.ENT_TRUST_HISTORY_HEADING || '';
+  document.getElementById('journal-detail-merge-target').innerHTML = '';
+  document.getElementById('journal-detail-merge-preview').hidden = true;
+  document.getElementById('journal-detail-merge-preview').innerHTML = '';
+  document.getElementById('journal-detail-undo-panel').hidden = true;
+  document.getElementById('journal-detail-undo-panel').innerHTML = '';
+  document.getElementById('journal-detail-suggestions').innerHTML = '<span class="observations-empty">loading...</span>';
+  document.getElementById('journal-detail-history').innerHTML = '<span class="observations-empty">loading...</span>';
+  hideInlineError('journal-detail-trust-error');
+}
+
+function renderJournalTrustControls(entity) {
+  resetJournalTrustSurface();
+  const select = document.getElementById('journal-detail-merge-target');
+  const candidates = (journalEntitiesData || [])
+    .filter((candidate) => candidate.id !== entity.id && candidate.blocked !== true)
+    .sort((left, right) => String(left.name || '').localeCompare(String(right.name || '')));
+  candidates.forEach((candidate) => {
+    const option = document.createElement('option');
+    option.value = candidate.id;
+    option.textContent = candidate.name || candidate.id;
+    select.appendChild(option);
+  });
+  const mergeButton = document.getElementById('journal-detail-merge-btn');
+  mergeButton.disabled = entity.blocked === true || candidates.length === 0;
+  mergeButton.onclick = () => previewJournalEntityMerge(entity.id, select.value);
+  if (pendingJournalMergeUndo?.available) {
+    showJournalMergeUndo(pendingJournalMergeUndo);
+  }
+}
+
+async function loadJournalTrustDetails(entityId) {
+  try {
+    const [history, candidates] = await Promise.all([
+      window.apiJson(`/app/entities/api/journal/entity/${encodeURIComponent(entityId)}/history`),
+      window.apiJson('/app/entities/api/merge-candidates?status=open')
+    ]);
+    if (currentDetailEntity?.id !== entityId) return;
+    renderJournalEntityHistory(entityId, history.items || []);
+    renderJournalEntitySuggestions(entityId, candidates.items || []);
+  } catch (err) {
+    if (currentDetailEntity?.id !== entityId) return;
+    showInlineError(
+      'journal-detail-trust-error',
+      err.serverMessage || err.message || ENT_COPY.ENT_TRUST_LOAD_FAILED
+    );
+    document.getElementById('journal-detail-suggestions').textContent = ENT_COPY.ENT_TRUST_LOAD_FAILED || '';
+    document.getElementById('journal-detail-history').textContent = ENT_COPY.ENT_TRUST_LOAD_FAILED || '';
+  }
+}
+
+function renderJournalEntitySuggestions(entityId, rows) {
+  const container = document.getElementById('journal-detail-suggestions');
+  container.innerHTML = '';
+  const relevant = rows.filter((row) => (
+    row.source_slug === entityId || row.target_slug === entityId
+  ));
+  if (!relevant.length) {
+    container.textContent = ENT_COPY.ENT_TRUST_SUGGESTIONS_EMPTY || '';
+    return;
+  }
+  const list = document.createElement('div');
+  list.className = 'entity-trust-list';
+  relevant.forEach((row) => {
+    const item = document.createElement('div');
+    item.className = 'entity-trust-row';
+    item.textContent = entityTrustFormat(ENT_COPY.ENT_TRUST_SUGGESTION_SUMMARY, {
+      source: row.source || row.source_slug,
+      target: row.target || row.target_slug,
+      facet: row.facet || ''
+    });
+    list.appendChild(item);
+  });
+  container.appendChild(list);
+}
+
+function renderJournalEntityHistory(entityId, rows) {
+  const container = document.getElementById('journal-detail-history');
+  container.innerHTML = '';
+  if (!rows.length) {
+    container.textContent = ENT_COPY.ENT_TRUST_HISTORY_EMPTY || '';
+    return;
+  }
+  const list = document.createElement('div');
+  list.className = 'entity-trust-list';
+  rows.slice().reverse().forEach((event) => {
+    const row = document.createElement('div');
+    row.className = 'entity-trust-row';
+    const summary = document.createElement('div');
+    const snapshot = event.identity_after || {};
+    summary.textContent = entityTrustFormat(ENT_COPY.ENT_TRUST_HISTORY_SUMMARY, {
+      kind: String(event.kind || '').replace(/_/g, ' '),
+      date: event.ts || '',
+      name: snapshot.name || entityId
+    });
+    row.appendChild(summary);
+    const change = document.createElement('div');
+    change.className = 'entity-trust-meta';
+    change.textContent = entityTrustFormat(ENT_COPY.ENT_TRUST_HISTORY_CHANGE, {
+      before: entityTrustIdentitySummary(event.identity_before),
+      after: entityTrustIdentitySummary(event.identity_after)
+    });
+    summary.appendChild(change);
+
+    if (event.kind === 'merge' && event.merge_state === 'open' && event.merge_id) {
+      const undo = document.createElement('button');
+      undo.type = 'button';
+      undo.className = 'btn btn-secondary';
+      undo.textContent = ENT_COPY.ENT_TRUST_UNDO_ACTION || '';
+      undo.onclick = () => undoJournalEntityMerge(event.merge_id, undo);
+      row.appendChild(undo);
+    } else if (event.restore_available && event.version_id) {
+      const restore = document.createElement('button');
+      restore.type = 'button';
+      restore.className = 'btn btn-secondary';
+      restore.textContent = ENT_COPY.ENT_TRUST_RESTORE_ACTION || '';
+      restore.onclick = () => restoreJournalEntityVersion(entityId, event.version_id, restore);
+      row.appendChild(restore);
+    }
+    list.appendChild(row);
+  });
+  container.appendChild(list);
+}
+
+async function previewJournalEntityMerge(sourceId, targetId) {
+  if (!sourceId || !targetId) return;
+  const button = document.getElementById('journal-detail-merge-btn');
+  button.disabled = true;
+  hideInlineError('journal-detail-trust-error');
+  try {
+    const preview = await window.apiJson('/app/entities/api/merge', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_slug: sourceId, target_slug: targetId})
+    });
+    if (currentDetailEntity?.id !== sourceId) return;
+    const target = (journalEntitiesData || []).find((entity) => entity.id === targetId) || {};
+    renderJournalEntityMergePreview(sourceId, targetId, target.name || targetId, preview);
+  } catch (err) {
+    showInlineError(
+      'journal-detail-trust-error',
+      err.serverMessage || err.message || ENT_COPY.ENT_TRUST_ACTION_FAILED
+    );
+  } finally {
+    if (currentDetailEntity?.id === sourceId) button.disabled = false;
+  }
+}
+
+function renderJournalEntityMergePreview(sourceId, targetId, targetName, preview) {
+  const panel = document.getElementById('journal-detail-merge-preview');
+  panel.innerHTML = '';
+  const identity = preview.would_identity || {};
+  const facets = preview.would_facets || {};
+  const segments = preview.would_segments || {};
+  const summary = document.createElement('p');
+  summary.textContent = entityTrustFormat(ENT_COPY.ENT_TRUST_PREVIEW_SUMMARY, {
+    aliases: identity.akas_added_count || 0,
+    facets: (facets.moved_count || 0) + (facets.merged_count || 0),
+    observations: facets.observations_appended || 0,
+    segments: (segments.labels_rewritten || 0) + (segments.corrections_rewritten || 0)
+  });
+  panel.appendChild(summary);
+  const commit = document.createElement('button');
+  commit.type = 'button';
+  commit.className = 'btn btn-primary';
+  commit.textContent = ENT_COPY.ENT_TRUST_MERGE_CONFIRM_ACTION || '';
+  commit.onclick = () => commitJournalEntityMerge(sourceId, targetId, targetName, commit);
+  panel.appendChild(commit);
+  panel.hidden = false;
+}
+
+async function commitJournalEntityMerge(sourceId, targetId, targetName, button) {
+  const sourceName = currentDetailEntity?.name || sourceId;
+  const prompt = entityTrustFormat(ENT_COPY.ENT_TRUST_MERGE_CONFIRM, {
+    source: sourceName,
+    target: targetName
+  });
+  if (!window.confirm(prompt)) return;
+  button.disabled = true;
+  try {
+    const result = await window.apiJson('/app/entities/api/merge', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({source_slug: sourceId, target_slug: targetId, commit: true})
+    });
+    pendingJournalMergeUndo = result.undo || null;
+    location.hash = targetId;
+    await loadJournalEntities();
+  } catch (err) {
+    if (!entityTrustRepairRequired(err)) button.disabled = false;
+    showInlineError(
+      'journal-detail-trust-error',
+      entityTrustErrorMessage(err, ENT_COPY.ENT_TRUST_ACTION_FAILED)
+    );
+  }
+}
+
+function showJournalMergeUndo(undo) {
+  const panel = document.getElementById('journal-detail-undo-panel');
+  panel.innerHTML = '';
+  if (!undo?.available || !undo.merge_id) return;
+  const message = document.createElement('span');
+  message.textContent = ENT_COPY.ENT_TRUST_MERGE_DONE || '';
+  panel.appendChild(message);
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn btn-secondary';
+  button.textContent = ENT_COPY.ENT_TRUST_UNDO_ACTION || '';
+  button.onclick = () => undoJournalEntityMerge(undo.merge_id, button);
+  panel.appendChild(button);
+  panel.hidden = false;
+}
+
+async function undoJournalEntityMerge(mergeId, button) {
+  if (!window.confirm(ENT_COPY.ENT_TRUST_UNDO_CONFIRM || '')) return;
+  button.disabled = true;
+  try {
+    const result = await window.apiJson(`/app/entities/api/merge/${encodeURIComponent(mergeId)}/undo`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: '{}'
+    });
+    pendingJournalMergeUndo = null;
+    location.hash = result.source_id || result.target_id || '';
+    await loadJournalEntities();
+  } catch (err) {
+    if (!entityTrustRepairRequired(err)) button.disabled = false;
+    showInlineError(
+      'journal-detail-trust-error',
+      entityTrustErrorMessage(err, ENT_COPY.ENT_TRUST_ACTION_FAILED)
+    );
+  }
+}
+
+async function restoreJournalEntityVersion(entityId, versionId, button) {
+  if (!window.confirm(ENT_COPY.ENT_TRUST_RESTORE_CONFIRM || '')) return;
+  button.disabled = true;
+  try {
+    await window.apiJson(`/app/entities/api/journal/entity/${encodeURIComponent(entityId)}/restore`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({version_id: versionId})
+    });
+    await loadJournalEntities();
+  } catch (err) {
+    button.disabled = false;
+    showInlineError(
+      'journal-detail-trust-error',
+      err.serverMessage || err.message || ENT_COPY.ENT_TRUST_ACTION_FAILED
+    );
+  }
 }
 
 // Handle journal entity edit form submission

@@ -188,6 +188,25 @@
   line-height: 1.4;
 }
 
+.curation-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6em;
+}
+
+.curation-outcome {
+  border: 1px solid #dbe3ec;
+  border-radius: 8px;
+  padding: 0.8em;
+  background: #f8fafc;
+}
+
+.curation-ambiguity-origin {
+  margin: 0.45em 0 0;
+  color: #6b7280;
+  font-size: 0.9em;
+}
+
 @media (max-width: 640px) {
   .curation-shell {
     padding: 1em;
@@ -291,6 +310,26 @@ window.CUR_COPY = CUR_COPY;
     `;
   }
 
+  function ambiguityItemHtml(item) {
+    const origins = item?.evidence?.origins || [];
+    const originLanes = origins.map((origin) => origin.lane).filter(Boolean).join(', ');
+    const candidates = item?.evidence?.ranked_candidates || [];
+    return `
+      <article class="curation-item" data-curation-item data-kind="entity_ambiguity" data-ambiguity-id="${escapeHtml(item.key)}">
+        <p class="curation-body">${escapeHtml(copyFormat(CUR_COPY.CUR_AMBIGUITY_BODY, {query: item.name || item.source}))}</p>
+        <p class="curation-ambiguity-origin">${escapeHtml(CUR_COPY.CUR_AMBIGUITY_ORIGIN_LABEL)}: ${escapeHtml(originLanes)}</p>
+        <div class="curation-actions">
+          ${candidates.map((candidate) => `
+            <button class="curation-button curation-button-primary" type="button" data-action="ambiguity-resolve" data-ambiguity-id="${escapeHtml(item.key)}" data-entity-id="${escapeHtml(candidate.id)}">
+              ${escapeHtml(copyFormat(CUR_COPY.CUR_AMBIGUITY_CHOOSE_ACTION, {name: candidate.name}))}
+            </button>
+          `).join('')}
+        </div>
+        <p class="curation-item-error" hidden></p>
+      </article>
+    `;
+  }
+
   function entityBatchHtml() {
     return `
       <div class="curation-batch" data-curation-batch>
@@ -322,24 +361,36 @@ window.CUR_COPY = CUR_COPY;
     `;
   }
 
-  function renderState(payload) {
+  function renderState(payload, preserveOutcomes = false) {
+    const savedOutcomes = preserveOutcomes
+      ? Array.from(root.querySelector('[data-curation-outcomes]')?.children || [])
+      : [];
     CUR_COPY = payload.copy || {};
     window.CUR_COPY = CUR_COPY;
     const facetItems = payload.facet_items || [];
     const entityItems = payload.entity_items || [];
+    const ambiguityItems = payload.ambiguity_items || [];
     const speakerItems = payload.speaker_items || [];
-    const empty = !facetItems.length && !entityItems.length && !speakerItems.length;
+    const empty = !facetItems.length && !entityItems.length && !ambiguityItems.length && !speakerItems.length;
     root.innerHTML = `
       <h1 class="curation-header">${escapeHtml(CUR_COPY.CUR_HEADING)}</h1>
       ${empty ? `<p class="curation-empty">${escapeHtml(CUR_COPY.CUR_EMPTY_STATE)}</p>` : ''}
+      <div class="curation-outcomes" data-curation-outcomes></div>
       <div class="curation-list" data-curation-list>
         ${facetItems.map(facetItemHtml).join('')}
         ${entityItems.length ? entityBatchHtml() : ''}
         ${entityItems.map(entityItemHtml).join('')}
+        ${ambiguityItems.map(ambiguityItemHtml).join('')}
         ${speakerItems.map(speakerItemHtml).join('')}
       </div>
     `;
+    const outcomes = root.querySelector('[data-curation-outcomes]');
+    savedOutcomes.forEach((outcome) => outcomes?.appendChild(outcome));
     refreshToolbar();
+  }
+
+  async function refreshCurationState() {
+    renderState(await window.apiJson('/app/curation/api/state'), true);
   }
 
   async function loadInitialState() {
@@ -369,6 +420,29 @@ window.CUR_COPY = CUR_COPY;
     errorNode.hidden = !message;
   }
 
+  function repairRequired(err) {
+    return err?.payload?.operation_state === 'repair_required';
+  }
+
+  function mutationErrorMessage(err, fallback) {
+    if (repairRequired(err)) {
+      return copyFormat(CUR_COPY.CUR_REPAIR_REQUIRED, {
+        detail: err.rawDetail || err.serverMessage || fallback,
+        remediation: err.payload.safe_remediation || ''
+      }).trim();
+    }
+    return err?.rawDetail || err?.serverMessage || err?.message || fallback;
+  }
+
+  function showMutationError(item, button, err, fallback) {
+    if (repairRequired(err)) {
+      item?.querySelectorAll('button, input').forEach((control) => setBusy(control, true));
+    } else {
+      setBusy(button, false);
+    }
+    showError(item, mutationErrorMessage(err, fallback));
+  }
+
   function postJson(path, payload) {
     return window.apiJson(path, {
       method: 'POST',
@@ -387,10 +461,33 @@ window.CUR_COPY = CUR_COPY;
     if (!item) return;
     item.dataset.removing = 'true';
     item.remove();
-    const list = root.querySelector('[data-curation-list]');
-    if (list && !list.querySelector('[data-curation-item]')) {
-      window.location.reload();
+    refreshToolbar();
+  }
+
+  function appendUndoOutcome(undo, label) {
+    const outcomes = root.querySelector('[data-curation-outcomes]');
+    if (!outcomes) return;
+    const row = document.createElement('div');
+    row.className = 'curation-outcome';
+    if (undo?.merge_id) row.dataset.mergeId = undo.merge_id;
+    const text = document.createElement('span');
+    text.textContent = label || CUR_COPY.CUR_ENTITY_MERGE_ACTION;
+    row.appendChild(text);
+    if (undo?.available && undo.merge_id) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'curation-button';
+      button.dataset.action = 'merge-undo';
+      button.dataset.mergeId = undo.merge_id;
+      button.textContent = CUR_COPY.CUR_UNDO_ACTION;
+      row.appendChild(button);
+    } else {
+      const reason = document.createElement('p');
+      reason.className = 'curation-item-error';
+      reason.textContent = undo?.reason || CUR_COPY.CUR_UNDO_UNAVAILABLE;
+      row.appendChild(reason);
     }
+    outcomes.appendChild(row);
   }
 
   function entityPayload(button) {
@@ -558,6 +655,52 @@ window.CUR_COPY = CUR_COPY;
       return;
     }
 
+    if (action === 'merge-undo') {
+      const outcome = button.closest('.curation-outcome');
+      setBusy(button, true);
+      postJson(`/app/entities/api/merge/${encodeURIComponent(button.dataset.mergeId)}/undo`, {})
+        .then(async () => {
+          button.remove();
+          const done = document.createElement('span');
+          done.textContent = CUR_COPY.CUR_UNDO_DONE;
+          outcome?.appendChild(done);
+          outcome?.querySelector('.curation-item-error')?.remove();
+          try {
+            await refreshCurationState();
+          } catch (err) {
+            const refreshError = document.createElement('p');
+            refreshError.className = 'curation-item-error';
+            refreshError.textContent = err.serverMessage || err.message;
+            outcome?.appendChild(refreshError);
+          }
+        })
+        .catch((err) => {
+          if (!repairRequired(err)) setBusy(button, false);
+          let error = outcome?.querySelector('.curation-item-error');
+          if (!error && outcome) {
+            error = document.createElement('p');
+            error.className = 'curation-item-error';
+            outcome.appendChild(error);
+          }
+          if (error) error.textContent = mutationErrorMessage(err, CUR_COPY.CUR_UNDO_FAILED);
+        });
+      return;
+    }
+
+    if (action === 'ambiguity-resolve') {
+      setBusy(button, true);
+      postJson(
+        `/app/entities/api/ambiguities/${encodeURIComponent(button.dataset.ambiguityId)}/resolve`,
+        {entity_id: button.dataset.entityId}
+      )
+        .then(() => removeItem(item))
+        .catch((err) => {
+          setBusy(button, false);
+          showError(item, err.serverMessage || err.message);
+        });
+      return;
+    }
+
     if (action === 'entity-cancel' || action === 'speaker-cancel') {
       const preview = item?.querySelector('.curation-preview');
       if (preview) {
@@ -604,10 +747,17 @@ window.CUR_COPY = CUR_COPY;
         : '/app/curation/api/speaker/dismiss';
       setBusy(button, true);
       postJson(path, payload)
-        .then(() => removeItem(item))
+        .then((data) => {
+          if (action === 'speaker-accept') appendUndoOutcome(data.undo, data.candidate?.target_label || data.key);
+          removeItem(item);
+        })
         .catch((err) => {
-          setBusy(button, false);
-          showError(item, err.serverMessage || err.message);
+          if (action === 'speaker-accept') {
+            showMutationError(item, button, err, CUR_COPY.CUR_UNDO_FAILED);
+          } else {
+            setBusy(button, false);
+            showError(item, err.serverMessage || err.message);
+          }
         });
       return;
     }
@@ -677,12 +827,23 @@ window.CUR_COPY = CUR_COPY;
             const article = articlesByKey[`${result.facet}|${result.source_slug}|${result.target_slug}`];
             if (!article) return;
             if (Object.prototype.hasOwnProperty.call(ok, result.status)) {
+              if (mode === 'merge') {
+                appendUndoOutcome(result.undo, `${result.source_slug} → ${result.target_slug}`);
+              }
               removeItem(article);
               return;
             }
             const checkbox = article.querySelector('input[data-action="entity-select"]');
             if (checkbox) checkbox.checked = false;
-            showError(article, result.error);
+            if (result.operation_state === 'repair_required') {
+              article.querySelectorAll('button, input').forEach((control) => setBusy(control, true));
+              showError(article, copyFormat(CUR_COPY.CUR_REPAIR_REQUIRED, {
+                detail: result.error,
+                remediation: result.safe_remediation || ''
+              }).trim());
+            } else {
+              showError(article, result.error);
+            }
           });
           const status = root.querySelector('.curation-batch-status');
           if (status) {
@@ -705,10 +866,10 @@ window.CUR_COPY = CUR_COPY;
           refreshToolbar();
         })
         .catch((err) => {
-          setBatchBusy(false);
+          if (!repairRequired(err)) setBatchBusy(false);
           const status = root.querySelector('.curation-batch-status');
           if (status) {
-            status.textContent = err.serverMessage || err.message;
+            status.textContent = mutationErrorMessage(err, CUR_COPY.CUR_UNDO_FAILED);
             status.classList.add('curation-batch-status-error');
             status.hidden = false;
           }
@@ -738,10 +899,17 @@ window.CUR_COPY = CUR_COPY;
         : '/app/curation/api/entity/dismiss';
       setBusy(button, true);
       postJson(path, payload)
-        .then(() => removeItem(item))
+        .then((data) => {
+          if (action === 'entity-accept') appendUndoOutcome(data.undo, `${item.dataset.source} → ${item.dataset.target}`);
+          removeItem(item);
+        })
         .catch((err) => {
-          setBusy(button, false);
-          showError(item, err.serverMessage || err.message);
+          if (action === 'entity-accept') {
+            showMutationError(item, button, err, CUR_COPY.CUR_UNDO_FAILED);
+          } else {
+            setBusy(button, false);
+            showError(item, err.serverMessage || err.message);
+          }
         });
     }
   });

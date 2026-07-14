@@ -63,9 +63,9 @@
     ), error => error.cause === 'parse' && error.serverMessage === 'Malformed server response');
 
     await expectApiError('400 with error', () => withFetch(
-      async () => response({ status: 400, statusText: 'Bad', body: '{"error":"broken"}' }),
+      async () => response({ status: 400, statusText: 'Bad', body: '{"error":"broken","operation_state":"repair_required"}' }),
       () => window.apiJson('/bad')
-    ), error => error.status === 400 && error.serverMessage === 'broken');
+    ), error => error.status === 400 && error.serverMessage === 'broken' && error.payload.operation_state === 'repair_required');
 
     await expectApiError('400 with message', () => withFetch(
       async () => response({ status: 400, statusText: 'Bad', body: '{"message":"nope"}' }),

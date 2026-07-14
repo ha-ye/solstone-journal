@@ -192,6 +192,8 @@ def accept_candidate(
     facet: str,
     source_slug: str,
     target_slug: str,
+    *,
+    merge_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Mark one entity merge candidate accepted."""
     row: dict[str, Any] | None = None
@@ -202,6 +204,8 @@ def accept_candidate(
         if existing is None:
             return rows
         existing["status"] = "accepted"
+        if merge_id:
+            existing["merge_id"] = merge_id
         touch_updated(existing)
         row = existing
         return rows

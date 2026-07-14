@@ -2,7 +2,8 @@
 name: entities
 description: >
   Tracked entities — people, companies, projects, tools — within facets.
-  Detect, attach, move, merge, update, alias, search, network, history, overview.
+  Detect, attach, move, merge/undo, resolve ambiguities, restore versions, update,
+  alias, search, network, relationship history, entity history, overview.
   TRIGGER: entity, person, company, relationship, who is, contact, sol call
   entities detect/attach/merge/search/network/history/overview.
 ---
@@ -368,8 +369,45 @@ sol call entities merge jeremy-miller jeremie-miller
 sol call entities merge jeremy-miller jeremie-miller --commit
 ```
 
+## undo-merge
+
+```bash
+sol call entities undo-merge MERGE_ID --yes [--json]
+```
+
+Deterministically undo one recorded merge. Use the `merge_id` returned by a
+successful merge or accepted merge suggestion. This restores the recorded
+source entity and its owned references without rolling back unrelated later
+target changes. `--yes` is required.
+
+## ambiguities and resolve-ambiguity
+
+```bash
+sol call entities ambiguities [--status open|resolved] [--json]
+sol call entities resolve-ambiguity AMBIGUITY_ID ENTITY_ID --yes [--json]
+```
+
+List persisted low-confidence entity questions and choose an existing scoped
+entity. The list includes candidates and origin lanes. A recorded choice sticks
+for later mutation runs. Never resolve to a blocked, missing, or out-of-scope
+entity. `resolve-ambiguity` requires `--yes`.
+
+## entity-history and restore-version
+
+```bash
+sol call entities entity-history ENTITY_ID [--json]
+sol call entities restore-version ENTITY_ID VERSION_ID --yes [--json]
+```
+
+`entity-history` shows durable identity versions (create, update, restore,
+merge, merge undo). This is distinct from `history`, which shows relationship
+evidence between two entities. Restore only ordinary identity versions;
+merge-bearing history must use `undo-merge`. `restore-version` requires `--yes`.
+
 ## Gotchas
 
 - **`merge` previews by default.** Default is `--no-commit`: it emits a JSON plan without mutating anything. Pass `--commit` when you actually want the merge to happen.
+- **`history` and `entity-history` are different.** `history` reads relationship evidence; `entity-history` reads restorable identity versions.
+- **Undo and restore require explicit confirmation.** Pass `--yes`; the commands make no request without it.
 - **`detect` requires TYPE ≥ 3 chars.** Shorter types are silently rejected.
 - **`observe` is for durable traits, `detect` is for day-scoped sightings.** Mixing them skews future entity context.

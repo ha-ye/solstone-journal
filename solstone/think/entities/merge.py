@@ -1471,6 +1471,7 @@ def _commit_merge(
     with trust_operation_lock():
         rollback = _Rollback()
         failed_phase = "preflight"
+        mutation_applied = False
         try:
             _strict_preflight(source_id, target_id)
             plan = _plan_merge(
@@ -1486,6 +1487,7 @@ def _commit_merge(
 
             failed_phase = "private_payload"
             private_payload_rel = _write_private_payload(target_id, merge_id, payload)
+            mutation_applied = True
 
             failed_phase = "voiceprints"
             if plan["voiceprints"]["items"]:
@@ -1584,6 +1586,13 @@ def _commit_merge(
                     "failed_phase": failed_phase,
                     "source_id": source_id,
                     "target_id": target_id,
+                    "operation_state": "repair_required",
+                    "mutation_applied": mutation_applied,
+                    "source_state": _safe_entity_state(source_id),
+                    "target_state": _safe_entity_state(target_id),
+                    "safe_remediation": (
+                        "Inspect and repair the recorded entity state before retrying."
+                    ),
                 }
             return {
                 "error": str(exc),
@@ -1685,6 +1694,7 @@ def undo_entity_merge(
     rollback = _Rollback()
     with trust_operation_lock():
         pre_edge_hash = _edge_hash()
+        mutation_applied = False
         try:
             rollback.snapshot(_journal_root() / "entities" / target_id)
             rollback.snapshot(_journal_root() / "entities" / source_id)
@@ -1702,6 +1712,7 @@ def undo_entity_merge(
                 if item.get("merge_id") != payload.get("merge_id")
             ]
 
+            mutation_applied = True
             _restore_source_state(payload)
             next_target = _target_after_identity_undo(target_id, payload)
             _undo_voiceprints(target_id, payload, active_payloads)
@@ -1727,14 +1738,27 @@ def undo_entity_merge(
                     },
                 ),
             )
+            undo_event = list(iter_entity_history(target_id))[-1]
             remove_entity_merge_payload(target_id, merge_id)
 
-            _rebuild_edges_verified(pre_edge_hash, expect_restore=True)
+            edge_fingerprint = _rebuild_edges_verified(
+                pre_edge_hash,
+                expect_restore=True,
+            )
             return {
                 "undone": True,
                 "merge_id": merge_id,
                 "source_id": source_id,
                 "target_id": target_id,
+                "restored_reference_counts": copy.deepcopy(
+                    payload.get("result_counts") or {}
+                ),
+                "history_version_id": undo_event["version_id"],
+                "edge_rebuild": {
+                    "rebuilt": True,
+                    "verified": True,
+                    "fingerprint": edge_fingerprint,
+                },
             }
         except Exception as exc:
             logger.exception("entity merge undo failed (merge_id=%s)", merge_id)
@@ -1752,6 +1776,15 @@ def undo_entity_merge(
                         "rollback_error": str(rollback_exc),
                     },
                     "merge_id": merge_id,
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "operation_state": "repair_required",
+                    "mutation_applied": mutation_applied,
+                    "source_state": _safe_entity_state(source_id),
+                    "target_state": _safe_entity_state(target_id),
+                    "safe_remediation": (
+                        "Inspect and repair the recorded entity state before retrying."
+                    ),
                 }
             return {"error": str(exc), "merge_id": merge_id}
 
@@ -1996,9 +2029,24 @@ def _delete_rebased_descendants(target_id: str, payload: dict[str, Any]) -> None
         remove_entity_merge_payload(target_id, str(merge_id))
 
 
-def _rebuild_edges_verified(pre_undo_hash: str, *, expect_restore: bool) -> None:
+def _safe_entity_state(entity_id: str) -> dict[str, Any]:
+    """Return an authoritative best-effort identity state for repair responses."""
+    try:
+        entity = _load_journal_entity_strict(entity_id)
+    except Exception as exc:
+        return {"entity_id": entity_id, "readable": False, "error": str(exc)}
+    return {
+        "entity_id": entity_id,
+        "readable": True,
+        "exists": entity is not None,
+        "entity": entity,
+    }
+
+
+def _rebuild_edges_verified(pre_undo_hash: str, *, expect_restore: bool) -> str:
     from solstone.think.indexer.edges import rebuild_edges_for_recorded_merge_undo
 
     fingerprint = rebuild_edges_for_recorded_merge_undo(str(_journal_root()))
     if expect_restore and fingerprint == "":
         raise sqlite3.DatabaseError("edge rebuild produced no fingerprint")
+    return fingerprint
