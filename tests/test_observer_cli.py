@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from solstone.apps.observer.prune import result_exit_code, run_prune
+from solstone.apps.observer.prune import format_result, result_exit_code, run_prune
 from solstone.apps.observer.utils import (
     append_history_record,
     list_observers,
@@ -877,6 +877,11 @@ def test_prune_execute_deletes_duplicates_repairs_chain_history_and_index(
         "090000_301",
         "090000_302",
     }
+    assert result.crash_repaired == 0
+    assert result.chain_repaired == 1
+    output = format_result(result)
+    assert "chain-repaired: 1" in output
+    assert "crash-repaired:" not in output
     assert result.refusals
     assert (canonical / "audio.flac").is_file()
     assert _sha((canonical / "audio.flac").read_bytes()) == canonical_hash
@@ -1371,6 +1376,11 @@ def test_prune_crash_rerun_repairs_pruned_dangling_prev_and_refuses_unexplained(
 
     result = run_prune(days=[PRUNE_DAY], stream=PRUNE_STREAM, execute=True)
     assert result.refusals == []
+    assert result.crash_repaired == 1
+    assert result.chain_repaired == 0
+    output = format_result(result)
+    assert "chain-repaired: 0" in output
+    assert "crash-repaired: 1" in output
     assert (
         read_segment_stream(
             observer_cli_env.journal

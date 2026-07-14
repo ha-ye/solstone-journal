@@ -92,7 +92,8 @@ class PruneResult:
     refusals: list[Refusal] = field(default_factory=list)
     deleted: list[PruneCandidate] = field(default_factory=list)
     index_errors: list[str] = field(default_factory=list)
-    repaired: int = 0
+    crash_repaired: int = 0
+    chain_repaired: int = 0
 
     @property
     def last_physical_copy_count(self) -> int:
@@ -145,7 +146,7 @@ def run_prune(
         result = _plan(days, stream=stream)
         result.execute = True
         result.refusals = [*recovery_refusals, *result.refusals]
-        result.repaired = repaired
+        result.crash_repaired = repaired
         if recovery_refusals:
             return result
         _execute_plan(result)
@@ -163,11 +164,12 @@ def format_result(result: PruneResult) -> str:
         f"groups: {len(result.groups)}",
         f"candidates: {len(candidates)}",
         f"deleted: {len(result.deleted)}",
+        f"chain-repaired: {result.chain_repaired}",
         f"last-physical-copy: {result.last_physical_copy_count}",
         f"refusals: {len(result.refusals)}",
     ]
-    if result.repaired:
-        lines.append(f"crash-repaired: {result.repaired}")
+    if result.crash_repaired:
+        lines.append(f"crash-repaired: {result.crash_repaired}")
     for group in result.groups:
         lines.append(
             "group "
@@ -420,7 +422,7 @@ def _execute_plan(result: PruneResult) -> None:
             stream, deleted_markers_by_stream.get(stream, {}), dry_run=False
         )
         result.refusals.extend(refusals)
-        result.repaired += repaired
+        result.chain_repaired += repaired
         if refusals:
             continue
         _repair_stream_state(stream)
