@@ -33,6 +33,8 @@ from solstone.think.facet_review_candidates import (
 from solstone.think.facet_review_candidates import (
     save_candidates as save_facet_candidates,
 )
+from solstone.think.indexer.edges import insert_edges
+from solstone.think.indexer.journal import get_journal_index
 from solstone.think.journal_io import LockTimeout
 from solstone.think.speaker_review_candidates import record_name_variant_candidate
 
@@ -92,6 +94,42 @@ def _entity_candidate_row(
 
 def _seed_entity_candidates(rows: list[dict[str, Any]]) -> None:
     save_entity_candidates(rows)
+
+
+def _insert_edges(journal: Path, rows: list[dict[str, Any]]) -> None:
+    conn, _ = get_journal_index(str(journal))
+    try:
+        insert_edges(conn, rows)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _edge(
+    src: str,
+    dst: str,
+    path: str,
+    *,
+    day: str | None = "20260601",
+) -> dict[str, Any]:
+    return {
+        "src": src,
+        "dst": dst,
+        "kind": "works-with",
+        "day": day,
+        "facet": "work",
+        "source": "curation-test",
+        "path": path,
+        "weight": 1,
+    }
+
+
+def _tree_snapshot(root: Path) -> dict[str, bytes]:
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _seed_entity_candidate(status: str = "open", detection_count: int = 4) -> None:
@@ -185,6 +223,136 @@ def test_load_open_items_includes_speaker_name_variant(curation_journal):
     assert item.evidence["similarity"] == 0.934
     assert item.evidence["readiness"] == "ready"
     assert item.strength == 93
+
+
+def test_entity_merge_equal_strength_uses_shared_neighborhood(curation_journal):
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                source_slug="alpha_source",
+                target_slug="alpha_target",
+                source="Alpha Source",
+                target="Alpha Target",
+                detection_count=5,
+            ),
+            _entity_candidate_row(
+                source_slug="zeta_source",
+                target_slug="zeta_target",
+                source="Zeta Source",
+                target="Zeta Target",
+                detection_count=5,
+            ),
+        ]
+    )
+    _insert_edges(
+        curation_journal,
+        [
+            _edge("zeta_source", "shared_one", "curation/zeta-shared-one-a"),
+            _edge("zeta_target", "shared_one", "curation/zeta-shared-one-b"),
+            _edge("zeta_source", "shared_two", "curation/zeta-shared-two-a"),
+            _edge("zeta_target", "shared_two", "curation/zeta-shared-two-b"),
+            _edge("zeta_source", "source_only", "curation/zeta-source-only"),
+            _edge("zeta_target", "target_only", "curation/zeta-target-only"),
+        ],
+    )
+
+    items = load_open_items()
+
+    assert [item.key for item in items] == [
+        "work|zeta_source|zeta_target",
+        "work|alpha_source|alpha_target",
+    ]
+    assert items[0].strength == 5
+    assert items[0].evidence["shared_neighbors"] == ["shared_one", "shared_two"]
+    assert items[0].evidence["neighborhood_similarity"] == pytest.approx(0.5)
+    assert items[0].evidence["composite"] == pytest.approx(5.125)
+    assert items[0].composite == pytest.approx(5.125)
+    assert items[0].to_dict()["composite"] == pytest.approx(5.125)
+
+
+def test_entity_merge_detection_strength_stays_primary(curation_journal):
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                source_slug="alpha_high",
+                target_slug="alpha_target",
+                source="Alpha High",
+                target="Alpha Target",
+                detection_count=6,
+            ),
+            _entity_candidate_row(
+                source_slug="zeta_low",
+                target_slug="zeta_target",
+                source="Zeta Low",
+                target="Zeta Target",
+                detection_count=5,
+            ),
+        ]
+    )
+    _insert_edges(
+        curation_journal,
+        [
+            _edge("zeta_low", "shared_one", "curation/low-shared-one-a"),
+            _edge("zeta_target", "shared_one", "curation/low-shared-one-b"),
+            _edge("zeta_low", "shared_two", "curation/low-shared-two-a"),
+            _edge("zeta_target", "shared_two", "curation/low-shared-two-b"),
+        ],
+    )
+
+    items = load_open_items()
+
+    assert [item.key for item in items] == [
+        "work|alpha_high|alpha_target",
+        "work|zeta_low|zeta_target",
+    ]
+    assert items[0].strength == 6
+    assert items[0].composite == 6.0
+    assert items[1].strength == 5
+    assert items[1].composite == pytest.approx(5.25)
+
+
+def test_load_open_items_missing_edge_index_degrades_without_mutation(
+    curation_journal,
+):
+    _seed_entity_candidates(
+        [
+            _entity_candidate_row(
+                source_slug="zeta_source",
+                target_slug="zeta_target",
+                source="Zeta Source",
+                target="Zeta Target",
+                detection_count=3,
+            ),
+            _entity_candidate_row(
+                source_slug="alpha_source",
+                target_slug="alpha_target",
+                source="Alpha Source",
+                target="Alpha Target",
+                detection_count=3,
+            ),
+            _entity_candidate_row(
+                source_slug="middle_source",
+                target_slug="middle_target",
+                source="Middle Source",
+                target="Middle Target",
+                detection_count=4,
+            ),
+        ]
+    )
+    before = _tree_snapshot(curation_journal)
+
+    items = load_open_items()
+
+    assert _tree_snapshot(curation_journal) == before
+    assert [item.key for item in items] == [
+        "work|middle_source|middle_target",
+        "work|alpha_source|alpha_target",
+        "work|zeta_source|zeta_target",
+    ]
+    assert [item.key for item in items] == [
+        item.key for item in sorted(items, key=lambda item: (-item.strength, item.key))
+    ]
+    assert [item.composite for item in items] == [4.0, 3.0, 3.0]
 
 
 def test_accept_facet_candidate_creates_facet_then_marks_accepted(curation_journal):

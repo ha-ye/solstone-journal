@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import logging
+import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -12,13 +14,19 @@ from solstone.think import speaker_review_candidates as speaker_store
 from solstone.think.entities import review_candidates as entity_store
 from solstone.think.entities.merge import merge_entity
 from solstone.think.facets import create_facet
+from solstone.think.indexer.edges import load_shared_neighborhood_jaccard
 from solstone.think.journal_io import LockTimeout
 
 KIND_FACET_CANDIDATE = "facet_candidate"
 KIND_ENTITY_MERGE = "entity_merge"
 KIND_SPEAKER_NAME_VARIANT = "speaker_name_variant"
+NEIGHBORHOOD_WEIGHT = 0.25
+# Entity detection strength is an integer; a sub-1.0 neighborhood contribution
+# can break ties but cannot outrank a genuinely stronger detection count.
 _BATCH_BUSY_ERROR = "entity merge candidates are busy; try again"
 _BATCH_MALFORMED_ERROR = "candidate is missing facet, source_slug, or target_slug"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,7 @@ class CurationItem:
     target_slug: str | None
     evidence: dict[str, Any]
     strength: int
+    composite: float
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON/template-friendly representation."""
@@ -49,6 +58,7 @@ class CurationItem:
             "target_slug": self.target_slug,
             "evidence": self.evidence,
             "strength": self.strength,
+            "composite": self.composite,
         }
 
 
@@ -114,6 +124,18 @@ def _speaker_direction_matches(
     )
 
 
+def _load_neighborhoods(
+    pairs: list[tuple[str, str]],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    if not pairs:
+        return {}
+    try:
+        return load_shared_neighborhood_jaccard(pairs)
+    except (FileNotFoundError, sqlite3.Error, OSError) as exc:
+        logger.info("curation neighborhood ranking unavailable: %s", exc)
+        return {}
+
+
 def _facet_error(name_key: str, message: str) -> dict[str, Any]:
     return {
         "status": "error",
@@ -153,6 +175,8 @@ def _speaker_error(
 def load_open_items() -> list[CurationItem]:
     """Load all currently open curation items without mutating journal state."""
     items: list[CurationItem] = []
+    entity_rows: list[tuple[dict[str, Any], int, str, str, str]] = []
+    entity_pairs: list[tuple[str, str]] = []
 
     for row in facet_store.load_candidates():
         if row.get("status") != "open":
@@ -177,6 +201,7 @@ def load_open_items() -> list[CurationItem]:
                 target_slug=None,
                 evidence=facet_evidence,
                 strength=strength,
+                composite=float(strength),
             )
         )
 
@@ -190,6 +215,24 @@ def load_open_items() -> list[CurationItem]:
         facet = str(row.get("facet") or "")
         source_slug = str(row.get("source_slug") or "")
         target_slug = str(row.get("target_slug") or "")
+        entity_rows.append((row, strength, facet, source_slug, target_slug))
+        entity_pairs.append((source_slug, target_slug))
+
+    neighborhoods = _load_neighborhoods(entity_pairs)
+    for row, strength, facet, source_slug, target_slug in entity_rows:
+        evidence = row.get("evidence", {})
+        if not isinstance(evidence, dict):
+            evidence = {}
+        entity_evidence = dict(evidence)
+        composite = float(strength)
+        neighborhood = neighborhoods.get((source_slug, target_slug))
+        if neighborhood is not None:
+            shared_neighbors = list(neighborhood["intersection"])
+            similarity = float(neighborhood["jaccard"])
+            composite += NEIGHBORHOOD_WEIGHT * similarity
+            entity_evidence["shared_neighbors"] = shared_neighbors
+            entity_evidence["neighborhood_similarity"] = similarity
+        entity_evidence["composite"] = composite
         items.append(
             CurationItem(
                 kind=KIND_ENTITY_MERGE,
@@ -200,8 +243,9 @@ def load_open_items() -> list[CurationItem]:
                 source_slug=source_slug,
                 target=str(row.get("target") or target_slug),
                 target_slug=target_slug,
-                evidence=dict(evidence),
+                evidence=entity_evidence,
                 strength=strength,
+                composite=composite,
             )
         )
 
@@ -229,10 +273,11 @@ def load_open_items() -> list[CurationItem]:
                 target_slug=target_id,
                 evidence=speaker_evidence,
                 strength=int(round(similarity * 100)),
+                composite=float(int(round(similarity * 100))),
             )
         )
 
-    return sorted(items, key=lambda item: (-item.strength, item.key))
+    return sorted(items, key=lambda item: (-item.composite, item.key))
 
 
 def accept_facet_candidate(name_key: str) -> dict[str, Any]:
