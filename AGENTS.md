@@ -88,6 +88,7 @@ Verified against `Makefile`. Grouped by use.
 | Target | When to use |
 |--------|-------------|
 | `make install` | First setup and whenever `pyproject.toml` or `uv.lock` changes. Creates `.venv/`, syncs deps, runs `make skills`. |
+| `make hopper-install` | Lean lode bootstrap — builds only `.installed` (venv + dev/host deps + skills) so `make ci` runs. Intentionally skips runtime/model provisioning (no `install-models`, parakeet build, or CUDA validation). |
 | `make skills` | Regenerate generated router references, then rewrite the `sol` + `journal` router skill symlinks into `journal/`. (`make install` depends on this; rarely run alone.) |
 | `make update` | Upgrade all deps to latest, regenerate `uv.lock`. Expect test churn. |
 | `make update-prices` | Refresh genai-prices model-cost data when adding a new provider model or when pricing tests fail. |
