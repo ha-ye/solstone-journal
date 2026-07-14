@@ -8,6 +8,9 @@ global lock order is:
 
     trust -> facet attached-store -> (facet relationship / observations /
     voiceprints npz / activities locked_modify / speaker segment) owner locks
+    -> entity ambiguity store
+
+The ambiguity-store lock is never acquired before the trust or owner locks.
 
 The trust lock is backed by ``journal_io.hold_lock`` at
 ``journal/health/locks/entity-trust``. ``hold_lock`` creates a persistent

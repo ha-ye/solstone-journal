@@ -181,6 +181,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Owner voice candidate (`awareness/owner_candidate.npz`) | `solstone/apps/speakers/owner.py` |
 | Speaker discovery clusters (`awareness/discovery_clusters.json`, `awareness/discovery_clusters.resolved.json`) | `solstone/apps/speakers/discovery.py` |
 | Speaker candidate pool (`awareness/speaker_candidates.json`) | `solstone/apps/speakers/candidate_tracker.py` |
+| Entity resolution ambiguities (`entities/ambiguities.jsonl`) | `solstone/think/entities/ambiguities.py` |
 | Entity merge candidates (`entities/review-candidates.jsonl`) | `solstone/think/entities/review_candidates.py` |
 | Facet review candidates (`facets/review-candidates.jsonl`) | `solstone/think/facet_review_candidates.py` |
 | Speaker review candidates (`speakers/review-candidates.jsonl`) | `solstone/think/speaker_review_candidates.py` |
