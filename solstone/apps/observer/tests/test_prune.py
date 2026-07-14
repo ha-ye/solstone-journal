@@ -249,6 +249,48 @@ def test_cross_start_leaves_no_provenance_pair_untouched(observer_env) -> None:
     assert _seg(env.journal, candidate).is_dir()
 
 
+def test_cross_start_ignores_non_upload_provenance_record(observer_env) -> None:
+    """Cross-start only keys on absent/upload records; transferred provenance is ignored."""
+    env = observer_env()
+    assert save_observer(_observer())
+    prefix = KEY[:8]
+    origin = "146000_300"
+    candidate = "147000_300"
+    _write_segment(env.journal, origin, 1, None)
+    _write_segment(env.journal, candidate, 2, origin)
+    _upload_history(
+        prefix,
+        candidate,
+        segment_original=origin,
+        record_type="transferred",
+    )
+
+    result = run_prune(days=[DAY], stream=STREAM, execute=True, cross_start=True)
+
+    assert result.deleted == []
+    assert result.refusals == []
+    assert _seg(env.journal, origin).is_dir()
+    assert _seg(env.journal, candidate).is_dir()
+
+
+def test_cross_start_marker_less_candidate_refuses_chain_identity(observer_env) -> None:
+    """A marker-less cross-start candidate reuses the same-start chain-identity gate."""
+    env = observer_env()
+    assert save_observer(_observer())
+    prefix = KEY[:8]
+    origin = "148000_300"
+    candidate = "149000_300"
+    _write_segment(env.journal, origin, 1, None)
+    _write_segment(env.journal, candidate, 2, origin, marker=False)
+    _upload_history(prefix, candidate, segment_original=origin)
+
+    result = run_prune(days=[DAY], stream=STREAM, execute=True, cross_start=True)
+
+    assert [refusal.gate for refusal in result.refusals] == ["chain-identity"]
+    assert result.deleted == []
+    assert _seg(env.journal, candidate).is_dir()
+
+
 def test_cross_start_refuses_conflicting_segment_original(observer_env) -> None:
     """AC4: conflicting server-authored origins refuse the candidate."""
     env = observer_env()
