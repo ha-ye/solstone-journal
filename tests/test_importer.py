@@ -7,6 +7,7 @@ import importlib
 import json
 import os
 import subprocess
+import sys
 import time
 import uuid
 import zipfile
@@ -23,6 +24,7 @@ from solstone.convey.secure_listener import ConveyIdentity
 from solstone.think.importers.file_importer import ImportPreview, ImportResult
 from solstone.think.importers.shared import install_source_file
 from solstone.think.utils import day_path
+from tests.pdf_worker_fixtures import write_pdf
 
 PDF_SENTINEL = "SOLSTONE_PDF_SENTINEL_DOCUMENT_ROUTING"
 
@@ -80,12 +82,16 @@ def _configure_text_import_runtime(monkeypatch, mod):
 
 
 def _write_text_pdf(path: Path, text: str) -> None:
-    pytest.importorskip("weasyprint")
-    pytest.importorskip("pypdf")
-    from weasyprint import HTML
-
-    HTML(string=f"<html><body><h1>Fixture</h1><p>{text}</p></body></html>").write_pdf(
-        path
+    write_pdf(
+        path,
+        [
+            {
+                "text": (
+                    f"{text} has enough extractable text for the document importer "
+                    "to use the text layer without model calls."
+                )
+            }
+        ],
     )
 
 
@@ -93,7 +99,14 @@ def _configure_document_import_runtime(monkeypatch, mod, doc_mod, *, timestamp: 
     monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
     monkeypatch.setattr(mod, "_status_emitter", lambda: None)
     monkeypatch.setattr(mod, "index_file", lambda *args, **kwargs: None)
-    monkeypatch.setattr(doc_mod, "_get_pdf_timestamp", lambda reader, path: timestamp)
+    monkeypatch.setattr(
+        doc_mod,
+        "_choose_timestamp",
+        lambda payload, path: doc_mod._TimestampChoice(
+            timestamp=timestamp,
+            source="file-mtime",
+        ),
+    )
 
 
 def _read_action_entries(journal_root: Path) -> list[dict]:
@@ -819,6 +832,25 @@ def test_corrupt_pdf_routes_to_document_importer_and_reports_error(
     assert output["entries_written"] == 0
     assert any("corrupt.pdf" in error for error in output["errors"])
     assert not (tmp_path / "chronicle" / "20251205" / "import.text").exists()
+
+
+def test_importer_main_exits_nonzero_after_completed_hard_failures(monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["journal", "importer", "/tmp/corrupt.pdf", "20251205_163000"],
+    )
+    monkeypatch.setattr(
+        mod,
+        "import_one",
+        lambda *args, **kwargs: {"hard_failures": ["corrupt.pdf: corrupt PDF"]},
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+
+    assert exc.value.code == 1
 
 
 def test_write_segment(tmp_path):

@@ -505,6 +505,8 @@ def _process_file_importer(
                 "with_day_summaries": getattr(args, "with_day_summaries", False),
             }
         )
+    if importer.name == "document":
+        kwargs["force"] = getattr(args, "force", False)
     return importer.process(path, journal_root, **kwargs)
 
 
@@ -992,11 +994,12 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             )
             processing_results["entries_written"] = result.entries_written
             processing_results["entities_seeded"] = result.entities_seeded
+            processing_results["summary_errors"] = list(result.errors)
+            processing_results["hard_failures"] = list(result.hard_failures)
             if result.merge_summary is not None:
                 processing_results["merge_summary"] = result.merge_summary
                 processing_results["merge_log_path"] = result.merge_log_path
                 processing_results["merge_staging_path"] = result.merge_staging_path
-                processing_results["summary_errors"] = list(result.errors)
             if result.principal_collision is not None:
                 processing_results["principal_collision"] = result.principal_collision
 
@@ -1135,6 +1138,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                             "entities_seeded": result.entities_seeded,
                             "files_created": result.files_created,
                             "errors": result.errors,
+                            "hard_failures": list(result.hard_failures),
                             "summary": result.summary,
                             "merge_summary": result.merge_summary,
                             "principal_collision": result.principal_collision,
@@ -1678,7 +1682,7 @@ def main() -> None:
         parser.error("the following arguments are required: media")
 
     try:
-        import_one(
+        result = import_one(
             args.media,
             timestamp=args.timestamp,
             facet=args.facet,
@@ -1695,6 +1699,8 @@ def main() -> None:
             date_to=args.date_to,
             with_day_summaries=args.with_day_summaries,
         )
+        if result and result.get("hard_failures"):
+            raise SystemExit(1)
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
 

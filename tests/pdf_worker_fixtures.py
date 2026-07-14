@@ -8,6 +8,9 @@ from pathlib import Path
 from pypdf import PdfReader, PdfWriter
 
 TEXT_SENTINEL = "SOLPDF_SENTINEL_PAGE_2"
+TEXT_RICH_SENTINEL = "SOLSTONE_TEXT_RICH_PAGE"
+MIXED_TEXT_SENTINEL = "SOLSTONE_MIXED_TEXT_LAYER"
+IMAGE_TEXT_SENTINEL = "SOLSTONE_TEXT_WITH_IMAGE_LAYER"
 PAGE_WIDTH_PT = 612
 PAGE_HEIGHT_PT = 792
 
@@ -135,12 +138,75 @@ def write_text_fixture(path: Path) -> Path:
     )
 
 
+def write_text_rich_fixture(path: Path) -> Path:
+    return write_pdf(
+        path,
+        [
+            {
+                "text": (
+                    f"{TEXT_RICH_SENTINEL} first page has more than fifty "
+                    "non-whitespace characters for text-layer importer coverage."
+                )
+            },
+            {
+                "text": (
+                    "Second rich text page also stays above the threshold so "
+                    "the document importer makes no model calls."
+                )
+            },
+        ],
+    )
+
+
 def write_image_only_fixture(path: Path) -> Path:
     return write_pdf(
         path,
         [
             {"image": (0, 0, PAGE_WIDTH_PT, PAGE_HEIGHT_PT)},
             {"image": (0, 0, PAGE_WIDTH_PT, PAGE_HEIGHT_PT)},
+        ],
+    )
+
+
+def write_text_with_image_rich_fixture(path: Path) -> Path:
+    return write_pdf(
+        path,
+        [
+            {
+                "text": (
+                    f"{IMAGE_TEXT_SENTINEL} has a healthy text layer and a "
+                    "large embedded image area that requires an overlay description."
+                ),
+                "image": (72, 144, 420, 420),
+            },
+            {
+                "text": (
+                    "Pure text companion page remains above the threshold and "
+                    "must not trigger a model description."
+                )
+            },
+        ],
+    )
+
+
+def write_importer_mixed_fixture(path: Path) -> Path:
+    return write_pdf(
+        path,
+        [
+            {
+                "text": (
+                    f"{MIXED_TEXT_SENTINEL} page has enough extractable text "
+                    "to be emitted verbatim without model assistance."
+                )
+            },
+            {"image": (0, 0, PAGE_WIDTH_PT, PAGE_HEIGHT_PT)},
+            {
+                "text": (
+                    f"{IMAGE_TEXT_SENTINEL} mixed page has text plus a large "
+                    "embedded image so the importer emits a description overlay."
+                ),
+                "image": (72, 144, 420, 420),
+            },
         ],
     )
 

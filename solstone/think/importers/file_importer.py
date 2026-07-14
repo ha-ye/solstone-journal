@@ -30,6 +30,7 @@ class ImportResult:
     files_created: list[str]
     errors: list[str]
     summary: str
+    hard_failures: tuple[str, ...] = ()
     segments: list[tuple[str, str]] | None = None
     date_range: tuple[str, str] | None = None
     merge_summary: dict[str, Any] | None = None
@@ -59,6 +60,7 @@ class FileImporter(Protocol):
         import_id: str | None = None,
         progress_callback: Callable | None = None,
         dry_run: bool = False,
+        force: bool = False,
     ) -> ImportResult: ...
 
 

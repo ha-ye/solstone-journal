@@ -59,7 +59,6 @@ def test_pdf_modules_are_not_loaded_by_static_imports():
     assert "weasyprint" not in modules
     assert "pypdf" not in modules
     assert "pypdfium2" not in modules
-    assert "pdf2image" not in modules
 
 
 def _force_missing_feature(monkeypatch, name: str):
@@ -72,7 +71,7 @@ def _force_missing_feature(monkeypatch, name: str):
 
 
 def _force_missing_pdf(monkeypatch):
-    _force_missing_feature(monkeypatch, "pdf")
+    _force_missing_feature(monkeypatch, "pdf-import")
 
 
 def test_render_reflection_pdf_missing_extra(monkeypatch, tmp_path):
@@ -95,4 +94,4 @@ def test_document_importer_process_pdf_missing_extra(monkeypatch, tmp_path):
     with pytest.raises(MissingExtraError) as exc:
         DocumentImporter().process(pdf, tmp_path)
 
-    assert "pip install 'solstone[pdf]'" in str(exc.value)
+    assert "pip install 'solstone[pdf-import]'" in str(exc.value)

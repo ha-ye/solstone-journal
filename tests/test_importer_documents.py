@@ -1,382 +1,809 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
+from __future__ import annotations
+
 import datetime as dt
+import hashlib
 import importlib
+import json
 import os
+import shutil
+import time
+from pathlib import Path
 
+from solstone.observe.pdf_worker import (
+    PdfWorkerEncryptedError,
+    PdfWorkerRenderIOError,
+    PdfWorkerSuccess,
+)
 from solstone.think.importers.file_importer import FILE_IMPORTER_REGISTRY
+from solstone.think.models import NoBrainConfiguredError
+from tests.pdf_worker_fixtures import (
+    IMAGE_TEXT_SENTINEL,
+    MIXED_TEXT_SENTINEL,
+    TEXT_RICH_SENTINEL,
+    write_encrypted_fixture_pair,
+    write_image_only_fixture,
+    write_importer_mixed_fixture,
+    write_pdf,
+    write_text_rich_fixture,
+    write_text_with_image_rich_fixture,
+)
 
 
-class MockPage:
-    def __init__(self, text: str):
-        self._text = text
-
-    def extract_text(self):
-        return self._text
+def _mod():
+    return importlib.import_module("solstone.think.importers.documents")
 
 
-class MockPdfReader:
-    def __init__(self, path):
-        self.path = str(path)
-        self.pages = [
-            MockPage(
-                "Page text content here with enough characters to pass threshold."
-            ),
-            MockPage(
-                "Second page text content here with enough characters to pass threshold."
-            ),
-        ]
-        self.metadata = {"/CreationDate": "D:20260115120000"}
+def _set_mtime(path: Path, when: dt.datetime) -> None:
+    ts = when.timestamp()
+    os.utime(path, (ts, ts))
+
+
+def _fixed_mtime(path: Path) -> None:
+    _set_mtime(path, dt.datetime(2026, 3, 4, 12, 0, 0).astimezone())
+
+
+def _install_generate(monkeypatch, mod, outcomes):
+    calls: list[dict] = []
+    iterator = iter(outcomes)
+
+    def fake_generate(*, contents, context, **kwargs):
+        del kwargs
+        calls.append({"contents": contents, "context": context})
+        outcome = next(iterator)
+        if isinstance(outcome, BaseException):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(mod, "generate", fake_generate)
+    return calls
+
+
+def _import_pdf(mod, pdf: Path, journal: Path, **kwargs):
+    return mod.importer.process(
+        pdf,
+        journal,
+        import_id=kwargs.pop("import_id", "import-test"),
+        **kwargs,
+    )
+
+
+def _segment_dir(journal: Path, result) -> Path:
+    day, seg_key = result.segments[0]
+    return journal / "chronicle" / day / "import.document" / seg_key
+
+
+def _transcript(journal: Path, result) -> str:
+    return (_segment_dir(journal, result) / "document_transcript.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def _assert_cited_rasters_exist(segment_dir: Path) -> None:
+    transcript = (segment_dir / "document_transcript.md").read_text(encoding="utf-8")
+    for line in transcript.splitlines():
+        marker = "pages/page-"
+        if marker not in line:
+            continue
+        rel = line[line.index(marker) :].split("]", 1)[0]
+        assert (segment_dir / rel).is_file()
+
+
+def _assert_no_bare_single_h1(transcript: str) -> None:
+    for index, line in enumerate(transcript.splitlines()):
+        if line.startswith("# "):
+            assert index == 0
+
+
+def _snapshot_tree(path: Path) -> dict[str, bytes]:
+    return {
+        str(child.relative_to(path)): child.read_bytes()
+        for child in sorted(path.rglob("*"))
+        if child.is_file()
+    }
+
+
+def _payload(pdf: Path, *, pages: list[dict], warnings=(), metadata=None) -> dict:
+    return {
+        "schema": "sol-pdf/1",
+        "engine": "pdfium fixture / pypdfium2 fixture",
+        "sha256": hashlib.sha256(pdf.read_bytes()).hexdigest(),
+        "page_count": len(pages),
+        "encrypted": False,
+        "warnings": list(warnings),
+        "render": None,
+        "metadata": metadata
+        or {
+            "title": None,
+            "author": None,
+            "creation_date": None,
+            "mod_date": None,
+            "producer": None,
+        },
+        "pages": pages,
+    }
 
 
 def test_detect_pdf_file(tmp_path):
-    mod = importlib.import_module("solstone.think.importers.documents")
+    mod = _mod()
     pdf = tmp_path / "file.pdf"
     pdf.write_bytes(b"%PDF-1.4")
     assert mod.importer.detect(pdf) is True
 
 
 def test_detect_non_pdf(tmp_path):
-    mod = importlib.import_module("solstone.think.importers.documents")
+    mod = _mod()
     txt = tmp_path / "file.txt"
     txt.write_text("hello", encoding="utf-8")
     assert mod.importer.detect(txt) is False
 
 
 def test_detect_directory_with_pdfs(tmp_path):
-    mod = importlib.import_module("solstone.think.importers.documents")
+    mod = _mod()
     (tmp_path / "a.pdf").write_bytes(b"%PDF-1.4")
     (tmp_path / "b.pdf").write_bytes(b"%PDF-1.4")
     assert mod.importer.detect(tmp_path) is True
 
 
 def test_detect_empty_directory(tmp_path):
-    mod = importlib.import_module("solstone.think.importers.documents")
+    mod = _mod()
     assert mod.importer.detect(tmp_path) is False
 
 
-def test_preview_single_pdf(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.importers.documents")
-    pdf = tmp_path / "file.pdf"
-    pdf.write_bytes(b"%PDF-1.4")
-    monkeypatch.setattr("pypdf.PdfReader", MockPdfReader)
-
-    preview = mod.importer.preview(pdf)
-
-    assert preview.date_range == ("20260115", "20260115")
-    assert preview.item_count == 1
-    assert preview.entity_count == 0
-    assert preview.summary == "1 PDF documents, 2 total pages"
-
-
-def test_extract_pdf_text_digital(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.importers.documents")
-    pdf = tmp_path / "digital.pdf"
-    pdf.write_bytes(b"%PDF-1.4")
-    monkeypatch.setattr("pypdf.PdfReader", MockPdfReader)
-
-    text, meta = mod.extract_pdf_text(pdf)
-
-    assert "Page text content here" in text
-    assert meta == {
-        "page_count": 2,
-        "is_scanned": False,
-        "extraction_method": "pypdf",
-        "vision_error": None,
-    }
-
-
-def test_extract_pdf_text_scanned_vision_success(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.importers.documents")
-
-    class ScannedReader(MockPdfReader):
-        def __init__(self, path):
-            self.path = str(path)
-            self.pages = [MockPage("x"), MockPage("y")]
-            self.metadata = {"/CreationDate": "D:20260115120000"}
-
-    pdf = tmp_path / "scan.pdf"
-    pdf.write_bytes(b"%PDF-1.4")
-    monkeypatch.setattr("pypdf.PdfReader", ScannedReader)
-    calls = []
-
-    def fake_vision(pdf_path, page_count):
-        calls.append((pdf_path.name, page_count))
-        return "Vision extracted text"
-
-    monkeypatch.setattr(mod, "_extract_text_vision", fake_vision)
-
-    text, meta = mod.extract_pdf_text(pdf)
-
-    assert calls == [("scan.pdf", 2)]
-    assert text == "Vision extracted text"
-    assert meta["page_count"] == 2
-    assert meta["is_scanned"] is True
-    assert meta["extraction_method"] == "vision"
-    assert meta["vision_error"] is None
-
-
-def test_extract_pdf_text_scanned_vision_failure_returns_sparse_text(
+def test_pure_text_layer_pdf_imports_verbatim_with_zero_model_calls(
     tmp_path, monkeypatch
 ):
-    mod = importlib.import_module("solstone.think.importers.documents")
-
-    class ScannedReader(MockPdfReader):
-        def __init__(self, path):
-            self.path = str(path)
-            self.pages = [MockPage("x")]
-            self.metadata = {"/CreationDate": "D:20260115120000"}
-
-    pdf = tmp_path / "scan.pdf"
-    pdf.write_bytes(b"%PDF-1.4")
-    monkeypatch.setattr("pypdf.PdfReader", ScannedReader)
-    monkeypatch.setattr(
-        mod,
-        "_extract_text_vision",
-        lambda pdf_path, page_count: (_ for _ in ()).throw(
-            RuntimeError("vision failed")
-        ),
+    mod = _mod()
+    pdf = write_text_rich_fixture(tmp_path / "contract.pdf")
+    _fixed_mtime(pdf)
+    calls = _install_generate(
+        monkeypatch, mod, [AssertionError("unexpected model call")]
     )
 
-    text, meta = mod.extract_pdf_text(pdf)
+    result = _import_pdf(mod, pdf, tmp_path)
 
-    assert text == "x"
-    assert meta["page_count"] == 1
-    assert meta["is_scanned"] is True
-    assert meta["extraction_method"] == "pypdf"
-    assert meta["vision_error"] == "vision failed"
-
-
-def test_process_text_pdf(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.importers.documents")
-    pdf = tmp_path / "contract.pdf"
-    pdf.write_bytes(b"%PDF-1.4")
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr("pypdf.PdfReader", MockPdfReader)
-    monkeypatch.setattr(mod, "day_path", lambda day: tmp_path / "chronicle" / day)
-    monkeypatch.setattr(
-        mod,
-        "write_content_manifest",
-        lambda import_id, entries: tmp_path / "manifest.jsonl",
-    )
-    monkeypatch.setattr(mod, "seed_entities", lambda facet, day, entities: entities)
-
-    result = mod.importer.process(
-        pdf, tmp_path, facet="work", import_id="20260115_120000"
-    )
-
-    seg_dir = tmp_path / "chronicle" / "20260115" / "import.document" / "120000_0"
-    md_path = seg_dir / "document_transcript.md"
-
-    assert result.entries_written == 1
-    assert result.entities_seeded >= 0
-    assert result.segments == [("20260115", "120000_0")]
-    assert result.files_created == [str(md_path)]
-    assert md_path.exists()
-    content = md_path.read_text(encoding="utf-8")
-    assert content.startswith("# contract")
-    assert "**Pages:** 2" in content
-    assert "Page text content here" in content
-
-
-def test_process_creates_original_pdf(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.importers.documents")
-    pdf = tmp_path / "original.pdf"
-    pdf.write_bytes(b"%PDF-1.4 fake")
-    os.utime(pdf, (1_600_000_000, 1_600_000_000))
-    pdf_mtime = pdf.stat().st_mtime
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr("pypdf.PdfReader", MockPdfReader)
-    monkeypatch.setattr(mod, "day_path", lambda day: tmp_path / "chronicle" / day)
-    monkeypatch.setattr(
-        mod,
-        "write_content_manifest",
-        lambda import_id, entries: tmp_path / "manifest.jsonl",
-    )
-    monkeypatch.setattr(mod, "seed_entities", lambda facet, day, entities: entities)
-
-    result = mod.importer.process(pdf, tmp_path, import_id="20260115_120000")
-
-    copied = (
-        tmp_path
-        / "chronicle"
-        / "20260115"
-        / "import.document"
-        / "120000_0"
-        / "original.pdf"
-    )
-    assert copied.exists()
-    assert copied.read_bytes() == b"%PDF-1.4 fake"
-    assert copied.stat().st_mtime == pdf_mtime
-    assert str(copied) not in result.files_created
-
-
-def test_process_scanned_detection(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.importers.documents")
-
-    class ScannedReader(MockPdfReader):
-        def __init__(self, path):
-            self.path = str(path)
-            self.pages = [MockPage("x"), MockPage("y")]
-            self.metadata = {"/CreationDate": "D:20260115120000"}
-
-    pdf = tmp_path / "scan.pdf"
-    pdf.write_bytes(b"%PDF-1.4")
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr("pypdf.PdfReader", ScannedReader)
-    monkeypatch.setattr(mod, "day_path", lambda day: tmp_path / "chronicle" / day)
-    monkeypatch.setattr(
-        mod,
-        "write_content_manifest",
-        lambda import_id, entries: tmp_path / "manifest.jsonl",
-    )
-    monkeypatch.setattr(mod, "seed_entities", lambda facet, day, entities: entities)
-    calls = []
-
-    def fake_vision(pdf_path, page_count):
-        calls.append((pdf_path.name, page_count))
-        return "Vision extracted text"
-
-    monkeypatch.setattr(mod, "_extract_text_vision", fake_vision)
-
-    result = mod.importer.process(pdf, tmp_path, import_id="20260115_120000")
-
-    assert calls == [("scan.pdf", 2)]
+    segment_dir = _segment_dir(tmp_path, result)
+    transcript = _transcript(tmp_path, result)
     assert result.errors == []
-    md_path = (
-        tmp_path
-        / "chronicle"
-        / "20260115"
-        / "import.document"
-        / "120000_0"
-        / "document_transcript.md"
+    assert result.hard_failures == ()
+    assert result.entries_written == 1
+    assert result.entities_seeded == 0
+    assert result.files_created == [str(segment_dir / "document_transcript.md")]
+    assert (segment_dir / "original.pdf").read_bytes() == pdf.read_bytes()
+    assert calls == []
+    assert "## Page 1" in transcript
+    assert "## Page 2" in transcript
+    assert TEXT_RICH_SENTINEL in transcript
+    assert mod.MARKER_MODEL_EXTRACTED.split("{NNNN}", 1)[0] not in transcript
+    assert (
+        "**Extraction:" in transcript
+        and "2 text-layer, 0 model-extracted, 0 unavailable of 2 pages; "
+        "0 image-described; 0 model calls"
+        in transcript
     )
-    assert "Vision extracted text" in md_path.read_text(encoding="utf-8")
 
 
-def test_process_scanned_all_fallback(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.importers.documents")
-
-    class ScannedReader(MockPdfReader):
-        def __init__(self, path):
-            self.path = str(path)
-            self.pages = [MockPage("x")]
-            self.metadata = {"/CreationDate": "D:20260115120000"}
-
-    pdf = tmp_path / "scan.pdf"
-    pdf.write_bytes(b"%PDF-1.4")
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr("pypdf.PdfReader", ScannedReader)
-    monkeypatch.setattr(mod, "day_path", lambda day: tmp_path / "chronicle" / day)
-    monkeypatch.setattr(
+def test_scanned_pdf_uses_reading_prompt_once_per_page_and_installs_rasters(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    pdf = write_image_only_fixture(tmp_path / "scan.pdf")
+    _fixed_mtime(pdf)
+    calls = _install_generate(
+        monkeypatch,
         mod,
-        "write_content_manifest",
-        lambda import_id, entries: tmp_path / "manifest.jsonl",
-    )
-    monkeypatch.setattr(mod, "seed_entities", lambda facet, day, entities: entities)
-    monkeypatch.setattr(
-        mod,
-        "_extract_text_vision",
-        lambda pdf_path, page_count: (_ for _ in ()).throw(
-            RuntimeError("vision failed")
-        ),
+        ["# Extracted page 1\n\nBody 1", "Extracted page 2"],
     )
 
-    result = mod.importer.process(pdf, tmp_path, import_id="20260115_120000")
+    result = _import_pdf(mod, pdf, tmp_path)
 
-    assert result.errors == [
-        "scan.pdf: scanned PDF — vision failed (vision failed); using sparse pypdf text"
+    segment_dir = _segment_dir(tmp_path, result)
+    transcript = _transcript(tmp_path, result)
+    assert [call["context"] for call in calls] == [
+        "import.document.vision",
+        "import.document.vision",
     ]
-    md_path = (
-        tmp_path
-        / "chronicle"
-        / "20260115"
-        / "import.document"
-        / "120000_0"
-        / "document_transcript.md"
+    assert all("# [Document Title or Type]" in call["contents"][0] for call in calls)
+    assert mod._marker(mod.MARKER_MODEL_EXTRACTED, index=1) in transcript
+    assert mod._marker(mod.MARKER_MODEL_EXTRACTED, index=2) in transcript
+    assert "> # Extracted page 1" in transcript
+    assert ">\n> Body 1" in transcript
+    assert (segment_dir / "pages" / "page-0001.png").is_file()
+    assert (segment_dir / "pages" / "page-0002.png").is_file()
+    assert (
+        "0 text-layer, 2 model-extracted, 0 unavailable of 2 pages; "
+        "0 image-described; 2 model calls" in transcript
     )
-    assert "\nx\n" in md_path.read_text(encoding="utf-8")
+    _assert_no_bare_single_h1(transcript)
+    _assert_cited_rasters_exist(segment_dir)
 
 
-def test_process_multi_file(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.importers.documents")
-    pdf_a = tmp_path / "a.pdf"
-    pdf_b = tmp_path / "b.pdf"
-    pdf_a.write_bytes(b"%PDF-1.4")
-    pdf_b.write_bytes(b"%PDF-1.4")
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr("pypdf.PdfReader", MockPdfReader)
-    monkeypatch.setattr(mod, "day_path", lambda day: tmp_path / "chronicle" / day)
-    monkeypatch.setattr(
+def test_mixed_pdf_keeps_text_extracts_scanned_and_describes_text_image_page(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    pdf = write_importer_mixed_fixture(tmp_path / "mixed.pdf")
+    _fixed_mtime(pdf)
+    calls = _install_generate(
+        monkeypatch,
         mod,
-        "write_content_manifest",
-        lambda import_id, entries: tmp_path / "manifest.jsonl",
+        ["Scanned page text", "Description of embedded chart"],
     )
-    monkeypatch.setattr(mod, "seed_entities", lambda facet, day, entities: entities)
 
-    result = mod.importer.process(tmp_path, tmp_path, import_id="20260115_120000")
+    result = _import_pdf(mod, pdf, tmp_path)
 
-    assert result.entries_written == 2
-    assert result.segments == [("20260115", "120000_0"), ("20260115", "120001_0")]
+    segment_dir = _segment_dir(tmp_path, result)
+    transcript = _transcript(tmp_path, result)
+    assert [call["context"] for call in calls] == [
+        "import.document.vision",
+        "import.document.describe",
+    ]
+    assert MIXED_TEXT_SENTINEL in transcript
+    assert IMAGE_TEXT_SENTINEL in transcript
+    assert mod._marker(mod.MARKER_MODEL_EXTRACTED, index=2) in transcript
+    assert mod._marker(mod.MARKER_IMAGE_DESCRIPTION, index=3) in transcript
+    assert "> Scanned page text" in transcript
+    assert "> Description of embedded chart" in transcript
+    assert (
+        "2 text-layer, 1 model-extracted, 0 unavailable of 3 pages; "
+        "1 image-described; 2 model calls" in transcript
+    )
+    _assert_cited_rasters_exist(segment_dir)
 
 
-def test_process_entity_seeding(tmp_path, monkeypatch):
-    mod = importlib.import_module("solstone.think.importers.documents")
+def test_text_page_with_large_image_gets_one_description_only(tmp_path, monkeypatch):
+    mod = _mod()
+    pdf = write_text_with_image_rich_fixture(tmp_path / "image-text.pdf")
+    _fixed_mtime(pdf)
+    calls = _install_generate(monkeypatch, mod, ["Image description"])
 
-    class EntityReader(MockPdfReader):
-        def __init__(self, path):
-            self.path = str(path)
-            self.pages = [
-                MockPage(
-                    "Signed by Jane Doe on behalf of Example Corp Inc for the purchase agreement and related closing documents."
-                )
-            ]
-            self.metadata = {"/CreationDate": "D:20260115120000"}
+    result = _import_pdf(mod, pdf, tmp_path)
 
-    pdf = tmp_path / "parties.pdf"
-    pdf.write_bytes(b"%PDF-1.4")
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr("pypdf.PdfReader", EntityReader)
-    monkeypatch.setattr(mod, "day_path", lambda day: tmp_path / "chronicle" / day)
-    monkeypatch.setattr(
+    transcript = _transcript(tmp_path, result)
+    assert [call["context"] for call in calls] == ["import.document.describe"]
+    assert mod._marker(mod.MARKER_IMAGE_DESCRIPTION, index=1) in transcript
+    assert "page-0002.png" not in transcript
+    assert "2 text-layer, 0 model-extracted, 0 unavailable of 2 pages" in transcript
+    assert "1 image-described; 1 model calls" in transcript
+
+
+def test_marker_bytes_are_exact():
+    mod = _mod()
+
+    assert mod.MARKER_MODEL_EXTRACTED == (
+        "> [model-extracted from page image — may contain errors; "
+        "original: pages/page-{NNNN}.png]"
+    )
+    assert mod.MARKER_IMAGE_DESCRIPTION == (
+        "> [image description — model-generated; original: pages/page-{NNNN}.png]"
+    )
+    assert mod.MARKER_PAGE_TEXT_UNAVAILABLE_WITH_RASTER == (
+        "> [page text unavailable — {reason}; "
+        "page image preserved at pages/page-{NNNN}.png]"
+    )
+    assert mod.MARKER_IMAGE_DESCRIPTION_UNAVAILABLE_WITH_RASTER == (
+        "> [image description unavailable — {reason}; "
+        "page image preserved at pages/page-{NNNN}.png]"
+    )
+    assert mod.MARKER_PAGE_TEXT_UNAVAILABLE_NO_RASTER == (
+        "> [page text unavailable — {reason}; no page image could be produced]"
+    )
+    assert mod.MARKER_IMAGE_DESCRIPTION_UNAVAILABLE_NO_RASTER == (
+        "> [image description unavailable — {reason}; no page image could be produced]"
+    )
+    assert mod._marker(mod.MARKER_MODEL_EXTRACTED, index=2) == (
+        "> [model-extracted from page image — may contain errors; "
+        "original: pages/page-0002.png]"
+    )
+    assert mod._marker(mod.MARKER_IMAGE_DESCRIPTION, index=12) == (
+        "> [image description — model-generated; original: pages/page-0012.png]"
+    )
+    assert (
+        mod._marker(
+            mod.MARKER_PAGE_TEXT_UNAVAILABLE_WITH_RASTER,
+            index=3,
+            reason="boom",
+        )
+        == "> [page text unavailable — boom; page image preserved at pages/page-0003.png]"
+    )
+    assert mod._marker(
+        mod.MARKER_IMAGE_DESCRIPTION_UNAVAILABLE_WITH_RASTER,
+        index=4,
+        reason="boom",
+    ) == (
+        "> [image description unavailable — boom; "
+        "page image preserved at pages/page-0004.png]"
+    )
+    assert (
+        mod._marker(
+            mod.MARKER_PAGE_TEXT_UNAVAILABLE_NO_RASTER,
+            reason="boom",
+        )
+        == "> [page text unavailable — boom; no page image could be produced]"
+    )
+    assert (
+        mod._marker(
+            mod.MARKER_IMAGE_DESCRIPTION_UNAVAILABLE_NO_RASTER,
+            reason="boom",
+        )
+        == "> [image description unavailable — boom; no page image could be produced]"
+    )
+
+
+def test_vision_extraction_failure_marks_one_scanned_page_unavailable(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    pdf = write_image_only_fixture(tmp_path / "scan.pdf")
+    _fixed_mtime(pdf)
+    calls = _install_generate(
+        monkeypatch,
         mod,
-        "write_content_manifest",
-        lambda import_id, entries: tmp_path / "manifest.jsonl",
+        [RuntimeError("vision failed"), "Second page model text"],
+    )
+
+    result = _import_pdf(mod, pdf, tmp_path)
+
+    segment_dir = _segment_dir(tmp_path, result)
+    transcript = _transcript(tmp_path, result)
+    assert len(calls) == 2
+    assert result.hard_failures == ()
+    assert (
+        mod._marker(
+            mod.MARKER_PAGE_TEXT_UNAVAILABLE_WITH_RASTER,
+            index=1,
+            reason="vision failed",
+        )
+        in transcript
+    )
+    assert mod._marker(mod.MARKER_MODEL_EXTRACTED, index=2) in transcript
+    assert (segment_dir / "pages" / "page-0001.png").is_file()
+    assert (segment_dir / "pages" / "page-0002.png").is_file()
+
+
+def test_description_failure_keeps_full_text_and_uses_description_marker(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    pdf = write_text_with_image_rich_fixture(tmp_path / "image-text.pdf")
+    _fixed_mtime(pdf)
+    _install_generate(monkeypatch, mod, [NoBrainConfiguredError()])
+
+    result = _import_pdf(mod, pdf, tmp_path)
+
+    transcript = _transcript(tmp_path, result)
+    assert IMAGE_TEXT_SENTINEL in transcript
+    assert (
+        mod._marker(
+            mod.MARKER_IMAGE_DESCRIPTION_UNAVAILABLE_WITH_RASTER,
+            index=1,
+            reason=mod.REASON_NO_BRAIN_CONFIGURED,
+        )
+        in transcript
+    )
+    assert "page text unavailable" not in transcript
+    assert result.hard_failures == ()
+
+
+def test_model_call_cap_marks_overflow_pages_unavailable(tmp_path, monkeypatch):
+    mod = _mod()
+    pdf = write_image_only_fixture(tmp_path / "scan.pdf")
+    _fixed_mtime(pdf)
+    monkeypatch.setattr(mod, "MODEL_CALLS_MAX_PER_DOCUMENT", 1)
+    calls = _install_generate(monkeypatch, mod, ["Only first page"])
+
+    result = _import_pdf(mod, pdf, tmp_path)
+
+    transcript = _transcript(tmp_path, result)
+    assert len(calls) == 1
+    assert mod._marker(mod.MARKER_MODEL_EXTRACTED, index=1) in transcript
+    assert (
+        mod._marker(
+            mod.MARKER_PAGE_TEXT_UNAVAILABLE_WITH_RASTER,
+            index=2,
+            reason=mod.REASON_MODEL_CALL_LIMIT,
+        )
+        in transcript
+    )
+    assert "1 model calls" in transcript
+
+
+def test_encrypted_fixture_is_hard_failure_without_segment(tmp_path):
+    mod = _mod()
+    clear = write_text_rich_fixture(tmp_path / "clear.pdf")
+    user_pdf = tmp_path / "encrypted.pdf"
+    owner_pdf = tmp_path / "owner.pdf"
+    write_encrypted_fixture_pair(clear, user_pdf, owner_pdf)
+
+    result = _import_pdf(mod, user_pdf, tmp_path)
+
+    assert result.entries_written == 0
+    assert result.hard_failures == ("encrypted.pdf: password-protected PDF",)
+    assert result.errors == ["encrypted.pdf: password-protected PDF"]
+    assert not (tmp_path / "chronicle").exists()
+
+
+def test_corrupt_pdf_batched_with_good_pdf_imports_good_and_returns_hard_failure(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    good = write_text_rich_fixture(tmp_path / "good.pdf")
+    corrupt = tmp_path / "corrupt.pdf"
+    corrupt.write_bytes(b"%PDF-1.4\nnot a valid xref\n%%EOF\n")
+    _fixed_mtime(good)
+    calls = _install_generate(
+        monkeypatch, mod, [AssertionError("unexpected model call")]
+    )
+
+    result = _import_pdf(mod, tmp_path, tmp_path)
+
+    assert calls == []
+    assert result.entries_written == 1
+    assert result.segments
+    assert "good" in _transcript(tmp_path, result)
+    assert len(result.hard_failures) == 1
+    assert "corrupt.pdf" in result.hard_failures[0]
+    assert "corrupt" in result.hard_failures[0]
+
+
+def test_render_io_failure_is_hard_failure_before_segment_creation(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(b"%PDF-1.4 synthetic")
+    render_root = tmp_path / "render-root"
+    payload = _payload(
+        pdf,
+        pages=[
+            {
+                "index": 1,
+                "width_pt": 612.0,
+                "height_pt": 792.0,
+                "chars": 0,
+                "image_area_fraction": 1.0,
+                "rendered": None,
+                "error": None,
+                "text": "",
+            }
+        ],
+    )
+
+    class FakeTemporaryDirectory:
+        def __enter__(self):
+            render_root.mkdir()
+            return str(render_root)
+
+        def __exit__(self, exc_type, exc, tb):
+            del exc_type, exc, tb
+            shutil.rmtree(render_root, ignore_errors=True)
+
+    def fake_worker(command, pdf_path, **kwargs):
+        del command, pdf_path
+        if kwargs.get("render_pages"):
+            raise PdfWorkerRenderIOError(
+                "synthetic render I/O failure",
+                returncode=5,
+                stdout="",
+                stderr="",
+                payload={
+                    "schema": "sol-pdf/1",
+                    "error": "render-io",
+                    "detail": "synthetic render I/O failure",
+                },
+            )
+        return PdfWorkerSuccess(payload=payload, warnings=(), stderr="")
+
+    monkeypatch.setattr(mod.tempfile, "TemporaryDirectory", FakeTemporaryDirectory)
+    monkeypatch.setattr(mod, "run_pdf_worker", fake_worker)
+
+    result = _import_pdf(mod, pdf, tmp_path)
+
+    assert result.entries_written == 0
+    assert len(result.hard_failures) == 1
+    assert "scan.pdf" in result.hard_failures[0]
+    assert "I/O" in result.hard_failures[0]
+    assert not (tmp_path / "chronicle").exists()
+    assert not render_root.exists()
+
+
+def test_worker_warnings_land_in_header_and_import_result(tmp_path, monkeypatch):
+    mod = _mod()
+    pdf = tmp_path / "warning.pdf"
+    pdf.write_bytes(b"%PDF-1.4 synthetic")
+    warning = (
+        "page 1: page render failed: synthetic render failure after text extraction"
+    )
+    first = _payload(
+        pdf,
+        pages=[
+            {
+                "index": 1,
+                "width_pt": 612.0,
+                "height_pt": 792.0,
+                "chars": 80,
+                "image_area_fraction": 0.25,
+                "rendered": None,
+                "error": None,
+                "text": "Healthy text layer survives even when render later fails.",
+            }
+        ],
+    )
+    second = _payload(
+        pdf,
+        pages=[
+            {
+                **first["pages"][0],
+                "chars": 0,
+                "image_area_fraction": 0.0,
+                "error": warning,
+                "text": "",
+            }
+        ],
+        warnings=[warning],
     )
     calls = []
 
-    def fake_seed_entities(facet, day, entities):
-        calls.append((facet, day, entities))
-        return entities
+    def fake_worker(command, pdf_path, **kwargs):
+        calls.append((command, Path(pdf_path).name, kwargs))
+        return PdfWorkerSuccess(
+            payload=second if kwargs.get("render_pages") else first,
+            warnings=tuple(second["warnings"] if kwargs.get("render_pages") else ()),
+            stderr="",
+        )
 
-    monkeypatch.setattr(mod, "seed_entities", fake_seed_entities)
+    monkeypatch.setattr(mod, "run_pdf_worker", fake_worker)
 
-    result = mod.importer.process(
-        pdf, tmp_path, facet="legal", import_id="20260115_120000"
-    )
+    result = _import_pdf(mod, pdf, tmp_path)
 
-    assert result.entities_seeded == len(calls[0][2])
-    assert calls[0][0] == "legal"
-    assert calls[0][1] == "20260115"
-    assert any(entity["type"] == "Person" for entity in calls[0][2])
-    assert any(entity["type"] == "Organization" for entity in calls[0][2])
-    assert all(entity["observations"] == ["Named in parties"] for entity in calls[0][2])
-
-
-def test_timestamp_from_metadata(tmp_path):
-    mod = importlib.import_module("solstone.think.importers.documents")
-    pdf = tmp_path / "file.pdf"
-    pdf.write_bytes(b"%PDF-1.4")
-    reader = MockPdfReader(pdf)
-
-    timestamp = mod._get_pdf_timestamp(reader, pdf)
-
+    transcript = _transcript(tmp_path, result)
+    assert len(calls) == 2
+    assert "**Worker warnings:**" in transcript
+    assert f"- {warning}" in transcript
+    assert result.errors == [f"warning.pdf: {warning}"]
     assert (
-        dt.datetime.fromtimestamp(timestamp).strftime("%Y%m%d%H%M%S")
-        == "20260115120000"
+        mod._marker(
+            mod.MARKER_IMAGE_DESCRIPTION_UNAVAILABLE_NO_RASTER,
+            reason=warning,
+        )
+        in transcript
     )
+
+
+def test_timestamp_metadata_offset_and_year_2999_fallback(tmp_path, monkeypatch):
+    mod = _mod()
+    old_tz = os.environ.get("TZ")
+    monkeypatch.setenv("TZ", "America/Denver")
+    time.tzset()
+    offset_pdf = write_pdf(
+        tmp_path / "offset.pdf",
+        [
+            {
+                "text": (
+                    "Offset metadata document has enough text to avoid model "
+                    "calls while proving the local day conversion."
+                )
+            }
+        ],
+        {"ModDate": "D:20260304003000+02'00'"},
+    )
+    future_pdf = write_pdf(
+        tmp_path / "future.pdf",
+        [
+            {
+                "text": (
+                    "Future metadata document falls back to the ordinary file "
+                    "mtime because year 2999 is outside the sanity window."
+                )
+            }
+        ],
+        {"ModDate": "D:29990101000000+00'00'"},
+    )
+    _set_mtime(future_pdf, dt.datetime(2026, 5, 6, 12, 0, 0).astimezone())
+
+    try:
+        offset_result = _import_pdf(mod, offset_pdf, tmp_path)
+        future_result = _import_pdf(mod, future_pdf, tmp_path)
+
+        assert offset_result.segments[0][0] == "20260303"
+        assert "**Date:** 2026-03-03 (pdf-metadata)" in _transcript(
+            tmp_path, offset_result
+        )
+        assert future_result.segments[0][0] == "20260506"
+        assert "**Date:** 2026-05-06 (file-mtime)" in _transcript(
+            tmp_path, future_result
+        )
+    finally:
+        if old_tz is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = old_tz
+        time.tzset()
+
+
+def test_segment_identity_force_controls_same_content_regeneration(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    first = write_importer_mixed_fixture(tmp_path / "first.pdf")
+    second = write_pdf(
+        tmp_path / "second.pdf",
+        [
+            {
+                "text": (
+                    "Second different document deliberately shares the exact "
+                    "same metadata timestamp as the first document."
+                )
+            }
+        ],
+    )
+    _fixed_mtime(first)
+    _fixed_mtime(second)
+
+    _install_generate(monkeypatch, mod, ["Initial scanned text", "Initial description"])
+    first_result = _import_pdf(mod, first, tmp_path)
+    first_segment = _segment_dir(tmp_path, first_result)
+    initial_snapshot = _snapshot_tree(first_segment)
+    manifest_path = tmp_path / "imports" / "import-test" / "content_manifest.jsonl"
+    initial_manifest = manifest_path.read_bytes()
+
+    def fail_generate(**_kwargs):
+        raise AssertionError("same-content skip must not call generate")
+
+    monkeypatch.setattr(mod, "generate", fail_generate)
+    skipped_result = _import_pdf(mod, first, tmp_path)
+
+    assert skipped_result.entries_written == 0
+    assert skipped_result.segments == []
+    assert skipped_result.hard_failures == ()
+    assert skipped_result.errors == [
+        "first.pdf: skipped (already imported; use --force to regenerate)"
+    ]
+    assert _snapshot_tree(first_segment) == initial_snapshot
+    assert manifest_path.read_bytes() == initial_manifest
+
+    _install_generate(monkeypatch, mod, ["Forced scanned text", "Forced description"])
+    same_result = _import_pdf(mod, first, tmp_path, force=True)
+
+    assert same_result.segments == first_result.segments
+    assert same_result.entries_written == 1
+    assert "Forced scanned text" in _transcript(tmp_path, same_result)
+    assert "Forced description" in _transcript(tmp_path, same_result)
+    assert (first_segment / "original.pdf").read_bytes() == first.read_bytes()
+    _assert_cited_rasters_exist(first_segment)
+
+    forced_snapshot = _snapshot_tree(first_segment)
+    second_result = _import_pdf(mod, second, tmp_path, force=True)
+
+    assert second_result.segments != first_result.segments
+    assert _snapshot_tree(first_segment) == forced_snapshot
+    assert (_segment_dir(tmp_path, second_result) / "original.pdf").read_bytes() == (
+        second.read_bytes()
+    )
+
+
+def test_write_order_original_exists_without_transcript_when_transcript_write_fails(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    pdf = write_text_rich_fixture(tmp_path / "contract.pdf")
+    _fixed_mtime(pdf)
+
+    def fail_write_text(*_args, **_kwargs):
+        raise RuntimeError("stop after original")
+
+    monkeypatch.setattr(mod, "write_text", fail_write_text)
+    result = _import_pdf(mod, pdf, tmp_path)
+
+    assert result.segments == []
+    [segment_dir] = list((tmp_path / "chronicle").glob("*/import.document/*"))
+    assert (segment_dir / "original.pdf").is_file()
+    assert not (segment_dir / "document_transcript.md").exists()
+
+
+def test_write_order_rasters_exist_without_transcript_when_final_write_fails(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    pdf = write_image_only_fixture(tmp_path / "scan.pdf")
+    _fixed_mtime(pdf)
+    _install_generate(monkeypatch, mod, ["Page one", "Page two"])
+
+    def fail_write_text(*_args, **_kwargs):
+        raise RuntimeError("stop after rasters")
+
+    monkeypatch.setattr(mod, "write_text", fail_write_text)
+    result = _import_pdf(mod, pdf, tmp_path)
+
+    assert result.segments == []
+    [segment_dir] = list((tmp_path / "chronicle").glob("*/import.document/*"))
+    assert (segment_dir / "original.pdf").is_file()
+    assert (segment_dir / "pages" / "page-0001.png").is_file()
+    assert (segment_dir / "pages" / "page-0002.png").is_file()
+    assert not (segment_dir / "document_transcript.md").exists()
+
+
+def test_preview_uses_inspect_only_and_aggregates_worker_failures(
+    tmp_path, monkeypatch
+):
+    mod = _mod()
+    readable = tmp_path / "readable.pdf"
+    encrypted = tmp_path / "encrypted.pdf"
+    readable.write_bytes(b"%PDF-1.4 readable")
+    encrypted.write_bytes(b"%PDF-1.4 encrypted")
+    payload = _payload(
+        readable,
+        pages=[
+            {
+                "index": 1,
+                "width_pt": 612.0,
+                "height_pt": 792.0,
+                "chars": 0,
+                "image_area_fraction": 0.0,
+                "rendered": None,
+                "error": None,
+            }
+        ],
+        metadata={"mod_date": "2026-03-04T12:00:00+00:00"},
+    )
+    calls = []
+
+    def fake_worker(command, pdf_path, **kwargs):
+        calls.append((command, Path(pdf_path).name, kwargs))
+        if Path(pdf_path).name == "encrypted.pdf":
+            raise PdfWorkerEncryptedError(
+                "encrypted",
+                returncode=3,
+                stdout="",
+                stderr="",
+                payload={"schema": "sol-pdf/1", "error": "encrypted"},
+            )
+        return PdfWorkerSuccess(payload=payload, warnings=(), stderr="")
+
+    monkeypatch.setattr(mod, "run_pdf_worker", fake_worker)
+
+    preview = mod.importer.preview(tmp_path)
+
+    assert [call[0] for call in calls] == ["inspect", "inspect"]
+    assert all("render_pages" not in call[2] for call in calls)
+    assert preview.item_count == 2
+    assert preview.entity_count == 0
+    assert preview.summary.startswith("2 PDF documents, 1 total pages")
+    assert "encrypted.pdf: password-protected PDF" in preview.summary
+    assert not (tmp_path / "chronicle").exists()
+    assert not (tmp_path / "imports").exists()
+
+
+def test_document_importer_no_longer_seeds_entities():
+    mod = _mod()
+    assert not hasattr(mod, "_extract_entities")
+    assert not hasattr(mod, "seed_entities")
 
 
 def test_registry_entry():
     assert FILE_IMPORTER_REGISTRY["document"] == "solstone.think.importers.documents"
+
+
+def test_manifest_meta_is_new_shape(tmp_path):
+    mod = _mod()
+    pdf = write_text_rich_fixture(tmp_path / "contract.pdf")
+    _fixed_mtime(pdf)
+
+    _import_pdf(mod, pdf, tmp_path)
+
+    manifest = tmp_path / "imports" / "import-test" / "content_manifest.jsonl"
+    entry = json.loads(manifest.read_text(encoding="utf-8"))
+    assert entry["meta"] == {
+        "page_count": 2,
+        "engine": entry["meta"]["engine"],
+        "timestamp_source": "file-mtime",
+        "text_layer_pages": 2,
+        "model_extracted_pages": 0,
+        "unavailable_pages": 0,
+        "image_described_pages": 0,
+        "model_calls": 0,
+        "warnings": [],
+    }
+    assert "extraction_method" not in entry["meta"]
