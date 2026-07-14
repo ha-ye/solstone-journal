@@ -22,6 +22,7 @@ from solstone.think.indexer.edges import (
     load_edge_evidence,
     load_entity_network,
     load_network_overview,
+    load_shared_neighborhood_jaccard,
 )
 from solstone.think.indexer.journal import (
     DB_NAME,
@@ -435,6 +436,91 @@ def test_future_dated_rows_do_not_affect_ranked_network_or_evidence_preview(
         "past-co",
         "past-spoke",
     ]
+
+
+def test_shared_neighborhood_jaccard_filters_and_does_not_write(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+    source = "edge_jaccard_source"
+    target = "edge_jaccard_target"
+    _insert(
+        edges_journal,
+        [
+            _row(source, "edge_shared_one", "works-with", "jaccard/shared-one-a"),
+            _row(target, "edge_shared_one", "works-with", "jaccard/shared-one-b"),
+            _row(source, "edge_shared_two", "works-with", "jaccard/shared-two-a"),
+            _row(target, "edge_shared_two", "works-with", "jaccard/shared-two-b"),
+            _row(source, "edge_source_only", "works-with", "jaccard/source-only"),
+            _row(target, "edge_target_only", "works-with", "jaccard/target-only"),
+            _row(source, "edge_null_day", "works-with", "jaccard/null-a", day=None),
+            _row(target, "edge_null_day", "works-with", "jaccard/null-b", day=None),
+            _row(
+                source, "edge_future", "works-with", "jaccard/future-a", day="20260601"
+            ),
+            _row(
+                target, "edge_future", "works-with", "jaccard/future-b", day="20260601"
+            ),
+            _row(source, "edge_alice", "works-with", "jaccard/principal-a"),
+            _row(target, "edge_alice", "works-with", "jaccard/principal-b"),
+            _row(source, target, "works-with", "jaccard/endpoints"),
+            _row(source, source, "works-with", "jaccard/source-self"),
+            _row(target, target, "works-with", "jaccard/target-self"),
+        ],
+    )
+    before = _table_hashes(edges_journal)
+
+    results = load_shared_neighborhood_jaccard(
+        [(source, target)],
+        facet="query-test",
+        reference_day="20260530",
+    )
+
+    assert _table_hashes(edges_journal) == before
+    result = results[(source, target)]
+    assert result["source_neighbors"] == [
+        "edge_null_day",
+        "edge_shared_one",
+        "edge_shared_two",
+        "edge_source_only",
+    ]
+    assert result["target_neighbors"] == [
+        "edge_null_day",
+        "edge_shared_one",
+        "edge_shared_two",
+        "edge_target_only",
+    ]
+    assert result["intersection"] == [
+        "edge_null_day",
+        "edge_shared_one",
+        "edge_shared_two",
+    ]
+    assert result["union"] == [
+        "edge_null_day",
+        "edge_shared_one",
+        "edge_shared_two",
+        "edge_source_only",
+        "edge_target_only",
+    ]
+    assert result["jaccard"] == pytest.approx(3 / 5)
+    assert source not in result["source_neighbors"]
+    assert target not in result["target_neighbors"]
+    assert target not in result["source_neighbors"]
+    assert source not in result["target_neighbors"]
+    assert "edge_alice" not in result["union"]
+    assert "edge_future" not in result["union"]
+
+
+def test_shared_neighborhood_jaccard_zero_for_empty_union(edges_journal):
+    scan_journal(str(edges_journal), full=True)
+
+    results = load_shared_neighborhood_jaccard(
+        [("edge_empty_a", "edge_empty_b")],
+        reference_day="20260530",
+    )
+
+    result = results[("edge_empty_a", "edge_empty_b")]
+    assert result["intersection"] == []
+    assert result["union"] == []
+    assert result["jaccard"] == 0.0
 
 
 def test_future_dated_rows_are_absent_from_ranked_network_and_overview(

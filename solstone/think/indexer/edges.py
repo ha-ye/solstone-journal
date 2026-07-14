@@ -676,6 +676,105 @@ GROUP BY peer, kind, day
         conn.close()
 
 
+def _load_neighbor_ids(
+    conn: sqlite3.Connection,
+    entity_id: str,
+    *,
+    filters_sql: str,
+    filter_params: dict[str, Any],
+    principal_id: str | None,
+) -> set[str]:
+    rows = conn.execute(
+        f"""
+SELECT DISTINCT
+  CASE WHEN src = :entity_id THEN dst ELSE src END AS peer
+FROM edges
+WHERE (src = :entity_id OR dst = :entity_id)
+  AND (CASE WHEN src = :entity_id THEN dst ELSE src END) != :entity_id
+  {filters_sql}
+        """,
+        {"entity_id": entity_id, **filter_params},
+    ).fetchall()
+    neighbors: set[str] = set()
+    for row in rows:
+        peer = str(row["peer"])
+        if not peer:
+            continue
+        if principal_id and entity_id != principal_id and peer == principal_id:
+            continue
+        neighbors.add(peer)
+    return neighbors
+
+
+def load_shared_neighborhood_jaccard(
+    pairs: Sequence[tuple[str, str]],
+    *,
+    kinds: Sequence[str] | None = None,
+    facet: str | None = None,
+    day_from: str | None = None,
+    day_to: str | None = None,
+    reference_day: str | None = None,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """Load shared-neighborhood Jaccard scores for entity pairs read-only."""
+    normalized_pairs = [(str(source), str(target)) for source, target in pairs]
+    if not normalized_pairs:
+        return {}
+
+    filters_sql, filter_params, _ = _filter_payload(
+        kinds=kinds,
+        facet=facet,
+        day_from=day_from,
+        day_to=day_to,
+    )
+    ranking_filters_sql, ranking_filter_params = _with_ranking_day_cap(
+        filters_sql,
+        filter_params,
+        _reference_day(reference_day),
+    )
+
+    # Local import mirrors load_entity_network and avoids indexer import cycles.
+    from solstone.think.entities.journal import get_journal_principal
+
+    principal = get_journal_principal()
+    principal_id = principal.get("id") if principal else None
+
+    conn = _open_edges_reader()
+    try:
+        entity_ids = sorted(
+            {entity_id for pair in normalized_pairs for entity_id in pair if entity_id}
+        )
+        neighbor_sets = {
+            entity_id: _load_neighbor_ids(
+                conn,
+                entity_id,
+                filters_sql=ranking_filters_sql,
+                filter_params=ranking_filter_params,
+                principal_id=principal_id,
+            )
+            for entity_id in entity_ids
+        }
+
+        results: dict[tuple[str, str], dict[str, Any]] = {}
+        for source_id, target_id in normalized_pairs:
+            source_neighbors = set(neighbor_sets.get(source_id, set()))
+            target_neighbors = set(neighbor_sets.get(target_id, set()))
+            source_neighbors.discard(target_id)
+            target_neighbors.discard(source_id)
+            intersection = source_neighbors & target_neighbors
+            union = source_neighbors | target_neighbors
+            jaccard = len(intersection) / len(union) if union else 0.0
+            results[(source_id, target_id)] = {
+                "source_neighbors": sorted(source_neighbors),
+                "target_neighbors": sorted(target_neighbors),
+                "intersection": sorted(intersection),
+                "union": sorted(union),
+                "jaccard": jaccard,
+            }
+        return results
+    finally:
+        conn.close()
+
+
 def load_edge_evidence(
     entity_id: str,
     peer_id: str,
