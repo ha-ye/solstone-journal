@@ -45,6 +45,7 @@ from solstone.convey.reasons import (
     FILE_READ_FAILED,
     INGEST_CONTRACT_INVALID,
     INGEST_NO_FILES,
+    INGEST_SIDECAR_CONFLICT,
     INGEST_STORAGE_FAILED,
     INVALID_DAY,
     INVALID_SEGMENT_OR_STREAM,
@@ -58,10 +59,8 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import error_response, respond_collection
 from solstone.observe import protocol
 from solstone.observe.utils import (
-    MAX_SEGMENT_ATTEMPTS,
     compute_bytes_sha256,
     compute_file_sha256,
-    find_available_segment,
 )
 from solstone.think.contract.journal import (
     ContractIssue,
@@ -70,17 +69,20 @@ from solstone.think.contract.journal import (
 )
 from solstone.think.link.auth import AuthorizedClients
 from solstone.think.link.paths import authorized_clients_path
+from solstone.think.segment_files import RESERVED_SEGMENT_FILENAMES
 from solstone.think.streams import stream_name, update_stream, write_segment_stream
 from solstone.think.utils import day_path, iter_segments, now_ms, segment_path
 
 from .processing_proof import has_terminal_processing_proof
 from .share_delete import DELETABLE_SOURCE_STREAMS, delete_source_stream
 from .utils import (
+    DISPOSITION_RECEIVED_NOT_WRITTEN,
+    MAX_INGEST_SEGMENT_ATTEMPTS,
+    IngestFile,
     ObserverRegistry,
     append_history_record,
     clear_ingest_rejection,
     find_oldest_unrevoked_by_name,
-    find_segment_by_sha256,
     get_active_ingest_rejection,
     get_hist_dir,
     get_observers_dir,
@@ -89,8 +91,10 @@ from .utils import (
     observer_filename_prefix,
     record_ingest_rejection,
     record_status_beacon,
+    resolve_ingest_plan,
     resolve_observer_identity,
     revoke_observer_record,
+    save_ingest_plan,
     save_observer,
 )
 
@@ -669,52 +673,6 @@ def resolve_file_status(
     return "missing"
 
 
-def check_matched_files_held(
-    key_prefix: str,
-    day: str,
-    matched_sha256s: set[str],
-    fallback_stream: str,
-) -> bool:
-    """Return True only when every matched sha is held by the journal.
-
-    This is read-only. It resolves each sha through the most-recent upload
-    history record before checking disk truth. Both "present" and "processed"
-    count as held; only "missing" requires healing.
-    """
-    day_dir = day_path(day, create=False)
-    records = load_history(key_prefix, day)
-    latest: dict[str, tuple[str, str, str, object]] = {}
-
-    for record in records:
-        if record.get("type"):
-            continue
-
-        stream = record.get("stream", fallback_stream)
-        segment = record.get("segment", "")
-
-        for file_rec in record.get("files", []):
-            sha256 = file_rec.get("sha256", "")
-            if sha256:
-                latest[sha256] = (
-                    stream,
-                    segment,
-                    file_rec.get("written", ""),
-                    file_rec.get("size"),
-                )
-
-    for sha256 in matched_sha256s:
-        entry = latest.get(sha256)
-        if entry is None:
-            return False
-
-        stream, segment, written, size = entry
-        status = resolve_file_status(day_dir, stream, segment, written, size)
-        if status == "missing":
-            return False
-
-    return True
-
-
 # === Segment collision helpers ===
 
 
@@ -814,37 +772,9 @@ def _process_ingest_files(
     uploaded_files,
     *,
     bundle: dict[str, Any],
-    source: str | None = None,
     meta: dict[str, Any] | None = None,
 ) -> tuple[dict, int]:
-    """Shared ingest pipeline: read/hash files, dedup, deconflict, save, record history, update stats.
-
-    Parameters
-    ----------
-    observer : dict
-        Observer metadata dict (must include 'stats', 'name', 'last_seen', etc.)
-    key_prefix : str
-        First 8 chars of observer key.
-    segment : str
-        Requested segment key (HHMMSS_LEN format).
-    day : str
-        Day string (YYYYMMDD format).
-    stream : str
-        Stream name (already resolved by caller).
-    uploaded_files : list
-        List of Flask FileStorage objects from request.files.getlist("files").
-    bundle : dict
-        Cached journal at-rest contract bundle from app startup.
-    source : str or None
-        If provided, added as "source" field to history record (e.g., "transfer").
-    meta : dict or None
-        Client metadata used to validate the ingest envelope.
-
-    Returns
-    -------
-    tuple of (dict, int)
-        Response body dict and HTTP status code.
-    """
+    """Shared ingest pipeline: read/hash, validate, resolve, apply, record history."""
     # Read file contents into memory and compute SHA256 before saving
     # This allows duplicate detection without writing to disk
     file_data = []  # List of (submitted_filename, simple_filename, content, sha256)
@@ -912,18 +842,51 @@ def _process_ingest_files(
             INGEST_CONTRACT_INVALID.status,
         )
 
-    # Check for duplicate submission by SHA256
-    incoming_sha256s = {fd[3] for fd in file_data}
-    existing_segment, matched_sha256s = find_segment_by_sha256(
-        key_prefix, day, incoming_sha256s
+    ingest_files = [
+        IngestFile(
+            submitted=submitted,
+            written=written,
+            content=content,
+            sha256=sha256,
+        )
+        for submitted, written, content, sha256 in file_data
+    ]
+    plan = resolve_ingest_plan(
+        day=day,
+        stream=stream,
+        requested_segment=segment,
+        files=ingest_files,
     )
 
-    if existing_segment and check_matched_files_held(
-        key_prefix, day, matched_sha256s, stream
-    ):
+    if plan.status == "conflict":
+        append_history_record(key_prefix, day, _sync_record_for_plan(plan))
         logger.info(
-            f"Duplicate segment rejected: {day}/{segment} from {observer.get('name')} "
-            f"(matches existing {existing_segment})"
+            "Observer ingest outcome=conflict day=%s stream=%s requested=%s segment=%s",
+            day,
+            stream,
+            segment,
+            plan.segment,
+        )
+        detail = "Conflicting sidecar metadata for existing segment"
+        return (
+            {
+                "status": "conflict",
+                **_error_body(INGEST_SIDECAR_CONFLICT, detail=detail),
+                "conflicting_files": plan.conflict_files,
+                "existing_segment": plan.existing_segment or plan.segment,
+            },
+            INGEST_SIDECAR_CONFLICT.status,
+        )
+
+    if plan.status == "duplicate":
+        save_ingest_plan(plan, allow_reentry=False)
+        append_history_record(key_prefix, day, _sync_record_for_plan(plan))
+        logger.info(
+            "Observer ingest outcome=candidate_matched day=%s stream=%s requested=%s segment=%s",
+            day,
+            stream,
+            segment,
+            plan.segment,
         )
 
         observer["last_seen"] = now_ms()
@@ -936,36 +899,23 @@ def _process_ingest_files(
         return (
             {
                 "status": "duplicate",
-                "existing_segment": existing_segment,
+                "existing_segment": plan.existing_segment or plan.segment,
                 "message": "All files already received",
             },
             200,
         )
 
-    if existing_segment:
-        logger.info(
-            f"Re-ingesting {day}/{segment} from {observer.get('name')}: matched "
-            f"segment {existing_segment} but its bytes are missing on disk - healing"
-        )
-
-    partial_match = bool(matched_sha256s)
-
-    # Ensure day directory exists
-    day_dir = day_path(day)
-    day_dir.mkdir(parents=True, exist_ok=True)
-
-    # Find available segment key within the stream directory
-    stream_dir = day_dir / stream
-    stream_dir.mkdir(parents=True, exist_ok=True)
-
-    original_segment = segment
-    available_segment = find_available_segment(stream_dir, segment)
-
-    if available_segment is None:
+    if plan.status == "storage_failed":
         logger.error(
-            f"No available segment slot for {day}/{stream}/{segment} from "
-            f"{observer.get('name', 'unknown')} after {MAX_SEGMENT_ATTEMPTS} attempts"
+            "No available segment slot for %s/%s/%s from %s after %s attempts",
+            day,
+            stream,
+            segment,
+            observer.get("name", "unknown"),
+            MAX_INGEST_SEGMENT_ATTEMPTS,
         )
+        day_dir = day_path(day)
+        day_dir.mkdir(parents=True, exist_ok=True)
         failed_dir = _save_to_failed(day_dir, file_data, segment)
         return (
             {
@@ -974,7 +924,7 @@ def _process_ingest_files(
                     INGEST_STORAGE_FAILED,
                     detail=(
                         "No available segment slot after "
-                        f"{MAX_SEGMENT_ATTEMPTS} attempts"
+                        f"{MAX_INGEST_SEGMENT_ATTEMPTS} attempts"
                     ),
                 ),
                 "failed_path": str(failed_dir.relative_to(day_dir.parent)),
@@ -982,88 +932,146 @@ def _process_ingest_files(
             507,
         )
 
-    segment = available_segment
-    if segment != original_segment:
-        logger.info(
-            f"Segment collision resolved: {original_segment} -> {segment} "
-            f"for observer {observer.get('name', 'unknown')}"
+    history_recorded = False
+    apply_result = save_ingest_plan(plan, allow_reentry=True)
+    if apply_result.reenter_resolution:
+        first_result = apply_result
+        plan = resolve_ingest_plan(
+            day=day,
+            stream=stream,
+            requested_segment=segment,
+            files=ingest_files,
+        )
+        if plan.status == "conflict":
+            append_history_record(key_prefix, day, _sync_record_for_plan(plan))
+            logger.info(
+                "Observer ingest outcome=conflict day=%s stream=%s requested=%s segment=%s",
+                day,
+                stream,
+                segment,
+                plan.segment,
+            )
+            detail = "Conflicting sidecar metadata for existing segment"
+            return (
+                {
+                    "status": "conflict",
+                    **_error_body(INGEST_SIDECAR_CONFLICT, detail=detail),
+                    "conflicting_files": plan.conflict_files,
+                    "existing_segment": plan.existing_segment or plan.segment,
+                },
+                INGEST_SIDECAR_CONFLICT.status,
+            )
+        if plan.status == "storage_failed":
+            day_dir = day_path(day)
+            day_dir.mkdir(parents=True, exist_ok=True)
+            failed_dir = _save_to_failed(day_dir, file_data, segment)
+            return (
+                {
+                    "status": "failed",
+                    **_error_body(
+                        INGEST_STORAGE_FAILED,
+                        detail=(
+                            "No available segment slot after "
+                            f"{MAX_INGEST_SEGMENT_ATTEMPTS} attempts"
+                        ),
+                    ),
+                    "failed_path": str(failed_dir.relative_to(day_dir.parent)),
+                },
+                507,
+            )
+        if plan.status == "duplicate":
+            records = _records_with_apply_result(plan.records, first_result)
+            sync_record = _sync_record_for_plan(plan, records=records)
+            append_history_record(key_prefix, day, sync_record)
+            apply_result = first_result
+            history_recorded = True
+        else:
+            second_result = save_ingest_plan(plan, allow_reentry=False)
+            apply_result = _merge_apply_results(first_result, second_result)
+
+    if not history_recorded:
+        append_history_record(
+            key_prefix,
+            day,
+            _sync_record_for_plan(
+                plan, records=_records_with_apply_result(plan.records, apply_result)
+            ),
         )
 
-    # Create segment directory for files (under stream)
-    segment_dir = segment_path(day, segment, stream)
-    segment_dir.mkdir(parents=True, exist_ok=True)
-
-    # Save files from memory to disk
-    saved_files = []
-    file_records = []
-    total_bytes = 0
-
-    for submitted_filename, simple_filename, content, sha256 in file_data:
-        target_path = segment_dir / simple_filename
-
-        try:
-            target_path.write_bytes(content)
-            stat = target_path.stat()
-            file_size = stat.st_size
-
-            saved_files.append(simple_filename)
-            total_bytes += file_size
-
-            file_records.append(
-                {
-                    "submitted": submitted_filename,
-                    "written": simple_filename,
-                    "size": file_size,
-                    "sha256": sha256,
-                }
-            )
-
-            logger.info(f"Saved {simple_filename} to {segment_dir}")
-        except OSError as e:
-            logger.error(f"Failed to save {simple_filename}: {e}")
-            return (
-                _error_body(
-                    INGEST_STORAGE_FAILED,
-                    detail=f"Failed to save {simple_filename}",
-                ),
-                500,
-            )
-
-    if not saved_files:
-        return _error_body(INGEST_NO_FILES, detail="No valid files saved"), 400
-
-    sync_record = {
-        "ts": now_ms(),
-        "segment": segment,
-        "stream": stream,
-        "files": file_records,
-    }
-    if segment != original_segment:
-        sync_record["segment_original"] = original_segment
-    if partial_match:
-        sync_record["partial_match_sha256s"] = list(matched_sha256s)
-    if source:
-        sync_record["source"] = source
-    append_history_record(key_prefix, day, sync_record)
-
     observer["last_seen"] = now_ms()
-    observer["last_segment"] = segment
+    observer["last_segment"] = plan.segment
     observer["stats"]["segments_received"] = (
         observer["stats"].get("segments_received", 0) + 1
     )
     observer["stats"]["bytes_received"] = (
-        observer["stats"].get("bytes_received", 0) + total_bytes
+        observer["stats"].get("bytes_received", 0) + apply_result.bytes_written
     )
     clear_ingest_rejection(observer)
     save_observer(observer)
 
-    status = "collision" if segment != original_segment else "ok"
-    return {
-        "status": status,
-        "segment": segment,
-        "files": saved_files,
-        "bytes": total_bytes,
-    }, 200
+    outcome = "minted" if plan.created_segment else "healed"
+    if plan.status == "collision":
+        outcome = "minted"
+    elif plan.write_files and not any(file.is_media for file in plan.write_files):
+        outcome = "healed"
+    logger.info(
+        "Observer ingest outcome=%s day=%s stream=%s requested=%s segment=%s",
+        outcome,
+        day,
+        stream,
+        segment,
+        plan.segment,
+    )
+
+    body = {
+        "status": "collision" if plan.status == "collision" else "ok",
+        "segment": plan.segment,
+        "files": apply_result.files_written,
+        "bytes": apply_result.bytes_written,
+        "_created_segment": plan.created_segment,
+    }
+    if plan.segment_original:
+        body["segment_original"] = plan.segment_original
+    return body, 200
+
+
+def _sync_record_for_plan(
+    plan, *, records: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    sync_record: dict[str, Any] = {
+        "ts": now_ms(),
+        "segment": plan.segment,
+        "stream": plan.stream,
+        "files": records if records is not None else plan.records,
+    }
+    if plan.segment_original:
+        sync_record["segment_original"] = plan.segment_original
+    return sync_record
+
+
+def _records_with_apply_result(
+    records: list[dict[str, Any]], apply_result
+) -> list[dict[str, Any]]:
+    written = set(apply_result.files_written)
+    already_held = set(apply_result.files_already_held)
+    adjusted = []
+    for record in records:
+        item = dict(record)
+        if item.get("written") in written:
+            item["disposition"] = "written"
+        if item.get("written") in already_held:
+            item["disposition"] = "already_held"
+        adjusted.append(item)
+    return adjusted
+
+
+def _merge_apply_results(first, second):
+    return type(first)(
+        files_written=[*first.files_written, *second.files_written],
+        files_already_held=[*first.files_already_held, *second.files_already_held],
+        bytes_written=first.bytes_written + second.bytes_written,
+        reenter_resolution=False,
+    )
 
 
 @observer_bp.route("/ingest", methods=["POST"])
@@ -1172,22 +1180,24 @@ def ingest_upload() -> Any:
     if status != 200 or body.get("status") == "duplicate":
         return jsonify(body), status
 
+    created_segment = bool(body.pop("_created_segment", False))
     segment = body["segment"]
     saved_files = body["files"]
     segment_dir = segment_path(day, segment, stream)
 
-    # Write stream identity for this segment
-    try:
-        result = update_stream(stream, day, segment, type="observer")
-        write_segment_stream(
-            segment_dir,
-            stream,
-            result["prev_day"],
-            result["prev_segment"],
-            result["seq"],
-        )
-    except Exception as e:
-        logger.warning(f"Failed to write stream identity: {e}")
+    # Write stream identity only when ingest minted a new segment directory.
+    if created_segment:
+        try:
+            result = update_stream(stream, day, segment, type="observer")
+            write_segment_stream(
+                segment_dir,
+                stream,
+                result["prev_day"],
+                result["prev_segment"],
+                result["seq"],
+            )
+        except Exception as e:
+            logger.warning(f"Failed to write stream identity: {e}")
 
     # Add stream to meta for downstream handlers
     meta["stream"] = stream
@@ -1205,7 +1215,7 @@ def ingest_upload() -> Any:
         event_fields["meta"] = meta
     emit("observe", "observing", **event_fields)
 
-    logger.info(
+    logger.debug(
         f"Received {len(saved_files)} files for {day}/{segment} from {observer.get('name')}"
     )
     return jsonify(body), status
@@ -1257,7 +1267,7 @@ def ingest_manifest_day(day: str) -> Any:
         arc_key = f"{stream}/{seg_key}"
         files = []
         for file_path in sorted(seg_path.iterdir()):
-            if file_path.is_file():
+            if file_path.is_file() and file_path.name not in RESERVED_SEGMENT_FILENAMES:
                 files.append(
                     {
                         "name": file_path.name,
@@ -1422,6 +1432,11 @@ def ingest_segments(day: str) -> Any:
 
         # Check each file's status
         for file_rec in record.get("files", []):
+            # Old history rows predate dispositions and remain enumerable. New
+            # received-not-written rows are audit-only and must not corroborate
+            # held bytes for clients.
+            if file_rec.get("disposition") == DISPOSITION_RECEIVED_NOT_WRITTEN:
+                continue
             written = file_rec.get("written", "")
             submitted = file_rec.get("submitted", "")
             size = file_rec.get("size", 0)
@@ -1447,6 +1462,8 @@ def ingest_segments(day: str) -> Any:
     # Convert files_by_sha dicts to lists and sort by segment key
     result = []
     for segment_data in sorted(segments.values(), key=lambda s: s["key"]):
+        if not segment_data["files_by_sha"]:
+            continue
         segment_key = segment_data["key"]
         entry = {
             "key": segment_key,

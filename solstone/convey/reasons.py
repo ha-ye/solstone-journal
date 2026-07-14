@@ -350,6 +350,11 @@ INGEST_CONTRACT_INVALID = Reason(
     "I couldn't use those observer files because they don't match the journal contract.",
     422,
 )
+INGEST_SIDECAR_CONFLICT = Reason(
+    "ingest_sidecar_conflict",
+    "I couldn't bring in those observer sidecars because they conflict with files already held.",
+    409,
+)
 
 # speakers
 SPEAKER_OWNER_VOICE_TOO_CLOSE = Reason(

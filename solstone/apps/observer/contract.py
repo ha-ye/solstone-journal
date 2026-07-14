@@ -242,6 +242,7 @@ OPERATIONS: list[OperationSpec] = [
                     FieldSpec("files", "array", item_type="string"),
                     FieldSpec("bytes", "integer"),
                     FieldSpec("existing_segment", "string"),
+                    FieldSpec("segment_original", "string"),
                     FieldSpec("message", "string"),
                 ),
                 example={
@@ -274,6 +275,11 @@ OPERATIONS: list[OperationSpec] = [
                     "missing_required_field",
                 ),
                 "Upload request failed validation.",
+            ),
+            _json_error(
+                409,
+                ("ingest_sidecar_conflict",),
+                "Uploaded sidecar metadata conflicts with an existing segment.",
             ),
             _json_error(
                 422,

@@ -73,6 +73,7 @@
               "import_not_found",
               "ingest_contract_invalid",
               "ingest_no_files",
+              "ingest_sidecar_conflict",
               "ingest_storage_failed",
               "invalid_config_value",
               "invalid_day",
@@ -3265,6 +3266,9 @@
                     "segment": {
                       "type": "string"
                     },
+                    "segment_original": {
+                      "type": "string"
+                    },
                     "status": {
                       "type": "string"
                     }
@@ -3320,6 +3324,19 @@
             "x-reason-codes": [
               "feature_unavailable",
               "pl_revoked"
+            ]
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Uploaded sidecar metadata conflicts with an existing segment.",
+            "x-reason-codes": [
+              "ingest_sidecar_conflict"
             ]
           },
           "422": {

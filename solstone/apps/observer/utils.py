@@ -9,11 +9,13 @@ that are used by both routes.py and events.py.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import math
 import os
 import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -27,10 +29,22 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import error_response
 from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
 from solstone.think.contract.journal import ContractIssue
-from solstone.think.journal_io import atomic_replace
-from solstone.think.utils import now_ms
+from solstone.think.journal_io import atomic_replace, write_bytes_exclusive
+from solstone.think.media import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
+from solstone.think.segment_files import (
+    INGEST_MANIFEST_NAME,
+    RESERVED_SEGMENT_FILENAMES,
+)
+from solstone.think.utils import day_path, now_ms
 
 logger = logging.getLogger(__name__)
+
+INGEST_MANIFEST_SCHEMA_VERSION = 1
+MAX_INGEST_SEGMENT_ATTEMPTS = 100
+DISPOSITION_WRITTEN = "written"
+DISPOSITION_ALREADY_HELD = "already_held"
+DISPOSITION_RECEIVED_NOT_WRITTEN = "received_not_written"
+_MEDIA_CONTENT_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 
 
 def get_observers_dir() -> Path:
@@ -614,56 +628,448 @@ def increment_stat(key_prefix: str, stat_name: str) -> None:
         logger.warning(f"Failed to update {stat_name} for {key_prefix}: {e}")
 
 
-def find_segment_by_sha256(
-    key_prefix: str, day: str, file_sha256s: set[str]
-) -> tuple[str | None, set[str]]:
-    """Find existing segment with matching file SHA256 signatures.
+@dataclass(frozen=True)
+class IngestFile:
+    submitted: str
+    written: str
+    content: bytes
+    sha256: str
 
-    Searches history records for the given day to find a segment where
-    all provided SHA256 hashes match existing files.
+    @property
+    def size(self) -> int:
+        return len(self.content)
 
-    Args:
-        key_prefix: Observer filename prefix
-        day: Day string (YYYYMMDD)
-        file_sha256s: Set of SHA256 hashes to match
+    @property
+    def is_reserved(self) -> bool:
+        return self.written in RESERVED_SEGMENT_FILENAMES
 
-    Returns:
-        Tuple of (segment_key, matched_sha256s):
-        - If full match: (segment_key, all sha256s)
-        - If partial match: (None, set of matching sha256s)
-        - If no match: (None, empty set)
-    """
-    records = load_history(key_prefix, day)
-    if not records:
-        return None, set()
+    @property
+    def is_media(self) -> bool:
+        return Path(self.written).suffix.lower() in _MEDIA_CONTENT_EXTENSIONS
 
-    # Build map of sha256 -> segment for all upload records
-    sha256_to_segment: dict[str, str] = {}
-    segment_sha256s: dict[str, set[str]] = {}
 
-    for record in records:
-        # Skip non-upload records (e.g., "observed" type)
-        if record.get("type"):
+@dataclass(frozen=True)
+class IngestPlan:
+    status: str
+    segment: str
+    requested_segment: str
+    stream: str
+    day: str
+    files: list[IngestFile]
+    records: list[dict[str, Any]]
+    write_files: list[IngestFile]
+    held_files: list[IngestFile]
+    conflict_files: list[str]
+    existing_segment: str | None = None
+    segment_original: str | None = None
+    created_segment: bool = False
+
+
+@dataclass(frozen=True)
+class IngestApplyResult:
+    files_written: list[str]
+    files_already_held: list[str]
+    bytes_written: int
+    reenter_resolution: bool = False
+
+
+def resolve_ingest_plan(
+    *,
+    day: str,
+    stream: str,
+    requested_segment: str,
+    files: list[IngestFile],
+) -> IngestPlan:
+    """Resolve an observer upload against disk without writing anything."""
+    stream_dir = day_path(day, create=False) / stream
+    candidates = _candidate_dirs(stream_dir, requested_segment)
+    content_files = _content_identity_files(files)
+
+    for candidate_segment, candidate_dir in candidates:
+        evaluation = _evaluate_candidate(candidate_dir, files, content_files)
+        if evaluation is None:
             continue
+        return _plan_for_candidate(
+            day=day,
+            stream=stream,
+            requested_segment=requested_segment,
+            segment=candidate_segment,
+            files=files,
+            content_files=content_files,
+            evaluation=evaluation,
+        )
 
-        segment = record.get("segment", "")
-        if not segment:
+    segment = _first_available_segment(stream_dir, requested_segment)
+    if segment is None:
+        return IngestPlan(
+            status="storage_failed",
+            segment=requested_segment,
+            requested_segment=requested_segment,
+            stream=stream,
+            day=day,
+            files=files,
+            records=_records_for_files(
+                files, disposition=DISPOSITION_RECEIVED_NOT_WRITTEN
+            ),
+            write_files=[],
+            held_files=[],
+            conflict_files=[],
+        )
+
+    records = []
+    write_files = []
+    for file in files:
+        if file.is_reserved:
+            records.append(_file_record(file, DISPOSITION_RECEIVED_NOT_WRITTEN))
+        else:
+            records.append(_file_record(file, DISPOSITION_WRITTEN))
+            write_files.append(file)
+
+    return IngestPlan(
+        status="ok" if segment == requested_segment else "collision",
+        segment=segment,
+        requested_segment=requested_segment,
+        stream=stream,
+        day=day,
+        files=files,
+        records=records,
+        write_files=write_files,
+        held_files=[],
+        conflict_files=[],
+        segment_original=requested_segment if segment != requested_segment else None,
+        created_segment=True,
+    )
+
+
+def save_ingest_plan(plan: IngestPlan, *, allow_reentry: bool) -> IngestApplyResult:
+    """Apply a resolved ingest plan, writing client bytes create-exclusively."""
+    if plan.status == "duplicate":
+        segment_dir = day_path(plan.day, create=False) / plan.stream / plan.segment
+        if plan.held_files:
+            write_ingest_manifest(
+                segment_dir,
+                requested_segment=plan.requested_segment,
+                files=plan.held_files,
+            )
+        return IngestApplyResult(
+            files_written=[], files_already_held=[], bytes_written=0
+        )
+
+    if plan.status not in {"ok", "collision"}:
+        return IngestApplyResult(
+            files_written=[], files_already_held=[], bytes_written=0
+        )
+
+    segment_dir = day_path(plan.day) / plan.stream / plan.segment
+    segment_dir.mkdir(parents=True, exist_ok=True)
+
+    files_written: list[str] = []
+    files_already_held: list[str] = []
+    bytes_written = 0
+    for file in plan.write_files:
+        target = segment_dir / file.written
+        try:
+            write_bytes_exclusive(target, file.content)
+        except FileExistsError:
+            try:
+                existing_sha = _file_sha256(target)
+            except OSError:
+                existing_sha = ""
+            if existing_sha == file.sha256:
+                files_already_held.append(file.written)
+                continue
+            if allow_reentry:
+                return IngestApplyResult(
+                    files_written=files_written,
+                    files_already_held=files_already_held,
+                    bytes_written=bytes_written,
+                    reenter_resolution=True,
+                )
+            raise
+
+        files_written.append(file.written)
+        bytes_written += file.size
+
+    if plan.write_files or plan.held_files:
+        write_ingest_manifest(
+            segment_dir,
+            requested_segment=plan.requested_segment,
+            files=[*plan.held_files, *plan.write_files],
+        )
+    return IngestApplyResult(
+        files_written=files_written,
+        files_already_held=files_already_held,
+        bytes_written=bytes_written,
+    )
+
+
+def write_ingest_manifest(
+    segment_dir: Path, *, requested_segment: str, files: list[IngestFile]
+) -> None:
+    """Write the journal-authored ingest manifest for a segment."""
+    manifest_path = segment_dir / INGEST_MANIFEST_NAME
+    existing = _read_ingest_manifest(manifest_path)
+    manifest_files = dict(existing.get("files", {})) if existing else {}
+    for file in files:
+        if file.is_reserved:
             continue
+        manifest_files[file.written] = {"sha256": file.sha256, "size": file.size}
+    manifest = {
+        "schema_version": INGEST_MANIFEST_SCHEMA_VERSION,
+        "requested_segment": requested_segment,
+        "files": manifest_files,
+    }
+    atomic_replace(manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
-        if segment not in segment_sha256s:
-            segment_sha256s[segment] = set()
 
-        for file_rec in record.get("files", []):
-            sha256 = file_rec.get("sha256", "")
-            if sha256:
-                sha256_to_segment[sha256] = segment
-                segment_sha256s[segment].add(sha256)
+def _content_identity_files(files: list[IngestFile]) -> list[IngestFile]:
+    non_reserved = [file for file in files if not file.is_reserved]
+    media_files = [file for file in non_reserved if file.is_media]
+    return media_files or non_reserved
 
-    # Check for full match - all incoming sha256s exist in a single segment
-    for segment, existing_sha256s in segment_sha256s.items():
-        if file_sha256s and file_sha256s.issubset(existing_sha256s):
-            return segment, file_sha256s
 
-    # Check for partial match - some sha256s already exist
-    matched = file_sha256s & set(sha256_to_segment.keys())
-    return None, matched
+def _candidate_dirs(stream_dir: Path, requested_segment: str) -> list[tuple[str, Path]]:
+    if not stream_dir.exists():
+        return []
+    start = requested_segment.split("_", 1)[0]
+    candidates = [
+        child.name
+        for child in stream_dir.iterdir()
+        if child.is_dir() and child.name.startswith(f"{start}_")
+    ]
+    candidates.sort()
+    if requested_segment in candidates:
+        candidates.remove(requested_segment)
+        candidates.insert(0, requested_segment)
+    return [(segment, stream_dir / segment) for segment in candidates]
+
+
+def _evaluate_candidate(
+    segment_dir: Path, files: list[IngestFile], content_files: list[IngestFile]
+) -> dict[str, Any] | None:
+    content_names = {file.written for file in content_files}
+    manifest_files = _manifest_files(segment_dir)
+    missing_content: list[IngestFile] = []
+    content_conflicts: list[IngestFile] = []
+    sidecar_conflicts: list[IngestFile] = []
+    new_files: list[IngestFile] = []
+    held_files: list[IngestFile] = []
+
+    for file in files:
+        if file.is_reserved:
+            continue
+        target = segment_dir / file.written
+        held = False
+        if target.exists():
+            try:
+                held = _file_sha256(target) == file.sha256
+            except OSError:
+                held = False
+            if not held:
+                if file.written in content_names:
+                    content_conflicts.append(file)
+                else:
+                    sidecar_conflicts.append(file)
+                continue
+        else:
+            manifest_entry = manifest_files.get(file.written)
+            if _manifest_entry_matches(manifest_entry, file):
+                if _has_terminal_processing_proof(
+                    segment_dir / file.written, file.size
+                ):
+                    held = True
+                elif file.written in content_names:
+                    missing_content.append(file)
+                    continue
+                else:
+                    new_files.append(file)
+                    continue
+            elif manifest_entry is not None and file.written in content_names:
+                content_conflicts.append(file)
+                continue
+            else:
+                if file.written in content_names:
+                    missing_content.append(file)
+                else:
+                    new_files.append(file)
+                continue
+
+        if held:
+            held_files.append(file)
+
+    if content_conflicts:
+        return None
+    if not content_files and not held_files:
+        return None
+
+    return {
+        "missing_content": missing_content,
+        "sidecar_conflicts": sidecar_conflicts,
+        "new_files": new_files,
+        "held_files": held_files,
+    }
+
+
+def _plan_for_candidate(
+    *,
+    day: str,
+    stream: str,
+    requested_segment: str,
+    segment: str,
+    files: list[IngestFile],
+    content_files: list[IngestFile],
+    evaluation: dict[str, Any],
+) -> IngestPlan:
+    records = []
+    write_files: list[IngestFile] = []
+    held_files: list[IngestFile] = list(evaluation["held_files"])
+    conflict_files = [file.written for file in evaluation["sidecar_conflicts"]]
+    missing_content = list(evaluation["missing_content"])
+    new_files = list(evaluation["new_files"])
+    has_media_identity = any(file.is_media for file in content_files)
+
+    for file in files:
+        if file.is_reserved:
+            records.append(_file_record(file, DISPOSITION_RECEIVED_NOT_WRITTEN))
+        elif file in held_files:
+            records.append(_file_record(file, DISPOSITION_ALREADY_HELD))
+        elif file in missing_content:
+            records.append(_file_record(file, DISPOSITION_WRITTEN))
+            write_files.append(file)
+        elif file in new_files:
+            if conflict_files and has_media_identity:
+                records.append(_file_record(file, DISPOSITION_RECEIVED_NOT_WRITTEN))
+            else:
+                records.append(_file_record(file, DISPOSITION_WRITTEN))
+                write_files.append(file)
+        else:
+            records.append(_file_record(file, DISPOSITION_RECEIVED_NOT_WRITTEN))
+
+    if missing_content:
+        return IngestPlan(
+            status="ok",
+            segment=segment,
+            requested_segment=requested_segment,
+            stream=stream,
+            day=day,
+            files=files,
+            records=records,
+            write_files=write_files,
+            held_files=held_files,
+            conflict_files=[],
+            existing_segment=segment,
+        )
+
+    if conflict_files and has_media_identity:
+        return IngestPlan(
+            status="conflict",
+            segment=segment,
+            requested_segment=requested_segment,
+            stream=stream,
+            day=day,
+            files=files,
+            records=records,
+            write_files=[],
+            held_files=held_files,
+            conflict_files=conflict_files,
+            existing_segment=segment,
+        )
+
+    if write_files:
+        return IngestPlan(
+            status="ok",
+            segment=segment,
+            requested_segment=requested_segment,
+            stream=stream,
+            day=day,
+            files=files,
+            records=records,
+            write_files=write_files,
+            held_files=held_files,
+            conflict_files=[],
+            existing_segment=segment,
+        )
+
+    return IngestPlan(
+        status="duplicate",
+        segment=segment,
+        requested_segment=requested_segment,
+        stream=stream,
+        day=day,
+        files=files,
+        records=records,
+        write_files=[],
+        held_files=held_files,
+        conflict_files=[],
+        existing_segment=segment,
+    )
+
+
+def _first_available_segment(stream_dir: Path, requested_segment: str) -> str | None:
+    start, duration_text = requested_segment.split("_", 1)
+    try:
+        duration = int(duration_text)
+    except ValueError:
+        return None
+    for offset in range(MAX_INGEST_SEGMENT_ATTEMPTS):
+        candidate = requested_segment if offset == 0 else f"{start}_{duration + offset}"
+        if not (stream_dir / candidate).exists():
+            return candidate
+    return None
+
+
+def _records_for_files(
+    files: list[IngestFile], *, disposition: str
+) -> list[dict[str, Any]]:
+    return [_file_record(file, disposition) for file in files]
+
+
+def _file_record(file: IngestFile, disposition: str) -> dict[str, Any]:
+    return {
+        "submitted": file.submitted,
+        "written": file.written,
+        "size": file.size,
+        "sha256": file.sha256,
+        "disposition": disposition,
+    }
+
+
+def _read_ingest_manifest(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    files = raw.get("files")
+    if not isinstance(files, dict):
+        return {}
+    return raw
+
+
+def _manifest_files(segment_dir: Path) -> dict[str, Any]:
+    manifest = _read_ingest_manifest(segment_dir / INGEST_MANIFEST_NAME)
+    files = manifest.get("files")
+    return files if isinstance(files, dict) else {}
+
+
+def _manifest_entry_matches(entry: object, file: IngestFile) -> bool:
+    return (
+        isinstance(entry, dict)
+        and entry.get("sha256") == file.sha256
+        and entry.get("size") == file.size
+    )
+
+
+def _has_terminal_processing_proof(path: Path, size: int) -> bool:
+    from solstone.apps.observer.processing_proof import has_terminal_processing_proof
+
+    return has_terminal_processing_proof(path, size)
+
+
+def _file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
