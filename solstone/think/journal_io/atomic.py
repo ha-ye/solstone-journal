@@ -49,6 +49,37 @@ def atomic_replace(path: Path, data: str | bytes, *, mode: int | None = None) ->
     _fsync_dir(path.parent)
 
 
+def write_bytes_exclusive(path: Path, data: bytes, *, mode: int | None = None) -> None:
+    """Durably create path with data, failing if path already exists.
+
+    Contract: create the parent directory, write bytes to a same-directory temp,
+    flush and fsync the temp file, fchmod before close when mode is supplied,
+    link the temp path to the destination so an existing destination raises
+    FileExistsError without replacement, then call _fsync_dir(path.parent). On
+    any exception before install completion, unlink the temporary file and
+    re-raise.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp_", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+            if mode is not None:
+                os.fchmod(f.fileno(), mode)
+        os.link(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    else:
+        os.unlink(tmp)
+    _fsync_dir(path.parent)
+
+
 def install_file(temp_path: Path, dest: Path, *, mode: int | None = None) -> None:
     """Durably install an ALREADY-WRITTEN temp file onto dest.
 

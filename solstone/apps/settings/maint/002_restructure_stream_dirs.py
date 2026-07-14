@@ -21,13 +21,17 @@ import argparse
 import shutil
 from pathlib import Path
 
+from solstone.think.segment_files import RESERVED_SEGMENT_FILENAMES
 from solstone.think.streams import read_segment_stream
 from solstone.think.utils import day_dirs, get_journal, segment_key, setup_cli
 
 
 def _is_empty_segment(seg_dir: Path) -> bool:
     """Check if a segment directory has no content files."""
-    return not any(f.is_file() and f.name != "stream.json" for f in seg_dir.iterdir())
+    return not any(
+        f.is_file() and f.name not in RESERVED_SEGMENT_FILENAMES
+        for f in seg_dir.iterdir()
+    )
 
 
 def _count_segments(days: dict[str, str]) -> tuple[int, int, int]:

@@ -37,6 +37,7 @@ from solstone.think.journal_io import contained_path, install_file
 from solstone.think.link.bundle import load_client_identity
 from solstone.think.link.dialer import TunnelClient, TunnelRequestError
 from solstone.think.link.paths import relay_url
+from solstone.think.segment_files import RESERVED_SEGMENT_FILENAMES
 from solstone.think.utils import (
     CHRONICLE_DIR,
     day_path,
@@ -540,7 +541,7 @@ def _upload_segment_journal(
     files = [
         file_path
         for file_path in sorted(segment_path.iterdir())
-        if file_path.is_file() and file_path.name != "stream.json"
+        if file_path.is_file() and file_path.name not in RESERVED_SEGMENT_FILENAMES
     ]
     if not files:
         return ("skip", 0)
@@ -653,7 +654,7 @@ def send_segments_pl(peer: PeerInfo, days: list[str], dry_run: bool) -> None:
                 local_files = {
                     file_info["name"]: file_info["sha256"]
                     for file_info in manifest["files"]
-                    if file_info["name"] != "stream.json"
+                    if file_info["name"] not in RESERVED_SEGMENT_FILENAMES
                 }
                 remote_entry = remote_manifest.get(day, {}).get(
                     f"{stream_name}/{seg_key}", {}

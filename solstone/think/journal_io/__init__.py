@@ -16,6 +16,7 @@ from solstone.think.journal_io.append import append_jsonl, append_text
 from solstone.think.journal_io.atomic import (
     atomic_replace,
     install_file,
+    write_bytes_exclusive,
     write_json,
     write_jsonl,
     write_text,
@@ -79,6 +80,7 @@ __all__ = [
     # Atomic replace
     "atomic_replace",
     "install_file",
+    "write_bytes_exclusive",
     "write_json",
     "write_jsonl",
     "write_text",

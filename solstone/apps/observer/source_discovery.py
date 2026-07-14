@@ -8,11 +8,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from solstone.think.segment_files import RESERVED_SEGMENT_FILENAMES
 from solstone.think.utils import day_dirs, iter_segments
 
 LOCATION_ORIGINAL = "location.jsonl"
 # Files that don't count as "other content" when deciding location-only vs mixed.
-_NON_CONTENT_NAMES = {LOCATION_ORIGINAL, "item.json", "stream.json"}
+_NON_CONTENT_NAMES = {LOCATION_ORIGINAL, "item.json"} | RESERVED_SEGMENT_FILENAMES
 
 
 @dataclass(frozen=True)

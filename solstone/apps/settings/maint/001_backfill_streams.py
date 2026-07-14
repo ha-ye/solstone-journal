@@ -29,6 +29,7 @@ import os
 import socket
 from pathlib import Path
 
+from solstone.think.segment_files import RESERVED_SEGMENT_FILENAMES
 from solstone.think.streams import (
     _strip_hostname,
     read_segment_stream,
@@ -325,7 +326,8 @@ def backfill_streams(journal_root: Path, fallback_host: str, verbose: bool) -> N
 
             # Skip empty segments (no content files at all)
             has_content = any(
-                f.is_file() and f.name != "stream.json" for f in seg_dir.iterdir()
+                f.is_file() and f.name not in RESERVED_SEGMENT_FILENAMES
+                for f in seg_dir.iterdir()
             )
             if not has_content:
                 continue

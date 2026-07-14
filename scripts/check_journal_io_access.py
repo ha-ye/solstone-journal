@@ -62,6 +62,7 @@ GATED_PRIMITIVES: frozenset[str] = frozenset(
         "install_file",
         "save_npz",
         "update_npz",
+        "write_bytes_exclusive",
         "write_json",
         "write_jsonl",
         "write_npz",
@@ -73,7 +74,14 @@ MODULE_PRIMITIVES: dict[str, frozenset[str]] = {
     "solstone.think.journal_io": GATED_PRIMITIVES,
     "solstone.think.journal_io.append": frozenset({"append_jsonl", "append_text"}),
     "solstone.think.journal_io.atomic": frozenset(
-        {"atomic_replace", "install_file", "write_json", "write_jsonl", "write_text"}
+        {
+            "atomic_replace",
+            "install_file",
+            "write_bytes_exclusive",
+            "write_json",
+            "write_jsonl",
+            "write_text",
+        }
     ),
     "solstone.think.journal_io.locking": frozenset({"hold_lock"}),
     "solstone.think.journal_io.npz": frozenset({"save_npz", "update_npz", "write_npz"}),

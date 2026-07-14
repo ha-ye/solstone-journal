@@ -37,6 +37,7 @@ from solstone.think.importers.sync import SYNCABLE_REGISTRY
 from solstone.think.link.bundle import load_client_identity
 from solstone.think.link.dialer import TunnelClient
 from solstone.think.link.paths import relay_url
+from solstone.think.segment_files import RESERVED_SEGMENT_FILENAMES
 from solstone.think.utils import (
     day_path,
     get_config,
@@ -139,7 +140,7 @@ def _upload_segment(
     files = [
         file_path
         for file_path in sorted(segment_path.iterdir())
-        if file_path.is_file() and file_path.name != "stream.json"
+        if file_path.is_file() and file_path.name not in RESERVED_SEGMENT_FILENAMES
     ]
     if not files:
         return ("skip", 0)
@@ -323,7 +324,7 @@ def export_segments(
                 local_files = {
                     file_info["name"]: file_info["sha256"]
                     for file_info in manifest["files"]
-                    if file_info["name"] != "stream.json"
+                    if file_info["name"] not in RESERVED_SEGMENT_FILENAMES
                 }
                 if not local_files:
                     result.skipped += 1
@@ -345,7 +346,7 @@ def export_segments(
                     seg_bytes = sum(
                         file_info["size"]
                         for file_info in manifest["files"]
-                        if file_info["name"] != "stream.json"
+                        if file_info["name"] not in RESERVED_SEGMENT_FILENAMES
                     )
                     logger.info(f"  [would send] {day}/{stream_name}/{seg_key}")
                     day_sent += 1
