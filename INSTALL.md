@@ -142,6 +142,36 @@ the journal tool. For GPU transcription, upgrade `solstone-journal-cuda` instead
 of `solstone-journal`. The `journal setup` step refreshes runtime artifacts and
 reconciles the systemd/launchd unit if anything has changed.
 
+## upgrading an existing journal
+
+The steps above cover the package upgrade. If you already have a journal with history in it, three more things happen (or need to happen) on top of that:
+
+**one-time maintenance tasks.** Some upgrades ship a one-time migration that runs automatically the next time the service starts — you don't need to do anything. `journal maint --list` shows what ran and what's pending; `journal maint <task>` shows details and log output for one.
+
+**search index rebuild, if you're coming from before 0.7.0.** A pre-0.7.0 search index is dropped and rebuilt on first open after upgrade. The rebuild usually queues itself automatically, but if the service was still starting up when that happened, it can miss the window and print a message asking you to run it yourself. If search feels empty (or noticeably thinner than your journal's actual history) right after upgrading from a pre-0.7.0 install, run:
+
+```bash
+journal indexer --rescan-full
+```
+
+This is a full historical rescan — it can take a while on a large journal.
+
+**connections/edges backfill, if you're coming from before 0.8.3.** The relationship layer between entities (who's connected to whom, and how) is derived by a separate pass. `journal indexer --rescan` (and the automatic light rescan on service start) only covers today plus facets/imports/apps — it does **not** backfill edges over your existing history. To build connections for days you already have:
+
+```bash
+journal indexer --rebuild-edges
+```
+
+Run this once after upgrading to a version with the connections feature if your existing days show no connections.
+
+**if your journal isn't at the default location.** `journal setup` expects `~/journal` unless told otherwise. If your journal lives somewhere else — including if you're on an early source install that relied on the now-retired source-tree fallback (running `journal setup` from inside a git checkout used to default the journal into `<repo>/journal`) — point setup at it explicitly so it reuses that journal instead of creating an empty one at the default path:
+
+```bash
+journal setup --journal /path/to/your/journal --accept-existing-journal
+```
+
+Skipping `--journal` here silently resolves to `~/journal` and starts fresh — a real risk on the source-tree-fallback case, since a fresh `~/journal` looks like a working install even though your actual history is untouched at the old path.
+
 ## uninstall
 
 1. remove setup-managed runtime files: `journal setup --clean-uninstall`

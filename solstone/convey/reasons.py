@@ -211,7 +211,7 @@ ENTITY_OPERATION_FAILED = Reason(
 )
 EDGE_INDEX_UNAVAILABLE = Reason(
     "edge_index_unavailable",
-    "I couldn't read your connections because the index hasn't been built yet. Run `journal indexer --rescan` to build it.",
+    "I couldn't read your connections because the index hasn't been built yet. Run `journal indexer --rebuild-edges` to build it.",
     503,
 )
 
