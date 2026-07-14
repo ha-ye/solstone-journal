@@ -183,6 +183,38 @@ def test_observer_ingest_health_ok_and_skip(doctor, monkeypatch):
     assert result.status == "skip"
 
 
+def test_orphan_segment_pdf_check_warns_for_pdf_without_transcript(
+    doctor, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(tmp_path), "source"))
+    segment = tmp_path / "chronicle" / "20250101" / "import.document" / "120000_0"
+    segment.mkdir(parents=True)
+    (segment / "original.pdf").write_bytes(b"%PDF-1.4 synthetic")
+
+    result = doctor.orphan_segment_pdf_check(args(doctor))
+
+    assert result.status == "warn"
+    assert "1 orphan segment PDF" in result.detail
+    assert "chronicle/20250101/import.document/120000_0/original.pdf" in result.detail
+    assert result.fix is not None
+    assert "journal maint --force settings:007_migrate_pdf_extractions" in result.fix
+
+
+def test_orphan_segment_pdf_check_ignores_pdf_with_transcript(
+    doctor, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(tmp_path), "source"))
+    segment = tmp_path / "chronicle" / "20250101" / "import.document" / "120000_0"
+    segment.mkdir(parents=True)
+    (segment / "original.pdf").write_bytes(b"%PDF-1.4 synthetic")
+    (segment / "document_transcript.md").write_text("ready", encoding="utf-8")
+
+    result = doctor.orphan_segment_pdf_check(args(doctor))
+
+    assert result.status == "ok"
+    assert result.detail == "no orphan segment PDFs"
+
+
 def test_journal_maint_tasks_failed_state_fails(doctor, monkeypatch, tmp_path):
     monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(tmp_path), "source"))
     write_maint_events(

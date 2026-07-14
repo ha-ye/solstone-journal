@@ -46,6 +46,7 @@ from typing import IO, Callable, Sequence
 from solstone.think import features as _features
 from solstone.think import maint, parakeet_readiness, skills_cli
 from solstone.think.health_cli import fetch_supervisor_status
+from solstone.think.media import PDF_EXTENSIONS
 from solstone.think.probe import (
     CONFIG_DIR_READABLE_CHECK,
     DEFAULT_REQUIRES_PYTHON,
@@ -139,6 +140,7 @@ TASK_PACE_CHECK = Check("task_pace", "advisory", ("linux", "darwin"))
 OBSERVER_INGEST_HEALTH_CHECK = Check(
     "observer_ingest_health", "advisory", ("linux", "darwin")
 )
+ORPHAN_SEGMENT_PDF_CHECK = Check("orphan_segment_pdf", "advisory", ("linux", "darwin"))
 _CAUGHT_UP_BACKLOG_FIX = (
     "solstone catches up on its own; reprocess a day from the health surface "
     "to prioritize it"
@@ -154,6 +156,10 @@ _TASK_PACE_FIX = (
 )
 _OBSERVER_INGEST_FIX = (
     "update or restart the observer, then confirm a valid upload clears the rejection"
+)
+_ORPHAN_SEGMENT_PDF_FIX = (
+    "journal maint --force settings:007_migrate_pdf_extractions, "
+    "then re-run journal doctor"
 )
 
 
@@ -926,6 +932,39 @@ def observer_ingest_health_check(args: Args) -> CheckResult:
     return make_result(check, "warn", detail[:400], _OBSERVER_INGEST_FIX)
 
 
+def orphan_segment_pdf_check(args: Args) -> CheckResult:
+    """Warn when a raw PDF original has no document transcript beside it.
+
+    For the owner, this means the original is present in the journal as raw
+    media but the readable document transcript is missing, so catchup cannot
+    use that PDF's text until the maintenance task migrates or rebuilds it.
+    """
+    del args
+    check = ORPHAN_SEGMENT_PDF_CHECK
+    journal_text, _source = get_journal_info()
+    chronicle = Path(journal_text) / "chronicle"
+    if not chronicle.is_dir():
+        return make_result(check, "skip", "chronicle directory unavailable")
+
+    orphan_paths: list[str] = []
+    for suffix in sorted(PDF_EXTENSIONS):
+        for pdf_path in sorted(chronicle.glob(f"*/*/*/*{suffix}")):
+            if any(pdf_path.parent.glob("*_transcript.md")):
+                continue
+            try:
+                display_path = pdf_path.relative_to(Path(journal_text)).as_posix()
+            except ValueError:
+                display_path = str(pdf_path)
+            orphan_paths.append(display_path)
+
+    if not orphan_paths:
+        return make_result(check, "ok", "no orphan segment PDFs")
+
+    paths_text = truncate(", ".join(orphan_paths), 360)
+    detail = f"{len(orphan_paths)} orphan segment PDF(s): {paths_text}"
+    return make_result(check, "warn", detail, _ORPHAN_SEGMENT_PDF_FIX)
+
+
 def _resolve_configured_backend() -> str | None:
     """Read transcribe.backend from an existing journal config without creating anything.
 
@@ -1063,6 +1102,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (JOURNAL_MAINT_TASKS_CHECK, journal_maint_tasks_check),
     (TASK_PACE_CHECK, task_pace_check),
     (OBSERVER_INGEST_HEALTH_CHECK, observer_ingest_health_check),
+    (ORPHAN_SEGMENT_PDF_CHECK, orphan_segment_pdf_check),
     (STALE_ALIAS_CHECK, partial(stale_alias_symlink_check, binary="journal")),
     (LAUNCHD_STALE_PLIST_CHECK, launchd_stale_plist_check),
     (DEFAULT_STT_READY_CHECK, default_stt_ready_check),
