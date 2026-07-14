@@ -530,6 +530,7 @@
   function appendRows(cells, columns) {
     clearGrid();
     state.grid.className = `date-nav-content__grid date-nav-content__grid--${columns}`;
+    state.grid.dataset.cols = String(columns);
     for (let index = 0; index < cells.length; index += columns) {
       const row = document.createElement('div');
       row.className = 'date-nav-content__row';
@@ -664,17 +665,27 @@
     if (target) target.focus();
   }
 
+  function focusGridCell(cells, index) {
+    const target = cells[index];
+    if (!target) return;
+    cells.forEach((cell) => {
+      cell.tabIndex = -1;
+    });
+    target.tabIndex = 0;
+    target.focus();
+  }
+
+  function gridColumnCount() {
+    return Number(state.grid?.dataset.cols) || 7;
+  }
+
   function moveGridFocus(event, offset) {
     const cells = focusableCells();
     const currentIndex = cells.indexOf(event.target);
     if (currentIndex < 0 || cells.length === 0) return;
     event.preventDefault();
     const nextIndex = Math.max(0, Math.min(cells.length - 1, currentIndex + offset));
-    cells.forEach((cell) => {
-      cell.tabIndex = -1;
-    });
-    cells[nextIndex].tabIndex = 0;
-    cells[nextIndex].focus();
+    focusGridCell(cells, nextIndex);
   }
 
   function handleGridKeydown(event) {
@@ -686,21 +697,20 @@
     }
     if (event.key === 'ArrowRight') moveGridFocus(event, 1);
     if (event.key === 'ArrowLeft') moveGridFocus(event, -1);
-    if (event.key === 'ArrowDown') moveGridFocus(event, 7);
-    if (event.key === 'ArrowUp') moveGridFocus(event, -7);
+    if (event.key === 'ArrowDown') moveGridFocus(event, gridColumnCount());
+    if (event.key === 'ArrowUp') moveGridFocus(event, -gridColumnCount());
     if (event.key === 'Home') {
-      const first = focusableCells()[0];
-      if (first) {
+      const cells = focusableCells();
+      if (cells.length > 0) {
         event.preventDefault();
-        first.focus();
+        focusGridCell(cells, 0);
       }
     }
     if (event.key === 'End') {
       const cells = focusableCells();
-      const last = cells[cells.length - 1];
-      if (last) {
+      if (cells.length > 0) {
         event.preventDefault();
-        last.focus();
+        focusGridCell(cells, cells.length - 1);
       }
     }
     if (event.key === 'Enter' || event.key === ' ') {

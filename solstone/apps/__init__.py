@@ -27,7 +27,11 @@ app.json fields (all optional):
       "icon": "🏠",           # Emoji icon for menu bar (default: "📦")
       "label": "Custom Label", # Display label (default: title-cased app name)
       "facets": {},            # Facet options: {"disabled": true} to hide facet bar
-      "date_nav": true,        # Show date navigation bar (default: false)
+      "date_nav": {"mount": "content", "unit": {"one": "item", ...}},
+                              # Normalized {unit, allow_future, mount} config;
+                              # legacy true -> {unit: None,
+                              # allow_future: <allow_future_dates>,
+                              # mount: "chrome"}
       "app_bar": false,        # Hide the universal chat bar on this app (default: true)
       "allow_future_dates": true, # Allow future dates in month picker (default: false)
     }
