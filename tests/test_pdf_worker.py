@@ -27,6 +27,7 @@ from tests.pdf_worker_fixtures import (
     TEXT_SENTINEL,
     write_dates_fixture,
     write_encrypted_fixture_pair,
+    write_garbled_dates_fixture,
     write_image_only_fixture,
     write_missing_dates_fixture,
     write_mixed_fixture,
@@ -189,9 +190,11 @@ def test_whitespace_text_layer_counts_zero_non_whitespace_chars(tmp_path):
 def test_metadata_dates_preserve_offsets_and_missing_dates_are_null(tmp_path):
     dated = write_dates_fixture(tmp_path / "dated.pdf")
     missing = write_missing_dates_fixture(tmp_path / "missing.pdf")
+    garbled = write_garbled_dates_fixture(tmp_path / "garbled.pdf")
 
     dated_payload = _single_json(_run_worker("inspect", str(dated)))
     missing_payload = _single_json(_run_worker("inspect", str(missing)))
+    garbled_payload = _single_json(_run_worker("inspect", str(garbled)))
 
     assert dated_payload["metadata"] == {
         "title": "Dated Fixture",
@@ -203,6 +206,9 @@ def test_metadata_dates_preserve_offsets_and_missing_dates_are_null(tmp_path):
     assert missing_payload["metadata"]["title"] == "No Dates"
     assert missing_payload["metadata"]["creation_date"] is None
     assert missing_payload["metadata"]["mod_date"] is None
+    assert garbled_payload["metadata"]["title"] == "Garbled Dates"
+    assert garbled_payload["metadata"]["creation_date"] is None
+    assert garbled_payload["metadata"]["mod_date"] is None
 
 
 def test_encrypted_documents_map_exit_code_and_encrypted_fact(tmp_path):
@@ -227,6 +233,20 @@ def test_encrypted_documents_map_exit_code_and_encrypted_fact(tmp_path):
     owner_only = _run_worker("extract", str(owner_pdf))
     assert owner_only.returncode == 0, owner_only.stderr
     assert _single_json(owner_only)["encrypted"] is True
+
+
+def test_encrypted_fixture_pair_is_deterministic(tmp_path):
+    clear = write_text_fixture(tmp_path / "clear.pdf")
+    first_user = tmp_path / "first-user.pdf"
+    first_owner = tmp_path / "first-owner.pdf"
+    second_user = tmp_path / "second-user.pdf"
+    second_owner = tmp_path / "second-owner.pdf"
+
+    write_encrypted_fixture_pair(clear, first_user, first_owner)
+    write_encrypted_fixture_pair(clear, second_user, second_owner)
+
+    assert first_user.read_bytes() == second_user.read_bytes()
+    assert first_owner.read_bytes() == second_owner.read_bytes()
 
 
 def test_garbage_and_zero_byte_inputs_exit_corrupt(tmp_path):
@@ -297,6 +317,37 @@ def test_run_pdf_worker_success_and_typed_failures(tmp_path):
             render_below_chars=10_000,
             render_dir=bad_render_parent / "child",
         )
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stdout"),
+    [
+        (0, ""),
+        (0, "not json"),
+        (4, "not json"),
+        (-9, ""),
+    ],
+)
+def test_run_pdf_worker_unparseable_or_crashed_worker_maps_to_engine_failure(
+    monkeypatch,
+    returncode,
+    stdout,
+):
+    class FakeCompleted:
+        def __init__(self) -> None:
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = "diagnostic"
+
+    def fake_run(*_args, **_kwargs):
+        return FakeCompleted()
+
+    monkeypatch.setattr("solstone.observe.pdf_worker.subprocess.run", fake_run)
+
+    with pytest.raises(PdfWorkerEngineError) as exc:
+        run_pdf_worker("inspect", "unused.pdf")
+
+    assert exc.value.returncode == returncode
 
 
 @pytest.mark.timeout(60)

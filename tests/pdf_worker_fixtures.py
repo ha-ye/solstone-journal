@@ -180,6 +180,18 @@ def write_missing_dates_fixture(path: Path) -> Path:
     )
 
 
+def write_garbled_dates_fixture(path: Path) -> Path:
+    return write_pdf(
+        path,
+        [{"text": "Garbled date metadata fixture."}],
+        {
+            "Title": "Garbled Dates",
+            "CreationDate": "D:20260304110200+99'00'",
+            "ModDate": "D:20260304110200-07'99'",
+        },
+    )
+
+
 def write_encrypted_fixture_pair(src: Path, user_path: Path, owner_path: Path) -> None:
     _encrypt_pdf(src, user_path, user_password="userpass", owner_password="ownerpass")
     _encrypt_pdf(src, owner_path, user_password="", owner_password="ownerpass")

@@ -33,7 +33,7 @@ FEATURES: dict[str, Feature] = {
     "pdf-import": Feature(
         name="pdf-import",
         summary="PDF document extraction",
-        pip_modules=("pypdfium2",),
+        pip_modules=("pypdfium2", "PIL"),
         apt_packages=(),
         brew_packages=(),
         usage="Extract PDF document metadata, text, and page rasters",

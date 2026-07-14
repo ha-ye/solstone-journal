@@ -73,6 +73,9 @@ PDF_META_EXTRA = [
     "pypdf>=4.0.0",
     "pdf2image>=1.16.0",
 ]
+DIST_TO_IMPORT_NAME = {
+    "pillow": "PIL",
+}
 CPU_ONNXRUNTIME_DEPS = {
     "onnxruntime>=1.20.0,!=1.24.1",
     "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -108,6 +111,10 @@ def _names(reqs: list[str]) -> set[str]:
             head = head.split(sep, 1)[0]
         out.add(head.strip().lower())
     return out
+
+
+def _import_names(reqs: list[str]) -> set[str]:
+    return {DIST_TO_IMPORT_NAME.get(name, name) for name in _names(reqs)}
 
 
 def _check_models_pin(extras: dict, member_version: str | None) -> list[str]:
@@ -248,7 +255,7 @@ def main(root: Path | None = None) -> int:
     for name in ("pdf-import", "pdf-export"):
         if name in extras and name in FEATURES:
             feature_modules = set(FEATURES[name].pip_modules)
-            extra_modules = _names(extras[name])
+            extra_modules = _import_names(extras[name])
             if extra_modules != feature_modules:
                 errors.append(
                     f"[{name}] package set must match features.py pip_modules "

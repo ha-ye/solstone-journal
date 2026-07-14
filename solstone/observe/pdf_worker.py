@@ -146,6 +146,12 @@ def run_pdf_worker(
     env: dict[str, str] | None = None,
     python_executable: str | None = None,
 ) -> PdfWorkerSuccess:
+    """Run the worker subprocess and classify document-level outcomes.
+
+    Exit 2 is a caller/programming error (bad arguments built by this helper's
+    caller), not a document outcome, so it surfaces as ``PdfWorkerEngineError``.
+    """
+
     argv = [
         python_executable or sys.executable,
         "-m",
@@ -656,6 +662,10 @@ def _parse_pdf_date(value: Any) -> str | None:
     if parts["z"]:
         return prefix + "Z"
     if not parts["sign"]:
+        return None
+    tz_hour = int(parts["tzhour"])
+    tz_minute = int(parts["tzminute"])
+    if tz_hour > 23 or tz_minute > 59:
         return None
     return prefix + f"{parts['sign']}{parts['tzhour']}:{parts['tzminute']}"
 

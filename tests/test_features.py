@@ -53,6 +53,10 @@ def test_features_registry_contents():
         assert feature.pip_modules
 
 
+def test_pdf_import_feature_covers_worker_render_imports():
+    assert {"pypdfium2", "PIL"} <= set(FEATURES["pdf-import"].pip_modules)
+
+
 def test_is_available_true_for_pdf():
     assert is_available("pdf") is True
 

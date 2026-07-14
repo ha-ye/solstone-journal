@@ -4375,6 +4375,7 @@ journal-host = [
 ]
 pdf = [
     { name = "pdf2image" },
+    { name = "pillow" },
     { name = "pypdf" },
     { name = "pypdfium2" },
     { name = "weasyprint" },
@@ -4383,6 +4384,7 @@ pdf-export = [
     { name = "weasyprint" },
 ]
 pdf-import = [
+    { name = "pillow" },
     { name = "pypdfium2" },
 ]
 
@@ -4441,6 +4443,7 @@ requires-dist = [
     { name = "packaging", marker = "extra == 'journal-host'" },
     { name = "pdf2image", marker = "extra == 'pdf'", specifier = ">=1.16.0" },
     { name = "pillow", marker = "extra == 'journal-host'", specifier = ">=11.0.0" },
+    { name = "pillow", marker = "extra == 'pdf-import'", specifier = ">=11.0.0" },
     { name = "psutil" },
     { name = "pyhpke", marker = "extra == 'journal-host'", specifier = "==0.6.4" },
     { name = "pyopenssl", specifier = ">=24.0" },
