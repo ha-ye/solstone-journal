@@ -33,6 +33,7 @@ from solstone.apps.observer.utils import (
     list_observers,
     load_history,
     observer_filename_prefix,
+    pruned_segments,
     revoke_observer_record,
     save_observer,
 )
@@ -367,6 +368,33 @@ def cmd_status(args: argparse.Namespace) -> int:
     return _status_all(json_output=args.json_output)
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    """Find or delete provable duplicate observer segments."""
+    from solstone.apps.observer.prune import (
+        format_result,
+        resolve_prune_days,
+        result_exit_code,
+        run_prune,
+    )
+
+    try:
+        days = resolve_prune_days(
+            day=args.day,
+            day_range=args.day_range,
+            all_days=args.all_days,
+        )
+        result = run_prune(days=days, stream=args.stream, execute=args.execute)
+    except ValueError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:
+        logger.exception("observer prune failed")
+        print(f"Error: observer prune failed: {exc}", file=sys.stderr)
+        return 1
+    print(format_result(result), end="")
+    return result_exit_code(result)
+
+
 def _status_single(identifier: str, json_output: bool = False) -> int:
     """Detailed status for a single observer."""
     observer = _find_observer(identifier)
@@ -411,7 +439,10 @@ def _status_single(identifier: str, json_output: bool = False) -> int:
     today = datetime.date.today().strftime("%Y%m%d")
     history = load_history(key_prefix, today)
     if history:
-        uploads = [r for r in history if not r.get("type")]
+        pruned = pruned_segments(history)
+        uploads = [
+            r for r in history if not r.get("type") and r.get("segment") not in pruned
+        ]
         print(f"\n  Today ({today}): {len(uploads)} segment(s) synced")
         for rec in uploads[-5:]:
             seg = rec.get("segment", "?")
@@ -429,7 +460,12 @@ def _status_single(identifier: str, json_output: bool = False) -> int:
             for df in day_files:
                 day = df.stem
                 records = load_history(key_prefix, day)
-                day_uploads = [r for r in records if not r.get("type")]
+                pruned = pruned_segments(records)
+                day_uploads = [
+                    r
+                    for r in records
+                    if not r.get("type") and r.get("segment") not in pruned
+                ]
                 print(f"    {day}: {len(day_uploads)} segment(s)")
 
     return 0
@@ -555,6 +591,32 @@ def main() -> None:
         help="Print the reconciliation plan without revoking anything.",
     )
 
+    # prune
+    p_prune = sub.add_parser(
+        "prune",
+        help="Find or delete provable duplicate observer segments",
+        description=(
+            "Find byte-identical same-start observer duplicate segments. "
+            "Dry-run is the default and performs zero writes. Exit codes: "
+            "0 clean, 2 refusals present, 1 usage/error."
+        ),
+    )
+    day_group = p_prune.add_mutually_exclusive_group(required=True)
+    day_group.add_argument("--day", help="Prune one day (YYYYMMDD)")
+    day_group.add_argument("--day-range", help="Prune inclusive range A..B")
+    day_group.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_days",
+        help="Scan every journal day",
+    )
+    p_prune.add_argument("--stream", help="Limit to one stream")
+    p_prune.add_argument(
+        "--execute",
+        action="store_true",
+        help="Delete provable duplicates; dry-run is the default.",
+    )
+
     args = setup_cli(parser)
 
     # Keep app helpers aligned with the active CLI journal.
@@ -569,6 +631,7 @@ def main() -> None:
     handlers = {
         "create": cmd_create,
         "list": cmd_list,
+        "prune": cmd_prune,
         "rename": cmd_rename,
         "reconcile": cmd_reconcile,
         "revoke": cmd_revoke,

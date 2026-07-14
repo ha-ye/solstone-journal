@@ -89,6 +89,7 @@ from .utils import (
     list_observers,
     load_history,
     observer_filename_prefix,
+    pruned_segments,
     record_ingest_rejection,
     record_status_beacon,
     resolve_ingest_plan,
@@ -1241,11 +1242,13 @@ def ingest_manifest() -> Any:
     days: dict[str, dict[str, int]] = {}
     for hist_path in sorted(hist_dir.glob("*.jsonl")):
         records = load_history(key_prefix, hist_path.stem)
+        pruned = pruned_segments(records)
         segments = {
             record.get("segment", "")
             for record in records
             if not record.get("type") and record.get("segment")
         }
+        segments.difference_update(pruned)
         days[hist_path.stem] = {"segments": len(segments)}
 
     return jsonify({"days": days})
@@ -1391,6 +1394,7 @@ def ingest_segments(day: str) -> Any:
 
     # Load sync history for this observer/day
     records = load_history(key_prefix, day)
+    pruned = pruned_segments(records)
 
     if not records:
         return _respond_observer_segments([], client_pv=client_pv)
@@ -1427,6 +1431,8 @@ def ingest_segments(day: str) -> Any:
             continue
 
         segment = record.get("segment", "")
+        if segment in pruned:
+            continue
         stream = record.get("stream", fallback_stream)
         segment_original = record.get("segment_original")
 
