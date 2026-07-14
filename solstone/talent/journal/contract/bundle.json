@@ -30,7 +30,7 @@
         ],
         "notes": "Accepted producer paths are stream-qualified. Readers tolerate older flat and prefixed names.",
         "producer_write_paths": [
-          "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{stream.json,audio.jsonl,screen.jsonl}"
+          "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{stream.json,ingest.json,audio.jsonl,screen.jsonl}"
         ],
         "stage": "accepted"
       },
@@ -300,6 +300,70 @@
         }
       },
       "source": "solstone/observe/protocol.schema.json"
+    },
+    "observer-ingest-json": {
+      "schema": {
+        "$id": "solstone-journal-format:observer-ingest-json",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": false,
+        "properties": {
+          "files": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "sha256": {
+                  "pattern": "^[0-9a-f]{64}$",
+                  "type": "string"
+                },
+                "size": {
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "sha256",
+                "size"
+              ],
+              "type": "object"
+            },
+            "type": "object"
+          },
+          "requested_segment": {
+            "pattern": "^[0-9]{6}_[0-9]+$",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schema_version",
+          "requested_segment",
+          "files"
+        ],
+        "title": "Observer ingest manifest",
+        "type": "object",
+        "x-journal-contract": {
+          "allowed_producers": [
+            "observer ingest journal writer"
+          ],
+          "file_kind": "json",
+          "format_id": "observer-ingest-json",
+          "key_fields": [
+            "schema_version",
+            "requested_segment",
+            "files"
+          ],
+          "legacy_read_paths": [],
+          "producer_write_paths": [
+            "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/ingest.json"
+          ],
+          "reference_writer": "solstone.apps.observer.utils.write_ingest_manifest",
+          "schema_owner": "apps.observer",
+          "write_discipline": "atomic JSON replace"
+        }
+      },
+      "source": "solstone/apps/observer/ingest.schema.json"
     },
     "screen-jsonl": {
       "schema": {

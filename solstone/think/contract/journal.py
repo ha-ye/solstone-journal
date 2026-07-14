@@ -319,6 +319,8 @@ def schema_for_filename(
     schemas = _bundle_schemas(bundle)
     if filename == "stream.json":
         return schemas.get("stream-json")
+    if filename == "ingest.json":
+        return schemas.get("observer-ingest-json")
     if filename == "audio.jsonl" or filename.endswith("_audio.jsonl"):
         return schemas.get("audio-jsonl")
     if filename == "screen.jsonl" or filename.endswith("_screen.jsonl"):

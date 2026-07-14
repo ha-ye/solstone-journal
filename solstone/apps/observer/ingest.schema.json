@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "solstone-journal-format:observer-ingest-json",
+  "title": "Observer ingest manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "requested_segment", "files"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "requested_segment": {
+      "type": "string",
+      "pattern": "^[0-9]{6}_[0-9]+$"
+    },
+    "files": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sha256", "size"],
+        "properties": {
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  },
+  "x-journal-contract": {
+    "format_id": "observer-ingest-json",
+    "schema_owner": "apps.observer",
+    "reference_writer": "solstone.apps.observer.utils.write_ingest_manifest",
+    "allowed_producers": ["observer ingest journal writer"],
+    "write_discipline": "atomic JSON replace",
+    "file_kind": "json",
+    "key_fields": ["schema_version", "requested_segment", "files"],
+    "producer_write_paths": ["chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/ingest.json"],
+    "legacy_read_paths": []
+  }
+}

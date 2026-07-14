@@ -19,7 +19,7 @@
     {
       "stage": "accepted",
       "producer_write_paths": [
-        "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{stream.json,audio.jsonl,screen.jsonl}"
+        "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{stream.json,ingest.json,audio.jsonl,screen.jsonl}"
       ],
       "legacy_read_paths": [
         "chronicle/YYYYMMDD/HHMMSS_LEN/{stream.json,audio.jsonl,screen.jsonl}",
