@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from solstone.think.journal_io.locking import hold_lock
+from solstone.think.media import MEDIA_EXTENSIONS
 from solstone.think.utils import (
     day_dirs,
     day_is_complete,
@@ -53,9 +54,7 @@ RAW_HASHED_NAMES = frozenset(
 )
 RAW_HASHED_SUFFIXES = ("_audio.jsonl", "_screen.jsonl", "_transcript.md")
 RAW_HASHED_GLOBS = ("monitor_*_diff.json", "monitor_*_diff_box.json")
-MEDIA_EXTENSIONS = frozenset(
-    {".flac", ".opus", ".ogg", ".m4a", ".mp3", ".wav", ".webm", ".mp4", ".mov", ".png"}
-)
+# Raw media extensions are sourced from solstone/think/media.py, the registry.
 
 _CATCHUP_STATE_LOCK = threading.Lock()
 

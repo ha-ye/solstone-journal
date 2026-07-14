@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from solstone.think import catchup_state
+from solstone.think import catchup_state, media
 
 DAY = "20260101"
 CMD_DAILY = ["journal", "think", "-v", "--day", DAY]
@@ -166,6 +166,33 @@ def test_raw_input_fingerprint_stability_and_allowlist(journal):
     second = _segment(journal, segment="120500_300")
     (second / "conversation_transcript.jsonl").write_text("{}\n", encoding="utf-8")
     assert catchup_state.read_raw_input_fingerprint(DAY) != raw_changed
+
+
+@pytest.mark.parametrize(
+    "extension",
+    (".jpg", ".jpeg", ".heic", ".heif", ".gif", ".webp", ".tiff"),
+)
+def test_raw_input_fingerprint_includes_image_extensions(journal, extension):
+    segment = _segment(journal)
+    baseline = catchup_state.read_raw_input_fingerprint(DAY)
+
+    (segment / f"image{extension}").write_bytes(b"raw-image")
+
+    assert catchup_state.read_raw_input_fingerprint(DAY) != baseline
+
+
+def test_media_extensions_sourced_from_registry(journal):
+    assert catchup_state.MEDIA_EXTENSIONS is media.MEDIA_EXTENSIONS
+
+    segment = _segment(journal)
+    for extension in media.MEDIA_EXTENSIONS:
+        baseline = catchup_state.read_raw_input_fingerprint(DAY)
+
+        (segment / f"media_{extension.removeprefix('.')}{extension}").write_bytes(
+            b"raw-media"
+        )
+
+        assert catchup_state.read_raw_input_fingerprint(DAY) != baseline
 
 
 def test_raw_input_fingerprint_skips_file_deleted_mid_scan(journal, monkeypatch):
