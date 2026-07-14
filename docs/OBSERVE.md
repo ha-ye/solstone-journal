@@ -36,7 +36,7 @@ journal observer revoke <name>
 | Command | Purpose |
 |---------|---------|
 | `journal observer` | Manage observer registrations (see "Managing observers" above) |
-| `journal observer prune` | Dry-run or execute safe cleanup of same-start duplicate observer segments |
+| `journal observer prune` | Dry-run or execute safe cleanup of duplicate observer segments |
 | `journal transcribe` | Audio transcription with faster-whisper |
 | `journal describe` | Visual analysis of screen recordings |
 | `journal grab` | Walk available screen frames and optionally write frame images |
@@ -128,7 +128,7 @@ eligible for upload healing.
 
 ### Duplicate observer pruning
 
-`journal observer prune [--day YYYYMMDD | --day-range A..B | --all] [--stream NAME] [--execute]`
+`journal observer prune [--day YYYYMMDD | --day-range A..B | --all] [--stream NAME] [--execute] [--cross-start]`
 finds byte-identical duplicate observer segments from the old ingest suffix-ladder
 defect. Dry-run is the default and performs zero writes: no manifest healing, no
 history append, no index deletion, and no health marker touch. `--execute`
@@ -144,6 +144,12 @@ files: valid `ingest.json` files define content exactly; legacy manifest-less
 segments use present media files; manifest-less non-media-only segments refuse.
 The canonical is deterministic: the earliest same-start segment whose content
 is held by present bytes or terminal processing proof.
+
+`--cross-start` is opt-in. After same-start planning or execution, it also
+considers different-start candidates proven by server-authored
+`segment_original` provenance in observer upload history. The named origin is
+resolved through existing pruned history to a surviving canonical, and the same
+content, chain, held-ness, and observer-attribution gates apply.
 
 Prune fails closed. It refuses unverifiable canonicals, near-duplicates, unknown
 non-derived files, marker-less candidates, and ambiguous stream-to-observer

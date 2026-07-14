@@ -139,6 +139,7 @@ def run_prune(
     days: list[str],
     stream: str | None = None,
     execute: bool = False,
+    cross_start: bool = False,
 ) -> PruneResult:
     """Plan or execute observer duplicate pruning."""
     if execute:
@@ -149,9 +150,14 @@ def run_prune(
         result.crash_repaired = repaired
         if recovery_refusals:
             return result
-        _execute_plan(result)
+        _execute_plan(result, result.groups)
+        if cross_start:
+            _plan_cross_start(result, days, stream=stream)
         return result
-    return _plan(days, stream=stream)
+    result = _plan(days, stream=stream)
+    if cross_start:
+        _plan_cross_start(result, days, stream=stream)
+    return result
 
 
 def format_result(result: PruneResult) -> str:
@@ -349,6 +355,177 @@ def _plan(days: list[str], *, stream: str | None) -> PruneResult:
     return result
 
 
+def _plan_cross_start(
+    result: PruneResult, days: list[str], *, stream: str | None
+) -> None:
+    same_start_claims: dict[str, dict[tuple[str, str], str]] = {}
+    for group in result.groups:
+        claims = same_start_claims.setdefault(group.stream, {})
+        for candidate in group.candidates:
+            claims[(group.day, candidate.analysis.segment)] = group.canonical.segment
+
+    provenance = _cross_start_provenance_pairs(days, stream=stream)
+    cross_groups: list[PruneGroup] = []
+    stream_names = sorted({stream_name for _day, stream_name in provenance})
+    for stream_name in stream_names:
+        claims = same_start_claims.get(stream_name, {})
+        segments = _stream_segments(stream_name)
+        existing = set(segments) - set(claims)
+        pruned = _pruned_records_by_stream(stream_name)
+        for (day, segment), canonical in claims.items():
+            pruned[(day, segment)] = {
+                "type": "pruned",
+                "stream": stream_name,
+                "segment": segment,
+                "duplicate_of": canonical,
+            }
+
+        clusters: dict[tuple[str, str], list[tuple[str, str]]] = {}
+        for group_key, candidate_origins in sorted(provenance.items()):
+            record_day, record_stream = group_key
+            if record_stream != stream_name:
+                continue
+            for candidate_segment, origins in sorted(candidate_origins.items()):
+                candidate_key = (record_day, candidate_segment)
+                if candidate_key not in existing:
+                    continue
+                if len(origins) > 1:
+                    result.refusals.append(
+                        Refusal(
+                            f"{record_day}/{stream_name}/{candidate_segment}",
+                            "cross-start-provenance",
+                            "segment_original",
+                            "conflicting server-authored origins; reconcile observer history before pruning",
+                        )
+                    )
+                    continue
+                origin_segment = next(iter(origins))
+                clusters.setdefault((record_day, origin_segment), []).append(
+                    candidate_key
+                )
+
+        for origin_key, candidate_keys in sorted(clusters.items()):
+            target, refusal = _nearest_surviving_ancestor(
+                origin_key,
+                stream_name,
+                existing,
+                {},
+                pruned,
+                gate="cross-start-origin",
+                cycle_resolution="break the origin predecessor cycle before pruning",
+                dead_end_resolution=(
+                    "restore the origin segment or append a valid pruned history record before pruning"
+                ),
+            )
+            if refusal is not None:
+                result.refusals.append(refusal)
+                continue
+            if target is None:
+                result.refusals.append(
+                    Refusal(
+                        f"{origin_key[0]}/{stream_name}/{origin_key[1]}",
+                        "cross-start-origin",
+                        "stream.json",
+                        "restore the origin segment or append a valid pruned history record before pruning",
+                    )
+                )
+                continue
+
+            canonical_path = segments[target]
+            canonical = _analyze_segment(
+                target[0], stream_name, target[1], canonical_path
+            )
+            if canonical.identity_issue:
+                result.refusals.append(_identity_refusal(canonical))
+                continue
+            if canonical.marker_error:
+                result.refusals.append(
+                    Refusal(
+                        canonical.label,
+                        "chain-identity",
+                        "stream.json",
+                        canonical.marker_error,
+                    )
+                )
+                continue
+            owner_refusal = _observer_prefix_for_stream(canonical.stream)
+            if isinstance(owner_refusal, Refusal):
+                result.refusals.append(owner_refusal)
+                continue
+
+            analyses = [
+                _analyze_segment(day, stream_name, segment, segments[(day, segment)])
+                for day, segment in sorted(candidate_keys)
+                if (day, segment) in existing
+            ]
+            identity_errors = [
+                analysis for analysis in analyses if analysis.identity_issue
+            ]
+            if identity_errors:
+                for analysis in identity_errors:
+                    result.refusals.append(_identity_refusal(analysis))
+                continue
+
+            safe_candidates: list[PruneCandidate] = []
+            for analysis in analyses:
+                if analysis.marker_error:
+                    result.refusals.append(
+                        Refusal(
+                            analysis.label,
+                            "chain-identity",
+                            "stream.json",
+                            analysis.marker_error,
+                        )
+                    )
+                    continue
+                if analysis.unknown_files:
+                    result.refusals.append(
+                        Refusal(
+                            analysis.label,
+                            "derived-output",
+                            analysis.unknown_files[0],
+                            "remove the file or add a valid ingest manifest proving it is content",
+                        )
+                    )
+                    continue
+                if analysis.identity_key != canonical.identity_key:
+                    result.refusals.append(
+                        Refusal(
+                            analysis.label,
+                            "content-identity",
+                            _first_identity_difference(
+                                canonical.identity, analysis.identity
+                            )
+                            or "content identity",
+                            "compared to canonical "
+                            f"{canonical.segment} from segment_original provenance; "
+                            "leave it in place; only byte-identical cross-start duplicates are pruned",
+                        )
+                    )
+                    continue
+                safe_candidates.append(
+                    PruneCandidate(
+                        analysis,
+                        _is_last_physical_copy(canonical.identity, analysis.path),
+                    )
+                )
+            if safe_candidates:
+                cross_groups.append(
+                    PruneGroup(
+                        canonical.day,
+                        canonical.stream,
+                        # The report header uses the canonical/origin start.
+                        canonical.segment.split("_", 1)[0],
+                        canonical,
+                        safe_candidates,
+                    )
+                )
+
+    result.groups.extend(cross_groups)
+    if result.execute:
+        _execute_plan(result, cross_groups)
+
+
 def _identity_refusal(analysis: SegmentAnalysis) -> Refusal:
     issue = analysis.identity_issue
     if issue is None:
@@ -366,11 +543,11 @@ def _identity_refusal(analysis: SegmentAnalysis) -> Refusal:
     )
 
 
-def _execute_plan(result: PruneResult) -> None:
+def _execute_plan(result: PruneResult, groups: list[PruneGroup]) -> None:
     affected_streams: set[str] = set()
     affected_days: set[str] = set()
     deleted_markers_by_stream: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
-    for group in result.groups:
+    for group in groups:
         prefix = _observer_prefix_for_stream(group.stream)
         if isinstance(prefix, Refusal):
             result.refusals.append(prefix)
@@ -634,6 +811,10 @@ def _nearest_surviving_ancestor(
     existing: set[tuple[str, str]],
     deleted_markers: dict[tuple[str, str], dict[str, Any]],
     pruned: dict[tuple[str, str], dict[str, Any]],
+    *,
+    gate: str = "chain-repair",
+    cycle_resolution: str = "break the predecessor cycle before pruning",
+    dead_end_resolution: str = "restore the missing predecessor or append a valid pruned history record",
 ) -> tuple[tuple[str, str] | None, Refusal | None]:
     current: tuple[str, str] | None = start
     seen: set[tuple[str, str]] = set()
@@ -643,9 +824,9 @@ def _nearest_surviving_ancestor(
         if current in seen:
             return None, Refusal(
                 f"{current[0]}/{stream}/{current[1]}",
-                "chain-repair",
+                gate,
                 "stream.json",
-                "break the predecessor cycle before pruning",
+                cycle_resolution,
             )
         seen.add(current)
         marker = deleted_markers.get(current)
@@ -662,11 +843,46 @@ def _nearest_surviving_ancestor(
             continue
         return None, Refusal(
             f"{current[0]}/{stream}/{current[1]}",
-            "chain-repair",
+            gate,
             "stream.json",
-            "restore the missing predecessor or append a valid pruned history record",
+            dead_end_resolution,
         )
     return None, None
+
+
+def _cross_start_provenance_pairs(
+    days: list[str], *, stream: str | None
+) -> dict[tuple[str, str], dict[str, set[str]]]:
+    selected_days = set(days)
+    pairs: dict[tuple[str, str], dict[str, set[str]]] = {}
+    for observer in list_observers():
+        prefix = observer_filename_prefix(observer)
+        hist_dir = get_hist_dir(prefix, ensure_exists=False)
+        if not hist_dir.exists():
+            continue
+        for hist_path in hist_dir.glob("*.jsonl"):
+            day = hist_path.stem
+            if day not in selected_days:
+                continue
+            for record in load_history(prefix, day):
+                record_type = record.get("type", "upload")
+                if record_type != "upload":
+                    continue
+                record_stream = record.get("stream")
+                if not isinstance(record_stream, str) or not record_stream:
+                    continue
+                if stream is not None and record_stream != stream:
+                    continue
+                segment = record.get("segment")
+                segment_original = record.get("segment_original")
+                if not isinstance(segment, str) or not segment:
+                    continue
+                if not isinstance(segment_original, str) or not segment_original:
+                    continue
+                pairs.setdefault((day, record_stream), {}).setdefault(
+                    segment, set()
+                ).add(segment_original)
+    return pairs
 
 
 def _pruned_records_by_stream(stream: str) -> dict[tuple[str, str], dict[str, Any]]:

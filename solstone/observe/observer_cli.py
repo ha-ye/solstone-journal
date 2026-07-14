@@ -383,7 +383,12 @@ def cmd_prune(args: argparse.Namespace) -> int:
             day_range=args.day_range,
             all_days=args.all_days,
         )
-        result = run_prune(days=days, stream=args.stream, execute=args.execute)
+        result = run_prune(
+            days=days,
+            stream=args.stream,
+            execute=args.execute,
+            cross_start=args.cross_start,
+        )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -599,6 +604,8 @@ def main() -> None:
             "Find byte-identical same-start observer duplicate segments. "
             "Canonical is the earliest same-start segment whose content is held "
             "by bytes or terminal proof. "
+            "Opt-in cross-start mode also uses server-authored segment_original "
+            "provenance after same-start pruning. "
             "Dry-run is the default and performs zero writes. Exit codes: "
             "0 clean, 2 refusals present, 1 usage/error."
         ),
@@ -617,6 +624,14 @@ def main() -> None:
         "--execute",
         action="store_true",
         help="Delete provable duplicates; dry-run is the default.",
+    )
+    p_prune.add_argument(
+        "--cross-start",
+        action="store_true",
+        help=(
+            "Also prune different-start duplicates proven by server-authored "
+            "segment_original provenance; runs after same-start. Off by default."
+        ),
     )
 
     args = setup_cli(parser)
