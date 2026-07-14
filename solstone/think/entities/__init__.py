@@ -28,6 +28,13 @@ from solstone.think.entities.activity import (
     load_detected_entities_recent,
 )
 
+# Entity ambiguity storage
+from solstone.think.entities.ambiguities import (
+    EntityAmbiguityError,
+    load_ambiguities,
+    record_ambiguity_choice,
+)
+
 # Core types and utilities
 from solstone.think.entities.core import (
     DEFAULT_ACTIVITY_TS,
@@ -93,12 +100,19 @@ from solstone.think.entities.loading import (
 
 # Entity matching and resolution
 from solstone.think.entities.matching import (
+    EntityResolution,
+    EntityResolutionError,
+    EntityResolutionOutcome,
     MatchResult,
     MatchTier,
+    ResolutionCandidate,
+    ResolutionOrigin,
+    ResolutionScope,
     build_name_resolution_map,
     find_entity_by_email,
     find_matching_entity,
     is_name_variant_match,
+    record_entity_resolution,
     resolve_entity,
     resolve_journal_entity,
     validate_aka_uniqueness,
@@ -166,6 +180,7 @@ __all__ = [
     "EntityExistsError",
     "EntityNotFoundError",
     "EntityWriteError",
+    "EntityAmbiguityError",
     # History
     "EntityHistoryError",
     "EntityHistoryRepairRequired",
@@ -173,6 +188,9 @@ __all__ = [
     "iter_entity_history",
     "load_entity_history_event",
     "restore_journal_entity_version",
+    # Ambiguities
+    "load_ambiguities",
+    "record_ambiguity_choice",
     # Journal
     "block_journal_entity",
     "create_journal_entity",
@@ -219,12 +237,19 @@ __all__ = [
     "update_detected_entity",
     "voiceprint_file_path",
     # Matching
+    "EntityResolution",
+    "EntityResolutionError",
+    "EntityResolutionOutcome",
     "MatchResult",
     "MatchTier",
+    "ResolutionCandidate",
+    "ResolutionOrigin",
+    "ResolutionScope",
     "build_name_resolution_map",
     "find_entity_by_email",
     "find_matching_entity",
     "is_name_variant_match",
+    "record_entity_resolution",
     "resolve_entity",
     "resolve_journal_entity",
     "validate_aka_uniqueness",

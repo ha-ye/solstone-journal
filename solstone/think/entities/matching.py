@@ -10,9 +10,22 @@ This module provides entity lookup functions:
 - validate_aka_uniqueness: Check for aka collisions
 """
 
-import logging
-from enum import IntEnum
+from __future__ import annotations
 
+import logging
+import unicodedata
+from dataclasses import dataclass
+from enum import IntEnum
+from typing import Any
+
+from solstone.think.entities.ambiguities import (
+    EntityAmbiguityError,
+    ResolutionOrigin,
+    ResolutionScope,
+    load_resolved_ambiguity_choice,
+    normalize_resolution_query,
+    record_ambiguity_observation,
+)
 from solstone.think.entities.core import EntityDict, entity_slug
 from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.loading import load_entities
@@ -33,6 +46,14 @@ class MatchTier(IntEnum):
     FUZZY = 8  # fuzzy match via rapidfuzz
 
 
+class EntityResolutionOutcome(IntEnum):
+    """Outcome for mutation-safe entity resolution."""
+
+    RESOLVED = 1
+    AMBIGUOUS = 2
+    NO_MATCH = 3
+
+
 class MatchResult(dict):
     """Entity match result with confidence tier.
 
@@ -50,6 +71,40 @@ class MatchResult(dict):
     def is_high_confidence(self) -> bool:
         """True for tiers 1-4 (exact, case-insensitive, email, slug)."""
         return self.tier <= MatchTier.SLUG
+
+
+class EntityResolutionError(EntityAmbiguityError):
+    """Raised when a persisted entity resolution choice is invalid."""
+
+
+@dataclass(frozen=True)
+class ResolutionCandidate:
+    """One ranked low-confidence resolution candidate."""
+
+    id: str
+    name: str
+    tier: MatchTier
+    score: float
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the persisted JSON summary for this candidate."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "tier": int(self.tier),
+            "score": self.score,
+        }
+
+
+@dataclass(frozen=True)
+class EntityResolution:
+    """Explicit result for mutation-safe entity resolution."""
+
+    outcome: EntityResolutionOutcome
+    entity: EntityDict | None = None
+    tier: MatchTier | None = None
+    candidates: tuple[ResolutionCandidate, ...] = ()
+    ambiguity_id: str | None = None
 
 
 def _token_subset_match(name_a_lower: str, name_b_lower: str) -> bool:
@@ -575,6 +630,222 @@ def _closest_candidates(
         candidates = entities[:limit]
 
     return candidates
+
+
+def _candidate_similarity_score(query: str, entity: EntityDict) -> float:
+    """Return the best fuzzy score for *query* against an entity name or aka."""
+    choices: list[str] = []
+    name = entity.get("name", "")
+    if name:
+        choices.append(name)
+    aka_list = entity.get("aka", [])
+    if isinstance(aka_list, list):
+        choices.extend(str(aka) for aka in aka_list if aka)
+    if not choices:
+        return 0.0
+
+    try:
+        from rapidfuzz import fuzz
+
+        return float(max(fuzz.token_sort_ratio(query, choice) for choice in choices))
+    except ImportError:
+        query_lower = query.lower()
+        return (
+            100.0 if any(choice.lower() == query_lower for choice in choices) else 0.0
+        )
+
+
+def _rank_resolution_candidates(
+    query: str,
+    tier: MatchTier,
+    entities: list[EntityDict],
+) -> tuple[ResolutionCandidate, ...]:
+    """Return deterministic candidate summaries for one low-confidence tier."""
+    by_id: dict[str, EntityDict] = {}
+    for entity in entities:
+        entity_id = str(entity.get("id") or "")
+        name = str(entity.get("name") or "")
+        if not entity_id or not name:
+            continue
+        by_id.setdefault(entity_id, entity)
+
+    ranked = [
+        ResolutionCandidate(
+            id=entity_id,
+            name=str(entity.get("name") or ""),
+            tier=tier,
+            score=_candidate_similarity_score(query, entity),
+        )
+        for entity_id, entity in by_id.items()
+    ]
+    return tuple(
+        sorted(
+            ranked,
+            key=lambda candidate: (-candidate.score, candidate.name, candidate.id),
+        )
+    )
+
+
+def _collect_low_confidence_candidates(
+    query: str,
+    entities: list[EntityDict],
+    fuzzy_threshold: int = 90,
+) -> tuple[MatchTier | None, tuple[ResolutionCandidate, ...]]:
+    """Collect all candidates at the highest applicable low-confidence tier."""
+    if not query or not entities:
+        return None, ()
+
+    query_lower = query.lower()
+
+    # Tier 5: First-word match without the legacy uniqueness guard.
+    if len(query) >= 3:
+        first_word_matches: list[EntityDict] = []
+        for entity in entities:
+            name = str(entity.get("name") or "")
+            if not name:
+                continue
+            first_word = name.split()[0].lower()
+            if len(first_word) >= 3 and first_word == query_lower:
+                first_word_matches.append(entity)
+        if first_word_matches:
+            return MatchTier.FIRST_WORD, _rank_resolution_candidates(
+                query, MatchTier.FIRST_WORD, first_word_matches
+            )
+
+        query_first = query.split()[0].lower()
+        if query_first != query_lower and len(query_first) >= 3:
+            long_to_short_matches = [
+                entity
+                for entity in entities
+                if entity.get("name")
+                and len(str(entity.get("name")).split()) == 1
+                and str(entity.get("name")).split()[0].lower() == query_first
+            ]
+            if long_to_short_matches:
+                return MatchTier.FIRST_WORD, _rank_resolution_candidates(
+                    query, MatchTier.FIRST_WORD, long_to_short_matches
+                )
+
+    # Tier 6: Token-subset match without the legacy uniqueness guard.
+    subset_matches = [
+        entity
+        for entity in entities
+        if entity.get("name")
+        and _token_subset_match(query_lower, str(entity.get("name")).lower())
+    ]
+    if subset_matches:
+        return MatchTier.TOKEN_SUBSET, _rank_resolution_candidates(
+            query, MatchTier.TOKEN_SUBSET, subset_matches
+        )
+
+    # Tier 7: Prefix-token match without the legacy uniqueness guard.
+    prefix_matches = [
+        entity
+        for entity in entities
+        if entity.get("name")
+        and _prefix_token_match(query_lower, str(entity.get("name")).lower())
+    ]
+    if prefix_matches:
+        return MatchTier.PREFIX, _rank_resolution_candidates(
+            query, MatchTier.PREFIX, prefix_matches
+        )
+
+    # Tier 8: Fuzzy match through the existing closest-candidate helper.
+    if len(query) >= 4:
+        fuzzy_matches = _closest_candidates(
+            query,
+            entities,
+            limit=len(entities),
+            min_score=fuzzy_threshold,
+        )
+        if fuzzy_matches:
+            return MatchTier.FUZZY, _rank_resolution_candidates(
+                query, MatchTier.FUZZY, fuzzy_matches
+            )
+
+    return None, ()
+
+
+def _entity_by_id(entities: list[EntityDict], entity_id: str) -> EntityDict | None:
+    """Return one entity by id from a caller-provided resolution set."""
+    for entity in entities:
+        if entity.get("id") == entity_id:
+            return entity
+    return None
+
+
+def _matchable_resolution_query(query: str) -> str:
+    """Return the query form passed to legacy matching predicates."""
+    return " ".join(unicodedata.normalize("NFKC", query).strip().split())
+
+
+def record_entity_resolution(
+    query: str,
+    entities: list[EntityDict],
+    *,
+    scope: ResolutionScope,
+    origin: ResolutionOrigin,
+    fuzzy_threshold: int = 90,
+) -> EntityResolution:
+    """Resolve an entity name on a mutation-safe boundary.
+
+    Low-confidence matches record an ambiguity row before returning, so callers
+    can reuse their existing unresolved path without risking a later write.
+    """
+    if not query or not query.strip() or not entities:
+        return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
+
+    normalized_query = normalize_resolution_query(query)
+    match_query = _matchable_resolution_query(query)
+    resolved_row = load_resolved_ambiguity_choice(scope, normalized_query)
+    if resolved_row is not None:
+        entity_id = str(resolved_row.get("resolved_entity_id") or "")
+        entity = _entity_by_id(entities, entity_id)
+        if entity is None:
+            raise EntityResolutionError(
+                "resolved ambiguity choice is missing or outside scope: "
+                f"{resolved_row.get('ambiguity_id')} -> {entity_id}"
+            )
+        if entity.get("blocked"):
+            raise EntityResolutionError(
+                "resolved ambiguity choice is blocked: "
+                f"{resolved_row.get('ambiguity_id')} -> {entity_id}"
+            )
+        return EntityResolution(
+            outcome=EntityResolutionOutcome.RESOLVED,
+            entity=entity,
+        )
+
+    match = find_matching_entity(match_query, entities, fuzzy_threshold)
+    if match and match.is_high_confidence:
+        return EntityResolution(
+            outcome=EntityResolutionOutcome.RESOLVED,
+            entity=match,
+            tier=match.tier,
+        )
+
+    tier, candidates = _collect_low_confidence_candidates(
+        match_query,
+        entities,
+        fuzzy_threshold,
+    )
+    if tier is not None and candidates:
+        row = record_ambiguity_observation(
+            scope=scope,
+            query=query,
+            normalized_query=normalized_query,
+            observed_tier=int(tier),
+            ranked_candidates=[candidate.to_dict() for candidate in candidates],
+            origin=origin,
+        )
+        return EntityResolution(
+            outcome=EntityResolutionOutcome.AMBIGUOUS,
+            tier=tier,
+            candidates=candidates,
+            ambiguity_id=str(row.get("ambiguity_id") or ""),
+        )
+
+    return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
 
 
 def resolve_entity(
