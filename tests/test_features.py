@@ -2,6 +2,8 @@
 # Copyright (c) 2026 sol pbc
 
 import dataclasses
+import tomllib
+from pathlib import Path
 
 import pytest
 
@@ -14,6 +16,12 @@ from solstone.think.features import (
     is_available,
     require_extra,
 )
+
+
+def _project_optional_dependencies() -> dict:
+    root = Path(__file__).resolve().parents[1]
+    data = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    return data["project"]["optional-dependencies"]
 
 
 def test_feature_is_frozen():
@@ -32,6 +40,8 @@ def test_feature_is_frozen():
 
 def test_features_registry_contents():
     assert "pdf" in FEATURES
+    assert "pdf-import" in FEATURES
+    assert "pdf-export" in FEATURES
 
     for feature in FEATURES.values():
         assert isinstance(feature.name, str)
@@ -83,6 +93,39 @@ def test_install_hint_pdf_darwin():
         install_hint("pdf", "darwin")
         == "pip install 'solstone[pdf]' and brew install pango poppler"
     )
+
+
+def test_install_hint_pdf_import_linux():
+    assert install_hint("pdf-import", "linux") == "pip install 'solstone[pdf-import]'"
+
+
+def test_install_hint_pdf_import_darwin():
+    assert install_hint("pdf-import", "darwin") == "pip install 'solstone[pdf-import]'"
+
+
+def test_install_hint_pdf_export_linux():
+    assert (
+        install_hint("pdf-export", "linux")
+        == "pip install 'solstone[pdf-export]' and apt install libpango-1.0-0 libpangoft2-1.0-0"
+    )
+
+
+def test_install_hint_pdf_export_darwin():
+    assert (
+        install_hint("pdf-export", "darwin")
+        == "pip install 'solstone[pdf-export]' and brew install pango"
+    )
+
+
+def test_pdf_meta_extra_membership():
+    extras = _project_optional_dependencies()
+
+    assert extras["pdf"] == [
+        "solstone[pdf-import]",
+        "solstone[pdf-export]",
+        "pypdf>=4.0.0",
+        "pdf2image>=1.16.0",
+    ]
 
 
 def test_install_hint_unknown_raises_keyerror():

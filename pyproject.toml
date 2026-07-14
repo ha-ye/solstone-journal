@@ -66,16 +66,26 @@ dependencies = [
 # [journal] and [journal-cuda] are retired tombstones that fail loudly and point
 # old installs at the new leaf packages. They no longer install the journal.
 #
-# [journal-host] and [pdf] remain internal building blocks. The leaf packages
-# compose [journal-host] with either the CPU ONNX runtime or the NVIDIA CUDA
-# runtime; [pdf] backs per-feature install hints (think/features.py).
+# [journal-host], [pdf-import], [pdf-export], and [pdf] remain internal
+# building blocks. The leaf packages compose [journal-host] with either the CPU
+# ONNX runtime or the NVIDIA CUDA runtime; [pdf] backs the legacy per-feature
+# install hints while the split extras back new focused feature hints.
 #
 # Base solstone keeps only the `sol`/`solstone` scripts. Install exactly one
 # journal leaf; the CPU and GPU ONNX wheels own the same `onnxruntime/` import
 # dir and clobber each other.
 # ---------------------------------------------------------------------------
-pdf = [
+pdf-import = [
+    "pypdfium2>=5.11,<6",
+]
+
+pdf-export = [
     "weasyprint>=60.0",
+]
+
+pdf = [
+    "solstone[pdf-import]",
+    "solstone[pdf-export]",
     "pypdf>=4.0.0",
     "pdf2image>=1.16.0",
 ]

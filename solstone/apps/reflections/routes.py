@@ -85,7 +85,7 @@ def _load_reflection(day: str) -> tuple[Path, str, frontmatter.Post]:
 
 
 def _weasyprint() -> tuple[type, Callable[..., Any]]:
-    require_extra("pdf")
+    require_extra("pdf-export")
     from weasyprint import HTML, default_url_fetcher
 
     return HTML, default_url_fetcher

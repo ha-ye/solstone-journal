@@ -11,21 +11,9 @@ import sys
 
 import pytest
 
-FORBIDDEN = {
-    "flask",
-    "werkzeug",
-    "jinja2",
-    "anthropic",
-    "openai",
-    "google.genai",
-    "httpx",
-    "numpy",
-    "PIL",
-    "soundfile",
-    "av",
-    "pypdf",
-    "frontmatter",
-}
+from scripts.check_access_imports_clean import BLOCKED_FAMILIES
+
+FORBIDDEN = set(BLOCKED_FAMILIES)
 
 MODULES = (
     "solstone.think.chat_cli",

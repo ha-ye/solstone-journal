@@ -30,6 +30,22 @@ FEATURES: dict[str, Feature] = {
         brew_packages=("pango", "poppler"),
         usage="Render reflections to PDF and ingest PDF documents into the journal",
     ),
+    "pdf-import": Feature(
+        name="pdf-import",
+        summary="PDF document extraction",
+        pip_modules=("pypdfium2",),
+        apt_packages=(),
+        brew_packages=(),
+        usage="Extract PDF document metadata, text, and page rasters",
+    ),
+    "pdf-export": Feature(
+        name="pdf-export",
+        summary="PDF export rendering",
+        pip_modules=("weasyprint",),
+        apt_packages=("libpango-1.0-0", "libpangoft2-1.0-0"),
+        brew_packages=("pango",),
+        usage="Render reflections and newsletters to PDF",
+    ),
 }
 
 

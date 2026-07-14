@@ -5,6 +5,33 @@ provider artifacts downloaded at runtime into the journal provider cache. The
 solstone source code remains AGPL-3.0-only; the notices below apply only to the
 listed model files and runtime provider artifacts.
 
+## PDF extraction engine
+
+The PDF import worker uses pypdfium2, whose wheel bundles Google's PDFium
+library. These artifacts are installed as Python package dependencies; they are
+not source code owned by solstone.
+
+### pypdfium2
+
+Attribution: pypdfium2 project.
+
+Source:
+
+- Project: https://github.com/pypdfium2-team/pypdfium2
+- Package: https://pypi.org/project/pypdfium2/
+
+License notice: BSD 3-Clause License (BSD-3-Clause).
+
+### PDFium
+
+Attribution: Google PDFium project.
+
+Source:
+
+- Project: https://pdfium.googlesource.com/pdfium/
+
+License notice: BSD 3-Clause License (BSD-3-Clause).
+
 ## bundled model weights
 
 | Bundled file | Upstream model | Source artifact | License | SHA-256 |

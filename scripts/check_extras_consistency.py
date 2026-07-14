@@ -40,6 +40,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from solstone.think.features import FEATURES
+
 # The thin access partition. Adding anything here must keep the `sol` access
 # commands import-clean (scripts/check_access_imports_clean.py) — keep this in
 # lockstep with pyproject's [project.dependencies].
@@ -65,6 +67,12 @@ HOST_SCRIPTS = {
 }
 TOMBSTONE_PIN = "solstone-journal-host==0.7.0"
 LITELLM_PIN = "litellm==1.86.1"
+PDF_META_EXTRA = [
+    "solstone[pdf-import]",
+    "solstone[pdf-export]",
+    "pypdf>=4.0.0",
+    "pdf2image>=1.16.0",
+]
 CPU_ONNXRUNTIME_DEPS = {
     "onnxruntime>=1.20.0,!=1.24.1",
     "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -226,9 +234,29 @@ def main(root: Path | None = None) -> int:
     if "all" in extras:
         errors.append("[all] extra must be removed")
 
-    for name in ("pdf", "journal", "journal-cuda", "journal-host"):
+    for name in (
+        "pdf-import",
+        "pdf-export",
+        "pdf",
+        "journal",
+        "journal-cuda",
+        "journal-host",
+    ):
         if name not in extras:
             errors.append(f"missing required extra: [{name}]")
+
+    for name in ("pdf-import", "pdf-export"):
+        if name in extras and name in FEATURES:
+            feature_modules = set(FEATURES[name].pip_modules)
+            extra_modules = _names(extras[name])
+            if extra_modules != feature_modules:
+                errors.append(
+                    f"[{name}] package set must match features.py pip_modules "
+                    f"{sorted(feature_modules)}; found {sorted(extra_modules)}"
+                )
+
+    if extras.get("pdf") != PDF_META_EXTRA:
+        errors.append(f"[pdf] must be exactly {PDF_META_EXTRA!r}")
 
     # 3. Root user-facing journal extras are tombstones.
     for name in ("journal", "journal-cuda"):

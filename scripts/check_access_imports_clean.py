@@ -47,6 +47,7 @@ BLOCKED_FAMILIES = (
     "soundfile",
     "av",
     "pypdf",
+    "pypdfium2",
     "frontmatter",
 )
 ACCESS_CASES: tuple[tuple[str, list[str]], ...] = (

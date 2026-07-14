@@ -58,26 +58,31 @@ def test_pdf_modules_are_not_loaded_by_static_imports():
     assert "solstone.think.importers.text" in modules
     assert "weasyprint" not in modules
     assert "pypdf" not in modules
+    assert "pypdfium2" not in modules
     assert "pdf2image" not in modules
 
 
-def _force_missing_pdf(monkeypatch):
-    real = features_module.FEATURES["pdf"]
+def _force_missing_feature(monkeypatch, name: str):
+    real = features_module.FEATURES[name]
     fake: Feature = dataclasses.replace(
         real,
         pip_modules=("definitely_not_installed_xyz",),
     )
-    monkeypatch.setitem(features_module.FEATURES, "pdf", fake)
+    monkeypatch.setitem(features_module.FEATURES, name, fake)
+
+
+def _force_missing_pdf(monkeypatch):
+    _force_missing_feature(monkeypatch, "pdf")
 
 
 def test_render_reflection_pdf_missing_extra(monkeypatch, tmp_path):
-    _force_missing_pdf(monkeypatch)
+    _force_missing_feature(monkeypatch, "pdf-export")
     from solstone.apps.reflections.routes import _render_reflection_pdf
 
     with pytest.raises(MissingExtraError) as exc:
         _render_reflection_pdf(tmp_path / "20260308.md", frontmatter.Post("# hi"))
 
-    assert "pip install 'solstone[pdf]'" in str(exc.value)
+    assert "pip install 'solstone[pdf-export]'" in str(exc.value)
 
 
 def test_document_importer_process_pdf_missing_extra(monkeypatch, tmp_path):

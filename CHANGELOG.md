@@ -6,6 +6,10 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+### Changed
+
+- pdf import and pdf export now have separate extras: `pdf-import` adds the new pypdfium2 worker with no system packages, while `pdf-export` carries weasyprint and pango for newsletter and reflection downloads. the existing `pdf` extra and document import hint are unchanged for now.
+
 ## [0.8.6] - 2026-07-14
 
 ### Fixed
