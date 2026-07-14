@@ -425,7 +425,7 @@ solstone/
 | App | Source | Commands |
 |-----|--------|----------|
 | `activities` | `solstone/apps/activities/call.py` | list, get, create, update, mute, unmute |
-| `entities` | `solstone/apps/entities/call.py` | list, show, search, observe, merge |
+| `entities` | `solstone/apps/entities/call.py` | list, move, detect, attach, update, aka, record-merge-candidate, merge-candidates, accept-merge-candidate, dismiss-merge-candidate, merge, undo-merge, ambiguities, resolve-ambiguity, entity-history, restore-version, network, history, overview, observations, observe, search |
 | `speakers` | `solstone/apps/speakers/call.py` | list, show, detect-owner, confirm-owner, clusters, suggest |
 | `transcripts` | `solstone/apps/transcripts/call.py` | list, read, segments |
 | `support` | `solstone/apps/support/call.py` | register, search, article, create, list, show, reply, attach, feedback, announcements, diagnose |
