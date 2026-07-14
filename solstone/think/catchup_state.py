@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from solstone.think.journal_io.locking import hold_lock
-from solstone.think.media import MEDIA_EXTENSIONS
+from solstone.think.media import MEDIA_EXTENSIONS, PDF_EXTENSIONS
 from solstone.think.utils import (
     day_dirs,
     day_is_complete,
@@ -129,6 +129,10 @@ def _is_raw_hashed(name: str) -> bool:
 
 def _is_media(name: str) -> bool:
     return Path(name).suffix.lower() in MEDIA_EXTENSIONS
+
+
+def _is_pdf(name: str) -> bool:
+    return Path(name).suffix.lower() in PDF_EXTENSIONS
 
 
 def _empty_state() -> dict:
@@ -272,7 +276,7 @@ def read_raw_input_fingerprint(day: str) -> str:
             try:
                 if _is_raw_hashed(name):
                     marker = _file_sha256(path)
-                elif _is_media(name):
+                elif _is_media(name) or _is_pdf(name):
                     marker = f"size:{path.stat().st_size}"
                 else:
                     continue

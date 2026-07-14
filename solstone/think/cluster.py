@@ -219,10 +219,7 @@ def _process_segment(
                 header = json.loads(first_line) if first_line.strip() else {}
             except (OSError, json.JSONDecodeError):
                 continue
-            if not isinstance(header, dict) or header.get("kind") not in (
-                "document",
-                "image",
-            ):
+            if not isinstance(header, dict) or header.get("kind") != "image":
                 continue
             from solstone.observe.hear import load_transcript
 

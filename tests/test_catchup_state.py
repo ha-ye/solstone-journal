@@ -195,6 +195,27 @@ def test_media_extensions_sourced_from_registry(journal):
         assert catchup_state.read_raw_input_fingerprint(DAY) != baseline
 
 
+def test_raw_input_fingerprint_pdf_only_day_differs_from_empty_day(journal):
+    empty_digest = catchup_state.read_raw_input_fingerprint(DAY)
+
+    segment = _segment(journal)
+    (segment / "original.pdf").write_bytes(b"%PDF-1.4 one")
+
+    assert catchup_state.PDF_EXTENSIONS is media.PDF_EXTENSIONS
+    assert catchup_state.read_raw_input_fingerprint(DAY) != empty_digest
+
+
+def test_raw_input_fingerprint_pdf_size_changes_digest(journal):
+    segment = _segment(journal)
+    pdf = segment / "original.pdf"
+    pdf.write_bytes(b"%PDF-1.4 one")
+    first_digest = catchup_state.read_raw_input_fingerprint(DAY)
+
+    pdf.write_bytes(b"%PDF-1.4 one plus more bytes")
+
+    assert catchup_state.read_raw_input_fingerprint(DAY) != first_digest
+
+
 def test_raw_input_fingerprint_skips_file_deleted_mid_scan(journal, monkeypatch):
     first = _segment(journal)
     deleted = first / "audio.jsonl"

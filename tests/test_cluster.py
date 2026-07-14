@@ -110,7 +110,9 @@ def test_cluster(tmp_path, monkeypatch):
     assert "screen summary" in result
 
 
-def test_process_segment_consumes_kind_tagged_document_jsonl(tmp_path, monkeypatch):
+def test_process_segment_ignores_document_jsonl_but_keeps_image_jsonl(
+    tmp_path, monkeypatch
+):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     day_dir = day_path("20240101")
     segment = day_dir / "default" / "123456_300"
@@ -119,6 +121,13 @@ def test_process_segment_consumes_kind_tagged_document_jsonl(tmp_path, monkeypat
         json.dumps({"raw": "report.pdf", "kind": "document"})
         + "\n"
         + json.dumps({"start": "00:00:00", "text": "hello doc"})
+        + "\n",
+        encoding="utf-8",
+    )
+    (segment / "image.jsonl").write_text(
+        json.dumps({"raw": "image.png", "kind": "image"})
+        + "\n"
+        + json.dumps({"start": "00:00:00", "text": "hello image"})
         + "\n",
         encoding="utf-8",
     )
@@ -131,8 +140,34 @@ def test_process_segment_consumes_kind_tagged_document_jsonl(tmp_path, monkeypat
 
     assert len(entries) == 1
     assert entries[0]["prefix"] == "transcript"
-    assert entries[0]["name"] == "123456_300/report.jsonl"
-    assert "hello doc" in entries[0]["content"]
+    assert entries[0]["name"] == "123456_300/image.jsonl"
+    assert "hello image" in entries[0]["content"]
+    assert "hello doc" not in entries[0]["content"]
+
+
+def test_process_segment_reads_document_transcript_md_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    segment = day_dir / "import.document" / "123456_0"
+    segment.mkdir(parents=True)
+    (segment / "document_transcript.md").write_text("document body", encoding="utf-8")
+    (segment / "report.jsonl").write_text(
+        json.dumps({"raw": "report.pdf", "kind": "document"})
+        + "\n"
+        + json.dumps({"start": "00:00:00", "text": "legacy duplicate"})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    entries = mod._process_segment(
+        segment, "20240101", transcripts=True, percepts=False, agents=False
+    )
+
+    assert len(entries) == 1
+    assert entries[0]["name"] == "123456_0/document_transcript.md"
+    assert entries[0]["content"] == "document body"
 
 
 def test_cluster_range(tmp_path, monkeypatch):
