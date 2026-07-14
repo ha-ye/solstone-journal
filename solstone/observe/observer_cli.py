@@ -597,6 +597,8 @@ def main() -> None:
         help="Find or delete provable duplicate observer segments",
         description=(
             "Find byte-identical same-start observer duplicate segments. "
+            "Canonical is the earliest same-start segment whose content is held "
+            "by bytes or terminal proof. "
             "Dry-run is the default and performs zero writes. Exit codes: "
             "0 clean, 2 refusals present, 1 usage/error."
         ),

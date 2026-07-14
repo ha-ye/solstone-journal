@@ -16,7 +16,7 @@ import math
 import os
 import threading
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from solstone.apps.utils import get_app_storage_path, log_app_action
@@ -47,9 +47,9 @@ DISPOSITION_RECEIVED_NOT_WRITTEN = "received_not_written"
 _MEDIA_CONTENT_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 
 
-def get_observers_dir() -> Path:
+def get_observers_dir(*, ensure_exists: bool = True) -> Path:
     """Get the observers storage directory."""
-    return get_app_storage_path("observer", "observers", ensure_exists=True)
+    return get_app_storage_path("observer", "observers", ensure_exists=ensure_exists)
 
 
 def get_hist_dir(key_prefix: str, ensure_exists: bool = True) -> Path:
@@ -262,7 +262,7 @@ class ObserverRegistry:
 
     @classmethod
     def singleton(cls) -> ObserverRegistry:
-        observers_dir = get_observers_dir()
+        observers_dir = get_observers_dir(ensure_exists=False)
         with cls._instance_lock:
             if cls._instance is None or cls._instance._observers_dir != observers_dir:
                 cls._instance = cls(observers_dir)
@@ -386,7 +386,7 @@ def _find_observer(identifier: str) -> dict | None:
     if observer:
         return observer
 
-    observers_dir = get_observers_dir()
+    observers_dir = get_observers_dir(ensure_exists=False)
     observer_path = observers_dir / f"{identifier}.json"
     if observer_path.exists():
         try:
@@ -665,6 +665,12 @@ class ContentIdentityFile:
 
 
 @dataclass(frozen=True)
+class ContentIdentityIssue:
+    file: str
+    resolution: str
+
+
+@dataclass(frozen=True)
 class IngestPlan:
     status: str
     segment: str
@@ -889,8 +895,8 @@ def content_identity_from_uploads(files: list[IngestFile]) -> list[IngestFile]:
 
 def content_identity_from_segment(
     segment_dir: Path,
-) -> tuple[dict[str, ContentIdentityFile], str | None]:
-    """Return a segment's content identity, or a refusal reason.
+) -> tuple[dict[str, ContentIdentityFile], ContentIdentityIssue | None]:
+    """Return a segment's content identity, or a structured refusal.
 
     Valid ingest manifests are authoritative. Legacy manifest-less directories
     can establish identity only from media files present on disk.
@@ -901,8 +907,14 @@ def content_identity_from_segment(
         for name, entry in manifest_files.items():
             if not isinstance(name, str) or name in RESERVED_SEGMENT_FILENAMES:
                 continue
+            manifest_name_issue = _manifest_content_name_issue(name)
+            if manifest_name_issue is not None:
+                return {}, manifest_name_issue
             if not isinstance(entry, dict):
-                return {}, f"manifest entry for {name!r} is invalid"
+                return {}, ContentIdentityIssue(
+                    name,
+                    "repair ingest.json: this content entry is not a sha256/size object",
+                )
             sha256 = entry.get("sha256")
             size = entry.get("size")
             if (
@@ -910,25 +922,40 @@ def content_identity_from_segment(
                 or isinstance(size, bool)
                 or not isinstance(size, int)
             ):
-                return {}, f"manifest entry for {name!r} is invalid"
+                return {}, ContentIdentityIssue(
+                    name,
+                    "repair ingest.json: this content entry needs string sha256 and integer size",
+                )
             target = segment_dir / name
             if target.exists():
                 try:
                     disk_sha = _file_sha256(target)
                     disk_size = target.stat().st_size
                 except OSError:
-                    return {}, f"content file {name!r} cannot be read"
+                    return {}, ContentIdentityIssue(
+                        name,
+                        "restore a readable content file before pruning",
+                    )
                 if disk_sha != sha256 or disk_size != size:
-                    return {}, f"content file {name!r} does not match ingest manifest"
+                    return {}, ContentIdentityIssue(
+                        name,
+                        "restore bytes matching ingest.json or repair the corrupt manifest before pruning",
+                    )
                 evidence = "present"
             elif _has_terminal_processing_proof(target, size):
                 evidence = "terminal_proof"
             else:
-                return {}, f"content file {name!r} is neither present nor proof-held"
+                return {}, ContentIdentityIssue(
+                    name,
+                    "restore the content file or its terminal processing proof before pruning",
+                )
             identity[name] = ContentIdentityFile(name, sha256, size, evidence)
         if identity:
             return identity, None
-        return {}, "valid ingest manifest has no content files"
+        return {}, ContentIdentityIssue(
+            INGEST_MANIFEST_NAME,
+            "repair ingest.json so it names at least one non-reserved content file",
+        )
 
     media_paths = [
         path
@@ -938,7 +965,10 @@ def content_identity_from_segment(
         and path.suffix.lower() in _MEDIA_CONTENT_EXTENSIONS
     ]
     if not media_paths:
-        return {}, "no valid ingest manifest and no media files"
+        return {}, ContentIdentityIssue(
+            INGEST_MANIFEST_NAME,
+            "restore a valid ingest.json with content files or restore media files before pruning",
+        )
 
     identity = {}
     for path in media_paths:
@@ -947,8 +977,27 @@ def content_identity_from_segment(
                 path.name, _file_sha256(path), path.stat().st_size, "present"
             )
         except OSError:
-            return {}, f"media file {path.name!r} cannot be read"
+            return {}, ContentIdentityIssue(
+                path.name,
+                "restore readable media bytes before pruning",
+            )
     return identity, None
+
+
+def _manifest_content_name_issue(name: str) -> ContentIdentityIssue | None:
+    path = PurePosixPath(name)
+    if (
+        not name
+        or "\\" in name
+        or path.is_absolute()
+        or len(path.parts) != 1
+        or path.parts[0] in {"", ".", ".."}
+    ):
+        return ContentIdentityIssue(
+            name or INGEST_MANIFEST_NAME,
+            "repair ingest.json: content file names must be plain in-segment names",
+        )
+    return None
 
 
 def content_identity_key(identity: dict[str, ContentIdentityFile]) -> tuple:

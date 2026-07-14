@@ -249,6 +249,34 @@ def _index_count(journal: Path, segment: str) -> int:
         conn.close()
 
 
+def _journal_snapshot(journal: Path) -> list[tuple[str, str, bytes]]:
+    entries = []
+    for path in sorted(journal.rglob("*")):
+        rel = path.relative_to(journal).as_posix()
+        if path.is_dir():
+            entries.append((rel, "dir", b""))
+        elif path.is_file():
+            entries.append((rel, "file", path.read_bytes()))
+    return entries
+
+
+def _stream_marker_snapshot(journal: Path) -> dict[str, dict]:
+    snapshot = {}
+    for stream, segment, path in iter_segments(PRUNE_DAY):
+        if stream != PRUNE_STREAM:
+            continue
+        snapshot[segment] = read_segment_stream(path)
+    return snapshot
+
+
+def _pruned_history(prefix: str, segment: str) -> list[dict]:
+    return [
+        record
+        for record in load_history(prefix, PRUNE_DAY)
+        if record.get("type") == "pruned" and record.get("segment") == segment
+    ]
+
+
 def _build_legacy_prune_lattice(journal: Path, prefix: str) -> None:
     _write_prune_segment(
         journal, segment="080000_300", seq=1, prev_segment=None, audio=b"before"
@@ -805,6 +833,32 @@ def test_prune_dry_run_lists_legacy_duplicates_and_writes_nothing(
     assert _index_count(observer_cli_env.journal, "090000_301") == 1
 
 
+def test_prune_dry_run_without_observer_storage_writes_nothing(
+    observer_cli_env,
+) -> None:
+    _write_prune_segment(
+        observer_cli_env.journal,
+        segment="081000_300",
+        seq=1,
+        prev_segment=None,
+    )
+    _write_prune_segment(
+        observer_cli_env.journal,
+        segment="081000_301",
+        seq=2,
+        prev_segment="081000_300",
+    )
+    _write_stream_state(observer_cli_env.journal, last_segment="081000_301", seq=2)
+    assert not (observer_cli_env.journal / "apps").exists()
+    before = _journal_snapshot(observer_cli_env.journal)
+
+    result = run_prune(days=[PRUNE_DAY], stream=PRUNE_STREAM, execute=False)
+
+    assert any(refusal.gate == "observer-attribution" for refusal in result.refusals)
+    assert result.deleted == []
+    assert _journal_snapshot(observer_cli_env.journal) == before
+
+
 def test_prune_execute_deletes_duplicates_repairs_chain_history_and_index(
     observer_cli_env,
 ) -> None:
@@ -1041,6 +1095,51 @@ def test_prune_unrecognized_derived_file_refuses_legacy_and_manifest_candidates(
     ).is_dir()
 
 
+def test_prune_refuses_manifest_content_name_outside_segment(
+    observer_cli_env,
+) -> None:
+    observer = _observer_for_stream()
+    assert save_observer(observer)
+    prefix = observer["key"][:8]
+    _write_prune_segment(
+        observer_cli_env.journal,
+        segment="133000_300",
+        seq=1,
+        prev_segment=None,
+        manifest=True,
+    )
+    candidate = _write_prune_segment(
+        observer_cli_env.journal,
+        segment="133000_301",
+        seq=2,
+        prev_segment="133000_300",
+        manifest=True,
+    )
+    (candidate.parent / "outside.flac").write_bytes(PRUNE_AUDIO)
+    manifest_path = candidate / "ingest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"]["../outside.flac"] = {
+        "sha256": _sha(PRUNE_AUDIO),
+        "size": len(PRUNE_AUDIO),
+    }
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+    _append_upload(prefix, "133000_300")
+    _append_upload(prefix, "133000_301")
+    _write_stream_state(observer_cli_env.journal, last_segment="133000_301", seq=2)
+
+    result = run_prune(days=[PRUNE_DAY], stream=PRUNE_STREAM, execute=True)
+
+    refusal = next(
+        refusal
+        for refusal in result.refusals
+        if refusal.subject.endswith("/133000_301")
+    )
+    assert refusal.gate == "canonical-heldness"
+    assert refusal.file == "../outside.flac"
+    assert "plain in-segment names" in refusal.resolution
+    assert candidate.is_dir()
+
+
 def test_prune_manifest_extra_content_refuses_as_content_identity(
     observer_cli_env,
 ) -> None:
@@ -1175,6 +1274,51 @@ def test_prune_last_physical_copy_is_labeled_in_dry_run_and_execute(
     assert result.deleted[0].last_physical_copy is True
 
 
+def test_prune_crash_after_pruned_record_before_delete_converges(
+    observer_cli_env,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observer = _observer_for_stream()
+    assert save_observer(observer)
+    prefix = observer["key"][:8]
+    _write_prune_segment(
+        observer_cli_env.journal,
+        segment="155000_300",
+        seq=1,
+        prev_segment=None,
+    )
+    candidate = _write_prune_segment(
+        observer_cli_env.journal,
+        segment="155000_301",
+        seq=2,
+        prev_segment="155000_300",
+    )
+    _append_upload(prefix, "155000_300")
+    _append_upload(prefix, "155000_301")
+    _write_stream_state(observer_cli_env.journal, last_segment="155000_301", seq=2)
+
+    from solstone.apps.observer import prune
+
+    def crash_before_delete(_path: Path) -> None:
+        raise RuntimeError("interrupt before delete")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(prune.shutil, "rmtree", crash_before_delete)
+        with pytest.raises(RuntimeError, match="interrupt before delete"):
+            run_prune(days=[PRUNE_DAY], stream=PRUNE_STREAM, execute=True)
+
+    assert candidate.is_dir()
+    assert (candidate / "audio.flac").read_bytes() == PRUNE_AUDIO
+    assert len(_pruned_history(prefix, "155000_301")) == 1
+
+    result = run_prune(days=[PRUNE_DAY], stream=PRUNE_STREAM, execute=True)
+
+    assert result.refusals == []
+    assert result_exit_code(result) == 0
+    assert not candidate.exists()
+    assert len(_pruned_history(prefix, "155000_301")) == 1
+
+
 def test_prune_crash_rerun_repairs_pruned_dangling_prev_and_refuses_unexplained(
     observer_cli_env,
     monkeypatch: pytest.MonkeyPatch,
@@ -1244,6 +1388,52 @@ def test_prune_crash_rerun_repairs_pruned_dangling_prev_and_refuses_unexplained(
     __import__("shutil").rmtree(unexplained)
     bad = run_prune(days=[PRUNE_DAY], stream=PRUNE_STREAM, execute=True)
     assert any(refusal.gate == "chain-repair" for refusal in bad.refusals)
+
+
+def test_prune_execute_twice_is_clean_noop_second_run(
+    observer_cli_env,
+) -> None:
+    observer = _observer_for_stream()
+    assert save_observer(observer)
+    prefix = observer["key"][:8]
+    _write_prune_segment(
+        observer_cli_env.journal,
+        segment="165000_300",
+        seq=1,
+        prev_segment=None,
+    )
+    _write_prune_segment(
+        observer_cli_env.journal,
+        segment="165000_301",
+        seq=2,
+        prev_segment="165000_300",
+    )
+    _write_prune_segment(
+        observer_cli_env.journal,
+        segment="165500_300",
+        seq=3,
+        prev_segment="165000_301",
+        audio=b"after",
+    )
+    _append_upload(prefix, "165000_300")
+    _append_upload(prefix, "165000_301")
+    _write_stream_state(observer_cli_env.journal, last_segment="165500_300", seq=3)
+
+    first = run_prune(days=[PRUNE_DAY], stream=PRUNE_STREAM, execute=True)
+    assert result_exit_code(first) == 0
+    assert [candidate.analysis.segment for candidate in first.deleted] == ["165000_301"]
+    state_after_first = get_stream_state(PRUNE_STREAM)
+    markers_after_first = _stream_marker_snapshot(observer_cli_env.journal)
+    pruned_after_first = _pruned_history(prefix, "165000_301")
+
+    second = run_prune(days=[PRUNE_DAY], stream=PRUNE_STREAM, execute=True)
+
+    assert result_exit_code(second) == 0
+    assert second.refusals == []
+    assert second.deleted == []
+    assert _pruned_history(prefix, "165000_301") == pruned_after_first
+    assert _stream_marker_snapshot(observer_cli_env.journal) == markers_after_first
+    assert get_stream_state(PRUNE_STREAM) == state_after_first
 
 
 def test_prune_observer_attribution_refuses_no_owner_and_ambiguous_owner(

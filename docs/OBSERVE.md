@@ -119,6 +119,12 @@ than observer ingest.
 
 Segment listings report each uploaded file as `present`, `processed`, or
 `missing`. `present` means the recorded file still exists at its exact path.
+`processed` applies only to raw audio/video media whose recorded path is absent
+but whose same-stem JSONL sidecar at that segment path carries a terminal
+`solstone.processing.v1` proof for the original input size. Legacy segments
+without `ingest.json` use that proof to dedupe absent raw media, then graduate to
+a manifest on the next resolution. Anything else is `missing` and remains
+eligible for upload healing.
 
 ### Duplicate observer pruning
 
@@ -136,6 +142,8 @@ happen to have identical bytes, such as two silent captures at different times.
 Within that same-start set, identity is the set of `(name, sha256, size)` content
 files: valid `ingest.json` files define content exactly; legacy manifest-less
 segments use present media files; manifest-less non-media-only segments refuse.
+The canonical is deterministic: the earliest same-start segment whose content
+is held by present bytes or terminal processing proof.
 
 Prune fails closed. It refuses unverifiable canonicals, near-duplicates, unknown
 non-derived files, marker-less candidates, and ambiguous stream-to-observer
@@ -148,16 +156,14 @@ both dry-run and execute output and includes a summary count.
 Execute deletes index rows for each pruned segment, repairs stream-chain
 predecessors atomically on surviving `stream.json` markers, preserves stream
 state metadata and monotonic `seq`, and touches `chronicle/<day>/health/stream.updated`.
+It never renumbers survivor marker `seq` values. Prune appends the `pruned`
+history record before deleting the directory; if deletion then fails, the group
+stops loudly and the next successful run dedupes the existing record and
+converges.
 Observer receipt stats such as `segments_received` and `bytes_received` are not
 decremented; pruning records storage cleanup, not the original receipt event.
 Exit codes are `0` for a clean run, `2` when refusals are present, and `1` for
 usage or unexpected errors.
-`processed` applies only to raw audio/video media whose recorded path is absent
-but whose same-stem JSONL sidecar at that segment path carries a terminal
-`solstone.processing.v1` proof for the original input size. Legacy segments
-without `ingest.json` use that proof to dedupe absent raw media, then graduate to
-a manifest on the next resolution. Anything else is `missing` and remains
-eligible for upload healing.
 
 ### Observer health
 

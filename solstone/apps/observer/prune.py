@@ -14,6 +14,7 @@ from typing import Any
 
 from solstone.apps.observer.utils import (
     ContentIdentityFile,
+    ContentIdentityIssue,
     append_history_record,
     content_identity_from_segment,
     content_identity_key,
@@ -24,7 +25,10 @@ from solstone.apps.observer.utils import (
     observer_filename_prefix,
 )
 from solstone.think.indexer.journal import delete_segment_index_rows
-from solstone.think.segment_files import RESERVED_SEGMENT_FILENAMES
+from solstone.think.segment_files import (
+    INGEST_MANIFEST_NAME,
+    RESERVED_SEGMENT_FILENAMES,
+)
 from solstone.think.streams import (
     get_stream_state,
     read_segment_stream,
@@ -53,7 +57,7 @@ class SegmentAnalysis:
     path: Path
     marker: dict[str, Any] | None
     identity: dict[str, ContentIdentityFile]
-    identity_error: str | None
+    identity_issue: ContentIdentityIssue | None
     marker_error: str | None
     unknown_files: list[str]
 
@@ -257,33 +261,17 @@ def _plan(days: list[str], *, stream: str | None) -> PruneResult:
     result = PruneResult(execute=False)
     for analyses in _same_start_sets(days, stream=stream):
         duplicate_groups, singleton_mismatches = _duplicate_groups(analyses)
-        identity_errors = [analysis for analysis in analyses if analysis.identity_error]
+        identity_errors = [analysis for analysis in analyses if analysis.identity_issue]
         if not duplicate_groups:
             if identity_errors and any(
-                analysis.identity_error is None for analysis in analyses
+                analysis.identity_issue is None for analysis in analyses
             ):
                 for analysis in identity_errors:
-                    result.refusals.append(
-                        Refusal(
-                            analysis.label,
-                            "canonical-heldness",
-                            None,
-                            analysis.identity_error
-                            or "restore the canonical content file or terminal proof",
-                        )
-                    )
+                    result.refusals.append(_identity_refusal(analysis))
             continue
         if identity_errors:
             for analysis in identity_errors:
-                result.refusals.append(
-                    Refusal(
-                        analysis.label,
-                        "canonical-heldness",
-                        None,
-                        analysis.identity_error
-                        or "restore the canonical content file or terminal proof",
-                    )
-                )
+                result.refusals.append(_identity_refusal(analysis))
             continue
         mismatch_canonical = _mismatch_comparison_canonical(duplicate_groups)
         for mismatch in singleton_mismatches:
@@ -293,7 +281,8 @@ def _plan(days: list[str], *, stream: str | None) -> PruneResult:
                     "content-identity",
                     _first_identity_difference(
                         mismatch_canonical.identity, mismatch.identity
-                    ),
+                    )
+                    or "content identity",
                     "compared to canonical "
                     f"{mismatch_canonical.segment}; leave it in place; only "
                     "byte-identical same-start duplicates are pruned",
@@ -358,6 +347,23 @@ def _plan(days: list[str], *, stream: str | None) -> PruneResult:
     return result
 
 
+def _identity_refusal(analysis: SegmentAnalysis) -> Refusal:
+    issue = analysis.identity_issue
+    if issue is None:
+        return Refusal(
+            analysis.label,
+            "canonical-heldness",
+            INGEST_MANIFEST_NAME,
+            "restore the canonical content file or terminal proof before pruning",
+        )
+    return Refusal(
+        analysis.label,
+        "canonical-heldness",
+        issue.file,
+        issue.resolution,
+    )
+
+
 def _execute_plan(result: PruneResult) -> None:
     affected_streams: set[str] = set()
     affected_days: set[str] = set()
@@ -381,18 +387,6 @@ def _execute_plan(result: PruneResult) -> None:
                     )
                 )
                 break
-            try:
-                shutil.rmtree(analysis.path)
-            except OSError as exc:
-                result.refusals.append(
-                    Refusal(
-                        analysis.label,
-                        "delete",
-                        None,
-                        f"delete failed: {exc}",
-                    )
-                )
-                break
             _append_pruned_once(
                 prefix,
                 analysis.day,
@@ -400,6 +394,19 @@ def _execute_plan(result: PruneResult) -> None:
                 analysis.segment,
                 group.canonical.segment,
             )
+            try:
+                shutil.rmtree(analysis.path)
+            except OSError as exc:
+                result.refusals.append(
+                    Refusal(
+                        analysis.label,
+                        "delete",
+                        analysis.segment,
+                        "delete failed after the pruned history record was written: "
+                        f"{exc}; fix the filesystem error and rerun prune",
+                    )
+                )
+                break
             deleted_markers[(analysis.day, analysis.segment)] = marker
             result.deleted.append(candidate)
             affected_streams.add(analysis.stream)
@@ -443,7 +450,7 @@ def _duplicate_groups(
 ) -> tuple[list[list[SegmentAnalysis]], list[SegmentAnalysis]]:
     by_key: dict[tuple, list[SegmentAnalysis]] = {}
     for analysis in analyses:
-        if analysis.identity_error:
+        if analysis.identity_issue:
             continue
         by_key.setdefault(analysis.identity_key, []).append(analysis)
     duplicate_groups = [items for items in by_key.values() if len(items) > 1]
@@ -471,15 +478,15 @@ def _mismatch_comparison_canonical(
 def _analyze_segment(
     day: str, stream: str, segment: str, path: Path
 ) -> SegmentAnalysis:
-    identity, identity_error = content_identity_from_segment(path)
+    identity, identity_issue = content_identity_from_segment(path)
     marker = read_segment_stream(path)
     marker_error = None
     if marker is None:
         marker_error = "restore a readable stream.json marker before pruning"
     elif marker.get("stream") != stream:
-        marker_error = "stream.json stream does not match the segment path"
+        marker_error = "rewrite stream.json so its stream matches the segment directory before pruning"
     unknown_files = []
-    if not identity_error:
+    if not identity_issue:
         unknown_files = _unknown_files(path, identity)
     return SegmentAnalysis(
         day,
@@ -488,7 +495,7 @@ def _analyze_segment(
         path,
         marker,
         identity,
-        identity_error,
+        identity_issue,
         marker_error,
         unknown_files,
     )
@@ -535,7 +542,7 @@ def _observer_prefix_for_stream(stream: str) -> str | Refusal:
         return Refusal(
             stream,
             "observer-attribution",
-            None,
+            "apps/observer/observers",
             "multiple active observers own this locked stream; reconcile observers first",
         )
     prefixes = set()
@@ -557,13 +564,13 @@ def _observer_prefix_for_stream(stream: str) -> str | Refusal:
         return Refusal(
             stream,
             "observer-attribution",
-            None,
+            "apps/observer/observers",
             "no observer owns or references this stream; create an unambiguous observer history first",
         )
     return Refusal(
         stream,
         "observer-attribution",
-        None,
+        "apps/observer/observers/*/hist",
         "multiple observer histories reference this stream; reconcile ownership first",
     )
 
