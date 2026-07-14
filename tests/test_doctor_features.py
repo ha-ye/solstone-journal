@@ -33,28 +33,30 @@ def test_feature_checks_registered(doctor):
 
 
 def test_feature_checks_in_check_map(doctor):
-    assert "feature:pdf" in doctor.CHECK_MAP
+    assert "feature:pdf-import" in doctor.CHECK_MAP
+    assert "feature:pdf-export" in doctor.CHECK_MAP
+    assert f"feature:{'pdf'}" not in doctor.CHECK_MAP
 
 
-def test_pdf_feature_check_ok_when_available(doctor):
-    result = run_check(doctor, "feature:pdf")
+def test_pdf_import_feature_check_ok_when_available(doctor):
+    result = run_check(doctor, "feature:pdf-import")
 
     assert result.status == "ok"
 
 
-def test_pdf_feature_check_warns_when_missing(doctor, monkeypatch):
-    monkeypatch.setattr(features, "is_available", lambda name: name != "pdf")
+def test_pdf_import_feature_check_warns_when_missing(doctor, monkeypatch):
+    monkeypatch.setattr(features, "is_available", lambda name: name != "pdf-import")
 
-    result = run_check(doctor, "feature:pdf")
+    result = run_check(doctor, "feature:pdf-import")
 
     assert result.status == "warn"
-    assert result.fix == features.install_hint("pdf", doctor.platform_tag())
+    assert result.fix == features.install_hint("pdf-import", doctor.platform_tag())
 
 
 def test_parse_args_feature(doctor):
-    parsed = doctor.parse_args(["--feature", "pdf"])
+    parsed = doctor.parse_args(["--feature", "pdf-import"])
 
-    assert parsed.feature == "pdf"
+    assert parsed.feature == "pdf-import"
 
 
 def test_parse_args_rejects_unknown_feature(doctor, capsys):
@@ -64,18 +66,18 @@ def test_parse_args_rejects_unknown_feature(doctor, capsys):
     assert error.value.code == 2
     stderr = capsys.readouterr().err
     assert "known features" in stderr
-    assert "pdf" in stderr
+    assert "pdf-import" in stderr
 
 
 def test_run_checks_filters_to_feature(doctor):
-    results = doctor.run_checks(args(doctor, feature="pdf"))
+    results = doctor.run_checks(args(doctor, feature="pdf-import"))
 
     assert len(results) == 1
-    assert results[0].name.startswith("feature:pdf")
+    assert results[0].name == "feature:pdf-import"
 
 
 def test_emit_json_filtered_summary(doctor, capsys):
-    results = doctor.run_checks(args(doctor, feature="pdf"))
+    results = doctor.run_checks(args(doctor, feature="pdf-import"))
 
     doctor.emit_json(results)
     payload = json.loads(capsys.readouterr().out)

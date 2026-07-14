@@ -70,8 +70,6 @@ LITELLM_PIN = "litellm==1.86.1"
 PDF_META_EXTRA = [
     "solstone[pdf-import]",
     "solstone[pdf-export]",
-    "pypdf>=4.0.0",
-    "pdf2image>=1.16.0",
 ]
 DIST_TO_IMPORT_NAME = {
     "pillow": "PIL",

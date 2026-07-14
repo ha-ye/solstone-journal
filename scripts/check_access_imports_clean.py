@@ -46,7 +46,6 @@ BLOCKED_FAMILIES = (
     "PIL",
     "soundfile",
     "av",
-    "pypdf",
     "pypdfium2",
     "frontmatter",
 )

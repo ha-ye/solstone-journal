@@ -59,7 +59,7 @@ Use the diagnostic command that matches the question:
 | `journal_sync` | blocker | Concurrent-writer conflict check. |
 | `stale_alias_symlink` | blocker | Checks only the `journal` wrapper; stale aliases warn, never block, and `journal setup` repairs them. |
 | `launchd_stale_plist` | advisory | macOS only; Linux skips it. |
-| `feature:pdf`, `feature:whisper` | advisory | Optional extras with exact install commands. |
+| `feature:pdf-import`, `feature:pdf-export`, `feature:whisper` | advisory | Optional extras with exact install commands. |
 
 `host_dependencies` fix guidance is: Reinstall the journal host stack:
 `pip install --upgrade solstone-journal`  |  `uv tool install --upgrade solstone-journal`  |  `pipx install --force solstone-journal`. On an NVIDIA host use `solstone-journal-cuda` instead — never install both.
@@ -75,7 +75,7 @@ missing journal-host packaging pieces directly.
 `journal setup` step 1 runs `journal doctor --readiness`: the client readiness
 checks (`python_version`, `sol_importable`, `local_bin_sol_reachable`,
 `stale_alias_symlink`, `disk_space`, `journal_dir_writable`) plus
-`host_dependencies`, `default_stt_ready`, `feature:pdf`, and `feature:whisper`.
+`host_dependencies`, `default_stt_ready`, `feature:pdf-import`, `feature:pdf-export`, and `feature:whisper`.
 It does not run runtime service, sync, config-dir, or launchd checks. A blocker
 failure still stops setup early; feature advisories stay advisory and include
 the exact extra-install command.

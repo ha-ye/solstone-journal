@@ -87,8 +87,6 @@ pdf-export = [
 pdf = [
     "solstone[pdf-import]",
     "solstone[pdf-export]",
-    "pypdf>=4.0.0",
-    "pdf2image>=1.16.0",
 ]
 
 # The full journal-host stack EXCEPT the ONNX runtime package (which is the
@@ -272,6 +270,8 @@ dev = [
     "pytest-xdist",
     "ruff",
     "setuptools",
+    # Test-only: encrypted PDF fixture construction in tests/pdf_worker_fixtures.py.
+    "pypdf>=4.0.0",
 ]
 journal-cpu = ["solstone-journal"]
 journal-cuda = ["solstone-journal-cuda"]

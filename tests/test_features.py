@@ -39,7 +39,7 @@ def test_feature_is_frozen():
 
 
 def test_features_registry_contents():
-    assert "pdf" in FEATURES
+    assert "pdf" not in FEATURES
     assert "pdf-import" in FEATURES
     assert "pdf-export" in FEATURES
 
@@ -57,8 +57,8 @@ def test_pdf_import_feature_covers_worker_render_imports():
     assert {"pypdfium2", "PIL"} <= set(FEATURES["pdf-import"].pip_modules)
 
 
-def test_is_available_true_for_pdf():
-    assert is_available("pdf") is True
+def test_is_available_true_for_pdf_import():
+    assert is_available("pdf-import") is True
 
 
 def test_is_available_false_for_missing_module(monkeypatch):
@@ -83,20 +83,6 @@ def test_is_available_false_for_missing_module(monkeypatch):
 def test_is_available_unknown_raises_keyerror():
     with pytest.raises(KeyError):
         is_available("nonexistent")
-
-
-def test_install_hint_pdf_linux():
-    assert (
-        install_hint("pdf", "linux")
-        == "pip install 'solstone[pdf]' and apt install libpango-1.0-0 libpangoft2-1.0-0 poppler-utils"
-    )
-
-
-def test_install_hint_pdf_darwin():
-    assert (
-        install_hint("pdf", "darwin")
-        == "pip install 'solstone[pdf]' and brew install pango poppler"
-    )
 
 
 def test_install_hint_pdf_import_linux():
@@ -127,8 +113,6 @@ def test_pdf_meta_extra_membership():
     assert extras["pdf"] == [
         "solstone[pdf-import]",
         "solstone[pdf-export]",
-        "pypdf>=4.0.0",
-        "pdf2image>=1.16.0",
     ]
 
 
@@ -138,20 +122,20 @@ def test_install_hint_unknown_raises_keyerror():
 
 
 def test_missing_extra_error_message():
-    err = MissingExtraError("pdf", "linux")
+    err = MissingExtraError("pdf-import", "linux")
 
     assert (
         err.args[0]
-        == "feature 'pdf' requires the [pdf] extra: pip install 'solstone[pdf]' and apt install libpango-1.0-0 libpangoft2-1.0-0 poppler-utils"
+        == "feature 'pdf-import' requires the [pdf-import] extra: pip install 'solstone[pdf-import]'"
     )
 
 
 def test_missing_extra_error_name_attribute():
-    assert MissingExtraError("pdf", "linux").name == "pdf"
+    assert MissingExtraError("pdf-import", "linux").name == "pdf-import"
 
 
 def test_require_extra_succeeds_when_available():
-    require_extra("pdf")
+    require_extra("pdf-import")
 
 
 def test_require_extra_raises_when_missing(monkeypatch):

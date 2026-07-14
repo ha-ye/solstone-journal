@@ -277,7 +277,7 @@ instead of false failures. Its battery is:
   `stale_alias_symlink` — blockers.
   Stale `journal` aliases warn, never block, and `journal setup` repairs them.
 - `launchd_stale_plist` — advisory on macOS; skipped on Linux.
-- `feature:pdf`, `feature:whisper` — advisories with the exact extra-install
+- `feature:pdf-import`, `feature:pdf-export`, `feature:whisper` — advisories with the exact extra-install
   command when missing.
 
 `host_dependencies` fix guidance is: Reinstall the journal host stack:
@@ -331,7 +331,7 @@ successfully so the next run can repair the wrappers.
 
 ### Doctor pass-through
 
-`journal setup --jsonl` runs `journal doctor --readiness --jsonl` for the doctor step and forwards `doctor.started`, `check.completed`, and `doctor.completed` lines verbatim. The readiness battery is the client readiness checks (`python_version`, `sol_importable`, `local_bin_sol_reachable`, `stale_alias_symlink`, `disk_space`, `journal_dir_writable`) plus `host_dependencies`, `default_stt_ready`, `feature:pdf`, and `feature:whisper`; it does not run runtime service, sync, config-dir, or launchd checks. Advisory doctor checks are also translated into setup-level `step.warning` events so consumers can handle setup warnings uniformly.
+`journal setup --jsonl` runs `journal doctor --readiness --jsonl` for the doctor step and forwards `doctor.started`, `check.completed`, and `doctor.completed` lines verbatim. The readiness battery is the client readiness checks (`python_version`, `sol_importable`, `local_bin_sol_reachable`, `stale_alias_symlink`, `disk_space`, `journal_dir_writable`) plus `host_dependencies`, `default_stt_ready`, `feature:pdf-import`, `feature:pdf-export`, and `feature:whisper`; it does not run runtime service, sync, config-dir, or launchd checks. Advisory doctor checks are also translated into setup-level `step.warning` events so consumers can handle setup warnings uniformly.
 
 Example stream excerpt for setup readiness:
 

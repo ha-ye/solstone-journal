@@ -22,14 +22,6 @@ class Feature:
 
 
 FEATURES: dict[str, Feature] = {
-    "pdf": Feature(
-        name="pdf",
-        summary="PDF rendering and ingestion",
-        pip_modules=("weasyprint", "pypdf", "pdf2image"),
-        apt_packages=("libpango-1.0-0", "libpangoft2-1.0-0", "poppler-utils"),
-        brew_packages=("pango", "poppler"),
-        usage="Render reflections to PDF and ingest PDF documents into the journal",
-    ),
     "pdf-import": Feature(
         name="pdf-import",
         summary="PDF document extraction",
