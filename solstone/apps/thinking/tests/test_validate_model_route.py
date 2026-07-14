@@ -91,8 +91,9 @@ def test_validate_model_route_reports_missing_stored_key(
         "provider": "anthropic",
         "model": "claude-opus-4-8",
         "reason_code": "key_missing",
-        "error": "No stored API key for provider.",
+        "message": "No stored API key for provider.",
     }
+    assert "error" not in payload
 
 
 def test_validate_model_route_relays_success_and_does_not_write_config(
@@ -104,7 +105,7 @@ def test_validate_model_route_relays_success_and_does_not_write_config(
 
     with patch(
         "solstone.apps.thinking.routes.validate_model",
-        return_value={"valid": True},
+        return_value={"valid": True, "extra": "dropped"},
     ) as mock_validate:
         response = client.post(
             "/app/thinking/api/validate-model",
@@ -136,6 +137,7 @@ def test_validate_model_route_relays_failure_with_probe_identity(
             "valid": False,
             "error": "model missing",
             "reason_code": "model_not_found",
+            "extra": "dropped",
         },
     ) as mock_validate:
         response = client.post(
@@ -148,9 +150,10 @@ def test_validate_model_route_relays_failure_with_probe_identity(
         "valid": False,
         "provider": "openai",
         "model": "gpt-5.5",
-        "error": "model missing",
         "reason_code": "model_not_found",
+        "message": "model missing",
     }
+    assert "error" not in response.get_json()
     mock_validate.assert_called_once_with(
         "openai",
         "gpt-5.5",

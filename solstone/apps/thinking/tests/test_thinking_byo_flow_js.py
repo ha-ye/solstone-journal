@@ -149,6 +149,7 @@ def _node_script(body: str) -> str:
         extract_js_function(source, "formatCopy"),
         extract_js_function(source, "byoReasonCopy"),
         extract_js_function(source, "byoModelStepAllowed"),
+        extract_js_function(source, "byoEntryMode"),
         extract_js_function(source, "byoKeyInputEmpty"),
         extract_js_function(source, "byoTierList"),
         extract_js_function(source, "preselectByoModel"),
@@ -161,6 +162,7 @@ def _node_script(body: str) -> str:
         extract_js_function(source, "runByoKeyCheckFlow"),
         extract_js_function(source, "runByoModelSaveFlow"),
         extract_js_function(source, "runByoCustomProbeFlow"),
+        extract_js_function(source, "selectedByoProvider"),
         extract_js_function(source, "changeByoProvider"),
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
@@ -203,7 +205,9 @@ def _node_render_script(body: str) -> str:
     source = STATIC.read_text(encoding="utf-8")
     parts = [
         extract_js_function(source, "formatCopy"),
+        extract_js_function(source, "byoReasonCopy"),
         extract_js_function(source, "byoModelStepAllowed"),
+        extract_js_function(source, "byoEntryMode"),
         extract_js_function(source, "byoTierList"),
         extract_js_function(source, "preselectByoModel"),
         extract_js_function(source, "byoTierRows"),
@@ -212,13 +216,33 @@ def _node_render_script(body: str) -> str:
         extract_js_function(source, "byoCustomShowsChecked"),
         extract_js_function(source, "byoSaveDisabled"),
         extract_js_function(source, "resetByoDraft"),
+        extract_js_function(source, "setSelectedByoProvider"),
         extract_js_function(source, "selectedByoProvider"),
+        extract_js_function(source, "changeByoProvider"),
         extract_js_function(source, "renderByoModelPanel"),
         _extract_js_function_exact(source, "renderByo"),
+        extract_js_function(source, "bindOpenView"),
+        _extract_js_function_exact(source, "bind"),
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
         "const text = copy.byo_setup;",
         RENDER_DOM_STUB,
+        body,
+    ]
+    return "\n".join(parts)
+
+
+def _node_api_script(body: str) -> str:
+    source = STATIC.read_text(encoding="utf-8")
+    parts = [
+        extract_js_function(source, "formatCopy"),
+        extract_js_function(source, "byoReasonCopy"),
+        extract_js_function(source, "api"),
+        extract_js_function(source, "runByoModelSaveFlow"),
+        extract_js_function(source, "runByoCustomProbeFlow"),
+        "function assert(condition, message) { if (!condition) throw new Error(message); }",
+        f"const copy = {json.dumps(thinking_copy.thinking_copy_payload())};",
+        "const text = copy.byo_setup;",
         body,
     ]
     return "\n".join(parts)
@@ -342,9 +366,7 @@ async function main() {
   const failed = await runByoKeyCheckFlow({
     apiFn: async (path, options) => {
       failedCalls.push({path, options});
-      return {
-        key_validation: {anthropic: {valid: false, reason_code: 'provider_key_invalid'}},
-      };
+      return {valid: false, reason_code: 'provider_key_invalid'};
     },
     applyKeys: () => {},
     provider: 'anthropic',
@@ -362,8 +384,12 @@ async function main() {
   });
 
   assert(failed.status === 'invalid', 'invalid key should fail');
-  assert(failedCalls.length === 1 && failedCalls[0].path === 'api/keys', 'invalid key should only write keys');
+  assert(
+    JSON.stringify(failedCalls.map((call) => call.path)) === JSON.stringify(['api/keys/check']),
+    'invalid key should only check keys',
+  );
   assert(!failedCalls.some((call) => call.path === 'api/providers'), 'invalid key should not write providers');
+  assert(!failedCalls.some((call) => call.path === 'api/keys'), 'invalid check should not store keys');
   assert(mode === 'paste', 'invalid key should stay on paste');
   assert(selected === '', 'invalid key should not select a model');
   assert(resets === 1 && renders === 1, 'invalid key should reset and render');
@@ -376,9 +402,13 @@ async function main() {
   const valid = await runByoKeyCheckFlow({
     apiFn: async (path, options) => {
       validCalls.push({path, options});
-      return {
-        key_validation: {anthropic: {valid: true, timestamp: '2026-07-13T12:00:00Z'}},
-      };
+      if (path === 'api/keys/check') return {valid: true, provider: 'anthropic'};
+      if (path === 'api/keys') {
+        return {
+          key_validation: {anthropic: {valid: true, timestamp: '2026-07-13T12:00:00Z'}},
+        };
+      }
+      throw new Error(`unexpected path ${path}`);
     },
     applyKeys: () => {},
     provider: 'anthropic',
@@ -396,16 +426,25 @@ async function main() {
   });
 
   assert(valid.status === 'model', 'valid non-scout key should open model step');
-  assert(validCalls.length === 1 && validCalls[0].path === 'api/keys', 'valid key should only write keys');
+  assert(
+    JSON.stringify(validCalls.map((call) => call.path)) === JSON.stringify(['api/keys/check', 'api/keys']),
+    'valid key should check then store keys',
+  );
   assert(mode === 'model', 'valid key should set model mode');
   assert(selected === 'injected-lite', 'valid key should preselect injected lite tier');
 
   mode = '';
   selected = '';
   const scout = await runByoKeyCheckFlow({
-    apiFn: async () => ({
-      key_validation: {google: {valid: true, timestamp: '2026-07-13T12:00:00Z'}},
-    }),
+    apiFn: async (path) => {
+      if (path === 'api/keys/check') return {valid: true, provider: 'google'};
+      if (path === 'api/keys') {
+        return {
+          key_validation: {google: {valid: true, timestamp: '2026-07-13T12:00:00Z'}},
+        };
+      }
+      throw new Error(`unexpected path ${path}`);
+    },
     applyKeys: () => {},
     provider: 'google',
     providerName: 'Gemini',
@@ -424,6 +463,78 @@ async function main() {
   assert(scout.status === 'checked', 'valid scout google key should not open model step');
   assert(mode === 'paste', 'scout google should stay on paste');
   assert(selected === '', 'scout google should not select a model');
+
+  const disagreementCalls = [];
+  statuses.length = 0;
+  mode = '';
+  const disagreement = await runByoKeyCheckFlow({
+    apiFn: async (path, options) => {
+      disagreementCalls.push({path, options});
+      if (path === 'api/keys/check') return {valid: true, provider: 'anthropic'};
+      if (path === 'api/keys') {
+        return {
+          key_validation: {anthropic: {valid: false, reason_code: 'provider_key_invalid'}},
+        };
+      }
+      throw new Error(`unexpected path ${path}`);
+    },
+    applyKeys: () => {},
+    provider: 'anthropic',
+    providerName: 'Claude',
+    envVar: 'ANTHROPIC_API_KEY',
+    value: 'later-rejected-key',
+    text,
+    providersPayload,
+    scoutEnabled: false,
+    setMode: (next) => { mode = next; },
+    selectModel: (model) => { selected = model; },
+    resetDraft: () => {},
+    renderFn: () => {},
+    showStatus: (message, tone) => statuses.push({message, tone}),
+  });
+
+  assert(disagreement.status === 'invalid', 'PUT invalid record should fail');
+  assert(
+    JSON.stringify(disagreementCalls.map((call) => call.path)) === JSON.stringify(['api/keys/check', 'api/keys']),
+    'PUT disagreement should still check then store',
+  );
+  assert(mode === 'paste', 'PUT invalid record should stay on paste');
+  assert(statuses.at(-1).message.includes("Claude didn't accept it"), 'PUT invalid record should render key failure');
+
+  const throwingCalls = [];
+  let thrown = '';
+  mode = 'paste';
+  try {
+    await runByoKeyCheckFlow({
+      apiFn: async (path, options) => {
+        throwingCalls.push({path, options});
+        if (path === 'api/keys/check') return {valid: true, provider: 'anthropic'};
+        throw new Error('write failed');
+      },
+      applyKeys: () => {},
+      provider: 'anthropic',
+      providerName: 'Claude',
+      envVar: 'ANTHROPIC_API_KEY',
+      value: 'write-fails-key',
+      text,
+      providersPayload,
+      scoutEnabled: false,
+      setMode: (next) => { mode = next; },
+      selectModel: (model) => { selected = model; },
+      resetDraft: () => {},
+      renderFn: () => {},
+      showStatus: (message, tone) => statuses.push({message, tone}),
+    });
+  } catch (error) {
+    thrown = error.message;
+  }
+
+  assert(thrown === 'write failed', 'PUT throw should propagate honestly');
+  assert(
+    JSON.stringify(throwingCalls.map((call) => call.path)) === JSON.stringify(['api/keys/check', 'api/keys']),
+    'PUT throw should happen after a valid check',
+  );
+  assert(mode === 'paste', 'PUT throw should not open model step');
   console.log('PASS');
 }
 main().catch((error) => { console.error(error.stack || error); process.exit(1); });
@@ -681,6 +792,95 @@ main().catch((error) => { console.error(error.stack || error); process.exit(1); 
     )
 
 
+def test_byo_probe_flows_use_real_api_wrapper_without_error_throw() -> None:
+    _run_node(
+        _node_api_script(
+            """
+async function main() {
+  const payloads = [];
+  const calls = [];
+  globalThis.fetch = async (path, options = {}) => {
+    calls.push({path, body: options.body ? JSON.parse(options.body) : null});
+    const payload = payloads.shift();
+    if (!payload) throw new Error(`no payload for ${path}`);
+    return {
+      ok: true,
+      async json() {
+        return payload;
+      },
+    };
+  };
+
+  let mode = 'model';
+  let selected = '';
+  let checked = '';
+  let renders = 0;
+  const messages = [];
+
+  payloads.push({valid: false, reason_code: 'model_not_found', message: 'raw vendor missing'});
+  const missing = await runByoCustomProbeFlow({
+    apiFn: api,
+    provider: 'anthropic',
+    providerName: 'Claude',
+    model: 'missing-real',
+    text,
+    setMode: (next) => { mode = next; },
+    selectModel: (model) => { selected = model; },
+    markChecked: (model) => { checked = model; },
+    renderFn: () => { renders += 1; },
+    showStatus: (message, tone) => messages.push({message, tone}),
+  });
+
+  assert(missing.status === 'invalid', 'custom missing should return invalid');
+  assert(messages.at(-1).message === 'Claude doesn\\'t offer "missing-real" to this key.', 'custom not found copy should render');
+  assert(!messages.at(-1).message.includes('raw vendor missing'), 'custom missing should not render raw vendor text');
+
+  messages.length = 0;
+  payloads.push({valid: false, reason_code: 'provider_key_invalid', message: 'raw auth failure'});
+  const authFail = await runByoModelSaveFlow({
+    apiFn: api,
+    applyProviders: () => { throw new Error('should not save providers'); },
+    provider: 'anthropic',
+    providerName: 'Claude',
+    model: 'auth-model',
+    text,
+    setMode: (next) => { mode = next; },
+    renderFn: () => { renders += 1; },
+    showStatus: (message, tone) => messages.push({message, tone}),
+  });
+
+  assert(authFail.status === 'probe_failed', 'auth failure should be a probe failure');
+  assert(messages.at(-1).message === "your key works, but auth-model didn't answer — Claude didn't accept it.", 'auth failure should use save probe copy plus rejected reason');
+  assert(!messages.at(-1).message.includes('raw auth failure'), 'auth failure should not render raw vendor text');
+
+  messages.length = 0;
+  mode = 'model';
+  payloads.push({valid: false, reason_code: 'key_missing', message: 'No stored API key for provider.'});
+  const keyMissing = await runByoModelSaveFlow({
+    apiFn: api,
+    applyProviders: () => { throw new Error('should not save providers'); },
+    provider: 'anthropic',
+    providerName: 'Claude',
+    model: 'key-missing-model',
+    text,
+    setMode: (next) => { mode = next; },
+    renderFn: () => { renders += 1; },
+    showStatus: (message, tone) => messages.push({message, tone}),
+  });
+
+  assert(keyMissing.status === 'key_missing', 'key missing should return key_missing');
+  assert(mode === 'paste', 'key missing should return to paste');
+  assert(messages.at(-1).message.includes("Claude couldn't be checked"), 'key missing should map to key failure copy');
+  assert(!messages.at(-1).message.includes('your key works'), 'key missing should not use model probe premise');
+  assert(!calls.some((call) => call.path === 'api/providers'), 'failed probes should not write providers');
+  console.log('PASS');
+}
+main().catch((error) => { console.error(error.stack || error); process.exit(1); });
+"""
+        )
+    )
+
+
 def test_byo_custom_preselection_requires_probe() -> None:
     _run_node(
         _node_script(
@@ -738,6 +938,21 @@ const state = {
   byoCustomModel: 'old-custom',
   byoCustomCheckedModel: 'old-custom',
   byoMode: 'model',
+  providers: {
+    scout_enabled: false,
+    byo_models: {openai: 'remembered-gpt'},
+    generate: {provider: 'anthropic', model: 'old-active'},
+    model_tiers: {
+      openai: [
+        {tier: 'lite', label: 'Lite GPT', model: 'lite-gpt'},
+      ],
+    },
+  },
+  keys: {
+    key_validation: {
+      openai: {valid: true, timestamp: '2026-07-13T12:00:00Z'},
+    },
+  },
 };
 const nodes = {
   byoProvider: {value: 'anthropic'},
@@ -775,15 +990,108 @@ changeByoProvider('openai');
 
 assert(state.selectedByoProvider === 'openai', 'provider should update');
 assert(nodes.byoProvider.value === 'openai', 'hidden select should update');
-assert(state.byoSelectedModel === '', 'selected model should reset');
+assert(state.byoSelectedModel !== 'old-model', 'selected model should not carry over');
 assert(state.byoCustomOpen === false, 'custom row state should reset');
 assert(state.byoCustomModel === '', 'custom text should reset');
 assert(state.byoCustomCheckedModel === '', 'probe flag should reset');
-assert(state.byoMode === 'paste', 'provider change should land on paste mode');
+assert(state.byoMode === 'model', 'cached-valid provider change should land on model mode');
+assert(state.byoSelectedModel === 'remembered-gpt', 'provider change should preselect remembered model after reset');
 assert(nodes.byoKeyInput.value === '', 'key input should clear');
 assert(nodes.byoCustomModel.value === '', 'custom input should clear');
 assert(renderByoCalls === 1, 'provider change should render byo');
 assert(renderMainLanesCalls === 1, 'provider change should render main lanes');
+console.log('PASS');
+"""
+        )
+    )
+
+
+def test_byo_entry_derivation_and_different_key_render_path() -> None:
+    _run_node(
+        _node_render_script(
+            """
+const window = {
+  location: {hash: ''},
+  history: {pushState() {}, replaceState() {}},
+  addEventListener() {},
+};
+function defaultByoProvider() {
+  return 'anthropic';
+}
+function renderMainLanes() {}
+
+const state = {
+  selectedByoProvider: 'anthropic',
+  byoMode: 'paste',
+  byoSelectedModel: 'old-model',
+  byoCustomOpen: true,
+  byoCustomModel: 'old-custom',
+  byoCustomCheckedModel: 'old-custom',
+  providers: {
+    scout_enabled: false,
+    byo_models: {google: 'remembered-google'},
+    generate: {provider: 'google', model: 'active-google'},
+    model_tiers: {
+      google: [
+        {tier: 'top', label: 'Remembered Google', model: 'remembered-google'},
+        {tier: 'mid', label: 'Active Google', model: 'active-google'},
+        {tier: 'lite', label: 'Lite Google', model: 'google-lite'},
+      ],
+    },
+  },
+  keys: {
+    api_keys: {google: true},
+    key_validation: {
+      google: {valid: true, timestamp: '2026-07-13T12:00:00Z'},
+    },
+  },
+};
+
+changeByoProvider('google');
+
+assert(state.byoMode === 'model', 'cached-valid google should land on model with scout off');
+assert(state.byoSelectedModel === 'remembered-google', 'remembered model should win preselection');
+assert(state.byoCustomOpen === false, 'custom open state should not carry over');
+assert(state.byoCustomModel === '', 'custom text should not carry over');
+assert(state.byoCustomCheckedModel === '', 'checked custom state should not carry over');
+assert($('byoKeyInput').value === '', 'provider switch should clear key input');
+assert(lastHidden('byoModelPanel') === false, 'model panel should show for cached-valid google');
+assert($('byoKeyCheckstripText').textContent.includes('Gemini'), 'checked-key strip should render provider');
+
+state.byoSelectedModel = 'old-model';
+state.byoCustomOpen = true;
+state.byoCustomModel = 'old-custom';
+state.byoCustomCheckedModel = 'old-custom';
+delete state.providers.byo_models.google;
+changeByoProvider('google');
+assert(state.byoSelectedModel === 'active-google', 'active-effective model should win when no remembered model exists');
+
+state.byoSelectedModel = 'old-model';
+state.providers.generate = {provider: 'anthropic', model: 'other-active'};
+changeByoProvider('google');
+assert(state.byoSelectedModel === 'google-lite', 'lite model should win when no remembered or active model exists');
+
+state.keys.key_validation.google = {valid: false, reason_code: 'provider_key_invalid'};
+changeByoProvider('google');
+assert(state.byoMode === 'paste', 'cached-invalid google should land on paste');
+assert($('byoKeyStatus').textContent.includes("Gemini didn't accept it"), 'cached-invalid google should render mapped failure');
+
+state.keys.key_validation.google = {valid: true, timestamp: '2026-07-13T12:00:00Z'};
+state.providers.scout_enabled = true;
+changeByoProvider('google');
+assert(state.byoMode === 'paste', 'scout google should never land on model');
+
+state.providers.scout_enabled = false;
+changeByoProvider('google');
+assert(state.byoMode === 'model', 'valid google should return to model before choosing a different key');
+$('byoKeyInput').value = 'just-checked-key';
+bind();
+nodes.get('byoDifferentKey').events.click();
+assert(state.byoMode === 'paste', 'different key should force paste mode');
+assert($('byoKeyInput').value === '', 'different key should clear key input');
+renderByo();
+assert(state.byoMode === 'paste', 'background render should not upgrade paste back to model');
+assert(lastHidden('byoPastePanel') === false, 'paste panel should remain visible after render');
 console.log('PASS');
 """
         )

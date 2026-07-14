@@ -439,6 +439,20 @@ def _keys_payload(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _validation_payload(result: dict[str, Any], **identity: str) -> dict[str, Any]:
+    """Map an adapter validation result to a browser-safe payload.
+
+    The browser `api()` wrapper throws on any top-level `error`, so failures
+    carry `message` instead.
+    """
+
+    payload: dict[str, Any] = {"valid": result.get("valid") is True, **identity}
+    if not payload["valid"]:
+        payload["reason_code"] = result.get("reason_code")
+        payload["message"] = result.get("error") or ""
+    return payload
+
+
 def _compute_ai_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     """Validate configured AI provider keys without mutating config."""
 
@@ -756,6 +770,36 @@ def confidential_recheck() -> Any:
         return _thinking_operation_failed()
 
 
+@thinking_bp.route("/api/keys/check", methods=["POST"])
+def keys_check() -> Any:
+    try:
+        request_data = request.get_json(silent=True)
+        if not isinstance(request_data, dict):
+            return error_response(MISSING_REQUEST_BODY, detail="No data provided")
+        env_var = request_data.get("env_var")
+        if not isinstance(env_var, str) or env_var not in AI_KEY_ENV_VARS:
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail=f"Invalid env var: {env_var}. Must be one of: {', '.join(AI_KEY_ENV_VARS)}",
+            )
+        value = request_data.get("value", "")
+        if value is not None and not isinstance(value, str):
+            return error_response(
+                INVALID_REQUEST_VALUE, detail="value must be a string"
+            )
+        candidate = str(value or "").strip()
+        if not candidate:
+            return error_response(
+                INVALID_REQUEST_VALUE, detail="value must not be empty"
+            )
+        provider = AI_ENV_TO_PROVIDER[env_var]
+        result = validate_key(provider, candidate)
+        return jsonify(_validation_payload(result, provider=provider))
+    except Exception:
+        logger.exception("error checking thinking key")
+        return _thinking_operation_failed()
+
+
 @thinking_bp.route("/api/keys", methods=["GET", "PUT"])
 def keys() -> Any:
     try:
@@ -870,22 +914,20 @@ def validate_model_route() -> Any:
         config = get_journal_config()
         api_key = _stored_api_key(config, provider)
         if not api_key:
-            payload = {
-                "valid": False,
-                "provider": provider,
-                "model": model,
-                "reason_code": "key_missing",
-                "error": "No stored API key for provider.",
-            }
-            return jsonify(payload)
+            return jsonify(
+                _validation_payload(
+                    {
+                        "valid": False,
+                        "reason_code": "key_missing",
+                        "error": "No stored API key for provider.",
+                    },
+                    provider=provider,
+                    model=model,
+                )
+            )
 
         result = validate_model(provider, model, api_key)
-        payload = {
-            **result,
-            "provider": provider,
-            "model": model,
-        }
-        return jsonify(payload)
+        return jsonify(_validation_payload(result, provider=provider, model=model))
     except Exception:
         logger.exception("error validating thinking model")
         return _thinking_operation_failed()

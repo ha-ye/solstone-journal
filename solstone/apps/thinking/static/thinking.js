@@ -412,6 +412,12 @@
     return validation?.valid === true && !(scoutEnabled === true && provider === 'google');
   }
 
+  function byoEntryMode(provider, validation, scoutEnabled) {
+    if (provider === 'local') return 'endpoint';
+    if (byoModelStepAllowed(provider, validation, scoutEnabled)) return 'model';
+    return 'paste';
+  }
+
   function byoKeyInputEmpty(value) {
     return String(value || '').trim() === '';
   }
@@ -505,6 +511,18 @@
       return {status: 'empty'};
     }
     showStatus(formatCopy(text?.checking_key || '', {provider: providerName}), '');
+    const check = await apiFn('api/keys/check', {
+      method: 'POST',
+      body: JSON.stringify({env_var: envVar, value}),
+    });
+    if (check?.valid !== true) {
+      resetDraft();
+      setMode('paste');
+      renderFn();
+      const reason = byoReasonCopy(check?.reason_code, 'key', text, providerName);
+      showStatus(formatCopy(text?.key_failed || '', {provider: providerName, reason}), 'error');
+      return {status: 'invalid', validation: check};
+    }
     const result = await apiFn('api/keys', {
       method: 'PUT',
       body: JSON.stringify({env_var: envVar, value}),
@@ -1371,7 +1389,11 @@
     if (keyInput) keyInput.value = '';
     const customInput = $('byoCustomModel');
     if (customInput) customInput.value = '';
-    state.byoMode = 'paste';
+    const selected = selectedByoProvider();
+    const validation = state.keys.key_validation?.[selected];
+    const mode = byoEntryMode(selected, validation, !!state.providers.scout_enabled);
+    if (mode === 'model') state.byoSelectedModel = preselectByoModel(selected, state.providers);
+    state.byoMode = mode;
     renderByo();
     renderMainLanes();
   }
@@ -2358,14 +2380,9 @@
       setSelectedByoProvider(provider);
       resetByoDraft();
       const validation = state.keys.key_validation?.[provider];
-      if (provider === 'local') {
-        state.byoMode = 'endpoint';
-      } else if (byoModelStepAllowed(provider, validation, !!state.providers.scout_enabled)) {
-        state.byoSelectedModel = preselectByoModel(provider, state.providers);
-        state.byoMode = 'model';
-      } else {
-        state.byoMode = configuredProviders().length > 0 || activeBrain().kind === 'byo' ? 'paste' : 'pick';
-      }
+      const mode = byoEntryMode(provider, validation, !!state.providers.scout_enabled);
+      if (mode === 'model') state.byoSelectedModel = preselectByoModel(provider, state.providers);
+      state.byoMode = mode === 'paste' && configuredProviders().length === 0 && activeBrain().kind !== 'byo' ? 'pick' : mode;
       renderByo();
     }
     showView(`${lane}-setup`);
@@ -2457,6 +2474,8 @@
     $('byoDifferentKey')?.addEventListener('click', () => {
       resetByoDraft();
       state.byoMode = 'paste';
+      const keyInput = $('byoKeyInput');
+      if (keyInput) keyInput.value = '';
       renderByo();
     });
     $('scoutEnable')?.addEventListener('click', () => enableScout().catch((err) => setMessage('scoutLaneOperation', err.message, 'error')));
