@@ -17,8 +17,9 @@ The invariants are:
   2. There is no `[all]` extra.
   3. Root `[journal]` and `[journal-cuda]` are tombstones pinned exactly to
      `solstone-journal-host==0.7.0`.
-  4. `[journal-host]` stays in root, folds in the `[pdf]` building block, and
-     pins `solstone-journal-models==<models leaf version>`.
+  4. `[journal-host]` stays in root, folds in the `[pdf]` building block, pins
+     `solstone-journal-models==<models leaf version>`, and pins the tested
+     LiteLLM runtime used by OpenHands.
   5. The CPU leaf depends on `solstone[journal-host]==<root version>`, pulls
      CPU `onnxruntime`, and does not pull `onnxruntime-gpu`.
   6. The CUDA leaf depends on `solstone[journal-host]==<root version>`, pulls
@@ -63,6 +64,7 @@ HOST_SCRIPTS = {
     "mlx-vlm-server": "solstone.think.providers.mlx_server:main",
 }
 TOMBSTONE_PIN = "solstone-journal-host==0.7.0"
+LITELLM_PIN = "litellm==1.86.1"
 CPU_ONNXRUNTIME_DEPS = {
     "onnxruntime>=1.20.0,!=1.24.1",
     "onnxruntime>=1.25.0,!=1.24.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -233,12 +235,24 @@ def main(root: Path | None = None) -> int:
         if extras.get(name) != [TOMBSTONE_PIN]:
             errors.append(f"[{name}] must be exactly [{TOMBSTONE_PIN!r}]")
 
-    # 4. journal-host folds pdf and pins models.
+    # 4. journal-host folds pdf and pins models plus the tested OpenHands
+    # runtime. OpenHands leaves LiteLLM broad, so an unconstrained fresh install
+    # can drift beyond the version exercised by this repository's lockfile.
     if "journal-host" in extras:
         host = extras["journal-host"]
         if "solstone[pdf]" not in host:
             errors.append("[journal-host] must fold in solstone[pdf]")
         errors.extend(_check_models_pin(extras, models_version))
+        litellm_requirements = [
+            dep
+            for dep in host
+            if dep.split(";", 1)[0].strip().lower().startswith("litellm")
+        ]
+        if litellm_requirements != [LITELLM_PIN]:
+            errors.append(
+                f"[journal-host] must contain exactly {LITELLM_PIN!r}; "
+                f"found {litellm_requirements}"
+            )
 
     root_scripts = project.get("scripts", {})
     if root_scripts != ROOT_SCRIPTS:

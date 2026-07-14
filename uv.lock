@@ -4282,7 +4282,7 @@ wheels = [
 
 [[package]]
 name = "solstone"
-version = "0.8.5"
+version = "0.8.6"
 source = { editable = "." }
 dependencies = [
     { name = "argon2-cffi" },
@@ -4311,6 +4311,7 @@ journal-host = [
     { name = "icalendar" },
     { name = "jsonschema" },
     { name = "kaldi-native-fbank" },
+    { name = "litellm" },
     { name = "markdown" },
     { name = "mistune" },
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin'" },
@@ -4384,6 +4385,7 @@ requires-dist = [
     { name = "icalendar", marker = "extra == 'journal-host'" },
     { name = "jsonschema", marker = "extra == 'journal-host'", specifier = ">=4.26,<5" },
     { name = "kaldi-native-fbank", marker = "extra == 'journal-host'", specifier = ">=1.22" },
+    { name = "litellm", marker = "extra == 'journal-host'", specifier = "==1.86.1" },
     { name = "markdown", marker = "extra == 'journal-host'" },
     { name = "mistune", marker = "extra == 'journal-host'" },
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'journal-host'", specifier = ">=0.31.2,<1" },
@@ -4446,7 +4448,7 @@ journal-cuda = [{ name = "solstone-journal-cuda", editable = "packages/solstone-
 
 [[package]]
 name = "solstone-journal"
-version = "0.8.5"
+version = "0.8.6"
 source = { editable = "packages/solstone-journal" }
 dependencies = [
     { name = "onnxruntime" },
@@ -4462,7 +4464,7 @@ requires-dist = [
 
 [[package]]
 name = "solstone-journal-cuda"
-version = "0.8.5"
+version = "0.8.6"
 source = { editable = "packages/solstone-journal-cuda" }
 dependencies = [
     { name = "nvidia-cublas-cu12" },

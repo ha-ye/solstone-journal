@@ -6,6 +6,12 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-07-14
+
+### Fixed
+
+- on a fresh install, checking your thinking providers now reaches every provider instead of stopping before the checks begin.
+
 ## [0.8.5] - 2026-07-14
 
 ### Added
