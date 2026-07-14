@@ -184,7 +184,6 @@ COMMANDS: dict[str, Command] = {
     # observe package - multimodal capture
     "transcribe": Command("solstone.observe.transcribe", "service"),
     "describe": Command("solstone.observe.describe", "service"),
-    "extract": Command("solstone.observe.extract_pdf", "service"),
     "depict": Command("solstone.observe.depict", "service"),
     "sense": Command("solstone.observe.sense", "service"),
     "transfer": Command("solstone.observe.transfer", "service"),

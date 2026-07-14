@@ -498,16 +498,13 @@ def test_file_sensor_register():
 
         sensor.register("*.webm", "describe", ["echo", "{file}"])
         sensor.register("*.flac", "transcribe", ["cat", "{file}"])
-        sensor.register("*.pdf", "extract", ["journal", "extract", "{file}"])
         sensor.register("*.png", "depict", ["journal", "depict", "{file}"])
 
         assert "*.webm" in sensor.handlers
         assert "*.flac" in sensor.handlers
-        assert "*.pdf" in sensor.handlers
         assert "*.png" in sensor.handlers
         assert sensor.handlers["*.webm"][0] == "describe"
         assert sensor.handlers["*.flac"][0] == "transcribe"
-        assert sensor.handlers["*.pdf"][0] == "extract"
         assert sensor.handlers["*.png"][0] == "depict"
 
 
@@ -520,7 +517,6 @@ def test_file_sensor_match_pattern():
         from solstone.observe.utils import (
             AUDIO_EXTENSIONS,
             IMAGE_EXTENSIONS,
-            PDF_EXTENSIONS,
             VIDEO_EXTENSIONS,
         )
 
@@ -535,8 +531,6 @@ def test_file_sensor_match_pattern():
             sensor.register(f"*{ext}", "transcribe", ["cat", "{file}"])
         for ext in VIDEO_EXTENSIONS:
             sensor.register(f"*{ext}", "describe", ["echo", "{file}"])
-        for ext in PDF_EXTENSIONS:
-            sensor.register(f"*{ext}", "extract", ["journal", "extract", "{file}"])
         for ext in IMAGE_EXTENSIONS:
             sensor.register(f"*{ext}", "depict", ["journal", "depict", "{file}"])
 
@@ -552,10 +546,6 @@ def test_file_sensor_match_pattern():
         mp3_file = segment_dir / "imported_audio.mp3"
         assert sensor._match_pattern(mp3_file) is not None
         assert sensor._match_pattern(mp3_file)[0] == "transcribe"
-
-        pdf_file = segment_dir / "report.pdf"
-        assert sensor._match_pattern(pdf_file) is not None
-        assert sensor._match_pattern(pdf_file)[0] == "extract"
 
         for filename in (
             "image.png",
@@ -579,6 +569,43 @@ def test_file_sensor_match_pattern():
         # Should not match - jsonl output file
         jsonl_file = segment_dir / "audio.jsonl"
         assert sensor._match_pattern(jsonl_file) is None
+
+
+def test_scan_unprocessed_skips_depict_for_import_stream_images(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    make_segment_file(tmp_path, filename="original.png", stream="import.image")
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.png", "depict", ["journal", "depict", "{file}"])
+
+    to_process, _ = sensor.scan_unprocessed("20250101")
+
+    assert to_process == []
+
+
+def test_scan_unprocessed_depicts_non_import_stream_images(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    image = make_segment_file(tmp_path, filename="original.png", stream="camera")
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.png", "depict", ["journal", "depict", "{file}"])
+
+    to_process, _ = sensor.scan_unprocessed("20250101")
+
+    assert to_process == [(image, "depict", ["journal", "depict", "{file}"])]
+
+
+def test_scan_unprocessed_import_audio_still_transcribes(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    audio = make_segment_file(
+        tmp_path,
+        filename="imported_audio.mp3",
+        stream="import.audio",
+    )
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.mp3", "transcribe", ["journal", "transcribe", "{file}"])
+
+    to_process, _ = sensor.scan_unprocessed("20250101")
+
+    assert to_process == [(audio, "transcribe", ["journal", "transcribe", "{file}"])]
 
 
 def test_standalone_dry_run(tmp_path, monkeypatch):
@@ -725,13 +752,12 @@ def test_process_day_elevates_describe_only_in_batch_mode(tmp_path, monkeypatch)
     import solstone.observe.sense as sense_module
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    for filename in ("screen.webm", "audio.flac", "document.pdf", "image.png"):
+    for filename in ("screen.webm", "audio.flac", "image.png"):
         make_segment_file(tmp_path, filename=filename)
 
     sensor = FileSensor(tmp_path)
     sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
     sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
-    sensor.register("*.pdf", "extract", ["journal", "extract", "{file}"])
     sensor.register("*.png", "depict", ["journal", "depict", "{file}"])
     monkeypatch.setattr(sensor, "_resolve_concurrency", lambda _handler: 1)
 
@@ -763,8 +789,7 @@ def test_process_day_elevates_describe_only_in_batch_mode(tmp_path, monkeypatch)
             self.instances.append(self)
 
     configured_pools = {
-        name: RecordingPool(name)
-        for name in ("describe", "transcribe", "extract", "depict")
+        name: RecordingPool(name) for name in ("describe", "transcribe", "depict")
     }
     sensor.handler_pools.update(configured_pools)
     monkeypatch.setattr(sense_module, "ThreadPoolExecutor", RecordingTempExecutor)
@@ -784,12 +809,10 @@ def test_process_day_elevates_describe_only_in_batch_mode(tmp_path, monkeypatch)
     assert configured_pools["describe"].submitted == []
     assert len(RecordingTempExecutor.instances[0].submitted) == 1
     assert len(configured_pools["transcribe"].submitted) == 1
-    assert len(configured_pools["extract"].submitted) == 1
     assert len(configured_pools["depict"].submitted) == 1
     assert set(processed) == {
         ("describe", "screen.webm"),
         ("transcribe", "audio.flac"),
-        ("extract", "document.pdf"),
         ("depict", "image.png"),
     }
 
@@ -849,8 +872,7 @@ def test_file_sensor_spawn_handler_duplicate(tmp_path):
     assert len(stub_pool.submitted) == 1
 
 
-# This pair proves only describe/transcribe/depict enter the memory gate; the
-# extract no-gate test alone would still pass if the gate were deleted.
+# This proves describe/transcribe/depict enter the memory gate.
 @pytest.mark.parametrize(
     ("handler_name", "filename"),
     [
@@ -897,39 +919,6 @@ def test_describe_transcribe_depict_enter_memory_gate(
     assert calls == [(handler_name, False)]
     assert spawns == [handler_name]
     assert sensor.queued_handlers[handler_name] == []
-
-
-def test_extract_handler_never_enters_memory_gate(tmp_path, monkeypatch):
-    sensor = FileSensor(tmp_path)
-    test_file = make_segment_file(tmp_path, "document.pdf")
-    queued_item = QueuedItem(test_file)
-    sensor.queued_handlers["extract"].append(queued_item)
-    spawns = []
-
-    def fail_wait(*_args, **_kwargs):
-        raise AssertionError("extract must not enter the memory gate")
-
-    def fake_spawn(*_args, **_kwargs):
-        spawns.append("extract")
-        return FakeManaged(FakeProcess(0))
-
-    monkeypatch.setattr(
-        "solstone.observe.sense.admission.wait_for_memory_headroom",
-        fail_wait,
-    )
-    monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
-
-    sensor._run_handler(
-        queued_item,
-        "extract",
-        ["journal", "extract", "{file}"],
-        "143022_300",
-        "20250101",
-        False,
-    )
-
-    assert spawns == ["extract"]
-    assert sensor.queued_handlers["extract"] == []
 
 
 def test_duplicate_observing_during_memory_throttle_does_not_spawn_twice(
@@ -1179,7 +1168,7 @@ def test_emit_status_idle_emits_beacon_without_handler_sections(tmp_path, monkey
     assert len(status_calls) == 1
     kwargs = status_calls[0].kwargs
     assert BEACON_FIELDS <= set(kwargs)
-    for handler_name in ("describe", "transcribe", "extract", "depict"):
+    for handler_name in ("describe", "transcribe", "depict"):
         assert handler_name not in kwargs
 
 

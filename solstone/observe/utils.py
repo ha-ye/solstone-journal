@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 
 from solstone.think.media import AUDIO_EXTENSIONS as _AUDIO_EXTENSIONS
 from solstone.think.media import IMAGE_EXTENSIONS as _IMAGE_EXTENSIONS
-from solstone.think.media import PDF_EXTENSIONS as _PDF_EXTENSIONS
 from solstone.think.media import VIDEO_EXTENSIONS as _VIDEO_EXTENSIONS
 from solstone.think.utils import day_path
 
@@ -37,7 +36,6 @@ SAMPLE_RATE = 16000
 VIDEO_EXTENSIONS = tuple(_VIDEO_EXTENSIONS)
 AUDIO_EXTENSIONS = tuple(_AUDIO_EXTENSIONS)
 IMAGE_EXTENSIONS = tuple(_IMAGE_EXTENSIONS)
-PDF_EXTENSIONS = tuple(_PDF_EXTENSIONS)
 
 # Pre-resize images to this max longest-side before VLM analysis. Images already
 # at or below this dimension pass through unchanged.

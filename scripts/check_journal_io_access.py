@@ -140,7 +140,6 @@ OWNER_FILES: frozenset[str] = frozenset(
         # intentionally omitted.
         "solstone/observe/depict.py",
         "solstone/observe/describe.py",
-        "solstone/observe/extract_pdf.py",
         "solstone/observe/transcribe/main.py",
         "solstone/observe/transfer.py",
         "solstone/think/importers/cli.py",

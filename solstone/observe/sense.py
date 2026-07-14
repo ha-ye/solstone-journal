@@ -28,7 +28,6 @@ from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
 from solstone.observe.utils import (
     AUDIO_EXTENSIONS,
     IMAGE_EXTENSIONS,
-    PDF_EXTENSIONS,
     VIDEO_EXTENSIONS,
 )
 from solstone.think import admission
@@ -57,7 +56,7 @@ from solstone.think.utils import (
 logger = logging.getLogger(__name__)
 
 # Handlers with serialized worker pools. Add a new entry here when registering one in main().
-HANDLER_NAMES = ("describe", "transcribe", "extract", "depict")
+HANDLER_NAMES = ("describe", "transcribe", "depict")
 MEMORY_GATED_HANDLERS = frozenset({"describe", "transcribe", "depict"})
 NATIVE_OBSERVE_NAME = "native.observe"
 NATIVE_STREAM_TYPE = "screen_audio"
@@ -68,12 +67,11 @@ NATIVE_STREAM_TYPE = "screen_audio"
 # operator may override per handler via the `{handler}.max_runtime` journal
 # config key (accepts an int seconds or a "30m"/"45m"/"2h" string).
 # describe/transcribe are calibrated from live measurement (gracious, ~1.5x
-# the heaviest observed legit job). extract/depict are UNMEASURED estimates
-# (those handlers never fired on the measured box) — revisit with real data.
+# the heaviest observed legit job). depict is an UNMEASURED estimate (it never
+# fired on the measured box) — revisit with real data.
 _DEFAULT_MAX_RUNTIME = {
     "describe": 1800,
     "transcribe": 2700,
-    "extract": 900,
     "depict": 600,
 }
 
@@ -1015,7 +1013,7 @@ class FileSensor:
         day_dir = day_path(day)
 
         # Find all matching unprocessed files in segment directories
-        from solstone.think.streams import read_segment_stream
+        from solstone.think.streams import is_import_stream, read_segment_stream
 
         to_process = []
         segment_meta_cache: Dict[str, Optional[Dict[str, Any]]] = {}
@@ -1053,6 +1051,8 @@ class FileSensor:
                 handler_info = self._match_pattern(file_path)
                 if handler_info:
                     handler_name, command = handler_info
+                    if handler_name == "depict" and is_import_stream(stream_name):
+                        continue
                     to_process.append((file_path, handler_name, command))
 
         return to_process, segment_meta_cache
@@ -1316,7 +1316,7 @@ def main():
         default=1,
         help=(
             "Max concurrent screen-describe jobs when using --day (default: 1). "
-            "Only the describe handler is elevated; audio, PDF, and image handlers "
+            "Only the describe handler is elevated; audio and image handlers "
             "keep their configured concurrency."
         ),
     )
@@ -1376,9 +1376,6 @@ def main():
     # Video files in segment directories
     for ext in VIDEO_EXTENSIONS:
         sensor.register(f"*{ext}", "describe", ["journal", "describe", "{file}"])
-
-    for ext in PDF_EXTENSIONS:
-        sensor.register(f"*{ext}", "extract", ["journal", "extract", "{file}"])
 
     for ext in IMAGE_EXTENSIONS:
         sensor.register(f"*{ext}", "depict", ["journal", "depict", "{file}"])
