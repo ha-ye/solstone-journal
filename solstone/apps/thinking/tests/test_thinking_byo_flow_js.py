@@ -832,7 +832,10 @@ async function main() {
   });
 
   assert(missing.status === 'invalid', 'custom missing should return invalid');
-  assert(messages.at(-1).message === 'Claude doesn\\'t offer "missing-real" to this key.', 'custom not found copy should render');
+  assert(
+    messages.at(-1).message === formatCopy(text.custom_not_found, {provider: 'Claude', model: 'missing-real'}),
+    'custom not found copy should render',
+  );
   assert(!messages.at(-1).message.includes('raw vendor missing'), 'custom missing should not render raw vendor text');
 
   messages.length = 0;
@@ -850,7 +853,14 @@ async function main() {
   });
 
   assert(authFail.status === 'probe_failed', 'auth failure should be a probe failure');
-  assert(messages.at(-1).message === "your key works, but auth-model didn't answer — Claude didn't accept it.", 'auth failure should use save probe copy plus rejected reason');
+  const rejectedReason = formatCopy(text.reason_rejected, {provider: 'Claude', model: 'auth-model'});
+  assert(
+    messages.at(-1).message === formatCopy(
+      text.probe_failed_save,
+      {provider: 'Claude', model: 'auth-model', reason: rejectedReason},
+    ),
+    'auth failure should use save probe copy plus rejected reason',
+  );
   assert(!messages.at(-1).message.includes('raw auth failure'), 'auth failure should not render raw vendor text');
 
   messages.length = 0;
@@ -870,7 +880,11 @@ async function main() {
 
   assert(keyMissing.status === 'key_missing', 'key missing should return key_missing');
   assert(mode === 'paste', 'key missing should return to paste');
-  assert(messages.at(-1).message.includes("Claude couldn't be checked"), 'key missing should map to key failure copy');
+  const keyMissingReason = formatCopy(text.reason_unknown, {provider: 'Claude', model: 'key-missing-model'});
+  assert(
+    messages.at(-1).message === formatCopy(text.key_failed, {provider: 'Claude', reason: keyMissingReason}),
+    'key missing should map to key failure copy',
+  );
   assert(!messages.at(-1).message.includes('your key works'), 'key missing should not use model probe premise');
   assert(!calls.some((call) => call.path === 'api/providers'), 'failed probes should not write providers');
   console.log('PASS');
@@ -1000,6 +1014,25 @@ assert(nodes.byoKeyInput.value === '', 'key input should clear');
 assert(nodes.byoCustomModel.value === '', 'custom input should clear');
 assert(renderByoCalls === 1, 'provider change should render byo');
 assert(renderMainLanesCalls === 1, 'provider change should render main lanes');
+
+state.byoSelectedModel = 'old-model';
+state.byoCustomOpen = true;
+state.byoCustomModel = 'old-custom';
+state.byoCustomCheckedModel = 'old-custom';
+nodes.byoKeyInput.value = 'secret-key';
+nodes.byoCustomModel.value = 'old-custom';
+state.keys.key_validation.openai = {valid: false, reason_code: 'provider_key_invalid'};
+changeByoProvider('openai');
+
+assert(state.byoSelectedModel === '', 'invalid provider change should clear selected model');
+assert(state.byoCustomOpen === false, 'invalid provider change should reset custom row state');
+assert(state.byoCustomModel === '', 'invalid provider change should reset custom text');
+assert(state.byoCustomCheckedModel === '', 'invalid provider change should reset probe flag');
+assert(state.byoMode === 'paste', 'cached-invalid provider change should land on paste mode');
+assert(nodes.byoKeyInput.value === '', 'invalid provider change should clear key input');
+assert(nodes.byoCustomModel.value === '', 'invalid provider change should clear custom input');
+assert(renderByoCalls === 2, 'invalid provider change should render byo');
+assert(renderMainLanesCalls === 2, 'invalid provider change should render main lanes');
 console.log('PASS');
 """
         )
@@ -1074,7 +1107,11 @@ assert(state.byoSelectedModel === 'google-lite', 'lite model should win when no 
 state.keys.key_validation.google = {valid: false, reason_code: 'provider_key_invalid'};
 changeByoProvider('google');
 assert(state.byoMode === 'paste', 'cached-invalid google should land on paste');
-assert($('byoKeyStatus').textContent.includes("Gemini didn't accept it"), 'cached-invalid google should render mapped failure');
+const invalidGoogleReason = formatCopy(text.reason_rejected, {provider: 'Gemini'});
+assert(
+  $('byoKeyStatus').textContent === formatCopy(text.key_failed, {provider: 'Gemini', reason: invalidGoogleReason}),
+  'cached-invalid google should render mapped failure',
+);
 
 state.keys.key_validation.google = {valid: true, timestamp: '2026-07-13T12:00:00Z'};
 state.providers.scout_enabled = true;
