@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>date-nav.js smoke</title>
+<style>
+  body { font: 14px/1.4 sans-serif; padding: 16px; }
+  .pass { color: #166534; }
+  .fail { color: #b91c1c; }
+</style>
+<h1>date-nav.js smoke</h1>
+<div id="results"></div>
+<script src="../date_format.js"></script>
+<script src="../date-nav.js"></script>
+<script>
+  const results = document.getElementById('results');
+  let failures = 0;
+  const unit = { one: 'segment', other: 'segments', none: 'no segments' };
+
+  function assert(name, condition, detail) {
+    const row = document.createElement('div');
+    row.className = condition ? 'pass' : 'fail';
+    row.textContent = `${condition ? 'PASS' : 'FAIL'} ${name}${detail ? ` — ${detail}` : ''}`;
+    results.appendChild(row);
+    if (!condition) failures += 1;
+  }
+
+  function equal(name, actual, expected) {
+    assert(name, actual === expected, `expected "${expected}", got "${actual}"`);
+  }
+
+  function approx(name, actual, expected) {
+    assert(name, Math.abs(actual - expected) < 0.000001, `expected ${expected}, got ${actual}`);
+  }
+
+  function run() {
+    const now = new Date(2026, 6, 14);
+    equal('formatDateShort fallback rung', window.formatDateShort('20260711', new Date(2026, 7, 20)), 'Sat Jul 11');
+    equal('formatDateShort weekday rung', window.formatDateShort('20260711', now), 'Saturday');
+
+    equal('heading today', window.DateNav.headingLabel('20260714', now), 'Today');
+    equal('heading yesterday', window.DateNav.headingLabel('20260713', now), 'Yesterday');
+    equal('heading tomorrow', window.DateNav.headingLabel('20260715', now), 'Tomorrow');
+    equal('heading last weekday', window.DateNav.headingLabel('20260711', now), 'Last Saturday');
+    equal('heading full date', window.DateNav.headingLabel('20260707', now), 'Tuesday, July 7');
+    equal('heading other year', window.DateNav.headingLabel('20250102', now), 'Thursday, January 2, 2025');
+
+    equal('control same year', window.DateNav.controlLabel('20260714', now), 'Tue, Jul 14');
+    equal('control other year', window.DateNav.controlLabel('20250102', now), "Thu, Jan 2 '25");
+
+    approx('heat zero', window.DateNav.heatIntensity(0, 9), 0);
+    approx('heat log1p', window.DateNav.heatIntensity(3, 9), 0.15 + 0.85 * (Math.log1p(3) / Math.log1p(9)));
+
+    const totals = window.DateNav.yearTotals({ 202501: 4, 202601: 2, 202602: 3 });
+    equal('year total 2025', totals[2025], 4);
+    equal('year total 2026', totals[2026], 5);
+
+    equal('unit one', window.DateNav.countLabel(1, unit), '1 segment');
+    equal('unit many', window.DateNav.countLabel(3, unit), '3 segments');
+    equal('unit none', window.DateNav.countLabel(0, unit), 'no segments');
+
+    equal('bad current path is dayless', window.DateNav.day(), null);
+    equal('bad app path is dayless', window.DateNav.parseDayFromPath('/app/transcripts/20261332'), null);
+    equal('opening month from coverage', window.DateNav.openingMonth({ coverage: { end: '20260520' } }, now), '202605');
+    equal('opening month without coverage', window.DateNav.openingMonth({ coverage: null }, now), '202607');
+
+    assert('summary', failures === 0, failures ? `${failures} failure(s)` : 'all checks passed');
+  }
+
+  run();
+</script>
+</html>

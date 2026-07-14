@@ -6,7 +6,7 @@
 import pytest
 from flask import Flask
 
-from solstone.apps import AppRegistry
+from solstone.apps import AppConfigError, AppRegistry, _parse_date_nav
 from solstone.convey.apps import register_app_context
 from solstone.convey.chat_stream import append_chat_event
 from solstone.convey.icons import lucide_svg
@@ -62,6 +62,90 @@ def _append_request(request_id: str = "req", *, ts: int | None = None) -> None:
     if ts is not None:
         fields["ts"] = ts
     append_chat_event(KIND_SOL_CHAT_REQUEST, **fields)
+
+
+def test_parse_date_nav_normalizes_legacy_and_content_configs():
+    assert _parse_date_nav({}) is None
+    assert _parse_date_nav({"date_nav": False}) is None
+    assert _parse_date_nav({"date_nav": True, "allow_future_dates": True}) == {
+        "unit": None,
+        "allow_future": True,
+        "mount": "chrome",
+    }
+    assert _parse_date_nav({"date_nav": {"unit": {"one": "log"}}}) == {
+        "unit": {"one": "log"},
+        "allow_future": False,
+        "mount": "chrome",
+    }
+    assert _parse_date_nav(
+        {
+            "date_nav": {
+                "mount": "content",
+                "unit": {
+                    "one": "segment",
+                    "other": "segments",
+                    "none": "no segments",
+                },
+            }
+        }
+    ) == {
+        "unit": {"one": "segment", "other": "segments", "none": "no segments"},
+        "allow_future": False,
+        "mount": "content",
+    }
+
+    with pytest.raises(AppConfigError):
+        _parse_date_nav({"date_nav": {"mount": "bogus"}})
+    with pytest.raises(AppConfigError):
+        _parse_date_nav({"date_nav": {"mount": "content"}})
+
+
+def test_shell_payload_emits_normalized_date_nav(monkeypatch):
+    from solstone.convey.shell_data import build_shell_data
+
+    monkeypatch.setattr("solstone.convey.shell_data.load_convey_config", lambda: {})
+    monkeypatch.setattr("solstone.convey.shell_data._get_facets_data", lambda: [])
+    monkeypatch.setattr("solstone.convey.shell_data._get_selected_facet", lambda: None)
+    monkeypatch.setattr("solstone.convey.shell_data._build_chat_bar", lambda: {})
+
+    registry = AppRegistry()
+    registry.discover()
+
+    apps = {app["name"]: app for app in build_shell_data(registry)["apps"]}
+    content_apps = [
+        name
+        for name, app in apps.items()
+        if app["date_nav"] and app["date_nav"]["mount"] == "content"
+    ]
+    chrome_apps = [
+        name
+        for name, app in apps.items()
+        if app["date_nav"] and app["date_nav"]["mount"] == "chrome"
+    ]
+
+    assert content_apps == ["transcripts"]
+    assert sorted(chrome_apps) == [
+        "activities",
+        "body",
+        "chat",
+        "reflections",
+        "sol",
+        "speakers",
+        "timeline",
+        "tokens",
+    ]
+    assert apps["news"]["date_nav"] is None
+    assert apps["activities"]["date_nav"]["allow_future"] is True
+    assert apps["activities"]["allow_future_dates"] is True
+    assert apps["body"]["allow_future_dates"] is False
+    assert apps["chat"]["allow_future_dates"] is False
+    assert apps["reflections"]["allow_future_dates"] is False
+    assert apps["timeline"]["allow_future_dates"] is False
+    assert apps["sol"]["allow_future_dates"] is False
+    assert apps["speakers"]["allow_future_dates"] is False
+    assert apps["tokens"]["allow_future_dates"] is False
+    assert apps["transcripts"]["allow_future_dates"] is False
+    assert apps["news"]["allow_future_dates"] is False
 
 
 def test_get_facets_data_adds_icon_svg_and_preserves_emoji(monkeypatch):

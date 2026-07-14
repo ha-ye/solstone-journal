@@ -54,6 +54,40 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class AppConfigError(ValueError):
+    """Raised when app metadata contains an invalid configuration."""
+
+
+def _parse_date_nav(metadata: dict) -> dict | None:
+    """Normalize app date navigation metadata."""
+    date_nav = metadata.get("date_nav", False)
+    if not date_nav:
+        return None
+
+    if date_nav is True:
+        return {
+            "unit": None,
+            "allow_future": bool(metadata.get("allow_future_dates", False)),
+            "mount": "chrome",
+        }
+
+    if not isinstance(date_nav, dict):
+        raise AppConfigError("date_nav must be a boolean or object")
+
+    mount = date_nav.get("mount", "chrome")
+    if mount not in {"chrome", "content"}:
+        raise AppConfigError("date_nav.mount must be 'chrome' or 'content'")
+
+    unit = date_nav.get("unit")
+    allow_future = bool(
+        date_nav.get("allow_future", metadata.get("allow_future_dates", False))
+    )
+    if mount == "content" and unit is None:
+        raise AppConfigError("content date_nav requires an explicit unit")
+
+    return {"unit": unit, "allow_future": allow_future, "mount": mount}
+
+
 @dataclass
 class App:
     """Convention-based app configuration."""
@@ -72,13 +106,14 @@ class App:
     #   - disabled: If true, facets bar is hidden for this app
     facets_config: dict = field(default_factory=dict)
 
-    # Date navigation (renders date nav below facet bar)
-    date_nav: bool = False
+    # Date navigation config; chrome mounts use the shared notch, content mounts
+    # are rendered inside app workspace content.
+    date_nav: dict | None = None
 
     # Hide the universal chat bar on this app
     app_bar: bool = True
 
-    # Allow apps to opt into clicking future dates in the month picker.
+    # Transitional; coexists with date_nav.allow_future and is removed in L4.
     allow_future_dates: bool = False
 
     def facets_enabled(self) -> bool:
@@ -87,7 +122,7 @@ class App:
 
     def date_nav_enabled(self) -> bool:
         """Check if date nav is enabled for this app."""
-        return self.date_nav
+        return self.date_nav is not None
 
     def get_blueprint(self) -> Optional[Blueprint]:
         """Return Flask Blueprint with app routes, or None if app has no custom routes."""
@@ -224,7 +259,7 @@ class AppRegistry:
             facets_config = {}
 
         # Date navigation
-        date_nav = metadata.get("date_nav", False)
+        date_nav = _parse_date_nav(metadata)
 
         # Universal app bar
         app_bar = metadata.get("app_bar", True)

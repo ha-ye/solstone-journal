@@ -270,6 +270,36 @@ def index() -> Any:
     return redirect(url_for("app:transcripts.transcripts_day", day=today))
 
 
+@transcripts_bp.route("/api/index")
+def api_index() -> Any:
+    """Return read-only whole-journal date navigation coverage.
+
+    Reuses ``_day_range_count`` for each day, so month totals match the sum of
+    ``/api/stats/{month}`` for the same month.
+    """
+    months: dict[str, int] = {}
+    first_day: str | None = None
+    last_day: str | None = None
+
+    for day_name, path in day_dirs().items():
+        count = _day_range_count(day_name, Path(path))
+        if count <= 0:
+            continue
+        month = day_name[:6]
+        months[month] = months.get(month, 0) + count
+        if first_day is None or day_name < first_day:
+            first_day = day_name
+        if last_day is None or day_name > last_day:
+            last_day = day_name
+
+    coverage = (
+        {"start": first_day, "end": last_day}
+        if first_day is not None and last_day is not None
+        else None
+    )
+    return jsonify({"coverage": coverage, "months": months})
+
+
 @transcripts_bp.route("/<day>")
 def transcripts_day(day: str) -> Any:
     """Serve the transcript SPA shell for a specific day."""

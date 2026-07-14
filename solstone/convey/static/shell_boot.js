@@ -114,7 +114,7 @@
   function applyBodyState(shell, app, day) {
     document.title = `${app.label} - journal`;
     document.body.classList.toggle('has-app-bar', !!app.app_bar);
-    document.body.classList.toggle('has-date-nav', !!app.date_nav && !!day);
+    document.body.classList.toggle('has-date-nav', !!(app.date_nav && app.date_nav.mount === 'chrome' && day));
     const appBar = document.getElementById('appBar');
     if (appBar) {
       appBar.hidden = !app.app_bar;
@@ -185,7 +185,8 @@
     const host = document.getElementById('date-nav-host');
     if (!host) return;
     host.innerHTML = '';
-    if (!app.date_nav || !day) return;
+    // L4 deletes the mount flag and the notch together; until then mount:'content' routes an app to date-nav.js instead of the chrome notch.
+    if (!app.date_nav || app.date_nav.mount !== 'chrome' || !day) return;
 
     const baseUrl = `/app/${app.name}/`;
     host.innerHTML =
@@ -228,7 +229,7 @@
       app: app.name,
       currentDay: day,
       container: '.month-picker',
-      allowFutureDates: !!app.allow_future_dates
+      allowFutureDates: !!app.date_nav.allow_future
     });
 
     document.getElementById('date-nav-label').addEventListener('click', () => {
