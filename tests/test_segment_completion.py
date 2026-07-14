@@ -796,6 +796,28 @@ def test_classifier_stats_and_gate_agree_on_all_gate_states(
     assert str(completion.blockers) in caplog.text
 
 
+def test_media_terminal_without_sense_complete_is_no_sense_complete(
+    segment_journal,
+):
+    day = "20990415"
+    _seed_segment(segment_journal, day, SEGMENT, state="analyzed")
+
+    completion = classify_segment_completion(
+        cluster_segments(day),
+        read_segment_progress(day),
+    )
+
+    assert completion.not_sensed == 0
+    assert completion.not_thought == 1
+    assert completion.blockers == [
+        {
+            "segment": SEGMENT,
+            "dimension": "not_thought",
+            "detail": "no_sense_complete",
+        }
+    ]
+
+
 def test_classify_segment_completion_latest_terminal_wins(segment_journal):
     day = "20990403"
     fail_then_complete = SEGMENT

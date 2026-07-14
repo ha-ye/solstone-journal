@@ -34,6 +34,7 @@ from solstone.think.activities import (
 from solstone.think.activity_state_machine import ActivityStateMachine
 from solstone.think.callosum import CallosumConnection
 from solstone.think.catchup_state import (
+    record_daily_catchup_progress,
     record_segment_repair_attempt,
     record_segment_repair_outcome,
 )
@@ -61,6 +62,7 @@ from solstone.think.models import is_local_provider_needed, resolve_provider
 from solstone.think.pipeline_health import (
     SEGMENT_FLOOR_TALENTS,
     DeterministicFailure,
+    blocked_segment_keys,
     classify_segment_completion,
     is_floor_talent_capped,
     lookup_segment_progress,
@@ -4510,8 +4512,43 @@ def main() -> None:
                 sys.exit(1)
             sys.exit(0)
 
+        blocked_before_cycle = None
+        blocked_after_cycle = None
+        cleared_pre = None
+        remaining_pre = None
+
+        def _blocked_keys(day: str) -> set[tuple[str | None, str]] | None:
+            try:
+                return blocked_segment_keys(
+                    cluster_segments(day),
+                    read_segment_progress(day),
+                )
+            except Exception:
+                logging.warning(
+                    "Failed to measure blocked segment keys for %s", day, exc_info=True
+                )
+                return None
+
+        def _yield_counts(
+            before: set[tuple[str | None, str]] | None,
+            after: set[tuple[str | None, str]] | None,
+        ) -> tuple[int | None, int | None]:
+            if before is None or after is None:
+                return None, None
+            return len(before - after), len(after)
+
+        def _format_segment_repair_yield(
+            cleared: int | None, remaining: int | None
+        ) -> str:
+            if cleared is None and remaining is None:
+                return "unknown"
+            cleared_text = str(cleared) if cleared is not None else "unknown"
+            remaining_text = str(remaining) if remaining is not None else "unknown"
+            return f"{cleared_text} cleared, {remaining_text} remaining"
+
         # PRE-PHASE: Run sense repair (daily only)
         if not args.segment:
+            blocked_before_cycle = _blocked_keys(day)
             logging.info("Running pre-phase: sense repair")
             cmd = [
                 "journal",
@@ -4564,8 +4601,13 @@ def main() -> None:
             _jsonl_log("phase.start", mode=_run_mode, day=day, phase="segment_think")
             _phase_start = time.time()
             record_segment_repair_attempt(day, started_at=_phase_start)
+            blocked_before_pre = _blocked_keys(day)
             phase_ok, phase_timed_out = run_bounded_phase(
                 cmd, day, DEFAULT_TASK_MAX_RUNTIME
+            )
+            blocked_after_pre = _blocked_keys(day)
+            cleared_pre, remaining_pre = _yield_counts(
+                blocked_before_pre, blocked_after_pre
             )
             phase_complete = {
                 "mode": _run_mode,
@@ -4580,6 +4622,10 @@ def main() -> None:
                     timeout_seconds=DEFAULT_TASK_MAX_RUNTIME,
                     bounded=True,
                 )
+            if cleared_pre is not None:
+                phase_complete["cleared"] = cleared_pre
+            if remaining_pre is not None:
+                phase_complete["remaining"] = remaining_pre
             _jsonl_log("phase.complete", **phase_complete)
             record_segment_repair_outcome(
                 day,
@@ -4587,12 +4633,15 @@ def main() -> None:
                 timed_out=phase_timed_out,
                 timeout_seconds=DEFAULT_TASK_MAX_RUNTIME,
                 ended_at=time.time(),
+                cleared=cleared_pre,
+                remaining=remaining_pre,
             )
             if not phase_ok:
                 if phase_timed_out:
                     logging.warning(
-                        "Segment-think repair exceeded its %ss budget, continuing anyway",
+                        "Segment-think repair exceeded its %ss budget, continuing anyway (yield: %s)",
                         DEFAULT_TASK_MAX_RUNTIME,
+                        _format_segment_repair_yield(cleared_pre, remaining_pre),
                     )
                 else:
                     logging.warning("Segment-think repair failed, continuing anyway")
@@ -4730,6 +4779,7 @@ def main() -> None:
                 segments = cluster_segments(day)
                 progress = read_segment_progress(day)
                 completion = classify_segment_completion(segments, progress)
+                blocked_after_cycle = blocked_segment_keys(segments, progress)
                 blockers = completion.blockers
 
                 if daily_done and not blockers:
@@ -4747,6 +4797,23 @@ def main() -> None:
                     )
             except Exception:
                 logging.warning("Failed to update daily marker", exc_info=True)
+
+            cleared_cycle, remaining_cycle = _yield_counts(
+                blocked_before_cycle, blocked_after_cycle
+            )
+            daily_complete_payload = {
+                "day": day,
+                "success": success_count,
+                "failed": fail_count,
+                "duration_ms": int((time.time() - start_time) * 1000),
+            }
+            if cleared_cycle is not None and remaining_cycle is not None:
+                daily_complete_payload["cleared"] = cleared_cycle
+                record_daily_catchup_progress(
+                    day, cleared=cleared_cycle, remaining=remaining_cycle
+                )
+            if remaining_cycle is not None:
+                daily_complete_payload["remaining"] = remaining_cycle
 
             # Set first_daily_ready awareness flag after first daily analysis
             try:
@@ -4769,10 +4836,7 @@ def main() -> None:
             # Notify supervisor that daily think processing is complete
             emit(
                 "daily_complete",
-                day=day,
-                success=success_count,
-                failed=fail_count,
-                duration_ms=int((time.time() - start_time) * 1000),
+                **daily_complete_payload,
             )
 
         # Build log message
@@ -4781,11 +4845,23 @@ def main() -> None:
             msg += " --refresh"
         if fail_count:
             msg += f" failed={fail_count}"
+        if not args.segment:
+            msg += (
+                "; segment repairs: "
+                f"{_format_segment_repair_yield(cleared_pre, remaining_pre)}"
+            )
         day_log(day, msg)
 
         duration_ms = int((time.time() - start_time) * 1000)
+        summary_suffix = ""
+        if not args.segment:
+            summary_suffix = (
+                "; segment repairs: "
+                f"{_format_segment_repair_yield(cleared_pre, remaining_pre)}"
+            )
         logging.info(
-            f"Think completed in {duration_ms}ms: {success_count} succeeded, {fail_count} failed"
+            f"Think completed in {duration_ms}ms: "
+            f"{success_count} succeeded, {fail_count} failed{summary_suffix}"
         )
 
         if fail_count > 0:

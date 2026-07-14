@@ -46,6 +46,13 @@ def _read_jsonl(path: Path) -> list[dict]:
     ]
 
 
+def _write_jsonl(path: Path, events: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as handle:
+        for event in events:
+            handle.write(json.dumps(event) + "\n")
+
+
 def _event_name(event: dict) -> str:
     return str(event.get("event") or event.get("type") or "")
 
@@ -303,6 +310,82 @@ def test_daily_segment_prephase_timeout_is_nonfatal(journal_copy, monkeypatch):
     assert mod.DEFAULT_TASK_MAX_RUNTIME == 1800
     assert mod.JOURNAL_STATS_MAX_RUNTIME == 600
     assert command_calls == []
+
+
+def test_daily_segment_prephase_records_yield_and_progressing_repair(
+    journal_copy, monkeypatch, caplog
+):
+    from solstone.think import catchup_state
+    from solstone.think import thinking as mod
+
+    day = "20240131"
+    _seed_segment(journal_copy, day, ACTIVE_SEGMENT)
+
+    def fake_bounded(cmd, day_arg, timeout=None):
+        if cmd[:2] == ["journal", "sense"]:
+            return (True, False)
+        if cmd[:3] == ["journal", "think", "--segments"]:
+            _write_jsonl(
+                journal_copy / "chronicle" / day / "health" / "001_segment.jsonl",
+                [
+                    {
+                        "event": "sense.complete",
+                        "ts": 1,
+                        "mode": "segment",
+                        "day": day,
+                        "segment": ACTIVE_SEGMENT,
+                        "stream": STREAM,
+                        "density": "active",
+                    },
+                    *[
+                        {
+                            "event": "talent.complete",
+                            "ts": index + 2,
+                            "mode": "segment",
+                            "day": day,
+                            "segment": ACTIVE_SEGMENT,
+                            "stream": STREAM,
+                            "name": name,
+                        }
+                        for index, name in enumerate(mod.SEGMENT_FLOOR_TALENTS)
+                    ],
+                ],
+            )
+            return (False, True)
+        return (True, False)
+
+    def fake_daily(day, verbose, **kwargs):
+        return (1, 0, [], set())
+
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded)
+    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", day])
+
+    caplog.set_level(logging.WARNING)
+    mod.main()
+
+    health_dir = journal_copy / "chronicle" / day / "health"
+    daily_files = sorted(health_dir.glob("*_daily.jsonl"))
+    events = _read_jsonl(daily_files[0])
+    segment_complete = next(
+        event
+        for event in events
+        if _event_name(event) == "phase.complete"
+        and event.get("phase") == "segment_think"
+    )
+    assert segment_complete["success"] is False
+    assert segment_complete["cleared"] == 1
+    assert segment_complete["remaining"] == 0
+
+    record = catchup_state.read_day_record(day, catchup_state.KIND_SEGMENT_REPAIR)
+    assert record["last_outcome"] == catchup_state.PROGRESSING_OUTCOME
+    assert record["cleared"] == 1
+    assert record["remaining"] == 0
+    assert record["exit_reason"] == catchup_state.SEGMENT_REPAIR_TIMEOUT_REASON
+    assert "Segment-think repair exceeded its 1800s budget" in caplog.text
+    assert "yield: 1 cleared, 0 remaining" in caplog.text
 
 
 def test_daily_sense_prephase_timeout_records_disposition(journal_copy, monkeypatch):
@@ -615,6 +698,66 @@ def test_raw_media_pending_skip_becomes_repair_selectable_after_describe_output(
         "complete": 0,
         "raw_blocked": 0,
     }
+
+
+def test_media_terminal_no_sense_complete_is_selected_and_dispatched(monkeypatch):
+    from solstone.think import thinking as think
+    from solstone.think.pipeline_health import classify_segment_completion
+
+    segment = {
+        "key": "090000_300",
+        "stream": STREAM,
+        "start": "09:00",
+        "end": "09:05",
+        "data_state": {"screen": "analyzed"},
+    }
+    monkeypatch.setattr(think, "read_segment_progress", lambda day: {})
+
+    completion = classify_segment_completion([segment], {})
+    assert completion.blockers == [
+        {
+            "segment": segment["key"],
+            "dimension": "not_thought",
+            "detail": "no_sense_complete",
+        }
+    ]
+
+    selected, counts = think._select_segment_repair_targets(
+        DAY,
+        [segment],
+        force_all=False,
+    )
+    assert selected == [segment]
+    assert counts == {
+        "total": 1,
+        "selected": 1,
+        "complete": 0,
+        "raw_blocked": 0,
+    }
+
+    dispatched = []
+
+    def fake_run_segment_sense(**kwargs):
+        dispatched.append((kwargs["stream"], kwargs["segment"]))
+        return (1, 0, [])
+
+    monkeypatch.setattr(think, "run_segment_sense", fake_run_segment_sense)
+    monkeypatch.setattr(think, "resolve_predecessor", lambda *args: None)
+
+    success, failed = think._run_segment_repair_batch(
+        day=DAY,
+        segments=selected,
+        refresh=False,
+        verbose=False,
+        max_concurrency=1,
+        segment_workers=1,
+        timeout=None,
+        skip_activity_prompts=False,
+        skip_talents=frozenset(),
+    )
+
+    assert (success, failed) == (1, 0)
+    assert dispatched == [(STREAM, segment["key"])]
 
 
 def test_run_segment_repair_batch_respects_worker_bound(monkeypatch):

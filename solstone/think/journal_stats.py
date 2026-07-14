@@ -96,6 +96,10 @@ def _serialize_backlog_day(day: BacklogDay) -> dict:
         data["segment_repair_reason_code"] = day.segment_repair_reason_code
         data["segment_repair_timeout_seconds"] = day.segment_repair_timeout_seconds
         data["segment_repair_bounded"] = day.segment_repair_bounded
+        if day.segment_repair_cleared is not None:
+            data["segment_repair_cleared"] = day.segment_repair_cleared
+        if day.segment_repair_remaining is not None:
+            data["segment_repair_remaining"] = day.segment_repair_remaining
     return data
 
 

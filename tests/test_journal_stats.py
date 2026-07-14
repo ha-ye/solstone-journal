@@ -158,6 +158,25 @@ def test_serialize_backlog_day_includes_segment_repair_fields_only_when_present(
     repair_data = stats_mod._serialize_backlog_day(repair)
 
     assert not any(key.startswith("segment_repair_") for key in normal_data)
+    assert set(repair_data) == {
+        "day",
+        "state",
+        "segments",
+        "units",
+        "not_sensed",
+        "reason",
+        "why",
+        "error",
+        "reason_code",
+        "segment_repair_status",
+        "segment_repair_attempts",
+        "segment_repair_consecutive_non_completion",
+        "segment_repair_last_outcome",
+        "segment_repair_next_retry_at",
+        "segment_repair_reason_code",
+        "segment_repair_timeout_seconds",
+        "segment_repair_bounded",
+    }
     assert repair_data["segment_repair_status"] == "stuck"
     assert repair_data["segment_repair_attempts"] == 3
     assert repair_data["segment_repair_consecutive_non_completion"] == 3
@@ -166,6 +185,33 @@ def test_serialize_backlog_day_includes_segment_repair_fields_only_when_present(
     assert repair_data["segment_repair_reason_code"] == "wall_clock_exceeded"
     assert repair_data["segment_repair_timeout_seconds"] == 300
     assert repair_data["segment_repair_bounded"] is True
+
+    progressing = health_mod.BacklogDay(
+        day="20240103",
+        state=health_mod.BACKLOG_STATE_PENDING,
+        segments=1,
+        units=0,
+        not_sensed=0,
+        why=(),
+        reason=health_mod.REASON_SEGMENT_REPAIR_PROGRESSING,
+        reason_code=health_mod.REASON_SEGMENT_REPAIR_PROGRESSING,
+        provider=None,
+        model=None,
+        error=None,
+        segment_repair_status="progressing",
+        segment_repair_attempts=1,
+        segment_repair_consecutive_non_completion=0,
+        segment_repair_last_outcome="progressing",
+        segment_repair_next_retry_at=1600.0,
+        segment_repair_reason_code="wall_clock_exceeded",
+        segment_repair_timeout_seconds=300,
+        segment_repair_bounded=True,
+        segment_repair_cleared=2,
+        segment_repair_remaining=5,
+    )
+    progressing_data = stats_mod._serialize_backlog_day(progressing)
+    assert progressing_data["segment_repair_cleared"] == 2
+    assert progressing_data["segment_repair_remaining"] == 5
 
 
 def test_scan_day(tmp_path, monkeypatch):

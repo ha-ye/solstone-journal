@@ -80,6 +80,10 @@ def _record(
     reason_code: str | None = None,
     timeout_seconds: float | None = None,
     bounded: bool | None = None,
+    cleared: int | None = None,
+    remaining: int | None = None,
+    exit_reason: str | None = None,
+    daily_progress: dict | None = None,
 ) -> dict:
     return {
         "day": day,
@@ -96,6 +100,10 @@ def _record(
         "reason_code": reason_code,
         "timeout_seconds": timeout_seconds,
         "bounded": bounded,
+        "cleared": cleared,
+        "remaining": remaining,
+        "exit_reason": exit_reason,
+        "daily_progress": daily_progress,
     }
 
 
@@ -360,6 +368,82 @@ def test_daily_backoff_schedule_and_single_transition(journal):
     )
 
 
+def test_daily_catchup_progressing_handoff_and_zero_cleared_failure(journal):
+    _segment(journal).joinpath("audio.jsonl").write_text("{}\n", encoding="utf-8")
+
+    catchup_state.record_attempt(CMD_DAILY, DAY, "ref-progress", started_at=10)
+    catchup_state.record_daily_catchup_progress(DAY, cleared=2, remaining=5)
+    result = catchup_state.record_outcome(
+        CMD_DAILY, DAY, "ref-progress", exit_status="timeout", ended_at=1000
+    )
+
+    record = catchup_state.read_day_record(DAY, catchup_state.KIND_DAILY_CATCHUP)
+    assert result.completed is False
+    assert result.entered_backoff is False
+    assert result.last_outcome == catchup_state.PROGRESSING_OUTCOME
+    assert result.consecutive_non_completion == 0
+    assert result.next_retry_at == 1600
+    assert record["last_outcome"] == catchup_state.PROGRESSING_OUTCOME
+    assert record["consecutive_non_completion"] == 0
+    assert record["entered_backoff_at"] is None
+    assert record["notified_at"] is None
+    assert record["next_retry_at"] == 1600
+    assert record["cleared"] == 2
+    assert record["remaining"] == 5
+    assert record["exit_reason"] == "timeout"
+    assert record["daily_progress"] is None
+
+    failed_day = "20260102"
+    failed_cmd = ["journal", "think", "-v", "--day", failed_day]
+    _segment(journal, day=failed_day).joinpath("audio.jsonl").write_text(
+        "{}\n", encoding="utf-8"
+    )
+
+    catchup_state.record_attempt(failed_cmd, failed_day, "ref-failed", started_at=20)
+    catchup_state.record_daily_catchup_progress(failed_day, cleared=0, remaining=6)
+    failed_result = catchup_state.record_outcome(
+        failed_cmd, failed_day, "ref-failed", exit_status="timeout", ended_at=2000
+    )
+
+    failed_record = catchup_state.read_day_record(
+        failed_day, catchup_state.KIND_DAILY_CATCHUP
+    )
+    assert failed_result.last_outcome == "timeout"
+    assert failed_result.consecutive_non_completion == 1
+    assert failed_result.next_retry_at == 2600
+    assert failed_record["last_outcome"] == "timeout"
+    assert failed_record["consecutive_non_completion"] == 1
+    assert failed_record["daily_progress"] is None
+
+
+def test_daily_progress_is_attempt_scoped_and_reconciled(journal, monkeypatch):
+    _segment(journal).joinpath("audio.jsonl").write_text("{}\n", encoding="utf-8")
+    _touch_marker(journal, DAY, "stream.updated", 100)
+
+    catchup_state.record_attempt(CMD_DAILY, DAY, "ref-1", started_at=10)
+    catchup_state.record_daily_catchup_progress(DAY, cleared=1, remaining=4)
+    assert catchup_state.read_day_record(DAY, catchup_state.KIND_DAILY_CATCHUP)[
+        "daily_progress"
+    ] == {"cleared": 1, "remaining": 4}
+
+    catchup_state.record_attempt(CMD_DAILY, DAY, "ref-2", started_at=20)
+    assert (
+        catchup_state.read_day_record(DAY, catchup_state.KIND_DAILY_CATCHUP)[
+            "daily_progress"
+        ]
+        is None
+    )
+
+    catchup_state.record_daily_catchup_progress(DAY, cleared=3, remaining=2)
+    monkeypatch.setattr(catchup_state.time, "time", lambda: 1000)
+    catchup_state.reconcile_interrupted_attempts()
+
+    record = catchup_state.read_day_record(DAY, catchup_state.KIND_DAILY_CATCHUP)
+    assert record["last_outcome"] == "interrupted"
+    assert record["active"] is None
+    assert record["daily_progress"] is None
+
+
 def test_day_eligible_to_drain(journal, monkeypatch):
     _segment(journal).joinpath("audio.jsonl").write_text("one\n", encoding="utf-8")
     fingerprint = catchup_state.read_raw_input_fingerprint(DAY)
@@ -488,6 +572,9 @@ def test_record_segment_repair_attempt_sets_active_and_resets_on_fingerprint_cha
         reason_code=catchup_state.SEGMENT_REPAIR_TIMEOUT_REASON,
         timeout_seconds=600,
         bounded=True,
+        cleared=2,
+        remaining=1,
+        exit_reason=catchup_state.SEGMENT_REPAIR_TIMEOUT_REASON,
         active=None,
     )
     _write_state(journal, {key: record})
@@ -505,6 +592,9 @@ def test_record_segment_repair_attempt_sets_active_and_resets_on_fingerprint_cha
     assert reset_record["reason_code"] is None
     assert reset_record["timeout_seconds"] is None
     assert reset_record["bounded"] is None
+    assert reset_record["cleared"] is None
+    assert reset_record["remaining"] is None
+    assert reset_record["exit_reason"] is None
     assert reset_record["active"] == {"ref": "segment-repair", "started_at": 20}
 
 
@@ -518,6 +608,8 @@ def test_record_segment_repair_outcome_records_failure_metadata_and_backoff(jour
         timed_out=True,
         timeout_seconds=300,
         ended_at=1000,
+        cleared=None,
+        remaining=None,
     )
 
     timeout_record = catchup_state.read_day_record(
@@ -531,6 +623,9 @@ def test_record_segment_repair_outcome_records_failure_metadata_and_backoff(jour
     assert timeout_record["consecutive_non_completion"] == 1
     assert timeout_record["next_retry_at"] == 1600
     assert timeout_record["entered_backoff_at"] is None
+    assert timeout_record["cleared"] is None
+    assert timeout_record["remaining"] is None
+    assert timeout_record["exit_reason"] is None
 
     catchup_state.record_segment_repair_attempt(DAY, started_at=20)
     catchup_state.record_segment_repair_outcome(
@@ -539,6 +634,8 @@ def test_record_segment_repair_outcome_records_failure_metadata_and_backoff(jour
         timed_out=False,
         timeout_seconds=300,
         ended_at=2000,
+        cleared=None,
+        remaining=None,
     )
     error_record = catchup_state.read_day_record(DAY, catchup_state.KIND_SEGMENT_REPAIR)
     assert error_record["last_outcome"] == "error"
@@ -554,11 +651,120 @@ def test_record_segment_repair_outcome_records_failure_metadata_and_backoff(jour
         timed_out=False,
         timeout_seconds=300,
         ended_at=3000,
+        cleared=None,
+        remaining=None,
     )
     stuck_record = catchup_state.read_day_record(DAY, catchup_state.KIND_SEGMENT_REPAIR)
     assert stuck_record["consecutive_non_completion"] == catchup_state.STUCK_THRESHOLD
     assert stuck_record["entered_backoff_at"] == 3000
     assert stuck_record["notified_at"] == 3000
+
+
+def test_record_segment_repair_outcome_progressing_resets_backoff(journal):
+    _segment(journal).joinpath("audio.jsonl").write_text("one\n", encoding="utf-8")
+
+    catchup_state.record_segment_repair_attempt(DAY, started_at=10)
+    catchup_state.record_segment_repair_outcome(
+        DAY,
+        success=False,
+        timed_out=True,
+        timeout_seconds=300,
+        ended_at=1000,
+        cleared=2,
+        remaining=3,
+    )
+
+    record = _read_entries(journal)[f"{DAY}:{catchup_state.KIND_SEGMENT_REPAIR}"]
+    assert record["active"] is None
+    assert record["last_outcome"] == catchup_state.PROGRESSING_OUTCOME
+    assert record["consecutive_non_completion"] == 0
+    assert record["entered_backoff_at"] is None
+    assert record["notified_at"] is None
+    assert record["next_retry_at"] == 1600
+    assert record["reason_code"] == catchup_state.SEGMENT_REPAIR_TIMEOUT_REASON
+    assert record["cleared"] == 2
+    assert record["remaining"] == 3
+    assert record["exit_reason"] == catchup_state.SEGMENT_REPAIR_TIMEOUT_REASON
+
+    summary = catchup_state.read_segment_repair_summary(DAY)
+    assert summary is not None
+    assert summary["status"] == catchup_state.PROGRESSING_OUTCOME
+    assert summary["cleared"] == 2
+    assert summary["remaining"] == 3
+    assert summary["consecutive_non_completion"] == 0
+
+
+def test_segment_repair_progressing_and_failed_persist_different_records(journal):
+    progressing_day = "20260101"
+    failed_day = "20260102"
+    _segment(journal, day=progressing_day).joinpath("audio.jsonl").write_text(
+        "one\n", encoding="utf-8"
+    )
+    _segment(journal, day=failed_day).joinpath("audio.jsonl").write_text(
+        "one\n", encoding="utf-8"
+    )
+
+    catchup_state.record_segment_repair_attempt(progressing_day, started_at=10)
+    catchup_state.record_segment_repair_outcome(
+        progressing_day,
+        success=False,
+        timed_out=False,
+        timeout_seconds=None,
+        ended_at=1000,
+        cleared=1,
+        remaining=4,
+    )
+    catchup_state.record_segment_repair_attempt(failed_day, started_at=20)
+    catchup_state.record_segment_repair_outcome(
+        failed_day,
+        success=False,
+        timed_out=False,
+        timeout_seconds=None,
+        ended_at=2000,
+        cleared=0,
+        remaining=5,
+    )
+
+    entries = _read_entries(journal)
+    progressing = entries[f"{progressing_day}:{catchup_state.KIND_SEGMENT_REPAIR}"]
+    failed = entries[f"{failed_day}:{catchup_state.KIND_SEGMENT_REPAIR}"]
+    assert progressing["last_outcome"] == catchup_state.PROGRESSING_OUTCOME
+    assert progressing["consecutive_non_completion"] == 0
+    assert progressing["cleared"] == 1
+    assert progressing["remaining"] == 4
+    assert failed["last_outcome"] == "error"
+    assert failed["consecutive_non_completion"] == 1
+    assert failed["cleared"] is None
+    assert failed["remaining"] is None
+    assert failed["exit_reason"] is None
+
+
+def test_segment_repair_progressing_survives_prune(journal):
+    old_day = "20260101"
+    new_day = "20260215"
+    _segment(journal, day=old_day).joinpath("audio.jsonl").write_text(
+        "one\n", encoding="utf-8"
+    )
+    _segment(journal, day=new_day).joinpath("audio.jsonl").write_text(
+        "one\n", encoding="utf-8"
+    )
+
+    catchup_state.record_segment_repair_attempt(old_day, started_at=10)
+    catchup_state.record_segment_repair_outcome(
+        old_day,
+        success=False,
+        timed_out=True,
+        timeout_seconds=300,
+        ended_at=1000,
+        cleared=1,
+        remaining=0,
+    )
+    catchup_state.record_segment_repair_attempt(new_day, started_at=20)
+
+    entries = _read_entries(journal)
+    old_key = f"{old_day}:{catchup_state.KIND_SEGMENT_REPAIR}"
+    assert old_key in entries
+    assert entries[old_key]["last_outcome"] == catchup_state.PROGRESSING_OUTCOME
 
 
 def test_record_segment_repair_outcome_success_pops_record(journal):
@@ -570,6 +776,8 @@ def test_record_segment_repair_outcome_success_pops_record(journal):
         timed_out=False,
         timeout_seconds=None,
         ended_at=1000,
+        cleared=None,
+        remaining=None,
     )
     assert catchup_state.read_segment_repair_summary(DAY) is not None
 
@@ -579,10 +787,32 @@ def test_record_segment_repair_outcome_success_pops_record(journal):
         timed_out=False,
         timeout_seconds=None,
         ended_at=2000,
+        cleared=None,
+        remaining=None,
     )
 
     assert catchup_state.read_day_record(DAY, catchup_state.KIND_SEGMENT_REPAIR) is None
     assert catchup_state.read_segment_repair_summary(DAY) is None
+
+
+def test_read_segment_repair_attempted_tracks_attempt_record_lifetime(journal):
+    _segment(journal).joinpath("audio.jsonl").write_text("one\n", encoding="utf-8")
+
+    assert not catchup_state.read_segment_repair_attempted(DAY)
+
+    catchup_state.record_segment_repair_attempt(DAY, started_at=10)
+    assert catchup_state.read_segment_repair_attempted(DAY)
+
+    catchup_state.record_segment_repair_outcome(
+        DAY,
+        success=True,
+        timed_out=False,
+        timeout_seconds=None,
+        ended_at=20,
+        cleared=None,
+        remaining=None,
+    )
+    assert not catchup_state.read_segment_repair_attempted(DAY)
 
 
 def test_read_segment_repair_summary_states(journal):

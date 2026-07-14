@@ -25,9 +25,11 @@ from solstone.think.pipeline_health import (
     MIN_SPAN_MS,
     REASON_CATCHUP_BACKOFF,
     REASON_SEGMENT_REPAIR_DEGRADED,
+    REASON_SEGMENT_REPAIR_PROGRESSING,
     REASON_SEGMENT_REPAIR_STUCK,
     STUCK_FAIL_THRESHOLD,
     TERMINAL_FAIL,
+    WHY_NO_SENSE_COMPLETE_AGED,
     CompletionsSince,
     TerminalUnit,
     is_floor_talent_capped,
@@ -298,6 +300,36 @@ def test_read_backlog_view_marks_complete_day_with_degraded_segment_repair_pendi
     assert backlog_day.segment_repair_status == "degraded"
     assert backlog_day.segment_repair_attempts == 3
     assert view.pending_days == 1
+
+
+def test_read_backlog_view_marks_progressing_segment_repair_pending(
+    pipeline_journal,
+):
+    day = "20990306"
+    _seed_complete_day_with_raw(pipeline_journal, day)
+
+    catchup_state.record_segment_repair_attempt(day, started_at=100)
+    catchup_state.record_segment_repair_outcome(
+        day,
+        success=False,
+        timed_out=True,
+        timeout_seconds=300,
+        ended_at=1000,
+        cleared=2,
+        remaining=4,
+    )
+
+    view = read_backlog_view()
+
+    backlog_day = next(item for item in view.days if item.day == day)
+    assert backlog_day.state == BACKLOG_STATE_PENDING
+    assert backlog_day.reason_code == REASON_SEGMENT_REPAIR_PROGRESSING
+    assert backlog_day.error is None
+    assert backlog_day.segment_repair_status == "progressing"
+    assert backlog_day.segment_repair_consecutive_non_completion == 0
+    assert backlog_day.segment_repair_cleared == 2
+    assert backlog_day.segment_repair_remaining == 4
+    assert view.degraded is False
 
 
 def test_read_backlog_view_marks_complete_day_with_stuck_segment_repair_stuck(
@@ -1763,6 +1795,49 @@ def test_read_backlog_view_reports_complete_pending_stuck_and_why_axis(
     assert view.stuck_days == 1
     assert view.oldest_pending_day == stuck_day
     assert read_backlog_view(window=3) == view
+
+
+def test_read_backlog_view_reports_aged_no_sense_complete_only_without_attempt(
+    pipeline_journal, monkeypatch
+):
+    from solstone.think import pipeline_health
+
+    aged_day = "20990308"
+    attempted_day = "20990307"
+    fresh_day = "20990306"
+    for day in (aged_day, attempted_day, fresh_day):
+        _seed_screen_segment(pipeline_journal, day, "090000_300")
+
+    old_stream_ms = 1000
+    fresh_stream_ms = old_stream_ms + pipeline_health.NO_SENSE_COMPLETE_AGED_MS + 1000
+    monkeypatch.setattr(
+        pipeline_health,
+        "now_ms",
+        lambda: old_stream_ms + pipeline_health.NO_SENSE_COMPLETE_AGED_MS,
+    )
+    _touch_marker(pipeline_journal, aged_day, "stream.updated", mtime_ms=old_stream_ms)
+    _touch_marker(
+        pipeline_journal, attempted_day, "stream.updated", mtime_ms=old_stream_ms
+    )
+    _touch_marker(
+        pipeline_journal, fresh_day, "stream.updated", mtime_ms=fresh_stream_ms
+    )
+
+    catchup_state.record_segment_repair_attempt(attempted_day, started_at=10)
+
+    view = read_backlog_view(window=3)
+    by_day = {day.day: day for day in view.days}
+
+    assert [unit.why for unit in by_day[aged_day].why] == [WHY_NO_SENSE_COMPLETE_AGED]
+    assert by_day[aged_day].why[0].last_fail_ts == old_stream_ms
+    assert by_day[aged_day].why[0].stuck is False
+    assert by_day[aged_day].state == BACKLOG_STATE_PENDING
+    assert WHY_NO_SENSE_COMPLETE_AGED not in {
+        unit.why for unit in by_day[attempted_day].why
+    }
+    assert WHY_NO_SENSE_COMPLETE_AGED not in {
+        unit.why for unit in by_day[fresh_day].why
+    }
 
 
 @pytest.mark.parametrize(

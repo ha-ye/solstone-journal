@@ -14,6 +14,7 @@ from pathlib import Path
 
 from solstone.think.catchup_state import (
     read_backoff_summary,
+    read_segment_repair_attempted,
     read_segment_repair_summary,
 )
 from solstone.think.cluster import cluster_segments
@@ -63,6 +64,7 @@ SENSED_TERMINAL_STATES = frozenset(
 )
 STUCK_FAIL_THRESHOLD = 3
 BACKLOG_DEFAULT_WINDOW = 30
+NO_SENSE_COMPLETE_AGED_MS = 3 * 24 * 60 * 60 * 1000
 
 TERMINAL_COMPLETE = "complete"
 TERMINAL_FAIL = "fail"
@@ -70,12 +72,14 @@ TERMINAL_FAIL = "fail"
 WHY_FAILED = "failed"
 WHY_CORRUPT_RAW = "corrupt_raw"
 WHY_NEVER_ATTEMPTED = "never_attempted"
+WHY_NO_SENSE_COMPLETE_AGED = "no_sense_complete_aged"
 WHY_SENSED_NOT_THOUGHT = "sensed_not_thought"
 
 REASON_CORRUPT_RAW = "corrupt_raw"
 REASON_FAILING_STEP = "failing_step"
 REASON_CATCHUP_BACKOFF = "catchup_backoff"
 REASON_SEGMENT_REPAIR_DEGRADED = "segment_repair_degraded"
+REASON_SEGMENT_REPAIR_PROGRESSING = "segment_repair_progressing"
 REASON_SEGMENT_REPAIR_STUCK = "segment_repair_stuck"
 REASON_SEGMENT_REPAIR_UNKNOWN = "segment_repair_unknown"
 
@@ -229,6 +233,8 @@ class BacklogDay:
     segment_repair_reason_code: str | None = None
     segment_repair_timeout_seconds: int | None = None
     segment_repair_bounded: bool | None = None
+    segment_repair_cleared: int | None = None
+    segment_repair_remaining: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1065,6 +1071,27 @@ def classify_segment_completion(
     )
 
 
+def blocked_segment_keys(
+    segments: list[dict],
+    progress: dict[tuple[str | None, str], SegmentProgress],
+) -> set[tuple[str | None, str]]:
+    """Return the clustered segment identities still blocked by completion gates."""
+    blocked: set[tuple[str | None, str]] = set()
+    for seg in segments:
+        if not segment_requires_processing(seg):
+            continue
+        key = seg["key"]
+        if not segment_fully_sensed(seg["data_state"]):
+            blocked.add((seg["stream"], key))
+            continue
+
+        segment_progress = lookup_segment_progress(progress, seg["stream"], key)
+        ok, _reason = segment_fully_thought(segment_progress)
+        if not ok:
+            blocked.add((seg["stream"], key))
+    return blocked
+
+
 def _stream_updated_ms(day: str) -> int | None:
     path = day_path(day, create=False) / "health" / "stream.updated"
     if not path.is_file():
@@ -1179,6 +1206,7 @@ def _segment_backlog_units(
     progress: dict[tuple[str | None, str], SegmentProgress],
     terminal_states: dict[TerminalUnit, TerminalState],
     stream_updated_ms: int | None,
+    repair_attempted: bool,
 ) -> tuple[BacklogUnit, ...]:
     why: list[BacklogUnit] = []
     for seg in segments:
@@ -1215,7 +1243,30 @@ def _segment_backlog_units(
 
         segment_progress = lookup_segment_progress(progress, seg["stream"], key)
         ok, reason = segment_fully_thought(segment_progress)
-        if ok or reason is None or reason == "no_sense_complete":
+        if ok or reason is None:
+            continue
+        if reason == "no_sense_complete":
+            if (
+                not repair_attempted
+                and stream_updated_ms is not None
+                and now_ms() - stream_updated_ms >= NO_SENSE_COMPLETE_AGED_MS
+            ):
+                why.append(
+                    BacklogUnit(
+                        mode="segment",
+                        name="sense",
+                        facet=None,
+                        stream=seg["stream"],
+                        segment=key,
+                        why=WHY_NO_SENSE_COMPLETE_AGED,
+                        reason_code=None,
+                        provider=None,
+                        model=None,
+                        trailing_fail_count=0,
+                        last_fail_ts=stream_updated_ms,
+                        stuck=False,
+                    )
+                )
             continue
 
         if reason.startswith("floor:"):
@@ -1347,6 +1398,7 @@ def _complete_backlog_day(day: str) -> BacklogDay:
 
 _SEGMENT_REPAIR_STATE = {
     "degraded": (BACKLOG_STATE_PENDING, REASON_SEGMENT_REPAIR_DEGRADED),
+    "progressing": (BACKLOG_STATE_PENDING, REASON_SEGMENT_REPAIR_PROGRESSING),
     "stuck": (BACKLOG_STATE_STUCK, REASON_SEGMENT_REPAIR_STUCK),
     "unknown": (BACKLOG_STATE_UNKNOWN, REASON_SEGMENT_REPAIR_UNKNOWN),
 }
@@ -1372,6 +1424,8 @@ def _segment_repair_fields(repair: dict | None) -> dict:
         "segment_repair_reason_code": repair.get("repair_reason_code"),
         "segment_repair_timeout_seconds": repair.get("timeout_seconds"),
         "segment_repair_bounded": repair.get("bounded"),
+        "segment_repair_cleared": repair.get("cleared"),
+        "segment_repair_remaining": repair.get("remaining"),
     }
 
 
@@ -1422,6 +1476,7 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
 
     for day in sorted(day_dirs().keys(), reverse=True)[:window]:
         repair = read_segment_repair_summary(day)
+        repair_attempted = read_segment_repair_attempted(day)
         if day_is_complete(day):
             backlog_days.append(_backlog_day_for_complete(day, repair))
             continue
@@ -1484,7 +1539,7 @@ def read_backlog_view(window: int = BACKLOG_DEFAULT_WINDOW) -> BacklogView:
 
         stream_ms = _stream_updated_ms(day)
         why = _segment_backlog_units(
-            day, segments, progress, terminal_states, stream_ms
+            day, segments, progress, terminal_states, stream_ms, repair_attempted
         ) + _non_segment_failed_units(terminal_states, stream_ms)
         backoff = read_backoff_summary(day)
         segment_depth = completion.not_sensed + completion.not_thought
