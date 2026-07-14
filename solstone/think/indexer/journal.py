@@ -182,6 +182,40 @@ def prune_chunks_by_stream(stream: str, journal: str | None = None) -> dict:
     return {"chunks": count, "files": len(paths)}
 
 
+def delete_segment_index_rows(
+    journal: str | None, rel_path: str
+) -> dict[str, int | str | None]:
+    """Delete index rows that reference one chronicle segment path."""
+    journal_root = Path(journal or get_journal())
+    db_path = journal_root / INDEX_DIR / DB_NAME
+    if not db_path.exists():
+        return {"chunks": 0, "files": 0, "error": None}
+
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            cur = conn.execute(
+                "DELETE FROM chunks WHERE path = ? OR path LIKE ?",
+                (rel_path, f"{rel_path}/%"),
+            )
+            chunks_deleted = cur.rowcount
+
+            cur = conn.execute(
+                "DELETE FROM files WHERE path LIKE ?",
+                (f"{rel_path}/%",),
+            )
+            files_deleted = cur.rowcount
+
+            conn.commit()
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        logger.warning("Segment index row delete failed for %s: %s", rel_path, exc)
+        return {"chunks": 0, "files": 0, "error": str(exc)}
+
+    return {"chunks": chunks_deleted, "files": files_deleted, "error": None}
+
+
 def index_file(journal: str, file_path: str, verbose: bool = False) -> bool:
     """Index a single file into the journal index.
 

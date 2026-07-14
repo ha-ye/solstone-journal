@@ -162,6 +162,15 @@ def delete_stream_state(name: str) -> bool:
     return True
 
 
+def touch_stream_health_marker(day: str) -> None:
+    """Touch health/stream.updated for a chronicle day."""
+    from solstone.think.utils import day_path
+
+    health_dir = day_path(day) / "health"
+    health_dir.mkdir(parents=True, exist_ok=True)
+    (health_dir / "stream.updated").touch()
+
+
 def update_stream(
     name: str,
     day: str,
@@ -242,6 +251,33 @@ def update_stream(
     write_json(state_path, state)
 
     return {"prev_day": prev_day, "prev_segment": prev_segment, "seq": seq}
+
+
+def repair_stream_state_tail(
+    name: str, last_day: str | None, last_segment: str | None, *, max_seq: int
+) -> dict:
+    """Update a stream's tail while preserving identity metadata and monotonic seq."""
+    streams_dir = _streams_dir()
+    state_path = streams_dir / f"{name}.json"
+    state = get_stream_state(name) or {
+        "name": name,
+        "type": "unknown",
+        "host": None,
+        "platform": None,
+        "created_at": int(time.time()),
+        "last_day": None,
+        "last_segment": None,
+        "seq": 0,
+    }
+    previous_seq = state.get("seq", 0)
+    if isinstance(previous_seq, bool) or not isinstance(previous_seq, int):
+        previous_seq = 0
+    state["name"] = state.get("name") or name
+    state["last_day"] = last_day
+    state["last_segment"] = last_segment
+    state["seq"] = max(previous_seq, max_seq)
+    write_json(state_path, state)
+    return state
 
 
 def write_segment_stream(

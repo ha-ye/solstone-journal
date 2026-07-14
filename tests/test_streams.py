@@ -13,6 +13,7 @@ from solstone.think.streams import (
     list_streams,
     read_segment_stream,
     rebuild_stream_state,
+    repair_stream_state_tail,
     stream_name,
     update_stream,
     write_segment_stream,
@@ -146,6 +147,31 @@ def test_delete_stream_state(tmp_path, monkeypatch):
     assert delete_stream_state("import.share") is True
     assert get_stream_state("import.share") is None
     assert delete_stream_state("import.share") is False
+
+
+def test_repair_stream_state_tail_preserves_metadata_and_monotonic_seq(
+    tmp_path, monkeypatch
+):
+    """Tail repair preserves stream metadata and never lowers seq."""
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    update_stream(
+        "archon",
+        "20250119",
+        "142500_300",
+        type="observer",
+        host="desktop",
+        platform="linux",
+    )
+    before = get_stream_state("archon")
+
+    repaired = repair_stream_state_tail("archon", "20250119", "141500_300", max_seq=1)
+
+    assert repaired["type"] == "observer"
+    assert repaired["host"] == "desktop"
+    assert repaired["platform"] == "linux"
+    assert repaired["created_at"] == before["created_at"]
+    assert repaired["last_segment"] == "141500_300"
+    assert repaired["seq"] == before["seq"]
 
 
 # --- write/read segment stream tests ---

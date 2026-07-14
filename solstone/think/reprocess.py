@@ -12,7 +12,7 @@ from datetime import date, datetime
 from enum import Enum
 
 from solstone.think.callosum import callosum_send
-from solstone.think.segment import _touch_health_marker
+from solstone.think.streams import touch_stream_health_marker
 from solstone.think.utils import (
     DATE_RE,
     day_is_complete,
@@ -95,7 +95,7 @@ def reprocess_day(day: str, flavor: str) -> ReprocessOutcome:
     if flavor == FLAVOR_MARK_UPDATED:
         # Durable effect first: advance stream.updated so updated_days() re-queues
         # the day even if it already completed. Then nudge a drain.
-        _touch_health_marker(day)
+        touch_stream_health_marker(day)
         ok = callosum_send("supervisor", "drain", day=day)
         return ReprocessOutcome(
             ReprocessCode.MARK_UPDATED_SUBMITTED if ok else ReprocessCode.UNREACHABLE

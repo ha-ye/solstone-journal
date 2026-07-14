@@ -16,10 +16,12 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from solstone.think.indexer.journal import delete_segment_index_rows
 from solstone.think.streams import (
     get_stream_state,
     read_segment_stream,
     rebuild_stream_state,
+    touch_stream_health_marker,
     write_segment_stream,
 )
 from solstone.think.utils import (
@@ -403,51 +405,6 @@ def _rewrite_events_jsonl(seg_dir: Path, new_day: str, new_segment: str) -> int:
     return count
 
 
-def _touch_health_marker(day: str) -> None:
-    """Touch health/stream.updated for a day."""
-    health_dir = day_path(day) / "health"
-    health_dir.mkdir(parents=True, exist_ok=True)
-    (health_dir / "stream.updated").touch()
-
-
-def _delete_index_rows(journal: str, rel_path: str) -> dict[str, int | str | None]:
-    """Delete all index rows referencing a segment path.
-
-    Returns counts of deleted rows per table.
-    """
-    db_path = Path(journal) / "indexer" / "journal.sqlite"
-    if not db_path.exists():
-        return {"chunks": 0, "files": 0, "error": None}
-
-    try:
-        conn = sqlite3.connect(db_path)
-        try:
-            cur = conn.execute(
-                "DELETE FROM chunks WHERE path = ? OR path LIKE ?",
-                (rel_path, f"{rel_path}/%"),
-            )
-            chunks_deleted = cur.rowcount
-
-            cur = conn.execute(
-                "DELETE FROM files WHERE path LIKE ?",
-                (f"{rel_path}/%",),
-            )
-            files_deleted = cur.rowcount
-
-            conn.commit()
-        finally:
-            conn.close()
-    except sqlite3.Error as exc:
-        logger.warning("Segment index row delete failed for %s: %s", rel_path, exc)
-        return {"chunks": 0, "files": 0, "error": str(exc)}
-
-    return {
-        "chunks": chunks_deleted,
-        "files": files_deleted,
-        "error": None,
-    }
-
-
 def _reindex_segment(journal: str, seg_dir: Path) -> int:
     """Re-index all formattable files in a segment directory.
 
@@ -613,7 +570,7 @@ def cmd_move(args: argparse.Namespace) -> None:
                 f"  pre-move index read errored: {index_info['error']} "
                 "(attempting delete+reindex anyway)"
             )
-        deleted = _delete_index_rows(journal, old_rel)
+        deleted = delete_segment_index_rows(journal, old_rel)
         if deleted.get("error"):
             print(
                 f"  index row delete failed: {deleted['error']} "
@@ -633,8 +590,8 @@ def cmd_move(args: argparse.Namespace) -> None:
     elif verbose:
         print("  index not available, skipping reindex")
 
-    _touch_health_marker(src_day)
-    _touch_health_marker(to_day)
+    touch_stream_health_marker(src_day)
+    touch_stream_health_marker(to_day)
     print(f"  touched health markers: {src_day}, {to_day}")
     if verbose:
         print("    think will re-run daily talents on both days")

@@ -27,8 +27,12 @@ from solstone.think.importers.utils import save_import_segments
 from solstone.think.indexer.journal import index_file
 from solstone.think.journal_io import atomic_replace
 from solstone.think.media import PDF_EXTENSIONS
-from solstone.think.segment import _touch_health_marker
-from solstone.think.streams import stream_name, update_stream, write_segment_stream
+from solstone.think.streams import (
+    stream_name,
+    touch_stream_health_marker,
+    update_stream,
+    write_segment_stream,
+)
 from solstone.think.utils import (
     day_path,
     get_journal,
@@ -1064,7 +1068,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                     )
 
                 for _day in sorted({seg_day for seg_day, _seg_key in result.segments}):
-                    _touch_health_marker(_day)
+                    touch_stream_health_marker(_day)
                     _callosum.emit("supervisor", "drain", day=_day)
 
             logger.info(
@@ -1201,7 +1205,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                 )
                 logger.info(f"Emitted observe.observed for segment: {day}/{seg}")
 
-            _touch_health_marker(day)
+            touch_stream_health_marker(day)
             _callosum.emit("supervisor", "drain", day=day)
 
         else:
@@ -1298,7 +1302,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                         f"transcribed successfully ({total_elapsed}s)"
                     )
 
-            _touch_health_marker(day)
+            touch_stream_health_marker(day)
             _callosum.emit("supervisor", "drain", day=day)
 
         # Complete processing metadata
