@@ -6,20 +6,22 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-07-14
+
 ### Added
 
-- Thinking now includes an audio transcription switch for confidential processing and updates the what-leaves copy to match the current setting.
+- confidential processing can now be enabled from the thinking app and includes a separate audio transcription switch. when audio transcription is on, that step uses the same verified confidential connection as thinking; the rest of audio processing stays local.
+- you can now bring Apple Health exports and Oura into your journal, then explore sleep, activity, heart, recovery, and other signals by day or across trends. your raw-retention choice is enforced when the import is saved, saved health material has owner-only file access, and its summary cards stay out of sol's thinking.
+- the home and entities views now show how people and organizations connect. identity changes keep a history, merges can be undone, and an ambiguous name waits for your choice before the journal changes anything.
+- when you add a Google, Anthropic, or OpenAI key, the thinking app checks it before anything is saved. then you can choose from three model options or name a specific model, which is checked before it becomes sol's active brain.
 
 ### Changed
 
-- sol now keeps one active brain for each lane instead of switching providers behind the scenes. old tier, context-routing, and backup keys are left in your config untouched, but they no longer steer model choice.
-- paths that used to be pinned to lite-class models now use the single model chosen for that lane. for byo-token owners this can raise per-token cost on those paths; local-lane installs are unaffected.
-- a legacy config with both `tier` and `model` now honors the model you named instead of ignoring it.
-- an engine you bring yourself now shares the same request limit as sol's bundled engine, 2 running at once by default, so a sudden burst of work can't overwhelm a shared machine. if your setup has real capacity to spare, raise `providers.local.parallel_slots` in your config to use more of it. reported by Dave Smith.
+- sol now uses one brain chosen in the thinking app for each lane and no longer ranks or switches engines behind the scenes. older tier, routing, and fallback settings remain untouched but no longer steer model choice. if you bring a paid vendor key, some frequent work may cost more because it now uses the model you chose.
 
 ### Fixed
 
-- timeline rollups now work on local-lane installs. they used to pin a cloud model internally, which made local setups fail before the rollup could run.
+- long hosted backups and restores no longer lose access partway through. each job now uses narrowly scoped access that lasts for the operation, while older snapshots remain append-only.
 
 ## [0.8.4] - 2026-07-12
 
