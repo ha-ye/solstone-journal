@@ -10,6 +10,11 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 - pdf import and pdf export now have separate extras: `pdf-import` adds the new pypdfium2 worker with no system packages, while `pdf-export` carries weasyprint and pango for newsletter and reflection downloads. the existing `pdf` extra and document import hint are unchanged for now.
 
+### Fixed
+
+- observer uploads now recognize already-held files from the segment folder itself, so retrying the same media no longer creates duplicate sibling segments or a 507 ladder; reported by Dave Smith.
+- days with image files may run through one extra catchup pass once, because image files now count in the raw-input fingerprint.
+
 ## [0.8.6] - 2026-07-14
 
 ### Fixed

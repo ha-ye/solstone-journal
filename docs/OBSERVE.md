@@ -95,6 +95,27 @@ Each observer is a standalone package in its own repo (see the Observer Architec
 
 All upload segments via the same HTTP ingest API (`/app/observer/ingest/<key>`).
 
+Observer ingest derives duplicate identity from the journal segment directory on
+disk, not from an append-only history index. For an upload, the server looks
+under `chronicle/<day>/<stream>/` for segment directories sharing the requested
+`HHMMSS` start, checks the exact requested key first, then checks the remaining
+candidates lexicographically. The content set is the uploaded audio/video files
+when the bundle has any; otherwise it is the uploaded non-reserved files, so
+tmux-style JSONL-only bundles never match on an empty media set.
+
+Reserved segment markers, including `stream.json` and `ingest.json`, are
+journal-authored. If a client includes those names in a bundle, the bytes are
+validated when covered by the journal contract, but they are not written from the
+client payload and are recorded in observer history as received-not-written.
+Segment listings filter those audit-only records so clients never treat
+journal-authored marker files as proof that their own marker bytes are held.
+
+Every resolution into an existing candidate appends observer history, including
+`duplicate`. That audit record is what lets `/app/observer/ingest/segments/<day>`
+corroborate the duplicate for clients that confirm before deleting local files,
+including segments that were originally created by import or transfer rather
+than observer ingest.
+
 Segment listings report each uploaded file as `present`, `processed`, or
 `missing`. `present` means the recorded file still exists at its exact path.
 `processed` applies only to raw audio/video media whose recorded path is absent
