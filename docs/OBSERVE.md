@@ -36,6 +36,7 @@ journal observer revoke <name>
 | Command | Purpose |
 |---------|---------|
 | `journal observer` | Manage observer registrations (see "Managing observers" above) |
+| `journal observer prune` | Dry-run or execute safe cleanup of same-start duplicate observer segments |
 | `journal transcribe` | Audio transcription with faster-whisper |
 | `journal describe` | Visual analysis of screen recordings |
 | `journal grab` | Walk available screen frames and optionally write frame images |
@@ -118,6 +119,39 @@ than observer ingest.
 
 Segment listings report each uploaded file as `present`, `processed`, or
 `missing`. `present` means the recorded file still exists at its exact path.
+
+### Duplicate observer pruning
+
+`journal observer prune [--day YYYYMMDD | --day-range A..B | --all] [--stream NAME] [--execute]`
+finds byte-identical duplicate observer segments from the old ingest suffix-ladder
+defect. Dry-run is the default and performs zero writes: no manifest healing, no
+history append, no index deletion, and no health marker touch. `--execute`
+re-derives groups, canonical held-ness, per-file hashes, and observer attribution
+from disk before deleting anything; dry-run output is advisory only.
+
+Duplicate groups are restricted to one `(day, stream, HHMMSS start)` candidate
+set. This matches the ingest planner's `HHMMSS_300`, `HHMMSS_301`, ...
+collision ladder and prevents data loss from grouping unrelated windows that
+happen to have identical bytes, such as two silent captures at different times.
+Within that same-start set, identity is the set of `(name, sha256, size)` content
+files: valid `ingest.json` files define content exactly; legacy manifest-less
+segments use present media files; manifest-less non-media-only segments refuse.
+
+Prune fails closed. It refuses unverifiable canonicals, near-duplicates, unknown
+non-derived files, marker-less candidates, and ambiguous stream-to-observer
+attribution. Recognized derived outputs are same-stem media sidecars, `events.jsonl`,
+`timeline.json`, and files under `talents/`. A proof-held canonical is allowed:
+when a canonical holds media only by terminal processing proof and a candidate is
+the last physical copy, the CLI marks that candidate as `last-physical-copy` in
+both dry-run and execute output and includes a summary count.
+
+Execute deletes index rows for each pruned segment, repairs stream-chain
+predecessors atomically on surviving `stream.json` markers, preserves stream
+state metadata and monotonic `seq`, and touches `chronicle/<day>/health/stream.updated`.
+Observer receipt stats such as `segments_received` and `bytes_received` are not
+decremented; pruning records storage cleanup, not the original receipt event.
+Exit codes are `0` for a clean run, `2` when refusals are present, and `1` for
+usage or unexpected errors.
 `processed` applies only to raw audio/video media whose recorded path is absent
 but whose same-stem JSONL sidecar at that segment path carries a terminal
 `solstone.processing.v1` proof for the original input size. Legacy segments

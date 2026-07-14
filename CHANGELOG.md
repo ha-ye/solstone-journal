@@ -6,6 +6,10 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+### Added
+
+- observer journals with old same-start duplicate segment ladders can now be pruned safely with a dry-run-first `journal observer prune` command.
+
 ### Changed
 
 - pdf import and pdf export now have separate extras: `pdf-import` adds the new pypdfium2 worker with no system packages, while `pdf-export` carries weasyprint and pango for newsletter and reflection downloads. the existing `pdf` extra and document import hint are unchanged for now.
