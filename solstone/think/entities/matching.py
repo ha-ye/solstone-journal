@@ -27,6 +27,7 @@ from solstone.think.entities.ambiguities import (
     record_ambiguity_observation,
 )
 from solstone.think.entities.core import EntityDict, entity_slug
+from solstone.think.entities.history import trust_operation_lock
 from solstone.think.entities.journal import load_all_journal_entities
 from solstone.think.entities.loading import load_entities
 
@@ -815,60 +816,61 @@ def record_entity_resolution(
     if not query or not query.strip():
         return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
 
-    normalized_query = normalize_resolution_query(query)
-    match_query = _matchable_resolution_query(query)
-    resolved_row = load_resolved_ambiguity_choice(scope, normalized_query)
-    if resolved_row is not None:
-        entity_id = str(resolved_row.get("resolved_entity_id") or "")
-        entity = _entity_by_id(entities, entity_id)
-        if entity is None:
-            raise EntityResolutionError(
-                "resolved ambiguity choice is missing or outside scope: "
-                f"{resolved_row.get('ambiguity_id')} -> {entity_id}"
+    with trust_operation_lock():
+        normalized_query = normalize_resolution_query(query)
+        match_query = _matchable_resolution_query(query)
+        resolved_row = load_resolved_ambiguity_choice(scope, normalized_query)
+        if resolved_row is not None:
+            entity_id = str(resolved_row.get("resolved_entity_id") or "")
+            entity = _entity_by_id(entities, entity_id)
+            if entity is None:
+                raise EntityResolutionError(
+                    "resolved ambiguity choice is missing or outside scope: "
+                    f"{resolved_row.get('ambiguity_id')} -> {entity_id}"
+                )
+            if entity.get("blocked"):
+                raise EntityResolutionError(
+                    "resolved ambiguity choice is blocked: "
+                    f"{resolved_row.get('ambiguity_id')} -> {entity_id}"
+                )
+            return EntityResolution(
+                outcome=EntityResolutionOutcome.RESOLVED,
+                entity=entity,
             )
-        if entity.get("blocked"):
-            raise EntityResolutionError(
-                "resolved ambiguity choice is blocked: "
-                f"{resolved_row.get('ambiguity_id')} -> {entity_id}"
-            )
-        return EntityResolution(
-            outcome=EntityResolutionOutcome.RESOLVED,
-            entity=entity,
-        )
 
-    if not entities:
+        if not entities:
+            return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
+
+        match = find_matching_entity(match_query, entities, fuzzy_threshold)
+        if match and match.is_high_confidence:
+            return EntityResolution(
+                outcome=EntityResolutionOutcome.RESOLVED,
+                entity=match,
+                tier=match.tier,
+            )
+
+        tier, candidates = _collect_low_confidence_candidates(
+            match_query,
+            entities,
+            fuzzy_threshold,
+        )
+        if tier is not None and candidates:
+            row = record_ambiguity_observation(
+                scope=scope,
+                query=query,
+                normalized_query=normalized_query,
+                observed_tier=int(tier),
+                ranked_candidates=[candidate.to_dict() for candidate in candidates],
+                origin=origin,
+            )
+            return EntityResolution(
+                outcome=EntityResolutionOutcome.AMBIGUOUS,
+                tier=tier,
+                candidates=candidates,
+                ambiguity_id=str(row.get("ambiguity_id") or ""),
+            )
+
         return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
-
-    match = find_matching_entity(match_query, entities, fuzzy_threshold)
-    if match and match.is_high_confidence:
-        return EntityResolution(
-            outcome=EntityResolutionOutcome.RESOLVED,
-            entity=match,
-            tier=match.tier,
-        )
-
-    tier, candidates = _collect_low_confidence_candidates(
-        match_query,
-        entities,
-        fuzzy_threshold,
-    )
-    if tier is not None and candidates:
-        row = record_ambiguity_observation(
-            scope=scope,
-            query=query,
-            normalized_query=normalized_query,
-            observed_tier=int(tier),
-            ranked_candidates=[candidate.to_dict() for candidate in candidates],
-            origin=origin,
-        )
-        return EntityResolution(
-            outcome=EntityResolutionOutcome.AMBIGUOUS,
-            tier=tier,
-            candidates=candidates,
-            ambiguity_id=str(row.get("ambiguity_id") or ""),
-        )
-
-    return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
 
 
 def resolve_entity(

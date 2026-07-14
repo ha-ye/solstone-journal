@@ -9,18 +9,22 @@ import ast
 import hashlib
 import inspect
 import json
+from contextlib import contextmanager
 from importlib import import_module
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
 import solstone.think.entities.ambiguities as ambiguities
+import solstone.think.entities.history as entity_history
 from solstone.think.entities import (
     EntityAmbiguityError,
     EntityResolutionOutcome,
     MatchTier,
     ResolutionOrigin,
     ResolutionScope,
+    delete_journal_entity,
     find_matching_entity,
     load_ambiguities,
     record_ambiguity_choice,
@@ -65,12 +69,10 @@ def _ambiguity_file(journal: Path) -> Path:
 def _tree_snapshot(root: Path) -> dict[str, str]:
     snapshot: dict[str, str] = {}
     for path in sorted(root.rglob("*")):
-        if path.name.endswith(".lock"):
+        if path.name.endswith(".lock") or path.is_dir():
             continue
         rel = path.relative_to(root).as_posix()
-        if path.is_dir():
-            snapshot[f"{rel}/"] = "<dir>"
-        elif path.is_file():
+        if path.is_file():
             snapshot[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
     return snapshot
 
@@ -388,6 +390,187 @@ def test_lock_timeout_during_persistence_fails_closed(
         raise LockTimeout(path, 0.01)
 
     monkeypatch.setattr(ambiguities, "hold_lock", raise_timeout)
+    before = _tree_snapshot(journal)
+
+    with pytest.raises(LockTimeout):
+        _record("Sarah", [_entity("Sarah Connor"), _entity("Sarah Lee")])
+
+    assert _tree_snapshot(journal) == before
+    assert not _ambiguity_file(journal).exists()
+
+
+def test_resolution_and_choice_use_trust_then_ambiguity_lock_order(
+    journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entities = [_entity("Sarah Connor"), _entity("Sarah Lee")]
+    scope = ResolutionScope.journal()
+    events: list[str] = []
+
+    @contextmanager
+    def trust_lock(path: Path) -> Iterator[None]:
+        events.append("trust-enter")
+        try:
+            yield
+        finally:
+            events.append("trust-exit")
+
+    @contextmanager
+    def ambiguity_lock(path: Path) -> Iterator[None]:
+        events.append("ambiguity-enter")
+        try:
+            yield
+        finally:
+            events.append("ambiguity-exit")
+
+    monkeypatch.setattr(entity_history, "hold_lock", trust_lock)
+    monkeypatch.setattr(ambiguities, "hold_lock", ambiguity_lock)
+
+    _record("Sarah", entities, scope=scope)
+    assert events == [
+        "trust-enter",
+        "ambiguity-enter",
+        "ambiguity-exit",
+        "trust-exit",
+    ]
+
+    events.clear()
+    record_ambiguity_choice("Sarah", "sarah_lee", entities, scope=scope)
+    assert events == [
+        "trust-enter",
+        "ambiguity-enter",
+        "ambiguity-exit",
+        "trust-exit",
+    ]
+
+
+def test_entity_delete_uses_trust_boundary(
+    journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entity_dir = journal / "entities" / "sarah_lee"
+    entity_dir.mkdir(parents=True)
+    (entity_dir / "entity.json").write_text(
+        json.dumps(_entity("Sarah Lee")),
+        encoding="utf-8",
+    )
+    events: list[str] = []
+
+    @contextmanager
+    def trust_lock(path: Path) -> Iterator[None]:
+        events.append("trust-enter")
+        try:
+            yield
+        finally:
+            events.append("trust-exit")
+
+    monkeypatch.setattr(entity_history, "hold_lock", trust_lock)
+
+    result = delete_journal_entity("sarah_lee")
+
+    assert result == {"success": True, "facets_deleted": []}
+    assert events == ["trust-enter", "trust-exit"]
+    assert not entity_dir.exists()
+
+
+@pytest.mark.parametrize(
+    "corrupt_line",
+    [
+        "{not-json",
+        "[]",
+        json.dumps({"schema_version": 1}),
+    ],
+)
+@pytest.mark.parametrize("position", ["before", "after", "only"])
+def test_mutation_resolution_fails_closed_on_corrupt_store_rows(
+    journal: Path,
+    corrupt_line: str,
+    position: str,
+) -> None:
+    entities = [_entity("Sarah Connor"), _entity("Sarah Lee")]
+    _record("Sarah", entities)
+    path = _ambiguity_file(journal)
+    valid = path.read_text(encoding="utf-8").rstrip("\n")
+    if position == "before":
+        content = f"{corrupt_line}\n{valid}\n"
+    elif position == "after":
+        content = f"{valid}\n{corrupt_line}\n"
+    else:
+        content = f"{corrupt_line}\n"
+    path.write_text(content, encoding="utf-8")
+    before = path.read_bytes()
+
+    with pytest.raises(EntityAmbiguityError):
+        _record("Sarah", entities, origin=_origin("retry", "retry-1"))
+
+    assert path.read_bytes() == before
+
+
+def test_read_only_list_remains_lenient_for_malformed_lines(journal: Path) -> None:
+    entities = [_entity("Sarah Connor"), _entity("Sarah Lee")]
+    _record("Sarah", entities)
+    path = _ambiguity_file(journal)
+    valid = path.read_text(encoding="utf-8")
+    path.write_text(f"{{not-json\n[]\n{valid}", encoding="utf-8")
+    before = path.read_bytes()
+
+    rows = load_ambiguities()
+
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+    assert path.read_bytes() == before
+
+
+def test_serialization_failure_is_typed_and_preserves_store(
+    journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entities = [_entity("Sarah Connor"), _entity("Sarah Lee")]
+    scope = ResolutionScope.journal()
+    _record("Sarah", entities, scope=scope)
+    path = _ambiguity_file(journal)
+    before = path.read_bytes()
+
+    def fail_serialization(*args, **kwargs):
+        raise TypeError("injected serialization failure")
+
+    monkeypatch.setattr(ambiguities.json, "dumps", fail_serialization)
+
+    with pytest.raises(EntityAmbiguityError, match="cannot write"):
+        record_ambiguity_choice("Sarah", "sarah_lee", entities, scope=scope)
+
+    assert path.read_bytes() == before
+
+
+def test_strict_choice_read_oserror_is_typed_and_preserves_store(
+    journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    entities = [_entity("Sarah Connor"), _entity("Sarah Lee")]
+    path = _ambiguity_file(journal)
+    path.parent.mkdir(parents=True)
+    path.write_text("sentinel\n", encoding="utf-8")
+    before = path.read_bytes()
+
+    def fail_read(*args, **kwargs):
+        raise PermissionError("injected read failure")
+
+    monkeypatch.setattr(ambiguities, "open", fail_read, raising=False)
+
+    with pytest.raises(EntityAmbiguityError, match="cannot read"):
+        _record("Sarah", entities)
+
+    assert path.read_bytes() == before
+
+
+def test_trust_lock_timeout_fails_before_ambiguity_mutation(
+    journal: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def raise_timeout(path: Path):
+        raise LockTimeout(path, 0.01)
+
+    monkeypatch.setattr(entity_history, "hold_lock", raise_timeout)
     before = _tree_snapshot(journal)
 
     with pytest.raises(LockTimeout):

@@ -321,35 +321,36 @@ def delete_journal_entity(entity_id: str) -> dict[str, Any]:
     Raises:
         ValueError: If entity not found or is the principal entity
     """
-    journal_entity = load_journal_entity(entity_id)
-    if not journal_entity:
-        raise ValueError(f"Entity '{entity_id}' not found")
+    with trust_operation_lock():
+        journal_entity = load_journal_entity(entity_id)
+        if not journal_entity:
+            raise ValueError(f"Entity '{entity_id}' not found")
 
-    if journal_entity.get("is_principal"):
-        raise ValueError("Cannot delete the principal (self) entity")
+        if journal_entity.get("is_principal"):
+            raise ValueError("Cannot delete the principal (self) entity")
 
-    facets_deleted = []
+        facets_deleted = []
 
-    # Delete all facet relationship directories
-    facets_dir = Path(get_journal()) / "facets"
-    if facets_dir.exists():
-        for facet_path in facets_dir.iterdir():
-            if not facet_path.is_dir():
-                continue
-            facet_name = facet_path.name
+        # Delete all facet relationship directories
+        facets_dir = Path(get_journal()) / "facets"
+        if facets_dir.exists():
+            for facet_path in facets_dir.iterdir():
+                if not facet_path.is_dir():
+                    continue
+                facet_name = facet_path.name
 
-            # Check for relationship directory (contains entity.json and memory)
-            rel_dir = facet_path / "entities" / entity_id
-            if rel_dir.exists() and rel_dir.is_dir():
-                shutil.rmtree(rel_dir)
-                facets_deleted.append(facet_name)
+                # Check for relationship directory (contains entity.json and memory)
+                rel_dir = facet_path / "entities" / entity_id
+                if rel_dir.exists() and rel_dir.is_dir():
+                    shutil.rmtree(rel_dir)
+                    facets_deleted.append(facet_name)
 
-    # Delete journal entity directory
-    journal_dir = Path(get_journal()) / "entities" / entity_id
-    if journal_dir.exists() and journal_dir.is_dir():
-        shutil.rmtree(journal_dir)
+        # Delete journal entity directory
+        journal_dir = Path(get_journal()) / "entities" / entity_id
+        if journal_dir.exists() and journal_dir.is_dir():
+            shutil.rmtree(journal_dir)
 
-    return {"success": True, "facets_deleted": facets_deleted}
+        return {"success": True, "facets_deleted": facets_deleted}
 
 
 def journal_entity_memory_path(entity_id: str) -> Path:
