@@ -1412,8 +1412,10 @@ def ingest_segments(day: str) -> Any:
         else:
             fallback_stream = stream_name(observer=observer_name)
 
-    # Build response grouped by segment, deduplicating by sha256
-    # Later records overwrite earlier ones (most recent upload wins)
+    # Build response grouped by segment, deduplicating by (written, sha256):
+    # same name+sha collapses, identical bytes under different names enumerate
+    # separately for AC-13 corroboration, and same-name different-sha records stay
+    # distinct so received-not-written rows can be filtered out before statting.
     segments: dict[str, dict] = {}
     observed_segments: set[str] = set()  # Track which segments have been observed
 
