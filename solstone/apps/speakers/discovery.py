@@ -364,7 +364,13 @@ def identify_cluster(
         return {"error": f"Cluster {cluster_id} not found in scan results."}
 
     from solstone.apps.speakers.routes import _load_speaker_corrections
-    from solstone.think.entities import entity_slug, find_matching_entity
+    from solstone.think.entities import (
+        EntityResolutionOutcome,
+        ResolutionOrigin,
+        ResolutionScope,
+        entity_slug,
+        record_entity_resolution,
+    )
     from solstone.think.entities.journal import (
         create_journal_entity,
         load_all_journal_entities,
@@ -385,10 +391,27 @@ def identify_cluster(
             entity for entity in journal_entities.values() if not entity.get("blocked")
         ]
 
-        entity = find_matching_entity(name, entities_list)
-        if entity:
-            entity_id = entity["id"]
-            entity_name = entity.get("name", name)
+        resolution = record_entity_resolution(
+            name,
+            entities_list,
+            scope=ResolutionScope.journal(),
+            origin=ResolutionOrigin(
+                lane="apps.speakers.discovery.identify_cluster",
+                record_id=str(cluster_id),
+                field="name",
+            ),
+        )
+        if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
+            return {
+                "status": "ambiguous",
+                "ambiguity_id": resolution.ambiguity_id,
+                "candidates": [
+                    candidate.to_dict() for candidate in resolution.candidates
+                ],
+            }
+        if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
+            entity_id = resolution.entity["id"]
+            entity_name = resolution.entity.get("name", name)
         else:
             entity_id = entity_slug(name)
             existing = load_journal_entity(entity_id)

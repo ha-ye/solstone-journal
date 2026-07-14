@@ -256,6 +256,68 @@ def test_entity_id_collision(merge_journals_fixture, monkeypatch):
     assert "staged" in result.output
 
 
+def test_ambiguous_entity_name_stages_instead_of_merging(
+    merge_journals_fixture, monkeypatch
+):
+    from solstone.think.entities import load_ambiguities
+
+    paths = merge_journals_fixture
+    _mock_indexer(monkeypatch)
+    _write_json(
+        paths["target"] / "entities" / "sarah_connor" / "entity.json",
+        {
+            "id": "sarah_connor",
+            "name": "Sarah Connor",
+            "type": "person",
+            "created_at": 1000,
+        },
+    )
+    _write_json(
+        paths["target"] / "entities" / "sarah_lee" / "entity.json",
+        {
+            "id": "sarah_lee",
+            "name": "Sarah Lee",
+            "type": "person",
+            "created_at": 1000,
+        },
+    )
+    _write_json(
+        paths["source"] / "entities" / "source_sarah" / "entity.json",
+        {
+            "id": "source_sarah",
+            "name": "Sarah",
+            "type": "person",
+            "aka": ["S"],
+            "created_at": 3000,
+        },
+    )
+    staging_path = paths["target"].parent / "manual-staging"
+
+    summary = merge_journals(
+        paths["source"],
+        paths["target"],
+        dry_run=False,
+        staging_path=staging_path,
+    )
+
+    assert summary.entities_staged == 1
+    assert (staging_path / "source_sarah" / "entity.json").exists()
+    assert not (paths["target"] / "entities" / "source_sarah").exists()
+    assert (
+        _read_json(paths["target"] / "entities" / "sarah_connor" / "entity.json")[
+            "name"
+        ]
+        == "Sarah Connor"
+    )
+    assert (
+        _read_json(paths["target"] / "entities" / "sarah_lee" / "entity.json")["name"]
+        == "Sarah Lee"
+    )
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+
+
 def test_facet_copy_new(merge_journals_fixture, monkeypatch):
     paths = merge_journals_fixture
     _mock_indexer(monkeypatch)

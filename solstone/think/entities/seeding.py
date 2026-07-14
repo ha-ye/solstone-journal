@@ -49,8 +49,11 @@ def seed_entities(
         save_journal_entity,
     )
     from solstone.think.entities.matching import (
+        EntityResolutionOutcome,
+        ResolutionOrigin,
+        ResolutionScope,
         find_entity_by_email,
-        find_matching_entity,
+        record_entity_resolution,
     )
     from solstone.think.entities.observations import add_observation, load_observations
 
@@ -60,6 +63,8 @@ def seed_entities(
 
     resolved: list[EntityDict] = []
     facet_ensured = False
+    ambiguous = 0
+    scope = ResolutionScope.journal()
 
     for ent in entities:
         name = ent.get("name", "").strip()
@@ -77,7 +82,25 @@ def seed_entities(
 
         # Fall back to name match
         if not matched:
-            matched = find_matching_entity(name, entity_list)
+            resolution = record_entity_resolution(
+                name,
+                entity_list,
+                scope=scope,
+                origin=ResolutionOrigin(
+                    lane="think.entities.seed_entities",
+                    facet=facet,
+                    day=day,
+                    field="name",
+                ),
+            )
+            if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
+                ambiguous += 1
+                continue
+            if (
+                resolution.outcome == EntityResolutionOutcome.RESOLVED
+                and resolution.entity
+            ):
+                matched = resolution.entity
 
         if matched:
             # Merge email into existing entity if new
@@ -125,5 +148,8 @@ def seed_entities(
                         )
                         break
                     existing_contents.add(obs_content)
+
+    if ambiguous:
+        logger.warning("seed_entities: skipped %d ambiguous entities", ambiguous)
 
     return resolved

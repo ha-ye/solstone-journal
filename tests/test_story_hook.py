@@ -342,6 +342,60 @@ def test_story_hook_resolves_entities(tmp_path, monkeypatch):
     assert record["closures"][0]["counterparty"] == "Mina"
 
 
+def test_story_hook_ambiguous_entities_keep_names_and_null_ids(tmp_path, monkeypatch):
+    from solstone.talent.story import post_process
+    from solstone.think.activities import append_activity_record
+    from solstone.think.entities import load_ambiguities
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_detected_entities(
+        tmp_path,
+        "work",
+        "20260418",
+        [
+            {"id": "sarah_connor", "type": "Person", "name": "Sarah Connor"},
+            {"id": "sarah_lee", "type": "Person", "name": "Sarah Lee"},
+        ],
+    )
+    append_activity_record("work", "20260418", _activity_record())
+
+    post_process(
+        _valid_result(
+            commitments=[
+                {
+                    "owner": "Sarah",
+                    "action": "send the revised deck",
+                    "counterparty": "Sarah",
+                    "when": "Friday morning",
+                    "context": "Ambiguous Sarah should not attach.",
+                }
+            ],
+            closures=[],
+            decisions=[],
+            relations=[
+                {
+                    "from": "Sarah",
+                    "to": "Sarah",
+                    "kind": "works-with",
+                    "note": "Ambiguous relationship.",
+                }
+            ],
+        ),
+        _context(tmp_path),
+    )
+
+    record = _load_record("work", "20260418")
+    assert record["commitments"][0]["owner"] == "Sarah"
+    assert record["commitments"][0]["owner_entity_id"] is None
+    assert record["commitments"][0]["counterparty_entity_id"] is None
+    assert record["relations"][0]["from"] == "Sarah"
+    assert record["relations"][0]["from_entity_id"] is None
+    assert record["relations"][0]["to_entity_id"] is None
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+
+
 def test_story_hook_skips_invalid_relations(tmp_path, monkeypatch, caplog):
     from solstone.talent.story import post_process
     from solstone.think.activities import append_activity_record

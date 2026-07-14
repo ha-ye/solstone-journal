@@ -57,6 +57,9 @@ from solstone.think.entities import (
     EntityDict,
     EntityExistsError,
     EntityNotFoundError,
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
     add_entity_aka,
     add_observation,
     attach_or_reactivate_entity,
@@ -77,6 +80,7 @@ from solstone.think.entities import (
     load_facet_relationship,
     load_observations,
     merge_entity,
+    record_entity_resolution,
     resolve_entity,
     resolve_journal_entity,
     save_detected_entity,
@@ -494,15 +498,29 @@ def detect_entity_route(facet_name: str) -> Any:
             detail=f"Invalid entity type '{type_}'",
         )
 
-    resolved, _ = resolve_entity(facet_name, entity)
-    if resolved is None:
+    resolution = record_entity_resolution(
+        entity,
+        load_entities(facet_name),
+        scope=ResolutionScope.facet_scope(facet_name),
+        origin=ResolutionOrigin(
+            lane="apps.entities.detect",
+            facet=facet_name,
+            day=day,
+            field="entity",
+        ),
+    )
+    if resolution.outcome != EntityResolutionOutcome.RESOLVED:
         blocked_match, _ = resolve_entity(facet_name, entity, include_blocked=True)
         if blocked_match and blocked_match.get("blocked"):
             return error_response(
                 ENTITY_BLOCKED,
                 detail=str(blocked_match.get("name") or entity),
             )
-    name = str(resolved.get("name", entity)) if resolved else entity
+    name = (
+        str(resolution.entity.get("name", entity))
+        if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity
+        else entity
+    )
 
     try:
         save_detected_entity(facet_name, day, type_, name, description)

@@ -41,7 +41,12 @@ from solstone.apps.speakers.encoder_config import (
     VP_OUTLIER_MIN_SIMILARITY,
 )
 from solstone.apps.speakers.owner import load_owner_centroid
-from solstone.think.entities import find_matching_entity
+from solstone.think.entities import (
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
+    record_entity_resolution,
+)
 from solstone.think.entities.journal import (
     get_journal_principal,
     load_all_journal_entities,
@@ -377,33 +382,65 @@ def attribute_segment(
 
     # Resolve candidates to entities
     candidate_entities: dict[str, dict] = {}
+    resolution_scope = ResolutionScope.journal()
+    resolution_origin = ResolutionOrigin(
+        lane="apps.speakers.attribution",
+        day=day,
+        segment_id=segment_key,
+        field="candidate_name",
+    )
     for name in candidate_names:
-        entity = find_matching_entity(name, entities_list)
-        if entity:
-            candidate_entities[entity["id"]] = entity
+        resolution = record_entity_resolution(
+            name,
+            entities_list,
+            scope=resolution_scope,
+            origin=resolution_origin,
+        )
+        if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
+            candidate_entities[resolution.entity["id"]] = resolution.entity
 
     # 2a: single-listed-speaker — all non-owner sentences belong to them
     if len(speakers) == 1:
-        entity = find_matching_entity(speakers[0], entities_list)
-        if entity:
+        resolution = record_entity_resolution(
+            speakers[0],
+            entities_list,
+            scope=resolution_scope,
+            origin=ResolutionOrigin(
+                lane="apps.speakers.attribution",
+                day=day,
+                segment_id=segment_key,
+                field="structural_single_speaker",
+            ),
+        )
+        if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             for sid in non_owner_sids:
                 if labels[sid]["speaker"] is None:
                     labels[sid] = {
                         "sentence_id": sid,
-                        "speaker": entity["id"],
+                        "speaker": resolution.entity["id"],
                         "confidence": "high",
                         "method": "structural_single_speaker",
                     }
 
     # 2b: single setting-field participant (import segments without speakers.json)
     elif not speakers and len(setting_names) == 1:
-        entity = find_matching_entity(setting_names[0], entities_list)
-        if entity:
+        resolution = record_entity_resolution(
+            setting_names[0],
+            entities_list,
+            scope=resolution_scope,
+            origin=ResolutionOrigin(
+                lane="apps.speakers.attribution",
+                day=day,
+                segment_id=segment_key,
+                field="structural_setting",
+            ),
+        )
+        if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             for sid in non_owner_sids:
                 if labels[sid]["speaker"] is None:
                     labels[sid] = {
                         "sentence_id": sid,
-                        "speaker": entity["id"],
+                        "speaker": resolution.entity["id"],
                         "confidence": "high",
                         "method": "structural_setting",
                     }

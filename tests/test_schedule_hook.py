@@ -106,6 +106,88 @@ def test_schedule_post_process_writes_record_and_resolves_entities(
     assert record["edits"][-1]["note"] == "created by schedule"
 
 
+def test_schedule_ambiguous_participant_keeps_unresolved_form(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.talent.schedule import post_process
+    from solstone.think.activities import load_activity_records
+    from solstone.think.entities import (
+        ResolutionScope,
+        load_ambiguities,
+        load_entities,
+        record_ambiguity_choice,
+    )
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_facet(tmp_path, "work")
+    _write_detected_entities(
+        tmp_path,
+        "work",
+        "20260420",
+        [
+            {"id": "sarah_connor", "type": "Person", "name": "Sarah Connor"},
+            {"id": "sarah_lee", "type": "Person", "name": "Sarah Lee"},
+        ],
+    )
+
+    payload = [
+        {
+            "activity": "meeting",
+            "target_date": "2026-04-20",
+            "start": "16:30:00",
+            "end": "17:30:00",
+            "title": "Sarah intro call",
+            "description": "Intro call with Sarah.",
+            "details": "Google Meet",
+            "participation": [
+                {
+                    "name": "Sarah",
+                    "role": "attendee",
+                    "source": "screen",
+                    "confidence": 0.95,
+                    "context": "calendar invite",
+                }
+            ],
+            "participation_confidence": 0.88,
+            "facet": "work",
+            "cancelled": False,
+        }
+    ]
+
+    assert post_process(json.dumps(payload), {"day": "20260418"}) is None
+
+    records = load_activity_records("work", "20260420", include_hidden=True)
+    assert len(records) == 1
+    record = records[0]
+    assert record["active_entities"] == []
+    assert record["participation"][0]["entity_id"] is None
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+
+    record_ambiguity_choice(
+        "Sarah",
+        "sarah_connor",
+        load_entities("work", "20260420"),
+        scope=ResolutionScope.facet_scope("work"),
+    )
+    resolved_payload = json.loads(json.dumps(payload))
+    resolved_payload[0]["start"] = "17:00:00"
+    resolved_payload[0]["end"] = "18:00:00"
+    resolved_payload[0]["title"] = "Sarah follow-up call"
+    assert post_process(json.dumps(resolved_payload), {"day": "20260418"}) is None
+
+    records = load_activity_records("work", "20260420", include_hidden=True)
+    assert len(records) == 2
+    record = records[1]
+    assert record["active_entities"] == ["sarah_connor"]
+    assert record["participation"][0]["entity_id"] == "sarah_connor"
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["status"] == "resolved"
+
+
 def test_schedule_post_process_accepts_wrapped_events(tmp_path, monkeypatch):
     from solstone.talent.schedule import post_process
     from solstone.think.activities import load_activity_records

@@ -9,7 +9,11 @@ import json
 
 import numpy as np
 
-from solstone.apps.speakers.bootstrap import link_import, seed_from_imports
+from solstone.apps.speakers.bootstrap import (
+    bootstrap_voiceprints,
+    link_import,
+    seed_from_imports,
+)
 
 # --- link-import tests ---
 
@@ -161,6 +165,95 @@ def test_seed_from_imports_skips_unmatched_speakers(speakers_env):
 
     result = seed_from_imports(dry_run=True)
     assert result["embeddings_saved"] == 0
+
+
+def test_seed_from_imports_skips_ambiguous_speakers(speakers_env):
+    from solstone.think.entities import (
+        ResolutionScope,
+        load_all_journal_entities,
+        load_ambiguities,
+        record_ambiguity_choice,
+    )
+
+    env = speakers_env()
+    _create_owner_centroid(env)
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+
+    embs = np.zeros((1, 256), dtype=np.float32)
+    embs[0, 1] = 1.0
+
+    env.create_import_segment(
+        "20240101",
+        "100000_300",
+        [("Sarah", "Hello")],
+        embeddings=embs,
+    )
+
+    result = seed_from_imports(dry_run=True)
+    assert result["embeddings_saved"] == 0
+    assert result["speakers_unmatched"] == ["Sarah"]
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+
+    record_ambiguity_choice(
+        "Sarah",
+        "sarah_connor",
+        list(load_all_journal_entities().values()),
+        scope=ResolutionScope.journal(),
+    )
+    resolved = seed_from_imports(dry_run=True)
+    assert resolved["embeddings_saved"] == 1
+    assert resolved["speakers_unmatched"] == []
+    assert "Sarah Connor" in resolved["speakers_found"]
+
+
+def test_bootstrap_voiceprints_skips_ambiguous_single_speaker(speakers_env):
+    from solstone.think.entities import (
+        ResolutionScope,
+        load_all_journal_entities,
+        load_ambiguities,
+        record_ambiguity_choice,
+    )
+
+    env = speakers_env()
+    _create_owner_centroid(env)
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+
+    embs = np.zeros((2, 256), dtype=np.float32)
+    embs[0, 1] = 1.0
+    embs[1, 2] = 1.0
+
+    env.create_segment(
+        "20240101",
+        "100000_300",
+        ["mic_audio"],
+        embeddings=embs,
+    )
+    env.create_speakers_json("20240101", "100000_300", ["Sarah"])
+
+    result = bootstrap_voiceprints(dry_run=True)
+
+    assert result["embeddings_saved"] == 0
+    assert result["entities_created"] == 0
+    assert result["speakers_unmatched"] == ["Sarah"]
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+
+    record_ambiguity_choice(
+        "Sarah",
+        "sarah_connor",
+        list(load_all_journal_entities().values()),
+        scope=ResolutionScope.journal(),
+    )
+    resolved = bootstrap_voiceprints(dry_run=True)
+    assert resolved["embeddings_saved"] == 2
+    assert resolved["entities_created"] == 0
+    assert resolved["speakers_unmatched"] == []
+    assert "Sarah Connor" in resolved["speakers_found"]
 
 
 def test_seed_from_imports_owner_contamination(speakers_env):

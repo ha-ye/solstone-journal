@@ -19,7 +19,12 @@ from solstone.think.activities import (
     mute_activity_record,
 )
 from solstone.think.entities.loading import load_entities
-from solstone.think.entities.matching import find_matching_entity
+from solstone.think.entities.matching import (
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
+    record_entity_resolution,
+)
 from solstone.think.facets import get_facets
 
 logger = logging.getLogger(__name__)
@@ -107,15 +112,32 @@ def post_process(result: str, context: dict) -> None:
             resolved_participation: list[dict[str, Any]] = []
             active_entities: list[str] = []
             seen_active_entities: set[str] = set()
+            new_id = make_anticipation_id(activity, start, target_date)
+            resolution_origin = ResolutionOrigin(
+                lane="talent.schedule",
+                facet=facet,
+                day=cache_key[1],
+                record_id=new_id,
+                field="participation.name",
+            )
+            resolution_scope = ResolutionScope.facet_scope(facet)
             for entry in participation:
                 if not isinstance(entry, dict):
                     continue
 
                 resolved_entry = dict(entry)
-                match = find_matching_entity(
-                    resolved_entry.get("name", ""), entities_list
+                resolution = record_entity_resolution(
+                    str(resolved_entry.get("name") or ""),
+                    entities_list,
+                    scope=resolution_scope,
+                    origin=resolution_origin,
                 )
-                entity_id = match.get("id") if match else None
+                entity_id = (
+                    resolution.entity.get("id")
+                    if resolution.outcome == EntityResolutionOutcome.RESOLVED
+                    and resolution.entity
+                    else None
+                )
                 resolved_entry["entity_id"] = entity_id
                 resolved_participation.append(resolved_entry)
 
@@ -126,7 +148,6 @@ def post_process(result: str, context: dict) -> None:
                 seen_active_entities.add(entity_id)
                 active_entities.append(entity_id)
 
-            new_id = make_anticipation_id(activity, start, target_date)
             record = {
                 "id": new_id,
                 "activity": activity,

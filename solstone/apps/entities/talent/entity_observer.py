@@ -18,7 +18,12 @@ import logging
 from solstone.talent.story import ALLOWED_RELATION_KINDS
 from solstone.think.entities.context import assemble_observer_context
 from solstone.think.entities.loading import detected_entities_path, load_entities
-from solstone.think.entities.matching import find_matching_entity
+from solstone.think.entities.matching import (
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
+    record_entity_resolution,
+)
 from solstone.think.entities.observations import record_observation_ops
 from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import now_ms
@@ -78,6 +83,9 @@ def _clean_relation(
     value: object,
     op: str,
     entities: list[dict],
+    *,
+    scope: ResolutionScope,
+    origin: ResolutionOrigin,
 ) -> tuple[dict | None, str | None]:
     if value is None or op in {"drop", "keep"}:
         return None, None
@@ -102,8 +110,14 @@ def _clean_relation(
         logger.warning("entity_observer: relation kind 'other' requires note")
         return None, "skipped"
 
-    match = find_matching_entity(target_name, entities, fuzzy_threshold=90)
-    if not match:
+    resolution = record_entity_resolution(
+        target_name,
+        entities,
+        scope=scope,
+        origin=origin,
+        fuzzy_threshold=90,
+    )
+    if resolution.outcome != EntityResolutionOutcome.RESOLVED or not resolution.entity:
         logger.warning(
             "entity_observer: unresolved relation target %r for %s op",
             target_name,
@@ -118,14 +132,19 @@ def _clean_relation(
 
     return {
         "kind": kind,
-        "target_entity_id": match["id"],
+        "target_entity_id": resolution.entity["id"],
         "target_name": target_name,
         "note": note,
     }, None
 
 
 def _clean_operation(
-    item: object, seen_indexes: set[int], entities: list[dict]
+    item: object,
+    seen_indexes: set[int],
+    entities: list[dict],
+    *,
+    scope: ResolutionScope,
+    origin: ResolutionOrigin,
 ) -> tuple[dict | None, str | None]:
     if not isinstance(item, dict):
         return None, "skipped"
@@ -135,7 +154,13 @@ def _clean_operation(
         content = item.get("content")
         if not isinstance(content, str) or not content.strip():
             return None, "skipped"
-        relation, status = _clean_relation(item.get("relation"), op, entities)
+        relation, status = _clean_relation(
+            item.get("relation"),
+            op,
+            entities,
+            scope=scope,
+            origin=origin,
+        )
         if status == "skipped":
             return None, status
         cleaned = {"op": "add", "content": content.strip()}
@@ -170,7 +195,13 @@ def _clean_operation(
     if content is not None:
         cleaned["content"] = content
 
-    relation, status = _clean_relation(item.get("relation"), op, entities)
+    relation, status = _clean_relation(
+        item.get("relation"),
+        op,
+        entities,
+        scope=scope,
+        origin=origin,
+    )
     if status == "skipped":
         return None, status
     if relation is not None:
@@ -212,6 +243,7 @@ def post_process(result: str, context: dict) -> str | None:
             return None
 
         attached_entities = load_entities(facet)
+        resolution_scope = ResolutionScope.facet_scope(facet)
         valid_entity_ids = {
             entity.get("id") for entity in attached_entities if entity.get("id")
         }
@@ -238,9 +270,20 @@ def post_process(result: str, context: dict) -> str | None:
 
             clean_ops: list[dict] = []
             seen_indexes: set[int] = set()
+            relation_origin = ResolutionOrigin(
+                lane="apps.entities.entity_observer",
+                facet=facet,
+                day=day,
+                record_id=entity_id,
+                field="relation.target_name",
+            )
             for item in operations:
                 clean_op, status = _clean_operation(
-                    item, seen_indexes, attached_entities
+                    item,
+                    seen_indexes,
+                    attached_entities,
+                    scope=resolution_scope,
+                    origin=relation_origin,
                 )
                 if status is not None:
                     counts[status] += 1

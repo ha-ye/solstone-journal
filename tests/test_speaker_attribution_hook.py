@@ -165,12 +165,6 @@ def _post_process_context():
     }
 
 
-def _match_entity(name, _entities):
-    if name == "Alice":
-        return {"id": "alice"}
-    return None
-
-
 class TestPostProcess:
     def test_bare_list_merges_layer4_attributions(self, tmp_path):
         result = json.dumps(
@@ -186,12 +180,8 @@ class TestPostProcess:
                 "solstone.apps.speakers.attribution.accumulate_voiceprints"
             ) as accumulate_mock,
             patch(
-                "solstone.think.entities.find_matching_entity",
-                side_effect=_match_entity,
-            ),
-            patch(
                 "solstone.think.entities.journal.load_all_journal_entities",
-                return_value={"alice": {"id": "alice"}},
+                return_value={"alice": {"id": "alice", "name": "Alice"}},
             ),
             patch("solstone.think.utils.segment_path", return_value=tmp_path),
         ):
@@ -236,12 +226,8 @@ class TestPostProcess:
                 "solstone.apps.speakers.attribution.accumulate_voiceprints"
             ) as accumulate_mock,
             patch(
-                "solstone.think.entities.find_matching_entity",
-                side_effect=_match_entity,
-            ),
-            patch(
                 "solstone.think.entities.journal.load_all_journal_entities",
-                return_value={"alice": {"id": "alice"}},
+                return_value={"alice": {"id": "alice", "name": "Alice"}},
             ),
             patch("solstone.think.utils.segment_path", return_value=tmp_path),
         ):
@@ -264,6 +250,52 @@ class TestPostProcess:
         }
         accumulate_mock.assert_not_called()
 
+    def test_ambiguous_layer4_attribution_leaves_speaker_unmatched(
+        self, tmp_path, monkeypatch
+    ):
+        from solstone.think.entities import load_ambiguities
+
+        monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+        import solstone.think.utils as think_utils
+
+        think_utils._journal_path_cache = None
+        result = json.dumps(
+            [{"sentence_id": 1, "speaker": "Sarah", "reasoning": "said her name"}]
+        )
+        context = _post_process_context()
+
+        with (
+            patch(
+                "solstone.apps.speakers.attribution.save_speaker_labels"
+            ) as save_mock,
+            patch(
+                "solstone.apps.speakers.attribution.accumulate_voiceprints"
+            ) as accumulate_mock,
+            patch(
+                "solstone.think.entities.journal.load_all_journal_entities",
+                return_value={
+                    "sarah_connor": {"id": "sarah_connor", "name": "Sarah Connor"},
+                    "sarah_lee": {"id": "sarah_lee", "name": "Sarah Lee"},
+                },
+            ),
+            patch("solstone.think.utils.segment_path", return_value=tmp_path),
+        ):
+            from solstone.talent.speaker_attribution import post_process
+
+            post_process(result, context)
+
+        saved_labels = save_mock.call_args[0][1]
+        assert saved_labels[0] == {
+            "sentence_id": 1,
+            "speaker": None,
+            "confidence": None,
+            "method": None,
+        }
+        accumulate_mock.assert_not_called()
+        rows = load_ambiguities()
+        assert len(rows) == 1
+        assert rows[0]["normalized_query"] == "sarah"
+
     def test_non_list_non_dict_yields_zero_merges_and_warns(self, tmp_path, caplog):
         context = _post_process_context()
 
@@ -273,12 +305,8 @@ class TestPostProcess:
             ) as save_mock,
             patch("solstone.apps.speakers.attribution.accumulate_voiceprints"),
             patch(
-                "solstone.think.entities.find_matching_entity",
-                side_effect=_match_entity,
-            ) as match_mock,
-            patch(
                 "solstone.think.entities.journal.load_all_journal_entities",
-                return_value={"alice": {"id": "alice"}},
+                return_value={"alice": {"id": "alice", "name": "Alice"}},
             ) as load_mock,
             patch("solstone.think.utils.segment_path", return_value=tmp_path),
             caplog.at_level(logging.WARNING),
@@ -302,4 +330,3 @@ class TestPostProcess:
         }
         assert "expected JSON array, got int" in caplog.text
         load_mock.assert_not_called()
-        match_mock.assert_not_called()

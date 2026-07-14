@@ -9,7 +9,12 @@ import logging
 from solstone.think.activities import update_record_fields
 from solstone.think.cluster import _find_segment_dir
 from solstone.think.entities.loading import load_entities
-from solstone.think.entities.matching import find_matching_entity
+from solstone.think.entities.matching import (
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
+    record_entity_resolution,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,14 @@ def post_process(result: str, context: dict) -> str | None:
         return None
 
     entities_list = load_entities(facet=facet, day=day)
+    scope = ResolutionScope.facet_scope(facet)
+    participation_origin = ResolutionOrigin(
+        lane="talent.participation",
+        facet=facet,
+        day=day,
+        record_id=str(record_id),
+        field="participation.name",
+    )
 
     resolved_entries = []
     for entry in participation:
@@ -114,8 +127,18 @@ def post_process(result: str, context: dict) -> str | None:
             continue
 
         resolved_entry = dict(entry)
-        match = find_matching_entity(resolved_entry.get("name", ""), entities_list)
-        resolved_entry["entity_id"] = match.get("id") if match else None
+        resolution = record_entity_resolution(
+            str(resolved_entry.get("name") or ""),
+            entities_list,
+            scope=scope,
+            origin=participation_origin,
+        )
+        resolved_entry["entity_id"] = (
+            resolution.entity.get("id")
+            if resolution.outcome == EntityResolutionOutcome.RESOLVED
+            and resolution.entity
+            else None
+        )
         resolved_entries.append(resolved_entry)
 
     segments = activity.get("segments") or []
@@ -143,12 +166,34 @@ def post_process(result: str, context: dict) -> str | None:
     def _name_resolves_to(entity_id: str | None, entry_name: str) -> bool:
         if not named_speakers:
             return False
+        speaker_origin = ResolutionOrigin(
+            lane="talent.participation",
+            facet=facet,
+            day=day,
+            record_id=str(record_id),
+            field="speaker.name",
+        )
         for name in named_speakers:
+            resolution = record_entity_resolution(
+                name,
+                entities_list,
+                scope=scope,
+                origin=speaker_origin,
+            )
+            if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
+                continue
             if entity_id:
-                match = find_matching_entity(name, entities_list)
-                if match and match.get("id") == entity_id:
+                if (
+                    resolution.outcome == EntityResolutionOutcome.RESOLVED
+                    and resolution.entity
+                    and resolution.entity.get("id") == entity_id
+                ):
                     return True
-            if entry_name and name.casefold() == entry_name.casefold():
+            if (
+                resolution.outcome == EntityResolutionOutcome.NO_MATCH
+                and entry_name
+                and name.casefold() == entry_name.casefold()
+            ):
                 return True
         return False
 

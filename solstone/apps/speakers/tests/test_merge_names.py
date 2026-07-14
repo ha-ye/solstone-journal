@@ -171,6 +171,27 @@ def test_deep_merge_full(speakers_env):
         assert c.get("corrected_speaker") != "alice_alias"
 
 
+def test_merge_names_ambiguous_alias_returns_error_without_merge(speakers_env):
+    env = speakers_env()
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+    env.create_entity("Alice Canonical")
+
+    result = merge_names("Sarah", "Alice Canonical")
+
+    assert "error" in result
+    assert "Ambiguous entity for alias" in result["error"]
+    assert result["ambiguous"]["alias"]["ambiguity_id"]
+    assert {
+        candidate["id"] for candidate in result["ambiguous"]["alias"]["candidates"]
+    } == {
+        "sarah_connor",
+        "sarah_lee",
+    }
+    assert load_journal_entity("sarah_connor") is not None
+    assert load_journal_entity("sarah_lee") is not None
+
+
 def test_alias_entity_deleted(speakers_env):
     """After merge, scan_journal_entities does not return alias_id."""
     env = speakers_env()

@@ -30,9 +30,14 @@ from typing import Any
 
 from solstone.apps.speakers.owner import load_owner_centroid
 from solstone.think.entities import (
+    EntityResolution,
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
     entity_slug,
     find_matching_entity,
     is_name_variant_match,
+    record_entity_resolution,
 )
 from solstone.think.entities.journal import (
     create_journal_entity,
@@ -46,6 +51,14 @@ logger = logging.getLogger(__name__)
 
 # Cosine similarity threshold for name variant merging (validated in Experiment B)
 NAME_MERGE_THRESHOLD = 0.90
+
+
+def _ambiguity_payload(resolution: EntityResolution) -> dict[str, Any]:
+    """Return a compact API payload for an ambiguous resolution."""
+    return {
+        "ambiguity_id": resolution.ambiguity_id,
+        "candidates": [candidate.to_dict() for candidate in resolution.candidates],
+    }
 
 
 def bootstrap_voiceprints(dry_run: bool = False) -> dict[str, Any]:
@@ -103,6 +116,7 @@ def bootstrap_voiceprints(dry_run: bool = False) -> dict[str, Any]:
         "embeddings_saved": 0,
         "embeddings_skipped_owner": 0,
         "embeddings_skipped_duplicate": 0,
+        "speakers_unmatched": [],
         "errors": [],
     }
 
@@ -110,6 +124,8 @@ def bootstrap_voiceprints(dry_run: bool = False) -> dict[str, Any]:
     entity_embeddings: dict[str, list[tuple[np.ndarray, dict]]] = defaultdict(list)
     entity_existing: dict[str, set] = {}
     entity_names: dict[str, str] = {}
+    unmatched_speakers: set[str] = set()
+    resolution_scope = ResolutionScope.journal()
 
     days = sorted(day_dirs().keys())
 
@@ -130,10 +146,28 @@ def bootstrap_voiceprints(dry_run: bool = False) -> dict[str, Any]:
             speaker_name = speakers[0]
 
             # Match speaker name to an existing journal entity
-            entity = find_matching_entity(speaker_name, entities_list)
-            if entity:
-                entity_id = entity["id"]
-                entity_name = entity.get("name", speaker_name)
+            resolution = record_entity_resolution(
+                speaker_name,
+                entities_list,
+                scope=resolution_scope,
+                origin=ResolutionOrigin(
+                    lane="apps.speakers.bootstrap_voiceprints",
+                    day=day,
+                    segment_id=seg_key,
+                    field="speaker",
+                ),
+            )
+            if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
+                if speaker_name not in unmatched_speakers:
+                    unmatched_speakers.add(speaker_name)
+                    stats["speakers_unmatched"].append(speaker_name)
+                continue
+            if (
+                resolution.outcome == EntityResolutionOutcome.RESOLVED
+                and resolution.entity
+            ):
+                entity_id = resolution.entity["id"]
+                entity_name = resolution.entity.get("name", speaker_name)
             else:
                 # Create a new entity for this speaker
                 entity_id = entity_slug(speaker_name)
@@ -229,13 +263,46 @@ def merge_names(alias_name: str, canonical_name: str) -> dict[str, Any]:
 
     journal_entities = load_all_journal_entities()
     entities_list = list(journal_entities.values())
+    resolution_scope = ResolutionScope.journal()
 
-    alias_entity = find_matching_entity(alias_name, entities_list)
-    if not alias_entity:
+    alias_resolution = record_entity_resolution(
+        alias_name,
+        entities_list,
+        scope=resolution_scope,
+        origin=ResolutionOrigin(
+            lane="apps.speakers.merge_names",
+            field="alias_name",
+        ),
+    )
+    if alias_resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
+        return {
+            "error": f"Ambiguous entity for alias: {alias_name}",
+            "ambiguous": {"alias": _ambiguity_payload(alias_resolution)},
+        }
+    if alias_resolution.outcome != EntityResolutionOutcome.RESOLVED:
+        return {"error": f"No entity found for alias: {alias_name}"}
+    alias_entity = alias_resolution.entity
+    if alias_entity is None:
         return {"error": f"No entity found for alias: {alias_name}"}
 
-    canonical_entity = find_matching_entity(canonical_name, entities_list)
-    if not canonical_entity:
+    canonical_resolution = record_entity_resolution(
+        canonical_name,
+        entities_list,
+        scope=resolution_scope,
+        origin=ResolutionOrigin(
+            lane="apps.speakers.merge_names",
+            field="canonical_name",
+        ),
+    )
+    if canonical_resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
+        return {
+            "error": f"Ambiguous entity for canonical: {canonical_name}",
+            "ambiguous": {"canonical": _ambiguity_payload(canonical_resolution)},
+        }
+    if canonical_resolution.outcome != EntityResolutionOutcome.RESOLVED:
+        return {"error": f"No entity found for canonical: {canonical_name}"}
+    canonical_entity = canonical_resolution.entity
+    if canonical_entity is None:
         return {"error": f"No entity found for canonical: {canonical_name}"}
 
     alias_id = alias_entity["id"]
@@ -658,6 +725,7 @@ def seed_from_imports(dry_run: bool = False) -> dict[str, Any]:
     entity_existing: dict[str, set] = {}
     unmatched_set: set[str] = set()
     speaker_entity_cache: dict[str, Any] = {}
+    resolution_scope = ResolutionScope.journal()
 
     days = sorted(day_dirs().keys())
 
@@ -718,8 +786,22 @@ def seed_from_imports(dry_run: bool = False) -> dict[str, Any]:
                         continue
 
                     if speaker_name not in speaker_entity_cache:
-                        entity = find_matching_entity(speaker_name, entities_list)
-                        speaker_entity_cache[speaker_name] = entity
+                        resolution = record_entity_resolution(
+                            speaker_name,
+                            entities_list,
+                            scope=resolution_scope,
+                            origin=ResolutionOrigin(
+                                lane="apps.speakers.seed_from_imports",
+                                day=day,
+                                segment_id=seg_key,
+                                field="speaker",
+                            ),
+                        )
+                        speaker_entity_cache[speaker_name] = (
+                            resolution.entity
+                            if resolution.outcome == EntityResolutionOutcome.RESOLVED
+                            else None
+                        )
 
                     entity = speaker_entity_cache[speaker_name]
                     if entity is None:

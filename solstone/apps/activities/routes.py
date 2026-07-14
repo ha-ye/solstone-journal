@@ -42,7 +42,12 @@ from solstone.think.activities import (
     update_activity_record,
 )
 from solstone.think.entities.loading import load_entities
-from solstone.think.entities.matching import find_matching_entity
+from solstone.think.entities.matching import (
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
+    record_entity_resolution,
+)
 from solstone.think.facets import get_facets, log_call_action
 from solstone.think.journal_io import LockTimeout
 from solstone.think.utils import now_ms, segment_parse
@@ -116,15 +121,33 @@ def _record_payload(record: dict[str, Any]) -> dict[str, Any]:
 
 
 def _resolve_participation_entity_ids(
-    entries: list[dict[str, Any]], *, facet: str, day: str
+    entries: list[dict[str, Any]], *, facet: str, day: str, record_id: str
 ) -> list[dict[str, Any]]:
     entities_list = load_entities(facet=facet, day=day)
+    scope = ResolutionScope.facet_scope(facet)
+    origin = ResolutionOrigin(
+        lane="apps.activities.create",
+        facet=facet,
+        day=day,
+        record_id=record_id,
+        field="participation.name",
+    )
 
     resolved_entries = []
     for entry in entries:
         resolved = dict(entry)
-        match = find_matching_entity(resolved["name"], entities_list)
-        resolved["entity_id"] = match.get("id") if match else None
+        resolution = record_entity_resolution(
+            str(resolved.get("name") or ""),
+            entities_list,
+            scope=scope,
+            origin=origin,
+        )
+        resolved["entity_id"] = (
+            resolution.entity.get("id")
+            if resolution.outcome == EntityResolutionOutcome.RESOLVED
+            and resolution.entity
+            else None
+        )
         resolved_entries.append(resolved)
 
     return resolved_entries
@@ -187,15 +210,15 @@ def activities_create_record(day: str) -> Any:
     details = str(body.get("details") or "")
     participation_provided = "participation" in body
     participation: list[dict[str, Any]] = []
+    actor = "cogitate:activities" if source == "cogitate" else "cli:create"
+    span_id = make_activity_id(activity_type, anchor)
     if participation_provided:
         raw_participation = body.get("participation")
         participation = raw_participation if isinstance(raw_participation, list) else []
         participation = _resolve_participation_entity_ids(
-            participation, facet=facet, day=day
+            participation, facet=facet, day=day, record_id=span_id
         )
 
-    actor = "cogitate:activities" if source == "cogitate" else "cli:create"
-    span_id = make_activity_id(activity_type, anchor)
     record: dict[str, Any] = {
         "id": span_id,
         "activity": activity_type,

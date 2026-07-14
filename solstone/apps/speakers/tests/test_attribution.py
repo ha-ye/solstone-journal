@@ -291,6 +291,35 @@ def test_layer2_single_speaker(speakers_env):
     assert result["unmatched"] == []
 
 
+def test_layer2_single_speaker_ambiguous_name_stays_unmatched(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+    from solstone.think.entities import load_ambiguities
+
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+
+    owner_emb = _normalized([0.95, 0.05])
+    other_emb = _normalized([0.1, 0.99])
+    embeddings = np.vstack([owner_emb, other_emb])
+
+    seg_dir = _write_controlled_segment(env, "20240101", "090000_300", embeddings)
+    agents_dir = seg_dir / "talents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "speakers.json").write_text(json.dumps(["Sarah"]))
+
+    result = attribute_segment("20240101", STREAM, "090000_300")
+
+    assert result["labels"][1]["speaker"] is None
+    assert result["labels"][1]["confidence"] is None
+    assert result["labels"][1]["method"] is None
+    assert result["unmatched"] == [2]
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+
+
 # ---------------------------------------------------------------------------
 # Layer 2: Setting field
 # ---------------------------------------------------------------------------
@@ -316,7 +345,7 @@ def test_layer2_setting_field(speakers_env):
     header = {
         "raw": "imported_audio.flac",
         "model": "medium.en",
-        "setting": "Jer and Jack at coffee",
+        "setting": "Jer and Jack Andersohn at coffee",
     }
     lines = [json.dumps(header)]
     lines.append(json.dumps({"start": "09:00:00", "text": "Owner talking"}))

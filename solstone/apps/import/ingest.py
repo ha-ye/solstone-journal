@@ -29,13 +29,22 @@ from solstone.observe.utils import (
     compute_file_sha256,
     find_available_segment,
 )
+from solstone.think.entities.ambiguities import (
+    load_resolved_ambiguity_choice,
+    normalize_resolution_query,
+)
 from solstone.think.entities.core import EntityDict, entity_slug
 from solstone.think.entities.journal import (
     has_journal_principal,
     load_all_journal_entities,
     save_journal_entity,
 )
-from solstone.think.entities.matching import find_matching_entity
+from solstone.think.entities.matching import (
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
+    record_entity_resolution,
+)
 from solstone.think.journal_io import append_text, atomic_replace
 from solstone.think.utils import DEFAULT_STREAM, STREAM_RE, day_path
 
@@ -382,6 +391,8 @@ def register_ingest_routes(bp) -> None:
         staged = 0
         skipped = 0
         errors: list[dict[str, str]] = []
+        state_dirty = False
+        resolution_scope = ResolutionScope.journal()
 
         for entity_data in entities:
             try:
@@ -401,8 +412,25 @@ def register_ingest_routes(bp) -> None:
                     json.dumps(entity_data, sort_keys=True, ensure_ascii=False).encode()
                 ).hexdigest()
 
+                staged_path = staged_dir / f"{source_id}.json"
                 existing_hash = entity_state["received"].get(source_id)
-                if existing_hash == content_hash:
+                resolved_choice = load_resolved_ambiguity_choice(
+                    resolution_scope,
+                    normalize_resolution_query(entity_data["name"]),
+                )
+                resolved_target_id = (
+                    str(resolved_choice.get("resolved_entity_id") or "")
+                    if resolved_choice
+                    else ""
+                )
+                needs_resolved_choice_apply = bool(
+                    resolved_target_id
+                    and (
+                        entity_state["id_map"].get(source_id) != resolved_target_id
+                        or staged_path.exists()
+                    )
+                )
+                if existing_hash == content_hash and not needs_resolved_choice_apply:
                     skipped += 1
                     entity_state["received"][source_id] = content_hash
                     _append_decision(
@@ -421,12 +449,23 @@ def register_ingest_routes(bp) -> None:
                     )
                     continue
 
-                match = find_matching_entity(
-                    entity_data["name"], list(target_entities.values())
+                resolution = record_entity_resolution(
+                    entity_data["name"],
+                    list(target_entities.values()),
+                    scope=resolution_scope,
+                    origin=ResolutionOrigin(
+                        lane="apps.import.ingest",
+                        source_id=source_id,
+                        path=key_prefix,
+                        field="name",
+                    ),
                 )
 
-                if match is not None and match.is_high_confidence:
-                    target_id = str(match["id"])
+                if (
+                    resolution.outcome == EntityResolutionOutcome.RESOLVED
+                    and resolution.entity
+                ):
+                    target_id = str(resolution.entity["id"])
                     target_entity: EntityDict = dict(target_entities[target_id])
                     pre_merge_snapshot = dict(target_entity)
 
@@ -485,7 +524,10 @@ def register_ingest_routes(bp) -> None:
                         if pre_merge_snapshot.get(key) != target_entity.get(key)
                     )
                     entity_state["id_map"][source_id] = target_id
+                    if staged_path.exists():
+                        staged_path.unlink()
                     auto_merged += 1
+                    match_tier = int(resolution.tier) if resolution.tier else None
                     _append_decision(
                         log_path,
                         {
@@ -493,29 +535,30 @@ def register_ingest_routes(bp) -> None:
                             "action": "auto_merged",
                             "item_type": "entity",
                             "item_id": source_id,
-                            "match_tier": int(match.tier),
-                            "reason": "high_confidence_match",
+                            "match_tier": match_tier,
+                            "reason": (
+                                "high_confidence_match"
+                                if match_tier is not None
+                                else "resolved_ambiguity_choice"
+                            ),
                             "source": entity_data,
                             "target": target_entity,
                             "fields_changed": fields_changed,
                         },
                     )
-                elif match is not None and not match.is_high_confidence:
+                elif resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
                     staged_dir.mkdir(parents=True, exist_ok=True)
                     staged_payload = {
                         "source_entity": entity_data,
                         "match_candidates": [
-                            {
-                                "id": match["id"],
-                                "name": match["name"],
-                                "tier": int(match.tier),
-                            }
+                            candidate.to_dict() for candidate in resolution.candidates
                         ],
                         "reason": "low_confidence_match",
+                        "ambiguity_id": resolution.ambiguity_id,
                         "staged_at": datetime.now(timezone.utc).isoformat(),
                     }
                     atomic_replace(
-                        staged_dir / f"{source_id}.json",
+                        staged_path,
                         json.dumps(staged_payload, indent=2, ensure_ascii=False) + "\n",
                     )
                     staged += 1
@@ -526,7 +569,9 @@ def register_ingest_routes(bp) -> None:
                             "action": "staged",
                             "item_type": "entity",
                             "item_id": source_id,
-                            "match_tier": int(match.tier),
+                            "match_tier": int(resolution.tier)
+                            if resolution.tier
+                            else None,
                             "reason": "low_confidence_match",
                             "source": entity_data,
                             "target": None,
@@ -620,13 +665,15 @@ def register_ingest_routes(bp) -> None:
                         )
 
                 entity_state["received"][source_id] = content_hash
+                state_dirty = True
             except Exception as exc:
                 entity_id = (
                     entity_data.get("id", "") if isinstance(entity_data, dict) else ""
                 )
                 errors.append({"entity_id": entity_id, "error": str(exc)})
 
-        _write_state_atomic(state_path, entity_state)
+        if state_dirty:
+            _write_state_atomic(state_path, entity_state)
 
         written = auto_merged + created
         if written > 0:

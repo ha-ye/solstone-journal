@@ -8,11 +8,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from solstone.think.entities import (
+    ResolutionScope,
     attach_or_reactivate_entity,
     detach_facet_entity,
+    load_ambiguities,
     load_entities,
     load_facet_relationship,
     load_journal_entity,
+    record_ambiguity_choice,
     save_entities,
 )
 from solstone.think.journal_io import LockTimeout
@@ -149,6 +152,53 @@ def test_delete_detected_returns_days_modified(client):
     assert {entity["name"] for entity in load_entities("personal", "20240101")} == {
         "Keep Me"
     }
+
+
+def test_detected_ambiguous_name_keeps_submitted_name_without_id(client):
+    save_entities(
+        "personal",
+        [
+            {"type": "Person", "name": "Ambig Route Alpha"},
+            {"type": "Person", "name": "Ambig Route Beta"},
+        ],
+    )
+
+    response = client.post(
+        "/app/entities/api/personal/detected",
+        json={
+            "day": "20240102",
+            "type": "Person",
+            "entity": "Ambig",
+            "description": "Detected ambiguous person",
+        },
+    )
+
+    assert response.status_code == 200
+    detected = load_entities("personal", "20240102")
+    assert [entity["name"] for entity in detected] == ["Ambig"]
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "ambig"
+
+    record_ambiguity_choice(
+        "Ambig",
+        "ambig_route_alpha",
+        load_entities("personal"),
+        scope=ResolutionScope.facet_scope("personal"),
+    )
+    response = client.post(
+        "/app/entities/api/personal/detected",
+        json={
+            "day": "20240103",
+            "type": "Person",
+            "entity": "Ambig",
+            "description": "Detected resolved person",
+        },
+    )
+
+    assert response.status_code == 200
+    detected = load_entities("personal", "20240103")
+    assert [entity["name"] for entity in detected] == ["Ambig Route Alpha"]
 
 
 def test_owner_lock_timeout_maps_to_entity_busy(client, monkeypatch):

@@ -11,6 +11,10 @@ import pytest
 from flask import Blueprint, Flask
 
 import solstone.convey.state as convey_state
+from solstone.think.entities import (
+    ResolutionScope,
+    record_ambiguity_choice,
+)
 from solstone.think.entities.core import entity_slug
 from solstone.think.entities.journal import (
     load_all_journal_entities,
@@ -263,12 +267,54 @@ def test_stage_low_confidence(ingest_env):
 
     staged = _read_staged(env["key_prefix"], "alce_jonson")
     assert staged["reason"] == "low_confidence_match"
-    assert staged["match_candidates"] == [
-        {"id": "alice_johnson", "name": "Alice Johnson", "tier": 8}
-    ]
+    assert staged["match_candidates"][0]["id"] == "alice_johnson"
+    assert staged["match_candidates"][0]["name"] == "Alice Johnson"
+    assert staged["match_candidates"][0]["tier"] == 8
+    assert "score" in staged["match_candidates"][0]
     state = _read_state(env["key_prefix"])
     assert "alce_jonson" not in state["id_map"]
     assert "alce_jonson" in state["received"]
+
+
+def test_resolved_ambiguity_applies_on_identical_reingest(ingest_env):
+    env = ingest_env
+    save_journal_entity(
+        {"id": "alice_johnson", "name": "Alice Johnson", "type": "Person"}
+    )
+
+    source = {"name": "Alce Jonson", "type": "Person", "aka": ["AJ"]}
+    first = _post_entities(env["client"], env["key"], env["key_prefix"], [source])
+
+    assert first.status_code == 200
+    assert first.get_json()["staged"] == 1
+    staged_path = (
+        get_state_directory(env["key_prefix"])
+        / "entities"
+        / "staged"
+        / "alce_jonson.json"
+    )
+    assert staged_path.exists()
+
+    record_ambiguity_choice(
+        "Alce Jonson",
+        "alice_johnson",
+        list(load_all_journal_entities().values()),
+        scope=ResolutionScope.journal(),
+    )
+    second = _post_entities(env["client"], env["key"], env["key_prefix"], [source])
+
+    assert second.status_code == 200
+    assert second.get_json()["auto_merged"] == 1
+    assert second.get_json()["skipped"] == 0
+    assert not staged_path.exists()
+    state = _read_state(env["key_prefix"])
+    assert state["id_map"]["alce_jonson"] == "alice_johnson"
+    assert state["received"]["alce_jonson"] == _entity_hash(
+        {**source, "id": "alce_jonson"}
+    )
+    merged = load_journal_entity("alice_johnson")
+    assert merged is not None
+    assert merged["aka"] == ["AJ"]
 
 
 def test_stage_id_collision(ingest_env):

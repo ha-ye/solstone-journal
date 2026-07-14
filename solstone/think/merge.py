@@ -21,7 +21,12 @@ from solstone.think.entities.journal import (
     load_all_journal_entities,
     save_journal_entity,
 )
-from solstone.think.entities.matching import find_matching_entity
+from solstone.think.entities.matching import (
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
+    record_entity_resolution,
+)
 from solstone.think.entities.merge import (
     _dedupe_akas,
     _dedupe_emails,
@@ -317,7 +322,76 @@ def _merge_entities(
                 raise ValueError("missing entity id")
             source_entity["id"] = entity_id
 
-            match = find_matching_entity(source_name, list(target_entities.values()))
+            resolution = record_entity_resolution(
+                source_name,
+                list(target_entities.values()),
+                scope=ResolutionScope.journal(),
+                origin=ResolutionOrigin(
+                    lane="think.merge.entities",
+                    record_id=entity_id,
+                    path=str(entity_path),
+                    field="name",
+                ),
+            )
+            if resolution.outcome == EntityResolutionOutcome.AMBIGUOUS:
+                if staging_path is not None:
+                    summary.entities_staged += 1
+                    if not dry_run:
+                        staged_dir = staging_path / entity_id
+                        staged_dir.mkdir(parents=True, exist_ok=True)
+                        (staged_dir / "entity.json").write_text(
+                            json.dumps(
+                                source_entity,
+                                indent=2,
+                                ensure_ascii=False,
+                            )
+                            + "\n",
+                            encoding="utf-8",
+                        )
+                    _log_decision(
+                        log_path,
+                        {
+                            "action": "entity_staged",
+                            "item_type": "entity",
+                            "item_id": entity_id,
+                            "reason": "ambiguous_name_match",
+                            "source": source_entity,
+                            "target": None,
+                            "ambiguity_id": resolution.ambiguity_id,
+                            "match_candidates": [
+                                candidate.to_dict()
+                                for candidate in resolution.candidates
+                            ],
+                            "staging_path": str(
+                                staging_path / entity_id / "entity.json"
+                            ),
+                        },
+                    )
+                else:
+                    summary.entities_skipped += 1
+                    _log_decision(
+                        log_path,
+                        {
+                            "action": "entity_skipped",
+                            "item_type": "entity",
+                            "item_id": entity_id,
+                            "reason": "ambiguous_name_no_staging",
+                            "source": source_entity,
+                            "target": None,
+                            "ambiguity_id": resolution.ambiguity_id,
+                            "match_candidates": [
+                                candidate.to_dict()
+                                for candidate in resolution.candidates
+                            ],
+                        },
+                    )
+                continue
+
+            match = (
+                resolution.entity
+                if resolution.outcome == EntityResolutionOutcome.RESOLVED
+                else None
+            )
             if match is None:
                 if entity_id in target_entities:
                     if staging_path is not None:

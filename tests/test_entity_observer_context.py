@@ -989,6 +989,99 @@ def test_post_process_preserves_op_with_unresolvable_relation_target(
     }
 
 
+def test_post_process_preserves_op_with_ambiguous_relation_target(
+    tmp_path, monkeypatch
+):
+    from solstone.think.entities import (
+        ResolutionScope,
+        load_ambiguities,
+        load_entities,
+        record_ambiguity_choice,
+    )
+
+    _set_journal(monkeypatch, str(tmp_path))
+    facet = "work"
+    day = "20260304"
+    _attach_entity(tmp_path, facet, "alice_johnson", "Alice Johnson")
+    _attach_entity(tmp_path, facet, "sarah_connor", "Sarah Connor")
+    _attach_entity(tmp_path, facet, "sarah_lee", "Sarah Lee")
+
+    post_process(
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "entity_id": "alice_johnson",
+                        "operations": [
+                            {
+                                "op": "add",
+                                "content": "Works with Sarah on a confidential project",
+                                "reasoning": "Relational, but Sarah is ambiguous.",
+                                "relation": {
+                                    "kind": "works-with",
+                                    "target_name": "Sarah",
+                                    "note": "",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "summary": "ambiguous relation target",
+            }
+        ),
+        {"facet": facet, "day": day},
+    )
+
+    observations = load_observations(facet, "alice_johnson")
+    assert len(observations) == 1
+    assert observations[0]["relation"] == {
+        "kind": "works-with",
+        "target_entity_id": None,
+        "target_name": "Sarah",
+        "note": "",
+    }
+    outcome = _load_outcome(tmp_path, facet, day)
+    assert outcome["relation_unresolved"] == 1
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+
+    record_ambiguity_choice(
+        "Sarah",
+        "sarah_connor",
+        load_entities(facet),
+        scope=ResolutionScope.facet_scope(facet),
+    )
+    post_process(
+        json.dumps(
+            {
+                "entities": [
+                    {
+                        "entity_id": "alice_johnson",
+                        "operations": [
+                            {
+                                "op": "add",
+                                "content": "Coordinates with Sarah after review",
+                                "reasoning": "Choice resolved.",
+                                "relation": {
+                                    "kind": "works-with",
+                                    "target_name": "Sarah",
+                                    "note": "",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "summary": "resolved relation target",
+            }
+        ),
+        {"facet": facet, "day": day},
+    )
+
+    observations = load_observations(facet, "alice_johnson")
+    assert observations[-1]["relation"]["target_entity_id"] == "sarah_connor"
+
+
 def test_post_process_drops_op_with_other_relation_kind_and_no_note(
     tmp_path, monkeypatch
 ):

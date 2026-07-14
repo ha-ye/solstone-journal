@@ -114,7 +114,12 @@ def post_process(result: str, context: dict) -> str | None:
         accumulate_voiceprints,
         save_speaker_labels,
     )
-    from solstone.think.entities import find_matching_entity
+    from solstone.think.entities import (
+        EntityResolutionOutcome,
+        ResolutionOrigin,
+        ResolutionScope,
+        record_entity_resolution,
+    )
     from solstone.think.entities.journal import load_all_journal_entities
     from solstone.think.utils import segment_path
 
@@ -148,6 +153,13 @@ def post_process(result: str, context: dict) -> str | None:
             entities_list = [
                 e for e in journal_entities.values() if not e.get("blocked")
             ]
+            resolution_scope = ResolutionScope.journal()
+            resolution_origin = ResolutionOrigin(
+                lane="talent.speaker_attribution",
+                day=str(day),
+                segment_id=str(segment),
+                field="layer4.speaker",
+            )
 
             for item in items:
                 if not isinstance(item, dict):
@@ -157,10 +169,18 @@ def post_process(result: str, context: dict) -> str | None:
                 if sid is None or not speaker_name:
                     continue
 
-                entity = find_matching_entity(speaker_name, entities_list)
-                if entity:
+                resolution = record_entity_resolution(
+                    str(speaker_name),
+                    entities_list,
+                    scope=resolution_scope,
+                    origin=resolution_origin,
+                )
+                if (
+                    resolution.outcome == EntityResolutionOutcome.RESOLVED
+                    and resolution.entity
+                ):
                     layer4[int(sid)] = {
-                        "speaker": entity["id"],
+                        "speaker": resolution.entity["id"],
                         "confidence": "medium",
                         "method": "contextual",
                     }

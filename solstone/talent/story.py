@@ -12,7 +12,12 @@ from typing import Any
 
 from solstone.think.activities import merge_story_fields
 from solstone.think.entities.loading import load_entities
-from solstone.think.entities.matching import find_matching_entity
+from solstone.think.entities.matching import (
+    EntityResolutionOutcome,
+    ResolutionOrigin,
+    ResolutionScope,
+    record_entity_resolution,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +78,23 @@ def _normalize_confidence(value: Any) -> float | None:
     return clamped
 
 
-def _resolve_entity_id(name: str, entities: list[dict[str, Any]]) -> str | None:
-    match = find_matching_entity(name, entities, fuzzy_threshold=90)
-    return match.get("id") if match else None
+def _resolve_entity_id(
+    name: str,
+    entities: list[dict[str, Any]],
+    *,
+    scope: ResolutionScope,
+    origin: ResolutionOrigin,
+) -> str | None:
+    resolution = record_entity_resolution(
+        name,
+        entities,
+        scope=scope,
+        origin=origin,
+        fuzzy_threshold=90,
+    )
+    if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
+        return str(resolution.entity.get("id") or "") or None
+    return None
 
 
 def _validate_fields(
@@ -149,6 +168,16 @@ def post_process(result: str, context: dict) -> str:
         return ""
 
     entities = load_entities(facet=facet, day=day)
+    resolution_scope = ResolutionScope.facet_scope(facet)
+
+    def origin(field: str) -> ResolutionOrigin:
+        return ResolutionOrigin(
+            lane="talent.story",
+            facet=facet,
+            day=day,
+            record_id=record_id,
+            field=field,
+        )
 
     resolved_commitments: list[dict[str, Any]] = []
     for index, entry in enumerate(commitments):
@@ -168,10 +197,16 @@ def post_process(result: str, context: dict) -> str:
             continue
         resolved_commitment = dict(normalized)
         resolved_commitment["owner_entity_id"] = _resolve_entity_id(
-            normalized["owner"], entities
+            normalized["owner"],
+            entities,
+            scope=resolution_scope,
+            origin=origin("commitments.owner"),
         )
         resolved_commitment["counterparty_entity_id"] = _resolve_entity_id(
-            normalized["counterparty"], entities
+            normalized["counterparty"],
+            entities,
+            scope=resolution_scope,
+            origin=origin("commitments.counterparty"),
         )
         resolved_commitments.append(resolved_commitment)
 
@@ -198,10 +233,16 @@ def post_process(result: str, context: dict) -> str:
             continue
         resolved_closure = dict(normalized)
         resolved_closure["owner_entity_id"] = _resolve_entity_id(
-            normalized["owner"], entities
+            normalized["owner"],
+            entities,
+            scope=resolution_scope,
+            origin=origin("closures.owner"),
         )
         resolved_closure["counterparty_entity_id"] = _resolve_entity_id(
-            normalized["counterparty"], entities
+            normalized["counterparty"],
+            entities,
+            scope=resolution_scope,
+            origin=origin("closures.counterparty"),
         )
         resolved_closures.append(resolved_closure)
 
@@ -227,10 +268,18 @@ def post_process(result: str, context: dict) -> str:
         resolved_decision = dict(normalized)
         resolved_decision["counterparty"] = counterparty
         resolved_decision["owner_entity_id"] = _resolve_entity_id(
-            normalized["owner"], entities
+            normalized["owner"],
+            entities,
+            scope=resolution_scope,
+            origin=origin("decisions.owner"),
         )
         resolved_decision["counterparty_entity_id"] = (
-            _resolve_entity_id(counterparty, entities)
+            _resolve_entity_id(
+                counterparty,
+                entities,
+                scope=resolution_scope,
+                origin=origin("decisions.counterparty"),
+            )
             if isinstance(counterparty, str) and counterparty.strip()
             else None
         )
@@ -271,10 +320,16 @@ def post_process(result: str, context: dict) -> str:
         resolved_relation = dict(normalized)
         resolved_relation["quote"] = quote
         resolved_relation["from_entity_id"] = _resolve_entity_id(
-            normalized["from"], entities
+            normalized["from"],
+            entities,
+            scope=resolution_scope,
+            origin=origin("relations.from"),
         )
         resolved_relation["to_entity_id"] = _resolve_entity_id(
-            normalized["to"], entities
+            normalized["to"],
+            entities,
+            scope=resolution_scope,
+            origin=origin("relations.to"),
         )
         resolved_relations.append(resolved_relation)
 

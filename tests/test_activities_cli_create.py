@@ -144,6 +144,39 @@ def test_create_resolves_participation_entity_ids(tmp_path, monkeypatch):
     think_utils._journal_path_cache = None
 
 
+def test_create_ambiguous_participation_keeps_entity_id_none(tmp_path, monkeypatch):
+    from solstone.think.entities import load_ambiguities
+
+    _configure_cli_env(tmp_path, monkeypatch)
+
+    _write_detected_entities(
+        tmp_path,
+        "work",
+        "20260418",
+        [
+            {"id": "sarah_connor", "type": "Person", "name": "Sarah Connor"},
+            {"id": "sarah_lee", "type": "Person", "name": "Sarah Lee"},
+        ],
+    )
+
+    payload = _base_payload()
+    payload["participation"] = [_valid_participation_entry(name="Sarah")]
+
+    result = _invoke_create(payload)
+
+    assert result.exit_code == 0
+    record = _read_written_record(tmp_path)
+    assert record["participation"][0]["name"] == "Sarah"
+    assert record["participation"][0]["entity_id"] is None
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+
+
 def test_create_omits_participation_when_not_provided(tmp_path, monkeypatch):
     _configure_cli_env(tmp_path, monkeypatch)
 

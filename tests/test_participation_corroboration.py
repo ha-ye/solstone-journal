@@ -212,6 +212,48 @@ def test_ac5_preserves_unresolved_casefold_name_match(tmp_path, monkeypatch):
     assert record["participation"][0]["role"] == "attendee"
 
 
+def test_ambiguous_speakers_json_name_does_not_corroborate_and_dedupes_origin(
+    tmp_path,
+    monkeypatch,
+):
+    from solstone.think.entities import load_ambiguities
+
+    facet = "work"
+    day = "20260418"
+    segment = "090000_300"
+    _write_detected_entities(
+        tmp_path,
+        facet,
+        day,
+        [
+            {"id": "sarah_connor", "type": "Person", "name": "Sarah Connor"},
+            {"id": "sarah_lee", "type": "Person", "name": "Sarah Lee"},
+        ],
+    )
+    _write_segment_talent_files(
+        tmp_path,
+        day,
+        segment,
+        sense=_sense_payload(),
+        speakers=["Sarah", "Sarah"],
+    )
+
+    record = _run_participation(
+        tmp_path,
+        monkeypatch,
+        segments=[segment],
+        result=_participation_result(name="Sarah", source="voice"),
+        seed_entities=False,
+    )
+
+    assert record["participation"][0]["entity_id"] is None
+    assert record["participation"][0]["role"] == "mentioned"
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+    assert rows[0]["occurrence_count"] == 2
+
+
 def test_ac6_ignores_transcript_attendee(tmp_path, monkeypatch):
     segment = "090000_300"
     _write_segment_talent_files(tmp_path, "20260418", segment, sense=_sense_payload())

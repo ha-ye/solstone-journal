@@ -271,6 +271,65 @@ def test_identify_matches_existing(speakers_env):
     assert (env.journal / "entities" / "bob_smith" / "voiceprints.npz").exists()
 
 
+def test_identify_ambiguous_name_returns_before_writes(speakers_env):
+    from solstone.think.entities import (
+        ResolutionScope,
+        load_all_journal_entities,
+        load_ambiguities,
+        record_ambiguity_choice,
+    )
+
+    env = speakers_env()
+    _setup_owner_centroid(env.journal, [0.0, 1.0])
+    env.create_entity("Sarah Connor")
+    env.create_entity("Sarah Lee")
+    embeddings = _make_speaker_embeddings([1.0, 0.0], 5)
+    segments = _create_cluster_segments(env, embeddings)
+
+    scan_result = discover_unknown_speakers()
+    cluster_id = scan_result["clusters"][0]["cluster_id"]
+    result = identify_cluster(cluster_id, "Sarah")
+
+    assert result["status"] == "ambiguous"
+    assert result["ambiguity_id"]
+    assert {candidate["id"] for candidate in result["candidates"]} == {
+        "sarah_connor",
+        "sarah_lee",
+    }
+    assert not (env.journal / "entities" / "sarah" / "entity.json").exists()
+    assert not (env.journal / "entities" / "sarah_connor" / "voiceprints.npz").exists()
+    for day, segment_key, _sentence_count in segments:
+        labels_path = (
+            env.journal / day / "test" / segment_key / "talents" / "speaker_labels.json"
+        )
+        corrections_path = (
+            env.journal
+            / day
+            / "test"
+            / segment_key
+            / "talents"
+            / "speaker_corrections.json"
+        )
+        assert not labels_path.exists()
+        assert not corrections_path.exists()
+    assert load_ambiguities()[0]["normalized_query"] == "sarah"
+
+    record_ambiguity_choice(
+        "Sarah",
+        "sarah_connor",
+        list(load_all_journal_entities().values()),
+        scope=ResolutionScope.journal(),
+    )
+
+    resolved = identify_cluster(cluster_id, "Sarah")
+
+    assert resolved["entity_id"] == "sarah_connor"
+    assert resolved["voiceprints_saved"] == 20
+    assert (env.journal / "entities" / "sarah_connor" / "voiceprints.npz").exists()
+    row = load_ambiguities()[0]
+    assert row["status"] == "resolved"
+
+
 def test_identify_idempotent(speakers_env):
     env = speakers_env()
     _setup_owner_centroid(env.journal, [0.0, 1.0])

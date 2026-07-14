@@ -732,6 +732,70 @@ def test_seed_entities_without_observations(tmp_path, monkeypatch):
     assert result[0]["name"] == "Test Person"
 
 
+def test_seed_entities_skips_ambiguous_names_without_observations(
+    tmp_path, monkeypatch
+):
+    """seed_entities() does not mint duplicates or observations for ambiguous names."""
+    from solstone.think.entities import (
+        ResolutionScope,
+        load_all_journal_entities,
+        load_ambiguities,
+        record_ambiguity_choice,
+    )
+    from solstone.think.entities.journal import save_journal_entity
+    from solstone.think.entities.observations import load_observations
+    from solstone.think.entities.seeding import seed_entities
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    save_journal_entity(
+        {"id": "sarah_connor", "name": "Sarah Connor", "type": "Person"}
+    )
+    save_journal_entity({"id": "sarah_lee", "name": "Sarah Lee", "type": "Person"})
+
+    result = seed_entities(
+        "test.facet",
+        "20251028",
+        [
+            {
+                "name": "Sarah",
+                "type": "Person",
+                "observations": ["Should not be written."],
+            }
+        ],
+    )
+
+    assert result == []
+    assert not (tmp_path / "entities" / "sarah" / "entity.json").exists()
+    assert load_observations("test.facet", "Sarah") == []
+    rows = load_ambiguities()
+    assert len(rows) == 1
+    assert rows[0]["normalized_query"] == "sarah"
+
+    record_ambiguity_choice(
+        "Sarah",
+        "sarah_connor",
+        list(load_all_journal_entities().values()),
+        scope=ResolutionScope.journal(),
+    )
+    resolved = seed_entities(
+        "test.facet",
+        "20251028",
+        [
+            {
+                "name": "Sarah",
+                "type": "Person",
+                "observations": ["Written after choice."],
+            }
+        ],
+    )
+
+    assert [entity["id"] for entity in resolved] == ["sarah_connor"]
+    assert [
+        observation["content"]
+        for observation in load_observations("test.facet", "sarah_connor")
+    ] == ["Written after choice."]
+
+
 def test_seed_entities_observation_formatting(tmp_path, monkeypatch):
     """seed_entities() creates observations with correct formatting for all field combos."""
     from solstone.think.entities.observations import load_observations
