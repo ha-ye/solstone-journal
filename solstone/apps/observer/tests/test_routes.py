@@ -15,6 +15,8 @@ import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 import solstone.apps.observer.routes as routes_module
 import solstone.apps.observer.utils as observer_utils
 import solstone.convey.bridge as convey_bridge
@@ -261,6 +263,36 @@ def _history_line_count(env, key_prefix: str, *, day: str = "20250103") -> int:
     if not hist_path.exists():
         return 0
     return len(hist_path.read_text(encoding="utf-8").splitlines())
+
+
+def _prepare_legacy_processed_segment(
+    env,
+    key: str,
+    stream: str,
+    audio_content: bytes,
+    screen_content: bytes,
+    *,
+    day: str = "20250103",
+    segment: str = "120000_300",
+) -> Path:
+    resp = _post_raw_audio_screen_bundle(
+        env,
+        key,
+        stream,
+        audio_content,
+        screen_content,
+        day=day,
+        segment=segment,
+    )
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "ok"
+    segment_dir = _day_dir(env, day) / stream / segment
+    _write_audio_processing_sidecar(segment_dir, input_size=len(audio_content))
+    _write_screen_processing_sidecar(segment_dir, input_size=len(screen_content))
+    (segment_dir / "audio.flac").unlink()
+    (segment_dir / "screen.mp4").unlink()
+    (segment_dir / "ingest.json").unlink()
+    return segment_dir
 
 
 def _plant_source_segment(
@@ -3444,10 +3476,10 @@ def test_ingest_same_media_different_start_times_resolve_to_their_own_segments(
     assert second_dup.get_json()["existing_segment"] == "121000_300"
 
 
-def test_ingest_manifest_absence_or_corruption_never_duplicates_from_cache(
+def test_ingest_manifest_absence_or_corruption_uses_processing_proof(
     observer_env,
 ):
-    """AC-8: absent/corrupt manifests fall back to disk and heal when needed."""
+    """AC-8: absent/corrupt manifests heal without proof and dedupe with proof."""
     env = observer_env()
     key = _create_observer(env, "manifest-fallback-test")
     audio = b"manifest fallback audio"
@@ -3467,8 +3499,13 @@ def test_ingest_manifest_absence_or_corruption_never_duplicates_from_cache(
     (segment_dir / "audio.flac").unlink()
     corrupt = _upload_audio(env, key, audio)
     assert corrupt.status_code == 200
-    assert corrupt.get_json()["status"] == "ok"
-    assert (segment_dir / "audio.flac").read_bytes() == audio
+    assert corrupt.get_json()["status"] == "duplicate"
+    assert not (segment_dir / "audio.flac").exists()
+    manifest = json.loads((segment_dir / "ingest.json").read_text(encoding="utf-8"))
+    assert manifest["files"]["audio.flac"] == {
+        "sha256": hashlib.sha256(audio).hexdigest(),
+        "size": len(audio),
+    }
 
     variants = [
         ("unknown-version", {"schema_version": 999}),
@@ -3504,8 +3541,13 @@ def test_ingest_manifest_absence_or_corruption_never_duplicates_from_cache(
         retry = _upload_audio(env, variant_key, variant_audio)
         body = retry.get_json()
         assert retry.status_code == 200
-        assert body["status"] == "ok"
-        assert (variant_dir / "audio.flac").read_bytes() == variant_audio
+        assert body["status"] == "duplicate"
+        assert not (variant_dir / "audio.flac").exists()
+        manifest = json.loads((variant_dir / "ingest.json").read_text("utf-8"))
+        assert manifest["files"]["audio.flac"] == {
+            "sha256": hashlib.sha256(variant_audio).hexdigest(),
+            "size": len(variant_audio),
+        }
 
 
 def test_ingest_manifest_different_hash_with_terminal_proof_disqualifies_candidate(
@@ -3695,6 +3737,147 @@ def test_ingest_manifest_accumulates_and_duplicates_after_media_deleted(
     assert duplicate.get_json()["status"] == "duplicate"
     assert not (segment_dir / "audio.flac").exists()
     assert not (segment_dir / "screen.mp4").exists()
+
+
+def test_ingest_legacy_processed_duplicate_graduates_manifest_and_reuploads(
+    observer_env,
+):
+    env = observer_env()
+    observer_name = "legacy-processed-graduates-test"
+    key = _create_observer(env, observer_name)
+    audio = b"legacy processed audio"
+    screen = b"legacy processed screen"
+    segment_dir = _prepare_legacy_processed_segment(
+        env, key, observer_name, audio, screen
+    )
+    stream_dir = segment_dir.parent
+    observer = _observer_record()
+    key_prefix = observer["filename_prefix"]
+    initial_history_lines = _history_line_count(env, key_prefix)
+    assert initial_history_lines == 1
+    assert not (segment_dir / "ingest.json").exists()
+
+    for index in range(3):
+        resp = _post_raw_audio_screen_bundle(env, key, observer_name, audio, screen)
+        body = resp.get_json()
+
+        assert resp.status_code == 200
+        assert body["status"] == "duplicate"
+        assert not (segment_dir / "audio.flac").exists()
+        assert not (segment_dir / "screen.mp4").exists()
+        assert len(list(stream_dir.iterdir())) == 1
+        assert _history_line_count(env, key_prefix) == initial_history_lines + index + 1
+
+        latest = load_history(key_prefix, "20250103")[-1]
+        dispositions = {
+            file["written"]: file["disposition"] for file in latest["files"]
+        }
+        assert dispositions["audio.flac"] == "already_held"
+        assert dispositions["screen.mp4"] == "already_held"
+
+        manifest = json.loads((segment_dir / "ingest.json").read_text("utf-8"))
+        assert manifest["files"]["audio.flac"] == {
+            "sha256": hashlib.sha256(audio).hexdigest(),
+            "size": len(audio),
+        }
+        assert manifest["files"]["screen.mp4"] == {
+            "sha256": hashlib.sha256(screen).hexdigest(),
+            "size": len(screen),
+        }
+
+
+def test_segments_endpoint_reports_processed_for_legacy_duplicate(observer_env):
+    env = observer_env()
+    observer_name = "legacy-processed-listing-test"
+    key = _create_observer(env, observer_name)
+    audio = b"legacy processed listing audio"
+    screen = b"legacy processed listing screen"
+    _prepare_legacy_processed_segment(env, key, observer_name, audio, screen)
+
+    duplicate = _post_raw_audio_screen_bundle(env, key, observer_name, audio, screen)
+    assert duplicate.status_code == 200
+    assert duplicate.get_json()["status"] == "duplicate"
+
+    files = _listed_files_by_name(env, key)
+    assert files["audio.flac"]["status"] == "processed"
+    assert files["screen.mp4"]["status"] == "processed"
+
+
+@pytest.mark.parametrize(
+    "proof_variant",
+    ["size_mismatch", "failed_state", "handler_mismatch"],
+)
+def test_ingest_legacy_processed_proof_mismatch_heals(
+    observer_env,
+    proof_variant: str,
+):
+    env = observer_env()
+    observer_name = f"legacy-proof-mismatch-{proof_variant}"
+    key = _create_observer(env, observer_name)
+    audio = b"legacy mismatch audio"
+    screen = b"legacy mismatch screen"
+    segment_dir = _prepare_legacy_processed_segment(
+        env, key, observer_name, audio, screen
+    )
+
+    if proof_variant == "size_mismatch":
+        _write_audio_processing_sidecar(segment_dir, input_size=len(audio) + 1)
+    elif proof_variant == "failed_state":
+        _write_audio_processing_sidecar(
+            segment_dir, input_size=len(audio), state=STATE_FAILED
+        )
+    else:
+        _write_audio_processing_sidecar(
+            segment_dir, input_size=len(audio), handler=HANDLER_DESCRIBE
+        )
+
+    resp = _post_raw_audio_screen_bundle(env, key, observer_name, audio, screen)
+    body = resp.get_json()
+
+    assert resp.status_code == 200
+    assert body["status"] == "ok"
+    assert (segment_dir / "audio.flac").read_bytes() == audio
+    assert not (segment_dir.parent / "120000_301").exists()
+
+
+def test_ingest_legacy_processed_sidecar_conflict_returns_409(observer_env):
+    env = observer_env()
+    observer_name = "legacy-processed-sidecar-conflict-test"
+    key = _create_observer(env, observer_name)
+    audio = b"legacy sidecar conflict audio"
+    screen = b"legacy sidecar conflict screen"
+    segment_dir = _prepare_legacy_processed_segment(
+        env, key, observer_name, audio, screen
+    )
+    proof_before = (segment_dir / "audio.jsonl").read_bytes()
+    changed_sidecar = b'{"raw":"audio.flac"}\n{"start":"00:00:00","text":"changed"}\n'
+    stream_marker = json.dumps(
+        {"stream": observer_name, "prev_day": None, "prev_segment": None, "seq": 1}
+    ).encode("utf-8")
+
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": [
+                (io.BytesIO(audio), "audio.flac"),
+                (io.BytesIO(screen), "screen.mp4"),
+                (io.BytesIO(changed_sidecar), "audio.jsonl"),
+                (io.BytesIO(stream_marker + b"\n"), "stream.json"),
+            ],
+        },
+    )
+    body = resp.get_json()
+
+    assert resp.status_code == 409
+    assert body["reason_code"] == "ingest_sidecar_conflict"
+    assert body["conflicting_files"] == ["audio.jsonl"]
+    assert not (segment_dir / "audio.flac").exists()
+    assert not (segment_dir / "screen.mp4").exists()
+    assert (segment_dir / "audio.jsonl").read_bytes() == proof_before
+    assert not (segment_dir.parent / "120000_301").exists()
 
 
 def test_ingest_held_content_never_mints_for_request_shape(observer_env):

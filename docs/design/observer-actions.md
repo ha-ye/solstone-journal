@@ -255,8 +255,10 @@ Operational caveats:
   and do not emit `observe.observing` (`test_ingest_duplicate_segment_returns_duplicate_status`, `test_ingest_duplicate_does_not_emit_event`).
 - Segment listings can mark raw media as `processed` when journal-side processing
   terminally consumed the recorded file and left same-stem sidecar proof. Ingest
-  duplicate resolution also requires the journal-authored `ingest.json` manifest
-  to match the uploaded hash before treating absent media as held.
+  duplicate resolution treats that proof as holding absent raw media on its own
+  for legacy segments; when an `ingest.json` entry is present, it must match the
+  uploaded hash, and legacy segments graduate to a manifest on their next
+  resolution.
 - Client-supplied reserved names such as `stream.json` and `ingest.json` are
   never written from the upload and are not enumerated as held in segment
   listings.

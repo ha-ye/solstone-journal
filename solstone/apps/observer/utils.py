@@ -901,25 +901,21 @@ def _evaluate_candidate(
                 continue
         else:
             manifest_entry = manifest_files.get(file.written)
-            if _manifest_entry_matches(manifest_entry, file):
-                if _has_terminal_processing_proof(
-                    segment_dir / file.written, file.size
-                ):
-                    held = True
-                elif file.written in content_names:
-                    missing_content.append(file)
-                    continue
+            if _is_held_by_processing_proof(segment_dir, manifest_files, file):
+                held = True
+            elif manifest_entry is not None and not _manifest_entry_matches(
+                manifest_entry, file
+            ):
+                if file.written in content_names:
+                    content_conflicts.append(file)
                 else:
                     new_files.append(file)
-                    continue
-            elif manifest_entry is not None and file.written in content_names:
-                content_conflicts.append(file)
+                continue
+            elif file.written in content_names:
+                missing_content.append(file)
                 continue
             else:
-                if file.written in content_names:
-                    missing_content.append(file)
-                else:
-                    new_files.append(file)
+                new_files.append(file)
                 continue
 
         if held:
@@ -1098,6 +1094,18 @@ def _manifest_entry_matches(entry: object, file: IngestFile) -> bool:
     )
 
 
+def _is_held_by_processing_proof(
+    segment_dir: Path, manifest_files: dict[str, Any], file: IngestFile
+) -> bool:
+    """Return whether terminal processing proof holds an absent ingest file."""
+    entry = manifest_files.get(file.written)
+    # Legacy segments predate manifests, so input_size is the only available
+    # strength there; when a manifest entry exists it must match by hash.
+    if entry is not None and not _manifest_entry_matches(entry, file):
+        return False
+    return _has_terminal_processing_proof(segment_dir / file.written, file.size)
+
+
 def _held_files_are_current(segment_dir: Path, files: list[IngestFile]) -> bool:
     manifest_files = _manifest_files(segment_dir)
     for file in files:
@@ -1108,10 +1116,7 @@ def _held_files_are_current(segment_dir: Path, files: list[IngestFile]) -> bool:
                     continue
             except OSError:
                 pass
-        manifest_entry = manifest_files.get(file.written)
-        if _manifest_entry_matches(
-            manifest_entry, file
-        ) and _has_terminal_processing_proof(target, file.size):
+        if _is_held_by_processing_proof(segment_dir, manifest_files, file):
             continue
         return False
     return True

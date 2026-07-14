@@ -120,8 +120,10 @@ Segment listings report each uploaded file as `present`, `processed`, or
 `missing`. `present` means the recorded file still exists at its exact path.
 `processed` applies only to raw audio/video media whose recorded path is absent
 but whose same-stem JSONL sidecar at that segment path carries a terminal
-`solstone.processing.v1` proof for the original input size. Anything else is
-`missing` and remains eligible for upload healing.
+`solstone.processing.v1` proof for the original input size. Legacy segments
+without `ingest.json` use that proof to dedupe absent raw media, then graduate to
+a manifest on the next resolution. Anything else is `missing` and remains
+eligible for upload healing.
 
 ### Observer health
 
