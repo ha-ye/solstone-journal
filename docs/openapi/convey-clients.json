@@ -3146,7 +3146,7 @@
     },
     "/app/observer/ingest": {
       "post": {
-        "description": "Upload one capture segment as multipart form data and trigger local observe processing. Media parts must use a registry container format \u2014 audio: flac (audio/flac), opus (audio/opus), ogg (audio/ogg), m4a (audio/mp4), mp3 (audio/mpeg), wav (audio/wav); video: webm (video/webm), mp4 (video/mp4), mov (video/quicktime); image: png (image/png), jpg (image/jpeg), jpeg (image/jpeg), heic (image/heic), heif (image/heif), gif (image/gif), webp (image/webp), tiff (image/tiff). Headerless raw streams are not accepted as media containers; raw PCM must be WAV-wrapped before upload. Video segment timestamps are boundary-relative real capture offsets (seconds from the segment start), never synthetic frame indices.",
+        "description": "Upload one capture segment as multipart form data and trigger local observe processing. Media parts must use a registry container format \u2014 audio: flac (audio/flac), opus (audio/opus), ogg (audio/ogg), m4a (audio/mp4), mp3 (audio/mpeg), wav (audio/wav); video: webm (video/webm), mp4 (video/mp4), mov (video/quicktime); image: png (image/png), jpg (image/jpeg), jpeg (image/jpeg), heic (image/heic), heif (image/heif), gif (image/gif), webp (image/webp), tiff (image/tiff). Headerless raw streams are not accepted as media containers; raw PCM must be WAV-wrapped before upload. Video segment timestamps are boundary-relative real capture offsets (seconds from the segment start), never synthetic frame indices. Duplicate identity is derived from the segment directory and its journal-authored ingest manifest, not from the observer history log. `collision` means conflicting content at the requested key (same stored filename, different bytes); an occupied but non-conflicting key joins that segment. Reserved names such as `stream.json` and `ingest.json` are never written from client bytes and never appear in segment listings as held. Every `duplicate` appends a corroborating history record so `/ingest/segments/<day>` can prove the held files by filename and sha.",
         "operationId": "observer.ingestUpload",
         "parameters": [
           {
@@ -3280,7 +3280,7 @@
                 }
               }
             },
-            "description": "Upload accepted, collision-adjusted, or duplicate. On `duplicate`, `existing_segment` is the authoritative stored segment key the client must adopt (do not re-upload). On `collision`, the returned `segment` is the authoritative remapped key the client must adopt for subsequent references."
+            "description": "Upload accepted, collision-adjusted, or duplicate. On `duplicate`, `existing_segment` is the authoritative stored segment key the client must adopt (do not re-upload); the server also appends a history record so the segment listing corroborates the duplicate. On `collision`, the requested key held conflicting content (same stored filename, different bytes), and the returned `segment` is the authoritative remapped key the client must adopt for subsequent references. An occupied key without conflicting content is not a collision; the upload joins that segment."
           },
           "400": {
             "content": {
@@ -3334,7 +3334,7 @@
                 }
               }
             },
-            "description": "Uploaded sidecar metadata conflicts with an existing segment.",
+            "description": "Uploaded sidecar metadata conflicts with an existing segment. The journal already holds different bytes under the named filename; strip the conflicting file and re-send. The response names `conflicting_files` and the held `existing_segment`.",
             "x-reason-codes": [
               "ingest_sidecar_conflict"
             ]

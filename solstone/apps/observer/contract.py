@@ -196,7 +196,15 @@ OPERATIONS: list[OperationSpec] = [
             "accepted as media containers; raw PCM must be WAV-wrapped before "
             "upload. Video segment timestamps are boundary-relative real capture "
             "offsets (seconds from the segment start), never synthetic frame "
-            "indices."
+            "indices. Duplicate identity is derived from the segment directory "
+            "and its journal-authored ingest manifest, not from the observer "
+            "history log. `collision` means conflicting content at the requested "
+            "key (same stored filename, different bytes); an occupied but "
+            "non-conflicting key joins that segment. Reserved names such as "
+            "`stream.json` and `ingest.json` are never written from client bytes "
+            "and never appear in segment listings as held. Every `duplicate` "
+            "appends a corroborating history record so `/ingest/segments/<day>` "
+            "can prove the held files by filename and sha."
         ),
         parameters=_OBSERVER_AUTH_PARAMS,
         request=RequestSpec(
@@ -232,9 +240,14 @@ OPERATIONS: list[OperationSpec] = [
                 description=(
                     "Upload accepted, collision-adjusted, or duplicate. On "
                     "`duplicate`, `existing_segment` is the authoritative stored "
-                    "segment key the client must adopt (do not re-upload). On "
-                    "`collision`, the returned `segment` is the authoritative "
-                    "remapped key the client must adopt for subsequent references."
+                    "segment key the client must adopt (do not re-upload); the "
+                    "server also appends a history record so the segment listing "
+                    "corroborates the duplicate. On `collision`, the requested "
+                    "key held conflicting content (same stored filename, "
+                    "different bytes), and the returned `segment` is the "
+                    "authoritative remapped key the client must adopt for "
+                    "subsequent references. An occupied key without conflicting "
+                    "content is not a collision; the upload joins that segment."
                 ),
                 named_fields=(
                     FieldSpec("status", "string", required=True),
@@ -279,7 +292,10 @@ OPERATIONS: list[OperationSpec] = [
             _json_error(
                 409,
                 ("ingest_sidecar_conflict",),
-                "Uploaded sidecar metadata conflicts with an existing segment.",
+                "Uploaded sidecar metadata conflicts with an existing segment. "
+                "The journal already holds different bytes under the named "
+                "filename; strip the conflicting file and re-send. The response "
+                "names `conflicting_files` and the held `existing_segment`.",
             ),
             _json_error(
                 422,

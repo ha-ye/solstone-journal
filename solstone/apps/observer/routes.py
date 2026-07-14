@@ -1100,7 +1100,7 @@ def ingest_upload() -> Any:
     Returns status:
     - "ok": New segment accepted
     - "duplicate": All files already received (no processing triggered)
-    - "collision": New segment saved with adjusted key (directory conflict)
+    - "collision": Conflicting content saved with an adjusted key
     """
     observer, key_prefix, error = resolve_observer_identity()
     if error is not None:
