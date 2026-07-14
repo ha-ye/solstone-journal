@@ -174,7 +174,7 @@ def test_missing_index_maps_to_edge_index_unavailable(journal_copy: Path):
     data = response.get_json()
     assert response.status_code == 503
     assert data["reason_code"] == "edge_index_unavailable"
-    assert "journal indexer --rescan" in data["error"]
+    assert "journal indexer --rebuild-edges" in data["error"]
 
 
 def test_malformed_edges_schema_maps_to_edge_index_unavailable(journal_copy: Path):
@@ -193,7 +193,7 @@ def test_malformed_edges_schema_maps_to_edge_index_unavailable(journal_copy: Pat
     data = response.get_json()
     assert response.status_code == 503
     assert data["reason_code"] == "edge_index_unavailable"
-    assert "journal indexer --rescan" in data["error"]
+    assert "journal indexer --rebuild-edges" in data["error"]
 
 
 def test_zero_edge_entity_matches_empty_edges_table(

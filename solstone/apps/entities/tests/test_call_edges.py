@@ -327,4 +327,4 @@ def test_unbuilt_index_message_survives_real_client(
         "I couldn't read your connections because the index hasn't been built yet."
         in output
     )
-    assert "journal indexer --rescan" in output
+    assert "journal indexer --rebuild-edges" in output
