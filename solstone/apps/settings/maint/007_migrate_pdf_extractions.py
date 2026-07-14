@@ -41,7 +41,46 @@ def _read_header(path: Path) -> dict[str, Any] | None:
 
 
 def _same_stem_pdf_exists(path: Path) -> bool:
-    return any(path.with_suffix(suffix).is_file() for suffix in PDF_EXTENSIONS)
+    try:
+        siblings = path.parent.iterdir()
+    except OSError:
+        return False
+    return any(
+        sibling.is_file()
+        and sibling.stem == path.stem
+        and sibling.suffix.lower() in PDF_EXTENSIONS
+        for sibling in siblings
+    )
+
+
+def _markdown_has_body(path: Path) -> bool:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return False
+
+    for index, line in enumerate(lines):
+        if line.strip() == "---":
+            return bool("\n".join(lines[index + 1 :]).strip())
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            continue
+        if stripped.startswith("**") and ":**" in stripped:
+            continue
+        return True
+    return False
+
+
+def _transcript_with_body_exists(segment_dir: Path) -> bool:
+    return any(
+        _markdown_has_body(transcript)
+        for transcript in sorted(segment_dir.glob("*_transcript.md"))
+        if transcript.is_file()
+    )
 
 
 def _read_document_text(path: Path) -> str | None:
@@ -94,6 +133,7 @@ def migrate_pdf_extractions(
         "converted_documents": 0,
         "skipped_unparseable": 0,
         "skipped_no_text": 0,
+        "skipped_empty_transcript": 0,
     }
     chronicle = journal_root / "chronicle"
     for jsonl_path in sorted(chronicle.glob("*/*/*/*.jsonl")):
@@ -114,7 +154,12 @@ def migrate_pdf_extractions(
         counts["scanned"] += 1
 
         if any(jsonl_path.parent.glob("*_transcript.md")):
-            jsonl_path.unlink()
+            if not _transcript_with_body_exists(jsonl_path.parent):
+                counts["skipped_empty_transcript"] += 1
+                if reported is not None:
+                    reported.append(_display_path(journal_root, jsonl_path))
+                continue
+            jsonl_path.unlink(missing_ok=True)
             counts["deleted_duplicates"] += 1
             continue
 
@@ -137,7 +182,7 @@ def migrate_pdf_extractions(
         title = Path(raw_name).stem if isinstance(raw_name, str) else jsonl_path.stem
         md_path = jsonl_path.parent / "document_transcript.md"
         _write_verified(md_path, _render_document_markdown(title, text, header))
-        jsonl_path.unlink()
+        jsonl_path.unlink(missing_ok=True)
         counts["converted_documents"] += 1
 
     return counts
@@ -154,6 +199,10 @@ def main() -> None:
     print(f"Converted {counts['converted_documents']} document JSONL file(s)")
     print(f"Skipped {counts['skipped_unparseable']} unparseable JSONL file(s)")
     print(f"Skipped {counts['skipped_no_text']} document JSONL file(s) with no text")
+    print(
+        f"Skipped {counts['skipped_empty_transcript']} duplicate JSONL file(s) "
+        "beside empty transcripts"
+    )
     for path in reported:
         print(f"Left in place: {path}")
 

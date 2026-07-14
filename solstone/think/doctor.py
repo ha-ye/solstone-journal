@@ -947,21 +947,29 @@ def orphan_segment_pdf_check(args: Args) -> CheckResult:
         return make_result(check, "skip", "chronicle directory unavailable")
 
     orphan_paths: list[str] = []
-    for suffix in sorted(PDF_EXTENSIONS):
-        for pdf_path in sorted(chronicle.glob(f"*/*/*/*{suffix}")):
-            if any(pdf_path.parent.glob("*_transcript.md")):
-                continue
-            try:
-                display_path = pdf_path.relative_to(Path(journal_text)).as_posix()
-            except ValueError:
-                display_path = str(pdf_path)
-            orphan_paths.append(display_path)
+    for pdf_path in sorted(chronicle.glob("*/*/*/*")):
+        if not pdf_path.is_file() or pdf_path.suffix.lower() not in PDF_EXTENSIONS:
+            continue
+        if any(pdf_path.parent.glob("*_transcript.md")):
+            continue
+        try:
+            display_path = pdf_path.relative_to(Path(journal_text)).as_posix()
+        except ValueError:
+            display_path = str(pdf_path)
+        orphan_paths.append(display_path)
 
     if not orphan_paths:
-        return make_result(check, "ok", "no orphan segment PDFs")
+        return make_result(
+            check,
+            "ok",
+            "all raw PDF originals have readable document transcripts",
+        )
 
     paths_text = truncate(", ".join(orphan_paths), 360)
-    detail = f"{len(orphan_paths)} orphan segment PDF(s): {paths_text}"
+    detail = (
+        f"{len(orphan_paths)} raw PDF original(s) without a readable document "
+        f"transcript: {paths_text}"
+    )
     return make_result(check, "warn", detail, _ORPHAN_SEGMENT_PDF_FIX)
 
 

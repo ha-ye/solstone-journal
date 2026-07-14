@@ -61,6 +61,7 @@ def test_migration_deletes_duplicate_document_and_image_jsonl(tmp_path):
         "converted_documents": 0,
         "skipped_unparseable": 0,
         "skipped_no_text": 0,
+        "skipped_empty_transcript": 0,
     }
     assert not document_jsonl.exists()
     assert not image_jsonl.exists()
@@ -91,6 +92,7 @@ def test_migration_converts_orphan_document_jsonl_in_any_stream(tmp_path):
         "converted_documents": 1,
         "skipped_unparseable": 0,
         "skipped_no_text": 0,
+        "skipped_empty_transcript": 0,
     }
     assert not jsonl_path.exists()
     assert "# original" in md_text
@@ -106,6 +108,7 @@ def test_migration_converts_orphan_document_jsonl_in_any_stream(tmp_path):
         "converted_documents": 0,
         "skipped_unparseable": 0,
         "skipped_no_text": 0,
+        "skipped_empty_transcript": 0,
     }
 
 
@@ -113,7 +116,7 @@ def test_migration_leaves_unconvertible_jsonl_in_place_and_reports(tmp_path):
     segment = _segment(tmp_path)
     malformed = segment / "malformed.jsonl"
     malformed.write_text("{not json\n", encoding="utf-8")
-    (segment / "malformed.pdf").write_bytes(b"%PDF-1.4 synthetic")
+    (segment / "malformed.PDF").write_bytes(b"%PDF-1.4 synthetic")
     no_text = segment / "no_text.jsonl"
     _write_jsonl(
         no_text,
@@ -134,6 +137,7 @@ def test_migration_leaves_unconvertible_jsonl_in_place_and_reports(tmp_path):
         "converted_documents": 0,
         "skipped_unparseable": 1,
         "skipped_no_text": 1,
+        "skipped_empty_transcript": 0,
     }
     assert malformed.exists()
     assert no_text.exists()
@@ -143,3 +147,32 @@ def test_migration_leaves_unconvertible_jsonl_in_place_and_reports(tmp_path):
         "chronicle/20250101/import.document/120000_0/malformed.jsonl",
         "chronicle/20250101/import.document/120000_0/no_text.jsonl",
     ]
+
+
+def test_migration_preserves_jsonl_beside_header_only_transcript(tmp_path):
+    segment = _segment(tmp_path)
+    jsonl_path = segment / "document.jsonl"
+    _write_jsonl(
+        jsonl_path,
+        {"raw": "original.pdf", "kind": "document"},
+        {"start": "00:00:00", "text": "Only durable extracted text."},
+    )
+    (segment / "document_transcript.md").write_text(
+        "# original\n\n**Type:** Document\n**Pages:** 1\n\n---\n",
+        encoding="utf-8",
+    )
+    reported: list[str] = []
+
+    counts = migrate_pdf_extractions(tmp_path, reported=reported)
+
+    assert counts == {
+        "scanned": 1,
+        "deleted_duplicates": 0,
+        "converted_documents": 0,
+        "skipped_unparseable": 0,
+        "skipped_no_text": 0,
+        "skipped_empty_transcript": 1,
+    }
+    assert jsonl_path.exists()
+    assert "Only durable extracted text." in jsonl_path.read_text(encoding="utf-8")
+    assert reported == ["chronicle/20250101/import.document/120000_0/document.jsonl"]

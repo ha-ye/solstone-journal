@@ -777,6 +777,22 @@ def test_importer_pdf_detection_none_raises_named_file(tmp_path, monkeypatch):
     assert str(pdf) in str(exc.value)
 
 
+def test_importer_missing_pdf_raises_not_found(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    pdf = tmp_path / "missing.pdf"
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    with pytest.raises(FileNotFoundError) as exc:
+        mod.import_one(
+            pdf,
+            timestamp="20251205_163000",
+            wait_for_processing=False,
+        )
+
+    assert str(exc.value) == f"Import source not found: {pdf}"
+
+
 def test_corrupt_pdf_routes_to_document_importer_and_reports_error(
     tmp_path, monkeypatch, capsys
 ):

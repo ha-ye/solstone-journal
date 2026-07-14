@@ -194,10 +194,25 @@ def test_orphan_segment_pdf_check_warns_for_pdf_without_transcript(
     result = doctor.orphan_segment_pdf_check(args(doctor))
 
     assert result.status == "warn"
-    assert "1 orphan segment PDF" in result.detail
+    assert "1 raw PDF original" in result.detail
+    assert "without a readable document transcript" in result.detail
     assert "chronicle/20250101/import.document/120000_0/original.pdf" in result.detail
     assert result.fix is not None
     assert "journal maint --force settings:007_migrate_pdf_extractions" in result.fix
+
+
+def test_orphan_segment_pdf_check_warns_for_uppercase_pdf(
+    doctor, monkeypatch, tmp_path
+):
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(tmp_path), "source"))
+    segment = tmp_path / "chronicle" / "20250101" / "import.document" / "120000_0"
+    segment.mkdir(parents=True)
+    (segment / "ORIGINAL.PDF").write_bytes(b"%PDF-1.4 synthetic")
+
+    result = doctor.orphan_segment_pdf_check(args(doctor))
+
+    assert result.status == "warn"
+    assert "chronicle/20250101/import.document/120000_0/ORIGINAL.PDF" in result.detail
 
 
 def test_orphan_segment_pdf_check_ignores_pdf_with_transcript(
@@ -212,7 +227,7 @@ def test_orphan_segment_pdf_check_ignores_pdf_with_transcript(
     result = doctor.orphan_segment_pdf_check(args(doctor))
 
     assert result.status == "ok"
-    assert result.detail == "no orphan segment PDFs"
+    assert result.detail == "all raw PDF originals have readable document transcripts"
 
 
 def test_journal_maint_tasks_failed_state_fails(doctor, monkeypatch, tmp_path):

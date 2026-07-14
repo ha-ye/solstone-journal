@@ -509,6 +509,8 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     global _stage_start_time, _stages_run, _status_thread, _status_running
 
     args.media = os.path.expanduser(args.media)
+    if not Path(args.media).exists():
+        raise FileNotFoundError(f"Import source not found: {args.media}")
 
     _file_importer = None
     import_source = None
