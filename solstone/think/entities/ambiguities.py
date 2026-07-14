@@ -127,10 +127,8 @@ def ambiguity_id_for_key(key: str) -> str:
 
 
 def ambiguities_dir() -> Path:
-    """Return the entity ambiguities directory, creating it if needed."""
-    path = Path(get_journal()) / "entities"
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    """Return the entity ambiguities directory path."""
+    return Path(get_journal()) / "entities"
 
 
 def ambiguities_path() -> Path:
@@ -192,10 +190,11 @@ def locked_modify_ambiguities(
     fn: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
 ) -> list[dict[str, Any]]:
     """Apply a locked read-modify-write cycle to ambiguities.jsonl."""
-    with hold_lock(ambiguities_path()):
-        rows = load_ambiguities()
+    path = ambiguities_path()
+    with hold_lock(path):
+        rows = _load_jsonl_rows(path)
         new_rows = fn(rows)
-        save_ambiguities(new_rows)
+        _save_jsonl_rows(path, new_rows)
         return new_rows
 
 

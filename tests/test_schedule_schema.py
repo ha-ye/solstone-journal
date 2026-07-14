@@ -171,7 +171,7 @@ def test_schedule_activity_enum_matches_default_activities_drift_detector():
 
 
 def test_schedule_participation_entry_diverges_from_shared_fragment():
-    """Schedule omits entity_id because the hook fills it via find_matching_entity."""
+    """Schedule omits entity_id because the hook fills it via record_entity_resolution."""
     schedule_schema = _load_schedule_schema()
     fragment = _load_json(PARTICIPATION_ENTRY_SCHEMA_PATH)
 

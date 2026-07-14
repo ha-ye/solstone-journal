@@ -2119,3 +2119,71 @@ def test_scan_journal_is_pure_wrt_entity_state(journal_copy):
     assert snap_before == snap_between == snap_after, (
         "scan_journal() mutated journal/entities/ — see docs/coding-standards.md § L6"
     )
+
+
+def test_scan_journal_rescan_does_not_record_entity_ambiguities(journal_copy):
+    """Index rescans must not create domain ambiguity rows for low-confidence names."""
+    from solstone.think.entities import load_ambiguities
+    from solstone.think.indexer.journal import scan_journal
+
+    journal_path = Path(journal_copy)
+    for entity_id, name in [
+        ("sarah_connor", "Sarah Connor"),
+        ("sarah_lee", "Sarah Lee"),
+    ]:
+        entity_dir = journal_path / "entities" / entity_id
+        entity_dir.mkdir(parents=True, exist_ok=True)
+        (entity_dir / "entity.json").write_text(
+            json.dumps(
+                {
+                    "id": entity_id,
+                    "name": name,
+                    "type": "Person",
+                    "created_at": "2026-01-01T00:00:00Z",
+                    "updated_at": "2026-01-01T00:00:00Z",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    today = datetime.now().strftime("%Y%m%d")
+    segment_dir = (
+        journal_path / "chronicle" / today / "default" / "121000_300" / "talents"
+    )
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "sense.json").write_text(
+        json.dumps(
+            {
+                "density": "active",
+                "content_type": "meeting",
+                "activity_summary": "Sarah discussed a low-confidence indexer case.",
+                "entities": [
+                    {
+                        "name": "Sarah",
+                        "type": "Person",
+                        "role": "mentioned",
+                        "source": "screen",
+                        "context": "Ambiguous against Sarah Connor and Sarah Lee.",
+                    }
+                ],
+                "facets": [
+                    {"facet": "work", "activity": "search indexing", "level": "high"}
+                ],
+                "speculative_facet": None,
+                "meeting_detected": False,
+                "speakers": [],
+                "recommend": {"screen_record": False, "speaker_attribution": False},
+                "emotional_register": "focused",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ambiguity_path = journal_path / "entities" / "ambiguities.jsonl"
+    assert not ambiguity_path.exists()
+
+    scan_journal(str(journal_path), full=True)
+    scan_journal(str(journal_path), full=True)
+
+    assert not ambiguity_path.exists()
+    assert load_ambiguities() == []

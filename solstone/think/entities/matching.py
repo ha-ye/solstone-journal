@@ -127,6 +127,28 @@ def _prefix_token_match(name_a_lower: str, name_b_lower: str) -> bool:
     )
 
 
+def _first_word_key(name: str) -> str:
+    """Return a matchable first-word key for tier-5 matching."""
+    first_word = name.split()[0].lower() if name else ""
+    if len(first_word) < 3:
+        return ""
+    return first_word
+
+
+def _first_word_match(query_lower: str, entity_name: str) -> bool:
+    """True when a query equals an entity name's matchable first word."""
+    return len(query_lower) >= 3 and _first_word_key(entity_name) == query_lower
+
+
+def _single_token_first_word_match(query_first: str, entity_name: str) -> bool:
+    """True when a query first word matches a single-token entity name."""
+    return (
+        bool(entity_name)
+        and len(entity_name.split()) == 1
+        and _first_word_match(query_first, entity_name)
+    )
+
+
 def is_name_variant_match(name_a: str, name_b: str) -> bool:
     """Check if two names are plausible variants of each other.
 
@@ -304,8 +326,8 @@ def find_matching_entity(
                     email_map[email.lower()] = entity
 
         # Tier 5: First word
-        first_word = name.split()[0].lower() if name else ""
-        if first_word and len(first_word) >= 3:
+        first_word = _first_word_key(name)
+        if first_word:
             if first_word not in first_word_map:
                 first_word_map[first_word] = []
             first_word_map[first_word].append(entity)
@@ -352,7 +374,7 @@ def find_matching_entity(
                 # "Javier Garcia" → "Javier"). Reject when both names are
                 # multi-token and merely share a first word (e.g., "Person B"
                 # should NOT match "Person A").
-                if len(matched_name.split()) == 1:
+                if _single_token_first_word_match(detected_first, str(matched_name)):
                     return MatchResult(fw_matches[0], MatchTier.FIRST_WORD)
 
     # Tier 6: Token-subset match (unambiguous only)
@@ -699,14 +721,11 @@ def _collect_low_confidence_candidates(
 
     # Tier 5: First-word match without the legacy uniqueness guard.
     if len(query) >= 3:
-        first_word_matches: list[EntityDict] = []
-        for entity in entities:
-            name = str(entity.get("name") or "")
-            if not name:
-                continue
-            first_word = name.split()[0].lower()
-            if len(first_word) >= 3 and first_word == query_lower:
-                first_word_matches.append(entity)
+        first_word_matches = [
+            entity
+            for entity in entities
+            if _first_word_match(query_lower, str(entity.get("name") or ""))
+        ]
         if first_word_matches:
             return MatchTier.FIRST_WORD, _rank_resolution_candidates(
                 query, MatchTier.FIRST_WORD, first_word_matches
@@ -717,9 +736,10 @@ def _collect_low_confidence_candidates(
             long_to_short_matches = [
                 entity
                 for entity in entities
-                if entity.get("name")
-                and len(str(entity.get("name")).split()) == 1
-                and str(entity.get("name")).split()[0].lower() == query_first
+                if _single_token_first_word_match(
+                    query_first,
+                    str(entity.get("name") or ""),
+                )
             ]
             if long_to_short_matches:
                 return MatchTier.FIRST_WORD, _rank_resolution_candidates(
@@ -792,7 +812,7 @@ def record_entity_resolution(
     Low-confidence matches record an ambiguity row before returning, so callers
     can reuse their existing unresolved path without risking a later write.
     """
-    if not query or not query.strip() or not entities:
+    if not query or not query.strip():
         return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
 
     normalized_query = normalize_resolution_query(query)
@@ -815,6 +835,9 @@ def record_entity_resolution(
             outcome=EntityResolutionOutcome.RESOLVED,
             entity=entity,
         )
+
+    if not entities:
+        return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
 
     match = find_matching_entity(match_query, entities, fuzzy_threshold)
     if match and match.is_high_confidence:

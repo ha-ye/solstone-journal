@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import inspect
 import json
 from importlib import import_module
@@ -59,6 +60,19 @@ def _origin(lane: str = "test", invocation_id: str = "run-1") -> ResolutionOrigi
 
 def _ambiguity_file(journal: Path) -> Path:
     return journal / "entities" / "ambiguities.jsonl"
+
+
+def _tree_snapshot(root: Path) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        if path.name.endswith(".lock"):
+            continue
+        rel = path.relative_to(root).as_posix()
+        if path.is_dir():
+            snapshot[f"{rel}/"] = "<dir>"
+        elif path.is_file():
+            snapshot[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return snapshot
 
 
 def _record(
@@ -350,6 +364,22 @@ def test_stale_resolved_choice_fails_loudly_without_fallback(journal: Path) -> N
         )
 
 
+def test_resolved_choice_with_empty_entity_set_fails_loudly(
+    journal: Path,
+) -> None:
+    entities = [_entity("Sarah Connor"), _entity("Sarah Lee")]
+    scope = ResolutionScope.journal()
+
+    _record("Sarah", entities, scope=scope)
+    record_ambiguity_choice("Sarah", "sarah_lee", entities, scope=scope)
+
+    with pytest.raises(EntityAmbiguityError):
+        resolution = _record("Sarah", [], scope=scope)
+        assert resolution.outcome != EntityResolutionOutcome.NO_MATCH
+
+    assert not (journal / "entities" / "sarah" / "entity.json").exists()
+
+
 def test_lock_timeout_during_persistence_fails_closed(
     journal: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -358,10 +388,12 @@ def test_lock_timeout_during_persistence_fails_closed(
         raise LockTimeout(path, 0.01)
 
     monkeypatch.setattr(ambiguities, "hold_lock", raise_timeout)
+    before = _tree_snapshot(journal)
 
     with pytest.raises(LockTimeout):
         _record("Sarah", [_entity("Sarah Connor"), _entity("Sarah Lee")])
 
+    assert _tree_snapshot(journal) == before
     assert not _ambiguity_file(journal).exists()
 
 

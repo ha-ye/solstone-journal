@@ -288,6 +288,33 @@ def test_identify_ambiguous_name_returns_before_writes(speakers_env):
 
     scan_result = discover_unknown_speakers()
     cluster_id = scan_result["clusters"][0]["cluster_id"]
+    candidate_path = env.journal / "awareness" / "speaker_candidates.json"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_text(
+        json.dumps(
+            {
+                "next_id": 2,
+                "candidates": [
+                    {
+                        "cand_id": 1,
+                        "centroid": embeddings[0].astype(float).tolist(),
+                        "n_segments": 2,
+                        "n_intervals": 10,
+                        "total_duration_s": 60.0,
+                        "source_segments": [],
+                        "confirmed_entity": None,
+                        "status": "pending",
+                    }
+                ],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    candidate_before = candidate_path.read_bytes()
+
     result = identify_cluster(cluster_id, "Sarah")
 
     assert result["status"] == "ambiguous"
@@ -312,6 +339,7 @@ def test_identify_ambiguous_name_returns_before_writes(speakers_env):
         )
         assert not labels_path.exists()
         assert not corrections_path.exists()
+    assert candidate_path.read_bytes() == candidate_before
     assert load_ambiguities()[0]["normalized_query"] == "sarah"
 
     record_ambiguity_choice(
