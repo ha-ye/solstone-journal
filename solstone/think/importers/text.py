@@ -11,28 +11,17 @@ from solstone.think.detect_transcript import (
     detect_transcript_json,
     detect_transcript_segment,
 )
-from solstone.think.features import require_extra
 from solstone.think.importers.shared import write_segment
 
 logger = logging.getLogger(__name__)
 
 
 def _read_transcript(path: str) -> str:
-    """Return transcript text from a .txt/.md/.pdf file."""
+    """Return transcript text from a .txt/.md file."""
     ext = os.path.splitext(path)[1].lower()
     if ext in {".txt", ".md"}:
         with open(path, "r", encoding="utf-8") as f:
             return f.read()
-    if ext == ".pdf":
-        require_extra("pdf")
-        from pypdf import PdfReader
-
-        reader = PdfReader(path)
-        parts = []
-        for page in reader.pages:
-            text = page.extract_text() or ""
-            parts.append(text)
-        return "\n".join(parts)
     raise ValueError("unsupported transcript format")
 
 

@@ -96,16 +96,3 @@ def test_document_importer_process_pdf_missing_extra(monkeypatch, tmp_path):
         DocumentImporter().process(pdf, tmp_path)
 
     assert "pip install 'solstone[pdf]'" in str(exc.value)
-
-
-def test_read_transcript_pdf_missing_extra(monkeypatch, tmp_path):
-    _force_missing_pdf(monkeypatch)
-    from solstone.think.importers.text import _read_transcript
-
-    pdf = tmp_path / "x.pdf"
-    pdf.write_bytes(b"")
-
-    with pytest.raises(MissingExtraError) as exc:
-        _read_transcript(str(pdf))
-
-    assert "pip install 'solstone[pdf]'" in str(exc.value)

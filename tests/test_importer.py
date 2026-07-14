@@ -24,6 +24,8 @@ from solstone.think.importers.file_importer import ImportPreview, ImportResult
 from solstone.think.importers.shared import install_source_file
 from solstone.think.utils import day_path
 
+PDF_SENTINEL = "SOLSTONE_PDF_SENTINEL_DOCUMENT_ROUTING"
+
 
 def _make_mock_file_importer(name="ics", display_name="ICS Calendar"):
     """Create a mock FileImporter for testing."""
@@ -75,6 +77,23 @@ def _configure_text_import_runtime(monkeypatch, mod):
     )
     monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
     monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+
+
+def _write_text_pdf(path: Path, text: str) -> None:
+    pytest.importorskip("weasyprint")
+    pytest.importorskip("pypdf")
+    from weasyprint import HTML
+
+    HTML(string=f"<html><body><h1>Fixture</h1><p>{text}</p></body></html>").write_pdf(
+        path
+    )
+
+
+def _configure_document_import_runtime(monkeypatch, mod, doc_mod, *, timestamp: float):
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+    monkeypatch.setattr(mod, "index_file", lambda *args, **kwargs: None)
+    monkeypatch.setattr(doc_mod, "_get_pdf_timestamp", lambda reader, path: timestamp)
 
 
 def _read_action_entries(journal_root: Path) -> list[dict]:
@@ -656,109 +675,134 @@ def test_text_import_observed_events_are_batch_and_drain_once(tmp_path, monkeypa
     assert "20240101" in updated_days()
 
 
-def test_importer_pdf(tmp_path, monkeypatch):
-    """Test importing a PDF transcript file."""
+def test_importer_pdf_routes_to_document_importer_and_dedups(tmp_path, monkeypatch):
+    """PDF imports use the document file importer, even with a bogus source hint."""
     mod = importlib.import_module("solstone.think.importers.cli")
-    text_mod = importlib.import_module("solstone.think.importers.text")
+    doc_mod = importlib.import_module("solstone.think.importers.documents")
+    fixed_ts = dt.datetime(2025, 12, 5, 16, 30, 0).timestamp()
 
-    # Create a fake PDF file (content doesn't matter — pypdf is mocked)
     pdf = tmp_path / "meeting.pdf"
+    _write_text_pdf(pdf, PDF_SENTINEL)
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _configure_document_import_runtime(
+        monkeypatch,
+        mod,
+        doc_mod,
+        timestamp=fixed_ts,
+    )
+
+    first = mod.import_one(
+        pdf,
+        timestamp="20251205_163000",
+        source="text",
+        wait_for_processing=False,
+    )
+
+    day_dir = day_path("20251205")
+    segment_dir = day_dir / "import.document" / "163000_0"
+    md_path = segment_dir / "document_transcript.md"
+    original_path = segment_dir / "original.pdf"
+    stream_json = segment_dir / "stream.json"
+
+    assert first is not None
+    assert first["source_type"] == "document"
+    assert first["outputs"][0]["type"] == "file_import"
+    assert md_path.exists()
+    assert PDF_SENTINEL in md_path.read_text(encoding="utf-8")
+    assert original_path.exists()
+    assert not (day_dir / "import.text").exists()
+    assert json.loads(stream_json.read_text(encoding="utf-8"))["stream"] == (
+        "import.document"
+    )
+
+    second = mod.import_one(
+        pdf,
+        timestamp="20251205_163100",
+        source="audio",
+        wait_for_processing=False,
+    )
+
+    assert second is not None
+    assert second["skipped"] is True
+    assert second["reason"] == "already_imported"
+    assert second["entry_count"] == 1
+    assert isinstance(second["imported_at"], str)
+
+
+def test_importer_pdf_dry_run_uses_document_preview(tmp_path, monkeypatch, capsys):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    doc_mod = importlib.import_module("solstone.think.importers.documents")
+    fixed_ts = dt.datetime(2025, 12, 5, 16, 30, 0).timestamp()
+    pdf = tmp_path / "meeting.pdf"
+    _write_text_pdf(pdf, PDF_SENTINEL)
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _configure_document_import_runtime(
+        monkeypatch,
+        mod,
+        doc_mod,
+        timestamp=fixed_ts,
+    )
+
+    result = mod.import_one(pdf, source="text", dry_run=True, json_output=True)
+    captured = capsys.readouterr()
+    preview = json.loads(captured.out.strip())
+
+    assert result is not None
+    assert result["dry_run"] is True
+    assert result["importer"] == "document"
+    assert preview["importer"] == "document"
+    assert preview["item_count"] == 1
+    assert not (tmp_path / "chronicle").exists()
+
+
+def test_importer_pdf_detection_none_raises_named_file(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    file_importer = importlib.import_module("solstone.think.importers.file_importer")
+    pdf = tmp_path / "unrouted.pdf"
     pdf.write_bytes(b"%PDF-1.4 fake")
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(
-        mod, "detect_created", lambda p, **kw: {"day": "20251205", "time": "163000"}
-    )
+    monkeypatch.setattr(file_importer, "detect_file_importer", lambda path: None)
 
-    # Mock _read_transcript to return extracted text (bypasses pypdf)
-    monkeypatch.setattr(
-        text_mod, "_read_transcript", lambda path: "Board meeting notes\nAction items"
-    )
+    with pytest.raises(ValueError) as exc:
+        mod.import_one(
+            pdf,
+            timestamp="20251205_163000",
+            wait_for_processing=False,
+        )
 
-    # Mock segment detection: single segment for short text
-    def mock_detect_segment(text, start_time):
-        return [("16:30:00", text)]
+    assert "PDF import requires the document importer" in str(exc.value)
+    assert str(pdf) in str(exc.value)
 
-    monkeypatch.setattr(text_mod, "detect_transcript_segment", mock_detect_segment)
 
-    # Mock JSON conversion
-    def mock_detect_json(text, segment_start):
-        return {
-            "entries": [
-                {
-                    "start": segment_start,
-                    "speaker": "Jack",
-                    "text": "Board meeting notes",
-                },
-                {"start": "16:30:30", "speaker": "Ramon", "text": "Action items"},
-            ],
-            "topics": "board meeting, action items",
-            "setting": "workplace",
-        }
+def test_corrupt_pdf_routes_to_document_importer_and_reports_error(
+    tmp_path, monkeypatch, capsys
+):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    corrupt = tmp_path / "corrupt.pdf"
+    corrupt.write_bytes(b"%PDF-1.4\nthis is not a real xref table\n%%EOF\n")
 
-    monkeypatch.setattr(text_mod, "detect_transcript_json", mock_detect_json)
-
-    # Mock CallosumConnection and status emitter
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
     monkeypatch.setattr(mod, "_status_emitter", lambda: None)
 
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "sol import",
-            str(pdf),
-            "--timestamp",
-            "20251205_163000",
-            "--facet",
-            "work",
-            "--setting",
-            "board meeting",
-        ],
+    result = mod.import_one(
+        corrupt,
+        timestamp="20251205_163000",
+        json_output=True,
+        wait_for_processing=False,
     )
-    mod.main()
+    captured = capsys.readouterr()
+    output = json.loads(captured.out.strip().splitlines()[-1])
 
-    day_dir = day_path("20251205")
-    # Single segment, last segment defaults to 5s
-    f1 = day_dir / "import.text" / "163000_5" / "conversation_transcript.jsonl"
-    assert f1.exists()
-
-    lines = f1.read_text().strip().split("\n")
-    metadata = json.loads(lines[0])
-    entries = [json.loads(line) for line in lines[1:]]
-
-    # Verify metadata
-    assert metadata["imported"]["id"] == "20251205_163000"
-    assert metadata["imported"]["facet"] == "work"
-    assert metadata["imported"]["setting"] == "board meeting"
-    assert metadata["raw"] == "../../../imports/20251205_163000/meeting.pdf"
-
-    # Verify entries — timestamps are relative offsets, topics/setting in metadata
-    assert entries[0] == {
-        "start": "00:00:00",
-        "speaker": "Jack",
-        "text": "Board meeting notes",
-        "source": "import",
-    }
-    assert entries[1] == {
-        "start": "00:00:30",
-        "speaker": "Ramon",
-        "text": "Action items",
-        "source": "import",
-    }
-    # Topics/setting extracted to metadata (not written as entry)
-    assert len(entries) == 2
-    assert metadata["topics"] == "board meeting, action items"
-    assert metadata["setting"] == "workplace"
-
-    # Verify .pdf auto-detected as text import (stream = import.text)
-    stream_json = day_dir / "import.text" / "163000_5" / "stream.json"
-    assert stream_json.exists()
-    stream_data = json.loads(stream_json.read_text())
-    assert stream_data["stream"] == "import.text"
-
-    # Verify segments.json written
-    segments_json = tmp_path / "imports" / "20251205_163000" / "segments.json"
-    assert segments_json.exists()
+    assert result is not None
+    assert result["source_type"] == "document"
+    assert output["importer"] == "document"
+    assert output["entries_written"] == 0
+    assert any("corrupt.pdf" in error for error in output["errors"])
+    assert not (tmp_path / "chronicle" / "20251205" / "import.text").exists()
 
 
 def test_write_segment(tmp_path):

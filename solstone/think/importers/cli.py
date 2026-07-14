@@ -26,6 +26,7 @@ from solstone.think.importers.text import _read_transcript, process_transcript
 from solstone.think.importers.utils import save_import_segments
 from solstone.think.indexer.journal import index_file
 from solstone.think.journal_io import atomic_replace
+from solstone.think.media import PDF_EXTENSIONS
 from solstone.think.segment import _touch_health_marker
 from solstone.think.streams import stream_name, update_stream, write_segment_stream
 from solstone.think.utils import (
@@ -542,13 +543,19 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     # detection for image/structured imports.
     if _file_importer is None:
         _ext = os.path.splitext(args.media)[1].lower()
-        if _ext not in {".m4a", ".txt", ".md", ".pdf"}:
+        if _ext not in {".m4a", ".txt", ".md"}:
             from solstone.think.importers.file_importer import detect_file_importer
 
             detected = detect_file_importer(Path(args.media))
             if detected is not None:
                 _file_importer = detected
                 import_source = detected.name
+
+    if (
+        _file_importer is None
+        and os.path.splitext(args.media)[1].lower() in PDF_EXTENSIONS
+    ):
+        raise ValueError(f"PDF import requires the document importer: {args.media}")
 
     # Source-level dedup for audio/text (before timestamp detection and before
     # _setup_import rewrites args.media). Mirrors the file-importer dedup at the
@@ -648,7 +655,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
     # reach the stream/manifest. File-importer sources are handled earlier.
     if import_source is None:
         _ext = os.path.splitext(args.media)[1].lower()
-        import_source = "text" if _ext in {".txt", ".md", ".pdf"} else "audio"
+        import_source = "text" if _ext in {".txt", ".md"} else "audio"
 
     stream = stream_name(import_source=import_source)
     needs_setup = _file_importer is None and not _is_in_imports(args.media)
@@ -706,7 +713,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
         print(f"  Target day: {day}")
 
         ext = os.path.splitext(args.media)[1].lower()
-        if ext in {".txt", ".md", ".pdf"}:
+        if ext in {".txt", ".md"}:
             from solstone.think.detect_transcript import detect_transcript_segment
             from solstone.think.importers.text import _time_to_seconds
 
@@ -1132,7 +1139,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                     )
                 )
 
-        elif ext in {".txt", ".md", ".pdf"}:
+        elif ext in {".txt", ".md"}:
             # Text transcript processing — no observe pipeline
             _set_stage("segmenting")
 
