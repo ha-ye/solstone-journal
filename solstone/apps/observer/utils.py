@@ -649,6 +649,22 @@ class IngestFile:
 
 
 @dataclass(frozen=True)
+class ContentIdentityFile:
+    name: str
+    sha256: str
+    size: int
+    evidence: str
+
+    @property
+    def is_media(self) -> bool:
+        return Path(self.name).suffix.lower() in _MEDIA_CONTENT_EXTENSIONS
+
+    @property
+    def is_terminal_proof_only(self) -> bool:
+        return self.evidence == "terminal_proof"
+
+
+@dataclass(frozen=True)
 class IngestPlan:
     status: str
     segment: str
@@ -683,7 +699,7 @@ def resolve_ingest_plan(
     """Resolve an observer upload against disk without writing anything."""
     stream_dir = day_path(day, create=False) / stream
     candidates = _candidate_dirs(stream_dir, requested_segment)
-    content_files = _content_identity_files(files)
+    content_files = content_identity_from_uploads(files)
 
     for candidate_segment, candidate_dir in candidates:
         evaluation = _evaluate_candidate(candidate_dir, files, content_files)
@@ -850,10 +866,118 @@ def write_ingest_manifest(
         )
 
 
-def _content_identity_files(files: list[IngestFile]) -> list[IngestFile]:
+def pruned_segments(records: list[dict]) -> set[str]:
+    """Return segments whose latest history record is a prune record."""
+    latest: dict[str, str | None] = {}
+    for record in records:
+        segment = record.get("segment")
+        if not isinstance(segment, str) or not segment:
+            continue
+        record_type = record.get("type")
+        latest[segment] = record_type if isinstance(record_type, str) else None
+    return {
+        segment for segment, record_type in latest.items() if record_type == "pruned"
+    }
+
+
+def content_identity_from_uploads(files: list[IngestFile]) -> list[IngestFile]:
+    """Return the upload files that define observer content identity."""
     non_reserved = [file for file in files if not file.is_reserved]
     media_files = [file for file in non_reserved if file.is_media]
     return media_files or non_reserved
+
+
+def content_identity_from_segment(
+    segment_dir: Path,
+) -> tuple[dict[str, ContentIdentityFile], str | None]:
+    """Return a segment's content identity, or a refusal reason.
+
+    Valid ingest manifests are authoritative. Legacy manifest-less directories
+    can establish identity only from media files present on disk.
+    """
+    manifest_files = _manifest_files(segment_dir)
+    if manifest_files:
+        identity: dict[str, ContentIdentityFile] = {}
+        for name, entry in manifest_files.items():
+            if not isinstance(name, str) or name in RESERVED_SEGMENT_FILENAMES:
+                continue
+            if not isinstance(entry, dict):
+                return {}, f"manifest entry for {name!r} is invalid"
+            sha256 = entry.get("sha256")
+            size = entry.get("size")
+            if (
+                not isinstance(sha256, str)
+                or isinstance(size, bool)
+                or not isinstance(size, int)
+            ):
+                return {}, f"manifest entry for {name!r} is invalid"
+            target = segment_dir / name
+            if target.exists():
+                try:
+                    disk_sha = _file_sha256(target)
+                    disk_size = target.stat().st_size
+                except OSError:
+                    return {}, f"content file {name!r} cannot be read"
+                if disk_sha != sha256 or disk_size != size:
+                    return {}, f"content file {name!r} does not match ingest manifest"
+                evidence = "present"
+            elif _has_terminal_processing_proof(target, size):
+                evidence = "terminal_proof"
+            else:
+                return {}, f"content file {name!r} is neither present nor proof-held"
+            identity[name] = ContentIdentityFile(name, sha256, size, evidence)
+        if identity:
+            return identity, None
+        return {}, "valid ingest manifest has no content files"
+
+    media_paths = [
+        path
+        for path in sorted(segment_dir.iterdir())
+        if path.is_file()
+        and path.name not in RESERVED_SEGMENT_FILENAMES
+        and path.suffix.lower() in _MEDIA_CONTENT_EXTENSIONS
+    ]
+    if not media_paths:
+        return {}, "no valid ingest manifest and no media files"
+
+    identity = {}
+    for path in media_paths:
+        try:
+            identity[path.name] = ContentIdentityFile(
+                path.name, _file_sha256(path), path.stat().st_size, "present"
+            )
+        except OSError:
+            return {}, f"media file {path.name!r} cannot be read"
+    return identity, None
+
+
+def content_identity_key(identity: dict[str, ContentIdentityFile]) -> tuple:
+    """Return the stable duplicate-group key for content identity."""
+    return tuple(
+        sorted((item.name, item.sha256, item.size) for item in identity.values())
+    )
+
+
+def is_structural_derived_file(
+    rel_name: str, content_files: dict[str, ContentIdentityFile]
+) -> bool:
+    """Return True for recognized journal-derived per-segment outputs."""
+    path = Path(rel_name)
+    if path.parts and path.parts[0] == "talents":
+        return True
+    if "/" in rel_name:
+        return False
+    if rel_name in {"events.jsonl", "timeline.json"}:
+        return True
+    if path.suffix.lower() not in {".jsonl", ".npz"}:
+        return False
+    sidecar_stem = path.stem
+    for content in content_files.values():
+        if not content.is_media:
+            continue
+        if Path(content.name).stem == sidecar_stem:
+            return True
+    return False
 
 
 def _candidate_dirs(stream_dir: Path, requested_segment: str) -> list[tuple[str, Path]]:
