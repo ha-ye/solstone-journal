@@ -10,6 +10,8 @@ import io
 import json
 import os
 import shutil
+import threading
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -3468,6 +3470,43 @@ def test_ingest_manifest_absence_or_corruption_never_duplicates_from_cache(
     assert corrupt.get_json()["status"] == "ok"
     assert (segment_dir / "audio.flac").read_bytes() == audio
 
+    variants = [
+        ("unknown-version", {"schema_version": 999}),
+        ("missing-version", {}),
+        ("string-version", {"schema_version": "1"}),
+        ("bad-file-entry", {"schema_version": 1, "entry": "not-a-dict"}),
+    ]
+    for suffix, manifest_shape in variants:
+        variant_audio = f"manifest {suffix} audio".encode()
+        variant_key = _create_observer(env, f"manifest-{suffix}-test")
+        first = _upload_audio(env, variant_key, variant_audio)
+        assert first.status_code == 200
+        variant_dir = _day_dir(env) / f"manifest-{suffix}-test" / "120000_300"
+        _write_audio_processing_sidecar(variant_dir, input_size=len(variant_audio))
+        (variant_dir / "audio.flac").unlink()
+        manifest_files = {
+            "audio.flac": {
+                "sha256": hashlib.sha256(variant_audio).hexdigest(),
+                "size": len(variant_audio),
+            }
+        }
+        manifest = {
+            "requested_segment": "120000_300",
+            "files": manifest_files,
+            **manifest_shape,
+        }
+        if suffix == "bad-file-entry":
+            manifest["files"] = {"audio.flac": manifest_shape["entry"]}
+        (variant_dir / "ingest.json").write_text(
+            json.dumps(manifest) + "\n", encoding="utf-8"
+        )
+
+        retry = _upload_audio(env, variant_key, variant_audio)
+        body = retry.get_json()
+        assert retry.status_code == 200
+        assert body["status"] == "ok"
+        assert (variant_dir / "audio.flac").read_bytes() == variant_audio
+
 
 def test_ingest_manifest_different_hash_with_terminal_proof_disqualifies_candidate(
     observer_env,
@@ -3659,59 +3698,104 @@ def test_ingest_manifest_accumulates_and_duplicates_after_media_deleted(
 
 
 def test_ingest_held_content_never_mints_for_request_shape(observer_env):
-    """AC-9: held content resolves in place for duplicate/additive/conflict shapes."""
+    """AC-9: held content resolves in place across request shapes."""
     env = observer_env()
-    key = _create_observer(env, "held-no-mint-test")
-    audio = b"held content"
-
-    first = _upload_audio(env, key, audio)
-    assert first.status_code == 200
-    stream_dir = _day_dir(env) / "held-no-mint-test"
-
-    additive = env.client.post(
-        "/app/observer/ingest",
-        headers={"Authorization": f"Bearer {key}"},
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "files": [
-                (io.BytesIO(audio), "audio.flac"),
-                (io.BytesIO(b"notes"), "notes.txt"),
+    audio = b"held media content"
+    tmux = b'{"line": 1}\n'
+    cases = [
+        (
+            "media-only-exact",
+            [(audio, "audio.flac")],
+            [(audio, "audio.flac")],
+            "120000_300",
+            "duplicate",
+        ),
+        (
+            "media-new-sidecar",
+            [(audio, "audio.flac")],
+            [(audio, "audio.flac"), (b"notes", "notes.txt")],
+            "120000_300",
+            "ok",
+        ),
+        (
+            "media-reserved",
+            [(audio, "audio.flac")],
+            [
+                (audio, "audio.flac"),
+                (
+                    b'{"stream":"held-shape-media-reserved","prev_day":null,'
+                    b'"prev_segment":null,"seq":1}\n',
+                    "stream.json",
+                ),
             ],
-        },
-    )
-    assert additive.status_code == 200
-    assert additive.get_json()["status"] == "ok"
+            "120000_300",
+            "duplicate",
+        ),
+        (
+            "media-laddered-key",
+            [(audio, "audio.flac")],
+            [(audio, "audio.flac")],
+            "120000_301",
+            "duplicate",
+        ),
+        (
+            "media-different-len",
+            [(audio, "audio.flac")],
+            [(audio, "audio.flac")],
+            "120000_999",
+            "duplicate",
+        ),
+        (
+            "media-less-exact",
+            [(tmux, "tmux.jsonl")],
+            [(tmux, "tmux.jsonl")],
+            "120000_300",
+            "duplicate",
+        ),
+        (
+            "media-less-laddered-key",
+            [(tmux, "tmux.jsonl")],
+            [(tmux, "tmux.jsonl")],
+            "120000_301",
+            "duplicate",
+        ),
+    ]
 
-    conflict = env.client.post(
-        "/app/observer/ingest",
-        headers={"Authorization": f"Bearer {key}"},
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "files": [
-                (io.BytesIO(audio), "audio.flac"),
-                (io.BytesIO(b"changed notes"), "notes.txt"),
-            ],
-        },
-    )
-    assert conflict.status_code == 409
+    for suffix, initial_files, retry_files, requested_segment, expected_status in cases:
+        observer_name = f"held-shape-{suffix}"
+        key = _create_observer(env, observer_name)
+        first = env.client.post(
+            "/app/observer/ingest",
+            headers={"Authorization": f"Bearer {key}"},
+            data={
+                "day": "20250103",
+                "segment": "120000_300",
+                "files": [
+                    (io.BytesIO(content), name) for content, name in initial_files
+                ],
+            },
+        )
+        assert first.status_code == 200
 
-    reserved = env.client.post(
-        "/app/observer/ingest",
-        headers={"Authorization": f"Bearer {key}"},
-        data={
-            "day": "20250103",
-            "segment": "120000_300",
-            "files": [
-                (io.BytesIO(audio), "audio.flac"),
-                (io.BytesIO(b'{"stream":"other","seq":9}\n'), "stream.json"),
-            ],
-        },
-    )
-    assert reserved.status_code == 200
-    assert reserved.get_json()["status"] == "duplicate"
-    assert sorted(path.name for path in stream_dir.iterdir()) == ["120000_300"]
+        retry = env.client.post(
+            "/app/observer/ingest",
+            headers={"Authorization": f"Bearer {key}"},
+            data={
+                "day": "20250103",
+                "segment": requested_segment,
+                "files": [(io.BytesIO(content), name) for content, name in retry_files],
+            },
+        )
+        body = retry.get_json()
+        assert retry.status_code == 200
+        assert body["status"] == expected_status
+        if expected_status == "duplicate":
+            assert body["existing_segment"] == "120000_300"
+        else:
+            assert body["segment"] == "120000_300"
+        assert sorted(
+            path.name for path in (_day_dir(env) / observer_name).iterdir()
+        ) == ["120000_300"]
 
 
 def test_ingest_create_collision_reenters_once(observer_env, monkeypatch):
@@ -3774,6 +3858,153 @@ def test_ingest_create_collision_identical_bytes_stays_on_single_dir(
 
     stream_dir = _day_dir(env) / "identical-race-test"
     assert sorted(path.name for path in stream_dir.iterdir()) == ["120000_300"]
+
+
+def test_ingest_multifile_create_collision_reenters_once(observer_env, monkeypatch):
+    """AC-11: a second-file race re-enters once and preserves landed bytes."""
+    env = observer_env()
+    key = _create_observer(env, "multifile-race-test")
+    audio = b"loser audio"
+    screen = b"loser screen"
+    winner_screen = b"winner screen"
+    real_write = observer_utils.write_bytes_exclusive
+    calls = {"count": 0}
+
+    def race_on_second_file(path: Path, data: bytes, *, mode=None):
+        calls["count"] += 1
+        if calls["count"] == 2:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(winner_screen)
+            raise FileExistsError(path)
+        return real_write(path, data, mode=mode)
+
+    monkeypatch.setattr(observer_utils, "write_bytes_exclusive", race_on_second_file)
+
+    resp = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": [
+                (io.BytesIO(audio), "audio.flac"),
+                (io.BytesIO(screen), "screen.mp4"),
+            ],
+        },
+    )
+    body = resp.get_json()
+
+    assert resp.status_code == 200
+    assert body["status"] == "collision"
+    assert body["segment"] == "120000_301"
+    stream_dir = _day_dir(env) / "multifile-race-test"
+    assert (stream_dir / "120000_300" / "audio.flac").read_bytes() == audio
+    assert (stream_dir / "120000_300" / "screen.mp4").read_bytes() == winner_screen
+    assert (stream_dir / "120000_301" / "audio.flac").read_bytes() == audio
+    assert (stream_dir / "120000_301" / "screen.mp4").read_bytes() == screen
+    assert not (stream_dir / "120000_302").exists()
+
+
+def test_ingest_duplicate_rechecks_held_files_before_response(
+    observer_env, monkeypatch
+):
+    """Held files that vanish after planning heal instead of returning duplicate."""
+    env = observer_env()
+    key = _create_observer(env, "held-recheck-test")
+    audio = b"held recheck audio"
+
+    first = _upload_audio(env, key, audio)
+    assert first.status_code == 200
+    segment_dir = _day_dir(env) / "held-recheck-test" / "120000_300"
+    real_recheck = observer_utils._held_files_are_current
+    calls = {"count": 0}
+
+    def delete_once_then_check(path: Path, files):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            (path / files[0].written).unlink()
+        return real_recheck(path, files)
+
+    monkeypatch.setattr(
+        observer_utils, "_held_files_are_current", delete_once_then_check
+    )
+
+    retry = _upload_audio(env, key, audio)
+    body = retry.get_json()
+
+    assert retry.status_code == 200
+    assert body["status"] == "ok"
+    assert body["segment"] == "120000_300"
+    assert (segment_dir / "audio.flac").read_bytes() == audio
+
+
+def test_ingest_manifest_locked_merge_preserves_concurrent_additions(
+    observer_env, monkeypatch
+):
+    """Concurrent manifest read-merge-write keeps both additive entries."""
+    env = observer_env()
+    segment_dir = _day_dir(env) / "manifest-lock-test" / "120000_300"
+    segment_dir.mkdir(parents=True)
+    base = observer_utils.IngestFile(
+        submitted="audio.flac",
+        written="audio.flac",
+        content=b"base audio",
+        sha256=hashlib.sha256(b"base audio").hexdigest(),
+    )
+    observer_utils.write_ingest_manifest(
+        segment_dir, requested_segment="120000_300", files=[base]
+    )
+
+    real_atomic_replace = observer_utils.atomic_replace
+    first_replace_entered = threading.Event()
+    release_first_replace = threading.Event()
+    calls = {"count": 0}
+
+    def slow_first_replace(path: Path, data, *, mode=None):
+        if path.name == "ingest.json":
+            calls["count"] += 1
+            if calls["count"] == 1:
+                first_replace_entered.set()
+                assert release_first_replace.wait(timeout=5)
+        return real_atomic_replace(path, data, mode=mode)
+
+    monkeypatch.setattr(observer_utils, "atomic_replace", slow_first_replace)
+
+    def ingest_file(name: str, content: bytes) -> observer_utils.IngestFile:
+        return observer_utils.IngestFile(
+            submitted=name,
+            written=name,
+            content=content,
+            sha256=hashlib.sha256(content).hexdigest(),
+        )
+
+    errors = []
+
+    def write_file(file: observer_utils.IngestFile) -> None:
+        try:
+            observer_utils.write_ingest_manifest(
+                segment_dir, requested_segment="120000_300", files=[file]
+            )
+        except Exception as exc:  # pragma: no cover - surfaced by assertion below
+            errors.append(exc)
+
+    first_file = ingest_file("notes-a.txt", b"notes a")
+    second_file = ingest_file("notes-b.txt", b"notes b")
+    first_thread = threading.Thread(target=write_file, args=(first_file,))
+    second_thread = threading.Thread(target=write_file, args=(second_file,))
+    first_thread.start()
+    assert first_replace_entered.wait(timeout=5)
+    second_thread.start()
+    time.sleep(0.1)
+    release_first_replace.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert errors == []
+    manifest = json.loads((segment_dir / "ingest.json").read_text(encoding="utf-8"))
+    assert set(manifest["files"]) == {"audio.flac", "notes-a.txt", "notes-b.txt"}
 
 
 def test_ingest_stream_chain_unchanged_for_existing_candidate_resolutions(observer_env):
@@ -3846,6 +4077,49 @@ def test_ingest_duplicate_against_import_created_segment_is_corroborated(
         "requested_segment": "120000_300",
         "schema_version": 1,
     }
+
+
+def test_ingest_duplicate_listing_keeps_same_sha_under_different_names(observer_env):
+    """AC-13: listing corroborates every submitted name, not only every sha."""
+    env = observer_env()
+    key = _create_observer(env, "same-sha-names-test")
+    content = b"same bytes under two names"
+    sha256 = hashlib.sha256(content).hexdigest()
+
+    first = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": [
+                (io.BytesIO(content), "left.flac"),
+                (io.BytesIO(content), "right.flac"),
+            ],
+        },
+    )
+    assert first.status_code == 200
+
+    duplicate = env.client.post(
+        "/app/observer/ingest",
+        headers={"Authorization": f"Bearer {key}"},
+        data={
+            "day": "20250103",
+            "segment": "120000_300",
+            "files": [
+                (io.BytesIO(content), "left.flac"),
+                (io.BytesIO(content), "right.flac"),
+            ],
+        },
+    )
+    assert duplicate.status_code == 200
+    assert duplicate.get_json()["status"] == "duplicate"
+
+    files = _listed_files_by_name(env, key)
+    assert files["left.flac"]["sha256"] == sha256
+    assert files["left.flac"]["status"] == "present"
+    assert files["right.flac"]["sha256"] == sha256
+    assert files["right.flac"]["status"] == "present"
 
 
 def test_ingest_returns_collision_status_when_adjusted(observer_env):

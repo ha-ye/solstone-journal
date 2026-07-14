@@ -878,33 +878,6 @@ def _process_ingest_files(
             INGEST_SIDECAR_CONFLICT.status,
         )
 
-    if plan.status == "duplicate":
-        save_ingest_plan(plan, allow_reentry=False)
-        append_history_record(key_prefix, day, _sync_record_for_plan(plan))
-        logger.info(
-            "Observer ingest outcome=candidate_matched day=%s stream=%s requested=%s segment=%s",
-            day,
-            stream,
-            segment,
-            plan.segment,
-        )
-
-        observer["last_seen"] = now_ms()
-        observer["stats"]["duplicates_rejected"] = (
-            observer["stats"].get("duplicates_rejected", 0) + 1
-        )
-        clear_ingest_rejection(observer)
-        save_observer(observer)
-
-        return (
-            {
-                "status": "duplicate",
-                "existing_segment": plan.existing_segment or plan.segment,
-                "message": "All files already received",
-            },
-            200,
-        )
-
     if plan.status == "storage_failed":
         logger.error(
             "No available segment slot for %s/%s/%s from %s after %s attempts",
@@ -988,6 +961,39 @@ def _process_ingest_files(
         else:
             second_result = save_ingest_plan(plan, allow_reentry=False)
             apply_result = _merge_apply_results(first_result, second_result)
+
+    if plan.status == "duplicate":
+        if not history_recorded:
+            append_history_record(
+                key_prefix,
+                day,
+                _sync_record_for_plan(
+                    plan, records=_records_with_apply_result(plan.records, apply_result)
+                ),
+            )
+        logger.info(
+            "Observer ingest outcome=candidate_matched day=%s stream=%s requested=%s segment=%s",
+            day,
+            stream,
+            segment,
+            plan.segment,
+        )
+
+        observer["last_seen"] = now_ms()
+        observer["stats"]["duplicates_rejected"] = (
+            observer["stats"].get("duplicates_rejected", 0) + 1
+        )
+        clear_ingest_rejection(observer)
+        save_observer(observer)
+
+        return (
+            {
+                "status": "duplicate",
+                "existing_segment": plan.existing_segment or plan.segment,
+                "message": "All files already received",
+            },
+            200,
+        )
 
     if not history_recorded:
         append_history_record(
@@ -1425,7 +1431,7 @@ def ingest_segments(day: str) -> Any:
         if segment not in segments:
             segments[segment] = {
                 "key": segment,
-                "files_by_sha": {},  # Keyed by sha256 for deduplication
+                "files_by_identity": {},  # Keyed by (name, sha256) for deduplication
             }
             if segment_original:
                 segments[segment]["original_key"] = segment_original
@@ -1456,19 +1462,20 @@ def ingest_segments(day: str) -> Any:
                 day_dir, stream, segment, written, size
             )
 
-            # Deduplicate by sha256 - later uploads overwrite earlier
-            segments[segment]["files_by_sha"][sha256] = file_info
+            # Deduplicate exact same name+sha records; identical bytes under
+            # different names must remain separately corroboratable.
+            segments[segment]["files_by_identity"][(written, sha256)] = file_info
 
-    # Convert files_by_sha dicts to lists and sort by segment key
+    # Convert files_by_identity dicts to lists and sort by segment key
     result = []
     for segment_data in sorted(segments.values(), key=lambda s: s["key"]):
-        if not segment_data["files_by_sha"]:
+        if not segment_data["files_by_identity"]:
             continue
         segment_key = segment_data["key"]
         entry = {
             "key": segment_key,
             "observed": segment_key in observed_segments,
-            "files": list(segment_data["files_by_sha"].values()),
+            "files": list(segment_data["files_by_identity"].values()),
         }
         if "original_key" in segment_data:
             entry["original_key"] = segment_data["original_key"]

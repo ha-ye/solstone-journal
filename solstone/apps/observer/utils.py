@@ -29,7 +29,7 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import error_response
 from solstone.observe.protocol import OBSERVER_HANDLE_HEADER
 from solstone.think.contract.journal import ContractIssue
-from solstone.think.journal_io import atomic_replace, write_bytes_exclusive
+from solstone.think.journal_io import atomic_replace, hold_lock, write_bytes_exclusive
 from solstone.think.media import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS
 from solstone.think.segment_files import (
     INGEST_MANIFEST_NAME,
@@ -745,6 +745,17 @@ def save_ingest_plan(plan: IngestPlan, *, allow_reentry: bool) -> IngestApplyRes
     """Apply a resolved ingest plan, writing client bytes create-exclusively."""
     if plan.status == "duplicate":
         segment_dir = day_path(plan.day, create=False) / plan.stream / plan.segment
+        if plan.held_files and not _held_files_are_current(
+            segment_dir, plan.held_files
+        ):
+            if allow_reentry:
+                return IngestApplyResult(
+                    files_written=[],
+                    files_already_held=[],
+                    bytes_written=0,
+                    reenter_resolution=True,
+                )
+            raise FileNotFoundError("held ingest files changed before response")
         if plan.held_files:
             write_ingest_manifest(
                 segment_dir,
@@ -790,6 +801,20 @@ def save_ingest_plan(plan: IngestPlan, *, allow_reentry: bool) -> IngestApplyRes
         files_written.append(file.written)
         bytes_written += file.size
 
+    # This closes the practical planner-to-response gap for held files, but it
+    # is not a full filesystem lock: a delete after this check can still race
+    # the history append/HTTP response. Closing that final gap needs a broader
+    # segment lock that observer ingest does not currently own.
+    if plan.held_files and not _held_files_are_current(segment_dir, plan.held_files):
+        if allow_reentry:
+            return IngestApplyResult(
+                files_written=files_written,
+                files_already_held=files_already_held,
+                bytes_written=bytes_written,
+                reenter_resolution=True,
+            )
+        raise FileNotFoundError("held ingest files changed before response")
+
     if plan.write_files or plan.held_files:
         write_ingest_manifest(
             segment_dir,
@@ -808,18 +833,21 @@ def write_ingest_manifest(
 ) -> None:
     """Write the journal-authored ingest manifest for a segment."""
     manifest_path = segment_dir / INGEST_MANIFEST_NAME
-    existing = _read_ingest_manifest(manifest_path)
-    manifest_files = dict(existing.get("files", {})) if existing else {}
-    for file in files:
-        if file.is_reserved:
-            continue
-        manifest_files[file.written] = {"sha256": file.sha256, "size": file.size}
-    manifest = {
-        "schema_version": INGEST_MANIFEST_SCHEMA_VERSION,
-        "requested_segment": requested_segment,
-        "files": manifest_files,
-    }
-    atomic_replace(manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    with hold_lock(manifest_path):
+        existing = _read_ingest_manifest(manifest_path)
+        manifest_files = dict(existing.get("files", {})) if existing else {}
+        for file in files:
+            if file.is_reserved:
+                continue
+            manifest_files[file.written] = {"sha256": file.sha256, "size": file.size}
+        manifest = {
+            "schema_version": INGEST_MANIFEST_SCHEMA_VERSION,
+            "requested_segment": requested_segment,
+            "files": manifest_files,
+        }
+        atomic_replace(
+            manifest_path, json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        )
 
 
 def _content_identity_files(files: list[IngestFile]) -> list[IngestFile]:
@@ -1041,8 +1069,17 @@ def _read_ingest_manifest(path: Path) -> dict[str, Any]:
         return {}
     if not isinstance(raw, dict):
         return {}
+    schema_version = raw.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version != INGEST_MANIFEST_SCHEMA_VERSION
+    ):
+        return {}
     files = raw.get("files")
     if not isinstance(files, dict):
+        return {}
+    if not all(isinstance(entry, dict) for entry in files.values()):
         return {}
     return raw
 
@@ -1059,6 +1096,25 @@ def _manifest_entry_matches(entry: object, file: IngestFile) -> bool:
         and entry.get("sha256") == file.sha256
         and entry.get("size") == file.size
     )
+
+
+def _held_files_are_current(segment_dir: Path, files: list[IngestFile]) -> bool:
+    manifest_files = _manifest_files(segment_dir)
+    for file in files:
+        target = segment_dir / file.written
+        if target.exists():
+            try:
+                if _file_sha256(target) == file.sha256:
+                    continue
+            except OSError:
+                pass
+        manifest_entry = manifest_files.get(file.written)
+        if _manifest_entry_matches(
+            manifest_entry, file
+        ) and _has_terminal_processing_proof(target, file.size):
+            continue
+        return False
+    return True
 
 
 def _has_terminal_processing_proof(path: Path, size: int) -> bool:
