@@ -12,7 +12,8 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ### Changed
 
-- pdf import and pdf export now have separate extras: `pdf-import` adds the new pypdfium2 worker with no system packages, while `pdf-export` carries weasyprint and pango for newsletter and reflection downloads. the existing `pdf` extra and document import hint are unchanged for now.
+- pdf import and pdf export now have separate extras: `pdf-import` adds the new pypdfium2 worker with no system packages, while `pdf-export` carries weasyprint and pango for newsletter and reflection downloads.
+- document import now reads each pdf page by page through the pypdfium2 worker, labels model-generated text clearly, and retires the legacy pypdf/pdf2image document-import path.
 
 ### Fixed
 

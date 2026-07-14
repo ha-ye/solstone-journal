@@ -540,8 +540,9 @@ def _render_transcript(
     return f"{header}\n\n{body}\n", stats
 
 
-def _collect_worker_outputs(pdf_path: Path, *, render_dir: Path) -> _WorkerOutputs:
-    first = run_pdf_worker("extract", pdf_path).payload
+def _collect_worker_outputs(
+    first: dict[str, Any], pdf_path: Path, *, render_dir: Path
+) -> _WorkerOutputs:
     render_pages = _render_set(first)
     second: dict[str, Any] | None = None
     if render_pages:
@@ -729,15 +730,12 @@ class DocumentImporter:
         for index, pdf_path in enumerate(pdfs):
             with tempfile.TemporaryDirectory() as render_root:
                 try:
-                    outputs = _collect_worker_outputs(
-                        pdf_path=pdf_path,
-                        render_dir=Path(render_root),
-                    )
-                    timestamp_choice = _choose_timestamp(outputs.payload, pdf_path)
+                    first = run_pdf_worker("extract", pdf_path).payload
+                    timestamp_choice = _choose_timestamp(first, pdf_path)
                     claim = _claim_segment(
                         journal_root,
                         timestamp=timestamp_choice.timestamp,
-                        sha256=str(outputs.payload.get("sha256") or ""),
+                        sha256=str(first.get("sha256") or ""),
                         used_keys=used_keys,
                         force=force,
                     )
@@ -747,6 +745,14 @@ class DocumentImporter:
                         )
                         continue
 
+                    # Imported documents use at most two extract calls: pass 1 above
+                    # is authoritative text/metadata, pass 2 here renders only the
+                    # selected pages. Pure text and already-imported skips cost one.
+                    outputs = _collect_worker_outputs(
+                        first,
+                        pdf_path=pdf_path,
+                        render_dir=Path(render_root),
+                    )
                     prepared = _prepare_document(
                         outputs,
                         pdf_path=pdf_path,

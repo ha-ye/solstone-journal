@@ -68,8 +68,8 @@ dependencies = [
 #
 # [journal-host], [pdf-import], [pdf-export], and [pdf] remain internal
 # building blocks. The leaf packages compose [journal-host] with either the CPU
-# ONNX runtime or the NVIDIA CUDA runtime; [pdf] backs the legacy per-feature
-# install hints while the split extras back new focused feature hints.
+# ONNX runtime or the NVIDIA CUDA runtime; [pdf] is a convenience composite of
+# [pdf-import] and [pdf-export], while the split extras back focused feature hints.
 #
 # Base solstone keeps only the `sol`/`solstone` scripts. Install exactly one
 # journal leaf; the CPU and GPU ONNX wheels own the same `onnxruntime/` import

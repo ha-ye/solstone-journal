@@ -653,8 +653,17 @@ def test_segment_identity_force_controls_same_content_regeneration(
         raise AssertionError("same-content skip must not call generate")
 
     monkeypatch.setattr(mod, "generate", fail_generate)
+    real_worker = mod.run_pdf_worker
+    worker_calls = []
+
+    def spy_worker(command, pdf_path, **kwargs):
+        worker_calls.append((command, Path(pdf_path).name, dict(kwargs)))
+        return real_worker(command, pdf_path, **kwargs)
+
+    monkeypatch.setattr(mod, "run_pdf_worker", spy_worker)
     skipped_result = _import_pdf(mod, first, tmp_path)
 
+    assert worker_calls == [("extract", "first.pdf", {})]
     assert skipped_result.entries_written == 0
     assert skipped_result.segments == []
     assert skipped_result.hard_failures == ()
@@ -664,6 +673,7 @@ def test_segment_identity_force_controls_same_content_regeneration(
     assert _snapshot_tree(first_segment) == initial_snapshot
     assert manifest_path.read_bytes() == initial_manifest
 
+    monkeypatch.setattr(mod, "run_pdf_worker", real_worker)
     _install_generate(monkeypatch, mod, ["Forced scanned text", "Forced description"])
     same_result = _import_pdf(mod, first, tmp_path, force=True)
 
