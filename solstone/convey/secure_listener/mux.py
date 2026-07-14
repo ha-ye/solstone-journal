@@ -256,11 +256,19 @@ class Multiplexer:
 
         maybe_state = self._streams.get(frame.stream_id)
         if maybe_state is None:
-            await self._emit_reset(
-                frame.stream_id,
-                RESET_PROTOCOL_ERROR,
-                RESET_CTX_UNKNOWN_STREAM,
-            )
+            # An unknown id means we hold no state for this stream: the common
+            # case is that both directions closed and `_forget` dropped it while
+            # the peer's CLOSE/RESET was still in flight. CLOSE and RESET are
+            # terminal — they ask us to tear down a stream that is already gone,
+            # so there is nothing to tear down and nothing to protect. DATA or
+            # WINDOW instead assert the peer believes the stream is live, which
+            # is a genuine desync.
+            if frame.flags & (FLAG_DATA | FLAG_WINDOW):
+                await self._emit_reset(
+                    frame.stream_id,
+                    RESET_PROTOCOL_ERROR,
+                    RESET_CTX_UNKNOWN_STREAM,
+                )
             return
         state = maybe_state
 

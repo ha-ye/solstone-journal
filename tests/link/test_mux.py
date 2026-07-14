@@ -31,6 +31,8 @@ from solstone.convey.secure_listener.framing import (
     build_open,
     build_ping,
     build_pong,
+    build_reset,
+    build_window,
     parse_reset_reason,
 )
 from solstone.convey.secure_listener.mux import (
@@ -227,6 +229,98 @@ async def test_unknown_stream_data_gets_reset() -> None:
 
     frames = _decode_frames(sent)
     assert any(frame.stream_id == 99 and frame.flags & FLAG_RESET for frame in frames)
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_stream_bare_close_is_ignored() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        return
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    await mux.feed(build_close(99).encode())
+
+    assert _decode_frames(sent) == []
+    assert diags == []
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_stream_bare_reset_is_ignored() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        return
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    await mux.feed(build_reset(99, RESET_CANCEL).encode())
+
+    assert _decode_frames(sent) == []
+    assert diags == []
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_stream_data_still_gets_reset_with_diagnostic() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        return
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    await mux.feed(build_data(99, b"x").encode())
+
+    frames = _decode_frames(sent)
+    _assert_single_reset(frames, 99, RESET_PROTOCOL_ERROR)
+    assert diags == [
+        ResetDiagnostic(
+            stream_id=99,
+            reason_code=RESET_PROTOCOL_ERROR,
+            reason_name="protocol_error",
+            context=RESET_CTX_UNKNOWN_STREAM,
+        )
+    ]
+    await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_stream_window_gets_reset() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        return
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    await mux.feed(build_window(99, 1).encode())
+
+    frames = _decode_frames(sent)
+    _assert_single_reset(frames, 99, RESET_PROTOCOL_ERROR)
+    assert diags == [
+        ResetDiagnostic(
+            stream_id=99,
+            reason_code=RESET_PROTOCOL_ERROR,
+            reason_name="protocol_error",
+            context=RESET_CTX_UNKNOWN_STREAM,
+        )
+    ]
     await mux.close()
 
 
