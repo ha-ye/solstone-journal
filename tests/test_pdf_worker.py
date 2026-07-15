@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import resource
 import subprocess
 import sys
 from pathlib import Path
@@ -13,12 +14,16 @@ import pytest
 from PIL import Image
 
 from solstone.observe.pdf_worker import (
+    DEFAULT_RLIMIT_AS_MB,
     ENV_RLIMIT_AS_MB,
+    ENV_RLIMIT_CPU_SECONDS,
     PdfWorkerCorruptError,
     PdfWorkerEncryptedError,
     PdfWorkerEngineError,
     PdfWorkerRenderIOError,
     PdfWorkerTimeoutError,
+    _apply_rlimits_from_env,
+    _positive_env_int,
     run_pdf_worker,
 )
 from tests.pdf_worker_fixtures import (
@@ -350,17 +355,107 @@ def test_run_pdf_worker_unparseable_or_crashed_worker_maps_to_engine_failure(
     assert exc.value.returncode == returncode
 
 
-@pytest.mark.timeout(60)
-def test_run_pdf_worker_tiny_address_limit_maps_to_engine_failure(tmp_path):
-    pdf = write_text_fixture(tmp_path / "clear.pdf")
+def test_apply_rlimits_from_env_applies_set_as_megabytes(monkeypatch):
+    recorded = []
 
-    with pytest.raises(PdfWorkerEngineError):
-        run_pdf_worker(
-            "inspect",
-            pdf,
-            env={ENV_RLIMIT_AS_MB: "64"},
-            timeout_seconds=20,
-        )
+    def recorder(kind, limits_tuple):
+        recorded.append((kind, limits_tuple))
+
+    def fake_getrlimit(_kind):
+        return (0, resource.RLIM_INFINITY)
+
+    monkeypatch.setattr("solstone.observe.pdf_worker.resource.setrlimit", recorder)
+    monkeypatch.setattr(
+        "solstone.observe.pdf_worker.resource.getrlimit",
+        fake_getrlimit,
+    )
+    monkeypatch.setenv(ENV_RLIMIT_AS_MB, "128")
+    monkeypatch.delenv(ENV_RLIMIT_CPU_SECONDS, raising=False)
+
+    _apply_rlimits_from_env()
+
+    as_calls = [call for call in recorded if call[0] == resource.RLIMIT_AS]
+    assert as_calls == [(resource.RLIMIT_AS, (128 * 1024 * 1024, 128 * 1024 * 1024))]
+
+
+def test_apply_rlimits_from_env_uses_default_as_megabytes_when_unset(monkeypatch):
+    recorded = []
+
+    def recorder(kind, limits_tuple):
+        recorded.append((kind, limits_tuple))
+
+    def fake_getrlimit(_kind):
+        return (0, resource.RLIM_INFINITY)
+
+    monkeypatch.setattr("solstone.observe.pdf_worker.resource.setrlimit", recorder)
+    monkeypatch.setattr(
+        "solstone.observe.pdf_worker.resource.getrlimit",
+        fake_getrlimit,
+    )
+    monkeypatch.delenv(ENV_RLIMIT_AS_MB, raising=False)
+    monkeypatch.delenv(ENV_RLIMIT_CPU_SECONDS, raising=False)
+
+    _apply_rlimits_from_env()
+
+    limit = DEFAULT_RLIMIT_AS_MB * 1024 * 1024
+    as_calls = [call for call in recorded if call[0] == resource.RLIMIT_AS]
+    assert as_calls == [(resource.RLIMIT_AS, (limit, limit))]
+
+
+def test_apply_rlimits_from_env_skips_as_limit_when_non_positive(monkeypatch):
+    recorded = []
+
+    def recorder(kind, limits_tuple):
+        recorded.append((kind, limits_tuple))
+
+    def fake_getrlimit(_kind):
+        return (0, resource.RLIM_INFINITY)
+
+    monkeypatch.setattr("solstone.observe.pdf_worker.resource.setrlimit", recorder)
+    monkeypatch.setattr(
+        "solstone.observe.pdf_worker.resource.getrlimit",
+        fake_getrlimit,
+    )
+    monkeypatch.setenv(ENV_RLIMIT_AS_MB, "0")
+    monkeypatch.delenv(ENV_RLIMIT_CPU_SECONDS, raising=False)
+
+    _apply_rlimits_from_env()
+
+    assert not any(kind == resource.RLIMIT_AS for kind, _limits in recorded)
+
+
+def test_positive_env_int_maps_unset_default_and_non_positive(monkeypatch):
+    monkeypatch.delenv(ENV_RLIMIT_CPU_SECONDS, raising=False)
+    assert _positive_env_int(ENV_RLIMIT_CPU_SECONDS, 7) == 7
+
+    monkeypatch.setenv(ENV_RLIMIT_CPU_SECONDS, "0")
+    assert _positive_env_int(ENV_RLIMIT_CPU_SECONDS, 7) is None
+
+    monkeypatch.setenv(ENV_RLIMIT_CPU_SECONDS, "-1")
+    assert _positive_env_int(ENV_RLIMIT_CPU_SECONDS, 7) is None
+
+
+def test_run_pdf_worker_env_override_merges_onto_environ(monkeypatch, tmp_path):
+    pdf = write_text_fixture(tmp_path / "clear.pdf")
+    captured_env = []
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = '{"schema": "sol-pdf/1", "warnings": []}'
+        stderr = ""
+
+    def fake_run(*_args, **kwargs):
+        captured_env.append(kwargs["env"])
+        return FakeCompleted()
+
+    monkeypatch.setattr("solstone.observe.pdf_worker.subprocess.run", fake_run)
+    monkeypatch.setenv("SOLSTONE_PDF_WORKER_TEST_MARKER", "1")
+
+    run_pdf_worker("inspect", pdf, env={ENV_RLIMIT_AS_MB: "64"})
+
+    assert len(captured_env) == 1
+    assert captured_env[0][ENV_RLIMIT_AS_MB] == "64"
+    assert captured_env[0]["SOLSTONE_PDF_WORKER_TEST_MARKER"] == "1"
 
 
 def test_run_pdf_worker_timeout_maps_to_typed_timeout(monkeypatch, tmp_path):
