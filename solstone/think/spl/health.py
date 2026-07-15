@@ -8,6 +8,7 @@ REASON_SERVICE_TOKEN_REJECTED = "service_token_rejected"
 REASON_RELAY_TUNNEL_REJECTED = "relay_tunnel_rejected"
 REASON_RELAY_TUNNEL_UNREACHABLE = "relay_tunnel_unreachable"
 REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE = "local_private_listener_unreachable"
+REASON_RELAY_ADMISSION_SATURATED = "relay_admission_saturated"
 
 OFFLINE_TUNNEL_REASONS = frozenset(
     {

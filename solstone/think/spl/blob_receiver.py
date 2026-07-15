@@ -25,8 +25,15 @@ from solstone.think.convey_client import ConveyClient
 from solstone.think.link.auth import AuthorizedClients, ClientEntry
 from solstone.think.link.paths import LinkState, authorized_clients_path
 from solstone.think.link.upload_key import load_upload_key
+from solstone.think.spl.admission import BlobAdmissionGate
+from solstone.think.spl.health import REASON_RELAY_ADMISSION_SATURATED
 from solstone.think.spl.hpke import open_auth
-from solstone.think.spl.ws_buffer import BufferedWsReader
+from solstone.think.spl.ws_buffer import (
+    BufferedWsReader,
+    WsBufferClosed,
+    WsProgressTimeout,
+    WsReadTimeout,
+)
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +45,11 @@ MAX_CT_LEN = 80 * 1024 * 1024
 MAX_ENTRIES = 64
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_TOTAL_BYTES = 64 * 1024 * 1024
+_OFFER_DEADLINE_S = 5.0
+_ENC_DEADLINE_S = 5.0
+_CT_DEADLINE_S = 300.0
+_CT_WINDOW_S = 10.0
+_CT_MIN_BYTES_PER_WINDOW = 64 * 1024
 
 _OFFER_MAGIC = b"SBO1"
 _READY_MAGIC = b"SBR1"
@@ -55,6 +67,7 @@ BlobIngestPost = Callable[
     [str, str, str, dict[str, Any], list[tuple[str, bytes, str]], str],
     Awaitable[dict[str, Any]] | dict[str, Any],
 ]
+AdmissionEmit = Callable[[str, dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -87,8 +100,34 @@ async def receive_blob(
     ws: Any,
     *,
     ingest_post: BlobIngestPost | None = None,
+    gate: BlobAdmissionGate | None = None,
+    emit: AdmissionEmit | None = None,
+    offer_deadline_s: float | None = None,
+    enc_deadline_s: float | None = None,
+    ct_deadline_s: float | None = None,
+    ct_window_s: float | None = None,
+    ct_min_bytes_per_window: int | None = None,
+    time_source: Callable[[], float] | None = None,
 ) -> None:
-    header = await reader.read_exactly(OFFER_LEN)
+    offer_deadline_s = (
+        offer_deadline_s if offer_deadline_s is not None else _OFFER_DEADLINE_S
+    )
+    enc_deadline_s = enc_deadline_s if enc_deadline_s is not None else _ENC_DEADLINE_S
+    ct_deadline_s = ct_deadline_s if ct_deadline_s is not None else _CT_DEADLINE_S
+    ct_window_s = ct_window_s if ct_window_s is not None else _CT_WINDOW_S
+    ct_min_bytes_per_window = (
+        ct_min_bytes_per_window
+        if ct_min_bytes_per_window is not None
+        else _CT_MIN_BYTES_PER_WINDOW
+    )
+
+    try:
+        header = await reader.read_exactly_bounded(
+            OFFER_LEN, deadline_s=offer_deadline_s, time_source=time_source
+        )
+    except (WsReadTimeout, WsBufferClosed):
+        await _close_ws(ws)
+        return
     try:
         offer = _parse_offer(header)
     except ValueError:
@@ -116,63 +155,98 @@ async def receive_blob(
         await _close_ws(ws)
         return
 
-    await _send_ready(ws, 0x00)
-    enc = await reader.read_exactly(ENC_LEN)
-    ct = await reader.read_exactly(offer.ct_len)
-    info = _blob_info(offer.sender_fp)
-    try:
-        opened = open_auth(
-            enc,
-            load_upload_key().private_key,
-            info,
-            bytes.fromhex(entry.pubkey_spki),
-            ct,
-            offer.header,
-        )
-    except Exception as exc:
-        log.warning(
-            "blob open failed: blob_id=%s sender_fp=%s ct_len=%d type=%s",
-            offer.blob_id_hex,
-            offer.sender_fingerprint,
-            offer.ct_len,
-            type(exc).__name__,
-        )
-        await _close_ws(ws)
-        return
+    sender_held = False
+    if gate is not None:
+        if not gate.try_acquire_sender(offer.sender_fingerprint):
+            if emit is not None:
+                emit(
+                    "admission_saturated",
+                    {
+                        "reason": REASON_RELAY_ADMISSION_SATURATED,
+                        "count": gate.saturated_count,
+                    },
+                )
+            log.warning(
+                "blob receive rejected: reason=%s", REASON_RELAY_ADMISSION_SATURATED
+            )
+            await _close_ws(ws)
+            return
+        sender_held = True
 
     try:
-        unpacked = _safe_unpack(opened.plaintext)
-        post = ingest_post or _default_ingest_post
-        response = post(
-            unpacked.day,
-            unpacked.segment,
-            unpacked.host,
-            unpacked.meta,
-            unpacked.files,
-            entry.observer_handle,
-        )
-        if hasattr(response, "__await__"):
-            response = await response
-        status = _ack_status(response)
-    except Exception as exc:
-        log.warning(
-            "blob ingest failed: blob_id=%s sender_fp=%s type=%s",
+        await _send_ready(ws, 0x00)
+        try:
+            enc = await reader.read_exactly_bounded(
+                ENC_LEN, deadline_s=enc_deadline_s, time_source=time_source
+            )
+            ct = await reader.read_exactly_progress(
+                offer.ct_len,
+                deadline_s=ct_deadline_s,
+                window_s=ct_window_s,
+                min_bytes_per_window=ct_min_bytes_per_window,
+                time_source=time_source,
+            )
+        except (WsReadTimeout, WsProgressTimeout, WsBufferClosed):
+            await _close_ws(ws)
+            return
+
+        info = _blob_info(offer.sender_fp)
+        try:
+            opened = open_auth(
+                enc,
+                load_upload_key().private_key,
+                info,
+                bytes.fromhex(entry.pubkey_spki),
+                ct,
+                offer.header,
+            )
+        except Exception as exc:
+            log.warning(
+                "blob open failed: blob_id=%s sender_fp=%s ct_len=%d type=%s",
+                offer.blob_id_hex,
+                offer.sender_fingerprint,
+                offer.ct_len,
+                type(exc).__name__,
+            )
+            await _close_ws(ws)
+            return
+
+        try:
+            unpacked = _safe_unpack(opened.plaintext)
+            post = ingest_post or _default_ingest_post
+            response = post(
+                unpacked.day,
+                unpacked.segment,
+                unpacked.host,
+                unpacked.meta,
+                unpacked.files,
+                entry.observer_handle,
+            )
+            if hasattr(response, "__await__"):
+                response = await response
+            status = _ack_status(response)
+        except Exception as exc:
+            log.warning(
+                "blob ingest failed: blob_id=%s sender_fp=%s type=%s",
+                offer.blob_id_hex,
+                offer.sender_fingerprint,
+                type(exc).__name__,
+            )
+            await _close_ws(ws)
+            return
+        k_ack = opened.export(b"spl-blob-ack-v1", 32)
+        await ws.send(_ack(offer.blob_id, status, k_ack))
+        log.info(
+            "blob accepted: blob_id=%s sender_fp=%s status=%#04x files=%d",
             offer.blob_id_hex,
             offer.sender_fingerprint,
-            type(exc).__name__,
+            status,
+            len(unpacked.files),
         )
         await _close_ws(ws)
-        return
-    k_ack = opened.export(b"spl-blob-ack-v1", 32)
-    await ws.send(_ack(offer.blob_id, status, k_ack))
-    log.info(
-        "blob accepted: blob_id=%s sender_fp=%s status=%#04x files=%d",
-        offer.blob_id_hex,
-        offer.sender_fingerprint,
-        status,
-        len(unpacked.files),
-    )
-    await _close_ws(ws)
+    finally:
+        if sender_held and gate is not None:
+            gate.release_sender(offer.sender_fingerprint)
 
 
 def _parse_offer(header: bytes) -> Offer:

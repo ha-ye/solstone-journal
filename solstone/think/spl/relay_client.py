@@ -20,10 +20,16 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed, InvalidStatus, InvalidURI
 
+from solstone.think.spl.admission import (
+    _GLOBAL_ADMISSION_CEILING,
+    _SENDER_ADMISSION_CEILING,
+    BlobAdmissionGate,
+)
 from solstone.think.spl.health import (
     LINK_HEALTH_EVENT,
     REASON_HOME_MISSING_MOBILE,
     REASON_LOCAL_PRIVATE_LISTENER_UNREACHABLE,
+    REASON_RELAY_ADMISSION_SATURATED,
     REASON_RELAY_TUNNEL_REJECTED,
     REASON_RELAY_TUNNEL_UNREACHABLE,
     REASON_SERVICE_TOKEN_REJECTED,
@@ -39,6 +45,7 @@ _HEALTH_REFRESH_SECONDS = 30.0
 _LINK_DIRECT_HOST = "127.0.0.1"
 _LINK_DIRECT_PORT = 7657
 _BUF = 65536
+_DISPATCH_READ_DEADLINE_S = 10.0
 
 CallosumEmit = Callable[[str, dict[str, Any]], None]
 
@@ -72,12 +79,20 @@ class RelayClient:
         relay_endpoint: str,
         service_token: str,
         callosum_emit: CallosumEmit | None = None,
+        dispatch_read_deadline_s: float = _DISPATCH_READ_DEADLINE_S,
+        global_admission_ceiling: int = _GLOBAL_ADMISSION_CEILING,
+        sender_admission_ceiling: int = _SENDER_ADMISSION_CEILING,
     ) -> None:
         self._instance_id = instance_id
         self._relay_endpoint = relay_endpoint.rstrip("/")
         self._relay_ws_endpoint = _to_ws(self._relay_endpoint)
         self._service_token = service_token
         self._emit = callosum_emit or (lambda _event, _fields: None)
+        self._dispatch_read_deadline_s = dispatch_read_deadline_s
+        self._admission_gate = BlobAdmissionGate(
+            global_ceiling=global_admission_ceiling,
+            sender_ceiling=sender_admission_ceiling,
+        )
         self._running = False
         self._tunnels: dict[str, asyncio.Task[None]] = {}
         self._listen_generation = 0
@@ -164,6 +179,7 @@ class RelayClient:
     async def _handle_tunnel(self, tunnel_id: str) -> None:
         assert self._service_token is not None
         tcp_writer: asyncio.StreamWriter | None = None
+        global_held = False
         try:
             async with websockets.connect(
                 self._url_for(f"/tunnel/{tunnel_id}", token=self._service_token),
@@ -173,8 +189,17 @@ class RelayClient:
                 self._record_tunnel_success()
                 self._emit_health()
                 reader = BufferedWsReader(ws)
-                prefix = await reader.peek(4)
+                if not self._admission_gate.try_acquire_global():
+                    self._emit_admission_saturated()
+                    await ws.close()
+                    return
+                global_held = True
+                prefix = await reader.peek_bounded(
+                    4, deadline_s=self._dispatch_read_deadline_s
+                )
                 if prefix[:1] == b"\x16":
+                    self._admission_gate.release_global()
+                    global_held = False
                     try:
                         tcp_reader, tcp_writer = await asyncio.open_connection(
                             _LINK_DIRECT_HOST,
@@ -203,7 +228,12 @@ class RelayClient:
                 elif prefix == b"SBO1":
                     from solstone.think.spl.blob_receiver import receive_blob
 
-                    await receive_blob(reader, ws)
+                    await receive_blob(
+                        reader,
+                        ws,
+                        gate=self._admission_gate,
+                        emit=self._emit,
+                    )
                 else:
                     log.info(
                         "tunnel %s closed: unknown first bytes=%s",
@@ -251,6 +281,8 @@ class RelayClient:
         except Exception as exc:  # noqa: BLE001
             log.warning("tunnel %s error: type=%s", tunnel_id, type(exc).__name__)
         finally:
+            if global_held:
+                self._admission_gate.release_global()
             if tcp_writer is not None:
                 tcp_writer.close()
                 with contextlib.suppress(OSError, RuntimeError):
@@ -273,8 +305,21 @@ class RelayClient:
                 "last_relay_tunnel_error": self._last_tunnel_error,
                 "last_relay_tunnel_error_at": self._last_tunnel_error_at,
                 "relay_tunnel_error_status": self._last_tunnel_error_status,
+                "relay_admission_saturated_count": (
+                    self._admission_gate.saturated_count
+                ),
             },
         )
+
+    def _emit_admission_saturated(self) -> None:
+        self._emit(
+            "admission_saturated",
+            {
+                "reason": REASON_RELAY_ADMISSION_SATURATED,
+                "count": self._admission_gate.saturated_count,
+            },
+        )
+        log.warning("tunnel rejected: reason=%s", REASON_RELAY_ADMISSION_SATURATED)
 
     def _set_state(self, coarse_event: str, state: str) -> None:
         self._state = state

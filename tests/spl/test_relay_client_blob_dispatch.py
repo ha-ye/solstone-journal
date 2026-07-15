@@ -103,7 +103,7 @@ async def test_handle_tunnel_blob_branch_does_not_open_loopback(
     async def fail_open_connection(*_args: Any) -> tuple[FakeTcpReader, FakeTcpWriter]:
         raise AssertionError("blob branch must not open loopback")
 
-    async def fake_receive(reader, got_ws, *, ingest_post=None) -> None:
+    async def fake_receive(reader, got_ws, **_kwargs: Any) -> None:
         nonlocal called
         assert got_ws is ws
         assert await reader.read_exactly(4) == b"SBO1"
