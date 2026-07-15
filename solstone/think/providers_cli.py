@@ -122,13 +122,13 @@ async def _check_cogitate(
                 state.readiness_for_provider("local", "cogitate").reason_code
                 or "unknown"
             )
-            if not status.get("cogitate_cli_found"):
-                from solstone.think.providers.local_endpoint import (
-                    resolve_local_endpoint,
-                )
+            from solstone.think.providers.local_endpoint import resolve_local_endpoint
 
-                if not resolve_local_endpoint().is_bundled:
-                    return "skip", _local_readiness_message(status), reason_code
+            if not resolve_local_endpoint().is_bundled:
+                return "skip", _local_readiness_message(status), reason_code
+            if {"runtime_missing", "binary_missing", "model_missing"}.intersection(
+                status.get("issues", [])
+            ):
                 from solstone.think.providers import local_install
 
                 return (

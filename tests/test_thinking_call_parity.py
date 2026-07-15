@@ -326,7 +326,6 @@ def test_providers_show_human_and_set_errors(
         "local": {
             "generate_ready": False,
             "cogitate_ready": False,
-            "cogitate_cli": "llama-server",
             "issues": ["binary_missing"],
         },
         "openai": {"generate_ready": True, "cogitate_ready": True, "issues": []},

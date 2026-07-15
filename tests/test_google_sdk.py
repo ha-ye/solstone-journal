@@ -8,8 +8,7 @@ import pytest
 from solstone.think.providers import PROVIDER_METADATA, build_provider_status
 
 
-def test_google_provider_metadata_has_no_cogitate_cli() -> None:
-    assert "cogitate_cli" not in PROVIDER_METADATA["google"]
+def test_google_provider_metadata_has_no_runtime_adapter() -> None:
     assert "cogitate_runtime" not in PROVIDER_METADATA["google"]
 
 
@@ -51,6 +50,4 @@ def test_google_provider_status_uses_managed_key_only(
         [{"name": "google", "env_key": "GOOGLE_API_KEY"}],
     )["google"]
 
-    assert "cogitate_cli" not in status
-    assert "cogitate_cli_found" not in status
     assert status == expected_status

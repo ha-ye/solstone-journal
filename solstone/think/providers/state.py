@@ -285,7 +285,7 @@ def local_runtime_ready(model_id: str | None = None) -> bool:
 
 
 def local_status_dict() -> dict:
-    """Build the legacy local provider status dict."""
+    """Build the local provider status dict."""
     from solstone.think.models import is_local_provider_needed
     from solstone.think.providers.local_endpoint import (
         probe_local_endpoint,
@@ -301,8 +301,6 @@ def local_status_dict() -> dict:
             "selected": selected,
             "generate_ready": reachable,
             "cogitate_ready": reachable,
-            "cogitate_cli": None,
-            "cogitate_cli_found": False,
             "issues": [] if reachable else ["local_endpoint_unreachable"],
         }
 
@@ -320,8 +318,6 @@ def local_status_dict() -> dict:
                 "selected": False,
                 "generate_ready": False,
                 "cogitate_ready": False,
-                "cogitate_cli": "mlx-vlm",
-                "cogitate_cli_found": runtime_available,
                 "issues": [],
             }
 
@@ -340,8 +336,6 @@ def local_status_dict() -> dict:
             "selected": True,
             "generate_ready": ready,
             "cogitate_ready": ready,
-            "cogitate_cli": "mlx-vlm",
-            "cogitate_cli_found": runtime_available,
             "issues": issues,
         }
 
@@ -358,8 +352,6 @@ def local_status_dict() -> dict:
             "selected": False,
             "generate_ready": False,
             "cogitate_ready": False,
-            "cogitate_cli": "llama-server",
-            "cogitate_cli_found": binary_installed,
             "issues": [],
         }
 
@@ -387,8 +379,6 @@ def local_status_dict() -> dict:
         "selected": True,
         "generate_ready": ready,
         "cogitate_ready": ready,
-        "cogitate_cli": "llama-server",
-        "cogitate_cli_found": binary_installed,
         "issues": issues,
     }
 

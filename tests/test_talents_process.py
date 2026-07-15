@@ -60,7 +60,6 @@ def test_talent_main_sigterm_exits_without_cancelled_traceback(tmp_path):
             providers.PROVIDER_METADATA["test"] = {{
                 "label": "Test",
                 "env_key": "",
-                "cogitate_cli": "",
             }}
             sys.modules["solstone_test_provider"] = fake_provider
             """

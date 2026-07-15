@@ -2397,7 +2397,6 @@ def test_build_provider_status_local_readiness(monkeypatch):
     assert status["configured"] is True
     assert status["generate_ready"] is True
     assert status["cogitate_ready"] is True
-    assert status["cogitate_cli"] == "llama-server"
     assert status["issues"] == []
 
 
@@ -2527,8 +2526,6 @@ def test_local_provider_status_carries_install_hint_substring(monkeypatch):
     assert status["configured"] is False
     assert status["generate_ready"] is False
     assert status["cogitate_ready"] is False
-    assert status["cogitate_cli"] == "llama-server"
-    assert status["cogitate_cli_found"] is False
     assert status["issues"] == [
         "binary_missing",
         "model_missing",

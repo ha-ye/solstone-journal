@@ -862,8 +862,6 @@ def test_local_status_dict_byo(
         "selected": selected_config["providers"]["active"]["provider"] == "local",
         "generate_ready": reachable,
         "cogitate_ready": reachable,
-        "cogitate_cli": None,
-        "cogitate_cli_found": False,
         "issues": expected_issues,
     }
 
@@ -887,14 +885,10 @@ def test_local_status_dict_darwin(monkeypatch):
         "selected",
         "generate_ready",
         "cogitate_ready",
-        "cogitate_cli",
-        "cogitate_cli_found",
         "issues",
     }
     assert status["generate_ready"] is True
     assert status["cogitate_ready"] is True
-    assert status["cogitate_cli"] == "mlx-vlm"
-    assert status["cogitate_cli_found"] is True
     assert status["issues"] == []
 
 

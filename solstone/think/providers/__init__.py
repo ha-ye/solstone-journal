@@ -148,7 +148,6 @@ def build_provider_status(
     -------
     Dict[str, Dict[str, Any]]
         Keyed by provider name. Each entry has readiness fields and issues.
-        Local readiness also includes cogitate_cli and cogitate_cli_found.
     """
     if providers_list is None:
         providers_list = get_provider_list()

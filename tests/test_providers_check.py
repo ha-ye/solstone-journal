@@ -320,7 +320,8 @@ def test_check_cogitate_local_missing_runtime_names_local_install_hint(monkeypat
         "_provider_status",
         lambda _name: {
             "configured": True,
-            "cogitate_cli_found": False,
+            "cogitate_ready": False,
+            "issues": ["model_missing"],
         },
     )
     monkeypatch.setattr(
@@ -349,7 +350,6 @@ def test_check_cogitate_local_endpoint_unreachable_uses_endpoint_reason(monkeypa
         "_provider_status",
         lambda _name: {
             "configured": True,
-            "cogitate_cli_found": False,
             "cogitate_ready": False,
             "issues": ["local_endpoint_unreachable"],
         },

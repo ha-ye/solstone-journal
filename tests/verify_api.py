@@ -438,12 +438,10 @@ def normalize(data: Any, journal_path: str) -> Any:
                         status["cogitate_ready"] = False
                         status["issues"] = [f"{env_keys[_name]} not set"]
                         continue
-                    if isinstance(status, dict) and "cogitate_cli" in status:
-                        status["cogitate_cli_found"] = False
+                    if _name == "local" and isinstance(status, dict):
                         status["cogitate_ready"] = False
                         status["configured"] = False
                         status["generate_ready"] = False
-                        cli = status.get("cogitate_cli", "")
                         issues = [
                             i
                             for i in status.get("issues", [])
@@ -451,28 +449,24 @@ def normalize(data: Any, journal_path: str) -> Any:
                             and "not set" not in i
                             and "not reachable" not in i
                         ]
-                        if _name == "local":
-                            local_issues = [
-                                i
-                                for i in issues
-                                if i
-                                in {
-                                    "binary_missing",
-                                    "gpu_unavailable",
-                                    "model_missing",
-                                    "ram_insufficient",
-                                    "server_unhealthy",
-                                }
-                            ]
-                            for local_issue in ("binary_missing", "model_missing"):
-                                if local_issue not in local_issues:
-                                    local_issues.append(local_issue)
-                            local_issues.append("run `journal install-provider local`")
-                            status["issues"] = sorted(local_issues)
-                            continue
-                        if cli and _name not in {"anthropic", "openai", "google"}:
-                            issues.append(f"{cli} CLI not found on PATH")
-                        status["issues"] = sorted(issues)
+                        local_issues = [
+                            i
+                            for i in issues
+                            if i
+                            in {
+                                "binary_missing",
+                                "gpu_unavailable",
+                                "model_missing",
+                                "ram_insufficient",
+                                "server_unhealthy",
+                            }
+                        ]
+                        for local_issue in ("binary_missing", "model_missing"):
+                            if local_issue not in local_issues:
+                                local_issues.append(local_issue)
+                        local_issues.append("run `journal install-provider local`")
+                        status["issues"] = sorted(local_issues)
+                        continue
             # Normalize env-dependent API key presence
             if key in ("api_keys", "runtime_env"):
                 for k in result:

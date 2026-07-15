@@ -462,7 +462,13 @@ def test_providers_payload_omits_bundled_block(settings_client):
             "cogitate_ready",
             "issues",
         }
-    assert provider_status["local"]["cogitate_cli"] == "llama-server"
+    assert set(provider_status["local"]) == {
+        "configured",
+        "selected",
+        "generate_ready",
+        "cogitate_ready",
+        "issues",
+    }
     assert REMOVED_PROVIDER not in payload
     _assert_install_status(payload["local"])
 
@@ -1083,8 +1089,6 @@ def test_providers_payload_local_status_uses_endpoint_readiness_under_byo(
         "selected": False,
         "generate_ready": True,
         "cogitate_ready": True,
-        "cogitate_cli": None,
-        "cogitate_cli_found": False,
         "issues": [],
     }
 
@@ -1125,8 +1129,6 @@ def test_get_providers_uses_state_local_status(settings_client, monkeypatch):
         "selected": True,
         "generate_ready": True,
         "cogitate_ready": True,
-        "cogitate_cli": "llama-server",
-        "cogitate_cli_found": True,
         "issues": ["sentinel"],
     }
     monkeypatch.setattr(
@@ -1236,8 +1238,6 @@ def test_get_providers_ai_readiness_degrades_without_changing_status_payload(
         "selected": True,
         "generate_ready": True,
         "cogitate_ready": True,
-        "cogitate_cli": "llama-server",
-        "cogitate_cli_found": True,
         "issues": ["sentinel"],
     }
     monkeypatch.setattr(

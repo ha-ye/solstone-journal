@@ -198,8 +198,6 @@
       "provider": "google"
     },
     "local": {
-      "cogitate_cli": "llama-server",
-      "cogitate_cli_found": false,
       "cogitate_ready": false,
       "configured": false,
       "generate_ready": false,
