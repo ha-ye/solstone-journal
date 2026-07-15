@@ -20,7 +20,7 @@ from solstone.convey.sol_initiated.copy import (
 )
 from solstone.convey.sol_initiated.state import latest_unresolved_sol_chat_request
 from solstone.convey.utils import DATE_RE, error_response
-from solstone.think.utils import get_config
+from solstone.think.utils import day_dirs, get_config
 
 chat_bp = Blueprint(
     "app:chat",
@@ -95,6 +95,39 @@ def api_state() -> Any:
     )
 
 
+def _chat_day_count(day: str) -> int:
+    try:
+        return len(read_chat_events(day))
+    except ValueError:
+        logger.warning("corrupt chat stream for %s", day, exc_info=True)
+        return 0
+
+
+@chat_bp.route("/api/index")
+def api_index() -> Any:
+    months: dict[str, int] = {}
+    first_day: str | None = None
+    last_day: str | None = None
+
+    for day_name in day_dirs().keys():
+        count = _chat_day_count(day_name)
+        if count <= 0:
+            continue
+        month = day_name[:6]
+        months[month] = months.get(month, 0) + count
+        if first_day is None or day_name < first_day:
+            first_day = day_name
+        if last_day is None or day_name > last_day:
+            last_day = day_name
+
+    coverage = (
+        {"start": first_day, "end": last_day}
+        if first_day is not None and last_day is not None
+        else None
+    )
+    return jsonify({"coverage": coverage, "months": months})
+
+
 @chat_bp.route("/api/stats/<month>")
 def stats(month: str) -> Any:
     if len(month) != 6 or not month.isdigit():
@@ -120,7 +153,7 @@ def _month_chat_counts(month: str) -> dict[str, int]:
 
     for day_num in range(1, days_in_month + 1):
         day = f"{month}{day_num:02d}"
-        count = len(read_chat_events(day))
+        count = _chat_day_count(day)
         if count:
             stats[day] = count
 

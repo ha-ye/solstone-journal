@@ -2935,11 +2935,6 @@ a:focus-visible {
   gap: 12px;
 }
 
-body.has-date-nav .chat-app {
-  height: calc(100dvh - var(--facet-bar-height) - var(--date-nav-height) - 16px);
-  padding-top: 8px;
-}
-
 .chat-app-search {
   position: sticky;
   top: 0;

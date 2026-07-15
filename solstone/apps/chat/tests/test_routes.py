@@ -140,6 +140,19 @@ def test_chat_index_redirects_to_today(journal_copy, monkeypatch):
     assert response.headers["Location"].endswith(f"/app/chat/{today}")
 
 
+def test_chat_api_index_counts_fixture_events(journal_copy, monkeypatch):
+    env = _make_env(journal_copy, monkeypatch)
+
+    response = env.client.get("/app/chat/api/index")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data == {
+        "coverage": {"start": "20260508", "end": "20260508"},
+        "months": {"202605": 2},
+    }
+
+
 def test_chat_invalid_days_return_404(journal_copy, monkeypatch):
     _set_today(monkeypatch, "20990101")
     env = _make_env(journal_copy, monkeypatch)
