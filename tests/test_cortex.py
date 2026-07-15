@@ -67,15 +67,6 @@ def _completed_path(journal_path: Path, use_id: str, name: str = "chat") -> Path
     return journal_path / "talents" / name.replace(":", "--") / f"{use_id}.jsonl"
 
 
-def _wait_until(predicate, timeout: float = 2.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return predicate()
-
-
 @pytest.fixture
 def mock_journal(tmp_path, monkeypatch):
     """Set up a temporary journal directory."""
@@ -156,12 +147,7 @@ def test_handle_request_dedups_existing_active_file(
         daemon=True,
     )
     cortex_service._spawn_worker.start()
-    assert _wait_until(
-        lambda: (
-            cortex_service.spawn_queue.qsize() == 0
-            and cortex_service._pending_spawns == 0
-        )
-    )
+    cortex_service.spawn_queue.join()
     cortex_service.stop_event.set()
     cortex_service._spawn_worker.join(timeout=1)
 
@@ -586,12 +572,7 @@ def test_spawn_worker_processes_fifo(cortex_service):
         )
         cortex_service._spawn_worker.start()
 
-        assert _wait_until(
-            lambda: (
-                cortex_service.spawn_queue.qsize() == 0
-                and cortex_service._pending_spawns == 0
-            )
-        )
+        cortex_service.spawn_queue.join()
         cortex_service.stop_event.set()
         cortex_service._spawn_worker.join(timeout=1)
 
@@ -616,12 +597,7 @@ def test_duplicate_claim_is_not_enqueued_twice(cortex_service, mock_journal):
         )
         cortex_service._spawn_worker.start()
 
-        assert _wait_until(
-            lambda: (
-                cortex_service.spawn_queue.qsize() == 0
-                and cortex_service._pending_spawns == 0
-            )
-        )
+        cortex_service.spawn_queue.join()
         cortex_service.stop_event.set()
         cortex_service._spawn_worker.join(timeout=1)
 
@@ -647,12 +623,7 @@ def test_spawn_worker_isolates_per_item_failures(cortex_service, mock_journal):
         cortex_service._handle_callosum_message(_cortex_request("bad"))
         cortex_service._handle_callosum_message(_cortex_request("good"))
 
-        assert _wait_until(
-            lambda: (
-                cortex_service.spawn_queue.qsize() == 0
-                and cortex_service._pending_spawns == 0
-            )
-        )
+        cortex_service.spawn_queue.join()
 
         completed = _completed_path(mock_journal, "bad")
         assert completed.exists()

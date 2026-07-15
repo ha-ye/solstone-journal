@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import asyncio
-import time
+import threading
 
 from flask import Flask
 
@@ -102,21 +102,21 @@ def test_schedule_refresh_updates_instruction(monkeypatch, journal_copy):
         return "<voice_instruction>New voice</voice_instruction>", "session-3"
 
     monkeypatch.setattr(brain, "_run_claude", fake_run_claude)
+    refresh_applied = threading.Event()
+    original_complete = brain._complete_future
+
+    def complete_and_signal(app_arg, attr_name, future):
+        original_complete(app_arg, attr_name, future)
+        if attr_name == "refresh_future":
+            refresh_applied.set()
+
+    monkeypatch.setattr(brain, "_complete_future", complete_and_signal)
 
     start_voice_runtime(app)
     try:
         future = brain.schedule_refresh(app, force=True)
         assert future.result(timeout=1.0) == ("session-3", "New voice")
-        # The app-state update runs in the future's done-callback. A
-        # concurrent.futures.Future notifies result() waiters *before* it
-        # invokes done-callbacks, so the callback may not have applied the
-        # instruction yet when result() returns -- poll for the side effect
-        # rather than racing it (this was an xdist-only flake under load).
-        deadline = time.monotonic() + 1.0
-        while (
-            app.voice_brain_instruction != "New voice" and time.monotonic() < deadline
-        ):
-            time.sleep(0.01)
+        assert refresh_applied.wait(timeout=2.0)
         assert app.voice_brain_instruction == "New voice"
     finally:
         stop_voice_runtime(app)

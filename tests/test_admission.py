@@ -6,7 +6,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 
 import pytest
 
@@ -328,6 +328,7 @@ def test_two_waiters_keep_throttle_state_until_both_end(
     starts: list[str] = []
     ends: list[str] = []
     events_lock = threading.Lock()
+    started = threading.Semaphore(0)
 
     monkeypatch.setattr(admission, "get_config", lambda: _memory_config(5 * 1024))
     monkeypatch.setattr(admission, "_POLL_INTERVAL_SECONDS", 0.01)
@@ -343,6 +344,7 @@ def test_two_waiters_keep_throttle_state_until_both_end(
     def on_start(**fields: object) -> None:
         with events_lock:
             starts.append(str(fields["stage"]))
+        started.release()
 
     def on_end(**fields: object) -> None:
         with events_lock:
@@ -373,7 +375,8 @@ def test_two_waiters_keep_throttle_state_until_both_end(
 
     for thread in threads:
         thread.start()
-    _wait_until(lambda: admission.throttle_state().count == 2)
+    assert started.acquire(timeout=2.0)
+    assert started.acquire(timeout=2.0)
 
     state = admission.throttle_state()
     assert state.throttled is True
@@ -382,7 +385,8 @@ def test_two_waiters_keep_throttle_state_until_both_end(
     assert state.available_mib == 2 * 1024
 
     release_first.set()
-    _wait_until(lambda: not threads[0].is_alive())
+    threads[0].join(timeout=2)
+    assert not threads[0].is_alive()
 
     state = admission.throttle_state()
     assert state.throttled is True
@@ -401,12 +405,3 @@ def test_two_waiters_keep_throttle_state_until_both_end(
     )
     assert sorted(starts) == ["describe", "transcribe"]
     assert sorted(ends) == ["describe", "transcribe"]
-
-
-def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("condition was not met before timeout")

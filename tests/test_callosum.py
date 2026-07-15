@@ -231,30 +231,46 @@ def test_client_receives_during_outbound_flood(short_callosum_server):
         client.stop()
 
 
-def test_client_disconnected_idle_blocks_and_drops_emit(tmp_path, monkeypatch, caplog):
+def test_client_disconnected_idle_blocks_and_drops_emit(tmp_path, monkeypatch):
     client = CallosumConnection(socket_path=tmp_path / "missing.sock")
     original_wait = client.stop_event.wait
     wait_calls = 0
+    block_reached = threading.Event()
 
     def counted_wait(timeout=None):
         nonlocal wait_calls
         wait_calls += 1
+        block_reached.set()
         return original_wait(timeout)
 
     monkeypatch.setattr(client.stop_event, "wait", counted_wait)
 
-    with caplog.at_level(logging.INFO, logger="solstone.think.callosum"):
+    drop_logged = threading.Event()
+    drop_message = "Dropping message (not connected): test/event"
+
+    class _DropWatcher(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            if drop_message in record.getMessage():
+                drop_logged.set()
+
+    logger = logging.getLogger("solstone.think.callosum")
+    previous_level = logger.level
+    logger.setLevel(logging.INFO)
+    handler = _DropWatcher()
+    logger.addHandler(handler)
+    try:
         client.start()
         try:
-            time.sleep(0.25)
+            # Wait until the reconnect loop has entered its disconnected idle block
+            # (first stop_event.wait), then emit while still disconnected.
+            assert block_reached.wait(timeout=2.0)
             assert client.emit("test", "event")
-            deadline = time.monotonic() + 1.0
-            while "Dropping message (not connected): test/event" not in caplog.text:
-                if time.monotonic() > deadline:
-                    pytest.fail("disconnected emit was not dropped in time")
-                time.sleep(0.01)
+            assert drop_logged.wait(timeout=2.0)
         finally:
             client.stop()
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
 
     assert 1 <= wait_calls <= 20
 
