@@ -11,8 +11,8 @@ Pipeline:
   5. Map sentences to intervals by timestamp overlap.
 
 Returns a list of integer speaker labels (1-indexed) parallel to the input
-sentences list, matching the format of the `speaker` field Gemini writes into
-audio.jsonl.  Sentences with no single-speaker interval coverage get None.
+sentences list, matching the transcript `speaker` field format.  Sentences
+with no single-speaker interval coverage get None.
 
 Public API:
     from solstone.observe.transcribe.diarize import diarize, diarize_auto_k
@@ -347,7 +347,7 @@ def _assign_sentences(
             overlap = max(0.0, min(end, ivl_end) - max(start, ivl_start))
             if overlap > best_overlap:
                 best_overlap = overlap
-                best_label = int(global_labels[idx]) + 1  # 1-indexed to match Gemini
+                best_label = int(global_labels[idx]) + 1  # 1-indexed speaker label
 
         result.append(best_label)
 

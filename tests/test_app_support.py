@@ -1092,6 +1092,7 @@ def test_proactive_support_still_emits_for_generic_errors(monkeypatch):
 def test_collect_provider_readiness_is_redacted(monkeypatch):
     from solstone.apps.support import diagnostics
 
+    revai_secret = "REVAI_ACCESS_TOKEN_REDACTION_VALUE"
     snapshot = {
         "summary": {
             "status": "blocked",
@@ -1110,7 +1111,8 @@ def test_collect_provider_readiness_is_redacted(monkeypatch):
                 "operator_detail": (
                     "reason_code=provider_key_missing; provider=anthropic; "
                     "reset_at_ms=123; message=Traceback (most recent call last): "
-                    "/home/jer/.config ANTHROPIC_API_KEY=sk-testsecret"
+                    f"/home/jer/.config ANTHROPIC_API_KEY=sk-testsecret "
+                    f"REVAI_ACCESS_TOKEN={revai_secret}"
                 ),
             }
         },
@@ -1139,8 +1141,10 @@ def test_collect_provider_readiness_is_redacted(monkeypatch):
     assert payload["interfaces"]["generate"]["status"] == "blocked"
     assert payload["interfaces"]["generate"]["reset_at_ms"] == 123
     assert "ANTHROPIC_API_KEY" not in serialized
+    assert "REVAI_ACCESS_TOKEN" not in serialized
     assert "OPENAI_API_KEY" not in serialized
     assert "sk-testsecret" not in serialized
+    assert revai_secret not in serialized
     assert "/home/jer" not in serialized
     assert "Traceback" not in serialized
 

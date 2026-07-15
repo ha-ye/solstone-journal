@@ -504,7 +504,7 @@ versions: .installed
 	$(PYTHON) --version
 	@echo ""
 	@echo "=== Key package versions ==="
-	@$(UV) pip list | grep -E "^(pytest|ruff|mypy|Flask|numpy|Pillow|openai|anthropic|google-genai)" || true
+	@$(UV) pip list | grep -E "^(pytest|ruff|mypy|Flask|numpy|Pillow|openai|anthropic)" || true
 
 # Install pre-commit hooks (if using pre-commit)
 pre-commit: .installed

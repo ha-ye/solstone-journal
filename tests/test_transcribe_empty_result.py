@@ -646,7 +646,7 @@ def test_backend_raise_propagates(raw_path, audio_buffer, vad_result):
     with (
         patch(
             "solstone.observe.transcribe.main.stt_transcribe",
-            side_effect=RuntimeError("rev.ai 502"),
+            side_effect=RuntimeError("transcription backend 502"),
         ),
         patch(
             "solstone.observe.transcribe.main.get_journal",
@@ -669,4 +669,6 @@ def test_backend_raise_propagates(raw_path, audio_buffer, vad_result):
     # model output (see _failure_label). The message stays in the handler log.
     assert mock_send.call_args.kwargs["error"] == "RuntimeError"
     assert mock_send.call_args.kwargs["reason"] == "RuntimeError"
-    assert "rev.ai 502" not in json.dumps(mock_send.call_args.kwargs, default=str)
+    assert "transcription backend 502" not in json.dumps(
+        mock_send.call_args.kwargs, default=str
+    )
