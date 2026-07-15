@@ -6,19 +6,22 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-07-15
+
 ### Added
 
-- observer journals with old same-start duplicate segment ladders can now be pruned safely with a dry-run-first `journal observer prune` command.
+- older journals with repeated copies of the same segment can now preview and safely remove only proven duplicates, including copies filed under different start times.
 
 ### Changed
 
-- pdf import and pdf export now have separate extras: `pdf-import` adds the new pypdfium2 worker with no system packages, while `pdf-export` carries weasyprint and pango for newsletter and reflection downloads.
-- document import now reads each pdf page by page through the pypdfium2 worker, labels model-generated text clearly, and retires the legacy pypdf/pdf2image document-import path.
+- pdf imports now handle each page separately, keep extracted text distinct from model-assisted text, and preserve a page image anywhere a model helps.
+- dated journal views now use one in-page date control, with day, month, and year zoom plus week-by-week movement for reflections.
 
 ### Fixed
 
-- observer uploads now recognize already-held files from the segment folder itself, so retrying the same media no longer creates duplicate sibling segments or a 507 ladder; reported by Dave Smith.
-- days with image files may run through one extra catchup pass once, because image files now count in the raw-input fingerprint.
+- when sol sends the same moment again, your journal now reuses what it already has instead of creating extra copies.
+- text, markdown, and document imports that produce nothing now say so clearly and can be retried without a false "already imported" result.
+- private-network errors now stay contained, so one failed request no longer drops the whole link or forces repeat pairing.
 
 ## [0.8.6] - 2026-07-14
 
