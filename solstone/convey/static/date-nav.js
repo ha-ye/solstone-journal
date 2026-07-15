@@ -359,6 +359,8 @@
       '<button class="date-nav-content__arrow" type="button" data-date-nav-prev aria-label="previous day">‹</button>' +
       '<button class="date-nav-content__trigger" type="button" data-date-nav-trigger aria-haspopup="dialog" aria-expanded="false">' +
       '<span data-date-nav-label></span>' +
+      '<svg class="date-nav-content__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<rect x="3" y="5" width="18" height="16" rx="3"></rect><path d="M3 10h18M8 3v4M16 3v4"></path></svg>' +
       '<span class="date-nav-content__warning" data-date-nav-warning aria-hidden="true" hidden>!</span>' +
       '</button>' +
       '<button class="date-nav-content__arrow" type="button" data-date-nav-next aria-label="next day">›</button>' +
@@ -367,6 +369,10 @@
       '<div class="date-nav-content__panelbar">' +
       '<button class="date-nav-content__panel-arrow" type="button" data-date-nav-panel-prev aria-label="previous">‹</button>' +
       '<button class="date-nav-content__panel-title" type="button" data-date-nav-title aria-label="change date level"></button>' +
+      '<button class="date-nav-content__today" type="button" data-date-nav-today aria-label="go to today">' +
+      '<span class="date-nav-content__today-full">today</span>' +
+      '<span class="date-nav-content__today-short" aria-hidden="true">T</span>' +
+      '</button>' +
       '<button class="date-nav-content__panel-arrow" type="button" data-date-nav-panel-next aria-label="next">›</button>' +
       '</div>' +
       '<div class="date-nav-content__grid" data-date-nav-grid role="grid"></div>' +
@@ -520,10 +526,17 @@
     button.tabIndex = disabled ? -1 : -1;
     if (selected) button.classList.add('date-nav-content__cell--selected');
     if (count <= 0) button.classList.add('date-nav-content__cell--empty');
-    const meta = document.createElement('span');
-    meta.className = 'date-nav-content__cell-count';
-    meta.textContent = countLabel(count, selectedUnit());
-    button.appendChild(meta);
+    // The count belongs in the tooltip + aria-label, not as visible text in
+    // every cell — that noise buries the day number and the heat. Week rows
+    // (L3) are a list, not a grid, and DO show the meta inline.
+    if (kind === 'week') {
+      const meta = document.createElement('span');
+      meta.className = 'date-nav-content__cell-count';
+      meta.textContent = countLabel(count, selectedUnit());
+      button.appendChild(meta);
+    } else {
+      button.title = countLabel(count, selectedUnit());
+    }
     return button;
   }
 
@@ -746,6 +759,10 @@
     }
     if (event.target.closest('[data-date-nav-panel-next]')) {
       movePanel(1);
+      return;
+    }
+    if (event.target.closest('[data-date-nav-today]')) {
+      navigateTo(dayString(new Date()));
       return;
     }
     if (event.target.closest('[data-date-nav-title]')) {
