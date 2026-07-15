@@ -148,6 +148,23 @@
     return dayString(date);
   }
 
+  function leafZoom() {
+    return state.config?.step === 'week' ? 'weeks' : 'days';
+  }
+
+  function isWeekStep() {
+    return state.config?.step === 'week';
+  }
+
+  function sundayOf(day) {
+    const date = dateFromDay(day);
+    return date ? addDays(day, -date.getDay()) : null;
+  }
+
+  function stepDay(day, delta, config) {
+    return addDays(day, delta * (config?.step === 'week' ? 7 : 1));
+  }
+
   function addMonths(month, delta) {
     if (!/^\d{6}$/.test(String(month || ''))) return null;
     const date = new Date(Number(month.slice(0, 4)), Number(month.slice(4, 6)) - 1, 1);
@@ -177,6 +194,31 @@
     let label = `${WEEKDAYS_SHORT[target.getDay()]}, ${MONTHS_SHORT[target.getMonth()]} ${target.getDate()}`;
     if (target.getFullYear() !== now.getFullYear()) {
       label += ` '${String(target.getFullYear()).slice(-2)}`;
+    }
+    return label;
+  }
+
+  function weekControlLabel(day, now = new Date()) {
+    const target = dateFromDay(day);
+    if (!target) return '';
+    let label = `Week of ${MONTHS_SHORT[target.getMonth()]} ${target.getDate()}`;
+    if (target.getFullYear() !== now.getFullYear()) {
+      label += ` '${String(target.getFullYear()).slice(-2)}`;
+    }
+    return label;
+  }
+
+  function weekHeadingLabel(day, now = new Date()) {
+    const target = dateFromDay(day);
+    if (!target) return '';
+    const normalized = dayString(target);
+    const thisSunday = sundayOf(dayString(now));
+    const lastSunday = thisSunday ? addDays(thisSunday, -7) : null;
+    if (normalized === thisSunday) return 'This week';
+    if (normalized === lastSunday) return 'Last week';
+    let label = `Week of ${MONTHS_SHORT[target.getMonth()]} ${target.getDate()}`;
+    if (target.getFullYear() !== now.getFullYear()) {
+      label += `, ${target.getFullYear()}`;
     }
     return label;
   }
@@ -393,17 +435,18 @@
   }
 
   function renderShell() {
+    const stepLabel = isWeekStep() ? 'week' : 'day';
     state.host.innerHTML =
       '<div class="date-nav-content" data-date-nav-root>' +
       '<div class="date-nav-content__bar">' +
-      '<button class="date-nav-content__arrow" type="button" data-date-nav-prev aria-label="previous day">‹</button>' +
+      `<button class="date-nav-content__arrow" type="button" data-date-nav-prev aria-label="previous ${stepLabel}">‹</button>` +
       '<button class="date-nav-content__trigger" type="button" data-date-nav-trigger aria-haspopup="dialog" aria-expanded="false">' +
       '<span data-date-nav-label></span>' +
       '<svg class="date-nav-content__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
       '<rect x="3" y="5" width="18" height="16" rx="3"></rect><path d="M3 10h18M8 3v4M16 3v4"></path></svg>' +
       '<span class="date-nav-content__warning" data-date-nav-warning aria-hidden="true" hidden>!</span>' +
       '</button>' +
-      '<button class="date-nav-content__arrow" type="button" data-date-nav-next aria-label="next day">›</button>' +
+      `<button class="date-nav-content__arrow" type="button" data-date-nav-next aria-label="next ${stepLabel}">›</button>` +
       '</div>' +
       '<div class="date-nav-content__popover" data-date-nav-popover role="dialog" hidden>' +
       '<div class="date-nav-content__panelbar">' +
@@ -438,12 +481,18 @@
     if (state.prev) state.prev.hidden = dayless;
     if (state.next) state.next.hidden = dayless;
     if (state.heading) {
-      const heading = headingLabel(state.day);
+      const heading = state.day ? (isWeekStep() ? weekHeadingLabel(state.day) : headingLabel(state.day)) : '';
       state.heading.textContent = heading;
       state.heading.hidden = !heading;
     }
     const label = state.host?.querySelector('[data-date-nav-label]');
-    if (label) label.textContent = dayless ? 'pick a day' : controlLabel(state.day);
+    if (label) {
+      label.textContent = dayless
+        ? 'pick a day'
+        : isWeekStep()
+        ? weekControlLabel(state.day)
+        : controlLabel(state.day);
+    }
     if (state.warning) state.warning.hidden = !state.warningVisible;
     if (state.trigger) {
       state.trigger.setAttribute('aria-expanded', String(state.open));
@@ -477,7 +526,7 @@
   }
 
   function canNavigatePanel(delta) {
-    if (state.zoom === 'days') {
+    if (state.zoom === 'days' || state.zoom === 'weeks') {
       if (delta > 0 && allowFutureDates()) return true;
       if (!state.coverage) return false;
       const startMonth = state.coverage.start.slice(0, 6);
@@ -515,13 +564,13 @@
 
   function navigateDay(delta) {
     if (!canNavigateDay(delta)) return;
-    const nextDay = addDays(state.day, delta);
+    const nextDay = stepDay(state.day, delta, state.config);
     if (nextDay) navigateTo(nextDay);
   }
 
   function movePanel(delta) {
     if (!canNavigatePanel(delta)) return;
-    if (state.zoom === 'days') {
+    if (state.zoom === 'days' || state.zoom === 'weeks') {
       state.month = addMonths(state.month, delta);
       state.year = Number(state.month.slice(0, 4));
     } else if (state.zoom === 'months') {
@@ -533,7 +582,7 @@
 
   function showPanel() {
     state.open = true;
-    state.zoom = 'days';
+    state.zoom = leafZoom();
     fetchIndex().then((result) => {
       const payload = result.data || indexPayload();
       state.month = state.day ? state.day.slice(0, 6) : openingMonth(payload);
@@ -707,6 +756,48 @@
     appendRows(cells, 7);
   }
 
+  function renderWeeks() {
+    const month = state.month || openingMonth(indexPayload());
+    state.month = month;
+    state.year = Number(month.slice(0, 4));
+    const cached = state.monthCache.get(month);
+    if (!cached) {
+      fetchMonth(month).then(() => {
+        if (state.open && state.zoom === 'weeks' && state.month === month) {
+          renderPanel();
+          prefetchAdjacentMonths(month);
+        }
+      });
+    } else {
+      prefetchAdjacentMonths(month);
+    }
+
+    const data = cached?.data || {};
+    const year = Number(month.slice(0, 4));
+    const monthIndex = Number(month.slice(4, 6)) - 1;
+    const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
+    const sundays = [];
+    for (let day = 1; day <= daysInMonth; day += 1) {
+      const date = new Date(year, monthIndex, day);
+      if (date.getDay() === 0) sundays.push(dayString(date));
+    }
+
+    state.currentMax = 1;
+    const cells = sundays.map((sundayKey) => {
+      const date = dateFromDay(sundayKey);
+      const present = coerceCount(data[sundayKey]) > 0;
+      return renderCell({
+        value: sundayKey,
+        label: `week of ${MONTHS_SHORT[date.getMonth()]} ${date.getDate()}`,
+        count: present ? 1 : 0,
+        selected: sundayKey === state.day,
+        disabled: !present,
+        kind: 'week'
+      });
+    });
+    appendRows(cells, 1);
+  }
+
   function renderPanel() {
     if (!state.popover || !state.grid) return;
     state.popover.hidden = !state.open;
@@ -718,6 +809,7 @@
     state.title.textContent = titleLabel();
     if (state.zoom === 'years') renderYears();
     else if (state.zoom === 'months') renderMonths();
+    else if (state.zoom === 'weeks') renderWeeks();
     else renderDays();
   }
 
@@ -828,7 +920,7 @@
       return;
     }
     if (event.target.closest('[data-date-nav-title]')) {
-      if (state.zoom === 'days') state.zoom = 'months';
+      if (state.zoom === 'days' || state.zoom === 'weeks') state.zoom = 'months';
       else if (state.zoom === 'months') state.zoom = 'years';
       renderPanel();
       focusInitialCell();
@@ -849,9 +941,13 @@
     if (cell.dataset.dateNavCell === 'month') {
       state.month = value;
       state.year = Number(value.slice(0, 4));
-      state.zoom = 'days';
+      state.zoom = leafZoom();
       renderPanel();
       focusInitialCell();
+      return;
+    }
+    if (cell.dataset.dateNavCell === 'week') {
+      navigateTo(value);
       return;
     }
     if (cell.dataset.dateNavCell === 'day') {
@@ -923,6 +1019,7 @@
     state.appName = appName;
     state.config = config;
     state.day = parseDayFromPath(window.location.pathname);
+    if (isWeekStep() && state.day) state.day = sundayOf(state.day) || state.day;
     parsedDayInitialized = true;
     state.host = host;
     state.heading = heading;
@@ -968,6 +1065,10 @@
     countLabel,
     coerceCount,
     openingMonth,
-    isSelectableFutureDay
+    isSelectableFutureDay,
+    weekControlLabel,
+    weekHeadingLabel,
+    stepDay,
+    sundayOf
   };
 })();

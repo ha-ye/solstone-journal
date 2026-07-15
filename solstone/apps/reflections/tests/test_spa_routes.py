@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -40,9 +41,9 @@ def reflections_env(tmp_path, monkeypatch):
     return Env()
 
 
-def _seed_reflection(journal: Path) -> None:
-    target = journal / "reflections" / "weekly" / "20260308.md"
-    target.parent.mkdir(parents=True)
+def _seed_reflection(journal: Path, day: str = "20260308") -> None:
+    target = journal / "reflections" / "weekly" / f"{day}.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("# reflection\n\nbody\n", encoding="utf-8")
 
 
@@ -90,6 +91,7 @@ def test_reflections_api_routes_resolve(reflections_env):
 
     expected = {
         "/app/reflections/api/state": "app:reflections.api_state",
+        "/app/reflections/api/index": "app:reflections.api_index",
         "/app/reflections/api/sample": "app:reflections.api_sample",
         "/app/reflections/api/20260308": "app:reflections.api_week",
         "/app/reflections/api/stats/202603": "app:reflections.api_stats",
@@ -124,6 +126,20 @@ def test_reflections_state_payload_shape(reflections_env, monkeypatch):
     assert data["copy"]["populated_next_footer"] == "next reflection: Sunday, March 15"
 
 
+def test_reflections_index_payload_shape(reflections_env):
+    _seed_reflection(reflections_env.journal, "20260308")
+    _seed_reflection(reflections_env.journal, "20260405")
+
+    response = reflections_env.client.get("/app/reflections/api/index")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data == {
+        "coverage": {"start": "20260308", "end": "20260405"},
+        "months": {"202603": 1, "202604": 1},
+    }
+
+
 def test_reflections_detail_payload_canonicalizes(reflections_env):
     _seed_reflection(reflections_env.journal)
 
@@ -139,3 +155,12 @@ def test_reflections_detail_payload_canonicalizes(reflections_env):
 
 def test_reflections_routes_render_template_only_in_pdf_helper():
     assert _render_template_call_functions() == ["_render_reflection_pdf"]
+
+
+def test_week_arrow_targets_stay_sundays(reflections_env):
+    from solstone.apps.reflections.routes import _canonical_week_day
+
+    start = datetime.strptime("20260308", "%Y%m%d")
+    for offset in range(-28, 35, 7):
+        target = (start + timedelta(days=offset)).strftime("%Y%m%d")
+        assert _canonical_week_day(target) == target

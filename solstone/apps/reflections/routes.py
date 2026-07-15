@@ -170,6 +170,28 @@ def api_state() -> Any:
     )
 
 
+@reflections_bp.route("/api/index")
+def api_index() -> Any:
+    months: dict[str, int] = {}
+    first_day: str | None = None
+    last_day: str | None = None
+
+    for day in _list_reflection_days():
+        month = day[:6]
+        months[month] = months.get(month, 0) + 1
+        if first_day is None or day < first_day:
+            first_day = day
+        if last_day is None or day > last_day:
+            last_day = day
+
+    coverage = (
+        {"start": first_day, "end": last_day}
+        if first_day is not None and last_day is not None
+        else None
+    )
+    return jsonify({"coverage": coverage, "months": months})
+
+
 @reflections_bp.route("/<day>")
 def week_view(day: str) -> Any:
     return current_app.send_static_file("shell.html")

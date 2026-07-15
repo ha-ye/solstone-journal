@@ -166,6 +166,8 @@
 </style>
 
 <div class="reflection-shell" id="reflectionApp">
+  <div data-date-nav></div>
+  <h2 class="reflection-title" data-date-nav-heading></h2>
   <div id="reflectionContent"></div>
 </div>
 
@@ -316,8 +318,6 @@
       <header class="reflection-header">
         <div>
           <p class="reflection-kicker">weekly reflection</p>
-          <h2 class="reflection-title">${escapeHtml(payload.week_label)}</h2>
-          <p class="reflection-subtitle">week of ${escapeHtml(payload.week_label)}</p>
         </div>
         <div class="reflection-actions">
           <button type="button" class="reflection-button" id="copyReflectionButton">copy</button>

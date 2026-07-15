@@ -168,6 +168,10 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.date-nav-content__grid--1 .date-nav-content__row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .date-nav-content__grid--7 .date-nav-content__row {
   grid-template-columns: repeat(7, minmax(0, 1fr));
 }
@@ -185,6 +189,15 @@
   gap: 2px;
   padding: var(--space-1);
   background: color-mix(in srgb, var(--facet-color) calc(var(--intensity) * 55%), transparent);
+}
+
+.date-nav-content__grid--1 .date-nav-content__cell {
+  min-height: var(--touch-min);
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 var(--space-3);
+  text-align: left;
 }
 
 .date-nav-content__cell--selected {
