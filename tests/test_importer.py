@@ -2131,7 +2131,6 @@ def test_text_import_empty_segments_hard_fails_no_manifest_retry_and_error(
         return []
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    think_utils._journal_path_cache = None
     monkeypatch.setattr(text_mod, "detect_transcript_segment", fake_detect_segment)
     monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
     monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
@@ -2186,7 +2185,6 @@ def test_text_import_json_drop_hard_fails_no_manifest_and_retries(
         return [("12:00:00", text)]
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    think_utils._journal_path_cache = None
     monkeypatch.setattr(text_mod, "detect_transcript_segment", fake_detect_segment)
     monkeypatch.setattr(
         text_mod, "detect_transcript_json", lambda text, segment_start: None
@@ -2236,7 +2234,6 @@ def test_import_one_text_zero_entry_manifest_is_ignored(tmp_path, monkeypatch):
         return [("12:00:00", text)]
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    think_utils._journal_path_cache = None
     monkeypatch.setattr(text_mod, "detect_transcript_segment", fake_detect_segment)
     monkeypatch.setattr(
         text_mod,
@@ -2286,7 +2283,6 @@ def test_import_one_text_positive_entry_manifest_still_dedupes(tmp_path, monkeyp
         return [("12:00:00", text)]
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    think_utils._journal_path_cache = None
     monkeypatch.setattr(text_mod, "detect_transcript_segment", fake_detect_segment)
     monkeypatch.setattr(
         text_mod,
@@ -2330,7 +2326,6 @@ def test_import_one_text_happy_path_writes_manifest(tmp_path, monkeypatch):
     txt.write_text("hello\nworld")
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    think_utils._journal_path_cache = None
     _configure_text_import_runtime(monkeypatch, mod)
     monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
 
