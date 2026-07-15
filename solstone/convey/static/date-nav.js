@@ -344,6 +344,10 @@
     return delta !== null && delta > 0;
   }
 
+  function isSelectableFutureDay(day, config = {}, now = new Date()) {
+    return Boolean(config?.allow_future) && isFutureDay(day, now);
+  }
+
   function isSelectableFutureMonth(month, now = new Date()) {
     if (!/^\d{6}$/.test(String(month || ''))) return false;
     return compareMonth(month, monthString(now)) >= 0;
@@ -688,7 +692,7 @@
     for (let day = 1; day <= daysInMonth; day += 1) {
       const key = `${month}${String(day).padStart(2, '0')}`;
       const count = coerceCount(data[key]);
-      const selectableFuture = allowFutureDates() && isFutureDay(key);
+      const selectableFuture = isSelectableFutureDay(key, state.config);
       cells.push(
         renderCell({
           value: key,
@@ -963,6 +967,7 @@
     yearTotals,
     countLabel,
     coerceCount,
-    openingMonth
+    openingMonth,
+    isSelectableFutureDay
   };
 })();

@@ -4352,9 +4352,9 @@ def _build_source_freshness(
 
 @body_bp.route("/")
 def index():
-    # The overview is the stable Body home: no date-nav pill here; the
-    # client-rendered day grid and recent-day rail are the pickers. Day pages
-    # own ‹ date ›.
+    # The overview is the stable Body home: the shared date-nav mounts in
+    # dayless picker mode alongside the client-rendered day grid and recent-day
+    # rail.
     # (Deliberate divergence from transcripts/timeline, which land on a day:
     # Body's archive-first landing is the product identity.)
     return current_app.send_static_file("shell.html")
