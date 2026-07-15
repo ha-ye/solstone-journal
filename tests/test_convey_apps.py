@@ -64,50 +64,34 @@ def _append_request(request_id: str = "req", *, ts: int | None = None) -> None:
     append_chat_event(KIND_SOL_CHAT_REQUEST, **fields)
 
 
-def test_parse_date_nav_normalizes_legacy_and_content_configs():
+def test_parse_date_nav_normalizes_content_configs():
     assert _parse_date_nav({}) is None
     assert _parse_date_nav({"date_nav": False}) is None
-    assert _parse_date_nav({"date_nav": True, "allow_future_dates": True}) == {
-        "unit": None,
+
+    unit = {"one": "segment", "other": "segments", "none": "no segments"}
+    result = _parse_date_nav({"date_nav": {"unit": unit, "allow_future": True}})
+    assert result == {
+        "unit": unit,
         "allow_future": True,
-        "mount": "chrome",
         "step": None,
     }
-    assert _parse_date_nav({"date_nav": {"unit": {"one": "log"}}}) == {
-        "unit": {"one": "log"},
-        "allow_future": False,
-        "mount": "chrome",
-        "step": None,
-    }
+    assert "mount" not in result
+
     assert _parse_date_nav(
-        {
-            "date_nav": {
-                "mount": "content",
-                "unit": {
-                    "one": "segment",
-                    "other": "segments",
-                    "none": "no segments",
-                },
-            }
-        }
+        {"date_nav": {"unit": unit}, "allow_future_dates": True}
     ) == {
-        "unit": {"one": "segment", "other": "segments", "none": "no segments"},
+        "unit": unit,
         "allow_future": False,
-        "mount": "content",
         "step": None,
     }
-    assert _parse_date_nav(
-        {"date_nav": {"mount": "content", "unit": {"kind": "currency"}}}
-    ) == {
+    assert _parse_date_nav({"date_nav": {"unit": {"kind": "currency"}}}) == {
         "unit": {"kind": "currency"},
         "allow_future": False,
-        "mount": "content",
         "step": None,
     }
     assert _parse_date_nav(
         {
             "date_nav": {
-                "mount": "content",
                 "unit": {
                     "one": "reflection",
                     "other": "reflections",
@@ -123,21 +107,19 @@ def test_parse_date_nav_normalizes_legacy_and_content_configs():
             "none": "no reflection",
         },
         "allow_future": False,
-        "mount": "content",
         "step": "week",
     }
 
     with pytest.raises(AppConfigError):
-        _parse_date_nav({"date_nav": {"mount": "bogus"}})
+        _parse_date_nav({"date_nav": True})
     with pytest.raises(AppConfigError):
-        _parse_date_nav({"date_nav": {"mount": "content"}})
+        _parse_date_nav({"date_nav": {"allow_future": True}})
     with pytest.raises(AppConfigError):
-        _parse_date_nav({"date_nav": {"mount": "content", "unit": {"one": "log"}}})
+        _parse_date_nav({"date_nav": {"unit": {"one": "log"}}})
     with pytest.raises(AppConfigError):
         _parse_date_nav(
             {
                 "date_nav": {
-                    "mount": "content",
                     "unit": {"one": "log", "other": "logs", "none": "no logs"},
                     "step": "month",
                 }
@@ -157,18 +139,9 @@ def test_shell_payload_emits_normalized_date_nav(monkeypatch):
     registry.discover()
 
     apps = {app["name"]: app for app in build_shell_data(registry)["apps"]}
-    content_apps = [
-        name
-        for name, app in apps.items()
-        if app["date_nav"] and app["date_nav"]["mount"] == "content"
-    ]
-    chrome_apps = [
-        name
-        for name, app in apps.items()
-        if app["date_nav"] and app["date_nav"]["mount"] == "chrome"
-    ]
+    date_nav_apps = [name for name, app in apps.items() if app["date_nav"] is not None]
 
-    assert sorted(content_apps) == [
+    assert sorted(date_nav_apps) == [
         "activities",
         "body",
         "chat",
@@ -179,10 +152,11 @@ def test_shell_payload_emits_normalized_date_nav(monkeypatch):
         "tokens",
         "transcripts",
     ]
-    assert sorted(chrome_apps) == []
     assert apps["news"]["date_nav"] is None
     for name, app in apps.items():
+        assert "allow_future_dates" not in app
         if app["date_nav"]:
+            assert "mount" not in app["date_nav"]
             assert app["date_nav"]["allow_future"] is (name == "activities")
             assert app["date_nav"]["step"] == (
                 "week" if name == "reflections" else None

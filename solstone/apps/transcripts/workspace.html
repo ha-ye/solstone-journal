@@ -12,7 +12,7 @@
 }
 
 .tr-card {
-  min-height: calc(100vh - var(--facet-bar-height) - var(--date-nav-height) - 48px);
+  min-height: calc(100vh - var(--facet-bar-height) - 48px);
   background: #ffffff;
   border: 1px solid #e5e7eb;
   border-radius: 12px;
@@ -24,18 +24,18 @@
 
 body.has-app-bar .tr-card {
   min-height: calc(
-    100vh - var(--facet-bar-height) - var(--date-nav-height) - var(--app-bar-height) - 48px
+    100vh - var(--facet-bar-height) - var(--app-bar-height) - 48px
   );
 }
 
 /* Left timeline */
 .tr-timeline {
   position: sticky;
-  top: calc(var(--facet-bar-height) + var(--date-nav-height) + 16px);
+  top: calc(var(--facet-bar-height) + 16px);
   align-self: start;
   border-right: 1px solid #d1d5db;
   user-select: none;
-  height: calc(100vh - var(--facet-bar-height) - var(--date-nav-height) - 32px);
+  height: calc(100vh - var(--facet-bar-height) - 32px);
   overflow: hidden;
   touch-action: pan-y;
   cursor: crosshair;
@@ -738,7 +738,7 @@ body.has-app-bar .tr-card {
 
 .tr-body-panel {
   position: fixed;
-  top: calc(var(--facet-bar-height) + var(--date-nav-height) + 20px);
+  top: calc(var(--facet-bar-height) + 20px);
   right: 20px;
   bottom: calc(var(--app-bar-height, 0px) + 20px);
   z-index: 45;
@@ -1023,11 +1023,11 @@ body.has-app-bar .tr-card {
 /* Middle zoom timeline (segment selector) */
 .tr-zoom {
   position: sticky;
-  top: calc(var(--facet-bar-height) + var(--date-nav-height) + 16px);
+  top: calc(var(--facet-bar-height) + 16px);
   align-self: start;
   border-right: 1px solid #e5e7eb;
   user-select: none;
-  height: calc(100vh - var(--facet-bar-height) - var(--date-nav-height) - 32px);
+  height: calc(100vh - var(--facet-bar-height) - 32px);
   overflow: hidden;
   padding: 12px 0;
   box-sizing: border-box;
@@ -1036,7 +1036,7 @@ body.has-app-bar .tr-card {
 body.has-app-bar .tr-timeline,
 body.has-app-bar .tr-zoom {
   height: calc(
-    100vh - var(--facet-bar-height) - var(--date-nav-height) - var(--app-bar-height) - 32px
+    100vh - var(--facet-bar-height) - var(--app-bar-height) - 32px
   );
 }
 

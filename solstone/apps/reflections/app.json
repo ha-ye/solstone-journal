@@ -2,7 +2,6 @@
   "icon": "🌙",
   "label": "reflections",
   "date_nav": {
-    "mount": "content",
     "unit": {
       "one": "reflection",
       "other": "reflections",

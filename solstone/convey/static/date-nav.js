@@ -1000,14 +1000,7 @@
     const heading = document.querySelector('[data-date-nav-heading]');
     const config = app?.date_nav || null;
 
-    if (host && config?.mount === 'chrome') {
-      logDateNavError(new Error('chrome date_nav config found with content date nav host'), {
-        context: 'date-nav:mount-mismatch',
-        app: appName
-      });
-      return;
-    }
-    if (!config || config.mount !== 'content') return;
+    if (!config) return;
     if (!host) {
       logDateNavError(new Error('content date_nav config missing workspace host'), {
         context: 'date-nav:missing-host',

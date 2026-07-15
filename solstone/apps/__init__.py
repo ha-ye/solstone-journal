@@ -27,15 +27,11 @@ app.json fields (all optional):
       "icon": "🏠",           # Emoji icon for menu bar (default: "📦")
       "label": "Custom Label", # Display label (default: title-cased app name)
       "facets": {},            # Facet options: {"disabled": true} to hide facet bar
-      "date_nav": {"mount": "content", "unit": {"one": "item", ...}},
-                              # Normalized {unit, allow_future, mount, step} config;
-                              # legacy true -> {unit: None,
-                              # allow_future: <allow_future_dates>,
-                              # mount: "chrome", step: None};
+      "date_nav": {"unit": {"one": "item", ...}, "allow_future": false},
+                              # Normalized {unit, allow_future, step} config;
                               # step: "week" makes the leaf level week rows
                               # (reflections only)
       "app_bar": false,        # Hide the universal chat bar on this app (default: true)
-      "allow_future_dates": true, # Allow future dates in month picker (default: false)
     }
 
     See the App dataclass below for the complete field list with types and defaults.
@@ -69,39 +65,22 @@ def _parse_date_nav(metadata: dict) -> dict | None:
     date_nav = metadata.get("date_nav", False)
     if not date_nav:
         return None
-
-    if date_nav is True:
-        return {
-            "unit": None,
-            "allow_future": bool(metadata.get("allow_future_dates", False)),
-            "mount": "chrome",
-            "step": None,
-        }
-
     if not isinstance(date_nav, dict):
-        raise AppConfigError("date_nav must be a boolean or object")
-
-    mount = date_nav.get("mount", "chrome")
-    if mount not in {"chrome", "content"}:
-        raise AppConfigError("date_nav.mount must be 'chrome' or 'content'")
+        raise AppConfigError("date_nav must be an object or false")
 
     unit = date_nav.get("unit")
     step = date_nav.get("step")
     if step not in (None, "week"):
         raise AppConfigError("date_nav.step must be 'week' or omitted")
-
-    allow_future = bool(
-        date_nav.get("allow_future", metadata.get("allow_future_dates", False))
-    )
-    if mount == "content" and unit is None:
-        raise AppConfigError("content date_nav requires an explicit unit")
-    if mount == "content" and not _valid_content_date_nav_unit(unit):
+    if unit is None:
+        raise AppConfigError("date_nav requires an explicit unit")
+    if not _valid_content_date_nav_unit(unit):
         raise AppConfigError(
-            "content date_nav.unit must be {one, other, none} strings or "
-            "{kind: 'currency'}"
+            "date_nav.unit must be {one, other, none} strings or {kind: 'currency'}"
         )
+    allow_future = bool(date_nav.get("allow_future", False))
 
-    return {"unit": unit, "allow_future": allow_future, "mount": mount, "step": step}
+    return {"unit": unit, "allow_future": allow_future, "step": step}
 
 
 def _valid_content_date_nav_unit(unit: Any) -> bool:
@@ -131,15 +110,11 @@ class App:
     #   - disabled: If true, facets bar is hidden for this app
     facets_config: dict = field(default_factory=dict)
 
-    # Date navigation config; chrome mounts use the shared notch, content mounts
-    # are rendered inside app workspace content.
+    # Date navigation config rendered inside app workspace content.
     date_nav: dict | None = None
 
     # Hide the universal chat bar on this app
     app_bar: bool = True
-
-    # Transitional; coexists with date_nav.allow_future and is removed in L4.
-    allow_future_dates: bool = False
 
     def facets_enabled(self) -> bool:
         """Check if facets are enabled for this app."""
@@ -289,9 +264,6 @@ class AppRegistry:
         # Universal app bar
         app_bar = metadata.get("app_bar", True)
 
-        # Allow future dates in month picker
-        allow_future_dates = metadata.get("allow_future_dates", False)
-
         # Import routes module and get blueprint (optional)
         blueprint = None
         routes_module = None
@@ -327,7 +299,6 @@ class AppRegistry:
             facets_config=facets_config,
             date_nav=date_nav,
             app_bar=app_bar,
-            allow_future_dates=allow_future_dates,
         )
 
     def _load_metadata(self, app_path: Path) -> dict[str, Any]:

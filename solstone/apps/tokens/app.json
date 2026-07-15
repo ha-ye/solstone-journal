@@ -2,7 +2,6 @@
   "icon": "💰",
   "label": "tokens",
   "date_nav": {
-    "mount": "content",
     "unit": {
       "kind": "currency"
     }

@@ -3,7 +3,6 @@
   "label": "timeline",
   "facets": {"disabled": true},
   "date_nav": {
-    "mount": "content",
     "unit": {
       "one": "segment",
       "other": "segments",

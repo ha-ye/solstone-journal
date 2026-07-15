@@ -3,7 +3,6 @@
   "label": "body",
   "facets": {"disabled": true},
   "date_nav": {
-    "mount": "content",
     "unit": {
       "one": "reading",
       "other": "readings",

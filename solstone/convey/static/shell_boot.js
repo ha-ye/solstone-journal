@@ -114,7 +114,6 @@
   function applyBodyState(shell, app, day) {
     document.title = `${app.label} - journal`;
     document.body.classList.toggle('has-app-bar', !!app.app_bar);
-    document.body.classList.toggle('has-date-nav', !!(app.date_nav && app.date_nav.mount === 'chrome' && day));
     const appBar = document.getElementById('appBar');
     if (appBar) {
       appBar.hidden = !app.app_bar;
@@ -168,103 +167,6 @@
       .join('');
   }
 
-  function adjustDay(day, delta) {
-    const year = parseInt(day.substring(0, 4), 10);
-    const month = parseInt(day.substring(4, 6), 10) - 1;
-    const dayNum = parseInt(day.substring(6, 8), 10);
-    const date = new Date(year, month, dayNum);
-    date.setDate(date.getDate() + delta);
-    return (
-      date.getFullYear() +
-      String(date.getMonth() + 1).padStart(2, '0') +
-      String(date.getDate()).padStart(2, '0')
-    );
-  }
-
-  function renderDateNav(app, day) {
-    const host = document.getElementById('date-nav-host');
-    if (!host) return;
-    host.innerHTML = '';
-    // L4 deletes the mount flag and the notch together; until then mount:'content' routes an app to date-nav.js instead of the chrome notch.
-    if (!app.date_nav || app.date_nav.mount !== 'chrome' || !day) return;
-
-    const baseUrl = `/app/${app.name}/`;
-    host.innerHTML =
-      '<div class="date-nav">' +
-      '<div class="date-nav-left">' +
-      '<button class="date-nav-arrow" id="date-nav-prev" title="previous (←)">‹</button>' +
-      '</div>' +
-      `<button class="date-nav-label" id="date-nav-label" title="open month picker" aria-label="open month picker">${escapeHtml(window.formatDateShort(day))}</button>` +
-      '<div class="date-nav-right">' +
-      '<button class="date-nav-today" id="date-nav-today" title="jump to today (t)" aria-label="go to today">T</button>' +
-      '<button class="date-nav-arrow" id="date-nav-next" title="next (→)">›</button>' +
-      '</div>' +
-      '<div class="month-picker"></div>' +
-      '</div>';
-
-    function navigate(nextDay) {
-      window.location.href = `${baseUrl}${nextDay}`;
-    }
-
-    window.MonthPicker.registerDataProvider(app.name, async (month, facet) => {
-      try {
-        const raw = await window.apiJson(`${baseUrl}api/stats/${month}`);
-        const values = Object.values(raw);
-        if (values.length > 0 && typeof values[0] === 'object' && values[0] !== null) {
-          const result = {};
-          for (const [itemDay, facetCounts] of Object.entries(raw)) {
-            result[itemDay] = facet
-              ? facetCounts[facet] || 0
-              : Object.values(facetCounts).reduce((a, b) => a + b, 0);
-          }
-          return { data: result, error: null };
-        }
-        return { data: raw, error: null };
-      } catch (err) {
-        return { data: null, error: err };
-      }
-    });
-
-    window.MonthPicker.init({
-      app: app.name,
-      currentDay: day,
-      container: '.month-picker',
-      allowFutureDates: !!app.date_nav.allow_future
-    });
-
-    document.getElementById('date-nav-label').addEventListener('click', () => {
-      window.MonthPicker.toggle();
-    });
-    document.getElementById('date-nav-prev').addEventListener('click', () => {
-      if (window.MonthPicker.isOpen()) window.MonthPicker.navigateMonth(-1);
-      else navigate(adjustDay(day, -1));
-    });
-    document.getElementById('date-nav-next').addEventListener('click', () => {
-      if (window.MonthPicker.isOpen()) window.MonthPicker.navigateMonth(1);
-      else navigate(adjustDay(day, 1));
-    });
-    document.getElementById('date-nav-today').addEventListener('click', () => {
-      navigate(window.MonthPicker.getToday());
-    });
-    document.addEventListener('keydown', (event) => {
-      if (event.target.matches('input, textarea, select')) return;
-      if (event.key === 'ArrowLeft') {
-        event.preventDefault();
-        if (window.MonthPicker.isOpen()) window.MonthPicker.navigateMonth(-1);
-        else navigate(adjustDay(day, -1));
-      }
-      if (event.key === 'ArrowRight') {
-        event.preventDefault();
-        if (window.MonthPicker.isOpen()) window.MonthPicker.navigateMonth(1);
-        else navigate(adjustDay(day, 1));
-      }
-      if (event.key === 't' || event.key === 'T') {
-        event.preventDefault();
-        navigate(window.MonthPicker.getToday());
-      }
-    });
-  }
-
   function seedGlobals(shell, app) {
     const chatBar = shell.chat_bar || {};
     window.facetsData = shell.facets || [];
@@ -308,7 +210,6 @@
       applyBodyState(shell, app, context.day);
       renderMenu(shell, app.name);
       seedGlobals(shell, app);
-      renderDateNav(app, context.day);
       window.resolveSolShellReady(shell);
 
       for (const backgroundApp of shell.apps || []) {

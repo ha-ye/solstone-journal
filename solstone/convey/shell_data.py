@@ -260,7 +260,6 @@ def _build_apps(registry: AppRegistry, config: dict[str, Any]) -> list[dict[str,
             "facets_enabled": app_instance.facets_enabled(),
             "date_nav": app_instance.date_nav,
             "app_bar": app_instance.app_bar,
-            "allow_future_dates": app_instance.allow_future_dates,
             "workspace_url": f"/app/{app_instance.name}/workspace",
             "background_url": (
                 f"/app/{app_instance.name}/background"
