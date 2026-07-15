@@ -985,7 +985,7 @@
   }
 
   function handleFacetSwitch(event) {
-    // Re-tint heat for the newly selected facet: content-mount apps with facets
+    // Re-tint heat for the newly selected facet: date-nav apps with facets
     // enabled (chat, activities, sol) refetch index and month stats here.
     state.facet = event.detail?.facet || null;
     state.monthCache.clear();
