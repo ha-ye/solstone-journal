@@ -4467,11 +4467,36 @@ def api_window():
     return jsonify(_build_health_window(_journal_root(), window_start, window_end))
 
 
+@body_bp.get("/api/index")
+def api_index() -> Any:
+    day_counts = _read_health_dedupe_stats(_journal_root())["by_day"]
+    months: dict[str, int] = {}
+    first_day: str | None = None
+    last_day: str | None = None
+
+    for day, count in day_counts.items():
+        if count <= 0:
+            continue
+        month = day[:6]
+        months[month] = months.get(month, 0) + count
+        if first_day is None or day < first_day:
+            first_day = day
+        if last_day is None or day > last_day:
+            last_day = day
+
+    coverage = (
+        {"start": first_day, "end": last_day}
+        if first_day is not None and last_day is not None
+        else None
+    )
+    return jsonify({"coverage": coverage, "months": months})
+
+
 @body_bp.get("/api/stats/<month>")
-def api_month_stats(month: str):
-    if not re.fullmatch(r"\d{6}|\d{4}-\d{2}", month):
+def api_month_stats(month: str) -> Any:
+    if not re.fullmatch(r"\d{6}", month):
         return error_response(INVALID_REQUEST_VALUE, detail="Invalid month")
-    month_key = f"{month[:4]}-{month[4:6]}" if len(month) == 6 else month
+    month_key = f"{month[:4]}-{month[4:6]}"
     day_counts = _read_health_dedupe_stats(_journal_root())["by_day"]
     return jsonify(
         {

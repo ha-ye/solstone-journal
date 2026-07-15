@@ -64,16 +64,16 @@ function segmentTimeLabel(meta, secondsFromStart) {
 
 async function loadIndex() {
   try {
-    const res = await fetch("/app/timeline/api/index", { cache: "no-store" });
+    const res = await fetch("/app/timeline/api/overview", { cache: "no-store" });
     if (!res.ok) {
-      console.info(`/app/timeline/api/index failed (${res.status}); showing timeline error`);
+      console.info(`/app/timeline/api/overview failed (${res.status}); showing timeline error`);
       return { state: "error" };
     }
     let idx;
     try {
       idx = await res.json();
     } catch (e) {
-      console.warn("/app/timeline/api/index returned unreadable JSON; showing timeline error", e);
+      console.warn("/app/timeline/api/overview returned unreadable JSON; showing timeline error", e);
       return { state: "error" };
     }
     timelineMeta.generatedAt = idx.generated_at ?? null;
@@ -81,10 +81,10 @@ async function loadIndex() {
     timelineMeta.dataThrough = idx.data_through ?? null;
     rebuildMonthsFromIndex(idx);
     const state = months.every((m) => !m.yearEvent && !(m.day_count > 0)) ? "empty" : "data";
-    console.info(`loaded /app/timeline/api/index (${idx.months.length} months, year_top=${idx.year_top.length})`);
+    console.info(`loaded /app/timeline/api/overview (${idx.months.length} months, year_top=${idx.year_top.length})`);
     return { state };
   } catch (e) {
-    console.warn("/app/timeline/api/index fetch failed; showing timeline error", e);
+    console.warn("/app/timeline/api/overview fetch failed; showing timeline error", e);
     return { state: "error" };
   }
 }

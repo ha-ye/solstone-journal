@@ -547,13 +547,13 @@ button.activity-detail-back {
 </style>
 
 <div class="workspace-content-wide">
+  <div data-date-nav></div>
   <nav class="activities-breadcrumb" aria-label="activities navigation">
-    <a href="#" id="breadcrumbMonth" class="breadcrumb-link"></a>
+    <span id="breadcrumbMonth" class="breadcrumb-link"></span>
     <span class="breadcrumb-sep" aria-hidden="true">/</span>
     <span class="breadcrumb-current" aria-current="page"></span>
-    <a href="#" id="todayChip" class="today-chip" style="display:none"></a>
   </nav>
-  <h1 id="activitiesHeading"></h1>
+  <h1 id="activitiesHeading" data-date-nav-heading></h1>
   <div id="daySummary" class="day-summary"></div>
 
   <div id="dayView">
@@ -575,31 +575,6 @@ button.activity-detail-back {
   const { day } = window.solPathContext();
   const escapeHtml = (value) => window.AppServices.escapeHtml(value);
 
-  const weekdayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-
-  function ordinalSuffix(dayNum) {
-    const mod100 = dayNum % 100;
-    if (mod100 >= 11 && mod100 <= 13) return 'th';
-    if (dayNum % 10 === 1) return 'st';
-    if (dayNum % 10 === 2) return 'nd';
-    if (dayNum % 10 === 3) return 'rd';
-    return 'th';
-  }
-
-  function formatDateHeading(dayValue) {
-    const year = parseInt(dayValue.slice(0, 4), 10);
-    const monthIndex = parseInt(dayValue.slice(4, 6), 10) - 1;
-    const dayNum = parseInt(dayValue.slice(6, 8), 10);
-    const date = new Date(year, monthIndex, dayNum);
-    return `${weekdayNames[date.getDay()]} ${monthNames[monthIndex]} ${dayNum}${ordinalSuffix(dayNum)}`;
-  }
-
-  const heading = document.getElementById('activitiesHeading');
-  if (heading && day) {
-    heading.textContent = formatDateHeading(day);
-  }
-
   // Breadcrumb month link
   const monthLink = document.getElementById('breadcrumbMonth');
   if (monthLink) {
@@ -607,10 +582,6 @@ button.activity-detail-back {
     const month = parseInt(day.slice(4, 6), 10) - 1;
     const monthName = new Date(year, month, 1).toLocaleString('default', { month: 'long' });
     monthLink.textContent = monthName + ' ' + year;
-    monthLink.addEventListener('click', function(e) {
-      e.preventDefault();
-      if (window.MonthPicker) MonthPicker.show();
-    });
   }
 
   // Breadcrumb current — date without weekday
@@ -625,34 +596,6 @@ button.activity-detail-back {
   const bcCurrent = document.querySelector('.breadcrumb-current');
   if (bcCurrent) {
     bcCurrent.textContent = bcMonth + ' ' + dayNum + suffix;
-  }
-
-  // Today chip — show relative distance when viewing a non-today date
-  const todayChip = document.getElementById('todayChip');
-  if (todayChip) {
-    const now = new Date();
-    const todayStr = String(now.getFullYear()) + String(now.getMonth() + 1).padStart(2, '0') + String(now.getDate()).padStart(2, '0');
-    if (day !== todayStr) {
-      const dayDate = new Date(parseInt(day.slice(0, 4)), parseInt(day.slice(4, 6)) - 1, parseInt(day.slice(6, 8)));
-      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-      const diffDays = Math.round((dayDate - today) / 86400000);
-      const abs = Math.abs(diffDays);
-      let label;
-      if (abs === 1) {
-        label = diffDays < 0 ? 'yesterday' : 'tomorrow';
-      } else if (abs <= 30) {
-        label = diffDays < 0 ? abs + ' days ago' : 'in ' + abs + ' days';
-      } else if (abs <= 90) {
-        const weeks = Math.round(abs / 7);
-        label = diffDays < 0 ? weeks + ' weeks ago' : 'in ' + weeks + ' weeks';
-      } else {
-        const months = Math.round(abs / 30);
-        label = diffDays < 0 ? months + ' months ago' : 'in ' + months + ' months';
-      }
-      todayChip.textContent = '\u21a9 today (' + label + ')';
-      todayChip.href = '/app/activities/' + todayStr;
-      todayChip.style.display = '';
-    }
   }
 
   let allActivities = [];

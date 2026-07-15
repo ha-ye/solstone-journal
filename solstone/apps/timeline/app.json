@@ -2,6 +2,12 @@
   "icon": "🕰️",
   "label": "timeline",
   "facets": {"disabled": true},
-  "date_nav": true,
-  "allow_future_dates": false
+  "date_nav": {
+    "mount": "content",
+    "unit": {
+      "one": "segment",
+      "other": "segments",
+      "none": "no segments"
+    }
+  }
 }

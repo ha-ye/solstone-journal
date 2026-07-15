@@ -27,7 +27,7 @@ AppServices.register("timeline", {
       if (!msg || msg.event !== "stopped" || msg.exit_code !== 0) return;
       const ref = msg.ref || "";
       if (/^sched:maintenance:timeline:rollup-day:/.test(ref)) {
-        fetch("/app/timeline/api/index", { cache: "no-store" })
+        fetch("/app/timeline/api/overview", { cache: "no-store" })
           .then((r) => (r.ok ? r.json() : null))
           .then((idx) => {
             if (!idx) return;

@@ -1,6 +1,13 @@
 {
   "icon": "📅",
   "label": "activities",
-  "date_nav": true,
-  "allow_future_dates": true
+  "date_nav": {
+    "mount": "content",
+    "unit": {
+      "one": "activity",
+      "other": "activities",
+      "none": "no activities"
+    },
+    "allow_future": true
+  }
 }

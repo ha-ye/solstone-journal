@@ -379,8 +379,61 @@ def api_daily():
     return respond_collection(rows)
 
 
+def _token_cost_stats(month: str | None = None) -> dict[str, float]:
+    tokens_dir = Path(state.journal_root) / "tokens"
+    if not tokens_dir.exists():
+        return {}
+
+    stats: dict[str, float] = {}
+
+    pattern = f"{month}*.jsonl" if month is not None else "*.jsonl"
+    for log_file in tokens_dir.glob(pattern):
+        day = log_file.stem
+        if not DATE_RE.fullmatch(day):
+            continue
+        if month is not None and not day.startswith(month):
+            continue
+
+        data = _aggregate_token_data(day)
+        cost = data["total"]["cost"]
+        if cost > 0:
+            stats[day] = cost
+
+    return stats
+
+
+def _build_date_nav_index() -> dict[str, Any]:
+    day_costs = _token_cost_stats()
+    months: dict[str, float] = {}
+    first_day: str | None = None
+    last_day: str | None = None
+
+    for day, cost in day_costs.items():
+        if cost <= 0:
+            continue
+        month = day[:6]
+        months[month] = round(months.get(month, 0.0) + cost, 2)
+        if first_day is None or day < first_day:
+            first_day = day
+        if last_day is None or day > last_day:
+            last_day = day
+
+    coverage = (
+        {"start": first_day, "end": last_day}
+        if first_day is not None and last_day is not None
+        else None
+    )
+    return {"coverage": coverage, "months": months}
+
+
+@tokens_bp.route("/api/index")
+def api_index() -> Any:
+    """Return read-only whole-journal date navigation coverage."""
+    return jsonify(_build_date_nav_index())
+
+
 @tokens_bp.route("/api/stats/<month>")
-def api_stats(month: str):
+def api_stats(month: str) -> Any:
     """Return token cost for each day in a specific month.
 
     Args:
@@ -398,21 +451,5 @@ def api_stats(month: str):
             detail="Invalid month format, expected YYYYMM",
         )
 
-    tokens_dir = Path(state.journal_root) / "tokens"
-    if not tokens_dir.exists():
-        return jsonify({})
-
-    stats: dict[str, float] = {}
-
-    for log_file in tokens_dir.glob(f"{month}*.jsonl"):
-        day = log_file.stem
-        if not DATE_RE.fullmatch(day):
-            continue
-
-        # Get aggregated data for this day
-        data = _aggregate_token_data(day)
-        cost = data["total"]["cost"]
-        if cost > 0:
-            stats[day] = cost
-
+    stats = _token_cost_stats(month)
     return jsonify(stats)

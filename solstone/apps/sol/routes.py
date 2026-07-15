@@ -655,33 +655,19 @@ def api_preview_prompt(name: str) -> Any:
         return error_response(TALENT_OPERATION_FAILED, detail=str(e))
 
 
-@sol_bp.route("/api/stats/<month>")
-def api_stats(month: str) -> Any:
-    """Return talent-use counts per day per facet for a month.
-
-    Args:
-        month: YYYYMM format month string
-
-    Returns:
-        JSON dict mapping day (YYYYMMDD) to {facet: count, ...}
-        For unfaceted runs, uses "_none" as the key.
-    """
-    if not re.fullmatch(r"\d{6}", month):
-        return error_response(
-            INVALID_MONTH,
-            detail="Invalid month format, expected YYYYMM",
-        )
-
+def _talent_use_counts(month: str | None = None) -> dict[str, dict[str, int]]:
     talents_dir = Path(state.journal_root) / "talents"
     if not talents_dir.exists():
-        return jsonify({})
+        return {}
 
     stats: dict[str, dict[str, int]] = {}
 
-    # Read day index files for the month
-    for day_index_file in talents_dir.glob(f"{month}*.jsonl"):
+    pattern = f"{month}*.jsonl" if month is not None else "*.jsonl"
+    for day_index_file in talents_dir.glob(pattern):
         day = day_index_file.stem
         if not re.fullmatch(r"\d{8}", day):
+            continue
+        if month is not None and not day.startswith(month):
             continue
 
         try:
@@ -702,7 +688,58 @@ def api_stats(month: str) -> Any:
         except IOError:
             continue
 
-    return jsonify(stats)
+    return stats
+
+
+def _build_date_nav_index() -> dict[str, Any]:
+    day_counts = _talent_use_counts()
+    months: dict[str, int] = {}
+    first_day: str | None = None
+    last_day: str | None = None
+
+    for day, facet_counts in day_counts.items():
+        count = sum(facet_counts.values())
+        if count <= 0:
+            continue
+        month = day[:6]
+        months[month] = months.get(month, 0) + count
+        if first_day is None or day < first_day:
+            first_day = day
+        if last_day is None or day > last_day:
+            last_day = day
+
+    coverage = (
+        {"start": first_day, "end": last_day}
+        if first_day is not None and last_day is not None
+        else None
+    )
+    return {"coverage": coverage, "months": months}
+
+
+@sol_bp.route("/api/index")
+def api_index() -> Any:
+    """Return read-only whole-journal date navigation coverage."""
+    return jsonify(_build_date_nav_index())
+
+
+@sol_bp.route("/api/stats/<month>")
+def api_stats(month: str) -> Any:
+    """Return talent-use counts per day per facet for a month.
+
+    Args:
+        month: YYYYMM format month string
+
+    Returns:
+        JSON dict mapping day (YYYYMMDD) to {facet: count, ...}
+        For unfaceted runs, uses "_none" as the key.
+    """
+    if not re.fullmatch(r"\d{6}", month):
+        return error_response(
+            INVALID_MONTH,
+            detail="Invalid month format, expected YYYYMM",
+        )
+
+    return jsonify(_talent_use_counts(month))
 
 
 @sol_bp.route("/api/badge-count")

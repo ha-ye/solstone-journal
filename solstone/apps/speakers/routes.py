@@ -681,6 +681,50 @@ def api_state() -> Any:
         )
 
 
+def _speaker_segment_counts(month: str | None = None) -> dict[str, int]:
+    stats: dict[str, int] = {}
+
+    for day_name in day_dirs().keys():
+        if month is not None and not day_name.startswith(month):
+            continue
+
+        segments = _scan_segment_embeddings(day_name)
+        if segments:
+            stats[day_name] = len(segments)
+
+    return stats
+
+
+def _build_date_nav_index() -> dict[str, Any]:
+    day_counts = _speaker_segment_counts()
+    months: dict[str, int] = {}
+    first_day: str | None = None
+    last_day: str | None = None
+
+    for day, count in day_counts.items():
+        if count <= 0:
+            continue
+        month = day[:6]
+        months[month] = months.get(month, 0) + count
+        if first_day is None or day < first_day:
+            first_day = day
+        if last_day is None or day > last_day:
+            last_day = day
+
+    coverage = (
+        {"start": first_day, "end": last_day}
+        if first_day is not None and last_day is not None
+        else None
+    )
+    return {"coverage": coverage, "months": months}
+
+
+@speakers_bp.route("/api/index")
+def api_index() -> Any:
+    """Return read-only whole-journal date navigation coverage."""
+    return jsonify(_build_date_nav_index())
+
+
 @speakers_bp.route("/api/stats/<month>")
 def api_stats(month: str) -> Any:
     """Return segment counts for each day in a month.
@@ -693,16 +737,7 @@ def api_stats(month: str) -> Any:
             detail="Invalid month format, expected YYYYMM",
         )
 
-    stats: dict[str, int] = {}
-
-    for day_name in day_dirs().keys():
-        if not day_name.startswith(month):
-            continue
-
-        segments = _scan_segment_embeddings(day_name)
-        if segments:
-            stats[day_name] = len(segments)
-
+    stats = _speaker_segment_counts(month)
     return jsonify(stats)
 
 

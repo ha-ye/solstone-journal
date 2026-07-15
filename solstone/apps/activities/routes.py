@@ -97,6 +97,50 @@ def _month_activity_counts(month: str) -> dict[str, dict[str, int]]:
     return stats
 
 
+def _activity_months() -> set[str]:
+    months: set[str] = set()
+    facets_root = Path(state.journal_root) / "facets"
+    for activity_file in facets_root.glob("*/activities/*.jsonl"):
+        day = activity_file.stem
+        if DATE_RE.fullmatch(day):
+            months.add(day[:6])
+    return months
+
+
+def _build_date_nav_index() -> dict[str, Any]:
+    months: dict[str, int] = {}
+    first_day: str | None = None
+    last_day: str | None = None
+
+    for month in sorted(_activity_months()):
+        try:
+            month_counts = _month_activity_counts(month)
+        except ValueError:
+            continue
+        for day, facet_counts in month_counts.items():
+            count = sum(facet_counts.values())
+            if count <= 0:
+                continue
+            months[month] = months.get(month, 0) + count
+            if first_day is None or day < first_day:
+                first_day = day
+            if last_day is None or day > last_day:
+                last_day = day
+
+    coverage = (
+        {"start": first_day, "end": last_day}
+        if first_day is not None and last_day is not None
+        else None
+    )
+    return {"coverage": coverage, "months": months}
+
+
+@activities_bp.route("/api/index")
+def api_index() -> Any:
+    """Return read-only whole-journal date navigation coverage."""
+    return jsonify(_build_date_nav_index())
+
+
 @activities_bp.route("/api/stats/<month>")
 def activities_stats(month: str) -> Any:
     """Return activity counts per facet for a specific month."""

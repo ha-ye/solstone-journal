@@ -1,6 +1,11 @@
 {
   "icon": "💰",
   "label": "tokens",
-  "date_nav": true,
+  "date_nav": {
+    "mount": "content",
+    "unit": {
+      "kind": "currency"
+    }
+  },
   "facets": {"disabled": true}
 }

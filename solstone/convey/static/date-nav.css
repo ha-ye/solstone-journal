@@ -50,6 +50,10 @@
   font-weight: var(--weight-medium);
 }
 
+.date-nav-content--dayless .date-nav-content__trigger {
+  min-width: 156px;
+}
+
 .date-nav-content__warning {
   display: inline-flex;
   align-items: center;

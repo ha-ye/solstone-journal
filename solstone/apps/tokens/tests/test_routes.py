@@ -6,6 +6,7 @@ from __future__ import annotations
 import re
 from datetime import date as real_date
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 
@@ -41,6 +42,13 @@ def _patch_token_cost(monkeypatch):
         }
 
     monkeypatch.setattr(token_routes, "calc_token_cost", calc_cost)
+
+
+def _tokens_snapshot(journal: Path) -> dict[Path, int]:
+    tokens = journal / "tokens"
+    if not tokens.exists():
+        return {}
+    return {path: path.stat().st_mtime_ns for path in sorted(tokens.rglob("*"))}
 
 
 def test_api_daily_happy_path(tokens_env, monkeypatch):
@@ -146,6 +154,64 @@ def test_api_daily_cross_month_boundary(tokens_env, monkeypatch):
     ]
     expected_rate = sum(row["cost"] for row in rows) / 7
     assert expected_rate == pytest.approx(0.4)
+
+
+def test_api_index_reports_nonzero_coverage_and_months(tokens_env, monkeypatch):
+    env = tokens_env(
+        {
+            "20260304": [_entry("gpt-5", 1000)],
+            "20260305": [_entry("gpt-5", 2000)],
+            "20260401": [_entry("gpt-5", 3000)],
+        }
+    )
+    _patch_token_cost(monkeypatch)
+
+    response = env.client.get("/app/tokens/api/index")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body["coverage"] == {"start": "20260304", "end": "20260401"}
+    assert body["months"]["202603"] == pytest.approx(0.3)
+    assert body["months"]["202604"] == pytest.approx(0.3)
+
+
+def test_api_index_month_totals_match_api_stats(tokens_env, monkeypatch):
+    env = tokens_env(
+        {
+            "20260304": [_entry("gpt-5", 1000)],
+            "20260305": [_entry("gpt-5", 2000)],
+        }
+    )
+    _patch_token_cost(monkeypatch)
+
+    response = env.client.get("/app/tokens/api/index")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    for month, total in body["months"].items():
+        month_response = env.client.get(f"/app/tokens/api/stats/{month}")
+        assert month_response.status_code == 200
+        assert total == pytest.approx(sum(month_response.get_json().values()))
+
+
+def test_api_index_empty_journal(tokens_env):
+    env = tokens_env({})
+
+    response = env.client.get("/app/tokens/api/index")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"coverage": None, "months": {}}
+
+
+def test_api_index_is_read_only(tokens_env, monkeypatch):
+    env = tokens_env({"20260304": [_entry("gpt-5", 1000)]})
+    _patch_token_cost(monkeypatch)
+    before = _tokens_snapshot(env.journal)
+
+    response = env.client.get("/app/tokens/api/index")
+
+    assert response.status_code == 200
+    assert _tokens_snapshot(env.journal) == before
 
 
 def test_tokens_page_serves_spa_shell(tokens_env):

@@ -88,8 +88,22 @@ def _parse_date_nav(metadata: dict) -> dict | None:
     )
     if mount == "content" and unit is None:
         raise AppConfigError("content date_nav requires an explicit unit")
+    if mount == "content" and not _valid_content_date_nav_unit(unit):
+        raise AppConfigError(
+            "content date_nav.unit must be {one, other, none} strings or "
+            "{kind: 'currency'}"
+        )
 
     return {"unit": unit, "allow_future": allow_future, "mount": mount}
+
+
+def _valid_content_date_nav_unit(unit: Any) -> bool:
+    """Return whether *unit* is a supported content date-nav unit schema."""
+    if not isinstance(unit, dict):
+        return False
+    if unit.get("kind") == "currency":
+        return True
+    return all(isinstance(unit.get(key), str) for key in ("one", "other", "none"))
 
 
 @dataclass

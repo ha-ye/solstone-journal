@@ -135,7 +135,7 @@ def test_timeline_static_literal_paths_resolve(client):
 
 
 def test_empty_journal_index_returns_empty_recent_months(empty_client):
-    response = empty_client.get("/app/timeline/api/index")
+    response = empty_client.get("/app/timeline/api/overview")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -151,7 +151,7 @@ def test_index_metadata_absent_when_master_minimal(empty_client, empty_timeline_
         json.dumps({"months": {}}) + "\n", encoding="utf-8"
     )
 
-    response = empty_client.get("/app/timeline/api/index")
+    response = empty_client.get("/app/timeline/api/overview")
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -161,7 +161,7 @@ def test_index_metadata_absent_when_master_minimal(empty_client, empty_timeline_
 
 
 def test_index_shape_and_size(client):
-    response = client.get("/app/timeline/api/index")
+    response = client.get("/app/timeline/api/overview")
 
     assert response.status_code == 200
     assert len(response.data) < 20 * 1024
@@ -188,6 +188,60 @@ def test_index_shape_and_size(client):
     assert month["month_top"][0]["title"] == "Timeline Port"
     assert "days" not in month
     assert [item["month"] for item in payload["year_top"]] == ["202604", "202605"]
+
+
+def _chronicle_snapshot(journal: Path) -> dict[Path, int]:
+    return {
+        path: path.stat().st_mtime_ns
+        for path in sorted((journal / "chronicle").rglob("*"))
+    }
+
+
+def _expected_date_nav_months() -> dict[str, int]:
+    months: dict[str, int] = {}
+    for day, count in routes._day_segment_counts().items():
+        month = day[:6]
+        months[month] = months.get(month, 0) + count
+    return months
+
+
+def test_api_index_reports_nonzero_coverage_and_months(client):
+    response = client.get("/app/timeline/api/index")
+    assert response.status_code == 200
+    body = response.get_json()
+
+    expected_days = routes._day_segment_counts()
+    assert body["coverage"] == {
+        "start": min(expected_days),
+        "end": max(expected_days),
+    }
+    assert body["months"] == _expected_date_nav_months()
+
+
+def test_api_index_month_totals_match_api_stats(client):
+    response = client.get("/app/timeline/api/index")
+    assert response.status_code == 200
+    body = response.get_json()
+
+    for month, total in body["months"].items():
+        month_response = client.get(f"/app/timeline/api/stats/{month}")
+        assert month_response.status_code == 200
+        assert total == sum(month_response.get_json().values())
+
+
+def test_api_index_empty_journal(empty_client):
+    response = empty_client.get("/app/timeline/api/index")
+    assert response.status_code == 200
+    assert response.get_json() == {"coverage": None, "months": {}}
+
+
+def test_api_index_is_read_only(client, timeline_env):
+    before = _chronicle_snapshot(timeline_env)
+
+    response = client.get("/app/timeline/api/index")
+
+    assert response.status_code == 200
+    assert _chronicle_snapshot(timeline_env) == before
 
 
 def test_month_known_shape(client):
@@ -372,7 +426,7 @@ def test_stats_cache_invalidates_on_mtime(empty_client, empty_timeline_env):
 
 
 def test_master_cache_invalidates_on_mtime(client, timeline_env):
-    first = client.get("/app/timeline/api/index").get_json()
+    first = client.get("/app/timeline/api/overview").get_json()
     first_title = next(m for m in first["months"] if m["ym"] == MONTH)["month_top"][0][
         "title"
     ]
@@ -385,7 +439,7 @@ def test_master_cache_invalidates_on_mtime(client, timeline_env):
     bumped = time.time() + 2
     os.utime(timeline_path, (bumped, bumped))
 
-    second = client.get("/app/timeline/api/index").get_json()
+    second = client.get("/app/timeline/api/overview").get_json()
     second_title = next(m for m in second["months"] if m["ym"] == MONTH)["month_top"][
         0
     ]["title"]

@@ -547,7 +547,8 @@ def test_read_routes_create_nothing_in_empty_journal(body_env):
 
     assert env.client.get("/app/body/api/status").status_code == 200
     assert env.client.get("/app/body/api/day/20260703").status_code == 200
-    assert env.client.get("/app/body/api/stats/2026-07").status_code == 200
+    assert env.client.get("/app/body/api/index").status_code == 200
+    assert env.client.get("/app/body/api/stats/202607").status_code == 200
     recent = env.client.get("/app/body/api/recent?before=20260703")
     assert recent.status_code == 200
     assert recent.get_json() == {"days": [], "has_more": False}
@@ -632,10 +633,74 @@ def test_month_stats_api_returns_day_counts(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
-    response = env.client.get("/app/body/api/stats/2026-07")
+    response = env.client.get("/app/body/api/stats/202607")
 
     assert response.status_code == 200
     assert response.get_json() == {"20260703": 3, "20260704": 1}
+
+
+def test_month_stats_api_rejects_dashed_month(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    response = env.client.get("/app/body/api/stats/2026-07")
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_request_value"
+
+
+def _imports_snapshot(journal: Path) -> dict[Path, int]:
+    imports = journal / "imports"
+    if not imports.exists():
+        return {}
+    return {path: path.stat().st_mtime_ns for path in sorted(imports.rglob("*"))}
+
+
+def test_api_index_reports_nonzero_coverage_and_months(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    response = env.client.get("/app/body/api/index")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "coverage": {"start": "20260703", "end": "20260704"},
+        "months": {"202607": 4},
+    }
+
+
+def test_api_index_month_totals_match_api_stats(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+
+    response = env.client.get("/app/body/api/index")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    for month, total in body["months"].items():
+        month_response = env.client.get(f"/app/body/api/stats/{month}")
+        assert month_response.status_code == 200
+        assert total == sum(month_response.get_json().values())
+
+
+def test_api_index_empty_journal(body_env):
+    env = body_env()
+
+    response = env.client.get("/app/body/api/index")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"coverage": None, "months": {}}
+
+
+def test_api_index_is_read_only(body_env):
+    env = body_env()
+    _seed_health_import(env.journal)
+    before = _imports_snapshot(env.journal)
+
+    response = env.client.get("/app/body/api/index")
+
+    assert response.status_code == 200
+    assert _imports_snapshot(env.journal) == before
 
 
 def test_day_api_rejects_invalid_day(body_env):
@@ -1957,17 +2022,15 @@ def test_overview_quick_entry_row_and_section_order(body_env):
     archive = env.client.get("/app/body/api/status").get_json()["archive"]
     source = _workspace_source()
 
-    # Quick-entry row: solid button to the latest day with data, outline
-    # button opening the jump-to-date calendar. No "This week" button.
+    # Quick-entry row: solid button to the latest day with data and trends.
+    # No legacy jump calendar or "This week" button.
     assert archive["latest_day"] == "20260704"
     assert archive["coverage"]["start_month"] == "2026-07"
     assert archive["coverage"]["end_month"] == "2026-07"
     assert "Open latest day" in source
     assert "bodyDayHref(latestDay)" in source
-    assert "Jump to date" in source
-    assert 'id="body-jump-pop"' in source
-    assert 'data-start-month="${escapeHtml(coverage.start_month)}"' in source
-    assert 'data-end-month="${escapeHtml(coverage.end_month)}"' in source
+    assert 'href="/app/body/trends"' in source
+    assert "Jump to date" not in source
     assert "This week" not in source
 
     # Latest-first order: hero, quick entry, recent days, all history,
@@ -1985,65 +2048,23 @@ def test_overview_quick_entry_row_and_section_order(body_env):
     assert order == sorted(order)
 
 
-def test_overview_jump_popover_header_button_opens_year_month_picker():
-    source = _workspace_source()
-
-    # The header month-year text is a real button that discloses the
-    # two-step picker inside the same popover.
-    assert (
-        '<button type="button" class="body-jump-title" id="body-jump-title-btn"'
-        ' aria-expanded="false" aria-controls="body-jump-picker">' in source
-    )
-    assert (
-        'titleBtn.setAttribute("aria-expanded", picking ? "true" : "false");' in source
-    )
-
-    # Step 1 offers the coverage years, step 2 the chosen year's months —
-    # both mounted inside the popover, after the day grid.
-    pop_at = source.index('id="body-jump-pop"')
-    days_at = source.index('id="body-jump-days"')
-    picker_at = source.index('id="body-jump-picker"')
-    years_at = source.index('id="body-jump-years"')
-    months_at = source.index('id="body-jump-months"')
-    assert pop_at < days_at < picker_at < years_at < months_at
-
-    # Coverage years derive from the bounds the popover already carries.
-    assert "parseInt(startMonth.slice(0, 4), 10)" in source
-    assert 'class="body-jump-year"' in source
-
-    # Months outside the archive's coverage bounds render disabled.
-    assert "const out = ym < startMonth || ym > endMonth;" in source
-    assert 'out ? " disabled" : ""' in source
-
-    # A back affordance returns from months to years; Escape still closes
-    # the whole popover from any picker depth.
-    assert 'id="body-jump-back"' in source
-    assert "backToYearsBtn.addEventListener" in source
-    assert 'if (event.key === "Escape") closePop(true);' in source
-
-    # Picking a month returns to the day grid on that month, and reopening
-    # the popover always resets to the day-grid view.
-    assert "function showDayGrid(month)" in source
-    assert "showDayGrid(pick.dataset.month);" in source
-    assert "showDayGrid(current);" in source
-
-    # The existing month-stepping chevrons stay wired.
-    assert "shiftMonth(current, -1)" in source
-    assert "shiftMonth(current, 1)" in source
-
-
 # --- Overview vs day-page navigation model --------------------------------------
 
 
-def test_overview_is_stable_home_without_day_nav(body_env):
+def test_overview_mounts_dayless_date_nav_and_keeps_body_title(body_env):
     env = body_env()
     _seed_health_import(env.journal)
 
-    html = env.client.get("/app/body/").get_data(as_text=True)
+    response = env.client.get("/app/body/")
+    source = _workspace_source()
 
-    # The overview is the stable Body home: the day grid and recent-day
-    # rail are the pickers, so the date-nav pill must NOT mount here.
-    assert 'id="date-nav-label"' not in html
+    assert response.status_code == 200
+    assert "data-date-nav" in source
+    assert "data-date-nav-heading" in source
+    assert (
+        'renderHeader("Body", "Personal health context imported into Solstone.", false)'
+        in source
+    )
 
 
 def test_valid_day_page_serves_shell_and_workspace_has_overview_backlink(body_env):
@@ -2057,7 +2078,8 @@ def test_valid_day_page_serves_shell_and_workspace_has_overview_backlink(body_en
     assert "Glucose 100–140 mg/dL." not in html
     source = _workspace_source()
     assert "Body overview" in source
-    assert 'renderHeader(`Body · ${bodyDay.date_label}`, "", true)' in source
+    assert 'renderHeader("", "", true, { showTitle: false })' in source
+    assert "data-date-nav-heading" in source
 
 
 # --- Shared display normalizers ------------------------------------------------
@@ -4646,10 +4668,10 @@ def test_trends_overview_button_sits_in_quick_entry_row():
         '<a class="body-btn body-btn--outline" href="/app/body/trends">Trends</a>'
         in source
     )
-    # The link sits in the quick-entry row: after the jump button, before
-    # the recent-days rail.
+    # The link sits in the quick-entry row after the latest-day button.
+    latest_at = source.index("Open latest day")
     trends_at = source.index('href="/app/body/trends"')
-    assert source.index("Jump to date") < trends_at < source.index('id="body-jump-pop"')
+    assert latest_at < trends_at
 
 
 def test_trends_copy_avoids_surveillance_and_interpretation_words():

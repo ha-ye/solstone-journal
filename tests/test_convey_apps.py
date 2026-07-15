@@ -93,11 +93,20 @@ def test_parse_date_nav_normalizes_legacy_and_content_configs():
         "allow_future": False,
         "mount": "content",
     }
+    assert _parse_date_nav(
+        {"date_nav": {"mount": "content", "unit": {"kind": "currency"}}}
+    ) == {
+        "unit": {"kind": "currency"},
+        "allow_future": False,
+        "mount": "content",
+    }
 
     with pytest.raises(AppConfigError):
         _parse_date_nav({"date_nav": {"mount": "bogus"}})
     with pytest.raises(AppConfigError):
         _parse_date_nav({"date_nav": {"mount": "content"}})
+    with pytest.raises(AppConfigError):
+        _parse_date_nav({"date_nav": {"mount": "content", "unit": {"one": "log"}}})
 
 
 def test_shell_payload_emits_normalized_date_nav(monkeypatch):
@@ -123,29 +132,20 @@ def test_shell_payload_emits_normalized_date_nav(monkeypatch):
         if app["date_nav"] and app["date_nav"]["mount"] == "chrome"
     ]
 
-    assert content_apps == ["transcripts"]
-    assert sorted(chrome_apps) == [
+    assert sorted(content_apps) == [
         "activities",
         "body",
-        "chat",
-        "reflections",
         "sol",
         "speakers",
         "timeline",
         "tokens",
+        "transcripts",
     ]
+    assert sorted(chrome_apps) == ["chat", "reflections"]
     assert apps["news"]["date_nav"] is None
-    assert apps["activities"]["date_nav"]["allow_future"] is True
-    assert apps["activities"]["allow_future_dates"] is True
-    assert apps["body"]["allow_future_dates"] is False
-    assert apps["chat"]["allow_future_dates"] is False
-    assert apps["reflections"]["allow_future_dates"] is False
-    assert apps["timeline"]["allow_future_dates"] is False
-    assert apps["sol"]["allow_future_dates"] is False
-    assert apps["speakers"]["allow_future_dates"] is False
-    assert apps["tokens"]["allow_future_dates"] is False
-    assert apps["transcripts"]["allow_future_dates"] is False
-    assert apps["news"]["allow_future_dates"] is False
+    for name, app in apps.items():
+        if app["date_nav"]:
+            assert app["date_nav"]["allow_future"] is (name == "activities")
 
 
 def test_get_facets_data_adds_icon_svg_and_preserves_emoji(monkeypatch):

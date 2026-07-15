@@ -342,200 +342,6 @@ a.body-day-cell:focus-visible {
   outline-offset: 1px;
 }
 
-.body-jump-pop {
-  position: absolute;
-  top: calc(100% + var(--space-2));
-  left: 0;
-  z-index: 30;
-  width: 292px;
-  padding: var(--space-3);
-  background: var(--paper);
-  border: 1px solid var(--hairline-2);
-  border-radius: var(--radius);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
-}
-
-.body-jump-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  margin-bottom: var(--space-2);
-}
-
-.body-jump-title {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  min-height: 30px;
-  padding: 0 var(--space-2);
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  font-size: 14px;
-  font-weight: var(--weight-medium);
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.body-jump-title:hover {
-  background: var(--orange-wash);
-}
-
-.body-jump-title:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
-}
-
-.body-jump-title-caret {
-  font-size: 10px;
-  color: var(--ink-faint-paper);
-}
-
-.body-jump-nav {
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--hairline-2);
-  border-radius: var(--radius-sm);
-  background: var(--cream-bright);
-  color: var(--ink);
-  font-size: 15px;
-  cursor: pointer;
-}
-
-.body-jump-nav:hover:not(:disabled) {
-  background: var(--orange-wash);
-}
-
-.body-jump-nav:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.body-jump-nav:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
-}
-
-.body-jump-dow,
-.body-jump-days {
-  display: grid;
-  grid-template-columns: repeat(7, 1fr);
-  gap: 2px;
-}
-
-.body-jump-dow {
-  margin-bottom: 2px;
-  font-size: 11px;
-  text-align: center;
-  color: var(--ink-faint-paper);
-}
-
-/* The hidden attribute must win over the display: grid/flex above. */
-.body-jump-dow[hidden],
-.body-jump-days[hidden],
-.body-jump-years[hidden],
-.body-jump-months[hidden],
-.body-jump-back[hidden] {
-  display: none;
-}
-
-.body-jump-back {
-  display: inline-flex;
-  align-items: center;
-  margin: 0 0 var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  font-size: 13px;
-  font-weight: var(--weight-medium);
-  color: var(--orange-ink);
-  cursor: pointer;
-}
-
-.body-jump-back:hover {
-  background: var(--orange-wash);
-}
-
-.body-jump-back:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
-}
-
-.body-jump-years,
-.body-jump-months {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--space-2);
-}
-
-.body-jump-year,
-.body-jump-month {
-  display: grid;
-  place-items: center;
-  min-height: 34px;
-  border: 1px solid var(--hairline-2);
-  border-radius: var(--radius-sm);
-  background: var(--cream-bright);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-  cursor: pointer;
-}
-
-.body-jump-year:hover:not(:disabled),
-.body-jump-month:hover:not(:disabled) {
-  background: var(--orange-wash);
-}
-
-.body-jump-month:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.body-jump-year:focus-visible,
-.body-jump-month:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
-}
-
-.body-jump-day {
-  display: grid;
-  place-items: center;
-  height: 34px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  font-variant-numeric: tabular-nums;
-  color: var(--ink);
-  text-decoration: none;
-  background: color-mix(
-    in srgb,
-    var(--orange) calc(var(--heat, 0) * 100%),
-    var(--orange-wash)
-  );
-}
-
-a.body-jump-day:hover {
-  outline: 1px solid var(--orange-ink);
-}
-
-a.body-jump-day:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 1px;
-}
-
-.body-jump-day--empty {
-  background: transparent;
-  color: var(--ink-faint-paper);
-}
-
-.body-jump-day--pad {
-  background: transparent;
-}
-
 .body-recent-carousel {
   display: flex;
   gap: var(--space-3);
@@ -1296,6 +1102,8 @@ a.body-jump-day:focus-visible {
 
 
 <div class="workspace-content body-shell">
+  <div data-date-nav></div>
+  <h1 class="body-title" data-date-nav-heading></h1>
   <div id="body-state-gate"></div>
   <div id="body-view-root" hidden></div>
 </div>
@@ -1372,10 +1180,11 @@ a.body-jump-day:focus-visible {
     gate.querySelector(".surface-state-retry")?.addEventListener("click", retryFn, { once: true });
   }
 
-  function renderHeader(title, subtitle, backLink) {
+  function renderHeader(title, subtitle, backLink, options = {}) {
+    const showTitle = options.showTitle !== false;
     return html([
       '<header class="body-header">',
-      `<h1 class="body-title">${escapeHtml(title)}</h1>`,
+      showTitle ? `<h1 class="body-title">${escapeHtml(title)}</h1>` : "",
       subtitle ? `<p class="body-subtitle">${escapeHtml(subtitle)}</p>` : "",
       backLink ? '<nav class="body-nav" aria-label="Body views"><a class="body-link" href="/app/body/">&larr; Body overview</a></nav>' : "",
       '</header>',
@@ -1440,221 +1249,13 @@ a.body-jump-day:focus-visible {
 
   function renderQuickActions(archive) {
     if (!archive?.latest_day) return "";
-    const coverage = asObject(archive.coverage);
     const latestDay = safeDay(archive.latest_day);
     return html([
       '<div class="body-quick-row">',
       `<a class="body-btn body-btn--solid" href="${bodyDayHref(latestDay)}">Open latest day</a>`,
-      '<button type="button" class="body-btn body-btn--outline" id="body-jump-btn" aria-haspopup="dialog" aria-expanded="false">Jump to date&hellip;</button>',
       '<a class="body-btn body-btn--outline" href="/app/body/trends">Trends</a>',
-      `<div class="body-jump-pop" id="body-jump-pop" role="dialog" aria-label="Jump to date" hidden data-start-month="${escapeHtml(coverage.start_month)}" data-end-month="${escapeHtml(coverage.end_month)}" data-latest-day="${escapeHtml(latestDay)}">`,
-      '<div class="body-jump-head">',
-      '<button type="button" class="body-jump-nav" id="body-jump-prev" aria-label="Previous month">&lsaquo;</button>',
-      '<button type="button" class="body-jump-title" id="body-jump-title-btn" aria-expanded="false" aria-controls="body-jump-picker"><span id="body-jump-title" aria-live="polite"></span><span class="body-jump-title-caret" aria-hidden="true">&#9662;</span></button>',
-      '<button type="button" class="body-jump-nav" id="body-jump-next" aria-label="Next month">&rsaquo;</button>',
-      '</div>',
-      '<div class="body-jump-dow" id="body-jump-dow" aria-hidden="true"><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span><span>Su</span></div>',
-      '<div class="body-jump-days" id="body-jump-days"></div>',
-      '<div id="body-jump-picker" hidden>',
-      '<button type="button" class="body-jump-back" id="body-jump-back" hidden>&lsaquo; All years</button>',
-      '<div class="body-jump-years" id="body-jump-years" role="group" aria-label="Choose a year"></div>',
-      '<div class="body-jump-months" id="body-jump-months" role="group" aria-label="Choose a month" hidden></div>',
-      '</div>',
-      '</div>',
       '</div>',
     ]);
-  }
-
-  function initJumpPopover() {
-    const button = document.getElementById("body-jump-btn");
-    const pop = document.getElementById("body-jump-pop");
-    if (!button || !pop) return;
-    const titleEl = document.getElementById("body-jump-title");
-    const titleBtn = document.getElementById("body-jump-title-btn");
-    const dowEl = document.getElementById("body-jump-dow");
-    const daysEl = document.getElementById("body-jump-days");
-    const prevBtn = document.getElementById("body-jump-prev");
-    const nextBtn = document.getElementById("body-jump-next");
-    const pickerEl = document.getElementById("body-jump-picker");
-    const yearsEl = document.getElementById("body-jump-years");
-    const monthsEl = document.getElementById("body-jump-months");
-    const backToYearsBtn = document.getElementById("body-jump-back");
-    const startMonth = pop.dataset.startMonth;
-    const endMonth = pop.dataset.endMonth;
-    const latestDay = pop.dataset.latestDay || "";
-    let current = latestDay.length === 8 ? `${latestDay.slice(0, 4)}-${latestDay.slice(4, 6)}` : endMonth;
-    const cache = {};
-    let view = "days";
-    let pickedYear = null;
-    const monthNames = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
-
-    function shiftMonth(month, delta) {
-      let year = parseInt(month.slice(0, 4), 10);
-      let idx = parseInt(month.slice(5, 7), 10) - 1 + delta;
-      year += Math.floor(idx / 12);
-      idx = ((idx % 12) + 12) % 12;
-      return `${year}-${String(idx + 1).padStart(2, "0")}`;
-    }
-
-    function renderMonth(month, counts) {
-      const year = parseInt(month.slice(0, 4), 10);
-      const monthIndex = parseInt(month.slice(5, 7), 10) - 1;
-      titleEl.textContent = `${monthNames[monthIndex]} ${year}`;
-      prevBtn.disabled = month <= startMonth;
-      nextBtn.disabled = month >= endMonth;
-      let max = 0;
-      Object.keys(counts).forEach((dayKey) => {
-        if (Number(counts[dayKey]) > max) max = Number(counts[dayKey]);
-      });
-      const scale = max > 0 ? Math.log1p(max) : 1;
-      const totalDays = new Date(year, monthIndex + 1, 0).getDate();
-      const lead = (new Date(year, monthIndex, 1).getDay() + 6) % 7;
-      const cells = [];
-      for (let pad = 0; pad < lead; pad += 1) {
-        cells.push('<span class="body-jump-day body-jump-day--pad" aria-hidden="true"></span>');
-      }
-      for (let dayNum = 1; dayNum <= totalDays; dayNum += 1) {
-        const dayKey = `${month.replace("-", "")}${String(dayNum).padStart(2, "0")}`;
-        const count = Number(counts[dayKey] || 0);
-        if (count > 0) {
-          const heat = safeNumber((Math.log1p(count) / scale).toFixed(3));
-          const entries = count === 1 ? "1 entry" : `${count} entries`;
-          const label = `${monthNames[monthIndex]} ${dayNum}, ${year} — ${entries}`;
-          cells.push(`<a class="body-jump-day" href="${bodyDayHref(dayKey)}" style="--heat: ${heat}" aria-label="${escapeHtml(label)}">${escapeHtml(dayNum)}</a>`);
-        } else {
-          cells.push(`<span class="body-jump-day body-jump-day--empty">${escapeHtml(dayNum)}</span>`);
-        }
-      }
-      daysEl.innerHTML = cells.join("");
-    }
-
-    function setView(next) {
-      view = next;
-      const picking = next !== "days";
-      dowEl.hidden = picking;
-      daysEl.hidden = picking;
-      pickerEl.hidden = !picking;
-      yearsEl.hidden = next !== "years";
-      monthsEl.hidden = next !== "months";
-      backToYearsBtn.hidden = next !== "months";
-      titleBtn.setAttribute("aria-expanded", picking ? "true" : "false");
-      prevBtn.disabled = picking || current <= startMonth;
-      nextBtn.disabled = picking || current >= endMonth;
-      if (next === "years") titleEl.textContent = "Choose a year";
-      if (next === "months") titleEl.textContent = String(pickedYear);
-    }
-
-    function renderYears() {
-      const startYear = parseInt(startMonth.slice(0, 4), 10);
-      const endYear = parseInt(endMonth.slice(0, 4), 10);
-      const cells = [];
-      for (let year = startYear; year <= endYear; year += 1) {
-        cells.push(`<button type="button" class="body-jump-year" data-year="${escapeHtml(year)}">${escapeHtml(year)}</button>`);
-      }
-      yearsEl.innerHTML = cells.join("");
-    }
-
-    function renderMonths(year) {
-      const cells = [];
-      for (let idx = 0; idx < 12; idx += 1) {
-        const ym = `${year}-${String(idx + 1).padStart(2, "0")}`;
-        const out = ym < startMonth || ym > endMonth;
-        cells.push(`<button type="button" class="body-jump-month" data-month="${escapeHtml(ym)}" aria-label="${escapeHtml(`${monthNames[idx]} ${year}`)}"${out ? " disabled" : ""}>${escapeHtml(monthNames[idx].slice(0, 3))}</button>`);
-      }
-      monthsEl.innerHTML = cells.join("");
-    }
-
-    function showMonth(month) {
-      current = month;
-      if (cache[month]) {
-        renderMonth(month, cache[month]);
-        return;
-      }
-      daysEl.innerHTML = window.SurfaceState.loading({ text: "loading days..." });
-      window.apiJson(`/app/body/api/stats/${encodeURIComponent(month)}`)
-        .then((counts) => {
-          cache[month] = counts;
-          if (view === "days" && current === month) renderMonth(month, counts);
-        })
-        .catch((err) => {
-          daysEl.innerHTML = window.SurfaceState.error({
-            heading: "Couldn't load days",
-            desc: window.CONVEY_COPY.RELOAD_HINT,
-            serverMessage: err?.serverMessage,
-            detail: err,
-            retry: true,
-          });
-          daysEl.querySelector(".surface-state-retry")?.addEventListener("click", () => showMonth(month), { once: true });
-        });
-    }
-
-    function showDayGrid(month) {
-      setView("days");
-      showMonth(month);
-    }
-
-    function openPop() {
-      pop.hidden = false;
-      button.setAttribute("aria-expanded", "true");
-      showDayGrid(current);
-    }
-
-    function closePop(refocus) {
-      if (pop.hidden) return;
-      pop.hidden = true;
-      button.setAttribute("aria-expanded", "false");
-      setView("days");
-      if (refocus) button.focus();
-    }
-
-    button.addEventListener("click", () => {
-      if (pop.hidden) openPop(); else closePop(false);
-    });
-    button.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
-        event.preventDefault();
-        if (pop.hidden) openPop(); else closePop(false);
-      }
-    });
-    titleBtn.addEventListener("click", () => {
-      if (view === "days") {
-        renderYears();
-        setView("years");
-      } else {
-        showDayGrid(current);
-      }
-    });
-    yearsEl.addEventListener("click", (event) => {
-      const pick = event.target.closest(".body-jump-year");
-      if (!pick) return;
-      pickedYear = parseInt(pick.dataset.year, 10);
-      renderMonths(pickedYear);
-      setView("months");
-    });
-    monthsEl.addEventListener("click", (event) => {
-      const pick = event.target.closest(".body-jump-month");
-      if (!pick || pick.disabled) return;
-      showDayGrid(pick.dataset.month);
-    });
-    backToYearsBtn.addEventListener("click", () => {
-      renderYears();
-      setView("years");
-    });
-    prevBtn.addEventListener("click", () => {
-      const nextMonth = shiftMonth(current, -1);
-      if (nextMonth >= startMonth) showMonth(nextMonth);
-    });
-    nextBtn.addEventListener("click", () => {
-      const nextMonth = shiftMonth(current, 1);
-      if (nextMonth <= endMonth) showMonth(nextMonth);
-    });
-    document.addEventListener("click", (event) => {
-      if (pop.hidden) return;
-      if (!pop.contains(event.target) && event.target !== button) closePop(false);
-    });
-    document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape") closePop(true);
-    });
   }
 
   function renderRecentDaysSection(archive) {
@@ -1908,7 +1509,6 @@ a.body-jump-day:focus-visible {
     try {
       const status = await window.apiJson("/app/body/api/status");
       reveal(renderOverview(status));
-      initJumpPopover();
       initRecentCarousel();
     } catch (err) {
       showError("Couldn't load body archive", err, initBodyOverview);
@@ -2181,7 +1781,7 @@ a.body-jump-day:focus-visible {
   }
 
   function renderDayView(bodyDay) {
-    const header = renderHeader(`Body · ${bodyDay.date_label}`, "", true);
+    const header = renderHeader("", "", true, { showTitle: false });
     if (!bodyDay.has_data) {
       return html([header, renderEmptyDay(bodyDay), renderDayAudit(bodyDay)]);
     }

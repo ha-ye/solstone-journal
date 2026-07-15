@@ -9,12 +9,18 @@
 </style>
 <h1>date-nav.js smoke</h1>
 <div id="results"></div>
+<div id="fixture">
+  <div data-date-nav></div>
+  <h2 data-date-nav-heading>stale heading</h2>
+</div>
 <script src="../date_format.js"></script>
 <script src="../date-nav.js"></script>
 <script>
   const results = document.getElementById('results');
   let failures = 0;
   const unit = { one: 'segment', other: 'segments', none: 'no segments' };
+  const activityUnit = { one: 'activity', other: 'activities', none: 'no activities' };
+  const currencyUnit = { kind: 'currency' };
 
   function assert(name, condition, detail) {
     const row = document.createElement('div');
@@ -32,7 +38,25 @@
     assert(name, Math.abs(actual - expected) < 0.000001, `expected ${expected}, got ${actual}`);
   }
 
-  function run() {
+  function tick() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  async function mount(appName, path, dateNav, responses) {
+    window.history.replaceState(null, '', path);
+    window.solShellData = { apps: [{ name: appName, date_nav: dateNav }] };
+    window.apiJson = async (url) => {
+      if (url.endsWith('/api/index')) return responses.index;
+      const monthMatch = url.match(/\/api\/stats\/(\d{6})$/);
+      if (monthMatch) return responses.stats?.[monthMatch[1]] || {};
+      throw new Error(`unexpected url: ${url}`);
+    };
+    document.dispatchEvent(new CustomEvent('workspace:mounted', { detail: { appName } }));
+    await tick();
+    await tick();
+  }
+
+  async function run() {
     const now = new Date(2026, 6, 14);
     equal('formatDateShort fallback rung', window.formatDateShort('20260711', new Date(2026, 7, 20)), 'Sat Jul 11');
     equal('formatDateShort weekday rung', window.formatDateShort('20260711', now), 'Saturday');
@@ -53,19 +77,60 @@
     const totals = window.DateNav.yearTotals({ 202501: 4, 202601: 2, 202602: 3 });
     equal('year total 2025', totals[2025], 4);
     equal('year total 2026', totals[2026], 5);
+    const nestedTotals = window.DateNav.yearTotals({ 202601: { work: 2, personal: 3 } });
+    equal('year total nested object sum', nestedTotals[2026], 5);
 
     equal('unit one', window.DateNav.countLabel(1, unit), '1 segment');
     equal('unit many', window.DateNav.countLabel(3, unit), '3 segments');
     equal('unit none', window.DateNav.countLabel(0, unit), 'no segments');
+    equal('activity one', window.DateNav.countLabel(1, activityUnit), '1 activity');
+    equal('activity many', window.DateNav.countLabel(2, activityUnit), '2 activities');
+    equal('activity none', window.DateNav.countLabel(0, activityUnit), 'no activities');
+    equal('currency zero', window.DateNav.countLabel(0, currencyUnit), 'nothing spent');
+    equal('currency tiny', window.DateNav.countLabel(0.004, currencyUnit), '<$0.01');
+    equal('currency cents', window.DateNav.countLabel(0.4823, currencyUnit), '$0.48');
+    equal('coerceCount object sum', window.DateNav.coerceCount({ work: 2, personal: 3 }), 5);
+    equal('nested count label sum', window.DateNav.countLabel({ work: 2, personal: 3 }, activityUnit), '3 activities');
 
     equal('bad current path is dayless', window.DateNav.day(), null);
+    equal('general app path parses day', window.DateNav.parseDayFromPath('/app/sol/20260714'), '20260714');
     equal('bad app path is dayless', window.DateNav.parseDayFromPath('/app/transcripts/20261332'), null);
+    equal('non-8-digit app path is dayless', window.DateNav.parseDayFromPath('/app/timeline/202607'), null);
     equal('opening month from coverage', window.DateNav.openingMonth({ coverage: { end: '20260520' } }, now), '202605');
     equal('opening month without coverage', window.DateNav.openingMonth({ coverage: null }, now), '202607');
+
+    await mount(
+      'body',
+      '/app/body/',
+      { mount: 'content', unit: { one: 'reading', other: 'readings', none: 'no readings' } },
+      { index: { coverage: { start: '20260703', end: '20260704' }, months: { 202607: 4 } } }
+    );
+    equal('dayless label', document.querySelector('[data-date-nav-label]')?.textContent, 'pick a day 📅');
+    assert('dayless prev hidden', document.querySelector('[data-date-nav-prev]')?.hidden === true);
+    assert('dayless next hidden', document.querySelector('[data-date-nav-next]')?.hidden === true);
+    equal('dayless heading emptied', document.querySelector('[data-date-nav-heading]')?.textContent, '');
+
+    await mount(
+      'tokens',
+      '/app/tokens/20260304',
+      { mount: 'content', unit: currencyUnit },
+      {
+        index: { coverage: { start: '20260304', end: '20260304' }, months: { 202603: 0.4823 } },
+        stats: { 202603: { 20260304: 0.4823 } }
+      }
+    );
+    document.querySelector('[data-date-nav-trigger]')?.click();
+    await tick();
+    await tick();
+    const selectedCell = document.querySelector('[data-date-nav-cell="day"][data-value="20260304"]');
+    assert('currency aria is formatted dollars', selectedCell?.getAttribute('aria-label')?.includes('$0.48'));
+    assert('currency aria is not items literal', !(selectedCell?.getAttribute('aria-label') || '').includes('0.4823 items'));
 
     assert('summary', failures === 0, failures ? `${failures} failure(s)` : 'all checks passed');
   }
 
-  run();
+  run().catch((error) => {
+    assert('run threw', false, error?.stack || String(error));
+  });
 </script>
 </html>

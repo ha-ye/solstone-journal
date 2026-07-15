@@ -44,6 +44,86 @@ def test_activities_day_guard_still_404s(activities_env):
     assert response.status_code == 404
 
 
+def _facet_snapshot(journal: Path) -> dict[Path, int]:
+    facets = journal / "facets"
+    if not facets.exists():
+        return {}
+    return {path: path.stat().st_mtime_ns for path in sorted(facets.rglob("*"))}
+
+
+def test_api_index_reports_nonzero_coverage_and_months(activities_env):
+    journal, _facet, _day, _day_path = activities_env(
+        [{"id": "a1", "activity": "coding", "title": "Coding"}],
+        day="20240101",
+        facet="work",
+    )
+    activities_env(
+        [{"id": "a2", "activity": "meeting", "title": "Meeting"}],
+        day="20240101",
+        facet="personal",
+    )
+    activities_env(
+        [{"id": "a3", "activity": "coding", "title": "Later"}],
+        day="20240203",
+        facet="work",
+    )
+    client = create_app(journal=str(journal)).test_client()
+
+    response = client.get("/app/activities/api/index")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "coverage": {"start": "20240101", "end": "20240203"},
+        "months": {"202401": 2, "202402": 1},
+    }
+
+
+def test_api_index_month_totals_match_api_stats(activities_env):
+    journal, _facet, _day, _day_path = activities_env(
+        [
+            {"id": "a1", "activity": "coding", "title": "Coding"},
+            {"id": "a2", "activity": "meeting", "title": "Meeting"},
+        ],
+        day="20240101",
+        facet="work",
+    )
+    client = create_app(journal=str(journal)).test_client()
+
+    response = client.get("/app/activities/api/index")
+
+    assert response.status_code == 200
+    body = response.get_json()
+    for month, total in body["months"].items():
+        month_response = client.get(f"/app/activities/api/stats/{month}")
+        assert month_response.status_code == 200
+        assert total == sum(
+            sum(day.values()) for day in month_response.get_json().values()
+        )
+
+
+def test_api_index_empty_journal(activities_env):
+    journal, _facet, _day, _day_path = activities_env(None)
+    client = create_app(journal=str(journal)).test_client()
+
+    response = client.get("/app/activities/api/index")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"coverage": None, "months": {}}
+
+
+def test_api_index_is_read_only(activities_env):
+    journal, _facet, _day, _day_path = activities_env(
+        [{"id": "a1", "activity": "coding", "title": "Coding"}]
+    )
+    before = _facet_snapshot(journal)
+    client = create_app(journal=str(journal)).test_client()
+
+    response = client.get("/app/activities/api/index")
+
+    assert response.status_code == 200
+    assert _facet_snapshot(journal) == before
+
+
 def test_activities_colors_literal_path_resolves(activities_env):
     journal, _facet, _day, _day_path = activities_env(None)
     app = create_app(journal=str(journal))

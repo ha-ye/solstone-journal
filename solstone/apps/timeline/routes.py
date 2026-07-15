@@ -345,7 +345,11 @@ def _day_seg_count_mtime(day_dir: Path) -> float:
 def _stats_for_month(month: str, mtime_key: float) -> dict[str, int]:
     """Return segment counts by day for a month."""
     del mtime_key
+    return _day_segment_counts(month)
 
+
+def _day_segment_counts(month: str | None = None) -> dict[str, int]:
+    """Return non-zero segment counts by day, optionally scoped to a month."""
     if not state.journal_root:
         return {}
 
@@ -358,12 +362,28 @@ def _stats_for_month(month: str, mtime_key: float) -> dict[str, int]:
         if not day_dir.is_dir():
             continue
         day = day_dir.name
-        if not _DAY_RE.fullmatch(day) or not day.startswith(month):
+        if not _DAY_RE.fullmatch(day):
+            continue
+        if month is not None and not day.startswith(month):
             continue
         seg_count = len(iter_segments(day_dir))
         if seg_count:
             out[day] = seg_count
     return out
+
+
+def _build_date_nav_index() -> dict[str, Any]:
+    day_counts = _day_segment_counts()
+    if not day_counts:
+        return {"coverage": None, "months": {}}
+
+    months: dict[str, int] = {}
+    for day, count in sorted(day_counts.items()):
+        month = day[:6]
+        months[month] = months.get(month, 0) + count
+
+    days = sorted(day_counts)
+    return {"coverage": {"start": days[0], "end": days[-1]}, "months": months}
 
 
 @timeline_bp.route("/api/stats/<ym>")
@@ -392,9 +412,14 @@ def timeline_stats(ym: str) -> Any:
     return jsonify(_stats_for_month(ym, mtime_key))
 
 
+@timeline_bp.route("/api/overview")
+def timeline_overview() -> Any:
+    return jsonify(_build_index())
+
+
 @timeline_bp.route("/api/index")
 def timeline_index() -> Any:
-    return jsonify(_build_index())
+    return jsonify(_build_date_nav_index())
 
 
 @timeline_bp.route("/api/month/<ym>")

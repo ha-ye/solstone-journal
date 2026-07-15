@@ -3,7 +3,7 @@
 
 (function () {
   const DAY_RE = /^\d{8}$/;
-  const TRANSCRIPTS_DAY_RE = /^\/app\/transcripts\/(\d{8})(?:\/)?$/;
+  const APP_DAY_RE = /^\/app\/[a-z0-9_-]+\/(\d{8})\/?$/;
   const MS_PER_DAY = 24 * 60 * 60 * 1000;
   const WEEKDAYS = [
     'Sunday',
@@ -97,7 +97,7 @@
   }
 
   function parseDayFromPath(pathname) {
-    const match = String(pathname || '').match(TRANSCRIPTS_DAY_RE);
+    const match = String(pathname || '').match(APP_DAY_RE);
     return match ? parseDayString(match[1]) : null;
   }
 
@@ -182,15 +182,33 @@
   }
 
   function countLabel(count, unit) {
+    const normalized = coerceCount(count);
     const noun = unit || {};
-    if (count === 1) return `1 ${noun.one}`;
-    if (count > 0) return `${count} ${noun.other}`;
+    if (noun.kind === 'currency') {
+      if (normalized === 0) return 'nothing spent';
+      if (normalized > 0 && normalized < 0.01) return '<$0.01';
+      return `$${normalized.toFixed(2)}`;
+    }
+    if (normalized === 1) return `1 ${noun.one}`;
+    if (normalized > 0) return `${normalized} ${noun.other}`;
     return noun.none || '';
   }
 
+  function coerceCount(value) {
+    if (value == null) return 0;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+    if (typeof value === 'object' && !Array.isArray(value)) {
+      return Object.values(value).reduce((total, item) => {
+        const numeric = Number(item);
+        return total + (Number.isFinite(numeric) ? numeric : 0);
+      }, 0);
+    }
+    return 0;
+  }
+
   function heatIntensity(value, max) {
-    const numeric = Number(value || 0);
-    const maximum = Number(max || 0);
+    const numeric = coerceCount(value);
+    const maximum = coerceCount(max);
     if (numeric <= 0 || maximum <= 0) return 0;
     return 0.15 + 0.85 * (Math.log1p(numeric) / Math.log1p(maximum));
   }
@@ -200,7 +218,7 @@
     Object.entries(months || {}).forEach(([month, value]) => {
       if (!/^\d{6}$/.test(month)) return;
       const year = month.slice(0, 4);
-      totals[year] = (totals[year] || 0) + Number(value || 0);
+      totals[year] = (totals[year] || 0) + coerceCount(value);
     });
     return totals;
   }
@@ -317,6 +335,24 @@
     return state.config?.unit || {};
   }
 
+  function allowFutureDates() {
+    return Boolean(state.config?.allow_future);
+  }
+
+  function isFutureDay(day, now = new Date()) {
+    const delta = dayDelta(day, now);
+    return delta !== null && delta > 0;
+  }
+
+  function isSelectableFutureMonth(month, now = new Date()) {
+    if (!/^\d{6}$/.test(String(month || ''))) return false;
+    return compareMonth(month, monthString(now)) >= 0;
+  }
+
+  function isSelectableFutureYear(year, now = new Date()) {
+    return Number(year) >= now.getFullYear();
+  }
+
   function resetMountState() {
     if (mountAbort) mountAbort.abort();
     mountAbort = null;
@@ -393,9 +429,17 @@
   }
 
   function updateLabels() {
-    if (state.heading) state.heading.textContent = headingLabel(state.day);
+    const dayless = !state.day;
+    if (state.root) state.root.classList.toggle('date-nav-content--dayless', dayless);
+    if (state.prev) state.prev.hidden = dayless;
+    if (state.next) state.next.hidden = dayless;
+    if (state.heading) {
+      const heading = headingLabel(state.day);
+      state.heading.textContent = heading;
+      state.heading.hidden = !heading;
+    }
     const label = state.host?.querySelector('[data-date-nav-label]');
-    if (label) label.textContent = controlLabel(state.day) || 'Date';
+    if (label) label.textContent = dayless ? 'pick a day 📅' : controlLabel(state.day);
     if (state.warning) state.warning.hidden = !state.warningVisible;
     if (state.trigger) {
       state.trigger.setAttribute('aria-expanded', String(state.open));
@@ -415,21 +459,31 @@
   }
 
   function canNavigateDay(delta) {
-    if (!state.day || !state.coverage) return false;
-    if (delta < 0) return compareDay(state.day, state.coverage.start) > 0;
-    if (delta > 0) return compareDay(state.day, state.coverage.end) < 0;
+    if (!state.day) return false;
+    if (delta < 0) {
+      if (!state.coverage) return false;
+      return compareDay(state.day, state.coverage.start) > 0;
+    }
+    if (delta > 0) {
+      if (allowFutureDates()) return true;
+      if (!state.coverage) return false;
+      return compareDay(state.day, state.coverage.end) < 0;
+    }
     return false;
   }
 
   function canNavigatePanel(delta) {
-    if (!state.coverage) return false;
     if (state.zoom === 'days') {
+      if (delta > 0 && allowFutureDates()) return true;
+      if (!state.coverage) return false;
       const startMonth = state.coverage.start.slice(0, 6);
       const endMonth = state.coverage.end.slice(0, 6);
       if (delta < 0) return compareMonth(state.month, startMonth) > 0;
       if (delta > 0) return compareMonth(state.month, endMonth) < 0;
     }
     if (state.zoom === 'months') {
+      if (delta > 0 && allowFutureDates()) return true;
+      if (!state.coverage) return false;
       const startYear = Number(state.coverage.start.slice(0, 4));
       const endYear = Number(state.coverage.end.slice(0, 4));
       if (delta < 0) return state.year > startYear;
@@ -505,7 +559,7 @@
   }
 
   function maxPositive(values) {
-    return values.reduce((max, value) => Math.max(max, Number(value || 0)), 0);
+    return values.reduce((max, value) => Math.max(max, coerceCount(value)), 0);
   }
 
   function clearGrid() {
@@ -513,29 +567,30 @@
   }
 
   function renderCell({ value, label, count, selected = false, disabled = false, kind }) {
+    const normalized = coerceCount(count);
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'date-nav-content__cell';
     button.dataset.dateNavCell = kind;
     button.dataset.value = value;
     button.setAttribute('role', 'gridcell');
-    button.setAttribute('aria-label', `${label}, ${countLabel(count, selectedUnit())}`);
+    button.setAttribute('aria-label', `${label}, ${countLabel(normalized, selectedUnit())}`);
     button.textContent = label;
-    button.style.setProperty('--intensity', String(heatIntensity(count, state.currentMax || 0)));
+    button.style.setProperty('--intensity', String(heatIntensity(normalized, state.currentMax || 0)));
     button.disabled = disabled;
     button.tabIndex = disabled ? -1 : -1;
     if (selected) button.classList.add('date-nav-content__cell--selected');
-    if (count <= 0) button.classList.add('date-nav-content__cell--empty');
+    if (normalized <= 0) button.classList.add('date-nav-content__cell--empty');
     // The count belongs in the tooltip + aria-label, not as visible text in
     // every cell — that noise buries the day number and the heat. Week rows
     // (L3) are a list, not a grid, and DO show the meta inline.
     if (kind === 'week') {
       const meta = document.createElement('span');
       meta.className = 'date-nav-content__cell-count';
-      meta.textContent = countLabel(count, selectedUnit());
+      meta.textContent = countLabel(normalized, selectedUnit());
       button.appendChild(meta);
     } else {
-      button.title = countLabel(count, selectedUnit());
+      button.title = countLabel(normalized, selectedUnit());
     }
     return button;
   }
@@ -562,13 +617,14 @@
     state.currentMax = max;
     appendRows(
       years.map((year) => {
-        const count = totals[year] || 0;
+        const count = coerceCount(totals[year]);
+        const selectableFuture = allowFutureDates() && isSelectableFutureYear(year);
         return renderCell({
           value: year,
           label: year,
           count,
           selected: Number(year) === state.year,
-          disabled: count <= 0,
+          disabled: count <= 0 && !selectableFuture,
           kind: 'year'
         });
       }),
@@ -581,19 +637,20 @@
     const counts = [];
     for (let month = 1; month <= 12; month += 1) {
       const key = `${state.year}${String(month).padStart(2, '0')}`;
-      counts.push(Number(state.months[key] || 0));
+      counts.push(coerceCount(state.months[key]));
     }
     state.currentMax = maxPositive(counts);
     for (let month = 1; month <= 12; month += 1) {
       const key = `${state.year}${String(month).padStart(2, '0')}`;
-      const count = Number(state.months[key] || 0);
+      const count = coerceCount(state.months[key]);
+      const selectableFuture = allowFutureDates() && isSelectableFutureMonth(key);
       cells.push(
         renderCell({
           value: key,
           label: MONTHS_SHORT[month - 1],
           count,
           selected: key === state.month,
-          disabled: count <= 0,
+          disabled: count <= 0 && !selectableFuture,
           kind: 'month'
         })
       );
@@ -623,21 +680,22 @@
     const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
     const values = [];
     for (let day = 1; day <= daysInMonth; day += 1) {
-      values.push(Number(data[`${month}${String(day).padStart(2, '0')}`] || 0));
+      values.push(coerceCount(data[`${month}${String(day).padStart(2, '0')}`]));
     }
     state.currentMax = maxPositive(values);
 
     const cells = [];
     for (let day = 1; day <= daysInMonth; day += 1) {
       const key = `${month}${String(day).padStart(2, '0')}`;
-      const count = Number(data[key] || 0);
+      const count = coerceCount(data[key]);
+      const selectableFuture = allowFutureDates() && isFutureDay(key);
       cells.push(
         renderCell({
           value: key,
           label: String(day),
           count,
           selected: key === state.day,
-          disabled: count <= 0,
+          disabled: count <= 0 && !selectableFuture,
           kind: 'day'
         })
       );
@@ -904,6 +962,7 @@
     heatIntensity,
     yearTotals,
     countLabel,
+    coerceCount,
     openingMonth
   };
 })();
