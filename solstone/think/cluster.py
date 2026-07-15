@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from solstone.observe.screen import format_screen_text
+from solstone.think.browser_formatter import format_browser_text
 from solstone.think.data_state import (
     DataState,
     derive_modality_state,
@@ -126,7 +127,7 @@ def _process_segment(
         segment_path: Path to segment directory
         date_str: Date in YYYYMMDD format
         transcripts: Whether to load transcript content (JSONL and markdown)
-        percepts: Whether to load raw screen data from *screen.jsonl files
+        percepts: Whether to load screen and browser percept content
         agents: Whether to load agent output summaries from *.md files.
             Can be bool (all/none) or dict for selective filtering
             (e.g., {"entities": True, "meetings": "required"}).
@@ -270,6 +271,28 @@ def _process_segment(
                     file=sys.stderr,
                 )
 
+        for browser_jsonl in sorted(segment_path.glob("browser_*.jsonl")):
+            try:
+                content = format_browser_text(browser_jsonl)
+                if content:
+                    entries.append(
+                        {
+                            "timestamp": segment_start,
+                            "segment_key": segment_key,
+                            "segment_start": segment_start,
+                            "segment_end": segment_end,
+                            "prefix": "browser",
+                            "content": content,
+                            "name": f"{segment_path.name}/{browser_jsonl.name}",
+                            "stream": stream,
+                        }
+                    )
+            except Exception as e:  # pragma: no cover - warning only
+                print(
+                    f"Warning: Could not read JSONL file {browser_jsonl.name}: {e}",
+                    file=sys.stderr,
+                )
+
     # Process text projections of talent outputs (with optional filtering).
     if agents:
         # Convert bool to filter: True -> None (all), False handled by outer if
@@ -350,6 +373,7 @@ def _count_by_source(entries: list[dict[str, Any]]) -> dict[str, int]:
     Maps internal entry prefixes to returned source-count keys:
     - "transcript" -> "transcripts"
     - "percept" -> "percepts"
+    - "browser" -> "percepts"
     - "agent_output" -> "talents"
 
     Note: cluster input config still uses the internal "agents" source key for
@@ -359,10 +383,11 @@ def _count_by_source(entries: list[dict[str, Any]]) -> dict[str, int]:
     Returns:
         Dict with counts for each source type, e.g., {"transcripts": 2, "percepts": 1, "talents": 0}
     """
-    # Map internal prefix to source config name
+    # Map internal prefixes to returned source-count keys
     prefix_to_source = {
         "transcript": "transcripts",
         "percept": "percepts",
+        "browser": "percepts",
         "agent_output": "talents",
     }
 
@@ -406,6 +431,10 @@ def _groups_to_markdown(groups: dict[str, list[dict[str, Any]]]) -> str:
                 lines.append("")
             elif entry["prefix"] == "percept":
                 lines.append("### Screen Activity")
+                lines.append(entry["content"].strip())
+                lines.append("")
+            elif entry["prefix"] == "browser":
+                lines.append("### Browser Content")
                 lines.append(entry["content"].strip())
                 lines.append("")
             elif entry["prefix"] == "agent_output":

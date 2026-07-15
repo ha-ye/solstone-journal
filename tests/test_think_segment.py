@@ -122,6 +122,39 @@ def _seed_empty_screen(segment_dir: Path, name: str = "screen") -> None:
     )
 
 
+def _seed_browser_content(segment_dir: Path) -> None:
+    rows = [
+        {
+            "t": "segment_start",
+            "ts": 1,
+            "site": "mail.google.com",
+            "title": "Inbox - Gmail",
+            "blocks": [
+                {
+                    "type": "row",
+                    "text": (
+                        "Browser-only sense input with enough semantic page text "
+                        "to clear the no-input gate."
+                    ),
+                }
+            ],
+        },
+        {
+            "t": "delta",
+            "ts": 2,
+            "op": "add",
+            "block": {
+                "type": "row",
+                "text": "Added browser update about the planning thread.",
+            },
+        },
+    ]
+    (segment_dir / "browser_mail-google-com.jsonl").write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+
+
 def _active_sense_json() -> dict:
     return {
         "density": "active",
@@ -892,6 +925,31 @@ class TestRunSegmentSense:
 
         assert spawned == ["sense"]
         assert result == (1, 0, [])
+
+    def test_browser_only_segment_is_not_gated_as_no_input(self, segment_dir):
+        from solstone.think.cluster import _count_by_source, _load_entries_from_segment
+        from solstone.think.talents import check_segment_has_no_input
+
+        _seed_browser_content(segment_dir)
+        sources = _sense_config_with_load("sense")["sense"]["load"]
+        entries = _load_entries_from_segment(
+            str(segment_dir),
+            transcripts=False,
+            percepts=True,
+            agents=False,
+        )
+        counts = _count_by_source(entries)
+
+        assert counts["percepts"] > 0
+        assert (
+            check_segment_has_no_input(
+                "20240115",
+                "120000_300",
+                sources,
+                stream="default",
+            )
+            is False
+        )
 
     def test_check_segment_has_no_input_noop_without_sources(self, segment_dir):
         from solstone.think.talents import _is_no_input, check_segment_has_no_input

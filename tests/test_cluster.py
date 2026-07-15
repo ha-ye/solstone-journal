@@ -84,6 +84,28 @@ def _seed_screen_json(segment_dir: Path) -> None:
     )
 
 
+def _write_browser_snapshot(
+    path: Path,
+    *,
+    site: str,
+    title: str,
+    text: str,
+) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "t": "segment_start",
+                "ts": 1,
+                "site": site,
+                "title": title,
+                "blocks": [{"type": "row", "text": text}],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_cluster(tmp_path, monkeypatch):
     """Test cluster() uses transcripts and agent output summaries (*.md files)."""
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
@@ -325,6 +347,147 @@ def test_cluster_period_uses_raw_screen(tmp_path, monkeypatch):
     assert "VS Code with Python file" in result
     # Insight content should NOT be present (agents=False for cluster_period)
     assert "This insight should NOT appear" not in result
+
+
+def test_cluster_period_loads_browser_fixture_as_percepts(monkeypatch):
+    journal = Path("tests/fixtures/journal").resolve()
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    result, counts = mod.cluster_period(
+        "20260703",
+        "000141_317",
+        sources={"transcripts": False, "percepts": True, "agents": False},
+        stream="suze.browser",
+    )
+
+    assert counts["transcripts"] == 0
+    assert counts["percepts"] > 0
+    assert "### Browser Content" in result
+    assert "mail.google.com" in result
+    assert "Browser stream contract review" in result
+    # Delta-exclusive marker: proves add-delta block text renders.
+    assert "Casey Morgan - Lunch moved to Thursday" in result
+
+
+def test_cluster_period_loads_browser_files_in_sorted_order(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    segment = day_dir / "default" / "090000_300"
+    segment.mkdir(parents=True)
+    _write_browser_snapshot(
+        segment / "browser_mail-google-com.jsonl",
+        site="mail.google.com",
+        title="Mail",
+        text="mail sorted marker",
+    )
+    _write_browser_snapshot(
+        segment / "browser_app-slack-com.jsonl",
+        site="app.slack.com",
+        title="Slack",
+        text="slack sorted marker",
+    )
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    result, counts = mod.cluster_period(
+        "20240101",
+        "090000_300",
+        sources={"transcripts": False, "percepts": True, "agents": False},
+    )
+
+    assert counts["percepts"] == 2
+    assert "slack sorted marker" in result
+    assert "mail sorted marker" in result
+    assert result.index("slack sorted marker") < result.index("mail sorted marker")
+
+
+def test_cluster_period_skips_bad_browser_file_without_dropping_segment(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    segment = day_dir / "default" / "090000_300"
+    segment.mkdir(parents=True)
+    (segment / "audio.jsonl").write_text(
+        '{"raw": "audio.flac"}\n'
+        '{"start": "00:00:01", "text": "resilient audio marker"}\n',
+        encoding="utf-8",
+    )
+    _write_browser_snapshot(
+        segment / "browser_broken.jsonl",
+        site="broken.example",
+        title="Broken",
+        text="broken browser marker",
+    )
+    _write_browser_snapshot(
+        segment / "browser_valid.jsonl",
+        site="mail.google.com",
+        title="Mail",
+        text="valid browser marker",
+    )
+
+    mod = importlib.import_module("solstone.think.cluster")
+    original_format_browser_text = mod.format_browser_text
+
+    def raise_for_broken_browser(path):
+        if path.name == "browser_broken.jsonl":
+            raise RuntimeError("forced browser formatter failure")
+        return original_format_browser_text(path)
+
+    monkeypatch.setattr(mod, "format_browser_text", raise_for_broken_browser)
+
+    result, counts = mod.cluster_period(
+        "20240101",
+        "090000_300",
+        sources={"transcripts": True, "percepts": True, "agents": False},
+    )
+
+    assert counts["transcripts"] == 1
+    assert counts["percepts"] == 1
+    assert "resilient audio marker" in result
+    assert "valid browser marker" in result
+    assert (
+        "Warning: Could not read JSONL file browser_broken.jsonl"
+        in capsys.readouterr().err
+    )
+
+
+def test_cluster_period_browser_does_not_change_audio_output(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    segment = day_dir / "default" / "090000_300"
+    segment.mkdir(parents=True)
+    (segment / "audio.jsonl").write_text(
+        '{"raw": "audio.flac"}\n{"start": "00:00:01", "text": "stable audio marker"}\n',
+        encoding="utf-8",
+    )
+
+    mod = importlib.import_module("solstone.think.cluster")
+
+    audio_only, audio_counts = mod.cluster_period(
+        "20240101",
+        "090000_300",
+        sources={"transcripts": True, "percepts": True, "agents": False},
+    )
+    _write_browser_snapshot(
+        segment / "browser_mail-google-com.jsonl",
+        site="mail.google.com",
+        title="Mail",
+        text="browser marker appended after audio",
+    )
+    with_browser, browser_counts = mod.cluster_period(
+        "20240101",
+        "090000_300",
+        sources={"transcripts": True, "percepts": True, "agents": False},
+    )
+
+    assert audio_counts == {"transcripts": 1, "percepts": 0, "talents": 0}
+    assert browser_counts == {"transcripts": 1, "percepts": 1, "talents": 0}
+    assert with_browser.startswith(audio_only)
+    assert "stable audio marker" in with_browser
+    assert "browser marker appended after audio" in with_browser
 
 
 def test_load_entries_from_toplevel_segment(tmp_path, monkeypatch):

@@ -186,6 +186,12 @@ def _stream_content_description(stream: str | None) -> str:
         source = stream.split(".", 1)[1]
         return f"imported content from {source}"
 
+    if stream.endswith(".browser"):
+        return (
+            "semantic page text and change updates from browser web apps "
+            "such as Gmail or Slack"
+        )
+
     return "captured content"
 
 
@@ -257,6 +263,18 @@ def _stream_import_guidance(stream: str | None) -> str:
             "## Content Guidance\n\n"
             "This is imported content. Summarize the key topics, actions, "
             "and takeaways present in this segment."
+        )
+
+    if stream.endswith(".browser"):
+        return (
+            "## Content Guidance\n\n"
+            "This is semantic page text and change updates from web apps the "
+            "owner was reading in their browser, such as Gmail or Slack. Read it "
+            "as visible page text, not audio and not screen frames. A "
+            "segment_start snapshot contains the page's visible text. Delta rows "
+            "describe text that was added or updated during the segment; remove "
+            "deltas mean text left the page. Summarize what the owner was "
+            "reading, doing, and attending to."
         )
 
     return ""
