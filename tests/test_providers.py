@@ -28,9 +28,9 @@ def test_cogitate_baseline_ready_with_hosted_key(monkeypatch) -> None:
     import litellm  # noqa: F401
     import openhands.sdk  # noqa: F401
 
-    status = build_provider_status(
-        [_provider("anthropic", "ANTHROPIC_API_KEY")], False
-    )["anthropic"]
+    status = build_provider_status([_provider("anthropic", "ANTHROPIC_API_KEY")])[
+        "anthropic"
+    ]
 
     assert status == {
         "provider": "anthropic",
@@ -51,7 +51,7 @@ def test_cloud_provider_status_never_carries_install_gate(
     else:
         monkeypatch.delenv(env_key, raising=False)
 
-    status = build_provider_status([_provider(name, env_key)], False)[name]
+    status = build_provider_status([_provider(name, env_key)])[name]
 
     assert set(status) == {
         "provider",
@@ -102,7 +102,6 @@ def test_inert_upgrade_path_for_stale_bundled_config(
             _provider("anthropic", "ANTHROPIC_API_KEY"),
             _provider("openai", "OPENAI_API_KEY"),
         ],
-        False,
     )
 
     assert status["anthropic"]["cogitate_ready"] is True

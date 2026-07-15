@@ -2457,7 +2457,6 @@ class TestDispatchCortexRequest:
         result = cortex_client.cortex_request(
             prompt="hi",
             name="test",
-            provider="local",
             use_id="1713629000008",
         )
 

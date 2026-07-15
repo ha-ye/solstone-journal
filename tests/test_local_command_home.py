@@ -121,7 +121,6 @@ def test_local_commands_are_journal_help_only(monkeypatch, capsys) -> None:
     [
         (["navigate", "/x"], "journal navigate"),
         (["identity"], "journal identity"),
-        (["settings", "providers", "install", "local"], "journal install-provider"),
     ],
 )
 def test_old_sol_call_paths_redirect(args: list[str], pointer: str) -> None:

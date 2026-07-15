@@ -138,7 +138,7 @@ def test_get_providers_includes_local_install_state(settings_client):
     _assert_install_status(payload["local"])
 
 
-def test_get_providers_reports_byo_when_split_cloud_providers_share_lane(
+def test_get_providers_reports_active_personal_cloud_lane(
     settings_client,
 ):
     response = settings_client.get("/app/thinking/api/providers")
@@ -146,7 +146,10 @@ def test_get_providers_reports_byo_when_split_cloud_providers_share_lane(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["active_lane"]["lane"] == "byo"
-    assert payload["active_lane"]["split"] is False
+    assert payload["active"] == {
+        "provider": "google",
+        "model": "gemini-flash-latest",
+    }
 
 
 def test_get_providers_reports_none_lane_when_no_engine_selected(
@@ -173,25 +176,27 @@ def test_get_providers_reports_none_lane_when_no_engine_selected(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["active_lane"]["lane"] == NO_BRAIN_PROVIDER
-    assert payload["active_lane"]["split"] is False
+    assert payload["active"]["provider"] == NO_BRAIN_PROVIDER
 
 
-def test_get_providers_reports_advanced_when_generate_and_cogitate_lanes_split(
+def test_get_providers_reports_one_profile_for_both_interfaces(
     settings_client_with_journal,
 ):
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    config["providers"]["generate"]["provider"] = "local"
-    config["providers"]["cogitate"]["provider"] = "openai"
+    config["providers"]["active"] = {
+        "provider": "openai",
+        "model": "gpt-5.4-mini",
+    }
     _write_config(journal_path, config)
 
     response = client.get("/app/thinking/api/providers")
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["active_lane"]["lane"] == "advanced"
-    assert payload["active_lane"]["split"] is True
+    assert payload["active_lane"]["lane"] == "byo"
+    assert payload["active"] == config["providers"]["active"]
 
 
 def test_provider_update_rejects_context_payload(settings_client_with_journal):
@@ -205,68 +210,7 @@ def test_provider_update_rejects_context_payload(settings_client_with_journal):
     assert response.status_code != 200
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
-    assert "providers.contexts routing is retired" in payload["detail"]
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"tier": 2},
-        {"backup": "anthropic"},
-        {"models": {"google": {"3": "gemini-flash-lite-latest"}}},
-        {"generate": {"tier": 2}},
-        {"cogitate": {"backup": "anthropic"}},
-    ],
-)
-def test_provider_update_rejects_retired_routing_keys(
-    settings_client_with_journal,
-    payload,
-):
-    client, journal_path = settings_client_with_journal
-    config_path = journal_path / "config" / "journal.json"
-    before = config_path.read_bytes()
-
-    response = client.put("/app/thinking/api/providers", json=payload)
-
-    assert response.status_code == 400
-    body = response.get_json()
-    assert body["reason_code"] == "invalid_config_value"
-    assert "retired" in body["detail"]
-    assert config_path.read_bytes() == before
-
-
-def test_provider_update_preserves_legacy_models_on_success(
-    settings_client_with_journal,
-):
-    client, journal_path = settings_client_with_journal
-    config_path = journal_path / "config" / "journal.json"
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    legacy_models = {
-        "google": {
-            "2": "legacy-flash",
-            "3": "legacy-lite",
-        },
-    }
-    config["providers"]["models"] = legacy_models.copy()
-    _write_config(journal_path, config)
-
-    response = client.put(
-        "/app/thinking/api/providers",
-        json={
-            "generate": {
-                "provider": "anthropic",
-                "model": "claude-sonnet-4-6",
-            }
-        },
-    )
-
-    assert response.status_code == 200
-    stored = json.loads(config_path.read_text(encoding="utf-8"))
-    assert stored["providers"]["models"] == legacy_models
-    assert stored["providers"]["generate"] == {
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
-    }
+    assert payload["detail"] == "Unknown provider fields: contexts"
 
 
 def test_scout_enabled_google_provider_derives_byo_with_provenance(
@@ -280,8 +224,10 @@ def test_scout_enabled_google_provider_derives_byo_with_provenance(
         "enabled_at": "2026-05-23T00:00:00Z",
         "key_fingerprint_sha256": "fingerprint",
     }
-    config["providers"]["generate"]["provider"] = "google"
-    config["providers"]["cogitate"]["provider"] = "google"
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": "gemini-flash-latest",
+    }
     _write_config(journal_path, config)
 
     response = client.get("/app/thinking/api/providers")
@@ -289,8 +235,6 @@ def test_scout_enabled_google_provider_derives_byo_with_provenance(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["active_lane"]["lane"] == "byo"
-    assert payload["active_lane"]["generate"] == "byo"
-    assert payload["active_lane"]["cogitate"] == "byo"
     assert payload["active_lane"]["scout_enabled"] is True
     assert payload["active_lane"]["scout_provenance_configured"] is True
 
@@ -369,6 +313,41 @@ def test_key_save_preserves_remembered_byo_model(
     assert stored["providers"]["byo_models"] == {"openai": "gpt-5.5"}
 
 
+def test_validate_all_does_not_cache_result_for_a_concurrently_replaced_key(
+    settings_client_with_journal,
+    monkeypatch,
+):
+    client, journal_path = settings_client_with_journal
+    config_path = journal_path / "config" / "journal.json"
+    current = json.loads(config_path.read_text())
+    current["env"]["GOOGLE_API_KEY"] = "new-key"
+    current["providers"]["key_validation"]["google"] = {
+        "valid": True,
+        "timestamp": "new-key-result",
+    }
+    _write_config(journal_path, current)
+    stale = json.loads(json.dumps(current))
+    stale["env"]["GOOGLE_API_KEY"] = "old-key"
+    monkeypatch.setattr(
+        "solstone.apps.thinking.routes.get_journal_config",
+        lambda: stale,
+    )
+    monkeypatch.setattr(
+        "solstone.apps.thinking.routes.validate_key",
+        lambda _provider, _api_key: {"valid": False, "error": "old key"},
+    )
+
+    response = client.post("/app/thinking/api/validate-keys")
+
+    assert response.status_code == 200
+    stored = json.loads(config_path.read_text())
+    assert stored["providers"]["key_validation"]["google"] == {
+        "valid": True,
+        "timestamp": "new-key-result",
+    }
+    assert response.get_json()["key_validation"]["google"]["valid"] is True
+
+
 def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
     settings_client_with_journal, monkeypatch
 ):
@@ -409,15 +388,16 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
         "served_model_id": "confidential-model",
         "credential_created_at": "2026-05-24T00:00:00Z",
         "credential_fingerprint_sha256": "confidential-fingerprint-secret",
-        "prior_generate_provider": "google",
-        "prior_cogitate_provider": "openai",
+        "prior_active": {"provider": "google", "model": "gemini-flash-latest"},
         "prior_local_endpoint": None,
     }
     config.setdefault("providers", {}).setdefault("local", {})["credential"] = (
         "confidential-credential-secret"
     )
-    config["providers"]["generate"]["provider"] = "google"
-    config["providers"]["cogitate"]["provider"] = "google"
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": "gemini-flash-latest",
+    }
     _write_config(journal_path, config)
 
     monkeypatch.setattr(
@@ -452,9 +432,6 @@ def test_thinking_status_payloads_are_secret_free_with_scout_provenance(
     providers_payload = responses[0].get_json()
     assert providers_payload["active_lane"] == {
         "lane": "byo",
-        "generate": "byo",
-        "cogitate": "byo",
-        "split": False,
         "scout_enabled": True,
         "scout_provenance_configured": True,
         "confidential_enabled": True,
@@ -563,8 +540,7 @@ def test_local_endpoint_override_derives_byo_and_bundled_derives_local(
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    config["providers"]["generate"]["provider"] = "local"
-    config["providers"]["cogitate"]["provider"] = "local"
+    config["providers"]["active"] = {"provider": "local", "model": LOCAL_MODEL}
     _write_config(journal_path, config)
 
     response = client.get("/app/thinking/api/providers")
@@ -587,8 +563,6 @@ def test_local_endpoint_override_derives_byo_and_bundled_derives_local(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["active_lane"]["lane"] == "byo"
-    assert payload["active_lane"]["generate"] == "byo"
-    assert payload["active_lane"]["cogitate"] == "byo"
 
 
 def test_local_endpoint_override_derives_confidential_only_with_provenance(
@@ -598,8 +572,7 @@ def test_local_endpoint_override_derives_confidential_only_with_provenance(
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    config["providers"]["generate"]["provider"] = "local"
-    config["providers"]["cogitate"]["provider"] = "local"
+    config["providers"]["active"] = {"provider": "local", "model": LOCAL_MODEL}
     config["providers"]["local"] = {
         "endpoint_url": "http://host.test:8080/v1",
         "served_model_id": "served-model",
@@ -616,8 +589,6 @@ def test_local_endpoint_override_derives_confidential_only_with_provenance(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["active_lane"]["lane"] == "byo"
-    assert payload["active_lane"]["generate"] == "byo"
-    assert payload["active_lane"]["cogitate"] == "byo"
     assert payload["active_lane"]["confidential_provenance_configured"] is False
 
     config.setdefault("services", {})["confidential"] = {
@@ -627,8 +598,7 @@ def test_local_endpoint_override_derives_confidential_only_with_provenance(
         "served_model_id": "served-model",
         "credential_created_at": "2026-05-24T00:00:00Z",
         "credential_fingerprint_sha256": "fingerprint",
-        "prior_generate_provider": "google",
-        "prior_cogitate_provider": "openai",
+        "prior_active": {"provider": "google", "model": "gemini-flash-latest"},
         "prior_local_endpoint": None,
     }
     _write_config(journal_path, config)
@@ -638,8 +608,6 @@ def test_local_endpoint_override_derives_confidential_only_with_provenance(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["active_lane"]["lane"] == "confidential"
-    assert payload["active_lane"]["generate"] == "confidential"
-    assert payload["active_lane"]["cogitate"] == "confidential"
     assert payload["active_lane"]["confidential_enabled"] is True
     assert payload["active_lane"]["confidential_provenance_configured"] is True
 
@@ -714,8 +682,7 @@ def test_byo_local_with_override_succeeds_and_rederives_byo(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["active_lane"]["lane"] == "byo"
-    assert payload["generate"]["provider"] == "local"
-    assert payload["cogitate"]["provider"] == "local"
+    assert payload["active"]["provider"] == "local"
 
 
 def test_byo_endpoint_switch_never_remembers_local_model(
@@ -745,7 +712,7 @@ def test_byo_endpoint_switch_never_remembers_local_model(
     assert "local" not in stored["providers"].get("byo_models", {})
 
 
-def test_byo_lane_with_top_level_model_writes_types_and_memory(
+def test_byo_lane_with_top_level_model_writes_active_profile_and_memory(
     settings_client_with_journal,
 ):
     client, journal_path = settings_client_with_journal
@@ -762,22 +729,14 @@ def test_byo_lane_with_top_level_model_writes_types_and_memory(
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert payload["generate"] == {
-        "provider": "anthropic",
-        "model": "claude-opus-4-8",
-    }
-    assert payload["cogitate"] == {
+    assert payload["active"] == {
         "provider": "anthropic",
         "model": "claude-opus-4-8",
     }
     assert payload["byo_models"]["anthropic"] == "claude-opus-4-8"
 
     stored = json.loads(config_path.read_text())
-    assert stored["providers"]["generate"] == {
-        "provider": "anthropic",
-        "model": "claude-opus-4-8",
-    }
-    assert stored["providers"]["cogitate"] == {
+    assert stored["providers"]["active"] == {
         "provider": "anthropic",
         "model": "claude-opus-4-8",
     }
@@ -788,12 +747,8 @@ def test_byo_lane_with_top_level_model_writes_types_and_memory(
     ("payload", "detail"),
     [
         (
-            {"model": "gemini-pro-latest"},
-            "model is only valid with lane=byo.",
-        ),
-        (
             {"lane": "local", "model": "gemini-pro-latest"},
-            "model is only valid with lane=byo for cloud providers.",
+            "model is only valid with cloud BYO providers: anthropic, google, openai.",
         ),
         (
             {"lane": "byo", "provider": "google", "model": ""},
@@ -861,11 +816,7 @@ def test_byo_lane_fills_remembered_model_after_hygiene_pop(
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    config["providers"]["generate"] = {
-        "provider": "google",
-        "model": "gemini-pro-latest",
-    }
-    config["providers"]["cogitate"] = {
+    config["providers"]["active"] = {
         "provider": "google",
         "model": "gemini-pro-latest",
     }
@@ -879,11 +830,7 @@ def test_byo_lane_fills_remembered_model_after_hygiene_pop(
 
     assert response.status_code == 200
     stored = json.loads(config_path.read_text())
-    assert stored["providers"]["generate"] == {
-        "provider": "anthropic",
-        "model": "claude-opus-4-8",
-    }
-    assert stored["providers"]["cogitate"] == {
+    assert stored["providers"]["active"] == {
         "provider": "anthropic",
         "model": "claude-opus-4-8",
     }
@@ -895,11 +842,7 @@ def test_byo_lane_remembered_model_does_not_overwrite_present_model(
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    config["providers"]["generate"] = {
-        "provider": "anthropic",
-        "model": "claude-sonnet-4-6",
-    }
-    config["providers"]["cogitate"] = {
+    config["providers"]["active"] = {
         "provider": "anthropic",
         "model": "claude-sonnet-4-6",
     }
@@ -913,8 +856,7 @@ def test_byo_lane_remembered_model_does_not_overwrite_present_model(
 
     assert response.status_code == 200
     stored = json.loads(config_path.read_text())
-    assert stored["providers"]["generate"]["model"] == "claude-sonnet-4-6"
-    assert stored["providers"]["cogitate"]["model"] == "claude-sonnet-4-6"
+    assert stored["providers"]["active"]["model"] == "claude-sonnet-4-6"
 
 
 def test_lane_switch_to_confidential_rejects_without_config_write(
@@ -950,8 +892,7 @@ def test_lane_switch_to_confidential_rejects_without_config_write(
         "served_model_id": "served-model",
         "credential_created_at": "2026-05-24T00:00:00Z",
         "credential_fingerprint_sha256": "fingerprint",
-        "prior_generate_provider": "google",
-        "prior_cogitate_provider": "openai",
+        "prior_active": {"provider": "google", "model": "gemini-flash-latest"},
         "prior_local_endpoint": None,
     }
     _write_config(journal_path, config)
@@ -964,8 +905,7 @@ def test_lane_switch_to_confidential_rejects_without_config_write(
     assert response.status_code == 200
     payload = response.get_json()
     assert payload["active_lane"]["lane"] == "confidential"
-    assert payload["generate"]["provider"] == "local"
-    assert payload["cogitate"]["provider"] == "local"
+    assert payload["active"]["provider"] == "local"
 
 
 def test_switch_from_byo_model_to_local_resolves_local_default(
@@ -995,11 +935,7 @@ def test_switch_to_cloud_without_memory_resolves_provider_default(
     client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    config["providers"]["generate"] = {
-        "provider": "google",
-        "model": "gemini-pro-latest",
-    }
-    config["providers"]["cogitate"] = {
+    config["providers"]["active"] = {
         "provider": "google",
         "model": "gemini-pro-latest",
     }
@@ -1015,13 +951,13 @@ def test_switch_to_cloud_without_memory_resolves_provider_default(
     assert resolve_provider("generate") == ("anthropic", "claude-sonnet-4-6")
 
 
-def test_legacy_explicit_model_resolves_without_ui_interaction(
+def test_active_explicit_model_resolves_without_ui_interaction(
     settings_client_with_journal,
 ):
     _client, journal_path = settings_client_with_journal
     config_path = journal_path / "config" / "journal.json"
     config = json.loads(config_path.read_text())
-    config["providers"]["generate"] = {
+    config["providers"]["active"] = {
         "provider": "openai",
         "model": "gpt-5.5",
     }
@@ -1108,8 +1044,10 @@ def test_get_providers_scout_google_grandfather_is_zero_touch(
         "enabled_at": "2026-05-23T00:00:00Z",
         "key_fingerprint_sha256": "fingerprint",
     }
-    config["providers"]["generate"]["provider"] = "google"
-    config["providers"]["cogitate"]["provider"] = "google"
+    config["providers"]["active"] = {
+        "provider": "google",
+        "model": "gemini-flash-latest",
+    }
     _write_config(journal_path, config)
     before = config_path.read_bytes()
 
@@ -1354,29 +1292,3 @@ def test_get_providers_ai_readiness_includes_local_on_mlx(settings_client, monke
     assert payload["local_backend"] == "mlx"
     assert "local" in payload["ai_readiness"]
     assert payload["ai_readiness"]["local"]["status"] == "ready"
-
-
-def test_put_providers_clear_refuses_noncanonical_path_but_removes_config(
-    settings_client_with_journal,
-):
-    client, journal_path = settings_client_with_journal
-    noncanonical = journal_path / "elsewhere.json"
-    noncanonical.write_text("secret", encoding="utf-8")
-    config_path = journal_path / "config" / "journal.json"
-    config = json.loads(config_path.read_text())
-    config["providers"]["vertex_credentials"] = str(noncanonical)
-    config["providers"].setdefault("key_validation", {})["google_vertex"] = {
-        "valid": True,
-    }
-    config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
-
-    response = client.put(
-        "/app/thinking/api/providers",
-        json={"vertex_credentials": ""},
-    )
-
-    assert response.status_code == 200
-    assert noncanonical.exists()
-    config = json.loads(config_path.read_text())
-    assert "vertex_credentials" not in config["providers"]
-    assert "google_vertex" not in config["providers"]["key_validation"]

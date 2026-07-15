@@ -152,12 +152,7 @@ def _compute_runtime_label() -> str:
 
 
 def _service_key_validation(config: dict[str, Any]) -> dict[str, Any]:
-    providers_config = config.get("providers", {})
-    key_validation = (
-        providers_config.get("key_validation", {})
-        if isinstance(providers_config, dict)
-        else {}
-    )
+    key_validation = config.get("service_key_validation", {})
     if not isinstance(key_validation, dict):
         key_validation = {}
     return {
@@ -211,6 +206,7 @@ def _project_public_config(config: dict[str, Any]) -> dict[str, Any]:
     service_validation = _service_key_validation(config)
     if service_validation:
         projected["key_validation"] = service_validation
+    projected.pop("service_key_validation", None)
     if "env" in projected:
         projected["env"] = {k: bool(v) for k, v in projected["env"].items()}
     projected.pop("providers", None)
@@ -442,10 +438,7 @@ def update_config() -> Any:
                                 config[section][backend_key][nested_key] = new_value
 
             if section == "env" and changed_fields:
-                if "providers" not in config:
-                    config["providers"] = {}
-                if "key_validation" not in config["providers"]:
-                    config["providers"]["key_validation"] = {}
+                key_validation = config.setdefault("service_key_validation", {})
 
                 # Validate service tokens (Rev.ai, Plaud) — not AI providers,
                 # so they use their own validators instead of think.providers.
@@ -469,9 +462,9 @@ def update_config() -> Any:
                             mod = importlib.import_module(module_path)
                             result = mod.validate_token(new_val)
                             result["timestamp"] = datetime.now(timezone.utc).isoformat()
-                            config["providers"]["key_validation"][val_key] = result
+                            key_validation[val_key] = result
                         else:
-                            config["providers"]["key_validation"].pop(val_key, None)
+                            key_validation.pop(val_key, None)
 
             write_journal_config(config)
 
@@ -856,8 +849,7 @@ def validate_all_keys() -> Any:
         with hold_config_lock():
             config = get_journal_config()
             key_validation = _compute_key_validation(config)
-            providers_config = config.setdefault("providers", {})
-            existing = providers_config.setdefault("key_validation", {})
+            existing = config.setdefault("service_key_validation", {})
             for key in ("revai", "plaud"):
                 existing.pop(key, None)
             existing.update(key_validation)

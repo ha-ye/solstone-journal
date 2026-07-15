@@ -358,7 +358,7 @@ def test_run_pdf_worker_tiny_address_limit_maps_to_engine_failure(tmp_path):
         run_pdf_worker(
             "inspect",
             pdf,
-            env={ENV_RLIMIT_AS_MB: "64"},
+            env={ENV_RLIMIT_AS_MB: "16"},
             timeout_seconds=20,
         )
 

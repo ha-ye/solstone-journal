@@ -966,7 +966,7 @@ def init_cli_runtime(verbose: bool, debug: bool) -> None:
     # managed provider API keys. Load every config-declared var into os.environ,
     # then strip any managed provider key (registry-derived) that config does not
     # set, so a stray shell-set provider key is never used. Non-managed vars are
-    # loaded as-is; Vertex/ADC auth vars are not managed keys and are never stripped.
+    # loaded as-is.
     config = get_config()
     config_env = config.get("env", {})
     for key, value in config_env.items():
@@ -985,9 +985,8 @@ def setup_cli(parser: argparse.ArgumentParser, *, parse_known: bool = False):
     (in ``journal.json``) are loaded into ``os.environ``. journal.json is the
     authoritative and exclusive source for managed provider API keys (the
     provider registry's ``env_key`` values): a managed provider key absent from
-    config is stripped so a shell-set value is never used. Vertex/ADC auth vars
-    are not managed keys and are never stripped; non-managed vars load as
-    declared.
+    config is stripped so a shell-set value is never used. Non-managed vars load
+    as declared.
     The parsed arguments are returned. If ``parse_known`` is ``True`` a tuple of
     ``(args, extra)`` is returned using :func:`argparse.ArgumentParser.parse_known_args`.
     """

@@ -26,7 +26,6 @@ API_ENV_KEYS = (
     "OPENAI_API_KEY",
     "REVAI_ACCESS_TOKEN",
     "PLAUD_ACCESS_TOKEN",
-    "GOOGLE_APPLICATION_CREDENTIALS",
 )
 
 
@@ -40,6 +39,20 @@ class _FixedDateTime:
 def _thinking_client(journal_copy: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for key in API_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
+    config = json.loads(
+        (journal_copy / "config" / "journal.json").read_text(encoding="utf-8")
+    )
+    providers = config.setdefault("providers", {})
+    providers.pop("generate", None)
+    providers.pop("cogitate", None)
+    providers["active"] = {
+        "provider": "google",
+        "model": "gemini-custom-flash-test",
+    }
+    (journal_copy / "config" / "journal.json").write_text(
+        json.dumps(config, indent=2) + "\n",
+        encoding="utf-8",
+    )
     client = ConveyClient(
         session=make_test_client(journal_copy),
         base_url="",
@@ -60,12 +73,8 @@ def fake_validators(monkeypatch: pytest.MonkeyPatch) -> None:
     def validate_key(provider: str, api_key: str) -> dict[str, Any]:
         return {"valid": True, "provider": provider, "fingerprint": api_key[-4:]}
 
-    def validate_vertex(path: str) -> dict[str, Any]:
-        return {"valid": True, "path": path}
-
     monkeypatch.setattr(thinking_routes, "datetime", _FixedDateTime)
     monkeypatch.setattr(thinking_routes, "validate_key", validate_key)
-    monkeypatch.setattr(thinking_routes, "validate_vertex_credentials", validate_vertex)
 
 
 def _read_config(journal: Path) -> dict[str, Any]:
@@ -83,15 +92,6 @@ def _assert_json(result, expected: Any) -> None:
     assert result.exit_code == 0
     assert json.loads(result.stdout) == expected
     assert result.stderr == ""
-
-
-def _fake_creds(email: str = "test@test.iam.gservice.test") -> dict[str, str]:
-    return {
-        "type": "service_credential",
-        "project_id": "test-project",
-        "client_email": email,
-        "private_key": "fake-private-key",
-    }
 
 
 def _approved_scout_payload(key: str = "google-scout-key") -> dict[str, str]:
@@ -119,8 +119,6 @@ def _first_json(stdout: str) -> tuple[Any, str]:
 def test_show_verbs_select_http_fields() -> None:
     keys = runner.invoke(thinking_call.app, ["keys", "show"])
     providers = runner.invoke(thinking_call.app, ["providers", "show"])
-    google = runner.invoke(thinking_call.app, ["google-backend", "show"])
-    vertex = runner.invoke(thinking_call.app, ["vertex-credentials", "show"])
 
     assert keys.exit_code == 0
     keys_payload = json.loads(keys.stdout)
@@ -133,8 +131,7 @@ def test_show_verbs_select_http_fields() -> None:
 
     assert providers.exit_code == 0
     providers_payload = json.loads(providers.stdout)
-    assert providers_payload["generate"]["provider"] == "google"
-    assert providers_payload["cogitate"]["provider"] == "openai"
+    assert providers_payload["active"]["provider"] == "google"
     assert providers_payload["local_override"]["enabled"] is False
     assert providers_payload["active_lane"]["lane"] == "byo"
     assert providers_payload["active_lane"]["confidential_attestation"] == {
@@ -143,15 +140,6 @@ def test_show_verbs_select_http_fields() -> None:
         "last_verified": None,
         "reason": "confidential_not_configured",
     }
-
-    assert google.exit_code == 0
-    assert json.loads(google.stdout) == {
-        "google_backend": "auto",
-        "vertex_credentials_configured": False,
-        "vertex_credentials_email": "",
-    }
-    assert vertex.exit_code == 0
-    assert json.loads(vertex.stdout)["configured"] is False
 
 
 def test_scout_status_matches_http_payload(journal_copy: Path) -> None:
@@ -346,7 +334,7 @@ def test_providers_show_human_and_set_errors(
     monkeypatch.setattr(
         thinking_routes,
         "build_provider_status",
-        lambda providers, vertex_creds_configured: provider_status,
+        lambda providers: provider_status,
     )
 
     human = runner.invoke(thinking_call.app, ["providers", "show", "--human"])
@@ -361,14 +349,14 @@ def test_providers_show_human_and_set_errors(
 
     success = runner.invoke(
         thinking_call.app,
-        ["providers", "set-generate", "--provider", "openai"],
+        ["providers", "set-active", "--provider", "openai"],
     )
     assert success.exit_code == 0
     assert json.loads(success.stdout)["provider"] == "openai"
 
     bad_provider = runner.invoke(
         thinking_call.app,
-        ["providers", "set-generate", "--provider", "invalid"],
+        ["providers", "set-active", "--provider", "invalid"],
     )
     assert bad_provider.exit_code == 1
     assert bad_provider.stderr == (
@@ -377,7 +365,7 @@ def test_providers_show_human_and_set_errors(
 
     bad_tier = runner.invoke(
         thinking_call.app,
-        ["providers", "set-generate", "--tier", "9"],
+        ["providers", "set-active", "--tier", "9"],
     )
     assert bad_tier.exit_code != 0
     assert "No such option: --tier" in bad_tier.stderr
@@ -465,58 +453,6 @@ def test_local_endpoint_verbs_use_http_shapes(
         "params": None,
         "json_body": None,
     }
-
-
-def test_google_backend_and_vertex_credentials(
-    journal_copy: Path,
-    tmp_path: Path,
-    fake_validators: None,
-) -> None:
-    google_bad = runner.invoke(thinking_call.app, ["google-backend", "set", "invalid"])
-    assert google_bad.exit_code == 1
-    assert google_bad.stderr == (
-        "Invalid google_backend: invalid. Must be one of: auto, aistudio, vertex\n"
-    )
-
-    google_set = runner.invoke(thinking_call.app, ["google-backend", "set", "vertex"])
-    _assert_json(google_set, {"google_backend": "vertex"})
-    assert _read_config(journal_copy)["providers"]["google_backend"] == "vertex"
-
-    missing = runner.invoke(
-        thinking_call.app,
-        ["vertex-credentials", "import", str(tmp_path / "missing.json")],
-    )
-    assert missing.exit_code == 1
-    assert missing.stderr == f"Credential file not found: {tmp_path / 'missing.json'}\n"
-
-    creds_path = tmp_path / "creds.json"
-    creds_path.write_text(json.dumps(_fake_creds()), encoding="utf-8")
-    imported = runner.invoke(
-        thinking_call.app,
-        ["vertex-credentials", "import", str(creds_path), "--skip-validation"],
-    )
-    assert imported.exit_code == 0
-    payload = json.loads(imported.stdout)
-    canonical = journal_copy / ".config" / "vertex-credentials.json"
-    assert payload == {
-        "configured": True,
-        "email": "test@test.iam.gservice.test",
-        "path": str(canonical),
-        "validation": None,
-    }
-    assert canonical.exists()
-    assert "fake-private-key" not in imported.stdout
-
-    shown = runner.invoke(thinking_call.app, ["vertex-credentials", "show"])
-    assert shown.exit_code == 0
-    shown_payload = json.loads(shown.stdout)
-    assert shown_payload["configured"] is True
-    assert shown_payload["email"] == "test@test.iam.gservice.test"
-    assert "fake-private-key" not in shown.stdout
-
-    cleared = runner.invoke(thinking_call.app, ["vertex-credentials", "clear"])
-    _assert_json(cleared, {"configured": False})
-    assert not canonical.exists()
 
 
 def test_local_verbs_hit_expected_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:

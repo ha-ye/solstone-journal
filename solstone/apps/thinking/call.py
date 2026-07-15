@@ -12,11 +12,8 @@ from typing import Any
 import typer
 
 from solstone.convey.reasons import (
-    FILE_NOT_FOUND,
     INVALID_CONFIG_VALUE,
-    INVALID_JSON_REQUEST,
     INVALID_OPERATION_FOR_STATE,
-    MISSING_REQUIRED_FIELD,
 )
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
@@ -34,7 +31,6 @@ _AI_ENV_TO_PROVIDER = {
 }
 _PROVIDERS = ("anthropic", "google", "openai", "local")
 _CLOUD_PROVIDERS = ("anthropic", "google", "openai")
-_GOOGLE_BACKENDS = ("auto", "aistudio", "vertex")
 
 # Mirrors solstone.apps.thinking.copy; reconstructed here so this call.py
 # remains a pure Convey HTTP client.
@@ -77,10 +73,6 @@ keys_app = typer.Typer(help="AI key management.")
 app.add_typer(keys_app, name="keys")
 providers_app = typer.Typer(help="AI provider configuration.")
 app.add_typer(providers_app, name="providers")
-google_backend_app = typer.Typer(help="Google backend selection.")
-app.add_typer(google_backend_app, name="google-backend")
-vertex_app = typer.Typer(help="Vertex credentials.")
-app.add_typer(vertex_app, name="vertex-credentials")
 local_app = typer.Typer(help="Local model readiness and setup.")
 app.add_typer(local_app, name="local")
 scout_app = typer.Typer(
@@ -370,7 +362,7 @@ def keys_validate(
         False, "--cache-result", help="Persist results to providers.key_validation."
     ),
 ) -> None:
-    """Validate configured AI keys and Vertex credentials."""
+    """Validate configured AI keys."""
 
     method = "POST" if cache_result else "GET"
     response = _request(method, "/app/thinking/api/validate-keys")
@@ -387,7 +379,7 @@ def providers_show(
     response = _get_providers()
     if human:
         active = response.get("active_lane", {})
-        typer.echo(f"active lane: {active.get('lane', 'advanced')}")
+        typer.echo(f"active lane: {active.get('lane', 'none')}")
         for name, status in sorted(response.get("provider_status", {}).items()):
             issues = status.get("issues", [])
             if issues:
@@ -403,8 +395,7 @@ def providers_show(
             "providers": response.get("providers", []),
             "provider_status": response.get("provider_status", {}),
             "active_lane": response.get("active_lane", {}),
-            "generate": response.get("generate", {}),
-            "cogitate": response.get("cogitate", {}),
+            "active": response.get("active", {}),
             "local_override": response.get("local_override", {}),
             "api_keys": response.get("api_keys", {}),
             "key_validation": response.get("key_validation", {}),
@@ -412,54 +403,45 @@ def providers_show(
     )
 
 
-def _set_provider_type(
-    agent_type: str,
-    provider: str | None,
+def _set_active_provider(
+    provider: str,
     model: str | None,
 ) -> dict[str, Any]:
-    if provider is not None:
-        _validate_provider_or_exit(provider)
-    payload = {
-        key: value
-        for key, value in {
-            "provider": provider,
-            "model": model,
-        }.items()
-        if value is not None
+    _validate_provider_or_exit(provider)
+    if provider == "local":
+        if model is not None:
+            _exit_with("--model is only valid for cloud providers.")
+        local_override = _get_providers().get("local_override", {})
+        lane = "byo" if local_override.get("enabled") else "local"
+    else:
+        lane = "byo"
+    payload: dict[str, object | None] = {
+        "lane": lane,
+        "provider": provider,
+        "model": model,
     }
     try:
         response = _request(
             "POST",
             "/app/thinking/api/providers",
-            json_body={agent_type: payload},
+            json_body=payload,
         )
     except ConveyClientError as err:
         if err.reason_code == INVALID_CONFIG_VALUE.code and err.detail:
             _exit_with(err.detail)
         raise
-    return response.get(agent_type, {})
+    return response.get("active", {})
 
 
-@providers_app.command("set-generate")
+@providers_app.command("set-active")
 @convey_cli
-def providers_set_generate(
-    provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
+def providers_set_active(
+    provider: str = typer.Option(..., "--provider", help="Active provider."),
     model: str | None = typer.Option(None, "--model", help="Model override."),
 ) -> None:
-    """Set generate provider defaults."""
+    """Set the provider and model used for all thinking."""
 
-    _echo_json(_set_provider_type("generate", provider, model))
-
-
-@providers_app.command("set-cogitate")
-@convey_cli
-def providers_set_cogitate(
-    provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
-    model: str | None = typer.Option(None, "--model", help="Model override."),
-) -> None:
-    """Set cogitate provider defaults."""
-
-    _echo_json(_set_provider_type("cogitate", provider, model))
+    _echo_json(_set_active_provider(provider, model))
 
 
 @app.command("set-local-endpoint")
@@ -496,100 +478,6 @@ def clear_local_endpoint() -> None:
 
     response = _request("DELETE", "/app/thinking/api/local/endpoint")
     _echo_json(response.get("local_endpoint", response))
-
-
-@google_backend_app.command("show")
-@convey_cli
-def google_backend_show() -> None:
-    """Show Google backend status."""
-
-    providers = _get_providers()
-    _echo_json(
-        {
-            "google_backend": providers.get("google_backend", "auto"),
-            "vertex_credentials_configured": providers.get(
-                "vertex_credentials_configured",
-                False,
-            ),
-            "vertex_credentials_email": providers.get("vertex_credentials_email", ""),
-        }
-    )
-
-
-@google_backend_app.command("set")
-@convey_cli
-def google_backend_set(
-    backend: str = typer.Argument(..., help="Google backend to use."),
-) -> None:
-    """Set the Google provider backend."""
-
-    if backend not in _GOOGLE_BACKENDS:
-        _exit_with(
-            f"Invalid google_backend: {backend}. Must be one of: {', '.join(_GOOGLE_BACKENDS)}"
-        )
-    _request(
-        "POST",
-        "/app/thinking/api/providers",
-        json_body={"google_backend": backend},
-    )
-    _echo_json({"google_backend": backend})
-
-
-@vertex_app.command("show")
-@convey_cli
-def vertex_credentials_show() -> None:
-    """Show Vertex credential status without secrets."""
-
-    providers = _get_providers()
-    validation = providers.get("key_validation", {}).get("google_vertex", {})
-    _echo_json(
-        {
-            "configured": providers.get("vertex_credentials_configured", False),
-            "email": providers.get("vertex_credentials_email", ""),
-            "validation": validation,
-        }
-    )
-
-
-@vertex_app.command("import")
-@convey_cli
-def vertex_credentials_import(
-    file_path: str = typer.Argument(..., help="Path to credentials JSON."),
-    skip_validation: bool = typer.Option(
-        False, "--skip-validation", help="Skip API validation of credentials."
-    ),
-) -> None:
-    """Import Vertex credentials into the journal config."""
-
-    try:
-        response = _request(
-            "POST",
-            "/app/thinking/api/vertex-credentials/import",
-            json_body={"path": file_path, "skip_validation": skip_validation},
-        )
-    except ConveyClientError as err:
-        if err.reason_code == FILE_NOT_FOUND.code:
-            _exit_with(f"Credential file not found: {err.detail}")
-        if err.reason_code == INVALID_JSON_REQUEST.code:
-            _exit_with(f"Invalid JSON in credential file: {err.detail}")
-        if err.reason_code == MISSING_REQUIRED_FIELD.code:
-            _exit_with(f"Missing required fields: {err.detail}")
-        typer.echo(err.error, err=True)
-        raise typer.Exit(1)
-    _echo_json(response)
-
-
-@vertex_app.command("clear")
-@convey_cli
-def vertex_credentials_clear() -> None:
-    """Clear stored Vertex credentials."""
-
-    _request(
-        "POST",
-        "/app/thinking/api/providers",
-        json_body={"vertex_credentials": ""},
-    )
-    _echo_json({"configured": False})
 
 
 @local_app.command("readiness")

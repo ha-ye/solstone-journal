@@ -92,12 +92,6 @@ def test_workspace_renders_each_lane(settings_env):
     assert html.count('id="byoLaneStatus"') == 1
     assert 'id="byoKeyStatus"' in html
     for control_id in (
-        "field-generate-provider",
-        "field-cogitate-provider",
-        "field-google-backend",
-        "vertexSave",
-        "vertexClear",
-        "vertexCredsInput",
         "localEndpointUrl",
         "localEndpointModel",
         "localEndpointCredential",
@@ -105,7 +99,8 @@ def test_workspace_renders_each_lane(settings_env):
         "localEndpointClear",
     ):
         assert f'id="{control_id}"' in html
-    assert "<details" in html
+    assert "advanced provider controls" not in html
+    assert "Vertex" not in html
     assert "Choose how sol thinks" not in html
     assert "window.THINKING =" not in html
     assert "window.THINKING_COPY =" not in html
@@ -223,7 +218,6 @@ def test_thinking_deck_copy_constants() -> None:
         "local": "local",
         "confidential": "confidential processing",
         "byo": "your own AI engine",
-        "advanced": "advanced split",
     }
     assert thinking_copy.GLANCE == {
         "lane_label": "sol is thinking with",

@@ -6,12 +6,10 @@
 from __future__ import annotations
 
 import copy
-import json
 import logging
 import os
 from collections.abc import Callable
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -21,18 +19,10 @@ from solstone.apps.thinking import copy as thinking_copy
 from solstone.apps.thinking import local_bootstrap, scout_lane
 from solstone.apps.thinking.copy import thinking_copy_payload
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
-from solstone.apps.thinking.vertex_credentials import (
-    delete_vertex_credentials,
-    save_vertex_credentials,
-)
 from solstone.apps.utils import log_app_action
-from solstone.convey import state
 from solstone.convey.readiness_snapshot import build_readiness_snapshot
 from solstone.convey.reasons import (
-    FILE_NOT_FOUND,
-    FILE_READ_FAILED,
     INVALID_CONFIG_VALUE,
-    INVALID_JSON_REQUEST,
     INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
     MISSING_REQUEST_BODY,
@@ -48,6 +38,7 @@ from solstone.think.journal_config import (
     write_journal_config,
 )
 from solstone.think.models import (
+    DEFAULT_MODEL_BY_PROVIDER,
     LOCAL_MODEL,
     NO_BRAIN_PROVIDER,
     resolve_provider,
@@ -59,7 +50,6 @@ from solstone.think.providers import (
     validate_key,
     validate_model,
 )
-from solstone.think.providers.google import validate_vertex_credentials
 from solstone.think.providers.local_endpoint import (
     normalize_local_endpoint_url,
     resolve_local_endpoint,
@@ -74,7 +64,7 @@ from solstone.think.services import (
 )
 from solstone.think.services.constants import SERVICE_SPP
 from solstone.think.services.spp_attest.cadence import AttestationSession
-from solstone.think.utils import CorruptConfigError, get_journal
+from solstone.think.utils import CorruptConfigError
 from solstone.think.utils import get_config as get_journal_config
 
 logger = logging.getLogger(__name__)
@@ -337,18 +327,15 @@ def _validate_local_endpoint_url(endpoint_url: str) -> str | Any:
     return normalized
 
 
-def _type_settings(providers_config: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    settings: dict[str, dict[str, Any]] = {}
-    for agent_type in ("generate", "cogitate"):
-        type_config = providers_config.get(agent_type, {})
-        if not isinstance(type_config, dict):
-            type_config = {}
-        provider, model = resolve_provider(agent_type)
-        settings[agent_type] = {
-            "provider": provider,
-            "model": type_config.get("model") or model,
-        }
-    return settings
+def _active_settings(providers_config: dict[str, Any]) -> dict[str, Any]:
+    active_config = providers_config.get("active", {})
+    if not isinstance(active_config, dict):
+        active_config = {}
+    provider, model = resolve_provider("generate")
+    return {
+        "provider": provider,
+        "model": active_config.get("model") or model,
+    }
 
 
 def _lane_for_provider(
@@ -367,27 +354,19 @@ def _lane_for_provider(
 
 
 def _active_lane_payload(
-    type_settings: dict[str, dict[str, Any]],
+    active_settings: dict[str, Any],
     transcribe_config: dict[str, Any],
 ) -> dict[str, Any]:
     endpoint = resolve_local_endpoint()
     local_endpoint_configured = not endpoint.is_bundled
     confidential_provenance_present = spp.confidential_provenance() is not None
-    per_type = {
-        agent_type: _lane_for_provider(
-            str(settings.get("provider") or ""),
-            local_endpoint_configured=local_endpoint_configured,
-            confidential_provenance_present=confidential_provenance_present,
-        )
-        for agent_type, settings in type_settings.items()
-    }
-    lanes = set(per_type.values())
-    active = next(iter(lanes)) if len(lanes) == 1 else "advanced"
+    active = _lane_for_provider(
+        str(active_settings.get("provider") or ""),
+        local_endpoint_configured=local_endpoint_configured,
+        confidential_provenance_present=confidential_provenance_present,
+    )
     return {
         "lane": active,
-        "generate": per_type.get("generate"),
-        "cogitate": per_type.get("cogitate"),
-        "split": active == "advanced",
         "scout_enabled": scout.is_scout_enabled(),
         "scout_provenance_configured": scout.scout_provenance() is not None,
         "confidential_enabled": spp.is_confidential_enabled(),
@@ -426,7 +405,7 @@ def _filtered_ai_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in key_validation.items()
-        if key in {"google", "openai", "anthropic", "google_vertex"}
+        if key in {"google", "openai", "anthropic"}
     }
 
 
@@ -440,7 +419,7 @@ def _keys_payload(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validation_payload(result: dict[str, Any], **identity: str) -> dict[str, Any]:
-    """Map an adapter validation result to a browser-safe payload.
+    """Map a transport validation result to a browser-safe payload.
 
     The browser `api()` wrapper throws on any top-level `error`, so failures
     carry `message` instead.
@@ -457,6 +436,8 @@ def _compute_ai_key_validation(config: dict[str, Any]) -> dict[str, Any]:
     """Validate configured AI provider keys without mutating config."""
 
     env_config = config.get("env", {})
+    if not isinstance(env_config, dict):
+        env_config = {}
     key_validation: dict[str, Any] = {}
 
     for env_var, provider in AI_ENV_TO_PROVIDER.items():
@@ -465,16 +446,6 @@ def _compute_ai_key_validation(config: dict[str, Any]) -> dict[str, Any]:
             result = validate_key(provider, api_key)
             result["timestamp"] = datetime.now(timezone.utc).isoformat()
             key_validation[provider] = result
-
-    providers_config = config.get("providers", {})
-    if providers_config.get("google_backend") == "vertex" and providers_config.get(
-        "vertex_credentials"
-    ):
-        result = validate_vertex_credentials(
-            providers_config["vertex_credentials"],
-        )
-        result["timestamp"] = datetime.now(timezone.utc).isoformat()
-        key_validation["google_vertex"] = result
 
     return key_validation
 
@@ -516,20 +487,9 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
     if not isinstance(providers_config, dict):
         providers_config = {}
 
-    type_settings = _type_settings(providers_config)
+    active_settings = _active_settings(providers_config)
 
     providers_list = get_provider_list()
-    vertex_creds_path = providers_config.get("vertex_credentials")
-    vertex_creds_configured = False
-    vertex_creds_email = ""
-    if vertex_creds_path and Path(vertex_creds_path).exists():
-        vertex_creds_configured = True
-        try:
-            creds_data = json.loads(Path(vertex_creds_path).read_text())
-            vertex_creds_email = creds_data.get("client_email", "")
-        except Exception:
-            pass
-
     local_status = local_bootstrap.get_state(local_model_id)
     ai_readiness = build_readiness_snapshot(
         local_model_id=local_model_id,
@@ -538,19 +498,15 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
 
     return {
         "providers": providers_list,
-        "provider_status": build_provider_status(
-            providers_list,
-            vertex_creds_configured,
-        ),
+        "provider_status": build_provider_status(providers_list),
         "ai_readiness": ai_readiness,
         "active_lane": _active_lane_payload(
-            type_settings,
+            active_settings,
             config.get("transcribe", {})
             if isinstance(config.get("transcribe", {}), dict)
             else {},
         ),
-        "generate": type_settings["generate"],
-        "cogitate": type_settings["cogitate"],
+        "active": active_settings,
         "model_tiers": MODEL_TIERS,
         "byo_models": providers_config.get("byo_models", {}),
         "api_keys": _api_key_status(config),
@@ -558,9 +514,6 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         "local": local_status,
         "local_override": _local_override_payload(config),
         "local_backend": "mlx" if local_bootstrap._is_mlx_backend() else "local",
-        "google_backend": providers_config.get("google_backend", "auto"),
-        "vertex_credentials_configured": vertex_creds_configured,
-        "vertex_credentials_email": vertex_creds_email,
         "scout_enabled": scout.is_scout_enabled(),
     }
 
@@ -822,19 +775,30 @@ def keys() -> Any:
             )
         provider = AI_ENV_TO_PROVIDER[env_var]
 
+        new_value = str(value or "").strip()
         validation = None
+        if new_value:
+            validation = validate_key(provider, new_value)
+            validation["timestamp"] = datetime.now(timezone.utc).isoformat()
         with hold_config_lock():
             config = read_journal_config()
-            env = config.setdefault("env", {})
-            providers_config = config.setdefault("providers", {})
-            key_validation = providers_config.setdefault("key_validation", {})
+            env = config.get("env")
+            if not isinstance(env, dict):
+                env = {}
+                config["env"] = env
+            providers_config = config.get("providers")
+            if not isinstance(providers_config, dict):
+                providers_config = {}
+                config["providers"] = providers_config
+            key_validation = providers_config.get("key_validation")
+            if not isinstance(key_validation, dict):
+                key_validation = {}
+                providers_config["key_validation"] = key_validation
             old_value = env.get(env_var)
-            new_value = str(value or "").strip()
             if new_value:
                 env[env_var] = new_value
                 os.environ[env_var] = new_value
-                validation = validate_key(provider, new_value)
-                validation["timestamp"] = datetime.now(timezone.utc).isoformat()
+                assert validation is not None
                 key_validation[provider] = validation
             else:
                 env.pop(env_var, None)
@@ -871,21 +835,50 @@ def keys() -> Any:
 
 @thinking_bp.route("/api/validate-keys", methods=["GET", "POST"])
 def validate_all_keys() -> Any:
-    """Re-validate configured AI keys and Vertex credentials."""
+    """Re-validate configured AI keys."""
 
     try:
         config = get_journal_config()
+        snapshot_env = config.get("env", {})
+        if not isinstance(snapshot_env, dict):
+            snapshot_env = {}
+        validated_values = {
+            provider: str(snapshot_env.get(env_var) or "").strip()
+            for env_var, provider in AI_ENV_TO_PROVIDER.items()
+        }
         key_validation = _compute_ai_key_validation(config)
         if request.method == "GET":
             return jsonify({"key_validation": key_validation})
 
-        providers_config = config.setdefault("providers", {})
-        existing = providers_config.setdefault("key_validation", {})
-        for key in ("google", "openai", "anthropic", "google_vertex"):
-            existing.pop(key, None)
-        existing.update(key_validation)
-        write_journal_config(config)
-        return jsonify({"success": True, "key_validation": key_validation})
+        with hold_config_lock():
+            config = read_journal_config()
+            providers_config = config.get("providers")
+            if not isinstance(providers_config, dict):
+                providers_config = {}
+                config["providers"] = providers_config
+            existing = providers_config.get("key_validation")
+            if not isinstance(existing, dict):
+                existing = {}
+                providers_config["key_validation"] = existing
+            current_env = config.get("env", {})
+            if not isinstance(current_env, dict):
+                current_env = {}
+            for env_var, provider in AI_ENV_TO_PROVIDER.items():
+                current_value = str(current_env.get(env_var) or "").strip()
+                if current_value != validated_values[provider]:
+                    continue
+                result = key_validation.get(provider)
+                if result is None:
+                    existing.pop(provider, None)
+                else:
+                    existing[provider] = result
+            write_journal_config(config)
+            persisted = {
+                provider: existing[provider]
+                for provider in AI_ENV_TO_PROVIDER.values()
+                if provider in existing
+            }
+        return jsonify({"success": True, "key_validation": persisted})
     except Exception:
         logger.exception("error validating thinking keys")
         return _thinking_operation_failed()
@@ -1113,7 +1106,7 @@ def get_local_provider_status() -> Any:
         local_provider = next(
             provider for provider in providers_list if provider["name"] == "local"
         )
-        provider_status = build_provider_status([local_provider], False)
+        provider_status = build_provider_status([local_provider])
         return jsonify(provider_status["local"])
     except Exception:
         logger.exception("error loading local provider status")
@@ -1139,8 +1132,14 @@ def _remember_byo_model(
     provider: str,
     model: str,
 ) -> None:
-    byo_models = config["providers"].setdefault("byo_models", {})
-    old_model = old_providers.get("byo_models", {}).get(provider)
+    byo_models = config["providers"].get("byo_models")
+    if not isinstance(byo_models, dict):
+        byo_models = {}
+        config["providers"]["byo_models"] = byo_models
+    old_byo_models = old_providers.get("byo_models")
+    if not isinstance(old_byo_models, dict):
+        old_byo_models = {}
+    old_model = old_byo_models.get(provider)
     if old_model != model:
         changed_fields[f"byo_models.{provider}"] = {
             "old": old_model,
@@ -1149,88 +1148,40 @@ def _remember_byo_model(
     byo_models[provider] = model
 
 
-def _fill_remembered_byo_model(
+def _set_active_provider(
     config: dict[str, Any],
     old_providers: dict[str, Any],
     changed_fields: dict[str, Any],
-    agent_type: str,
+    provider: str,
+    model: str | None,
 ) -> None:
-    type_config = config["providers"].get(agent_type, {})
-    if not isinstance(type_config, dict) or "model" in type_config:
-        return
-    provider = type_config.get("provider")
-    if provider not in CLOUD_BYO_PROVIDERS:
-        return
-    model = config["providers"].get("byo_models", {}).get(provider)
-    if not isinstance(model, str) or not model.strip():
-        return
-    model = model.strip()
-    old_type = old_providers.get(agent_type, {})
-    if old_type.get("model") != model:
-        changed_fields[f"{agent_type}.model"] = {
-            "old": old_type.get("model"),
-            "new": model,
-        }
-    type_config["model"] = model
+    old_active = old_providers.get("active", {})
+    if not isinstance(old_active, dict):
+        old_active = {}
 
+    if model is None:
+        if old_active.get("provider") == provider:
+            old_model = old_active.get("model")
+            if isinstance(old_model, str) and old_model.strip():
+                model = old_model.strip()
+        if model is None and provider in CLOUD_BYO_PROVIDERS:
+            remembered_models = config["providers"].get("byo_models")
+            if not isinstance(remembered_models, dict):
+                remembered_models = {}
+            remembered = remembered_models.get(provider)
+            if isinstance(remembered, str) and remembered.strip():
+                model = remembered.strip()
+        if model is None:
+            model = DEFAULT_MODEL_BY_PROVIDER[provider]
 
-def _apply_type_update(
-    config: dict[str, Any],
-    old_providers: dict[str, Any],
-    changed_fields: dict[str, Any],
-    agent_type: str,
-    type_data: dict[str, Any],
-) -> Any | None:
-    if agent_type not in config["providers"]:
-        config["providers"][agent_type] = {}
-    old_type = old_providers.get(agent_type, {})
-
-    if "provider" in type_data:
-        provider = _validate_provider(type_data["provider"])
-        if not isinstance(provider, str):
-            return provider
-        if old_type.get("provider") != provider:
-            changed_fields[f"{agent_type}.provider"] = {
-                "old": old_type.get("provider"),
-                "new": provider,
+    new_active = {"provider": provider, "model": model}
+    for field, value in new_active.items():
+        if old_active.get(field) != value:
+            changed_fields[f"active.{field}"] = {
+                "old": old_active.get(field),
+                "new": value,
             }
-        config["providers"][agent_type]["provider"] = provider
-        if old_type.get("provider") != provider and "model" not in type_data:
-            old_model = config["providers"][agent_type].pop("model", None)
-            if old_model is not None:
-                changed_fields[f"{agent_type}.model"] = {
-                    "old": old_model,
-                    "new": None,
-                }
-
-    if "tier" in type_data:
-        return error_response(
-            INVALID_CONFIG_VALUE,
-            detail=f"{agent_type}.tier is retired; set provider/model instead.",
-        )
-
-    if "backup" in type_data:
-        return error_response(
-            INVALID_CONFIG_VALUE,
-            detail=f"{agent_type}.backup is retired; automatic provider switching is disabled.",
-        )
-
-    if "model" in type_data:
-        model = type_data["model"]
-        if not isinstance(model, str) or not model.strip():
-            return error_response(
-                INVALID_CONFIG_VALUE,
-                detail=f"{agent_type}.model must be a non-empty string.",
-            )
-        model = model.strip()
-        if old_type.get("model") != model:
-            changed_fields[f"{agent_type}.model"] = {
-                "old": old_type.get("model"),
-                "new": model,
-            }
-        config["providers"][agent_type]["model"] = model
-
-    return None
+    config["providers"]["active"] = new_active
 
 
 def _lane_provider(request_data: dict[str, Any]) -> str | Any:
@@ -1278,62 +1229,44 @@ def _lane_provider(request_data: dict[str, Any]) -> str | Any:
 @thinking_bp.route("/api/providers", methods=["PUT", "POST"])
 def update_providers() -> Any:
     try:
-        request_data = request.get_json()
-        if not request_data:
+        request_data = request.get_json(silent=True)
+        if not isinstance(request_data, dict) or not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
+        unknown = set(request_data) - {"lane", "provider", "model"}
+        if unknown:
+            return error_response(
+                INVALID_CONFIG_VALUE,
+                detail=f"Unknown provider fields: {', '.join(sorted(unknown))}",
+            )
+        if "lane" not in request_data:
+            return error_response(MISSING_REQUIRED_FIELD, detail="lane")
 
-        config = get_journal_config()
-        old_providers = copy.deepcopy(config.get("providers", {}))
-        config.setdefault("providers", {})
-        changed_fields: dict[str, Any] = {}
+        provider = _lane_provider(request_data)
+        if not isinstance(provider, str):
+            return provider
 
-        for legacy_key in ("tier", "backup", "models"):
-            if legacy_key in request_data:
+        model: str | None = None
+        if "model" in request_data:
+            if request_data["lane"] != "byo" or provider not in CLOUD_BYO_PROVIDERS:
                 return error_response(
                     INVALID_CONFIG_VALUE,
                     detail=(
-                        f"{legacy_key} is retired; configure generate/cogitate "
-                        "provider/model instead."
+                        "model is only valid with cloud BYO providers: "
+                        "anthropic, google, openai."
                     ),
                 )
-        if "contexts" in request_data:
-            return error_response(
-                INVALID_CONFIG_VALUE,
-                detail=(
-                    "providers.contexts routing is retired; use /api/generators "
-                    "for disabled/extract toggles."
-                ),
-            )
-        if "model" in request_data and "lane" not in request_data:
-            return error_response(
-                INVALID_CONFIG_VALUE,
-                detail="model is only valid with lane=byo.",
-            )
-
-        if "lane" in request_data:
-            provider = _lane_provider(request_data)
-            if not isinstance(provider, str):
-                return provider
-            lane_update = {"provider": provider}
-            has_top_level_model = "model" in request_data
-            if has_top_level_model:
-                if request_data["lane"] != "byo":
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail="model is only valid with lane=byo for cloud providers.",
-                    )
-                if provider not in CLOUD_BYO_PROVIDERS:
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=(
-                            "model is only valid with cloud BYO providers: "
-                            "anthropic, google, openai."
-                        ),
-                    )
-                model = _validate_top_level_model(request_data["model"])
-                if not isinstance(model, str):
-                    return model
-                lane_update["model"] = model
+            model = _validate_top_level_model(request_data["model"])
+            if not isinstance(model, str):
+                return model
+        with hold_config_lock():
+            config = read_journal_config()
+            providers_config = config.get("providers")
+            if not isinstance(providers_config, dict):
+                providers_config = {}
+                config["providers"] = providers_config
+            old_providers = copy.deepcopy(providers_config)
+            changed_fields: dict[str, Any] = {}
+            if model is not None:
                 _remember_byo_model(
                     config,
                     old_providers,
@@ -1341,116 +1274,14 @@ def update_providers() -> Any:
                     provider,
                     model,
                 )
-            for agent_type in ("generate", "cogitate"):
-                error = _apply_type_update(
-                    config,
-                    old_providers,
-                    changed_fields,
-                    agent_type,
-                    lane_update,
-                )
-                if error is not None:
-                    return error
-                if not has_top_level_model:
-                    _fill_remembered_byo_model(
-                        config,
-                        old_providers,
-                        changed_fields,
-                        agent_type,
-                    )
-
-        for agent_type in ("generate", "cogitate"):
-            if agent_type not in request_data:
-                continue
-            type_data = request_data[agent_type]
-            if not isinstance(type_data, dict):
-                return error_response(INVALID_REQUEST_VALUE, detail=agent_type)
-            error = _apply_type_update(
+            _set_active_provider(
                 config,
                 old_providers,
                 changed_fields,
-                agent_type,
-                type_data,
+                provider,
+                model,
             )
-            if error is not None:
-                return error
-
-        if "google_backend" in request_data:
-            backend = request_data["google_backend"]
-            if backend not in ("auto", "aistudio", "vertex"):
-                return error_response(
-                    INVALID_CONFIG_VALUE,
-                    detail=(
-                        f"Invalid google_backend: {backend}. "
-                        "Must be 'auto', 'aistudio', or 'vertex'."
-                    ),
-                )
-            old_val = old_providers.get("google_backend", "auto")
-            if old_val != backend:
-                changed_fields["google_backend"] = {"old": old_val, "new": backend}
-            config["providers"]["google_backend"] = backend
-
-        if "vertex_credentials" in request_data:
-            vertex_creds_value = request_data["vertex_credentials"]
-            if vertex_creds_value:
-                try:
-                    creds_data = (
-                        json.loads(vertex_creds_value)
-                        if isinstance(vertex_creds_value, str)
-                        else vertex_creds_value
-                    )
-                except json.JSONDecodeError:
-                    return error_response(
-                        INVALID_JSON_REQUEST,
-                        detail="Invalid JSON in vertex_credentials",
-                    )
-                required_fields = (
-                    "type",
-                    "project_id",
-                    "client_email",
-                    "private_key",
-                )
-                missing = [
-                    field for field in required_fields if field not in creds_data
-                ]
-                if missing:
-                    return error_response(
-                        MISSING_REQUIRED_FIELD,
-                        detail=f"Missing required fields: {', '.join(missing)}",
-                    )
-                creds_file = save_vertex_credentials(
-                    creds_data,
-                    Path(state.journal_root),
-                )
-                old_val = old_providers.get("vertex_credentials", "")
-                creds_path_str = str(creds_file)
-                if old_val != creds_path_str:
-                    changed_fields["vertex_credentials"] = {
-                        "old": old_val,
-                        "new": creds_path_str,
-                    }
-                config["providers"]["vertex_credentials"] = creds_path_str
-                validation = validate_vertex_credentials(creds_path_str)
-                config["providers"].setdefault("key_validation", {})
-                config["providers"]["key_validation"]["google_vertex"] = {
-                    **validation,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
-            else:
-                old_path = config["providers"].get("vertex_credentials")
-                if old_path:
-                    changed_fields["vertex_credentials"] = {
-                        "old": old_path,
-                        "new": None,
-                    }
-                    delete_vertex_credentials(old_path, Path(state.journal_root))
-                    config["providers"].pop("vertex_credentials", None)
-                    config["providers"].get("key_validation", {}).pop(
-                        "google_vertex",
-                        None,
-                    )
-
-        write_journal_config(config)
+            write_journal_config(config)
         if changed_fields:
             log_app_action(
                 app="thinking",
@@ -1461,65 +1292,6 @@ def update_providers() -> Any:
         return get_providers()
     except Exception:
         logger.exception("error saving providers")
-        return _thinking_operation_failed()
-
-
-@thinking_bp.route("/api/vertex-credentials/import", methods=["POST"])
-def import_vertex_credentials() -> Any:
-    """Import Vertex credentials from a server-side path."""
-
-    try:
-        request_data = request.get_json()
-        if not isinstance(request_data, dict):
-            return error_response(MISSING_REQUEST_BODY, detail="No data provided")
-
-        raw_path = request_data.get("path")
-        if not isinstance(raw_path, str) or not raw_path.strip():
-            return error_response(MISSING_REQUIRED_FIELD, detail="path")
-
-        source = Path(raw_path)
-        if not source.exists():
-            return error_response(FILE_NOT_FOUND, detail=raw_path)
-
-        try:
-            creds_data = json.loads(source.read_text(encoding="utf-8"))
-        except json.JSONDecodeError:
-            return error_response(INVALID_JSON_REQUEST, detail=raw_path)
-        except OSError:
-            return error_response(FILE_READ_FAILED, detail=raw_path)
-
-        required_fields = ("type", "project_id", "client_email", "private_key")
-        missing = [field for field in required_fields if field not in creds_data]
-        if missing:
-            return error_response(
-                MISSING_REQUIRED_FIELD,
-                detail=", ".join(missing),
-            )
-
-        creds_file = save_vertex_credentials(creds_data, Path(get_journal()))
-        config = get_journal_config()
-        config.setdefault("providers", {})
-        config["providers"]["vertex_credentials"] = str(creds_file)
-
-        validation = None
-        if not bool(request_data.get("skip_validation", False)):
-            validation = validate_vertex_credentials(str(creds_file))
-            validation["timestamp"] = datetime.now(timezone.utc).isoformat()
-            config["providers"].setdefault("key_validation", {})
-            config["providers"]["key_validation"]["google_vertex"] = validation
-
-        write_journal_config(config)
-
-        return jsonify(
-            {
-                "configured": True,
-                "email": creds_data.get("client_email", ""),
-                "path": str(creds_file),
-                "validation": validation,
-            }
-        )
-    except Exception:
-        logger.exception("error importing vertex credentials")
         return _thinking_operation_failed()
 
 
@@ -1562,44 +1334,46 @@ def update_generators() -> Any:
         if not request_data:
             return error_response(MISSING_REQUEST_BODY, detail="No data provided")
 
-        config = get_journal_config()
-        old_providers = copy.deepcopy(config.get("providers", {}))
-        config.setdefault("providers", {})
-        config["providers"].setdefault("contexts", {})
-        old_contexts = old_providers.get("contexts", {})
-        changed_fields: dict[str, Any] = {}
-
         from solstone.think.talent import key_to_context
 
-        for key, updates in request_data.items():
-            if not isinstance(updates, dict):
-                continue
-            context_key = key_to_context(key)
-            ctx_config = config["providers"]["contexts"].get(context_key, {})
-            old_ctx = old_contexts.get(context_key, {})
-            if "disabled" in updates:
-                if not isinstance(updates["disabled"], bool):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"disabled must be boolean for {key}",
-                    )
-                ctx_config["disabled"] = updates["disabled"]
-            if "extract" in updates:
-                if not isinstance(updates["extract"], bool):
-                    return error_response(
-                        INVALID_CONFIG_VALUE,
-                        detail=f"extract must be boolean for {key}",
-                    )
-                ctx_config["extract"] = updates["extract"]
-            if ctx_config:
-                if old_ctx != ctx_config:
-                    changed_fields[f"contexts.{context_key}"] = {
-                        "old": old_ctx if old_ctx else None,
-                        "new": ctx_config,
-                    }
-                config["providers"]["contexts"][context_key] = ctx_config
+        with hold_config_lock():
+            config = read_journal_config()
+            contexts = config.get("talent_overrides")
+            if not isinstance(contexts, dict):
+                contexts = {}
+                config["talent_overrides"] = contexts
+            old_contexts = copy.deepcopy(contexts)
+            changed_fields: dict[str, Any] = {}
 
-        write_journal_config(config)
+            for key, updates in request_data.items():
+                if not isinstance(updates, dict):
+                    continue
+                context_key = key_to_context(key)
+                ctx_config = contexts.get(context_key, {})
+                old_ctx = old_contexts.get(context_key, {})
+                if "disabled" in updates:
+                    if not isinstance(updates["disabled"], bool):
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail=f"disabled must be boolean for {key}",
+                        )
+                    ctx_config["disabled"] = updates["disabled"]
+                if "extract" in updates:
+                    if not isinstance(updates["extract"], bool):
+                        return error_response(
+                            INVALID_CONFIG_VALUE,
+                            detail=f"extract must be boolean for {key}",
+                        )
+                    ctx_config["extract"] = updates["extract"]
+                if ctx_config:
+                    if old_ctx != ctx_config:
+                        changed_fields[f"contexts.{context_key}"] = {
+                            "old": old_ctx if old_ctx else None,
+                            "new": ctx_config,
+                        }
+                    contexts[context_key] = ctx_config
+
+            write_journal_config(config)
         if changed_fields:
             log_app_action(
                 app="thinking",

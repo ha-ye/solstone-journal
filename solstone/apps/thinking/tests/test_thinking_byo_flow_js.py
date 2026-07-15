@@ -355,7 +355,7 @@ async function main() {
       ],
     },
     byo_models: {},
-    generate: {provider: 'openai', model: 'not-anthropic'},
+    active: {provider: 'openai', model: 'not-anthropic'},
   };
   let mode = '';
   let selected = '';
@@ -549,7 +549,7 @@ def test_byo_preselection_and_payload_driven_tiers() -> None:
             """
 const injected = {
   byo_models: {anthropic: 'remembered-model'},
-  generate: {provider: 'anthropic', model: 'active-model'},
+  active: {provider: 'anthropic', model: 'active-model'},
   model_tiers: {
     anthropic: [
       {tier: 'lite', label: 'Injected Lite Label', model: 'payload-lite-id'},
@@ -561,8 +561,8 @@ const injected = {
 
 assert(preselectByoModel('anthropic', injected) === 'remembered-model', 'remembered model wins');
 delete injected.byo_models.anthropic;
-assert(preselectByoModel('anthropic', injected) === 'active-model', 'matching active generate model wins second');
-injected.generate.provider = 'google';
+assert(preselectByoModel('anthropic', injected) === 'active-model', 'matching active model wins second');
+injected.active.provider = 'google';
 assert(preselectByoModel('anthropic', injected) === 'payload-lite-id', 'lite tier wins last');
 
 const rows = byoTierRows('anthropic', injected, 'payload-mid-id', text);
@@ -607,7 +607,7 @@ const state = {
   byoCustomModel: '',
   byoCustomCheckedModel: '',
   providers: {
-    generate: {provider: 'anthropic', model: 'injected-mid-id'},
+    active: {provider: 'anthropic', model: 'injected-mid-id'},
     model_tiers: {
       anthropic: [
         {tier: 'lite', label: 'Injected Lite', model: 'injected-lite-id'},
@@ -667,7 +667,7 @@ const state = {
   byoCustomCheckedModel: '',
   providers: {
     scout_enabled: false,
-    generate: {provider: 'anthropic', model: 'injected-mid-id'},
+    active: {provider: 'anthropic', model: 'injected-mid-id'},
     model_tiers: {
       anthropic: [
         {tier: 'top', label: 'Injected Top', model: 'injected-top-id'},
@@ -955,7 +955,7 @@ const state = {
   providers: {
     scout_enabled: false,
     byo_models: {openai: 'remembered-gpt'},
-    generate: {provider: 'anthropic', model: 'old-active'},
+    active: {provider: 'anthropic', model: 'old-active'},
     model_tiers: {
       openai: [
         {tier: 'lite', label: 'Lite GPT', model: 'lite-gpt'},
@@ -1063,7 +1063,7 @@ const state = {
   providers: {
     scout_enabled: false,
     byo_models: {google: 'remembered-google'},
-    generate: {provider: 'google', model: 'active-google'},
+    active: {provider: 'google', model: 'active-google'},
     model_tiers: {
       google: [
         {tier: 'top', label: 'Remembered Google', model: 'remembered-google'},
@@ -1100,7 +1100,7 @@ changeByoProvider('google');
 assert(state.byoSelectedModel === 'active-google', 'active-effective model should win when no remembered model exists');
 
 state.byoSelectedModel = 'old-model';
-state.providers.generate = {provider: 'anthropic', model: 'other-active'};
+state.providers.active = {provider: 'anthropic', model: 'other-active'};
 changeByoProvider('google');
 assert(state.byoSelectedModel === 'google-lite', 'lite model should win when no remembered or active model exists');
 

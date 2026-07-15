@@ -41,13 +41,9 @@
     }
   },
   "providers": {
-    "generate": {
+    "active": {
       "provider": "google",
       "model": "gemini-custom-flash-test"
-    },
-    "cogitate": {
-      "provider": "openai",
-      "model": "gpt-5.4-mini"
     },
     "bundled": {
       "parakeet": {

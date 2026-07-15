@@ -760,7 +760,7 @@ class VideoProcessor:
                 promoted = True
 
         try:
-            frame_provider, frame_model = resolve_provider("generate")
+            frame_provider, _ = resolve_provider("generate")
             if frame_provider == NO_BRAIN_PROVIDER:
                 logger.info("No thinking engine selected; deferring frame description")
                 return
@@ -782,7 +782,6 @@ class VideoProcessor:
                         frame_img,
                     ),
                     context=FRAME_CONTEXT,
-                    model=frame_model,
                     system_instruction=system_instruction,
                     json_output=True,
                     json_schema=_SCHEMA,
@@ -1087,7 +1086,7 @@ class VideoProcessor:
                     # Determine output format from metadata
                     is_json = cat_meta.get("output") == "json"
 
-                    cat_provider, cat_model = resolve_provider("generate")
+                    cat_provider, _ = resolve_provider("generate")
                     if cat_provider == NO_BRAIN_PROVIDER:
                         logger.info(
                             "No thinking engine selected; deferring %s extraction",
@@ -1101,7 +1100,6 @@ class VideoProcessor:
                             f"Analyze this {category} screenshot.",
                             full_img,
                         ),
-                        model=cat_model,
                         system_instruction=cat_meta["prompt"] + redact_instruction,
                         json_output=is_json,
                         json_schema=cat_meta.get("json_schema"),

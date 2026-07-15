@@ -292,13 +292,10 @@ def read_journal_config_file(journal: Path) -> dict[str, Any]:
     return json.loads((journal / "config" / "journal.json").read_text(encoding="utf-8"))
 
 
-def provider_lanes(journal: Path) -> tuple[str | None, str | None]:
+def active_provider(journal: Path) -> str | None:
     config = read_journal_config_file(journal)
     providers = config.get("providers", {})
-    return (
-        providers.get("generate", {}).get("provider"),
-        providers.get("cogitate", {}).get("provider"),
-    )
+    return providers.get("active", {}).get("provider")
 
 
 def step_by_name(manifest: dict[str, Any], name: str) -> dict[str, Any]:
@@ -603,7 +600,7 @@ def test_brain_capable_sets_lane_and_triggers_bootstrap(
 
     assert rc == 0
     assert elapsed < 1
-    assert provider_lanes(journal) == ("local", "local")
+    assert active_provider(journal) == "local"
     manifest = read_manifest(journal)
     assert step_by_name(manifest, "brain")["status"] == "ok"
     assert_command(calls, 5, expected_brain_bootstrap_command())
@@ -631,7 +628,7 @@ def test_brain_skip_brain_sets_lane_and_skips(
     rc = setup.main(["--yes", "--journal", str(journal), "--skip-brain"])
 
     assert rc == 0
-    assert provider_lanes(journal) == ("local", "local")
+    assert active_provider(journal) == "local"
     brain_step = step_by_name(read_manifest(journal), "brain")
     assert brain_step["status"] == "skipped"
     assert brain_step["reason"] == "--skip-brain"
@@ -668,7 +665,7 @@ def test_brain_skip_models_derives_skip_brain(
     brain_step = step_by_name(manifest, "brain")
     assert brain_step["status"] == "skipped"
     assert brain_step["reason"] == "--skip-models implies --skip-brain"
-    assert provider_lanes(journal) == ("local", "local")
+    assert active_provider(journal) == "local"
     assert expected_brain_bootstrap_command() not in calls
 
 
@@ -693,7 +690,7 @@ def test_brain_skip_service_sets_lane_and_skips(
     rc = setup.main(["--yes", "--journal", str(journal), "--skip-service"])
 
     assert rc == 0
-    assert provider_lanes(journal) == ("local", "local")
+    assert active_provider(journal) == "local"
     brain_step = step_by_name(read_manifest(journal), "brain")
     assert brain_step["status"] == "skipped"
     assert brain_step["reason"] == "--skip-service"
@@ -723,7 +720,7 @@ def test_brain_blocked_verdict_skips_without_trigger(
     assert rc == 0
     manifest = read_manifest(journal)
     assert manifest["completed_at"] is not None
-    assert provider_lanes(journal) == ("local", "local")
+    assert active_provider(journal) == "local"
     brain_step = step_by_name(manifest, "brain")
     assert brain_step["status"] == "skipped"
     assert brain_step["reason"] == "local provider unavailable on this host"
@@ -782,10 +779,7 @@ def test_brain_preserves_existing_provider_lane(
     config_path = journal / "config" / "journal.json"
     config_path.parent.mkdir(parents=True)
     original_config = {
-        "providers": {
-            "generate": {"provider": "anthropic"},
-            "cogitate": {"provider": "anthropic", "tier": 2},
-        }
+        "providers": {"active": {"provider": "anthropic", "model": "claude-sonnet-5"}}
     }
     config_path.write_text(json.dumps(original_config), encoding="utf-8")
     calls = patch_subprocess(monkeypatch)
@@ -805,8 +799,8 @@ def test_brain_preserves_existing_provider_lane(
     "original_config",
     [
         {"providers": "anthropic"},
-        {"providers": {"generate": "anthropic"}},
-        {"providers": {"cogitate": ["local"]}},
+        {"providers": {"active": "anthropic"}},
+        {"providers": {"active": ["local"]}},
     ],
 )
 def test_brain_skips_on_malformed_provider_config(
@@ -901,14 +895,14 @@ def test_brain_rerun_after_defer_triggers_bootstrap(
     first_brain = step_by_name(first_manifest, "brain")
     assert first_brain["status"] == "skipped"
     assert first_brain["reason"] == "--skip-brain"
-    assert provider_lanes(journal) == ("local", "local")
+    assert active_provider(journal) == "local"
     assert expected_brain_bootstrap_command() not in first_calls
 
     second_calls = patch_subprocess(monkeypatch)
     second_rc = setup.main(["--yes", "--journal", str(journal)])
 
     assert second_rc == 0
-    assert provider_lanes(journal) == ("local", "local")
+    assert active_provider(journal) == "local"
     second_brain = step_by_name(read_manifest(journal), "brain")
     assert second_brain["status"] == "ok"
     assert expected_brain_bootstrap_command() in second_calls

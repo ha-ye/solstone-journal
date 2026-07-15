@@ -24,8 +24,7 @@ def _select_local_provider(journal_path):
         json.dumps(
             {
                 "providers": {
-                    "generate": {"provider": "local"},
-                    "cogitate": {"provider": "local"},
+                    "active": {"provider": "local", "model": "local/qwen3.5-4b"},
                 }
             }
         ),

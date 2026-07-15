@@ -551,6 +551,9 @@ def run_generate(
     del thinking_budget
     retry_index = int(kwargs.pop("inference_retry_index", 0) or 0)
     local_exclusive_admission = bool(kwargs.pop("local_exclusive_admission", False))
+    if kwargs:
+        unknown = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unsupported local generate options: {unknown}")
     endpoint = resolve_local_endpoint()
     # Validate the requested logical id; served id comes from the server.
     normalize_model_id(model)
@@ -722,6 +725,9 @@ async def run_agenerate(
     del thinking_budget
     retry_index = int(kwargs.pop("inference_retry_index", 0) or 0)
     local_exclusive_admission = bool(kwargs.pop("local_exclusive_admission", False))
+    if kwargs:
+        unknown = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unsupported local generate options: {unknown}")
     endpoint = resolve_local_endpoint()
     normalize_model_id(model)
     messages = _build_messages(contents, system_instruction)

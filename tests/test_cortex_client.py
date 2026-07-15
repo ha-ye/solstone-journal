@@ -71,8 +71,7 @@ def test_cortex_request_broadcasts_to_callosum(sent_callosum_messages):
     use_id = cortex_request(
         prompt="Test prompt",
         name="chat",
-        provider="openai",
-        config={"model": GPT_5},
+        config={"facet": "work"},
     )
 
     # Verify broadcast was received
@@ -82,15 +81,16 @@ def test_cortex_request_broadcasts_to_callosum(sent_callosum_messages):
     assert msg["event"] == "request"
     assert msg["prompt"] == "Test prompt"
     assert msg["name"] == "chat"
-    assert msg["provider"] == "openai"
-    assert msg["model"] == GPT_5
+    assert msg["facet"] == "work"
+    assert "provider" not in msg
+    assert "model" not in msg
     assert msg["use_id"] == use_id
     assert "ts" in msg
 
 
 def test_cortex_request_returns_agent_id(sent_callosum_messages):
     """Test that cortex_request returns use_id string."""
-    use_id = cortex_request(prompt="Test", name="chat", provider="openai")
+    use_id = cortex_request(prompt="Test", name="chat")
 
     # Verify use_id is a string timestamp
     assert isinstance(use_id, str)
@@ -104,7 +104,6 @@ def test_cortex_request_uses_explicit_use_id(sent_callosum_messages):
     use_id = cortex_request(
         prompt="Test prompt",
         name="chat",
-        provider="openai",
         use_id="1713629000000",
     )
 
@@ -116,7 +115,7 @@ def test_cortex_request_unique_agent_ids(sent_callosum_messages):
     """Test that cortex_request generates unique agent IDs."""
     agent_ids = []
     for i in range(3):
-        use_id = cortex_request(prompt=f"Test {i}", name="chat", provider="openai")
+        use_id = cortex_request(prompt=f"Test {i}", name="chat")
         agent_ids.append(use_id)
 
     # All agent IDs should be unique
@@ -132,7 +131,7 @@ def test_cortex_request_raises_when_callosum_unavailable(tmp_path, monkeypatch):
     )
 
     with pytest.raises(CortexSpawnUnavailable) as excinfo:
-        cortex_request(prompt="Test", name="chat", provider="openai")
+        cortex_request(prompt="Test", name="chat")
 
     assert excinfo.value.detail == "FileNotFoundError"
 
@@ -147,7 +146,7 @@ def test_cortex_request_empty_journal(tmp_path, monkeypatch):
     )
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
-    use_id = cortex_request("test", "chat", "openai")
+    use_id = cortex_request("test", "chat")
     assert use_id is not None
     assert len(use_id) > 0
 
@@ -183,7 +182,7 @@ def test_cortex_request_returns_when_claim_appears_after_poll(tmp_path, monkeypa
 
     monkeypatch.setattr(cc, "get_use_log_status", fake_status)
 
-    use_id = cortex_request("test", "chat", "openai", use_id="1713629000001")
+    use_id = cortex_request("test", "chat", use_id="1713629000001")
 
     assert use_id == "1713629000001"
 
@@ -204,7 +203,7 @@ def test_cortex_request_rebroadcast_reuses_same_use_id(tmp_path, monkeypatch):
         lambda use_id: "running" if len(send_calls) >= 2 else "not_found",
     )
 
-    use_id = cortex_request("test", "chat", "openai", use_id="1713629000002")
+    use_id = cortex_request("test", "chat", use_id="1713629000002")
 
     assert use_id == "1713629000002"
     assert len(send_calls) >= 2
@@ -225,7 +224,7 @@ def test_cortex_request_raises_when_not_claimed(tmp_path, monkeypatch):
     monkeypatch.setattr(cc, "get_use_log_status", lambda use_id: "not_found")
 
     with pytest.raises(CortexNotClaimed) as excinfo:
-        cortex_request("test", "chat", "openai", use_id="1713629000003")
+        cortex_request("test", "chat", use_id="1713629000003")
 
     assert excinfo.value.use_id == "1713629000003"
     assert len(send_calls) == 3
@@ -248,9 +247,7 @@ def test_cortex_request_patient_windows_are_non_decreasing(tmp_path, monkeypatch
     monkeypatch.setattr(cc, "get_use_log_status", lambda use_id: "not_found")
 
     with pytest.raises(CortexNotClaimed) as excinfo:
-        cortex_request(
-            "test", "chat", "openai", use_id="1713629000005", claim_windows=windows
-        )
+        cortex_request("test", "chat", use_id="1713629000005", claim_windows=windows)
 
     assert len(send_times) == len(windows)
     assert "after 5 broadcasts" in excinfo.value.detail
@@ -277,7 +274,7 @@ def test_cortex_request_raises_spawn_unavailable_on_failed_rebroadcast(
     monkeypatch.setattr(cc, "get_use_log_status", lambda use_id: "not_found")
 
     with pytest.raises(CortexSpawnUnavailable) as excinfo:
-        cortex_request("test", "chat", "openai", use_id="1713629000006")
+        cortex_request("test", "chat", use_id="1713629000006")
 
     assert excinfo.value.detail == "FileNotFoundError"
     assert len(send_calls) == 2
@@ -307,11 +304,11 @@ def test_dispatch_cortex_request_patient_schedule_claims_after_default_would_fai
     )
 
     with pytest.raises(CortexNotClaimed):
-        cortex_request("test", "chat", "openai", use_id="1713629000007")
+        cortex_request("test", "chat", use_id="1713629000007")
 
     clock["value"] = 0.0
     result = think._dispatch_cortex_request(
-        prompt="test", name="chat", provider="openai", use_id="1713629000008"
+        prompt="test", name="chat", use_id="1713629000008"
     )
 
     assert result == "1713629000008"
@@ -329,7 +326,7 @@ def test_cortex_request_immediate_claim_does_not_sleep(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cc.time, "sleep", fail_sleep)
 
-    use_id = cortex_request("test", "chat", "openai", use_id="1713629000004")
+    use_id = cortex_request("test", "chat", use_id="1713629000004")
 
     assert use_id == "1713629000004"
 

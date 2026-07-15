@@ -787,16 +787,6 @@ class TestSetupCliConfigEnv:
 
         assert os.environ.get("MY_TOOL_TOKEN") == "from_shell"
 
-    def test_vertex_adc_vars_survive_managed_key_strip(self, monkeypatch, cli_env):
-        """Test that Vertex/ADC env vars are not managed provider keys."""
-        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
-        monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/some/path")
-
-        cli_env({"identity": {"name": "Test"}, "env": {}})
-
-        assert os.environ.get("GOOGLE_GENAI_USE_VERTEXAI") == "true"
-        assert os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") == "/some/path"
-
     def test_empty_config_value_strips_managed_key(self, monkeypatch, cli_env):
         """Test that empty managed-key config values are treated as absent."""
         monkeypatch.setenv("GOOGLE_API_KEY", "from_shell")

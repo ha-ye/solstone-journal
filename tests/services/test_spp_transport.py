@@ -78,8 +78,10 @@ def _write_confidential_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
                 "served_model_id": "confidential-model",
                 "credential_created_at": "2026-05-24T00:00:00Z",
                 "credential_fingerprint_sha256": "fingerprint",
-                "prior_generate_provider": "google",
-                "prior_cogitate_provider": "openai",
+                "prior_active": {
+                    "provider": "google",
+                    "model": "gemini-flash-latest",
+                },
                 "prior_local_endpoint": None,
             }
         }

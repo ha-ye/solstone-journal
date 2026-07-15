@@ -236,6 +236,18 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
             return "provider_quota_exceeded"
         if exc_name == "ContextWindowExceededError":
             return "context_window_exceeded"
+        if exc_name in {"LLMContextWindowExceedError", "LLMContextWindowTooSmallError"}:
+            return "context_window_exceeded"
+        if exc_name == "LLMAuthenticationError":
+            return "provider_key_invalid"
+        if exc_name == "LLMRateLimitError":
+            return "provider_quota_exceeded"
+        if exc_name == "LLMTimeoutError":
+            return "chat_timeout"
+        if exc_name == "LLMServiceUnavailableError":
+            return "provider_unavailable"
+        if exc_name in {"LLMNoResponseError", "LLMResponseError"}:
+            return "provider_response_invalid"
         if _contains_any(message_lower, _CONTEXT_WINDOW_PATTERNS):
             return "context_window_exceeded"
         # MaxIterationsReached is OpenHands' event-code spelling of the same limit;

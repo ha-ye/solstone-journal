@@ -13,6 +13,7 @@ import asyncio
 import importlib
 import io
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -24,6 +25,21 @@ FIXTURES = Path("tests/fixtures")
 
 def copy_day(tmp_path: Path, monkeypatch) -> Path:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "active": {
+                        "provider": "google",
+                        "model": "gemini-2.0-flash",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     dest = day_path("20240101")
     src = FIXTURES / "journal" / "chronicle" / "20240101"
     copytree_tracked(src, dest)
@@ -39,11 +55,30 @@ MOCK_RESULT = {
 
 def run_generator_with_config(mod, config: dict, monkeypatch) -> list[dict]:
     """Run generator with NDJSON config and capture output events."""
+    config_path = Path(os.environ["SOLSTONE_JOURNAL"]) / "config" / "journal.json"
+    if not config_path.exists():
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        "active": {
+                            "provider": "google",
+                            "model": "gemini-2.0-flash",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
     # Mock argv to prevent argparse from seeing pytest args
     monkeypatch.setattr("sys.argv", ["sol"])
 
     # Mock stdin with config
-    stdin_data = json.dumps(config) + "\n"
+    request = {
+        key: value for key, value in config.items() if key not in {"provider", "model"}
+    }
+    stdin_data = json.dumps(request) + "\n"
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin_data))
 
     # Capture stdout
@@ -109,8 +144,6 @@ def test_generate_output_ndjson(tmp_path, monkeypatch):
         "name": "test_gen",
         "day": "20240101",
         "output": "md",
-        "provider": "google",
-        "model": "gemini-2.0-flash",
     }
 
     events = run_generator_with_config(mod, config, monkeypatch)
@@ -1182,6 +1215,21 @@ def test_cogitate_not_skipped_without_sources(tmp_path, monkeypatch):
 
     # Create empty day directory (no transcripts)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "active": {
+                        "provider": "google",
+                        "model": "gemini-2.0-flash",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
     day_dir = day_path("20240101")
     day_dir.mkdir(parents=True, exist_ok=True)
 

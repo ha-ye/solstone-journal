@@ -179,13 +179,11 @@ The `journal providers check` command is an ad-hoc provider check CLI. Cortex do
 journal providers check [TASK_FILE] [--provider PROVIDER] [--model MODEL] [--max-tokens N] [-o OUT_FILE]
 ```
 
-Provider resolution lives in `solstone/think/models.py`. Each interface has one
-active brain: explicit `providers.generate` / `providers.cogitate` provider and
-model pins win first, then managed cloud-key presence in `google` -> `anthropic`
--> `openai` order, then local runtime readiness, then the no-thinking-engine
-state. Retired tier, backup, and context provider/model routing keys are ignored
-by provider resolution. Configure managed cloud API keys in the `env` section of
-`journal/config/journal.json`. The `local` provider requires no API key.
+Provider resolution lives in `solstone/think/models.py`. Generate and cogitate
+share the single explicit `providers.active` provider/model selected in the
+Thinking app. There is no key-presence fallback, tier override, backup route, or
+talent-specific provider route. Configure cloud API keys in the `env` section of
+`journal/config/journal.json`; the bundled local provider requires no API key.
 
 ### Provider modules
 
@@ -198,7 +196,7 @@ to `solstone/think/providers/openhands.py` and maps `local` to
 - `run_cogitate()` - Tool-calling execution via `sol call` commands and event streaming
 
 For direct LLM calls, use `think.models.generate()` or `think.models.agenerate()`;
-they route through the active generate brain.
+they route through the active brain.
 
 ## Generator map keys
 

@@ -280,25 +280,18 @@ The JSON frontmatter for an agent can include:
 
 ### Model Resolution
 
-Models are resolved automatically by interface:
-1. `providers.generate.provider/model` or `providers.cogitate.provider/model`
-   pins the active brain when present.
-2. If no provider is pinned, managed cloud-key presence is honored in the
-   grandfathered `google` -> `anthropic` -> `openai` order.
-3. If no cloud key is configured and the local runtime is ready, `local` is used.
-4. If no brain is available, the request fails closed.
-
-`providers.contexts` no longer selects provider/model. Its `disabled` and
-`extract` fields remain live talent metadata.
+Generate and cogitate use the single explicit `providers.active` provider/model
+selected in the Thinking app. If it is missing or invalid, the request fails
+closed. Key presence, tiers, backup maps, and talent frontmatter never select a
+different provider or model. Talent `disabled` and `extract` metadata lives in
+the top-level `talent_overrides` map.
 
 ## Agent Providers
 
 The system supports multiple provider identities through
 `solstone/think/providers/__init__.py`:
 
-- **OpenAI** (`solstone/think/providers/openhands.py`): GPT cogitate via OpenHands; generate redispatched to `solstone/think/providers/openai.py`
-- **Google** (`solstone/think/providers/openhands.py`): Gemini cogitate via OpenHands; generate redispatched to `solstone/think/providers/google.py`
-- **Anthropic** (`solstone/think/providers/openhands.py`): Claude cogitate via OpenHands; generate redispatched to `solstone/think/providers/anthropic.py`
+- **OpenAI, Google AI Studio, and Anthropic** (`solstone/think/providers/openhands.py`): one OpenHands/LiteLLM transport for generate and cogitate
 - **Local** (`solstone/think/providers/local.py`): bundled llama-server, BYO OpenAI-compatible endpoint, or confidential local endpoint
 
 Effective providers:

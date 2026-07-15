@@ -165,19 +165,6 @@ def test_parse_response_fails_closed_on_bad_finish_reasons(raw):
     assert exc_info.value.reason_code == "provider_response_invalid"
 
 
-def test_cloud_generate_providers_do_not_reference_local_budget():
-    root = Path(__file__).resolve().parents[1]
-
-    for rel_path in (
-        "solstone/think/providers/anthropic.py",
-        "solstone/think/providers/google.py",
-        "solstone/think/providers/openai.py",
-    ):
-        text = (root / rel_path).read_text(encoding="utf-8")
-        assert "local_budget" not in text
-        assert "fit_contents" not in text
-
-
 def test_list_models_returns_specs():
     models = _provider().list_models("local")
 
@@ -2341,7 +2328,9 @@ def test_llama_server_pins_are_real_b9291_digests():
 def _select_local_provider(monkeypatch) -> None:
     monkeypatch.setattr(
         "solstone.think.models.get_config",
-        lambda: {"providers": {"generate": {"provider": "local"}}},
+        lambda: {
+            "providers": {"active": {"provider": "local", "model": "local/qwen3.5-4b"}}
+        },
     )
 
 
@@ -2351,7 +2340,11 @@ def test_build_provider_status_local_not_selected_is_inert(monkeypatch):
     health_calls = []
     monkeypatch.setattr(
         "solstone.think.models.get_config",
-        lambda: {"providers": {"generate": {"provider": "google"}}},
+        lambda: {
+            "providers": {
+                "active": {"provider": "google", "model": "gemini-flash-latest"}
+            }
+        },
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",

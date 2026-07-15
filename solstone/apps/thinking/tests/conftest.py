@@ -91,20 +91,10 @@ def settings_env(tmp_path, monkeypatch):
                     "OPENAI_API_KEY": "test-openai-key",
                 },
                 "providers": {
-                    "generate": {
+                    "active": {
                         "provider": "google",
                         "model": "gemini-flash-latest",
                     },
-                    "cogitate": {
-                        "provider": "openai",
-                        "model": "gpt-5.4-mini",
-                    },
-                    "auth": {
-                        "google": "api_key",
-                        "openai": "api_key",
-                        "anthropic": "platform",
-                    },
-                    "google_backend": "auto",
                     "key_validation": {},
                 },
                 "transcribe": {

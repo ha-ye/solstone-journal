@@ -195,7 +195,7 @@ def test_segment_default_byo_endpoint_uses_configured_slot_cap_and_does_not_prob
         monkeypatch,
         tmp_path,
         {
-            "generate": {"provider": "local"},
+            "active": {"provider": "local", "model": "local/qwen3.5-4b"},
             "local": {
                 "endpoint_url": "https://example.invalid/v1",
                 "served_model_id": "some-model",
@@ -219,7 +219,7 @@ def test_segment_default_confidential_endpoint_uses_cpu_formula_and_does_not_pro
         monkeypatch,
         tmp_path,
         {
-            "generate": {"provider": "local"},
+            "active": {"provider": "local", "model": "local/qwen3.5-4b"},
             "local": {
                 "endpoint_url": "https://example.invalid/v1",
                 "served_model_id": "some-model",
@@ -242,7 +242,7 @@ def test_describe_default_byo_endpoint_uses_configured_slot_cap_and_does_not_pro
         monkeypatch,
         tmp_path,
         {
-            "generate": {"provider": "local"},
+            "active": {"provider": "local", "model": "local/qwen3.5-4b"},
             "local": {
                 "endpoint_url": "https://example.invalid/v1",
                 "served_model_id": "some-model",
@@ -264,7 +264,7 @@ def test_describe_default_confidential_endpoint_uses_cpu_formula_and_does_not_pr
         monkeypatch,
         tmp_path,
         {
-            "generate": {"provider": "local"},
+            "active": {"provider": "local", "model": "local/qwen3.5-4b"},
             "local": {
                 "endpoint_url": "https://example.invalid/v1",
                 "served_model_id": "some-model",

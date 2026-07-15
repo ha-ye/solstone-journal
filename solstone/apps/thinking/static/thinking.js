@@ -434,9 +434,9 @@
   function preselectByoModel(provider, providersPayload) {
     const remembered = String(providersPayload?.byo_models?.[provider] || '').trim();
     if (remembered) return remembered;
-    const generate = providersPayload?.generate || {};
-    const generatedModel = String(generate.model || '').trim();
-    if (generate.provider === provider && generatedModel) return generatedModel;
+    const active = providersPayload?.active || {};
+    const activeModel = String(active.model || '').trim();
+    if (active.provider === provider && activeModel) return activeModel;
     const lite = byoTierList(provider, providersPayload).find((tier) => tier?.tier === 'lite');
     return String(lite?.model || '').trim();
   }
@@ -778,11 +778,9 @@
   }
 
   function defaultByoProvider() {
-    const generateProvider = state.providers.generate?.provider || '';
-    const cogitateProvider = state.providers.cogitate?.provider || '';
-    if (localEndpointConfigured() && (generateProvider === 'local' || cogitateProvider === 'local')) return 'local';
-    if (providerEnv[generateProvider]) return generateProvider;
-    if (providerEnv[cogitateProvider]) return cogitateProvider;
+    const activeProvider = state.providers.active?.provider || '';
+    if (localEndpointConfigured() && activeProvider === 'local') return 'local';
+    if (providerEnv[activeProvider]) return activeProvider;
     if (localEndpointConfigured() && configuredProviders().length === 0) return 'local';
     if (state.providers.scout_enabled) return 'google';
     return configuredProviders()[0] || 'anthropic';
@@ -841,19 +839,16 @@
   }
 
   function activeBrain() {
-    const lane = state.providers.active_lane?.lane || 'advanced';
-    const generateProvider = state.providers.generate?.provider || '';
-    const cogitateProvider = state.providers.cogitate?.provider || '';
-    const byoProvider = generateProvider !== 'local' ? generateProvider : cogitateProvider || generateProvider;
+    const lane = state.providers.active_lane?.lane || 'none';
+    const provider = state.providers.active?.provider || '';
     const byoUsable = byoIsUsable();
-    const advancedUsable = lane === 'advanced' && !!generateProvider && !!cogitateProvider;
 
     if (lane === 'byo' && byoUsable) {
       return {
         kind: 'byo',
-        byoKind: byoKindForProvider(byoProvider),
-        provider: byoProvider,
-        providerLabel: providerLabel(byoProvider),
+        byoKind: byoKindForProvider(provider),
+        provider,
+        providerLabel: providerLabel(provider),
       };
     }
     if (lane === 'local' && localIsReady()) {
@@ -861,14 +856,6 @@
     }
     if (lane === 'confidential' && confidentialProvenancePresent()) {
       return {kind: 'confidential', providerLabel: 'Confidential processing'};
-    }
-    if (advancedUsable) {
-      return {
-        kind: 'advanced',
-        generateProvider,
-        cogitateProvider,
-        providerLabel: 'Advanced split',
-      };
     }
     return {kind: 'none', providerLabel: ''};
   }
@@ -911,7 +898,7 @@
       const key = `byo_${brain.byoKind || 'key'}`;
       const row = glanceCopy[key] || {};
       const model = brain.byoKind === 'key'
-        ? byoModelLabel(brain.provider, state.providers.generate?.model || '', state.providers)
+        ? byoModelLabel(brain.provider, state.providers.active?.model || '', state.providers)
         : '';
       setText('thinkingActiveLane', glanceCopy.lane_label || 'sol is thinking with');
       setText('thinkingActiveValue', formatCopy(row.value, {provider: brain.providerLabel, model}));
@@ -928,13 +915,6 @@
       setText('thinkingActiveLane', row.label || '');
       setText('thinkingActiveValue', row.value || '');
       setText('thinkingActiveDetail', row.detail || '');
-    } else if (brain.kind === 'advanced') {
-      setText('thinkingActiveLane', 'sol is thinking with');
-      setText('thinkingActiveValue', 'an advanced split');
-      setText(
-        'thinkingActiveDetail',
-        `generate uses ${providerLabel(brain.generateProvider)}; cogitate uses ${providerLabel(brain.cogitateProvider)}`,
-      );
     } else {
       const row = glanceCopy.none || {};
       setText('thinkingActiveValue', row.value || activeLaneLabel('none'));
@@ -1349,26 +1329,6 @@
     }
   }
 
-  function populateProviderSelect(select, selected) {
-    if (!select) return;
-    select.innerHTML = '';
-    for (const provider of state.providers.providers || []) {
-      const option = document.createElement('option');
-      option.value = provider.name;
-      option.textContent = providerLabels[provider.name] || provider.label || provider.name;
-      select.appendChild(option);
-    }
-    select.value = selected || '';
-  }
-
-  function renderAdvanced() {
-    populateProviderSelect($('field-generate-provider'), state.providers.generate?.provider);
-    populateProviderSelect($('field-cogitate-provider'), state.providers.cogitate?.provider);
-    if ($('field-google-backend')) {
-      $('field-google-backend').value = state.providers.google_backend || 'auto';
-    }
-  }
-
   function setSelectedByoProvider(provider) {
     state.selectedByoProvider = provider || defaultByoProvider();
     const select = $('byoProvider');
@@ -1407,7 +1367,7 @@
     const providerName = providerLabel(provider);
     const checked = relativeTime(validation?.timestamp) || relativeTime(new Date().toISOString());
     const selected = state.byoSelectedModel || (state.byoCustomOpen ? '' : preselectByoModel(provider, state.providers));
-    const activeModel = state.providers.generate?.provider === provider ? state.providers.generate?.model || '' : '';
+    const activeModel = state.providers.active?.provider === provider ? state.providers.active?.model || '' : '';
     const rows = byoTierRows(provider, state.providers, activeModel, byoText);
     const catalogModels = new Set(rows.map((row) => row.model).filter(Boolean));
     const selectedIsCustom = !!selected && !catalogModels.has(selected);
@@ -1848,7 +1808,6 @@
   function renderAll() {
     renderGlance();
     renderMainLanes();
-    renderAdvanced();
     renderByo();
     renderLocalEndpoint();
     renderScout();
@@ -2282,45 +2241,6 @@
     }
   }
 
-  async function saveAdvanced(agentType, field, value) {
-    const payload = {[agentType]: {[field]: value}};
-    state.providers = await api('api/providers', {
-      method: 'PUT',
-      body: JSON.stringify(payload),
-    });
-    setMessage('advancedStatus', 'saved', 'ok');
-    renderAll();
-  }
-
-  async function saveGoogleBackend() {
-    state.providers = await api('api/providers', {
-      method: 'PUT',
-      body: JSON.stringify({google_backend: $('field-google-backend')?.value || 'auto'}),
-    });
-    setMessage('vertexStatus', 'backend saved', 'ok');
-    renderAll();
-  }
-
-  async function saveVertexCredentials() {
-    const value = $('vertexCredsInput')?.value || '';
-    state.providers = await api('api/providers', {
-      method: 'PUT',
-      body: JSON.stringify({vertex_credentials: value}),
-    });
-    if ($('vertexCredsInput')) $('vertexCredsInput').value = '';
-    setMessage('vertexStatus', 'credentials saved', 'ok');
-    renderAll();
-  }
-
-  async function clearVertexCredentials() {
-    state.providers = await api('api/providers', {
-      method: 'PUT',
-      body: JSON.stringify({vertex_credentials: ''}),
-    });
-    setMessage('vertexStatus', 'credentials cleared', 'ok');
-    renderAll();
-  }
-
   async function saveLocalEndpoint() {
     const payload = {
       endpoint_url: $('localEndpointUrl')?.value || '',
@@ -2508,11 +2428,6 @@
         refreshInstallStatus({autoResume: true}),
       ]).catch((err) => setMessage('localSetupMessage', err.message, 'error'));
     });
-    $('field-generate-provider')?.addEventListener('change', (event) => saveAdvanced('generate', 'provider', event.target.value).catch((err) => setMessage('advancedStatus', err.message, 'error')));
-    $('field-cogitate-provider')?.addEventListener('change', (event) => saveAdvanced('cogitate', 'provider', event.target.value).catch((err) => setMessage('advancedStatus', err.message, 'error')));
-    $('field-google-backend')?.addEventListener('change', () => saveGoogleBackend().catch((err) => setMessage('vertexStatus', err.message, 'error')));
-    $('vertexSave')?.addEventListener('click', () => saveVertexCredentials().catch((err) => setMessage('vertexStatus', err.message, 'error')));
-    $('vertexClear')?.addEventListener('click', () => clearVertexCredentials().catch((err) => setMessage('vertexStatus', err.message, 'error')));
     $('localEndpointSave')?.addEventListener('click', () => saveLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));
     $('localEndpointClear')?.addEventListener('click', () => clearLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));
     $('localEndpointClearFromLocal')?.addEventListener('click', () => clearLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));

@@ -1391,20 +1391,15 @@ def step_brain(ctx: SetupContext, step_index: int) -> StepResult:
         return step_result("brain", "skipped", [], started_at, reason=reason_malformed)
 
     providers = cfg.get("providers", {})
-    for agent_type in ("generate", "cogitate"):
-        if agent_type in providers and not isinstance(providers[agent_type], dict):
-            print_step_skipped(ctx, step_index, "brain", reason_malformed)
-            return step_result(
-                "brain", "skipped", [], started_at, reason=reason_malformed
-            )
+    active = providers.get("active")
+    if active is not None and not isinstance(active, dict):
+        print_step_skipped(ctx, step_index, "brain", reason_malformed)
+        return step_result("brain", "skipped", [], started_at, reason=reason_malformed)
 
-    generate = providers.get("generate", {})
-    cogitate = providers.get("cogitate", {})
-    owner_chose_other = any(
-        type_config.get("provider") is not None
-        and type_config.get("provider") != "local"
-        for type_config in (generate, cogitate)
-    )
+    owner_chose_other = isinstance(active, dict) and active.get("provider") not in {
+        None,
+        "local",
+    }
     if owner_chose_other:
         reason = "a provider is already configured"
         print_step_skipped(ctx, step_index, "brain", reason)
@@ -1414,15 +1409,12 @@ def step_brain(ctx: SetupContext, step_index: int) -> StepResult:
     if "providers" not in cfg:
         cfg["providers"] = providers
         changed = True
-    for agent_type in ("generate", "cogitate"):
-        type_config = providers.get(agent_type)
-        if type_config is None:
-            type_config = {}
-            providers[agent_type] = type_config
-            changed = True
-        if type_config.get("provider") != "local":
-            type_config["provider"] = "local"
-            changed = True
+    from solstone.think.models import LOCAL_MODEL
+
+    local_active = {"provider": "local", "model": LOCAL_MODEL}
+    if active != local_active:
+        providers["active"] = local_active
+        changed = True
     if changed:
         write_journal_config(cfg, ctx.journal_path)
 

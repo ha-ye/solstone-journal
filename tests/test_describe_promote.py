@@ -165,7 +165,7 @@ class FakeBatch:
             response=None,
             error=None,
             duration=0.01,
-            model_used=kwargs.get("model") or "",
+            model_used="gemini-test",
             provider=None,
             reason_code=None,
             reset_at_ms=None,

@@ -3,8 +3,9 @@
 
 """AI provider backends for think.
 
-This package contains provider-specific implementations for LLM generation
-and agent execution. Effective provider modules expose:
+This package exposes one OpenHands/LiteLLM cloud transport plus the local policy
+wrapper used for bundled and OpenAI-compatible endpoint execution. Effective
+provider modules expose:
 
 - run_generate(): Sync text generation, returns GenerateResult
 - run_agenerate(): Async text generation, returns GenerateResult
@@ -20,7 +21,6 @@ Available providers:
 - local: bundled llama-server or configured OpenAI-compatible endpoint
 """
 
-import shutil
 from importlib import import_module
 from types import ModuleType
 from typing import Any, Dict, List
@@ -53,10 +53,6 @@ PROVIDER_METADATA: Dict[str, Dict[str, Any]] = {
     "google": {
         "label": "Google (Gemini)",
         "env_key": "GOOGLE_API_KEY",
-        "vertex_env_keys": [
-            "GOOGLE_GENAI_USE_VERTEXAI",
-            "GOOGLE_APPLICATION_CREDENTIALS",
-        ],
     },
     "openai": {
         "label": "OpenAI (GPT)",
@@ -82,8 +78,7 @@ def managed_provider_env_keys() -> set[str]:
     journal config's ``env`` section is the authoritative and exclusive source — a
     managed key absent from journal config is stripped from ``os.environ`` at CLI
     startup (see :func:`solstone.think.utils.setup_cli`) so a shell-set value is
-    never used. Vertex/ADC auth vars (``vertex_env_keys``) are deliberately excluded:
-    they are file/ADC credentials a user may legitimately set in the shell.
+    never used.
     """
     return {m["env_key"] for m in PROVIDER_METADATA.values() if m.get("env_key")}
 
@@ -136,15 +131,12 @@ def get_provider_list() -> List[Dict[str, Any]]:
             "label": meta.get("label", name),
             "env_key": meta.get("env_key", ""),
         }
-        if "vertex_env_keys" in meta:
-            provider["vertex_env_keys"] = meta["vertex_env_keys"]
         providers.append(provider)
     return providers
 
 
 def build_provider_status(
     providers_list: List[Dict[str, Any]] | None = None,
-    vertex_creds_configured: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
     """Build per-provider readiness status.
 
@@ -152,9 +144,6 @@ def build_provider_status(
     ----------
     providers_list
         Output of get_provider_list().
-    vertex_creds_configured
-        Whether Vertex AI credentials are configured (for Google).
-
     Returns
     -------
     Dict[str, Dict[str, Any]]
@@ -164,78 +153,24 @@ def build_provider_status(
     if providers_list is None:
         providers_list = get_provider_list()
 
-    status = {}
+    status: dict[str, dict[str, Any]] = {}
     for provider in providers_list:
         from solstone.think.providers import state as provider_state
 
         name = provider["name"]
         env_key = provider.get("env_key", "")
-        meta = PROVIDER_METADATA.get(name, {})
-        cogitate_cli = meta.get("cogitate_cli", "")
-        issues: list[str] = []
-
         if name == "local":
             status[name] = provider_state.local_status_dict()
             continue
-        elif name in {"google", "anthropic", "openai"}:
-            configured = provider_state.cloud_key_configured(env_key)
-            status[name] = {
-                "provider": name,
-                "configured": configured,
-                "generate_ready": configured,
-                "cogitate_ready": configured,
-                "issues": [] if configured else [f"{env_key} not set"],
-            }
-            continue
-        else:
-            configured = provider_state.cloud_key_configured(env_key)
-            if not configured and env_key:
-                issues.append(f"{env_key} not set")
-
-        cogitate_cli_found = bool(shutil.which(cogitate_cli)) if cogitate_cli else False
-        if cogitate_cli and not cogitate_cli_found:
-            install_cmd = meta.get("cogitate_cli_install")
-            if install_cmd:
-                issues.append(
-                    f"{cogitate_cli} CLI not found on PATH — run: {install_cmd}"
-                )
-            else:
-                issues.append(f"{cogitate_cli} CLI not found on PATH")
-        cogitate_ready = configured and cogitate_cli_found
-
-        generate_ready = configured
-
+        configured = provider_state.cloud_key_configured(env_key)
         status[name] = {
+            "provider": name,
             "configured": configured,
-            "generate_ready": generate_ready,
-            "cogitate_ready": cogitate_ready,
-            "cogitate_cli": cogitate_cli,
-            "cogitate_cli_found": cogitate_cli_found,
-            "issues": issues,
+            "generate_ready": configured,
+            "cogitate_ready": configured,
+            "issues": [] if configured else [f"{env_key} not set"],
         }
     return status
-
-
-def get_provider_models(provider: str) -> list[dict]:
-    """Get available models for a provider.
-
-    Parameters
-    ----------
-    provider
-        Provider name (e.g., "google", "openai", "anthropic").
-
-    Returns
-    -------
-    list[dict]
-        List of raw model info objects returned by the provider API.
-
-    Raises
-    ------
-    ValueError
-        If the provider is not registered.
-    """
-    module = get_provider_module(provider)
-    return module.list_models(provider)
 
 
 def validate_key(provider: str, api_key: str) -> dict:
@@ -298,7 +233,6 @@ __all__ = [
     "get_provider_module",
     "get_provider_list",
     "build_provider_status",
-    "get_provider_models",
     "validate_key",
     "validate_model",
     "managed_provider_env_keys",

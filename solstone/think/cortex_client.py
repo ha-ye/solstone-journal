@@ -90,7 +90,6 @@ def _check_claimed(use_id: str, window: float) -> bool:
 def cortex_request(
     prompt: str,
     name: str,
-    provider: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
     use_id: Optional[str] = None,
     *,
@@ -101,8 +100,7 @@ def cortex_request(
     Args:
         prompt: The task or question for the talent
         name: Talent name - system (e.g., "chat") or app-qualified (e.g., "entities:entity_assist")
-        provider: AI provider - openai, google, or anthropic
-        config: Provider-specific configuration (model, max_output_tokens, thinking_budget, etc.)
+        config: Talent launch configuration (day, facet, output, etc.)
         use_id: Optional pre-reserved use_id. When omitted, a unique timestamp is allocated.
         claim_windows: Claim-wait schedule. Defaults to the fast-fail
             _DEFAULT_CLAIM_WINDOWS; the think orchestrator passes
@@ -147,7 +145,6 @@ def cortex_request(
         "ts": ts,
         "use_id": use_id,
         "prompt": prompt,
-        "provider": provider,
         "name": name,
     }
 

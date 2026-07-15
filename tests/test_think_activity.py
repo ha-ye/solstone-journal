@@ -1616,6 +1616,21 @@ def test_prepare_config_substitutes_facet_and_activity_md_dir_for_daily_cogitate
     )
 
     monkeypatch.setenv("GOOGLE_API_KEY", "x")
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "active": {
+                        "provider": "google",
+                        "model": "gemini-flash-latest",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
 
     config = mod.prepare_config(
         {

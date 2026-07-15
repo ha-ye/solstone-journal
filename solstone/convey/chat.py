@@ -995,7 +995,6 @@ def _spawn_chat_generate(action: dict[str, Any]) -> ChatSpawnResult:
         spawn_agent(
             prompt="",
             name="chat",
-            provider=None,
             config=config,
             use_id=action["raw_use_id"],
         )
@@ -1049,7 +1048,6 @@ def _spawn_talent(action: dict[str, Any]) -> bool:
         spawn_agent(
             prompt=prompt,
             name=spawn_name,
-            provider=None,
             config=config,
             use_id=action["use_id"],
         )

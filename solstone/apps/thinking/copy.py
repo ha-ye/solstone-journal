@@ -105,7 +105,6 @@ ACTIVE_LANE_LABELS = {
     "local": "local",
     "confidential": "confidential processing",
     "byo": "your own AI engine",
-    "advanced": "advanced split",
 }
 PROVIDER_LABELS = {
     "anthropic": "Claude",
@@ -122,7 +121,6 @@ STATE_LABELS = {
     "active": "active",
     "available": "available",
     "unavailable": "not ready",
-    "advanced": "split",
     "loading": "loading...",
     "saved": "saved",
     "validating": "validating...",

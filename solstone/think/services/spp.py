@@ -176,14 +176,6 @@ def _local_block(providers: dict[str, Any]) -> dict[str, Any]:
     return local
 
 
-def _type_block(providers: dict[str, Any], agent_type: str) -> dict[str, Any]:
-    block = providers.get(agent_type)
-    if not isinstance(block, dict):
-        block = {}
-        providers[agent_type] = block
-    return block
-
-
 def provision_confidential_handoff(payload: dict[str, Any]) -> None:
     """Persist a portal-provisioned confidential handoff into journal config."""
 
@@ -198,16 +190,15 @@ def provision_confidential_handoff(payload: dict[str, Any]) -> None:
         providers = _providers_block(config)
         local = _local_block(providers)
         prior_local = dict(local) if local else None
-        generate = _type_block(providers, "generate")
-        cogitate = _type_block(providers, "cogitate")
-        prior_generate_provider = generate.get("provider")
-        prior_cogitate_provider = cogitate.get("provider")
+        active = providers.get("active")
+        prior_active = dict(active) if isinstance(active, dict) and active else None
 
         local["endpoint_url"] = values["endpoint_url"]
         local["served_model_id"] = values["served_model_id"]
         local["credential"] = values["credential"]
-        generate["provider"] = "local"
-        cogitate["provider"] = "local"
+        from solstone.think.models import LOCAL_MODEL
+
+        providers["active"] = {"provider": "local", "model": LOCAL_MODEL}
         config.setdefault("services", {})["confidential"] = {
             "enabled_at": _now_iso(),
             "account_id": values["account_id"],
@@ -215,16 +206,7 @@ def provision_confidential_handoff(payload: dict[str, Any]) -> None:
             "served_model_id": values["served_model_id"],
             "credential_created_at": values["created_at"],
             CREDENTIAL_FINGERPRINT_FIELD: _fingerprint_key(values["credential"]),
-            "prior_generate_provider": (
-                prior_generate_provider
-                if isinstance(prior_generate_provider, str)
-                else None
-            ),
-            "prior_cogitate_provider": (
-                prior_cogitate_provider
-                if isinstance(prior_cogitate_provider, str)
-                else None
-            ),
+            "prior_active": prior_active,
             "prior_local_endpoint": prior_local,
         }
         write_journal_config(config)
@@ -246,17 +228,14 @@ def disable_confidential() -> DisableOutcome:
             return DisableOutcome(was_enabled=False, credential_preserved=False)
 
         providers = _providers_block(config)
-        generate = _type_block(providers, "generate")
-        cogitate = _type_block(providers, "cogitate")
-        for type_block, field in (
-            (generate, "prior_generate_provider"),
-            (cogitate, "prior_cogitate_provider"),
-        ):
-            prior_provider = block.get(field)
-            if isinstance(prior_provider, str) and prior_provider:
-                type_block["provider"] = prior_provider
+        from solstone.think.models import LOCAL_MODEL
+
+        if providers.get("active") == {"provider": "local", "model": LOCAL_MODEL}:
+            prior_active = block.get("prior_active")
+            if isinstance(prior_active, dict) and prior_active:
+                providers["active"] = dict(prior_active)
             else:
-                type_block.pop("provider", None)
+                providers.pop("active", None)
 
         local = _local_block(providers)
         current_credential = local.get("credential")

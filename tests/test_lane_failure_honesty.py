@@ -17,8 +17,6 @@ from solstone.think import models
 from solstone.think.journal_config import write_journal_config
 from solstone.think.models import (
     CLAUDE_SONNET_4,
-    GEMINI_FLASH,
-    GPT_5_MINI,
     LOCAL_MODEL,
     IncompleteJSONError,
     resolve_provider,
@@ -86,17 +84,12 @@ def _write_test_config(
     interface: str = "generate",
     env: dict[str, str] | None = None,
     local_endpoint: dict[str, Any] | None = None,
-    legacy: bool = True,
 ) -> dict[str, Any]:
-    section: dict[str, Any] = {"provider": provider, "model": model}
-    if legacy:
-        section.update(
-            {"tier": 1, "backup": "google" if provider != "google" else "openai"}
-        )
+    del interface
     config: dict[str, Any] = {
         "env": env or {},
         "providers": {
-            interface: section,
+            "active": {"provider": provider, "model": model},
         },
     }
     if local_endpoint is not None:
@@ -163,18 +156,59 @@ def _install_generate_probe(
 ) -> LaneProbe:
     observations: list[CallObservation] = []
     counts: dict[str, int] = {}
-    providers = [*CLOUD_PROVIDERS]
-    if patch_local:
-        providers.append("local")
 
-    def make_sync(provider: str) -> Callable[..., dict[str, Any]]:
-        def fake_run_generate(
+    def fake_cloud_generate(
+        contents: Any, model: str, *, provider: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        del contents
+        observations.append(
+            CallObservation(
+                target="solstone.think.providers.openhands",
+                method="generate",
+                provider=provider,
+                model=model,
+                kwargs=dict(kwargs),
+            )
+        )
+        if provider != active_provider:
+            raise AssertionError(f"inactive provider dispatched: {provider}")
+        counts[provider] = counts.get(provider, 0) + 1
+        if active is not None:
+            return active(counts[provider], kwargs)
+        return _result()
+
+    async def fake_cloud_agenerate(
+        contents: Any, model: str, *, provider: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        del contents
+        observations.append(
+            CallObservation(
+                target="solstone.think.providers.openhands",
+                method="agenerate",
+                provider=provider,
+                model=model,
+                kwargs=dict(kwargs),
+            )
+        )
+        raise AssertionError(f"async generate path dispatched: {provider}")
+
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_generate", fake_cloud_generate
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_agenerate", fake_cloud_agenerate
+    )
+
+    if patch_local:
+
+        def fake_local_generate(
             contents: Any, model: str, **kwargs: Any
         ) -> dict[str, Any]:
             del contents
+            provider = "local"
             observations.append(
                 CallObservation(
-                    target=f"solstone.think.providers.{provider}",
+                    target="solstone.think.providers.local",
                     method="generate",
                     provider=provider,
                     model=model,
@@ -188,10 +222,7 @@ def _install_generate_probe(
                 return active(counts[provider], kwargs)
             return _result()
 
-        return fake_run_generate
-
-    def make_async(provider: str) -> Callable[..., Any]:
-        async def fake_run_agenerate(
+        async def fake_local_agenerate(
             contents: Any,
             model: str,
             **kwargs: Any,
@@ -199,25 +230,20 @@ def _install_generate_probe(
             del contents
             observations.append(
                 CallObservation(
-                    target=f"solstone.think.providers.{provider}",
+                    target="solstone.think.providers.local",
                     method="agenerate",
-                    provider=provider,
+                    provider="local",
                     model=model,
                     kwargs=dict(kwargs),
                 )
             )
-            raise AssertionError(f"async generate path dispatched: {provider}")
+            raise AssertionError("async generate path dispatched: local")
 
-        return fake_run_agenerate
-
-    for provider in providers:
         monkeypatch.setattr(
-            f"solstone.think.providers.{provider}.run_generate",
-            make_sync(provider),
+            "solstone.think.providers.local.run_generate", fake_local_generate
         )
         monkeypatch.setattr(
-            f"solstone.think.providers.{provider}.run_agenerate",
-            make_async(provider),
+            "solstone.think.providers.local.run_agenerate", fake_local_agenerate
         )
     return LaneProbe(observations)
 
@@ -225,53 +251,42 @@ def _install_generate_probe(
 def _install_cloud_generate_tripwires(monkeypatch: pytest.MonkeyPatch) -> LaneProbe:
     observations: list[CallObservation] = []
 
-    def make_sync(provider: str) -> Callable[..., dict[str, Any]]:
-        def fake_run_generate(
-            contents: Any, model: str, **kwargs: Any
-        ) -> dict[str, Any]:
-            del contents
-            observations.append(
-                CallObservation(
-                    target=f"solstone.think.providers.{provider}",
-                    method="generate",
-                    provider=provider,
-                    model=model,
-                    kwargs=dict(kwargs),
-                )
+    def fake_run_generate(
+        contents: Any, model: str, *, provider: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        del contents
+        observations.append(
+            CallObservation(
+                target="solstone.think.providers.openhands",
+                method="generate",
+                provider=provider,
+                model=model,
+                kwargs=dict(kwargs),
             )
-            raise AssertionError(f"cloud provider dispatched: {provider}")
+        )
+        raise AssertionError(f"cloud provider dispatched: {provider}")
 
-        return fake_run_generate
-
-    def make_async(provider: str) -> Callable[..., Any]:
-        async def fake_run_agenerate(
-            contents: Any,
-            model: str,
-            **kwargs: Any,
-        ) -> dict[str, Any]:
-            del contents
-            observations.append(
-                CallObservation(
-                    target=f"solstone.think.providers.{provider}",
-                    method="agenerate",
-                    provider=provider,
-                    model=model,
-                    kwargs=dict(kwargs),
-                )
+    async def fake_run_agenerate(
+        contents: Any, model: str, *, provider: str, **kwargs: Any
+    ) -> dict[str, Any]:
+        del contents
+        observations.append(
+            CallObservation(
+                target="solstone.think.providers.openhands",
+                method="agenerate",
+                provider=provider,
+                model=model,
+                kwargs=dict(kwargs),
             )
-            raise AssertionError(f"async cloud provider dispatched: {provider}")
-
-        return fake_run_agenerate
-
-    for provider in CLOUD_PROVIDERS:
-        monkeypatch.setattr(
-            f"solstone.think.providers.{provider}.run_generate",
-            make_sync(provider),
         )
-        monkeypatch.setattr(
-            f"solstone.think.providers.{provider}.run_agenerate",
-            make_async(provider),
-        )
+        raise AssertionError(f"async cloud provider dispatched: {provider}")
+
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_generate", fake_run_generate
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.openhands.run_agenerate", fake_run_agenerate
+    )
     return LaneProbe(observations)
 
 
@@ -943,172 +958,3 @@ async def test_attempted_failed_segment_remains_repair_selectable(
         "complete": 0,
         "raw_blocked": 0,
     }
-
-
-@pytest.mark.parametrize(
-    (
-        "legacy_config",
-        "modern_config",
-        "interface",
-        "expected_provider",
-        "expected_model",
-    ),
-    [
-        (
-            {
-                "env": {
-                    "ANTHROPIC_API_KEY": "test-anthropic-key",
-                    "GOOGLE_API_KEY": "test-google-key",
-                },
-                "providers": {
-                    "generate": {
-                        "provider": "anthropic",
-                        "model": CLAUDE_SONNET_4,
-                        "tier": 1,
-                        "backup": "google",
-                    },
-                    "contexts": {
-                        "talent.system.test_generator": {
-                            "provider": "google",
-                            "model": GEMINI_FLASH,
-                            "tier": 3,
-                        }
-                    },
-                    "models": {"google": {"1": "legacy-gemini-pro"}},
-                },
-            },
-            {
-                "env": {
-                    "ANTHROPIC_API_KEY": "test-anthropic-key",
-                    "GOOGLE_API_KEY": "test-google-key",
-                },
-                "providers": {
-                    "generate": {
-                        "provider": "anthropic",
-                        "model": CLAUDE_SONNET_4,
-                    }
-                },
-            },
-            "generate",
-            "anthropic",
-            CLAUDE_SONNET_4,
-        ),
-        (
-            {
-                "env": {"GOOGLE_API_KEY": "test-google-key"},
-                "providers": {
-                    "generate": {
-                        "model": "gemini-custom-flash-test",
-                        "tier": 2,
-                        "backup": "anthropic",
-                    },
-                    "contexts": {
-                        "talent.system.test_generator": {
-                            "provider": "anthropic",
-                            "model": CLAUDE_SONNET_4,
-                        }
-                    },
-                    "models": {"anthropic": {"2": "claude-legacy"}},
-                },
-            },
-            {
-                "env": {"GOOGLE_API_KEY": "test-google-key"},
-                "providers": {
-                    "generate": {
-                        "model": "gemini-custom-flash-test",
-                    }
-                },
-            },
-            "generate",
-            "google",
-            "gemini-custom-flash-test",
-        ),
-        (
-            {
-                "env": {"GOOGLE_API_KEY": "test-google-key"},
-                "providers": {
-                    "generate": {
-                        "provider": "local",
-                        "tier": 3,
-                        "backup": "google",
-                    },
-                    "contexts": {
-                        "talent.system.test_generator": {
-                            "provider": "google",
-                            "model": GEMINI_FLASH,
-                        }
-                    },
-                    "models": {"local": {"1": "legacy-local-pro"}},
-                },
-            },
-            {
-                "env": {"GOOGLE_API_KEY": "test-google-key"},
-                "providers": {"generate": {"provider": "local"}},
-            },
-            "generate",
-            "local",
-            LOCAL_MODEL,
-        ),
-        (
-            {
-                "env": {
-                    "OPENAI_API_KEY": "test-openai-key",
-                    "ANTHROPIC_API_KEY": "test-anthropic-key",
-                },
-                "providers": {
-                    "cogitate": {
-                        "provider": "openai",
-                        "model": GPT_5_MINI,
-                        "tier": 1,
-                        "backup": "anthropic",
-                    },
-                    "contexts": {
-                        "talent.system.test_agent": {
-                            "provider": "anthropic",
-                            "model": CLAUDE_SONNET_4,
-                            "tier": 1,
-                        }
-                    },
-                    "models": {"openai": {"1": "legacy-gpt-pro"}},
-                },
-            },
-            {
-                "env": {"OPENAI_API_KEY": "test-openai-key"},
-                "providers": {
-                    "cogitate": {
-                        "provider": "openai",
-                        "model": GPT_5_MINI,
-                    }
-                },
-            },
-            "cogitate",
-            "openai",
-            GPT_5_MINI,
-        ),
-    ],
-)
-def test_grandfathered_legacy_provider_keys_are_inert_for_routing(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    legacy_config: dict[str, Any],
-    modern_config: dict[str, Any],
-    interface: str,
-    expected_provider: str,
-    expected_model: str,
-):
-    _clear_provider_env(monkeypatch)
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-
-    write_journal_config(legacy_config, tmp_path)
-    assert resolve_provider(interface) == (expected_provider, expected_model)
-    legacy_roundtrip = json.loads(
-        (tmp_path / "config" / "journal.json").read_text(encoding="utf-8")
-    )
-    write_journal_config(legacy_roundtrip, tmp_path)
-    assert (
-        json.loads((tmp_path / "config" / "journal.json").read_text(encoding="utf-8"))
-        == legacy_config
-    )
-
-    write_journal_config(modern_config, tmp_path)
-    assert resolve_provider(interface) == (expected_provider, expected_model)

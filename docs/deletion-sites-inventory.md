@@ -113,13 +113,6 @@ Out of scope for this sweep; keep visible because it is a destructive journal-do
 | `solstone/apps/import/call.py:401,437,452` | staged entity review file | merge/create/skip entity review resolution | `staged_path` must exist under `state_dir/entities/staged` | yes (`solstone/apps/import/call.py:402-463`) | no | `⚠️` | review-state cleanup after explicit operator resolution |
 | `solstone/apps/import/call.py:507,583,605` | staged facet review file | skip/apply facet review resolution | `staged_path` must exist under `state_dir/facets/staged` | yes (`solstone/apps/import/call.py:508-615`) | no | `⚠️` | review-state cleanup after explicit operator resolution |
 
-## solstone/apps/settings
-
-| file:line | target | trigger | path validation | audit log | dry-run | class | why |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `solstone/apps/settings/routes.py:878` | canonical `journal/.config/vertex-credentials.json` | provider update clears Vertex credentials | stored path must resolve to the canonical credential path before unlink | yes (`solstone/apps/settings/routes.py:892-899`) | no | `⚠️` | config artifact cleanup with a canonical-path guard |
-| `solstone/apps/settings/call.py:511` | canonical `journal/.config/vertex-credentials.json` | `sol call settings vertex clear` | stored path must resolve to the canonical credential path before unlink | no | no | `⚠️` | CLI config cleanup outside the journal-domain sweep |
-
 ## solstone/apps/support
 
 | file:line | target | trigger | path validation | audit log | dry-run | class | why |

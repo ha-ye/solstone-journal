@@ -1109,140 +1109,6 @@ input:checked + .slider:before {
   text-decoration: underline;
 }
 
-.provider-card {
-  border: 1px solid var(--facet-border, #e5e0db);
-  border-radius: 8px;
-  padding: 0.85em;
-  background: #fff;
-}
-
-.provider-card__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75em;
-  margin-bottom: 0.65em;
-}
-
-.provider-card__title {
-  font-weight: 600;
-  color: #333;
-}
-
-.provider-card__pills {
-  display: flex;
-  gap: 0.4em;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-}
-
-.provider-card__badge,
-.provider-card__key-pill {
-  border-radius: 999px;
-  padding: 0.2em 0.55em;
-  font-size: 0.75em;
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-.provider-card__badge[data-tone="ok"],
-.provider-card__key-pill[data-tone="ok"] {
-  background: #dcfce7;
-  color: #166534;
-}
-
-.provider-card__badge[data-tone="progress"],
-.provider-card__badge[data-tone="warn"],
-.provider-card__key-pill[data-tone="progress"],
-.provider-card__key-pill[data-tone="warn"] {
-  background: #fef3c7;
-  color: #92400e;
-}
-
-.provider-card__badge[data-tone="error"],
-.provider-card__key-pill[data-tone="error"] {
-  background: #fee2e2;
-  color: #991b1b;
-}
-
-.provider-card__badge[data-tone="muted"],
-.provider-card__key-pill[data-tone="muted"] {
-  background: #f3f4f6;
-  color: #374151;
-}
-
-.provider-card__meta {
-  display: grid;
-  gap: 0.25em;
-  color: #666;
-  font-size: 0.85em;
-  margin-bottom: 0.75em;
-}
-
-.provider-card__bytes,
-.provider-card__issue {
-  color: #666;
-  font-size: 0.85em;
-  margin-bottom: 0.75em;
-}
-
-.provider-card__issue {
-  color: #856404;
-}
-
-.provider-card__actions {
-  display: flex;
-  align-items: center;
-  gap: 0.5em;
-  flex-wrap: wrap;
-}
-
-.provider-card__actions button,
-.provider-card__menu button {
-  border: 1px solid #d1d5db;
-  background: white;
-  color: #374151;
-  border-radius: 6px;
-  padding: 0.4em 0.75em;
-  font-size: 0.85em;
-  cursor: pointer;
-}
-
-.provider-card__actions button:disabled {
-  color: #999;
-  cursor: default;
-}
-
-.provider-card__menu {
-  position: relative;
-}
-
-.provider-card__menu summary {
-  cursor: pointer;
-  color: #555;
-  font-size: 0.9em;
-}
-
-.provider-card__menu-body {
-  display: grid;
-  gap: 0.35em;
-  position: absolute;
-  right: 0;
-  top: 1.5em;
-  min-width: 8em;
-  padding: 0.45em;
-  border: 1px solid var(--facet-border, #e5e0db);
-  border-radius: 8px;
-  background: #fff;
-  z-index: 3;
-  box-shadow: 0 6px 18px rgba(0,0,0,0.12);
-}
-
-.provider-model-row {
-  align-items: flex-start;
-  margin-top: -0.25em;
-}
-
 /* Backend settings fieldsets */
 .backend-settings {
   border: none;
@@ -2590,7 +2456,7 @@ button:focus:not(:focus-visible) {
         <p class="settings-field-note">
           Gemini combines transcription and enrichment in a single API call, providing
           speaker diarization, emotion detection, and topic extraction automatically.
-          Model selection is handled by the provider settings.
+          Model selection is handled in Thinking.
         </p>
       </fieldset>
 
@@ -3403,7 +3269,7 @@ let solVoiceCategories = [];
 // Reusable per-tab attention indicator. Any tab can opt in by calling
 // setTabAttention('<section>', true) when its content has a problem the
 // user should notice (incompatible backend on the transcription tab,
-// missing API key referenced from the providers tab, etc.) and
+// missing service token referenced by a backend, etc.) and
 // setTabAttention('<section>', false) once the issue clears. Implemented
 // by toggling data-attention on the <button id="tab-{section}"> in the
 // nav; the CSS rule on .settings-nav-item[data-attention="true"]::after
@@ -3922,9 +3788,9 @@ function updateEnvStatus(fieldId, isJournalConfigured, isSystemConfigured) {
       label.appendChild(status);
     }
 
-    // Add validation status for provider keys
+    // Add validation status for transcription/import service tokens.
     const providerName = fieldId.replace('field-env-', '');
-    if (['google', 'openai', 'anthropic', 'revai', 'plaud'].includes(providerName)) {
+    if (['revai', 'plaud'].includes(providerName)) {
       const validation = keyValidationData[providerName];
       const oldValidation = label.querySelector('.key-validation-status');
       if (oldValidation) oldValidation.remove();
@@ -3934,11 +3800,7 @@ function updateEnvStatus(fieldId, isJournalConfigured, isSystemConfigured) {
         validationSpan.className = 'key-validation-status';
         if (validation.valid) {
           validationSpan.className += ' key-status-valid';
-          let validText = ' ✓ Valid';
-          if (providerName === 'google' && validation.backend) {
-            validText += validation.backend === 'vertex' ? ' (Vertex AI)' : ' (AI Studio)';
-          }
-          validationSpan.textContent = validText;
+          validationSpan.textContent = ' ✓ Valid';
         } else {
           validationSpan.className += ' key-status-invalid';
           const errMsg = validation.error || 'Invalid';

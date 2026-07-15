@@ -18,8 +18,6 @@ Example:
     async for req in batch.drain_batch():
         print(f"{req.my_id}: {req.response}")
 
-Provider-specific features:
-    - client: Optional client for connection reuse (Google only, others use singletons)
 """
 
 import asyncio
@@ -53,7 +51,6 @@ class BatchRequest:
         self,
         contents: Union[str, List[Any]],
         context: str,
-        model: Optional[str] = None,
         temperature: float = 0.3,
         max_output_tokens: int = 8192 * 2,
         system_instruction: Optional[str] = None,
@@ -64,7 +61,6 @@ class BatchRequest:
     ):
         self.contents = contents
         self.context = context
-        self.model = model
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self.system_instruction = system_instruction
@@ -77,7 +73,7 @@ class BatchRequest:
         self.response: Optional[str] = None
         self.error: Optional[str] = None
         self.duration: float = 0.0
-        self.model_used: str = model or ""
+        self.model_used: str = ""
         self.reason_code: Optional[str] = None
         self.provider: Optional[str] = None
         self.reset_at_ms: Optional[int] = None
@@ -107,7 +103,7 @@ class Batch:
             print(f"{req.task_id}: {req.response}")
     """
 
-    def __init__(self, max_concurrent: int = 5, client: Any = None):
+    def __init__(self, max_concurrent: int = 5):
         """
         Initialize batch processor.
 
@@ -115,13 +111,8 @@ class Batch:
         ----------
         max_concurrent : int
             Maximum number of concurrent API requests (default: 5)
-        client : Any, optional
-            Provider client for connection reuse. Passed through to backend.
-            Google: genai.Client instance for connection pooling
-            Other providers: Ignored (they use internal singletons)
         """
         self.max_concurrent = max_concurrent
-        self.client = client
         self.semaphore = asyncio.Semaphore(max_concurrent)
         self.result_queue: asyncio.Queue = asyncio.Queue()
         self.pending_tasks: set = set()
@@ -130,7 +121,6 @@ class Batch:
         self,
         contents: Union[str, List[Any]],
         context: str,
-        model: Optional[str] = None,
         temperature: float = 0.3,
         max_output_tokens: int = 8192 * 2,
         system_instruction: Optional[str] = None,
@@ -151,9 +141,6 @@ class Batch:
             The content to send to the model
         context : str
             Context string for provider routing (e.g., "observe.describe.frame")
-        model : str, optional
-            Model override. If not provided, resolved from context.
-
         Returns
         -------
         BatchRequest
@@ -162,7 +149,6 @@ class Batch:
         return BatchRequest(
             contents=contents,
             context=context,
-            model=model,
             temperature=temperature,
             max_output_tokens=max_output_tokens,
             system_instruction=system_instruction,
@@ -263,13 +249,6 @@ class Batch:
         start_time = time.time()
         try:
             async with self.semaphore:
-                # Build kwargs for provider-specific options
-                kwargs: dict = {}
-                if self.client is not None:
-                    kwargs["client"] = self.client
-                if request.model is not None:
-                    kwargs["model"] = request.model
-
                 result = await agenerate_with_result(
                     contents=request.contents,
                     context=request.context,
@@ -280,7 +259,6 @@ class Batch:
                     json_schema=request.json_schema,
                     thinking_budget=request.thinking_budget,
                     timeout_s=request.timeout_s,
-                    **kwargs,
                 )
                 error = finish_reason_error(
                     result,
@@ -298,13 +276,7 @@ class Batch:
                 request.response = result["text"]
                 request.error = None
 
-                # Track which model was actually used
-                if request.model:
-                    request.model_used = request.model
-                else:
-                    # Model was resolved from context - we don't have easy access
-                    # to what was resolved, so leave as empty string
-                    pass
+                request.model_used = str(result.get("model") or "")
         except Exception as e:
             request.duration = time.time() - start_time
             request.response = None

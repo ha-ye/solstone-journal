@@ -825,9 +825,13 @@ def test_local_readiness_byo_unreachable(monkeypatch):
 @pytest.mark.parametrize(
     ("selected_config", "reachable", "expected_issues"),
     [
-        ({"providers": {"generate": {"provider": "local"}}}, True, []),
         (
-            {"providers": {"generate": {"provider": "google"}}},
+            {"providers": {"active": {"provider": "local", "model": "local/test"}}},
+            True,
+            [],
+        ),
+        (
+            {"providers": {"active": {"provider": "google", "model": "gemini-test"}}},
             False,
             ["local_endpoint_unreachable"],
         ),
@@ -855,7 +859,7 @@ def test_local_status_dict_byo(
 
     assert status == {
         "configured": True,
-        "selected": selected_config["providers"]["generate"]["provider"] == "local",
+        "selected": selected_config["providers"]["active"]["provider"] == "local",
         "generate_ready": reachable,
         "cogitate_ready": reachable,
         "cogitate_cli": None,

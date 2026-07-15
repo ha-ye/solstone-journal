@@ -47,6 +47,19 @@ def _write_config(journal: Path, config: dict) -> None:
     write_journal_config(config, journal)
 
 
+@pytest.fixture(autouse=True)
+def _canonical_active_profile(journal_copy: Path) -> None:
+    config = _read_config(journal_copy)
+    providers = config.setdefault("providers", {})
+    providers.pop("generate", None)
+    providers.pop("cogitate", None)
+    providers["active"] = {
+        "provider": "google",
+        "model": "gemini-custom-flash-test",
+    }
+    _write_config(journal_copy, config)
+
+
 def test_confidential_provenance_delegates_to_config_helper(
     journal_copy: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -68,8 +81,10 @@ def test_provision_confidential_handoff_round_trip_writes_single_state(
     journal_copy: Path,
 ) -> None:
     config = _read_config(journal_copy)
-    config["providers"]["generate"]["model"] = "keep-generate-model"
-    config["providers"]["cogitate"]["model"] = "keep-cogitate-model"
+    config["providers"]["active"] = {
+        "provider": "openai",
+        "model": "keep-active-model",
+    }
     config["providers"]["local"] = {
         "endpoint_url": "http://prior.test/v1",
         "served_model_id": "prior-model",
@@ -85,13 +100,9 @@ def test_provision_confidential_handoff_round_trip_writes_single_state(
         "served_model_id": "confidential-model-one",
         "credential": "credential-one",
     }
-    assert saved["providers"]["generate"] == {
+    assert saved["providers"]["active"] == {
         "provider": "local",
-        "model": "keep-generate-model",
-    }
-    assert saved["providers"]["cogitate"] == {
-        "provider": "local",
-        "model": "keep-cogitate-model",
+        "model": "local/qwen3.5-4b",
     }
     block = saved["services"]["confidential"]
     assert set(block) == {
@@ -101,8 +112,7 @@ def test_provision_confidential_handoff_round_trip_writes_single_state(
         "served_model_id",
         "credential_created_at",
         CREDENTIAL_FINGERPRINT_FIELD,
-        "prior_generate_provider",
-        "prior_cogitate_provider",
+        "prior_active",
         "prior_local_endpoint",
     }
     assert block["account_id"] == "acct-one"
@@ -113,8 +123,10 @@ def test_provision_confidential_handoff_round_trip_writes_single_state(
         block[CREDENTIAL_FINGERPRINT_FIELD]
         == hashlib.sha256(b"credential-one").hexdigest()
     )
-    assert block["prior_generate_provider"] == "google"
-    assert block["prior_cogitate_provider"] == "openai"
+    assert block["prior_active"] == {
+        "provider": "openai",
+        "model": "keep-active-model",
+    }
     assert block["prior_local_endpoint"] == {
         "endpoint_url": "http://prior.test/v1",
         "served_model_id": "prior-model",
@@ -210,8 +222,10 @@ def test_disable_confidential_restores_prior_state_on_fingerprint_match(
 
     assert outcome == DisableOutcome(was_enabled=True, credential_preserved=False)
     saved = _read_config(journal_copy)
-    assert saved["providers"]["generate"]["provider"] == "google"
-    assert saved["providers"]["cogitate"]["provider"] == "openai"
+    assert saved["providers"]["active"] == {
+        "provider": "google",
+        "model": "gemini-custom-flash-test",
+    }
     assert saved["providers"]["local"] == {
         "endpoint_url": "http://prior.test",
         "served_model_id": "prior-model",
@@ -277,8 +291,10 @@ def test_disable_confidential_preserves_local_endpoint_when_current_credential_m
 
     assert outcome == DisableOutcome(was_enabled=True, credential_preserved=True)
     saved = _read_config(journal_copy)
-    assert saved["providers"]["generate"]["provider"] == "google"
-    assert saved["providers"]["cogitate"]["provider"] == "openai"
+    assert saved["providers"]["active"] == {
+        "provider": "google",
+        "model": "gemini-custom-flash-test",
+    }
     assert saved["providers"]["local"] == local
     assert "confidential" not in saved["services"]
 
@@ -305,8 +321,10 @@ def test_reenable_after_disable_lands_cleanly(journal_copy: Path) -> None:
     assert (
         saved["providers"]["local"]["endpoint_url"] == "https://spp-second.example.test"
     )
-    assert saved["services"]["confidential"]["prior_generate_provider"] == "google"
-    assert saved["services"]["confidential"]["prior_cogitate_provider"] == "openai"
+    assert saved["services"]["confidential"]["prior_active"] == {
+        "provider": "google",
+        "model": "gemini-custom-flash-test",
+    }
 
 
 def test_locked_parallel_writes_do_not_corrupt_config(journal_copy: Path) -> None:
@@ -361,7 +379,8 @@ def test_provision_requires_initialized_journal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     journal = tmp_path / "journal"
-    (journal / "config").mkdir(parents=True)
+    (journal / "config").mkdir(parents=True, exist_ok=True)
+    (journal / "config" / "journal.json").unlink(missing_ok=True)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
 
     with pytest.raises(JournalNotInitializedError):

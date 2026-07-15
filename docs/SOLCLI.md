@@ -430,7 +430,7 @@ solstone/
 | `transcripts` | `solstone/apps/transcripts/call.py` | list, read, segments |
 | `support` | `solstone/apps/support/call.py` | register, search, article, create, list, show, reply, attach, feedback, announcements, diagnose |
 | `sol` | `solstone/apps/sol/call.py` | set-name, reset, set-owner, sol-init |
-| `settings` | `solstone/apps/settings/call.py` | keys (show/set/delete), providers show, provider selection, vertex service-account. Provider install moved to `journal install-provider local`. |
+| `settings` | `solstone/apps/settings/call.py` | personal service keys (show/set/delete). Thinking provider selection lives in the Thinking app; local provider install lives at `journal install-provider local`. |
 | `awareness` | `solstone/apps/awareness/call.py` | status, imports, log, log-read |
 | `journal` | `solstone/think/tools/call.py` | search, events, facets, facet (show/create/update/rename/mute/unmute/delete/merge), news, agents, read, imports, import, retention purge, storage-summary |
 

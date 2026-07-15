@@ -6,6 +6,10 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ## [Unreleased]
 
+### Changed
+
+- thinking now has one active brain for every task: bundled local by default, a personal OpenAI, Anthropic, or Google AI Studio key, or an owner-supplied OpenAI-compatible endpoint. legacy split lanes, tier and talent routing, Vertex support, and duplicate cloud-provider adapters have been removed.
+
 ## [0.8.7] - 2026-07-15
 
 ### Added

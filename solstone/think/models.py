@@ -154,7 +154,6 @@ def model_supports(model: str, param: str) -> bool:
 
 
 NO_BRAIN_PROVIDER = "none"
-IMPLICIT_CLOUD_PROVIDER_ORDER = ("google", "anthropic", "openai")
 DEFAULT_MODEL_BY_PROVIDER: dict[str, str] = {
     "google": GEMINI_FLASH,
     "openai": GPT_5_MINI,
@@ -461,38 +460,6 @@ def get_context_registry() -> Dict[str, Dict[str, Any]]:
     return _context_registry
 
 
-def _resolve_default_provider(
-    providers: dict[str, Any],
-    agent_type: str,
-    *,
-    local_ready: bool | None = None,
-) -> str:
-    type_config = providers.get(agent_type, {}) if isinstance(providers, dict) else {}
-    if not isinstance(type_config, dict):
-        type_config = {}
-
-    explicit_provider = type_config.get("provider")
-    if isinstance(explicit_provider, str) and explicit_provider:
-        return explicit_provider
-
-    from solstone.think.providers import PROVIDER_METADATA
-    from solstone.think.providers.state import (
-        cloud_key_configured,
-        local_runtime_ready,
-    )
-
-    for provider in IMPLICIT_CLOUD_PROVIDER_ORDER:
-        env_key = PROVIDER_METADATA[provider]["env_key"]
-        if cloud_key_configured(env_key):
-            return provider
-
-    if local_ready is None:
-        local_ready = local_runtime_ready()
-    if local_ready:
-        return "local"
-    return NO_BRAIN_PROVIDER
-
-
 def default_model_for_provider(provider: str) -> str:
     """Return the single default model for a provider."""
     if provider == NO_BRAIN_PROVIDER:
@@ -504,27 +471,28 @@ def default_model_for_provider(provider: str) -> str:
 
 
 def resolve_provider(agent_type: str) -> tuple[str, str]:
-    """Resolve the active provider and model for an interface.
+    """Resolve the journal's one active thinking provider and model.
 
-    Precedence is explicit per-interface provider, configured cloud-key
-    presence in the grandfathered google -> anthropic -> openai order, local
-    runtime readiness, then NO_BRAIN_PROVIDER. Contexts, tiers, backups, and
-    providers.models overrides are intentionally ignored.
+    ``agent_type`` identifies the runtime interface for callers and diagnostics;
+    both generate and cogitate intentionally use the same active brain.
     """
+    if agent_type not in {"generate", "cogitate"}:
+        raise ValueError(f"Unknown thinking interface: {agent_type!r}")
     config = get_config()
     providers = config.get("providers", {})
     if not isinstance(providers, dict):
         providers = {}
 
-    type_config = providers.get(agent_type, {})
-    if not isinstance(type_config, dict):
-        type_config = {}
-
-    provider = _resolve_default_provider(providers, agent_type)
+    active = providers.get("active", {})
+    if not isinstance(active, dict):
+        active = {}
+    provider = active.get("provider")
+    if not isinstance(provider, str) or not provider:
+        provider = NO_BRAIN_PROVIDER
     if provider == NO_BRAIN_PROVIDER:
         return (NO_BRAIN_PROVIDER, "")
 
-    explicit_model = type_config.get("model")
+    explicit_model = active.get("model")
     if isinstance(explicit_model, str) and explicit_model.strip():
         return (provider, explicit_model.strip())
     return (provider, default_model_for_provider(provider))
@@ -548,53 +516,37 @@ def resolve_effective_route(context: str) -> tuple[str, str, str]:
 
 
 def is_local_provider_needed(config: dict[str, Any] | None = None) -> bool:
-    """Return True when journal provider config selects local anywhere."""
+    """Return True when the journal's active thinking provider is local."""
     journal_config = config if config is not None else get_config()
     providers = journal_config.get("providers", {})
     if not isinstance(providers, dict):
         return False
-
-    for agent_type in ("generate", "cogitate"):
-        type_config = providers.get(agent_type, {})
-        if isinstance(type_config, dict) and type_config.get("provider") == "local":
-            return True
-
-    from solstone.think.providers.state import local_runtime_ready
-
-    local_ready = local_runtime_ready()
-    return any(
-        _resolve_default_provider(providers, agent_type, local_ready=local_ready)
-        == "local"
-        for agent_type in ("generate", "cogitate")
-    )
+    active = providers.get("active", {})
+    return isinstance(active, dict) and active.get("provider") == "local"
 
 
 def no_thinking_engine_chosen(config: dict[str, Any] | None = None) -> bool:
-    """Return True when neither default thinking interface has an engine."""
+    """Return True when the journal has no active thinking engine."""
     journal_config = config if config is not None else get_config()
     providers = journal_config.get("providers", {})
     if not isinstance(providers, dict):
         providers = {}
-    from solstone.think.providers.state import local_runtime_ready
-
-    local_ready = local_runtime_ready()
-    return all(
-        _resolve_default_provider(providers, agent_type, local_ready=local_ready)
-        == NO_BRAIN_PROVIDER
-        for agent_type in ("generate", "cogitate")
-    )
+    active = providers.get("active", {})
+    return not isinstance(active, dict) or not active.get("provider")
 
 
 def type_default_is_local(
     agent_type: str, config: dict[str, Any] | None = None
 ) -> bool:
-    """Return True when the explicit per-type provider for agent_type is local."""
+    """Return True when the active brain is local for this runtime interface."""
+    if agent_type not in {"generate", "cogitate"}:
+        raise ValueError(f"Unknown thinking interface: {agent_type!r}")
     journal_config = config if config is not None else get_config()
     providers = journal_config.get("providers", {})
     if not isinstance(providers, dict):
         return False
-    type_config = providers.get(agent_type, {})
-    return isinstance(type_config, dict) and type_config.get("provider") == "local"
+    active = providers.get("active", {})
+    return isinstance(active, dict) and active.get("provider") == "local"
 
 
 def log_token_usage(
@@ -701,24 +653,6 @@ def log_token_usage(
 
     except Exception:
         logger.warning("failed to log token usage", exc_info=True)
-
-
-_CLOUD_MODEL_FAMILIES = {"openai", "google", "anthropic"}
-
-
-def _reject_local_cloud_model_override(
-    provider: str, model_override: str | None
-) -> None:
-    """Fail loudly when a local provider is paired with an explicit cloud model override."""
-    if (
-        provider == "local"
-        and model_override
-        and get_model_provider(model_override) in _CLOUD_MODEL_FAMILIES
-    ):
-        raise ValueError(
-            f"local provider cannot serve cloud model override {model_override!r}: "
-            "remove the model override or select a matching cloud provider."
-        )
 
 
 def _raise_if_no_brain(provider: str) -> None:
@@ -1135,7 +1069,6 @@ def generate(
     json_schema: dict | None = None,
     thinking_budget: Optional[int] = None,
     timeout_s: Optional[float] = None,
-    **kwargs: Any,
 ) -> str:
     """Generate text using the configured generate provider.
 
@@ -1161,9 +1094,6 @@ def generate(
         Token budget for model thinking (ignored by providers that don't support it).
     timeout_s : float, optional
         Request timeout in seconds.
-    **kwargs
-        Additional provider-specific options passed through to the backend.
-
     Returns
     -------
     str
@@ -1181,15 +1111,9 @@ def generate(
     if json_schema is not None:
         json_output = True
 
-    # Allow model override via kwargs (used by callers with explicit model selection)
-    model_override = kwargs.pop("model", None)
-
     provider, model = resolve_provider("generate")
-    if model_override:
-        model = model_override
 
     _raise_if_no_brain(provider)
-    _reject_local_cloud_model_override(provider, model_override)
     _raise_if_confidential_unverified()
 
     # Get provider module via registry (raises ValueError for unknown providers)
@@ -1199,10 +1123,10 @@ def generate(
     timeout_s = DEFAULT_PROVIDER_TIMEOUT_S if timeout_s is None else timeout_s
 
     # Call provider's run_generate (returns GenerateResult)
+    provider_options = {} if provider == "local" else {"provider": provider}
     result = provider_mod.run_generate(
         contents=contents,
         model=model,
-        provider=provider,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         system_instruction=system_instruction,
@@ -1210,7 +1134,7 @@ def generate(
         json_schema=provider_schema,
         thinking_budget=thinking_budget,
         timeout_s=timeout_s,
-        **kwargs,
+        **provider_options,
     )
 
     # Log token usage centrally (before validation so truncated responses
@@ -1245,7 +1169,8 @@ def generate_with_result(
     json_schema: dict | None = None,
     thinking_budget: Optional[int] = None,
     timeout_s: Optional[float] = None,
-    **kwargs: Any,
+    inference_retry_index: int = 0,
+    local_exclusive_admission: bool = False,
 ) -> dict:
     """Generate text and return full result with usage data.
 
@@ -1275,9 +1200,6 @@ def generate_with_result(
         Token budget for model thinking (ignored by providers that don't support it).
     timeout_s : float, optional
         Request timeout in seconds.
-    **kwargs
-        Additional provider-specific options passed through to the backend.
-
     Returns
     -------
     dict
@@ -1290,19 +1212,9 @@ def generate_with_result(
     if json_schema is not None:
         json_output = True
 
-    model_override = kwargs.pop("model", None)
-    provider_override = kwargs.pop("provider", None)
-
     provider, model = resolve_provider("generate")
-    if provider_override:
-        provider = provider_override
-        if not model_override:
-            model = default_model_for_provider(provider)
-    if model_override:
-        model = model_override
 
     _raise_if_no_brain(provider)
-    _reject_local_cloud_model_override(provider, model_override)
     _raise_if_confidential_unverified()
 
     provider_mod = get_provider_module(provider)
@@ -1310,10 +1222,18 @@ def generate_with_result(
 
     timeout_s = DEFAULT_PROVIDER_TIMEOUT_S if timeout_s is None else timeout_s
 
+    provider_options: dict[str, Any]
+    if provider == "local":
+        provider_options = {}
+        if inference_retry_index:
+            provider_options["inference_retry_index"] = inference_retry_index
+        if local_exclusive_admission:
+            provider_options["local_exclusive_admission"] = True
+    else:
+        provider_options = {"provider": provider}
     result = provider_mod.run_generate(
         contents=contents,
         model=model,
-        provider=provider,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         system_instruction=system_instruction,
@@ -1321,7 +1241,7 @@ def generate_with_result(
         json_schema=provider_schema,
         thinking_budget=thinking_budget,
         timeout_s=timeout_s,
-        **kwargs,
+        **provider_options,
     )
 
     # Log token usage centrally (before validation so truncated responses
@@ -1354,7 +1274,6 @@ async def agenerate_with_result(
     json_schema: dict | None = None,
     thinking_budget: Optional[int] = None,
     timeout_s: Optional[float] = None,
-    **kwargs: Any,
 ) -> dict:
     """Async generate text and return the full GenerateResult dict."""
     from solstone.think.providers import get_provider_module
@@ -1362,19 +1281,9 @@ async def agenerate_with_result(
     if json_schema is not None:
         json_output = True
 
-    model_override = kwargs.pop("model", None)
-    provider_override = kwargs.pop("provider", None)
-
     provider, model = resolve_provider("generate")
-    if provider_override:
-        provider = provider_override
-        if not model_override:
-            model = default_model_for_provider(provider)
-    if model_override:
-        model = model_override
 
     _raise_if_no_brain(provider)
-    _reject_local_cloud_model_override(provider, model_override)
     _raise_if_confidential_unverified()
 
     provider_mod = get_provider_module(provider)
@@ -1382,10 +1291,10 @@ async def agenerate_with_result(
 
     timeout_s = DEFAULT_PROVIDER_TIMEOUT_S if timeout_s is None else timeout_s
 
+    provider_options = {} if provider == "local" else {"provider": provider}
     result = await provider_mod.run_agenerate(
         contents=contents,
         model=model,
-        provider=provider,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         system_instruction=system_instruction,
@@ -1393,7 +1302,7 @@ async def agenerate_with_result(
         json_schema=provider_schema,
         thinking_budget=thinking_budget,
         timeout_s=timeout_s,
-        **kwargs,
+        **provider_options,
     )
 
     if result.get("usage"):
@@ -1423,7 +1332,6 @@ async def agenerate(
     json_schema: dict | None = None,
     thinking_budget: Optional[int] = None,
     timeout_s: Optional[float] = None,
-    **kwargs: Any,
 ) -> str:
     """Async generate text using the configured generate provider.
 
@@ -1449,9 +1357,6 @@ async def agenerate(
         Token budget for model thinking (ignored by providers that don't support it).
     timeout_s : float, optional
         Request timeout in seconds.
-    **kwargs
-        Additional provider-specific options passed through to the backend.
-
     Returns
     -------
     str
@@ -1469,15 +1374,9 @@ async def agenerate(
     if json_schema is not None:
         json_output = True
 
-    # Allow model override via kwargs (used by Batch for explicit model selection)
-    model_override = kwargs.pop("model", None)
-
     provider, model = resolve_provider("generate")
-    if model_override:
-        model = model_override
 
     _raise_if_no_brain(provider)
-    _reject_local_cloud_model_override(provider, model_override)
     _raise_if_confidential_unverified()
 
     # Get provider module via registry (raises ValueError for unknown providers)
@@ -1487,10 +1386,10 @@ async def agenerate(
     timeout_s = DEFAULT_PROVIDER_TIMEOUT_S if timeout_s is None else timeout_s
 
     # Call provider's run_agenerate (returns GenerateResult)
+    provider_options = {} if provider == "local" else {"provider": provider}
     result = await provider_mod.run_agenerate(
         contents=contents,
         model=model,
-        provider=provider,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
         system_instruction=system_instruction,
@@ -1498,7 +1397,7 @@ async def agenerate(
         json_schema=provider_schema,
         thinking_budget=thinking_budget,
         timeout_s=timeout_s,
-        **kwargs,
+        **provider_options,
     )
 
     # Log token usage centrally (before validation so truncated responses

@@ -33,10 +33,7 @@ def _provider_status(provider_name: str) -> dict[str, object]:
     )
     if provider is None:
         return {}
-    return build_provider_status([provider], vertex_creds_configured=False).get(
-        provider_name,
-        {},
-    )
+    return build_provider_status([provider]).get(provider_name, {})
 
 
 def _check_generate(

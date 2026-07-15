@@ -23,28 +23,17 @@ _API_KEY_ENV_VARS = [
     "REVAI_ACCESS_TOKEN",
     "PLAUD_ACCESS_TOKEN",
 ]
-_AI_KEY_ENV_VARS = {
-    "GOOGLE_API_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-}
 _SERVICE_KEY_VALIDATION_NAME = {
     "REVAI_ACCESS_TOKEN": "revai",
     "PLAUD_ACCESS_TOKEN": "plaud",
 }
 
 app = typer.Typer(
-    help="Journal settings — keys, providers, transcription, identity, and observer."
+    help="Journal settings — service keys, transcription, identity, and observer."
 )
 
 keys_app = typer.Typer(help="API key management.")
 app.add_typer(keys_app, name="keys")
-providers_app = typer.Typer(help="AI provider configuration.")
-app.add_typer(providers_app, name="providers")
-google_backend_app = typer.Typer(help="Google backend selection.")
-app.add_typer(google_backend_app, name="google-backend")
-vertex_app = typer.Typer(help="Vertex AI service account credentials.")
-app.add_typer(vertex_app, name="vertex-credentials")
 transcribe_app = typer.Typer(help="Transcription backend configuration.")
 app.add_typer(transcribe_app, name="transcribe")
 identity_app = typer.Typer(help="Journal owner identity.")
@@ -97,21 +86,10 @@ def _exit_with(message: str) -> None:
 
 
 def _validate_env_var_or_exit(env_var: str) -> None:
-    if env_var in _AI_KEY_ENV_VARS:
-        typer.echo(
-            "Moved to `sol call thinking keys …` — run that instead.",
-            err=True,
-        )
-        raise typer.Exit(2)
     if env_var not in _API_KEY_ENV_VARS:
         _exit_with(
             f"Invalid env var: {env_var}. Must be one of: {', '.join(_API_KEY_ENV_VARS)}"
         )
-
-
-def _moved_stub(command: str) -> None:
-    typer.echo(f"Moved to `sol call thinking {command}` — run that instead.", err=True)
-    raise typer.Exit(2)
 
 
 @processing_app.command("show")
@@ -285,7 +263,7 @@ def keys_clear(
 @convey_cli
 def keys_validate(
     cache_result: bool = typer.Option(
-        False, "--cache-result", help="Persist results to providers.key_validation."
+        False, "--cache-result", help="Persist service-token validation results."
     ),
 ) -> None:
     """Validate all configured API keys without persisting by default."""
@@ -293,106 +271,6 @@ def keys_validate(
     method = "POST" if cache_result else "GET"
     response = _request(method, "/app/settings/api/validate-keys")
     _echo_json({"key_validation": response.get("key_validation", {})})
-
-
-@providers_app.command("show")
-def providers_show(
-    human: bool = typer.Option(False, "--human", help="Print one-line statuses."),
-) -> None:
-    """Moved to ``sol call thinking providers show``."""
-
-    _moved_stub("providers show")
-
-
-@providers_app.command("install")
-def providers_install(
-    name: str = typer.Argument(None, help="Provider name."),
-) -> None:
-    """Moved to `journal install-provider`."""
-    typer.echo("Moved to `journal install-provider` — run that instead.", err=True)
-    raise typer.Exit(2)
-
-
-@providers_app.command("set-local-endpoint")
-def providers_set_local_endpoint(
-    url: str = typer.Option(..., "--url", help="OpenAI-compatible endpoint URL."),
-    model: str = typer.Option(..., "--model", help="Served model id."),
-    credential: str | None = typer.Option(
-        None,
-        "--credential",
-        help="Optional bearer credential for the endpoint.",
-    ),
-) -> None:
-    """Moved to ``sol call thinking set-local-endpoint``."""
-
-    _moved_stub("set-local-endpoint")
-
-
-@providers_app.command("clear-local-endpoint")
-def providers_clear_local_endpoint() -> None:
-    """Moved to ``sol call thinking clear-local-endpoint``."""
-
-    _moved_stub("clear-local-endpoint")
-
-
-@providers_app.command("set-generate")
-def providers_set_generate(
-    provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
-) -> None:
-    """Moved to ``sol call thinking providers set-generate``."""
-
-    _moved_stub("providers set-generate")
-
-
-@providers_app.command("set-cogitate")
-def providers_set_cogitate(
-    provider: str | None = typer.Option(None, "--provider", help="Primary provider."),
-) -> None:
-    """Moved to ``sol call thinking providers set-cogitate``."""
-
-    _moved_stub("providers set-cogitate")
-
-
-@google_backend_app.command("show")
-def google_backend_show() -> None:
-    """Moved to ``sol call thinking google-backend show``."""
-
-    _moved_stub("google-backend show")
-
-
-@google_backend_app.command("set")
-def google_backend_set(
-    backend: str = typer.Argument(..., help="Google backend to use."),
-) -> None:
-    """Moved to ``sol call thinking google-backend set``."""
-
-    _moved_stub("google-backend set")
-
-
-@vertex_app.command("show")
-def vertex_credentials_show() -> None:
-    """Moved to ``sol call thinking vertex-credentials show``."""
-
-    _moved_stub("vertex-credentials show")
-
-
-@vertex_app.command("import")
-def vertex_credentials_import(
-    file_path: str = typer.Argument(..., help="Path to service account JSON."),
-    skip_validation: bool = typer.Option(
-        False, "--skip-validation", help="Skip API validation of credentials."
-    ),
-) -> None:
-    """Moved to ``sol call thinking vertex-credentials import``."""
-
-    _moved_stub("vertex-credentials import")
-
-
-@vertex_app.command("clear")
-def vertex_credentials_clear() -> None:
-    """Moved to ``sol call thinking vertex-credentials clear``."""
-
-    _moved_stub("vertex-credentials clear")
 
 
 @transcribe_app.command("show")

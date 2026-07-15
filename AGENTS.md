@@ -207,7 +207,6 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Hosted backup binding (`backup/hosted/binding.json`) | `solstone/think/backup/hosted.py` |
 | Convey config (`config/convey.json`) | `solstone/convey/config.py` + `solstone/think/facets.py` |
 | Chat config (`config/chat.json`) | `solstone/apps/chat/config.py` |
-| Vertex credentials (`.config/vertex-credentials.json`) | `solstone/apps/thinking/vertex_credentials.py` |
 | Speaker labels (`chronicle/**/talents/speaker_labels.json`) | `solstone/apps/speakers/attribution.py` |
 | Speaker corrections (`chronicle/**/talents/speaker_corrections.json`) | `solstone/apps/speakers/attribution.py` |
 | Stream identity (`chronicle/**/<seg>/stream.json` marker + `streams/<name>.json` state) | `solstone/think/streams.py` |

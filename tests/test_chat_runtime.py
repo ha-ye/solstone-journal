@@ -702,12 +702,11 @@ def test_terminal_talent_reports_back_without_redispatch(
 
     spawns: list[dict] = []
 
-    def fake_spawn_agent(prompt, name, provider, config, use_id):
+    def fake_spawn_agent(prompt, name, config, use_id):
         spawns.append(
             {
                 "prompt": prompt,
                 "name": name,
-                "provider": provider,
                 "config": dict(config),
                 "use_id": str(use_id),
             }

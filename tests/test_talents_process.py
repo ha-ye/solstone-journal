@@ -19,6 +19,13 @@ import pytest
 def test_talent_main_sigterm_exits_without_cancelled_traceback(tmp_path):
     journal = tmp_path / "journal"
     journal.mkdir()
+    (journal / "config").mkdir()
+    (journal / "config" / "journal.json").write_text(
+        json.dumps(
+            {"providers": {"active": {"provider": "test", "model": "test-model"}}}
+        ),
+        encoding="utf-8",
+    )
 
     talent_dir = tmp_path / "talent"
     talent_dir.mkdir()
@@ -82,8 +89,6 @@ def test_talent_main_sigterm_exits_without_cancelled_traceback(tmp_path):
     request = {
         "name": "test_cogitate",
         "prompt": "hello",
-        "provider": "test",
-        "model": "test-model",
     }
     assert proc.stdin is not None
     proc.stdin.write(json.dumps(request).encode("utf-8") + b"\n")

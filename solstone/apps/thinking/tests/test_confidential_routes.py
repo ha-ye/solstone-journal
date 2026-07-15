@@ -240,8 +240,10 @@ def test_disable_confidential_restores_synchronously(
     assert data["service"] == "spp"
     assert data["result"] == {"was_enabled": True, "credential_preserved": False}
     config = _read_config(journal_copy)
-    assert config["providers"]["generate"]["provider"] == "google"
-    assert config["providers"]["cogitate"]["provider"] == "openai"
+    assert config["providers"]["active"] == {
+        "provider": "google",
+        "model": "gemini-flash-latest",
+    }
     assert config["providers"]["local"] == {}
     assert "confidential" not in config["services"]
     state = spp.get_attestation_state()

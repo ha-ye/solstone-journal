@@ -97,24 +97,12 @@ def _assert_json(result, expected: Any) -> None:
     assert result.stderr == ""
 
 
-def _fake_creds(email: str = "test@test.iam.gserviceaccount.com") -> dict[str, str]:
-    return {
-        "type": "service_account",
-        "project_id": "test-project",
-        "client_email": email,
-        "private_key": "fake-private-key",
-    }
-
-
 def test_show_and_read_verbs_select_http_fields(journal_copy: Path) -> None:
     show = runner.invoke(settings_call.app, ["show"])
     keys = runner.invoke(settings_call.app, ["keys", "show"])
-    providers = runner.invoke(settings_call.app, ["providers", "show"])
-    google = runner.invoke(settings_call.app, ["google-backend", "show"])
     transcribe = runner.invoke(settings_call.app, ["transcribe", "show"])
     identity = runner.invoke(settings_call.app, ["identity", "show"])
     observer = runner.invoke(settings_call.app, ["observer", "show"])
-    vertex = runner.invoke(settings_call.app, ["vertex-credentials", "show"])
 
     assert show.exit_code == 0
     show_payload = json.loads(show.stdout)
@@ -132,15 +120,6 @@ def test_show_and_read_verbs_select_http_fields(journal_copy: Path) -> None:
 
     assert keys.exit_code == 0
     assert json.loads(keys.stdout) == {key: False for key in show_payload["keys"]}
-    for result, command in (
-        (providers, "providers show"),
-        (google, "google-backend show"),
-        (vertex, "vertex-credentials show"),
-    ):
-        assert result.exit_code == 2
-        assert result.stderr == (
-            f"Moved to `sol call thinking {command}` — run that instead.\n"
-        )
     assert transcribe.exit_code == 0
     assert set(json.loads(transcribe.stdout)) == {"backends", "api_keys", "config"}
     assert identity.exit_code == 0
@@ -151,13 +130,9 @@ def test_show_and_read_verbs_select_http_fields(journal_copy: Path) -> None:
 
 def test_settings_config_projects_service_validation_only(journal_copy: Path) -> None:
     config = _read_config(journal_copy)
-    config.setdefault("providers", {})["key_validation"] = {
+    config["service_key_validation"] = {
         "revai": {"valid": True, "timestamp": "2026-01-01T00:00:00+00:00"},
         "plaud": {"valid": False, "error": "bad token"},
-        "google": {"valid": True},
-        "openai": {"valid": True},
-        "anthropic": {"valid": True},
-        "google_vertex": {"valid": True},
     }
     _write_config(journal_copy, config)
 
@@ -181,12 +156,12 @@ def test_keys_set_clear_validate_and_invalid_env(
         "REVAI_ACCESS_TOKEN, PLAUD_ACCESS_TOKEN\n"
     )
 
-    moved = runner.invoke(
+    ai_key = runner.invoke(
         settings_call.app,
         ["keys", "set", "ANTHROPIC_API_KEY", "anthropic-test-key"],
     )
-    assert moved.exit_code == 2
-    assert moved.stderr == ("Moved to `sol call thinking keys …` — run that instead.\n")
+    assert ai_key.exit_code == 1
+    assert ai_key.stderr.startswith("Invalid env var: ANTHROPIC_API_KEY.")
     assert "ANTHROPIC_API_KEY" not in _read_config(journal_copy).get("env", {})
 
     service_set = runner.invoke(
@@ -203,7 +178,7 @@ def test_keys_set_clear_validate_and_invalid_env(
             "timestamp": "2026-04-17T12:00:00+00:00",
         },
     }
-    assert _read_config(journal_copy)["providers"]["key_validation"]["revai"]["valid"]
+    assert _read_config(journal_copy)["service_key_validation"]["revai"]["valid"]
     keys_shown = runner.invoke(settings_call.app, ["keys", "show"])
     assert keys_shown.exit_code == 0
     assert "revai-token" not in keys_shown.stdout
@@ -225,30 +200,7 @@ def test_keys_set_clear_validate_and_invalid_env(
     )
     cached = runner.invoke(settings_call.app, ["keys", "validate", "--cache-result"])
     assert cached.exit_code == 0
-    assert _read_config(journal_copy)["providers"]["key_validation"]["plaud"]["valid"]
-
-
-def test_moved_provider_verbs_exit_two() -> None:
-    commands = [
-        ["providers", "set-generate", "--provider", "openai"],
-        ["providers", "set-cogitate", "--provider", "openai"],
-        [
-            "providers",
-            "set-local-endpoint",
-            "--url",
-            "http://host.test",
-            "--model",
-            "m",
-        ],
-        ["providers", "clear-local-endpoint"],
-        ["google-backend", "set", "vertex"],
-        ["vertex-credentials", "import", "creds.json"],
-        ["vertex-credentials", "clear"],
-    ]
-    for command in commands:
-        result = runner.invoke(settings_call.app, command)
-        assert result.exit_code == 2
-        assert result.stderr.startswith("Moved to `sol call thinking ")
+    assert _read_config(journal_copy)["service_key_validation"]["plaud"]["valid"]
 
 
 def test_transcribe_setters(journal_copy: Path) -> None:

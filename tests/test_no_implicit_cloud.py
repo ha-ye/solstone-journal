@@ -19,7 +19,6 @@ from solstone.think import models, talents
 from solstone.think.models import (
     CLAUDE_SONNET_4,
     GEMINI_FLASH,
-    GPT_5_MINI,
     LOCAL_MODEL,
     NO_BRAIN_PROVIDER,
     AttestationFailedError,
@@ -66,12 +65,6 @@ def _cloud_call_mocks(monkeypatch: pytest.MonkeyPatch) -> list[Mock]:
         ("solstone.think.providers.openhands", "run_generate"),
         ("solstone.think.providers.openhands", "run_agenerate"),
         ("solstone.think.providers.openhands", "run_cogitate"),
-        ("solstone.think.providers.google", "run_generate"),
-        ("solstone.think.providers.google", "run_agenerate"),
-        ("solstone.think.providers.openai", "run_generate"),
-        ("solstone.think.providers.openai", "run_agenerate"),
-        ("solstone.think.providers.anthropic", "run_generate"),
-        ("solstone.think.providers.anthropic", "run_agenerate"),
     ]
     for module_name, attr in targets:
         mock = Mock(side_effect=AssertionError("cloud call attempted"))
@@ -103,16 +96,17 @@ def _confidential_config(*, provider_pins: bool = True) -> dict:
                 "served_model_id": "confidential-model",
                 "credential_created_at": "2026-05-24T00:00:00Z",
                 "credential_fingerprint_sha256": "fingerprint",
-                "prior_generate_provider": "google",
-                "prior_cogitate_provider": "openai",
+                "prior_active": {
+                    "provider": "google",
+                    "model": GEMINI_FLASH,
+                },
                 "prior_local_endpoint": None,
             }
         },
     }
     if provider_pins:
         config["providers"] = {
-            "generate": {"provider": "google", "backup": "openai"},
-            "cogitate": {"provider": "openai", "backup": "anthropic"},
+            "active": {"provider": "google", "model": GEMINI_FLASH},
         }
     return config
 
@@ -449,8 +443,7 @@ def test_confidential_local_lane_stops_before_any_provider_dispatch(
     _empty_journal(tmp_path, monkeypatch)
     config = _confidential_config()
     config["providers"] = {
-        "generate": {"provider": "local"},
-        "cogitate": {"provider": "local"},
+        "active": {"provider": "local", "model": LOCAL_MODEL},
     }
     _write_journal_config(tmp_path, config)
     establish = _install_failing_confidential_transport(monkeypatch)
@@ -563,6 +556,9 @@ def test_confidential_gate_keys_on_provenance_not_provider_resolution(
     _empty_journal(tmp_path, monkeypatch)
     config = _confidential_config(provider_pins=False)
     config["env"] = {"GOOGLE_API_KEY": "stray-google-key"}
+    config["providers"] = {
+        "active": {"provider": "local", "model": LOCAL_MODEL},
+    }
     _write_journal_config(tmp_path, config)
     establish = _install_failing_confidential_transport(monkeypatch)
     mocks = _cloud_call_mocks(monkeypatch)
@@ -803,47 +799,45 @@ def test_none_provider_module_fails_closed(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("agent_type", "env_key", "expected_provider", "expected_model"),
+    ("agent_type", "env_key"),
     [
-        ("generate", "GOOGLE_API_KEY", "google", GEMINI_FLASH),
-        ("generate", "ANTHROPIC_API_KEY", "anthropic", CLAUDE_SONNET_4),
-        ("generate", "OPENAI_API_KEY", "openai", GPT_5_MINI),
-        ("cogitate", "GOOGLE_API_KEY", "google", GEMINI_FLASH),
-        ("cogitate", "ANTHROPIC_API_KEY", "anthropic", CLAUDE_SONNET_4),
-        ("cogitate", "OPENAI_API_KEY", "openai", GPT_5_MINI),
+        ("generate", "GOOGLE_API_KEY"),
+        ("generate", "ANTHROPIC_API_KEY"),
+        ("generate", "OPENAI_API_KEY"),
+        ("cogitate", "GOOGLE_API_KEY"),
+        ("cogitate", "ANTHROPIC_API_KEY"),
+        ("cogitate", "OPENAI_API_KEY"),
     ],
 )
-def test_key_presence_grandfathers_existing_installs(
+def test_key_presence_does_not_implicitly_select_a_provider(
     tmp_path,
     monkeypatch,
     agent_type: str,
     env_key: str,
-    expected_provider: str,
-    expected_model: str,
 ):
     _empty_journal(tmp_path, monkeypatch)
     original = _write_journal_config(tmp_path, {"env": {env_key: "test-key"}})
 
     provider, model = resolve_provider(agent_type)
 
-    assert provider == expected_provider
-    assert model == expected_model
+    assert provider == NO_BRAIN_PROVIDER
+    assert model == ""
     assert (tmp_path / "config" / "journal.json").read_text(
         encoding="utf-8"
     ) == original
 
 
-def test_model_only_config_uses_key_selected_provider(tmp_path, monkeypatch):
+def test_model_only_config_does_not_infer_provider_from_key(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
     _write_journal_config(
         tmp_path,
         {
             "env": {"GOOGLE_API_KEY": "test-key"},
-            "providers": {"generate": {"model": "gemini-custom"}},
+            "providers": {"active": {"model": "gemini-custom"}},
         },
     )
 
-    assert resolve_provider("generate") == ("google", "gemini-custom")
+    assert resolve_provider("generate") == (NO_BRAIN_PROVIDER, "")
 
 
 def test_explicit_provider_does_not_fall_through_to_keyed_provider(
@@ -854,28 +848,21 @@ def test_explicit_provider_does_not_fall_through_to_keyed_provider(
         tmp_path,
         {
             "env": {"GOOGLE_API_KEY": "test-key"},
-            "providers": {"generate": {"provider": "anthropic"}},
+            "providers": {"active": {"provider": "anthropic"}},
         },
     )
-    google = Mock(side_effect=AssertionError("google dispatched"))
-    monkeypatch.setattr("solstone.think.providers.google.run_generate", google)
 
     assert resolve_provider("generate") == ("anthropic", CLAUDE_SONNET_4)
-    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY not found"):
-        models.generate("hello", "any.context")
-    google.assert_not_called()
 
 
-def test_accepted_grandfather_divergence_lite_context_now_uses_brain_model(
-    tmp_path, monkeypatch
-):
+def test_key_only_config_requires_maintenance_migration(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
     _write_journal_config(tmp_path, {"env": {"GOOGLE_API_KEY": "test-key"}})
 
-    assert resolve_provider("generate") == ("google", GEMINI_FLASH)
+    assert resolve_provider("generate") == (NO_BRAIN_PROVIDER, "")
 
 
-def test_implicit_local_when_runtime_ready(tmp_path, monkeypatch):
+def test_runtime_readiness_does_not_implicitly_select_local(tmp_path, monkeypatch):
     _empty_journal(tmp_path, monkeypatch)
     monkeypatch.setattr(
         "solstone.think.providers.state.local_runtime_ready", lambda: True
@@ -883,9 +870,9 @@ def test_implicit_local_when_runtime_ready(tmp_path, monkeypatch):
 
     provider, model = resolve_provider("generate")
 
-    assert provider == "local"
-    assert model == LOCAL_MODEL
-    assert is_local_provider_needed() is True
+    assert provider == NO_BRAIN_PROVIDER
+    assert model == ""
+    assert is_local_provider_needed() is False
     assert not (tmp_path / "config" / "journal.json").exists()
 
 
@@ -898,7 +885,7 @@ def test_explicit_local_type_default_neutralizes_cloud_context_pin(
         tmp_path,
         {
             "providers": {
-                "generate": {"provider": "local"},
+                "active": {"provider": "local"},
                 "contexts": {
                     "talent.timeline.segment_summary": {
                         "provider": "google",

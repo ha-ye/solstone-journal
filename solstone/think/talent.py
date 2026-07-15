@@ -319,9 +319,11 @@ def get_talent_configs(
                 info["app"] = app_name
                 configs[key] = info
 
-    # Merge journal config overrides from providers.contexts
-    providers_config = get_config().get("providers", {})
-    contexts = providers_config.get("contexts", {})
+    # Merge journal-owned enable/extract overrides. Thinking owns these talent
+    # controls; they are deliberately separate from provider routing.
+    contexts = get_config().get("talent_overrides", {})
+    if not isinstance(contexts, dict):
+        contexts = {}
 
     for key, info in configs.items():
         context_key = key_to_context(key)

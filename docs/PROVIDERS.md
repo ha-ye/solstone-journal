@@ -1,233 +1,168 @@
-# Provider Architecture
+# Thinking Provider Architecture
 
-This guide describes the provider behavior that ships today. The core code paths
-are `solstone/think/models.py`, `solstone/think/talents.py`,
-`solstone/think/providers/__init__.py`, `solstone/think/providers/openhands.py`,
-and `solstone/think/providers/local.py`.
+Solstone is local-first software for personal use. It supports one active
+provider/model profile, configured in Thinking, and never silently switches
+providers. The implementation deliberately has no special Vertex AI, Azure
+OpenAI, Bedrock, or other enterprise-cloud integration.
 
-For the broader think pipeline, see `docs/THINK.md`.
+For the broader pipeline, see `docs/THINK.md`.
 
-## Active Brain Resolution
+## One Active Brain
 
-Solstone runs one active provider/model pair per interface:
+`config/journal.json` stores the selected profile at:
 
-- `generate` for single-shot model calls and generators.
-- `cogitate` for tool-using OpenHands runs.
+```json
+{
+  "providers": {
+    "active": {
+      "provider": "local",
+      "model": "local/qwen3.5-4b"
+    }
+  }
+}
+```
 
-`solstone/think/models.py` owns active-brain resolution. `resolve_provider()`
-checks `providers.<interface>.provider` first, then managed cloud-key presence in
-the grandfathered `google` -> `anthropic` -> `openai` order, then local runtime
-readiness, then the no-brain state. `providers.<interface>.model` can pin the
-model for that interface. Without a model pin, each provider has one default
-model in `DEFAULT_MODEL_BY_PROVIDER`.
+`solstone/think/models.py::resolve_provider()` is the only runtime resolver.
+The `generate` and `cogitate` arguments identify the interface being invoked,
+but both resolve the same `providers.active` profile. A missing profile is an
+explicit no-brain state. Key presence and local readiness never choose a
+provider implicitly.
 
-`resolve_provider()` intentionally ignores retired routing keys: `tier`,
-`backup`, and `providers.models`. `providers.contexts` no longer steers
-provider/model routing either. Its `disabled` and `extract` fields are still live
-talent metadata because `solstone/think/talent.py` merges exactly those fields
-from `providers.contexts.<context>`.
+Provider and model overrides are rejected in talent frontmatter, cortex
+requests, batch requests, and direct generate calls. Thinking is the sole
+configuration surface for the active brain. Talent `disabled` and `extract`
+controls are separate metadata under `talent_overrides`; they do not route
+models.
 
-## Provider Registry
+## Supported Owner Choices
 
-`solstone/think/providers/__init__.py` is the registry. Cloud provider names
-`google`, `openai`, and `anthropic` all resolve to the OpenHands facade module,
-`solstone.think.providers.openhands`; `local` resolves to
-`solstone.think.providers.local`.
+The Thinking app exposes five setup choices:
 
-The effective provider modules expose the interface that `models.py` and
-`talents.py` call:
+- Bundled local, using Solstone's installed llama-server or mlx-vlm runtime.
+- An owner-supplied OpenAI-compatible URL, model id, and optional bearer key.
+- OpenAI with an owner-supplied API key and model id.
+- Anthropic with an owner-supplied API key and model id.
+- Google AI Studio with an owner-supplied API key and Gemini model id.
 
-- `run_generate()` returns a `GenerateResult`.
-- `run_agenerate()` returns a `GenerateResult` from async callers.
-- `run_cogitate()` runs a tool-using conversation and emits events.
+The direct cloud options are convenience presets. The arbitrary endpoint is a
+plain compatibility contract: Solstone sends OpenAI-compatible requests, but
+does not add vendor-specific support for whatever sits behind that URL.
 
-The cloud vendor leaf modules `solstone/think/providers/google.py`,
-`solstone/think/providers/openai.py`, and
-`solstone/think/providers/anthropic.py` implement generate/agenerate only. They
-are not cogitate providers. The OpenHands facade owns cloud cogitate.
+Managed personal cloud keys remain journal-local:
 
-## Generate Dispatch
+- `env.OPENAI_API_KEY`
+- `env.ANTHROPIC_API_KEY`
+- `env.GOOGLE_API_KEY`
 
-`solstone/think/models.py` resolves the active generate brain, prepares the
-provider-facing schema, calls `provider_mod.run_generate()` or
-`provider_mod.run_agenerate()`, and logs usage centrally.
+## Dispatch
 
-For cloud generate, `provider_mod` is the OpenHands facade. The facade keeps
-`run_generate()` and `run_agenerate()` as redispatchers: at call time it imports
-the vendor leaf from `_GENERATE_MODULES` in
-`solstone/think/providers/openhands.py` and calls the matching leaf function.
-This keeps vendor-specific transport behavior in the leaf modules while leaving
-the registry stable.
+`solstone/think/providers/__init__.py` has a deliberately small registry:
 
-The native cloud leaves remain intentionally thin transport adapters. Solstone
-keeps them because the OpenAI-compatible surfaces do not provide full parity for
-the behavior the generate path needs, including strict/constrained schema support
-and native-provider response details. Anthropic, OpenAI, and Google each keep
-their provider-specific generate implementation in their own module.
+- `google`, `openai`, and `anthropic` all map to
+  `solstone/think/providers/openhands.py`.
+- `local` maps to `solstone/think/providers/local.py`.
 
-For local generate, `solstone/think/providers/local.py` owns both bundled-local
-and configured endpoint traffic. Bundled local posts to the supervisor-owned
-loopback llama-server. A configured local endpoint posts to the owner-supplied
-OpenAI-compatible URL resolved by `solstone/think/providers/local_endpoint.py`.
+The effective modules implement:
 
-## Cogitate Dispatch
+- `run_generate()` for synchronous single-shot generation.
+- `run_agenerate()` for asynchronous single-shot generation.
+- `run_cogitate()` for tool-using OpenHands conversations.
 
-`solstone/think/talents.py` runs cogitate talents through
-`_execute_with_tools()`. It resolves the provider module through
-`solstone/think/providers/__init__.py` and calls `run_cogitate()`.
+### Personal cloud
 
-For cloud cogitate, `solstone/think/providers/openhands.py` builds and runs the
-OpenHands conversation. For local cogitate,
-`solstone/think/providers/local.py` performs local readiness/admission work and
-then delegates to `openhands.run_cogitate()` with a local OpenAI-compatible
-configuration. This is why local cogitate failures are classified in
-`local.py`, not by a separate local tool-calling engine.
+`openhands.py` is the single cloud transport. It builds an OpenHands `LLM` and
+lets LiteLLM translate the request to OpenAI, Anthropic, or Google AI Studio.
+It also normalizes text, usage, finish reasons, and thinking blocks back into
+Solstone's `GenerateResult`.
 
-## Local Lanes
+Generate calls explicitly neutralize OpenHands' agent-oriented defaults and
+then apply only Solstone's requested behavior. The transport preserves:
 
-The owner-facing provider key is `local`. It has three runtime lanes:
+- sync and async calls;
+- multimodal message content;
+- JSON object and JSON Schema response formats;
+- OpenAI reasoning-effort suffixes;
+- Anthropic and Gemini thinking budgets;
+- normalized usage, resolved model, and finish reason.
 
-- Bundled local: `solstone/think/providers/local_server.py` manages the
-  loopback llama-server process and `solstone/think/providers/local.py` sends
-  OpenAI-compatible requests to it.
-- BYO local endpoint: `solstone/think/providers/local_endpoint.py` activates the
-  endpoint only when both `providers.local.endpoint_url` and
-  `providers.local.served_model_id` are present. Optional
-  `providers.local.credential` supplies the bearer token. Optional
-  `providers.local.parallel_slots` governs non-confidential BYO admission.
-- Confidential endpoint: `solstone/think/services/spp_transport.py` gates
-  confidential egress and `solstone/think/providers/local.py` uses that transport
-  before provider dispatch.
+Direct OpenAI generation uses the Responses API. Anthropic and Google use chat
+completion through LiteLLM's provider translation. Key/model validation sends
+a tiny request through this same runtime path, so validation can incur a small
+provider charge.
 
-Bundled local, BYO URL, and confidential local traffic all use an
-OpenAI-compatible request shape. The difference is where the request is sent and
-which readiness, admission, and attestation gates run first.
+OpenHands/LiteLLM may internally contain code for many providers. That does not
+make them Solstone-supported providers: Solstone exposes no registry entry,
+config, UI, credential flow, or validation path for enterprise integrations.
 
-## Local Admission and Capacity
+### Local and arbitrary endpoints
 
-The `local` provider has one shared admission boundary for governed local lanes:
-the supervisor-owned Qwen server and non-confidential OpenAI-compatible endpoint
-overrides. The confidential-processing lane (`services.confidential` present)
-and every cloud provider bypass this boundary. Bundled-local inference telemetry
-remains bundled-only.
+`local.py` remains a thin product-policy wrapper rather than a second general
+cloud adapter. It owns guarantees that OpenHands alone does not provide:
 
-Capacity remains explicit and intentionally small:
+- bundled runtime installation and readiness;
+- context-budget fitting and local schema preparation;
+- Qwen sampling and chat-template controls;
+- cross-process local admission and bounded retry;
+- content-free local inference telemetry;
+- confidential egress/attestation gates;
+- stable local error classification.
 
-| Runtime profile | Serving capacity | Evidence |
-|---|---:|---|
-| Linux floor | 1 | supervisor `ServerTier`; live `/props.total_slots` wins |
-| Linux capable (at least 16 GiB tiering VRAM) | 2 | supervisor `ServerTier`; live `/props.total_slots` wins |
-| Apple mlx-vlm local backend | 1 | conservative explicit default; mlx-vlm on darwin exposes neither `/props` nor `ServerTier` (`solstone/think/providers/local_server.py:185`) |
-| Non-confidential BYO endpoint | configured | journal config `providers.local.parallel_slots`; resolved by `_configured_byo_parallel_slots()` (`solstone/think/providers/local_endpoint.py:68`) after `resolve_local_endpoint()` selects BYO (`solstone/think/providers/local_endpoint.py:84`) |
-
-For bundled local, the provider memoizes capacity once per process. It first
-reads live `/props.total_slots`, then the persisted `health/local.ctx` launch
-profile, then uses one slot when neither source is available. The supervisor
-remains the configuration owner:
-changing a Linux profile's `parallel_slots` changes both
-`llama-server --parallel` and provider admission after journal processes restart.
-Apple stays at one until that runtime exposes a stable capacity contract and a
-separate measurement justifies raising it.
-
-Admission uses one `flock` file per slot under
-`health/local-inference-admission/`. This coordinates independent journal
-processes without a scheduler service or in-memory queue. Waiting async calls
-are cancellation-safe; exceptions and cancellation release acquired locks;
-process exit releases kernel locks. Queue time consumes the caller's existing
-provider deadline, so waiting cannot silently extend a request beyond its
-configured timeout. Cogitate holds one parent permit across model turns, but
-temporarily yields that permit while the OpenHands `sol` tool runs a nested
-`sol` child process. The parent reacquires through the same FIFO admission pool
-before any further model request; failure to reacquire is a terminal
-`local_queue_timeout`.
-
-Every bundled-local attempt appends a content-free JSON record to
-`health/local-inference/YYYYMMDD.jsonl`. These files follow the configured
-`retention.journal_logs.days` policy. Records contain request id, timestamp,
-kind, provider, logical model, runtime profile, serving capacity, evidence
-source, admission slot, client queue wait, timing, token counts, retry index,
-finish reason, outcome, timeout/cancellation flags, and a safe reason code on
-failure. Records never contain prompt text, generated text, messages, schemas,
-images, endpoint URLs, or credentials.
-
-## Honest Failure Semantics
-
-Provider failure is not a routing signal. Solstone does not silently switch to
-another provider when the active brain fails.
-
-- Quota failures are recorded by
-  `solstone/think/providers/state.py::record_quota_failure()` in
-  `health/talents.json` under the active journal root with provider, model, interface,
-  `provider_quota_exceeded`, and `reset_at_ms`.
-- Local endpoint reachability and contract failures are classified by
-  `solstone/think/providers/local_endpoint.py` and
-  `solstone/think/providers/local.py`.
-- Local retry is deliberately narrow in `solstone/think/talents.py`: generate
-  retries once only for `incomplete_json_length` or
-  `local_capacity_exhausted`, and it retries the same local provider.
-- Segment deferral is represented in health JSONL, not by provider switching.
-  `solstone/think/pipeline_health.py` folds segment progress, and
-  `solstone/think/thinking.py` selects sensed-but-not-fully-thought segments for
-  repair.
-
-If the local runtime, model files, RAM gate, loopback server, BYO endpoint, or
-confidential attestation is not ready, Solstone surfaces that recovery reason
-instead of falling back to a cloud provider.
-
-## Live Configuration Keys
-
-Provider configuration lives in `config/journal.json` under the active journal
-root; the canonical reader/writer is `solstone/think/journal_config.py`.
-
-Live routing keys:
-
-- `providers.generate.provider`
-- `providers.generate.model`
-- `providers.cogitate.provider`
-- `providers.cogitate.model`
-
-Live local endpoint keys:
+Bundled local posts to the supervisor-owned loopback server. A configured
+endpoint uses:
 
 - `providers.local.endpoint_url`
 - `providers.local.served_model_id`
-- `providers.local.credential`
-- `providers.local.parallel_slots`
+- `providers.local.credential` (optional)
+- `providers.local.parallel_slots` (optional)
 
-Live Google backend keys:
+Both generate and cogitate use the endpoint's OpenAI-compatible contract. The
+configured logical provider remains `local`, so the same readiness and safety
+boundary applies without maintaining vendor-specific adapters.
 
-- `providers.google_backend`, read by Google provider code for Gemini Developer
-  API versus Vertex behavior.
-- Vertex/ADC credential settings used by `solstone/apps/thinking/routes.py` and
-  `solstone/apps/thinking/vertex_credentials.py`.
+## Local Admission
 
-Live managed key storage:
+Bundled local and non-confidential arbitrary endpoints share the governed local
+admission boundary. Cloud and confidential processing bypass it. Capacity is
+kept intentionally small: one slot on the Linux floor and Apple mlx-vlm, two on
+the capable Linux tier, or the explicit `parallel_slots` value for an arbitrary
+endpoint.
 
-- `env.GOOGLE_API_KEY`
-- `env.ANTHROPIC_API_KEY`
-- `env.OPENAI_API_KEY`
+Admission uses per-slot `flock` files under
+`health/local-inference-admission/`, coordinating independent journal
+processes. Queue time consumes the caller's existing timeout. Cogitate yields
+its permit while a nested `sol` command runs and reacquires it before the next
+model turn.
 
-Retired for provider/model routing:
+Bundled attempts append content-free telemetry to
+`health/local-inference/YYYYMMDD.jsonl`. Records include timing, capacity,
+token counts, retry index, finish reason, and safe failure codes—never prompts,
+responses, schemas, images, URLs, or credentials.
 
-- `tier`
-- `backup`
-- `providers.models`
-- `providers.contexts.<context>.provider`
-- `providers.contexts.<context>.model`
+## Failure Semantics
 
-`providers.contexts.<context>.disabled` and
-`providers.contexts.<context>.extract` remain live talent metadata. Do not remove
-those fields as if the whole `providers.contexts` block were inert.
+Provider failure is not a routing signal. Solstone surfaces the failure and
+recovery action for the active profile.
 
-## Adding or Changing Providers
+- Quota failures are recorded in `health/talents.json`.
+- Endpoint reachability and contract errors are classified by the local
+  endpoint wrapper.
+- Local generate retries once only for narrow capacity/truncation cases, using
+  the same provider.
+- Missing local runtime, model files, RAM, endpoint readiness, or confidential
+  attestation fails closed rather than falling back to cloud.
 
-Provider changes should start from the current registry and active-brain model,
-not from the retired tier/backup system:
+## Migration Boundary
 
-1. Update `solstone/think/providers/__init__.py` for provider identity and
-   metadata.
-2. Implement the effective module surface that the registry points to.
-3. If the provider is cloud generate-only, keep cogitate on the OpenHands facade
-   and add a vendor leaf only for generate/agenerate.
-4. Add one default model in `solstone/think/models.py`.
-5. Add focused provider tests and lane-honesty tests under `tests/`.
-6. Update `docs/THINK.md`, `docs/CORTEX.md`, and this file.
+The Thinking maintenance task collapses legacy `providers.generate` and
+`providers.cogitate` into `providers.active`. If they differ, cogitate wins
+because its model already satisfies the tool-capable interface. A key-only
+legacy install is materialized once in Google, Anthropic, OpenAI order. The task
+selects bundled local when no prior profile or personal cloud key exists. It
+also:
+
+- removes tier, backup, model-map, Google-backend, and Vertex fields;
+- deletes the canonical legacy Vertex credential file;
+- moves `providers.contexts` enable/extract controls to `talent_overrides`;
+- moves Rev.ai/Plaud validation state to `service_key_validation`.
+
+There are no runtime compatibility shims for the retired shapes.

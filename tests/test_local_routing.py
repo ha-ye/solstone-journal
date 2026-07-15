@@ -23,12 +23,12 @@ def _write_config(journal: Path, config: dict) -> None:
     )
 
 
-def test_prepare_config_local_type_default_ignores_segment_summary_provider_pin(
+def test_prepare_config_uses_active_local_and_ignores_legacy_context_pin(
     journal_copy: Path,
 ) -> None:
     config = _read_config(journal_copy)
     providers = config.setdefault("providers", {})
-    providers["generate"] = {"provider": "local"}
+    providers["active"] = {"provider": "local", "model": LOCAL_MODEL}
     contexts = providers.setdefault("contexts", {})
     contexts["talent.timeline.segment_summary"] = {
         "provider": "google",
@@ -42,21 +42,21 @@ def test_prepare_config_local_type_default_ignores_segment_summary_provider_pin(
     assert prepared["model"] == LOCAL_MODEL
 
 
-def test_prepare_config_honors_explicit_local_request_model_pin(
+def test_prepare_config_rejects_explicit_request_model_pin(
     journal_copy: Path,
 ) -> None:
     config = _read_config(journal_copy)
     providers = config.setdefault("providers", {})
-    providers["generate"] = {"provider": "local"}
+    providers["active"] = {"provider": "local", "model": LOCAL_MODEL}
     _write_config(journal_copy, config)
 
-    prepared = prepare_config(
-        {
-            "name": "timeline:segment_summary",
-            "provider": "local",
-            "model": "local/custom-7b",
-        }
-    )
+    import pytest
 
-    assert prepared["provider"] == "local"
-    assert prepared["model"] == "local/custom-7b"
+    with pytest.raises(ValueError, match="request overrides for 'provider'"):
+        prepare_config(
+            {
+                "name": "timeline:segment_summary",
+                "provider": "local",
+                "model": "local/custom-7b",
+            }
+        )

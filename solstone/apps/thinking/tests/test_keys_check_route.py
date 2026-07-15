@@ -128,11 +128,7 @@ def test_keys_check_invalid_candidate_does_not_change_active_lane(
     client, journal_path = settings_client_with_journal
     config = _read_config(journal_path)
     config["env"]["ANTHROPIC_API_KEY"] = "working-key-a"
-    config["providers"]["generate"] = {
-        "provider": "anthropic",
-        "model": "claude-opus-4-8",
-    }
-    config["providers"]["cogitate"] = {
+    config["providers"]["active"] = {
         "provider": "anthropic",
         "model": "claude-opus-4-8",
     }

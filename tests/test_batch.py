@@ -22,21 +22,18 @@ def test_batch_request_creation():
     req = BatchRequest(contents="Test prompt", context="test.context")
     assert req.contents == "Test prompt"
     assert req.context == "test.context"
-    assert req.model is None
     assert req.temperature == 0.3
     assert req.response is None
     assert req.error is None
 
-    # With model override
+    # With generation options
     req2 = BatchRequest(
         contents=["Part 1", "Part 2"],
         context="test.context",
-        model="gemini-flash-lite-latest",
         temperature=0.7,
         json_output=True,
     )
     assert req2.contents == ["Part 1", "Part 2"]
-    assert req2.model == "gemini-flash-lite-latest"
     assert req2.temperature == 0.7
     assert req2.json_output is True
 
@@ -85,12 +82,12 @@ async def test_batch_basic(mock_agenerate):
 
 @pytest.mark.asyncio
 @patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
-async def test_batch_with_model_override(mock_agenerate):
-    """Test batch with explicit model override."""
-    mock_agenerate.return_value = _result("Response")
+async def test_batch_records_resolved_model(mock_agenerate):
+    """The transport-reported model is recorded without a request override."""
+    mock_agenerate.return_value = _result("Response", model=GEMINI_FLASH)
 
     batch = Batch(max_concurrent=5)
-    req = batch.create(contents="Test", context="test.context", model=GEMINI_FLASH)
+    req = batch.create(contents="Test", context="test.context")
     batch.add(req)
 
     results = []
@@ -100,9 +97,8 @@ async def test_batch_with_model_override(mock_agenerate):
     assert len(results) == 1
     assert results[0].model_used == GEMINI_FLASH
 
-    # Verify model was passed through
     call_kwargs = mock_agenerate.call_args[1]
-    assert call_kwargs["model"] == GEMINI_FLASH
+    assert "model" not in call_kwargs
 
 
 @pytest.mark.asyncio
@@ -282,7 +278,7 @@ async def test_batch_dynamic_adding(mock_agenerate):
 @pytest.mark.asyncio
 @patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_retry_pattern(mock_agenerate):
-    """Test retry pattern - add failed request back with different model."""
+    """Test retry pattern without bypassing the active model profile."""
     # First call fails, second succeeds
     call_count = 0
 
@@ -298,7 +294,7 @@ async def test_batch_retry_pattern(mock_agenerate):
     batch = Batch(max_concurrent=5)
 
     # Add initial request
-    req1 = batch.create(contents="Test", context="test.context", model=GEMINI_FLASH)
+    req1 = batch.create(contents="Test", context="test.context")
     req1.attempt = 1
     batch.add(req1)
 
@@ -306,12 +302,11 @@ async def test_batch_retry_pattern(mock_agenerate):
     async for req in batch.drain_batch():
         results.append(req)
 
-        # If error, retry with different model
+        # If error, retry through the same active profile.
         if req.error and req.attempt == 1:
             retry = batch.create(
                 contents=req.contents,
                 context="test.context",
-                model="gemini-flash-lite-latest",
             )
             retry.attempt = 2
             batch.add(retry)
@@ -336,7 +331,6 @@ async def test_batch_factory_method(mock_agenerate):
     req = batch.create(
         contents="Test",
         context="test.context",
-        model="gemini-flash-lite-latest",
         temperature=0.8,
         json_output=True,
     )
@@ -344,7 +338,6 @@ async def test_batch_factory_method(mock_agenerate):
     assert isinstance(req, BatchRequest)
     assert req.contents == "Test"
     assert req.context == "test.context"
-    assert req.model == "gemini-flash-lite-latest"
     assert req.temperature == 0.8
     assert req.json_output is True
 
@@ -440,21 +433,18 @@ async def test_batch_concurrency_limit(mock_agenerate):
 @patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
 async def test_batch_update_method(mock_agenerate):
     """Test batch.update() method for modifying and re-adding requests."""
-    # Track which model was used in each call
-    call_models = []
+    call_temperatures = []
 
-    async def mock_track_model(*args, **kwargs):
-        call_models.append(kwargs.get("model", "unknown"))
-        return _result(f"Response from {kwargs.get('model', 'unknown')}")
+    async def mock_track_options(*args, **kwargs):
+        call_temperatures.append(kwargs["temperature"])
+        return _result(f"Response at {kwargs['temperature']}")
 
-    mock_agenerate.side_effect = mock_track_model
+    mock_agenerate.side_effect = mock_track_options
 
     batch = Batch(max_concurrent=5)
 
     # Create initial request
-    req = batch.create(
-        contents="Initial prompt", context="test.context", model=GEMINI_FLASH
-    )
+    req = batch.create(contents="Initial prompt", context="test.context")
     req.stage = "initial"
     batch.add(req)
 
@@ -465,12 +455,12 @@ async def test_batch_update_method(mock_agenerate):
         # Capture the response at this point
         results.append((result_count, completed_req.response, completed_req.stage))
 
-        # After first result, update and re-add with different model
+        # After first result, update generation options and re-add.
         if result_count == 1:
             batch.update(
                 completed_req,
                 contents="Updated prompt",
-                model="gemini-flash-lite-latest",
+                temperature=0.8,
                 stage="updated",  # Update custom attribute too
                 custom_field="test_value",  # Add new custom attribute
             )
@@ -480,12 +470,11 @@ async def test_batch_update_method(mock_agenerate):
     assert results[0][2] == "initial"  # First result was initial stage
     assert results[1][2] == "updated"  # Second result was updated stage
 
-    # Verify models used
-    assert call_models == [GEMINI_FLASH, "gemini-flash-lite-latest"]
+    assert call_temperatures == [0.3, 0.8]
 
     # Verify correct responses at each stage
-    assert results[0][1] == f"Response from {GEMINI_FLASH}"
-    assert results[1][1] == "Response from gemini-flash-lite-latest"
+    assert results[0][1] == "Response at 0.3"
+    assert results[1][1] == "Response at 0.8"
 
     # Verify custom attribute was set
     assert req.custom_field == "test_value"
@@ -528,28 +517,9 @@ async def test_batch_timeout_passthrough(mock_agenerate):
     assert call_kwargs["timeout_s"] == 45
 
 
-@pytest.mark.asyncio
-@patch("solstone.think.batch.agenerate_with_result", new_callable=AsyncMock)
-async def test_batch_client_passthrough(mock_agenerate):
-    """Test that client is passed through for Google connection reuse."""
-    mock_agenerate.return_value = _result("Response")
-
-    # Create a mock client (would be genai.Client for Google)
-    mock_client = object()
-
-    batch = Batch(max_concurrent=5, client=mock_client)
-    req = batch.create(contents="Test", context="test.context")
-    batch.add(req)
-
-    results = []
-    async for completed_req in batch.drain_batch():
-        results.append(completed_req)
-
-    assert len(results) == 1
-
-    # Verify client was passed through
-    call_kwargs = mock_agenerate.call_args[1]
-    assert call_kwargs["client"] is mock_client
+def test_batch_rejects_provider_specific_client_override():
+    with pytest.raises(TypeError, match="unexpected keyword argument 'client'"):
+        Batch(max_concurrent=5, client=object())
 
 
 @pytest.mark.asyncio

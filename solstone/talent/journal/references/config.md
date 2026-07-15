@@ -113,7 +113,7 @@ The `env` block stores configuration as environment variables that solstone load
 }
 ```
 
-**Managed provider keys are journal-config-exclusive.** For the managed provider API keys — `GOOGLE_API_KEY`, `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY` — the journal config `env` section is the authoritative and exclusive source. At CLI startup, solstone loads the `env` block into the environment and then strips any of these managed keys that is *not* set in journal config, so a value set only in the shell is never used. This keeps the journal config the single, predictable place that decides which provider keys are in effect (useful when the journal is synced across machines). Google Vertex/ADC auth variables are not managed keys and are never stripped.
+**Managed provider keys are journal-config-exclusive.** For the managed provider API keys — `GOOGLE_API_KEY`, `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY` — the journal config `env` section is the authoritative and exclusive source. At CLI startup, solstone loads the `env` block into the environment and then strips any of these managed keys that is *not* set in journal config, so a value set only in the shell is never used. This keeps the journal config the single, predictable place that decides which provider keys are in effect (useful when the journal is synced across machines).
 
 Other variables declared in the `env` block (for example `REVAI_ACCESS_TOKEN`, `PLAUD_ACCESS_TOKEN`) are loaded into the environment at startup as well.
 
@@ -230,13 +230,9 @@ Brain choice is managed in the Thinking app. Your journal stores that choice in
     "GOOGLE_API_KEY": "stored-by-settings"
   },
   "providers": {
-    "generate": {
+    "active": {
       "provider": "google",
       "model": "gemini-flash-latest"
-    },
-    "cogitate": {
-      "provider": "openai",
-      "model": "gpt-5.4-mini"
     },
     "local": {
       "endpoint_url": "http://127.0.0.1:8080",
@@ -249,17 +245,13 @@ Brain choice is managed in the Thinking app. Your journal stores that choice in
 
 ### Live provider keys
 
-**`providers.generate`** controls the active brain for generator-style requests.
-It may contain:
+**`providers.active`** controls the single brain used by both generate and
+cogitate requests. It contains:
 - `provider` – `"google"`, `"anthropic"`, `"openai"`, `"local"`, or omitted.
 - `model` – explicit model id for that provider.
 
-**`providers.cogitate`** controls the active brain for tool-using requests. It
-has the same `provider` and `model` shape.
-
-When no provider is pinned, Solstone uses configured cloud keys in the
-grandfathered `google` → `anthropic` → `openai` order, then the ready local
-runtime, then the no-brain state.
+There is no implicit key-based selection or fallback. A missing or invalid
+active profile is the no-brain state.
 
 **`env`** stores managed cloud API keys:
 - `GOOGLE_API_KEY`
@@ -275,17 +267,7 @@ Optional local endpoint fields:
 - `credential`
 - `parallel_slots`
 
-### Legacy routing keys
+### Talent overrides
 
-These keys may still exist in older journals, but they no longer choose the
-provider or model:
-- `tier`
-- `backup`
-- `providers.models`
-- `providers.contexts.<context>.provider`
-- `providers.contexts.<context>.model`
-
-`providers.contexts.<context>.disabled` and
-`providers.contexts.<context>.extract` are still used as talent metadata. Do not
-delete a `providers.contexts` block just because its old provider/model routing
-fields are no longer active.
+`talent_overrides.<talent>.disabled` and `talent_overrides.<talent>.extract`
+are optional talent metadata. Provider and model overrides are rejected.

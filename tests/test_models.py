@@ -246,8 +246,8 @@ def test_resolve_provider_default_generate(use_fixtures_journal):
 def test_resolve_provider_default_cogitate(use_fixtures_journal):
     """Cogitate resolves the configured active provider/model."""
     provider, model = resolve_provider("cogitate")
-    assert provider == "openai"
-    assert model == GPT_5_MINI
+    assert provider == "google"
+    assert model == "gemini-custom-flash-test"
 
 
 def test_resolve_provider_contexts_are_inert(monkeypatch, tmp_path):
@@ -257,7 +257,7 @@ def test_resolve_provider_contexts_are_inert(monkeypatch, tmp_path):
         monkeypatch,
         {
             "providers": {
-                "generate": {
+                "active": {
                     "provider": "google",
                     "model": "gemini-flash-latest",
                 },
@@ -287,7 +287,7 @@ def test_resolve_provider_ordering_witness(monkeypatch, tmp_path):
         monkeypatch,
         {
             "providers": {
-                "generate": {
+                "active": {
                     "provider": "anthropic",
                     "model": "claude-haiku-4-5",
                 }
@@ -382,8 +382,7 @@ def test_default_model_by_provider():
 @pytest.mark.parametrize(
     "config",
     [
-        {"providers": {"generate": {"provider": "local"}}},
-        {"providers": {"cogitate": {"provider": "local"}}},
+        {"providers": {"active": {"provider": "local"}}},
     ],
 )
 def test_is_local_provider_needed_true_for_selected_surfaces(config):
@@ -394,7 +393,7 @@ def test_is_local_provider_needed_true_for_selected_surfaces(config):
     "config",
     [
         {},
-        {"providers": {"generate": {"provider": "google"}}},
+        {"providers": {"active": {"provider": "google"}}},
         {"providers": {"contexts": {"talent.*": {"provider": "anthropic"}}}},
         {"providers": {"contexts": {"talent.*": {"provider": "local"}}}},
         {"providers": []},
@@ -407,7 +406,7 @@ def test_is_local_provider_needed_false_when_not_selected(config, monkeypatch):
     assert is_local_provider_needed(config) is False
 
 
-def test_is_local_provider_needed_true_for_implicit_local(monkeypatch):
+def test_is_local_provider_needed_does_not_infer_from_runtime(monkeypatch):
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -415,7 +414,7 @@ def test_is_local_provider_needed_true_for_implicit_local(monkeypatch):
         "solstone.think.providers.state.local_runtime_ready", lambda: True
     )
 
-    assert is_local_provider_needed({}) is True
+    assert is_local_provider_needed({}) is False
 
 
 def test_resolve_provider_legacy_keys_are_inert(
@@ -427,7 +426,7 @@ def test_resolve_provider_legacy_keys_are_inert(
         monkeypatch,
         {
             "providers": {
-                "generate": {
+                "active": {
                     "provider": "google",
                     "model": "gemini-flash-latest",
                     "tier": 1,
@@ -457,7 +456,7 @@ def test_resolve_provider_model_key_wins_even_when_tier_present(
         monkeypatch,
         {
             "providers": {
-                "generate": {
+                "active": {
                     "provider": "google",
                     "tier": 1,
                     "model": "gemini-custom-flash-test",
@@ -478,7 +477,7 @@ def test_resolve_provider_local_type_default_ignores_context_pins(
         monkeypatch,
         {
             "providers": {
-                "generate": {"provider": "local"},
+                "active": {"provider": "local"},
                 "contexts": {
                     "talent.timeline.segment_summary": {
                         "provider": "google",
@@ -501,27 +500,18 @@ def test_legacy_context_toggles_remain_on_disk_but_not_routing(
         monkeypatch,
         {
             "providers": {
-                "generate": {"provider": "google", "model": GEMINI_FLASH},
-                "contexts": {
-                    "talent.x": {
-                        "provider": "local",
-                        "tier": 3,
-                        "disabled": True,
-                        "extract": "foo",
-                    }
-                },
-            }
+                "active": {"provider": "google", "model": GEMINI_FLASH},
+            },
+            "talent_overrides": {"talent.x": {"disabled": True, "extract": "foo"}},
         },
     )
 
     assert resolve_provider("generate") == ("google", GEMINI_FLASH)
 
     stored = json.loads((tmp_path / "config" / "journal.json").read_text())
-    context = stored["providers"]["contexts"]["talent.x"]
-    assert context["provider"] == "local"
+    context = stored["talent_overrides"]["talent.x"]
     assert context["disabled"] is True
     assert context["extract"] == "foo"
-    assert context["tier"] == 3
 
 
 def test_prepare_config_legacy_context_routing_keys_are_inert(
@@ -533,15 +523,12 @@ def test_prepare_config_legacy_context_routing_keys_are_inert(
     config_path = journal_copy / "config" / "journal.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config["providers"] = {
-        "generate": {"provider": "anthropic", "model": CLAUDE_SONNET_4},
-        "contexts": {
-            "talent.timeline.segment_summary": {
-                "provider": "google",
-                "model": "gemini-flash-lite-latest",
-                "tier": 3,
-                "backup": "openai",
-            }
-        },
+        "active": {"provider": "anthropic", "model": CLAUDE_SONNET_4},
+    }
+    config["talent_overrides"] = {
+        "talent.timeline.segment_summary": {
+            "disabled": False,
+        }
     }
     config_path.write_text(json.dumps(config), encoding="utf-8")
 
@@ -561,7 +548,7 @@ def test_prepare_config_frontmatter_provider_pin_is_dead_through_dispatch_identi
     config = json.loads(config_path.read_text(encoding="utf-8"))
     config["env"] = {"GOOGLE_API_KEY": "test-google-key"}
     config["providers"] = {
-        "generate": {"provider": "anthropic", "model": CLAUDE_SONNET_4}
+        "active": {"provider": "anthropic", "model": CLAUDE_SONNET_4}
     }
     config_path.write_text(json.dumps(config), encoding="utf-8")
 
@@ -581,74 +568,64 @@ def test_resolve_provider_cogitate_system_talents_stay_local(
     _write_tmp_journal_config(
         tmp_path,
         monkeypatch,
-        {"providers": {"cogitate": {"provider": "local"}}},
+        {"providers": {"active": {"provider": "local"}}},
     )
 
     assert resolve_provider("cogitate") == ("local", LOCAL_MODEL)
 
 
-def test_resolve_provider_split_lane_other_type_stays_cloud(
+def test_generate_and_cogitate_share_one_active_profile(
     use_fixtures_journal, monkeypatch, tmp_path
 ):
-    """A local generate lane does not force the cogitate lane local."""
+    """Both runtime interfaces resolve the same active profile."""
     _write_tmp_journal_config(
         tmp_path,
         monkeypatch,
         {
             "providers": {
-                "generate": {"provider": "local"},
-                "cogitate": {"provider": "openai"},
+                "active": {"provider": "openai"},
             }
         },
     )
 
-    assert resolve_provider("generate") == ("local", LOCAL_MODEL)
+    assert resolve_provider("generate") == ("openai", GPT_5_MINI)
     assert resolve_provider("cogitate") == ("openai", GPT_5_MINI)
 
 
-def test_generate_rejects_cloud_model_override_for_local_provider():
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: generate("hello", "test.context", model="gpt-5.5"),
+        lambda: generate_with_result("hello", "test.context", model="gpt-5.5"),
+        lambda: asyncio.run(agenerate("hello", "test.context", model="gpt-5.5")),
+    ],
+)
+def test_generate_entry_points_reject_request_model_overrides(call):
+    """Provider/model selection belongs exclusively to the active profile."""
+    with pytest.raises(TypeError, match="unexpected keyword argument 'model'"):
+        call()
+
+
+def test_local_generate_entry_points_do_not_pass_cloud_transport_options():
+    provider_module = SimpleNamespace(
+        run_generate=MagicMock(return_value={"text": "ok", "finish_reason": "stop"}),
+        run_agenerate=AsyncMock(return_value={"text": "ok", "finish_reason": "stop"}),
+    )
     with (
         patch(
             "solstone.think.models.resolve_provider",
-            return_value=("local", "local/qwen3.5-4b"),
+            return_value=("local", LOCAL_MODEL),
         ),
         patch(
             "solstone.think.providers.get_provider_module",
-            side_effect=AssertionError("provider module should not be invoked"),
+            return_value=provider_module,
         ),
     ):
-        with pytest.raises(ValueError, match="local provider cannot serve"):
-            generate("hello", "test.context", model="gpt-5.5")
+        assert generate("hello", "test.context") == "ok"
+        assert asyncio.run(agenerate("hello", "test.context")) == "ok"
 
-
-def test_generate_with_result_rejects_cloud_model_override_for_local_provider():
-    with (
-        patch(
-            "solstone.think.models.resolve_provider",
-            return_value=("local", "local/qwen3.5-4b"),
-        ),
-        patch(
-            "solstone.think.providers.get_provider_module",
-            side_effect=AssertionError("provider module should not be invoked"),
-        ),
-    ):
-        with pytest.raises(ValueError, match="local provider cannot serve"):
-            generate_with_result("hello", "test.context", model="gpt-5.5")
-
-
-def test_agenerate_rejects_cloud_model_override_for_local_provider():
-    with (
-        patch(
-            "solstone.think.models.resolve_provider",
-            return_value=("local", "local/qwen3.5-4b"),
-        ),
-        patch(
-            "solstone.think.providers.get_provider_module",
-            side_effect=AssertionError("provider module should not be invoked"),
-        ),
-    ):
-        with pytest.raises(ValueError, match="local provider cannot serve"):
-            asyncio.run(agenerate("hello", "test.context", model="gpt-5.5"))
+    assert "provider" not in provider_module.run_generate.call_args.kwargs
+    assert "provider" not in provider_module.run_agenerate.call_args.kwargs
 
 
 def test_generate_stops_before_provider_module_when_no_brain():
@@ -694,40 +671,6 @@ def test_agenerate_stops_before_provider_module_when_no_brain():
     ):
         with pytest.raises(NoBrainConfiguredError):
             asyncio.run(agenerate("hello", "test.context"))
-
-
-def test_unknown_model_override_for_local_provider_proceeds_to_provider():
-    provider_module = SimpleNamespace(
-        run_generate=MagicMock(
-            return_value={"text": "ok", "finish_reason": "stop"},
-        ),
-        run_agenerate=AsyncMock(
-            return_value={"text": "ok", "finish_reason": "stop"},
-        ),
-    )
-
-    with (
-        patch(
-            "solstone.think.models.resolve_provider",
-            return_value=("local", "local/qwen3.5-4b"),
-        ),
-        patch(
-            "solstone.think.providers.get_provider_module",
-            return_value=provider_module,
-        ),
-    ):
-        assert generate("hello", "test.context", model="served-model") == "ok"
-        assert generate_with_result("hello", "test.context", model="served-model") == {
-            "text": "ok",
-            "finish_reason": "stop",
-        }
-        assert (
-            asyncio.run(agenerate("hello", "test.context", model="served-model"))
-            == "ok"
-        )
-
-    assert provider_module.run_generate.call_count == 2
-    assert provider_module.run_agenerate.call_count == 1
 
 
 # ---------------------------------------------------------------------------

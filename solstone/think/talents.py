@@ -556,7 +556,7 @@ def prepare_config(request: dict) -> dict:
 
     Config fields produced:
     - name: Talent name
-    - provider, model: Resolved from interface defaults/request
+    - provider, model: Resolved from the journal's active Thinking profile
     - user_instruction: Talent instruction from .md file
     - prompt: User's runtime query/request
     - transcript: Clustered transcript (if day provided)
@@ -572,9 +572,7 @@ def prepare_config(request: dict) -> dict:
     from solstone.think.models import (
         NO_BRAIN_PROVIDER,
         NoBrainConfiguredError,
-        default_model_for_provider,
         resolve_provider,
-        type_default_is_local,
     )
     from solstone.think.talent import get_talent, key_to_context
 
@@ -595,6 +593,17 @@ def prepare_config(request: dict) -> dict:
             f"talent {name!r} declares 'outbound_approval' in frontmatter; "
             "this field is launch-config-only and may not come from a talent definition"
         )
+    for field in ("provider", "model"):
+        if field in config:
+            raise ValueError(
+                f"talent {name!r} declares {field!r} in frontmatter; "
+                "thinking provider and model are configured only in Thinking"
+            )
+        if request.get(field) is not None:
+            raise ValueError(
+                f"request overrides for {field!r} are not allowed; "
+                "thinking provider and model are configured only in Thinking"
+            )
 
     # Config now contains all frontmatter fields plus:
     # - path: Path to the .md file
@@ -669,25 +678,7 @@ def prepare_config(request: dict) -> dict:
     # Resolve provider and model for the talent's interface
     context = key_to_context(name)
     talent_type = config["type"]
-    default_provider, default_model = resolve_provider(talent_type)
-
-    if type_default_is_local(talent_type):
-        # Local type-default is a hard runtime promise: a frontmatter/request
-        # cloud provider pin may not force a local-lane talent onto cloud.
-        # An explicit local request pin with a model is honored verbatim.
-        provider = default_provider
-        if config.get("provider") == "local" and config.get("model"):
-            model = config["model"]
-        else:
-            model = default_model
-    else:
-        provider = config.get("provider") or default_provider
-        model = config.get("model")
-        if not model:
-            if provider != default_provider:
-                model = default_model_for_provider(provider)
-            else:
-                model = default_model
+    provider, model = resolve_provider(talent_type)
 
     config["provider"] = provider
     config["model"] = model
@@ -1478,8 +1469,6 @@ async def _execute_generate(
             json_output=is_json_output,
             json_schema=runtime_json_schema,
             timeout_s=timeout_s,
-            provider=config.get("provider"),
-            model=config.get("model"),
         )
     except Exception as exc:
         provider = config.get("provider", "google")
@@ -1526,8 +1515,6 @@ async def _execute_generate(
                     json_output=is_json_output,
                     json_schema=runtime_json_schema,
                     timeout_s=timeout_s,
-                    provider=config.get("provider"),
-                    model=config.get("model"),
                     **retry_kwargs,
                 )
             except Exception as retry_exc:

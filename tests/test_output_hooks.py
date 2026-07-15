@@ -13,6 +13,7 @@ import asyncio
 import importlib
 import io
 import json
+import os
 from pathlib import Path
 
 from solstone.think.talent import load_post_hook, load_pre_hook
@@ -39,10 +40,29 @@ MOCK_RESULT = {
 
 def run_generator_with_config(mod, config: dict, monkeypatch) -> list[dict]:
     """Run generator with NDJSON config and capture output events."""
+    config_path = Path(os.environ["SOLSTONE_JOURNAL"]) / "config" / "journal.json"
+    if not config_path.exists():
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        "active": {
+                            "provider": "google",
+                            "model": "gemini-2.0-flash",
+                        }
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
     # Mock argv to prevent argparse from seeing pytest args
     monkeypatch.setattr("sys.argv", ["sol"])
 
-    stdin_data = json.dumps(config) + "\n"
+    request = {
+        key: value for key, value in config.items() if key not in {"provider", "model"}
+    }
+    stdin_data = json.dumps(request) + "\n"
     monkeypatch.setattr("sys.stdin", io.StringIO(stdin_data))
 
     captured_output = io.StringIO()

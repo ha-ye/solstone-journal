@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""OpenHands provider facade for cogitate runs.
+"""Unified OpenHands/LiteLLM transport for personal cloud thinking.
 
 OpenHands and LiteLLM are installed on demand, so this module must stay importable
 without either package present. Keep all OpenHands/LiteLLM imports inside the
@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import sys
 import threading
@@ -24,7 +25,6 @@ from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +54,7 @@ from solstone.think.providers.local_admission import (
 from solstone.think.providers.local_server import LOCAL_MIN_CONTEXT_TOKENS
 from solstone.think.providers.shared import (
     USAGE_KEYS,
+    GenerateResult,
     JSONEventCallback,
     classify_provider_error,
     safe_raw,
@@ -61,12 +62,6 @@ from solstone.think.providers.shared import (
 from solstone.think.utils import get_journal, get_project_root, now_ms
 
 LOG = logging.getLogger("solstone.think.providers.openhands")
-
-_GENERATE_MODULES = {
-    "anthropic": "solstone.think.providers.anthropic",
-    "openai": "solstone.think.providers.openai",
-    "google": "solstone.think.providers.google",
-}
 
 _MODEL_PREFIXES = {
     "anthropic": "anthropic",
@@ -86,6 +81,25 @@ _COST_WARNING_TEXT = "Cost calculation failed"
 _LOCAL_OUTPUT_RESERVE_TOKENS = LOCAL_MIN_CONTEXT_TOKENS // 4
 _LOCAL_CONDENSER_MAX_TOKENS = LOCAL_MIN_CONTEXT_TOKENS * 11 // 16
 _LOCAL_CONDENSER_KEEP_FIRST = 4
+_GENERATE_NUM_RETRIES = 2
+_GEMINI_MAX_OUTPUT_TOKENS = 65_535
+_ANTHROPIC_THINKING_BUFFER = 1_000
+_SCHEMA_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
+@contextmanager
+def _openhands_import_policy():
+    """Contain OpenHands import side effects and irrelevant LiteLLM warnings."""
+    root_baseline = snapshot_root_logging()
+    os.environ.setdefault("OPENHANDS_SUPPRESS_BANNER", "1")
+    litellm_log = logging.getLogger("LiteLLM")
+    prior_litellm_level = litellm_log.level
+    litellm_log.setLevel(logging.ERROR)
+    try:
+        yield
+    finally:
+        litellm_log.setLevel(prior_litellm_level)
+        apply_http_logging_policy(root_baseline)
 
 
 def _prefixed_model(provider: str, model: str) -> str:
@@ -186,6 +200,417 @@ def _build_llm(provider: str, model: str) -> Any:
         llm_kwargs["reasoning_summary"] = "auto"
         llm_kwargs["enable_encrypted_reasoning"] = True
     return LLM(**llm_kwargs)
+
+
+def _parse_openai_effort(model: str) -> tuple[str, str | None]:
+    """Split Solstone's optional OpenAI reasoning-effort model suffix."""
+    from solstone.think.models import OPENAI_EFFORT_SUFFIXES
+
+    for suffix in OPENAI_EFFORT_SUFFIXES:
+        if model.endswith(suffix):
+            return model[: -len(suffix)], suffix[1:]
+    return model, None
+
+
+def _generate_token_budget(
+    provider: str,
+    max_output_tokens: int,
+    thinking_budget: int | None,
+) -> int:
+    """Return the provider-facing output ceiling for a generate call."""
+    if provider == "google":
+        total = max_output_tokens + max(0, thinking_budget or 0)
+        if total > _GEMINI_MAX_OUTPUT_TOKENS:
+            LOG.warning(
+                "Clamping Gemini token budget: max_output_tokens=%s "
+                "thinking_budget=%s total=%s clamp=%s",
+                max_output_tokens,
+                thinking_budget,
+                total,
+                _GEMINI_MAX_OUTPUT_TOKENS,
+            )
+            return _GEMINI_MAX_OUTPUT_TOKENS
+        return total
+    if provider == "anthropic" and thinking_budget and thinking_budget > 0:
+        return max(
+            max_output_tokens,
+            thinking_budget + _ANTHROPIC_THINKING_BUFFER + 1,
+        )
+    return max_output_tokens
+
+
+def _build_generate_llm(
+    provider: str,
+    model: str,
+    *,
+    max_output_tokens: int,
+    thinking_budget: int | None,
+    timeout_s: float,
+    api_key: str | None = None,
+    num_retries: int = _GENERATE_NUM_RETRIES,
+) -> tuple[Any, str]:
+    """Build a stateless OpenHands LLM for one direct generation request."""
+    from openhands.sdk import LLM
+
+    if provider not in _MODEL_PREFIXES:
+        raise ValueError(f"Unsupported OpenHands provider: {provider}")
+
+    api_model = model
+    effort = None
+    if provider == "openai":
+        api_model, effort = _parse_openai_effort(model)
+
+    return (
+        LLM(
+            model=_prefixed_model(provider, api_model),
+            api_key=api_key
+            if api_key is not None
+            else os.getenv(_API_KEY_ENV[provider]),
+            timeout=max(1, math.ceil(timeout_s)),
+            num_retries=num_retries,
+            max_output_tokens=_generate_token_budget(
+                provider,
+                max_output_tokens,
+                thinking_budget,
+            ),
+            # OpenHands defaults are agent-oriented: high reasoning, a 200k
+            # Anthropic thinking budget, prompt-cache breakpoints, and encrypted
+            # reasoning. Generate calls opt into reasoning explicitly instead.
+            reasoning_effort=effort,
+            extended_thinking_budget=None,
+            caching_prompt=False,
+            prompt_cache_retention=None,
+            enable_encrypted_reasoning=False,
+            openrouter_site_url="",
+            openrouter_app_name="",
+        ),
+        api_model,
+    )
+
+
+def _data_url(part: Any) -> str:
+    from solstone.think.providers._image import encode_image_part
+
+    media_type, payload = encode_image_part(part)
+    return f"data:{media_type};base64,{payload}"
+
+
+def _message_content(value: Any) -> list[Any]:
+    """Convert Solstone's generate input shapes to OpenHands content blocks."""
+    from openhands.sdk.llm import ImageContent, TextContent
+
+    from solstone.think.providers._image import is_image_part
+
+    if is_image_part(value):
+        return [ImageContent(image_urls=[_data_url(value)])]
+    if isinstance(value, list | tuple):
+        blocks: list[Any] = []
+        for item in value:
+            blocks.extend(_message_content(item))
+        return blocks
+    if isinstance(value, dict):
+        part_type = str(value.get("type") or "")
+        if part_type in {"text", "input_text", "output_text"}:
+            return [TextContent(text=str(value.get("text") or ""))]
+        if part_type in {"image_url", "input_image"}:
+            image_url = value.get("image_url")
+            if isinstance(image_url, dict):
+                image_url = image_url.get("url")
+            if isinstance(image_url, str) and image_url:
+                return [ImageContent(image_urls=[image_url])]
+    return [TextContent(text=str(value))]
+
+
+def _generate_messages(
+    contents: Any,
+    system_instruction: str | None,
+) -> list[Any]:
+    from openhands.sdk.llm import Message, TextContent
+
+    messages: list[Any] = []
+    if system_instruction:
+        messages.append(
+            Message(role="system", content=[TextContent(text=system_instruction)])
+        )
+
+    if (
+        isinstance(contents, list)
+        and contents
+        and isinstance(contents[0], dict)
+        and "role" in contents[0]
+    ):
+        for item in contents:
+            if not isinstance(item, dict):
+                raise ValueError("role-based generate contents must contain messages")
+            role = str(item.get("role") or "user")
+            if role == "model":
+                role = "assistant"
+            if role not in {"user", "system", "assistant", "tool"}:
+                raise ValueError(f"Unknown message role: {role!r}")
+            messages.append(
+                Message(role=role, content=_message_content(item.get("content", "")))
+            )
+    else:
+        messages.append(Message(role="user", content=_message_content(contents)))
+    return messages
+
+
+def _schema_name(schema: dict | None) -> str:
+    title = schema.get("title") if isinstance(schema, dict) else None
+    if isinstance(title, str) and _SCHEMA_NAME_RE.fullmatch(title):
+        return title
+    return "response"
+
+
+def _generate_call_kwargs(
+    provider: str,
+    model: str,
+    *,
+    temperature: float | None,
+    json_output: bool,
+    json_schema: dict | None,
+    thinking_budget: int | None,
+    timeout_s: float,
+    responses_api: bool,
+) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {"timeout": timeout_s}
+    # Preserve each direct provider's accepted parameter contract. OpenAI's
+    # reasoning models reject temperature, and Anthropic rejects it while
+    # extended thinking is enabled (plus a few model-specific cases).
+    include_temperature = provider == "google"
+    if provider == "anthropic" and not (thinking_budget and thinking_budget > 0):
+        from solstone.think.models import model_supports
+
+        include_temperature = model_supports(model, "temperature")
+    if temperature is not None and include_temperature:
+        kwargs["temperature"] = temperature
+
+    if provider == "google" and thinking_budget is not None:
+        kwargs["thinking"] = {
+            "type": "enabled" if thinking_budget > 0 else "disabled",
+            "budget_tokens": max(0, thinking_budget),
+        }
+    elif provider == "anthropic" and thinking_budget and thinking_budget > 0:
+        kwargs["thinking"] = {
+            "type": "enabled",
+            "budget_tokens": thinking_budget,
+        }
+
+    if json_schema is not None:
+        schema_format = {
+            "type": "json_schema",
+            "name": _schema_name(json_schema),
+            "schema": json_schema,
+            "strict": True,
+        }
+        if responses_api:
+            kwargs["text"] = {"format": schema_format}
+        else:
+            kwargs["response_format"] = {
+                "type": "json_schema",
+                "json_schema": schema_format,
+            }
+    elif json_output:
+        if responses_api:
+            kwargs["text"] = {"format": {"type": "json_object"}}
+        else:
+            kwargs["response_format"] = {"type": "json_object"}
+    return kwargs
+
+
+def _get(value: Any, key: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _response_text(response: Any) -> str:
+    parts = []
+    for content in response.message.content:
+        text = getattr(content, "text", None)
+        if isinstance(text, str):
+            parts.append(text)
+    return "".join(parts)
+
+
+def _response_thinking(response: Any) -> list[dict[str, Any]] | None:
+    message = response.message
+    blocks: list[dict[str, Any]] = []
+    for block in message.thinking_blocks:
+        thinking = getattr(block, "thinking", None)
+        if isinstance(thinking, str) and thinking:
+            item: dict[str, Any] = {"summary": thinking}
+            signature = getattr(block, "signature", None)
+            if signature:
+                item["signature"] = signature
+            blocks.append(item)
+            continue
+        data = getattr(block, "data", None)
+        if data:
+            blocks.append({"summary": "[redacted]", "redacted_data": data})
+
+    if not blocks and message.reasoning_content:
+        blocks.append({"summary": message.reasoning_content})
+    reasoning_item = message.responses_reasoning_item
+    if not blocks and reasoning_item is not None:
+        blocks.extend(
+            {"summary": summary}
+            for summary in reasoning_item.summary
+            if isinstance(summary, str) and summary
+        )
+    return blocks or None
+
+
+def _response_usage(response: Any) -> dict[str, Any] | None:
+    token_usage = response.metrics.accumulated_token_usage
+    if token_usage is None:
+        return None
+    usage: dict[str, Any] = {
+        "input_tokens": token_usage.prompt_tokens,
+        "output_tokens": token_usage.completion_tokens,
+        "total_tokens": token_usage.prompt_tokens + token_usage.completion_tokens,
+    }
+    if token_usage.cache_read_tokens:
+        usage["cached_tokens"] = token_usage.cache_read_tokens
+    if token_usage.cache_write_tokens:
+        usage["cache_creation_tokens"] = token_usage.cache_write_tokens
+    if token_usage.reasoning_tokens:
+        usage["reasoning_tokens"] = token_usage.reasoning_tokens
+    if not any(usage.values()):
+        return None
+    raw_model = _get(response.raw_response, "model")
+    if isinstance(raw_model, str) and raw_model:
+        usage["model_version"] = raw_model
+    return usage
+
+
+def _normalize_finish_reason(response: Any) -> str | None:
+    raw = response.raw_response
+    choices = _get(raw, "choices")
+    if choices:
+        reason = _get(choices[0], "finish_reason")
+    else:
+        status = _get(raw, "status")
+        if status == "completed":
+            return "stop"
+        if status == "incomplete":
+            details = _get(raw, "incomplete_details")
+            reason = _get(details, "reason", "max_tokens")
+        elif status == "failed":
+            return "error"
+        else:
+            reason = status
+    if not reason:
+        return None
+    normalized = str(reason).strip().lower()
+    return {
+        "end_turn": "stop",
+        "stop_sequence": "stop",
+        "length": "max_tokens",
+        "max_output_tokens": "max_tokens",
+    }.get(normalized, normalized)
+
+
+def _generate_result(response: Any, requested_model: str) -> GenerateResult:
+    raw_model = _get(response.raw_response, "model")
+    return GenerateResult(
+        text=_response_text(response),
+        model=raw_model
+        if isinstance(raw_model, str) and raw_model
+        else requested_model,
+        usage=_response_usage(response),
+        finish_reason=_normalize_finish_reason(response),
+        thinking=_response_thinking(response),
+    )
+
+
+def _run_generate(
+    contents: Any,
+    model: str,
+    *,
+    provider: str,
+    temperature: float | None,
+    max_output_tokens: int,
+    system_instruction: str | None,
+    json_output: bool,
+    thinking_budget: int | None,
+    json_schema: dict | None,
+    timeout_s: float,
+    api_key: str | None = None,
+    num_retries: int = _GENERATE_NUM_RETRIES,
+) -> GenerateResult:
+    with _openhands_import_policy():
+        llm, _ = _build_generate_llm(
+            provider,
+            model,
+            max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
+            timeout_s=timeout_s,
+            api_key=api_key,
+            num_retries=num_retries,
+        )
+        messages = _generate_messages(contents, system_instruction)
+    # Direct OpenAI is intentionally Responses-first even for custom model ids,
+    # matching Solstone's previous native OpenAI contract. Other providers use
+    # chat completion through LiteLLM's provider translation.
+    responses_api = provider == "openai"
+    call_kwargs = _generate_call_kwargs(
+        provider,
+        model,
+        temperature=temperature,
+        json_output=json_output,
+        json_schema=json_schema,
+        thinking_budget=thinking_budget,
+        timeout_s=timeout_s,
+        responses_api=responses_api,
+    )
+    response = (
+        llm.responses(messages, **call_kwargs)
+        if responses_api
+        else llm.completion(messages, **call_kwargs)
+    )
+    return _generate_result(response, model)
+
+
+async def _run_agenerate(
+    contents: Any,
+    model: str,
+    *,
+    provider: str,
+    temperature: float | None,
+    max_output_tokens: int,
+    system_instruction: str | None,
+    json_output: bool,
+    thinking_budget: int | None,
+    json_schema: dict | None,
+    timeout_s: float,
+) -> GenerateResult:
+    with _openhands_import_policy():
+        llm, _ = _build_generate_llm(
+            provider,
+            model,
+            max_output_tokens=max_output_tokens,
+            thinking_budget=thinking_budget,
+            timeout_s=timeout_s,
+        )
+        messages = _generate_messages(contents, system_instruction)
+    responses_api = provider == "openai"
+    call_kwargs = _generate_call_kwargs(
+        provider,
+        model,
+        temperature=temperature,
+        json_output=json_output,
+        json_schema=json_schema,
+        thinking_budget=thinking_budget,
+        timeout_s=timeout_s,
+        responses_api=responses_api,
+    )
+    response = (
+        await llm.aresponses(messages, **call_kwargs)
+        if responses_api
+        else await llm.acompletion(messages, **call_kwargs)
+    )
+    return _generate_result(response, model)
 
 
 def _build_local_condenser(llm: Any) -> Any:
@@ -329,25 +754,24 @@ def _ensure_sol_types() -> dict[str, Any]:
                     result = _run_command(decision.argv)
                 except Exception as exc:
                     command_error = exc
-                finally:
-                    try:
-                        self.slot_lease.reacquire()
-                    except LocalAdmissionCancelled:
-                        if result is not None:
-                            return SolObservation.from_text(
-                                result["text"], is_error=result["is_error"]
-                            )
+                try:
+                    self.slot_lease.reacquire()
+                except LocalAdmissionCancelled:
+                    if result is not None:
                         return SolObservation.from_text(
-                            "local_admission_cancelled: cogitate run interrupted "
-                            "before reacquiring local inference",
-                            is_error=True,
+                            result["text"], is_error=result["is_error"]
                         )
-                    except Exception as exc:
-                        self._store_terminal_error(exc)
-                        live_conversation = conversation or self._conversation
-                        if live_conversation is not None:
-                            live_conversation.interrupt()
-                        return SolObservation.from_text(str(exc), is_error=True)
+                    return SolObservation.from_text(
+                        "local_admission_cancelled: cogitate run interrupted "
+                        "before reacquiring local inference",
+                        is_error=True,
+                    )
+                except Exception as exc:
+                    self._store_terminal_error(exc)
+                    live_conversation = conversation or self._conversation
+                    if live_conversation is not None:
+                        live_conversation.interrupt()
+                    return SolObservation.from_text(str(exc), is_error=True)
                 if command_error is not None:
                     raise command_error
                 assert result is not None
@@ -1112,12 +1536,11 @@ async def run_cogitate(
     llm: Any | None = None
     usage_start: dict[str, int] | None = None
     try:
-        root_baseline = snapshot_root_logging()
-        from openhands.sdk import Conversation
-        from openhands.sdk.tool.registry import register_tool
-        from openhands.sdk.tool.spec import Tool
+        with _openhands_import_policy():
+            from openhands.sdk import Conversation
+            from openhands.sdk.tool.registry import register_tool
+            from openhands.sdk.tool.spec import Tool
 
-        apply_http_logging_policy(root_baseline)
         wants_emit_final = expects_emit_final(config)
         max_turns = int(config.get("max_turns", MAX_TURNS) or MAX_TURNS)
         cost_cap = float(
@@ -1421,28 +1844,138 @@ async def run_cogitate(
         raise
 
 
-def run_generate(contents: Any, model: str, **kwargs: Any) -> Any:
-    provider = kwargs.pop("provider")
-    module = import_module(_GENERATE_MODULES[provider])
-    return module.run_generate(contents=contents, model=model, **kwargs)
+def run_generate(
+    contents: Any,
+    model: str,
+    *,
+    provider: str,
+    temperature: float = 0.3,
+    max_output_tokens: int = 8192 * 2,
+    system_instruction: str | None = None,
+    json_output: bool = False,
+    thinking_budget: int | None = None,
+    json_schema: dict | None = None,
+    timeout_s: float = 120,
+    **kwargs: Any,
+) -> GenerateResult:
+    if kwargs:
+        unknown = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unsupported generate options: {unknown}")
+    return _run_generate(
+        contents,
+        model,
+        provider=provider,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        system_instruction=system_instruction,
+        json_output=json_output,
+        thinking_budget=thinking_budget,
+        json_schema=json_schema,
+        timeout_s=timeout_s,
+    )
 
 
-async def run_agenerate(contents: Any, model: str, **kwargs: Any) -> Any:
-    provider = kwargs.pop("provider")
-    module = import_module(_GENERATE_MODULES[provider])
-    return await module.run_agenerate(contents=contents, model=model, **kwargs)
+async def run_agenerate(
+    contents: Any,
+    model: str,
+    *,
+    provider: str,
+    temperature: float = 0.3,
+    max_output_tokens: int = 8192 * 2,
+    system_instruction: str | None = None,
+    json_output: bool = False,
+    thinking_budget: int | None = None,
+    json_schema: dict | None = None,
+    timeout_s: float = 120,
+    **kwargs: Any,
+) -> GenerateResult:
+    if kwargs:
+        unknown = ", ".join(sorted(kwargs))
+        raise TypeError(f"Unsupported generate options: {unknown}")
+    return await _run_agenerate(
+        contents,
+        model,
+        provider=provider,
+        temperature=temperature,
+        max_output_tokens=max_output_tokens,
+        system_instruction=system_instruction,
+        json_output=json_output,
+        thinking_budget=thinking_budget,
+        json_schema=json_schema,
+        timeout_s=timeout_s,
+    )
 
 
-def list_models(provider: str) -> list[dict]:
-    module = import_module(_GENERATE_MODULES[provider])
-    return module.list_models()
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    chain: list[BaseException] = []
+    current: BaseException | None = exc
+    while current is not None and current not in chain:
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _model_not_found(exc: BaseException) -> bool:
+    for item in _exception_chain(exc):
+        status = getattr(item, "status_code", None)
+        if status is None:
+            status = getattr(getattr(item, "response", None), "status_code", None)
+        if status == 404 or "notfound" in type(item).__name__.lower():
+            return True
+    return False
+
+
+def _validation_reason(exc: BaseException, provider: str) -> str:
+    if _model_not_found(exc):
+        return "model_not_found"
+    for item in _exception_chain(exc):
+        reason = classify_provider_error(item, provider)
+        if reason != "unknown":
+            return reason
+    return "unknown"
+
+
+def _probe(provider: str, model: str, api_key: str) -> None:
+    _run_generate(
+        "Reply OK",
+        model,
+        provider=provider,
+        temperature=None,
+        max_output_tokens=8,
+        system_instruction=None,
+        json_output=False,
+        thinking_budget=None,
+        json_schema=None,
+        timeout_s=10,
+        api_key=api_key,
+        num_retries=0,
+    )
 
 
 def validate_key(provider: str, api_key: str) -> dict:
-    module = import_module(_GENERATE_MODULES[provider])
-    return module.validate_key(api_key)
+    """Verify a personal cloud key through the same transport used at runtime."""
+    from solstone.think.models import default_model_for_provider
+
+    try:
+        _probe(provider, default_model_for_provider(provider), api_key)
+        return {"valid": True}
+    except Exception as exc:
+        reason = _validation_reason(exc, provider)
+        # A 404 or quota response proves the endpoint accepted the credential;
+        # model selection performs the definitive, model-specific probe next.
+        if reason in {"model_not_found", "provider_quota_exceeded"}:
+            return {"valid": True, "probe_reason_code": reason}
+        return {"valid": False, "error": str(exc), "reason_code": reason}
 
 
 def validate_model(provider: str, model: str, api_key: str) -> dict:
-    module = import_module(_GENERATE_MODULES[provider])
-    return module.validate_model(model, api_key)
+    """Verify that a personal cloud key can actually run the selected model."""
+    try:
+        _probe(provider, model, api_key)
+        return {"valid": True}
+    except Exception as exc:
+        return {
+            "valid": False,
+            "error": str(exc),
+            "reason_code": _validation_reason(exc, provider),
+        }
