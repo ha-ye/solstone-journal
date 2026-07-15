@@ -577,7 +577,7 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
         _source_hash = hash_source(Path(args.media))
         if not args.force:
             existing = find_manifest_by_hash(Path(get_journal()), _source_hash)
-            if existing:
+            if existing and existing.get("entry_count", 0) > 0:
                 imported_at = existing.get("imported_at", "unknown date")
                 entry_count = existing.get("entry_count", 0)
                 print(
@@ -1172,6 +1172,12 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                 facet=args.facet,
                 setting=args.setting,
             )
+            if not created_files:
+                raise RuntimeError(
+                    f"No segments were created from transcript {os.path.basename(args.media)}. "
+                    "Either no thinking engine is configured or the file had no segmentable "
+                    "content; choose a thinking engine in Thinking or check the file, then re-import."
+                )
             all_created_files.extend(created_files)
             processing_results["outputs"].append(
                 {

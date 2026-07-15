@@ -22,7 +22,12 @@ from PIL import Image
 import solstone.think.utils as think_utils
 from solstone.convey.secure_listener import ConveyIdentity
 from solstone.think.importers.file_importer import ImportPreview, ImportResult
-from solstone.think.importers.shared import install_source_file
+from solstone.think.importers.shared import (
+    find_manifest_by_hash,
+    hash_source,
+    install_source_file,
+    write_manifest,
+)
 from solstone.think.utils import day_path
 from tests.pdf_worker_fixtures import write_pdf
 
@@ -2109,6 +2114,236 @@ def test_import_one_text_reimport_is_deduped(tmp_path, monkeypatch):
     assert result["reason"] == "already_imported"
     assert len(calls) == 1
     assert len(list(segment_dir.iterdir())) == 1
+
+
+def test_text_import_empty_segments_hard_fails_no_manifest_retry_and_error(
+    tmp_path, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    text_mod = importlib.import_module("solstone.think.importers.text")
+
+    txt = tmp_path / "sample.txt"
+    txt.write_text("hello\nworld")
+    calls = []
+
+    def fake_detect_segment(text, start_time):
+        calls.append((text, start_time))
+        return []
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    monkeypatch.setattr(text_mod, "detect_transcript_segment", fake_detect_segment)
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["importer", str(txt), "--timestamp", "20240101_120000", "--source", "text"],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.main()
+
+    assert txt.name in str(excinfo.value)
+    assert find_manifest_by_hash(tmp_path, hash_source(txt)) is None
+    imports_dir = tmp_path / "imports"
+    manifest_paths = (
+        list(imports_dir.rglob("manifest.json")) if imports_dir.exists() else []
+    )
+    assert manifest_paths == []
+    imported_path = tmp_path / "imports" / "20240101_120000" / "imported.json"
+    assert imported_path.exists()
+    error_state = json.loads(imported_path.read_text(encoding="utf-8"))
+    assert txt.name in error_state["error"]
+
+    # Use a different timestamp so this isolates source-hash dedup instead of
+    # the separate _setup_import same-timestamp collision guard.
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["importer", str(txt), "--timestamp", "20240101_130000", "--source", "text"],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.main()
+
+    assert txt.name in str(excinfo.value)
+    assert len(calls) == 2
+
+
+def test_text_import_json_drop_hard_fails_no_manifest_and_retries(
+    tmp_path, monkeypatch
+):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    text_mod = importlib.import_module("solstone.think.importers.text")
+
+    txt = tmp_path / "sample.txt"
+    txt.write_text("hello\nworld")
+    calls = []
+
+    def fake_detect_segment(text, start_time):
+        calls.append((text, start_time))
+        return [("12:00:00", text)]
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    monkeypatch.setattr(text_mod, "detect_transcript_segment", fake_detect_segment)
+    monkeypatch.setattr(
+        text_mod, "detect_transcript_json", lambda text, segment_start: None
+    )
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["importer", str(txt), "--timestamp", "20240101_120000", "--source", "text"],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.main()
+
+    assert txt.name in str(excinfo.value)
+    assert find_manifest_by_hash(tmp_path, hash_source(txt)) is None
+    imports_dir = tmp_path / "imports"
+    manifest_paths = (
+        list(imports_dir.rglob("manifest.json")) if imports_dir.exists() else []
+    )
+    assert manifest_paths == []
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["importer", str(txt), "--timestamp", "20240101_130000", "--source", "text"],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        mod.main()
+
+    assert txt.name in str(excinfo.value)
+    assert len(calls) == 2
+
+
+def test_import_one_text_zero_entry_manifest_is_ignored(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    text_mod = importlib.import_module("solstone.think.importers.text")
+
+    txt = tmp_path / "sample.txt"
+    txt.write_text("hello\nworld")
+    calls = []
+
+    def fake_detect_segment(text, start_time):
+        calls.append((text, start_time))
+        return [("12:00:00", text)]
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    monkeypatch.setattr(text_mod, "detect_transcript_segment", fake_detect_segment)
+    monkeypatch.setattr(
+        text_mod,
+        "detect_transcript_json",
+        lambda text, segment_start: {
+            "entries": [
+                {
+                    "start": segment_start,
+                    "speaker": "Unknown",
+                    "text": text,
+                }
+            ],
+            "topics": "",
+            "setting": "",
+        },
+    )
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+
+    write_manifest(
+        tmp_path,
+        import_id="20231231_000000",
+        source_type="text",
+        source_hash=hash_source(txt),
+        entry_count=0,
+        files_created=[],
+    )
+
+    result = mod.import_one(txt, timestamp="20240101_120000", source="text")
+
+    assert len(calls) == 1
+    assert result is not None
+    assert result.get("reason") != "already_imported"
+
+
+def test_import_one_text_positive_entry_manifest_still_dedupes(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+    text_mod = importlib.import_module("solstone.think.importers.text")
+
+    txt = tmp_path / "sample.txt"
+    txt.write_text("hello\nworld")
+    calls = []
+
+    def fake_detect_segment(text, start_time):
+        calls.append((text, start_time))
+        return [("12:00:00", text)]
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    monkeypatch.setattr(text_mod, "detect_transcript_segment", fake_detect_segment)
+    monkeypatch.setattr(
+        text_mod,
+        "detect_transcript_json",
+        lambda text, segment_start: {
+            "entries": [
+                {
+                    "start": segment_start,
+                    "speaker": "Unknown",
+                    "text": text,
+                }
+            ],
+            "topics": "",
+            "setting": "",
+        },
+    )
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+
+    write_manifest(
+        tmp_path,
+        import_id="20231231_000000",
+        source_type="text",
+        source_hash=hash_source(txt),
+        entry_count=1,
+        files_created=["x"],
+    )
+
+    result = mod.import_one(txt, timestamp="20240101_120000", source="text")
+
+    assert result is not None
+    assert result["reason"] == "already_imported"
+    assert calls == []
+
+
+def test_import_one_text_happy_path_writes_manifest(tmp_path, monkeypatch):
+    mod = importlib.import_module("solstone.think.importers.cli")
+
+    txt = tmp_path / "sample.txt"
+    txt.write_text("hello\nworld")
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    think_utils._journal_path_cache = None
+    _configure_text_import_runtime(monkeypatch, mod)
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+
+    result = mod.import_one(txt, timestamp="20240101_120000", source="text")
+
+    assert result is not None
+    assert not result.get("skipped")
+    assert result["total_files_created"] >= 1
+    assert len(result["all_created_files"]) >= 1
+    manifest_path = tmp_path / "imports" / "20240101_120000" / "manifest.json"
+    assert manifest_path.exists()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["entry_count"] >= 1
 
 
 def test_file_importer_indexes_created_files_in_process(tmp_path, monkeypatch):
