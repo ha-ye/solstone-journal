@@ -18,10 +18,12 @@ from solstone.convey.secure_listener.framing import (
     FLAG_WINDOW,
     INITIAL_WINDOW,
     MAX_PAYLOAD,
+    MAX_SEND_CREDIT,
     RECOMMENDED_CHUNK,
     RESET_CANCEL,
     RESET_FLOW_CONTROL_ERROR,
     RESET_INTERNAL_ERROR,
+    RESET_PROTOCOL_ERROR,
     Frame,
     FrameDecoder,
     build_close,
@@ -29,6 +31,7 @@ from solstone.convey.secure_listener.framing import (
     build_ping,
     build_pong,
     build_reset,
+    build_window,
     parse_reset_reason,
     parse_window_credit,
 )
@@ -212,15 +215,259 @@ async def test_dialer_mux_pong_records_liveness_without_emit() -> None:
 @pytest.mark.asyncio
 async def test_dialer_mux_malformed_control_frame_closes_without_raising() -> None:
     sent: list[bytes] = []
+    dispatched: list[Frame] = []
 
     async def send(data: bytes) -> None:
         sent.append(data)
 
     mux = client._DialerMultiplexer(send)
-    await mux.feed(Frame(0, FLAG_PING | FLAG_PONG, b"abcdefgh").encode())
+    original_dispatch = mux._dispatch
+
+    async def dispatch_spy(frame: Frame) -> None:
+        dispatched.append(frame)
+        await original_dispatch(frame)
+
+    mux._dispatch = dispatch_spy
+    await mux.feed(
+        Frame(0, FLAG_PING | FLAG_PONG, b"abcdefgh").encode()
+        + build_ping(b"12345678").encode()
+    )
 
     assert mux._closed is True
     assert sent == []
+    assert [frame.flags for frame in dispatched] == [FLAG_PING | FLAG_PONG]
+
+
+@pytest.mark.asyncio
+async def test_dialer_window_credit_exact_cap_is_accepted() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+    stream = await mux.open_stream()
+
+    await mux.feed(build_window(stream.id, MAX_SEND_CREDIT - INITIAL_WINDOW).encode())
+
+    assert stream._state.send_credit == MAX_SEND_CREDIT
+    assert _reset_frames(sent, stream.id) == []
+
+
+@pytest.mark.asyncio
+async def test_dialer_window_credit_overflow_resets_and_forgets() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+    stream = await mux.open_stream()
+
+    await mux.feed(
+        build_window(stream.id, MAX_SEND_CREDIT - INITIAL_WINDOW + 1).encode()
+    )
+
+    resets = _reset_frames(sent, stream.id)
+    assert len(resets) == 1
+    assert parse_reset_reason(resets[0]) == RESET_FLOW_CONTROL_ERROR
+    assert stream._state.reset_reason == RESET_FLOW_CONTROL_ERROR
+    assert stream.id not in mux._streams
+
+
+@pytest.mark.asyncio
+async def test_dialer_window_credit_uses_remaining_credit_accounting() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+    stream = await mux.open_stream()
+    await stream.write(b"x")
+    assert stream._state.send_credit == INITIAL_WINDOW - 1
+
+    await mux.feed(
+        build_window(stream.id, MAX_SEND_CREDIT - INITIAL_WINDOW + 1).encode()
+    )
+
+    assert stream._state.send_credit == MAX_SEND_CREDIT
+    assert _reset_frames(sent, stream.id) == []
+
+    no_consume_sent: list[bytes] = []
+
+    async def no_consume_send(data: bytes) -> None:
+        no_consume_sent.append(data)
+
+    no_consume_mux = client._DialerMultiplexer(no_consume_send)
+    no_consume_stream = await no_consume_mux.open_stream()
+    await no_consume_mux.feed(
+        build_window(
+            no_consume_stream.id,
+            MAX_SEND_CREDIT - INITIAL_WINDOW + 1,
+        ).encode()
+    )
+    no_consume_resets = _reset_frames(no_consume_sent, no_consume_stream.id)
+    assert len(no_consume_resets) == 1
+    assert parse_reset_reason(no_consume_resets[0]) == RESET_FLOW_CONTROL_ERROR
+
+    accum_sent: list[bytes] = []
+
+    async def accum_send(data: bytes) -> None:
+        accum_sent.append(data)
+
+    accum_mux = client._DialerMultiplexer(accum_send)
+    accum_stream = await accum_mux.open_stream()
+    await accum_mux.feed(build_window(accum_stream.id, 0x40000000).encode())
+    assert accum_stream._state.send_credit == 1_074_790_400
+    assert _reset_frames(accum_sent, accum_stream.id) == []
+    await accum_mux.feed(build_window(accum_stream.id, 0x40000000).encode())
+    accum_resets = _reset_frames(accum_sent, accum_stream.id)
+    assert len(accum_resets) == 1
+    assert parse_reset_reason(accum_resets[0]) == RESET_FLOW_CONTROL_ERROR
+
+    single_sent: list[bytes] = []
+
+    async def single_send(data: bytes) -> None:
+        single_sent.append(data)
+
+    single_mux = client._DialerMultiplexer(single_send)
+    single_stream = await single_mux.open_stream()
+    await single_mux.feed(build_window(single_stream.id, 0xFFFFFFFF).encode())
+    single_resets = _reset_frames(single_sent, single_stream.id)
+    assert len(single_resets) == 1
+    assert parse_reset_reason(single_resets[0]) == RESET_FLOW_CONTROL_ERROR
+
+
+@pytest.mark.asyncio
+async def test_dialer_invalid_flags_on_known_stream_reset_and_forget() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+    stream = await mux.open_stream()
+
+    await mux.feed(Frame(stream.id, FLAG_DATA | FLAG_WINDOW, b"x").encode())
+
+    resets = _reset_frames(sent, stream.id)
+    assert len(resets) == 1
+    assert parse_reset_reason(resets[0]) == RESET_PROTOCOL_ERROR
+    assert stream._state.buffered == []
+    assert stream._state.reset_reason == RESET_PROTOCOL_ERROR
+    assert stream.id not in mux._streams
+
+
+@pytest.mark.asyncio
+async def test_dialer_invalid_open_flags_close_existing_stream_before_open_policy() -> (
+    None
+):
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+    stream = await mux.open_stream()
+
+    await mux.feed(Frame(stream.id, FLAG_OPEN | FLAG_WINDOW, b"").encode())
+
+    resets = _reset_frames(sent, stream.id)
+    assert len(resets) == 1
+    assert parse_reset_reason(resets[0]) == RESET_PROTOCOL_ERROR
+    assert stream._state.reset_reason == RESET_PROTOCOL_ERROR
+    assert stream.id not in mux._streams
+
+
+@pytest.mark.asyncio
+async def test_dialer_misplaced_control_on_unknown_stream_resets() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+
+    await mux.feed(Frame(99, FLAG_PING, b"\x00" * 8).encode())
+
+    resets = _reset_frames(sent, 99)
+    assert len(resets) == 1
+    assert parse_reset_reason(resets[0]) == RESET_PROTOCOL_ERROR
+    assert 99 not in mux._streams
+    assert mux._closed is False
+
+
+@pytest.mark.asyncio
+async def test_dialer_misplaced_control_on_known_stream_beats_invalid_data() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+    stream = await mux.open_stream()
+
+    await mux.feed(Frame(stream.id, FLAG_PING | FLAG_DATA, b"x").encode())
+
+    resets = _reset_frames(sent, stream.id)
+    assert len(resets) == 1
+    assert parse_reset_reason(resets[0]) == RESET_PROTOCOL_ERROR
+    assert stream._state.buffered == []
+    assert stream._state.reset_reason == RESET_PROTOCOL_ERROR
+    assert stream.id not in mux._streams
+
+
+@pytest.mark.asyncio
+async def test_dialer_unknown_stream_close_is_ignored() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+
+    await mux.feed(build_close(99).encode())
+
+    assert sent == []
+    assert mux._closed is False
+
+
+@pytest.mark.asyncio
+async def test_dialer_unknown_stream_reset_is_ignored() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+
+    await mux.feed(build_reset(99, RESET_CANCEL).encode())
+
+    assert sent == []
+    assert mux._closed is False
+
+
+@pytest.mark.asyncio
+async def test_dialer_unknown_stream_data_and_window_get_reset() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+
+    await mux.feed(build_data(99, b"x").encode())
+    await mux.feed(build_window(101, 1).encode())
+
+    data_resets = _reset_frames(sent, 99)
+    window_resets = _reset_frames(sent, 101)
+    assert len(data_resets) == 1
+    assert len(window_resets) == 1
+    assert parse_reset_reason(data_resets[0]) == RESET_PROTOCOL_ERROR
+    assert parse_reset_reason(window_resets[0]) == RESET_PROTOCOL_ERROR
+    assert 99 not in mux._streams
+    assert 101 not in mux._streams
 
 
 @pytest.mark.asyncio
@@ -268,6 +515,33 @@ async def test_tunnel_session_pongs_keep_session_alive_and_requests_work(
 
         assert await request_task == (200, {"content-length": "2"}, b"ok")
         assert session.is_alive is True
+    finally:
+        await session.close()
+
+
+@pytest.mark.asyncio
+async def test_tunnel_session_mux_fatal_closes_session_without_keepalive_wait(
+    pass_through_tls: None,
+) -> None:
+    transport = FakeTransport()
+    session = _session(
+        transport,
+        keepalive_interval=60.0,
+        keepalive_timeout=60.0,
+    )
+    try:
+        transport.inbound.put_nowait(
+            Frame(0, FLAG_PING | FLAG_PONG, b"abcdefgh").encode()
+        )
+
+        await _wait_for(
+            lambda: session._closed.is_set() and session._reader_task.done(),
+            timeout=1.0,
+        )
+
+        assert session._mux._closed is True
+        assert transport.closed is True
+        assert session._reader_task.exception() is None
     finally:
         await session.close()
 

@@ -18,6 +18,7 @@ from solstone.convey.secure_listener.framing import (
     FLAG_RESET,
     FLAG_WINDOW,
     HEADER_LEN,
+    MAX_SEND_CREDIT,
     RESET_PROTOCOL_ERROR,
     Frame,
     FrameDecoder,
@@ -127,12 +128,18 @@ def test_reset_reason_parse_roundtrip() -> None:
 
 
 def test_validate_flags_allows_only_legal_combos() -> None:
-    for flag in (FLAG_OPEN, FLAG_DATA, FLAG_CLOSE, FLAG_RESET, FLAG_WINDOW):
+    for flag in (
+        FLAG_OPEN,
+        FLAG_DATA,
+        FLAG_CLOSE,
+        FLAG_RESET,
+        FLAG_WINDOW,
+        FLAG_OPEN | FLAG_DATA,
+        FLAG_OPEN | FLAG_CLOSE,
+        FLAG_DATA | FLAG_CLOSE,
+        FLAG_OPEN | FLAG_DATA | FLAG_CLOSE,
+    ):
         validate_flags(flag)
-    validate_flags(FLAG_OPEN | FLAG_DATA)
-    validate_flags(FLAG_DATA | FLAG_CLOSE)
-    with pytest.raises(ProtocolError):
-        validate_flags(FLAG_OPEN | FLAG_CLOSE)
     with pytest.raises(ProtocolError):
         validate_flags(FLAG_DATA | FLAG_WINDOW)
 
@@ -223,6 +230,10 @@ def test_validate_flags_rejects_pong_combined_with_other_flags() -> None:
 
 def test_control_nonce_len_is_eight() -> None:
     assert CONTROL_NONCE_LEN == 8
+
+
+def test_max_send_credit_is_signed_31_bit_cap() -> None:
+    assert MAX_SEND_CREDIT == (1 << 31) - 1
 
 
 def test_reserved_mask_collapsed_to_bit_seven() -> None:

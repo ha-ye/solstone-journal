@@ -13,12 +13,14 @@ import pytest
 from solstone.convey.secure_listener.framing import (
     FLAG_CLOSE,
     FLAG_DATA,
+    FLAG_OPEN,
     FLAG_PING,
     FLAG_PONG,
     FLAG_RESET,
     FLAG_WINDOW,
     INITIAL_WINDOW,
     MAX_CONCURRENT_STREAMS,
+    MAX_SEND_CREDIT,
     RESET_CANCEL,
     RESET_FLOW_CONTROL_ERROR,
     RESET_INTERNAL_ERROR,
@@ -41,15 +43,19 @@ from solstone.convey.secure_listener.mux import (
     RESET_CTX_BODY_DISCARD_CANCELLATION,
     RESET_CTX_DUPLICATE_OPEN,
     RESET_CTX_HANDLER_EXCEPTION,
+    RESET_CTX_INVALID_FLAGS,
     RESET_CTX_MALFORMED_FRAME,
+    RESET_CTX_MISPLACED_CONTROL,
     RESET_CTX_NO_IDENTITY,
     RESET_CTX_OVER_CREDIT_DATA,
     RESET_CTX_OVER_CREDIT_OPEN,
     RESET_CTX_PARITY_VIOLATION,
     RESET_CTX_STREAM_CAP_OVERFLOW,
     RESET_CTX_UNKNOWN_STREAM,
+    RESET_CTX_WINDOW_OVERFLOW,
     Multiplexer,
     ResetDiagnostic,
+    TunnelFatalError,
 )
 from solstone.convey.secure_listener.wsgi import dispatch_stream
 from solstone.think.link.client import _http_head_bytes
@@ -103,6 +109,24 @@ def _assert_single_reset(
     reason: int,
 ) -> None:
     assert _reset_reasons(frames, stream_id) == [reason]
+
+
+def _assert_single_diag(
+    diags: list[ResetDiagnostic],
+    stream_id: int,
+    reason: int,
+    context: str,
+) -> None:
+    assert diags == [
+        ResetDiagnostic(
+            stream_id=stream_id,
+            reason_code=reason,
+            reason_name="protocol_error"
+            if reason == RESET_PROTOCOL_ERROR
+            else "flow_control_error",
+            context=context,
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -325,6 +349,187 @@ async def test_unknown_stream_window_gets_reset() -> None:
 
 
 @pytest.mark.asyncio
+async def test_listener_window_credit_exact_cap_is_accepted() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True)
+    try:
+        await mux.feed(build_open(1).encode())
+        state = mux._streams[1]
+
+        await mux.feed(build_window(1, MAX_SEND_CREDIT - state.send_credit).encode())
+
+        assert state.send_credit == MAX_SEND_CREDIT
+        assert _reset_reasons(_decode_frames(sent), 1) == []
+        assert 1 in mux._streams
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_listener_window_credit_overflow_resets_and_terminates() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(build_open(1).encode())
+        state = mux._streams[1]
+
+        await mux.feed(
+            build_window(1, MAX_SEND_CREDIT - state.send_credit + 1).encode()
+        )
+
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_FLOW_CONTROL_ERROR)
+        _assert_single_diag(
+            diags,
+            1,
+            RESET_FLOW_CONTROL_ERROR,
+            RESET_CTX_WINDOW_OVERFLOW,
+        )
+        assert 1 not in mux._streams
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_listener_invalid_flags_on_unknown_stream_reset_without_state() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        return
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(Frame(99, FLAG_DATA | FLAG_WINDOW, b"x").encode())
+
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 99, RESET_PROTOCOL_ERROR)
+        _assert_single_diag(
+            diags,
+            99,
+            RESET_PROTOCOL_ERROR,
+            RESET_CTX_INVALID_FLAGS,
+        )
+        assert 99 not in mux._streams
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_listener_invalid_open_flags_reject_before_opening() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+    handler_invoked = False
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        nonlocal handler_invoked
+        handler_invoked = True
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(Frame(1, FLAG_OPEN | FLAG_WINDOW, b"").encode())
+
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_PROTOCOL_ERROR)
+        _assert_single_diag(
+            diags,
+            1,
+            RESET_PROTOCOL_ERROR,
+            RESET_CTX_INVALID_FLAGS,
+        )
+        assert handler_invoked is False
+        assert 1 not in mux._streams
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_listener_invalid_flags_on_known_stream_terminate_without_payload() -> (
+    None
+):
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(build_open(1).encode())
+        state = mux._streams[1]
+
+        await mux.feed(Frame(1, FLAG_DATA | FLAG_WINDOW, b"x").encode())
+
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_PROTOCOL_ERROR)
+        assert bytes(state.reader._buffer) == b""
+        assert diags[-1] == ResetDiagnostic(
+            stream_id=1,
+            reason_code=RESET_PROTOCOL_ERROR,
+            reason_name="protocol_error",
+            context=RESET_CTX_INVALID_FLAGS,
+        )
+        assert 1 not in mux._streams
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_listener_misplaced_pong_on_known_stream_resets_and_terminates() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(build_open(1).encode())
+
+        await mux.feed(Frame(1, FLAG_PONG, b"\x00" * 8).encode())
+
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_PROTOCOL_ERROR)
+        assert diags[-1] == ResetDiagnostic(
+            stream_id=1,
+            reason_code=RESET_PROTOCOL_ERROR,
+            reason_name="protocol_error",
+            context=RESET_CTX_MISPLACED_CONTROL,
+        )
+        assert 1 not in mux._streams
+        assert mux._closed is False
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_streams_do_not_interfere() -> None:
     responses: dict[int, bytes] = {}
 
@@ -390,6 +595,49 @@ async def test_validates_open_reopen_is_protocol_error() -> None:
     await mux.close()
 
 
+@pytest.mark.asyncio
+async def test_listener_local_stream_ids_do_not_recycle_after_forget() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True)
+    try:
+        _reader1, writer1 = await mux.open_stream()
+        assert writer1.stream_id == 2
+        await writer1.reset(RESET_CANCEL, RESET_CTX_APP_CANCELLATION)
+
+        _reader2, writer2 = await mux.open_stream()
+
+        assert writer2.stream_id == 4
+        assert [
+            frame.stream_id for frame in _decode_frames(sent) if frame.flags & FLAG_OPEN
+        ] == [
+            2,
+            4,
+        ]
+    finally:
+        await mux.close()
+
+
+def test_listener_local_stream_id_exhaustion_still_raises() -> None:
+    async def send(_: bytes) -> None:
+        return
+
+    async def handler(*_: object) -> None:
+        return
+
+    mux = Multiplexer(send, handler, is_listener=True)
+    mux._next_local_id = 0x1_0000_0000
+
+    with pytest.raises(RuntimeError, match="stream_id space exhausted"):
+        mux._next_local_stream_id()
+
+
 # ---- streamID==0 PING/PONG keepalive responder ------------------------------
 
 
@@ -452,9 +700,83 @@ async def test_unsolicited_pong_is_silently_dropped() -> None:
     await mux.close()
 
 
+@pytest.mark.parametrize(
+    "frame",
+    [
+        Frame(0, FLAG_PING | FLAG_PONG, b"\x00" * 8),
+        Frame(0, FLAG_PING | FLAG_DATA, b"\x00" * 8),
+    ],
+)
 @pytest.mark.asyncio
-async def test_ping_on_nonzero_stream_is_protocol_error() -> None:
+async def test_stream_zero_malformed_control_raises_tunnel_fatal_once(
+    frame: Frame,
+) -> None:
     sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        pytest.fail("handler should not be invoked for control frames")
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    with pytest.raises(TunnelFatalError, match=RESET_CTX_MALFORMED_FRAME):
+        await mux.feed(frame.encode())
+
+    assert sent == []
+    _assert_single_diag(
+        diags,
+        0,
+        RESET_PROTOCOL_ERROR,
+        RESET_CTX_MALFORMED_FRAME,
+    )
+    assert mux._closed is True
+
+
+@pytest.mark.asyncio
+async def test_decoder_corrupt_frame_fatal_tears_down_streams_without_diag_storm() -> (
+    None
+):
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    await mux.feed(build_open(1).encode() + build_open(3).encode())
+    tasks = [state.task for state in mux._streams.values()]
+    assert all(task is not None for task in tasks)
+    corrupt = bytearray(build_data(1, b"x").encode())
+    corrupt[4] |= 0x80
+
+    with pytest.raises(TunnelFatalError, match=RESET_CTX_MALFORMED_FRAME):
+        await mux.feed(bytes(corrupt))
+
+    for _ in range(20):
+        await asyncio.sleep(0)
+        if all(task.done() for task in tasks if task is not None):
+            break
+
+    assert mux._closed is True
+    assert mux._streams == {}
+    assert all(task.done() for task in tasks if task is not None)
+    _assert_single_diag(
+        diags,
+        0,
+        RESET_PROTOCOL_ERROR,
+        RESET_CTX_MALFORMED_FRAME,
+    )
+
+
+@pytest.mark.asyncio
+async def test_second_feed_after_tunnel_fatal_is_inert() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
 
     async def send(data: bytes) -> None:
         sent.append(data)
@@ -462,16 +784,48 @@ async def test_ping_on_nonzero_stream_is_protocol_error() -> None:
     async def handler(*_: object) -> None:
         return
 
-    mux = Multiplexer(send, handler, is_listener=True)
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    # accept.py awaits reader_task at line 379 and logs this raised fatal in the
+    # generic Exception handler at line 187; direct mux callers should see it.
+    with pytest.raises(TunnelFatalError, match=RESET_CTX_MALFORMED_FRAME):
+        await mux.feed(Frame(0, FLAG_PING, b"short").encode())
+    sent_count = len(sent)
+    diag_count = len(diags)
+
+    await mux.feed(build_ping(b"12345678").encode())
+
+    assert len(sent) == sent_count
+    assert len(diags) == diag_count
+    assert mux._closed is True
+
+
+@pytest.mark.asyncio
+async def test_ping_on_nonzero_stream_is_protocol_error() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        return
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
     # PING on stream 5 (illegal — control frames are streamID==0 only).
     illegal = Frame(stream_id=5, flags=FLAG_PING, payload=b"\x00" * 8).encode()
     await mux.feed(illegal)
 
-    # Behavior parity with other top-level protocol errors: a RESET stamps the
-    # tunnel as broken; we don't have streams to reset here, so the side effect
-    # is internal teardown. The wire effect is no PONG emission.
     frames = _decode_frames(sent)
+    _assert_single_reset(frames, 5, RESET_PROTOCOL_ERROR)
+    _assert_single_diag(
+        diags,
+        5,
+        RESET_PROTOCOL_ERROR,
+        RESET_CTX_MISPLACED_CONTROL,
+    )
     assert not any(f.flags & FLAG_PONG for f in frames)
+    assert 5 not in mux._streams
+    assert mux._closed is False
     await mux.close()
 
 
@@ -886,6 +1240,19 @@ async def test_reset_diagnostics_distinguish_contexts_and_are_privacy_clean(
 
     await collect_with_handler(raising_handler, build_open(1).encode())
 
+    misplaced_mux = Multiplexer(
+        send,
+        waiting_handler,
+        is_listener=True,
+        on_reset=diags.append,
+    )
+    try:
+        await misplaced_mux.feed(
+            Frame(stream_id=5, flags=FLAG_PING, payload=b"\x00" * 8).encode()
+        )
+    finally:
+        await misplaced_mux.close()
+
     malformed_mux = Multiplexer(
         send,
         waiting_handler,
@@ -893,9 +1260,12 @@ async def test_reset_diagnostics_distinguish_contexts_and_are_privacy_clean(
         on_reset=diags.append,
     )
     try:
-        await malformed_mux.feed(
-            Frame(stream_id=5, flags=FLAG_PING, payload=b"\x00" * 8).encode()
-        )
+        with pytest.raises(TunnelFatalError):
+            await malformed_mux.feed(
+                Frame(
+                    stream_id=0, flags=FLAG_PING | FLAG_PONG, payload=b"\x00" * 8
+                ).encode()
+            )
     finally:
         await malformed_mux.close()
 
@@ -973,6 +1343,7 @@ async def test_reset_diagnostics_distinguish_contexts_and_are_privacy_clean(
         RESET_CTX_NO_IDENTITY,
         RESET_CTX_HANDLER_EXCEPTION,
         RESET_CTX_MALFORMED_FRAME,
+        RESET_CTX_MISPLACED_CONTROL,
         RESET_CTX_BODY_DISCARD_CANCELLATION,
         RESET_CTX_APP_CANCELLATION,
     } <= contexts

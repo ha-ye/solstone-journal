@@ -38,6 +38,7 @@ from solstone.convey.secure_listener.framing import (
     INITIAL_WINDOW,
     MAX_CONCURRENT_STREAMS,
     MAX_PAYLOAD,
+    MAX_SEND_CREDIT,
     RECOMMENDED_CHUNK,
     RESET_CANCEL,
     RESET_FLOW_CONTROL_ERROR,
@@ -56,6 +57,7 @@ from solstone.convey.secure_listener.framing import (
     parse_control_nonce,
     parse_reset_reason,
     parse_window_credit,
+    validate_flags,
 )
 from solstone.think.link.tls import TlsError as _TlsError
 
@@ -296,6 +298,8 @@ class _DialerMultiplexer:
             if frame is None:
                 return
             await self._dispatch(frame)
+            if self._closed:
+                return
 
     def close(self) -> None:
         if self._closed:
@@ -311,7 +315,12 @@ class _DialerMultiplexer:
             await self._dispatch_control(frame)
             return
         if frame.flags & (FLAG_PING | FLAG_PONG):
-            self.close()
+            await self._reject_stream(frame)
+            return
+        try:
+            validate_flags(frame.flags)
+        except ProtocolError:
+            await self._reject_stream(frame)
             return
 
         if frame.flags & FLAG_OPEN:
@@ -320,7 +329,8 @@ class _DialerMultiplexer:
 
         state = self._streams.get(frame.stream_id)
         if state is None:
-            await self._emit(build_reset(frame.stream_id, RESET_PROTOCOL_ERROR))
+            if frame.flags & (FLAG_DATA | FLAG_WINDOW):
+                await self._emit(build_reset(frame.stream_id, RESET_PROTOCOL_ERROR))
             return
 
         if frame.flags & FLAG_DATA:
@@ -355,6 +365,11 @@ class _DialerMultiplexer:
                 state.reset_reason = RESET_PROTOCOL_ERROR
                 self._close_stream(state, forget=True)
                 return
+            if state.send_credit + credit > MAX_SEND_CREDIT:
+                await self._emit(build_reset(frame.stream_id, RESET_FLOW_CONTROL_ERROR))
+                state.reset_reason = RESET_FLOW_CONTROL_ERROR
+                self._close_stream(state, forget=True)
+                return
             state.send_credit += credit
             state.credit_event.set()
 
@@ -381,6 +396,13 @@ class _DialerMultiplexer:
             return
         if is_ping:
             await self._emit(build_pong(nonce))
+
+    async def _reject_stream(self, frame: Frame) -> None:
+        state = self._streams.get(frame.stream_id)
+        await self._emit(build_reset(frame.stream_id, RESET_PROTOCOL_ERROR))
+        if state is not None:
+            state.reset_reason = RESET_PROTOCOL_ERROR
+            self._close_stream(state, forget=True)
 
     async def _emit(self, frame: Frame) -> None:
         if self._closed:
@@ -636,6 +658,8 @@ class TunnelSession:
                     await self._transport.send(outbound)
                 if plaintext:
                     await self._mux.feed(plaintext)
+                    if self._mux._closed:
+                        return
         finally:
             await self._cancel_keepalive()
             self._mux.close()

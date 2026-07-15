@@ -33,6 +33,7 @@ from .framing import (
     FLAG_WINDOW,
     INITIAL_WINDOW,
     MAX_CONCURRENT_STREAMS,
+    MAX_SEND_CREDIT,
     RECOMMENDED_CHUNK,
     RESET_CANCEL,
     RESET_FLOW_CONTROL_ERROR,
@@ -52,6 +53,7 @@ from .framing import (
     parse_control_nonce,
     parse_reset_reason,
     parse_window_credit,
+    validate_flags,
 )
 
 if TYPE_CHECKING:
@@ -67,6 +69,9 @@ RESET_CTX_UNKNOWN_STREAM: Final[str] = "unknown_stream"
 RESET_CTX_OVER_CREDIT_DATA: Final[str] = "over_credit_data"
 RESET_CTX_OVER_CREDIT_OPEN: Final[str] = "over_credit_open"
 RESET_CTX_BAD_WINDOW_FRAME: Final[str] = "bad_window_frame"
+RESET_CTX_WINDOW_OVERFLOW: Final[str] = "window_overflow"
+RESET_CTX_INVALID_FLAGS: Final[str] = "invalid_flag_combination"
+RESET_CTX_MISPLACED_CONTROL: Final[str] = "misplaced_control_frame"
 RESET_CTX_HANDLER_EXCEPTION: Final[str] = "handler_exception"
 RESET_CTX_NO_IDENTITY: Final[str] = "no_identity"
 RESET_CTX_APP_CANCELLATION: Final[str] = "app_cancellation"
@@ -91,6 +96,10 @@ class ResetDiagnostic:
 
 
 ResetDiag = Callable[[ResetDiagnostic], None]
+
+
+class TunnelFatalError(Exception):
+    """Raised when a framing violation terminates the whole tunnel."""
 
 
 @dataclass
@@ -173,19 +182,17 @@ class Multiplexer:
         self._on_reset = on_reset
         self._streams: dict[int, _StreamState] = {}
         self._closed = False
+        self._next_local_id = 2 if is_listener else 1
 
     async def feed(self, plaintext: bytes) -> None:
-        if not plaintext:
+        if self._closed or not plaintext:
             return
         self._decoder.feed(plaintext)
         while True:
             try:
                 frame = self._decoder.next()
             except ProtocolError:
-                await self._reset_all(
-                    RESET_PROTOCOL_ERROR,
-                    RESET_CTX_MALFORMED_FRAME,
-                )
+                await self._tunnel_fatal(RESET_CTX_MALFORMED_FRAME)
                 return
             if frame is None:
                 return
@@ -207,7 +214,12 @@ class Multiplexer:
             await self._dispatch_control(frame)
             return
         if frame.flags & (FLAG_PING | FLAG_PONG):
-            await self._reset_all(RESET_PROTOCOL_ERROR, RESET_CTX_MALFORMED_FRAME)
+            await self._reject_stream(frame, RESET_CTX_MISPLACED_CONTROL)
+            return
+        try:
+            validate_flags(frame.flags)
+        except ProtocolError:
+            await self._reject_stream(frame, RESET_CTX_INVALID_FLAGS)
             return
 
         if frame.flags & FLAG_OPEN:
@@ -320,6 +332,14 @@ class Multiplexer:
                 )
                 self._terminate(state)
                 return
+            if state.send_credit + credit > MAX_SEND_CREDIT:
+                await self._emit_reset(
+                    frame.stream_id,
+                    RESET_FLOW_CONTROL_ERROR,
+                    RESET_CTX_WINDOW_OVERFLOW,
+                )
+                self._terminate(state)
+                return
             state.send_credit += credit
             state.credit_event.set()
         if frame.flags & FLAG_RESET:
@@ -334,15 +354,15 @@ class Multiplexer:
         is_ping = bool(frame.flags & FLAG_PING)
         is_pong = bool(frame.flags & FLAG_PONG)
         if is_ping == is_pong:
-            await self._reset_all(RESET_PROTOCOL_ERROR, RESET_CTX_MALFORMED_FRAME)
+            await self._tunnel_fatal(RESET_CTX_MALFORMED_FRAME)
             return
         if frame.flags & ~(FLAG_PING | FLAG_PONG):
-            await self._reset_all(RESET_PROTOCOL_ERROR, RESET_CTX_MALFORMED_FRAME)
+            await self._tunnel_fatal(RESET_CTX_MALFORMED_FRAME)
             return
         try:
             nonce = parse_control_nonce(frame)
         except ProtocolError:
-            await self._reset_all(RESET_PROTOCOL_ERROR, RESET_CTX_MALFORMED_FRAME)
+            await self._tunnel_fatal(RESET_CTX_MALFORMED_FRAME)
             return
         if is_ping:
             await self._emit(build_pong(nonce))
@@ -418,14 +438,18 @@ class Multiplexer:
         await self._emit(build_reset(stream_id, reason))
         self._fire_diag(stream_id, reason, context)
 
-    async def _reset_all(self, reason: int, context: str) -> None:
-        count = 0
-        for state in list(self._streams.values()):
-            count += 1
-            await self._emit_reset(state.stream_id, reason, context)
+    async def _reject_stream(self, frame: Frame, context: str) -> None:
+        state = self._streams.get(frame.stream_id)
+        await self._emit_reset(frame.stream_id, RESET_PROTOCOL_ERROR, context)
+        if state is not None:
             self._terminate(state)
-        if count == 0:
-            self._fire_diag(0, reason, context)
+
+    async def _tunnel_fatal(self, context: str) -> None:
+        if self._closed:
+            return
+        self._fire_diag(0, RESET_PROTOCOL_ERROR, context)
+        await self.close()
+        raise TunnelFatalError(context)
 
     async def open_stream(
         self,
@@ -444,10 +468,8 @@ class Multiplexer:
         return reader, writer
 
     def _next_local_stream_id(self) -> int:
-        start = 2 if self._is_listener else 1
-        cur = start
-        while cur in self._streams:
-            cur += 2
-            if cur > 0xFFFFFFFF:
-                raise RuntimeError("stream_id space exhausted")
-        return cur
+        if self._next_local_id > 0xFFFFFFFF:
+            raise RuntimeError("stream_id space exhausted")
+        stream_id = self._next_local_id
+        self._next_local_id += 2
+        return stream_id

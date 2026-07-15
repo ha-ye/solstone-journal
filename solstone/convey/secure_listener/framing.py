@@ -25,10 +25,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Final
 
-# Flag bits — each frame must carry exactly one of OPEN / DATA / CLOSE /
-# RESET / WINDOW / PING / PONG, except OPEN|DATA (open with initial bytes)
-# and DATA|CLOSE (last data + half-close). PING and PONG ride on stream_id
-# 0 only (control channel) and carry an 8-byte nonce.
+# Flag bits — each received frame must carry one of the canonical SPL flag
+# sets: OPEN, DATA, OPEN|DATA, CLOSE, OPEN|CLOSE, DATA|CLOSE,
+# OPEN|DATA|CLOSE, RESET, WINDOW, PING, or PONG. PING and PONG ride on
+# stream_id 0 only (control channel) and carry an 8-byte nonce.
 FLAG_OPEN: Final[int] = 0x01
 FLAG_DATA: Final[int] = 0x02
 FLAG_CLOSE: Final[int] = 0x04
@@ -50,6 +50,7 @@ RESET_UNSPECIFIED: Final[int] = 0xFF
 HEADER_LEN: Final[int] = 8
 MAX_PAYLOAD: Final[int] = (1 << 24) - 1  # 16 MiB - 1
 INITIAL_WINDOW: Final[int] = 1 << 20  # 1 MiB
+MAX_SEND_CREDIT: Final[int] = (1 << 31) - 1
 MAX_CONCURRENT_STREAMS: Final[int] = 256
 RECOMMENDED_CHUNK: Final[int] = 64 * 1024
 CONTROL_NONCE_LEN: Final[int] = 8
@@ -195,7 +196,9 @@ def validate_flags(flags: int) -> None:
         FLAG_PING,
         FLAG_PONG,
         FLAG_OPEN | FLAG_DATA,
+        FLAG_OPEN | FLAG_CLOSE,
         FLAG_DATA | FLAG_CLOSE,
+        FLAG_OPEN | FLAG_DATA | FLAG_CLOSE,
     }
     if exclusive not in allowed:
         raise ProtocolError(f"illegal flag combination: {flags:#x}")
