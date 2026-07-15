@@ -530,6 +530,124 @@ async def test_listener_misplaced_pong_on_known_stream_resets_and_terminates() -
 
 
 @pytest.mark.asyncio
+async def test_listener_sibling_stream_survives_window_overflow() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(build_open(1).encode() + build_open(3).encode())
+
+        await mux.feed(build_window(1, MAX_SEND_CREDIT).encode())
+
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if 1 not in mux._streams:
+                break
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_FLOW_CONTROL_ERROR)
+        _assert_single_diag(
+            diags,
+            1,
+            RESET_FLOW_CONTROL_ERROR,
+            RESET_CTX_WINDOW_OVERFLOW,
+        )
+        assert 1 not in mux._streams
+        assert 3 in mux._streams
+        assert mux._closed is False
+        assert not any(diag.stream_id == 3 for diag in diags)
+        assert _reset_reasons(frames, 3) == []
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_listener_sibling_stream_survives_invalid_flags() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(build_open(1).encode() + build_open(3).encode())
+
+        await mux.feed(
+            Frame(stream_id=1, flags=FLAG_DATA | FLAG_WINDOW, payload=b"").encode()
+        )
+
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if 1 not in mux._streams:
+                break
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_PROTOCOL_ERROR)
+        _assert_single_diag(
+            diags,
+            1,
+            RESET_PROTOCOL_ERROR,
+            RESET_CTX_INVALID_FLAGS,
+        )
+        assert 1 not in mux._streams
+        assert 3 in mux._streams
+        assert mux._closed is False
+        assert not any(diag.stream_id == 3 for diag in diags)
+        assert _reset_reasons(frames, 3) == []
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
+async def test_listener_sibling_stream_survives_misplaced_control() -> None:
+    sent: list[bytes] = []
+    diags: list[ResetDiagnostic] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    async def handler(*_: object) -> None:
+        await asyncio.Event().wait()
+
+    mux = Multiplexer(send, handler, is_listener=True, on_reset=diags.append)
+    try:
+        await mux.feed(build_open(1).encode() + build_open(3).encode())
+
+        await mux.feed(
+            Frame(stream_id=1, flags=FLAG_PING, payload=b"\x00" * 8).encode()
+        )
+
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if 1 not in mux._streams:
+                break
+        frames = _decode_frames(sent)
+        _assert_single_reset(frames, 1, RESET_PROTOCOL_ERROR)
+        _assert_single_diag(
+            diags,
+            1,
+            RESET_PROTOCOL_ERROR,
+            RESET_CTX_MISPLACED_CONTROL,
+        )
+        assert 1 not in mux._streams
+        assert 3 in mux._streams
+        assert mux._closed is False
+        assert not any(diag.stream_id == 3 for diag in diags)
+        assert _reset_reasons(frames, 3) == []
+    finally:
+        await mux.close()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_streams_do_not_interfere() -> None:
     responses: dict[int, bytes] = {}
 

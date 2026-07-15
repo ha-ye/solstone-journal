@@ -419,6 +419,84 @@ async def test_dialer_misplaced_control_on_known_stream_beats_invalid_data() -> 
 
 
 @pytest.mark.asyncio
+async def test_dialer_sibling_stream_survives_window_overflow() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+    stream = await mux.open_stream()
+    sibling = await mux.open_stream()
+    assert stream.id == 1
+    assert sibling.id == 3
+
+    await mux.feed(build_window(stream.id, MAX_SEND_CREDIT).encode())
+
+    resets = _reset_frames(sent, stream.id)
+    assert len(resets) == 1
+    assert parse_reset_reason(resets[0]) == RESET_FLOW_CONTROL_ERROR
+    assert stream._state.reset_reason == RESET_FLOW_CONTROL_ERROR
+    assert stream.id not in mux._streams
+    assert sibling.id in mux._streams
+    assert sibling._state.reset_reason is None
+    assert _reset_frames(sent, sibling.id) == []
+    assert mux._closed is False
+
+
+@pytest.mark.asyncio
+async def test_dialer_sibling_stream_survives_invalid_flags() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+    stream = await mux.open_stream()
+    sibling = await mux.open_stream()
+    assert stream.id == 1
+    assert sibling.id == 3
+
+    await mux.feed(Frame(stream.id, FLAG_DATA | FLAG_WINDOW, b"").encode())
+
+    resets = _reset_frames(sent, stream.id)
+    assert len(resets) == 1
+    assert parse_reset_reason(resets[0]) == RESET_PROTOCOL_ERROR
+    assert stream._state.reset_reason == RESET_PROTOCOL_ERROR
+    assert stream.id not in mux._streams
+    assert sibling.id in mux._streams
+    assert sibling._state.reset_reason is None
+    assert _reset_frames(sent, sibling.id) == []
+    assert mux._closed is False
+
+
+@pytest.mark.asyncio
+async def test_dialer_sibling_stream_survives_misplaced_control() -> None:
+    sent: list[bytes] = []
+
+    async def send(data: bytes) -> None:
+        sent.append(data)
+
+    mux = client._DialerMultiplexer(send)
+    stream = await mux.open_stream()
+    sibling = await mux.open_stream()
+    assert stream.id == 1
+    assert sibling.id == 3
+
+    await mux.feed(Frame(stream.id, FLAG_PING, b"\x00" * 8).encode())
+
+    resets = _reset_frames(sent, stream.id)
+    assert len(resets) == 1
+    assert parse_reset_reason(resets[0]) == RESET_PROTOCOL_ERROR
+    assert stream._state.reset_reason == RESET_PROTOCOL_ERROR
+    assert stream.id not in mux._streams
+    assert sibling.id in mux._streams
+    assert sibling._state.reset_reason is None
+    assert _reset_frames(sent, sibling.id) == []
+    assert mux._closed is False
+
+
+@pytest.mark.asyncio
 async def test_dialer_unknown_stream_close_is_ignored() -> None:
     sent: list[bytes] = []
 
