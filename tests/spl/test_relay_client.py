@@ -16,7 +16,7 @@ from websockets.datastructures import Headers
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.http11 import Response
 
-from solstone.think.spl import relay_client
+from solstone.think.spl import blob_receiver, relay_client
 from solstone.think.spl.health import (
     LINK_HEALTH_EVENT,
     REASON_HOME_MISSING_MOBILE,
@@ -91,6 +91,20 @@ class FakeTunnelWS:
         if not self.frames:
             raise StopAsyncIteration
         return self.frames.pop(0)
+
+
+class BlockingRecvTunnelWS(FakeTunnelWS):
+    def __init__(self, frames: list[bytes] | None = None) -> None:
+        self.frames = list(frames or [])
+        self.recv_started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def recv(self) -> bytes:
+        if self.frames:
+            return self.frames.pop(0)
+        self.recv_started.set()
+        await self.release.wait()
+        raise ConnectionClosed(None, None)
 
 
 class FakeWriter:
@@ -630,6 +644,65 @@ async def test_tunnel_pre_attach_oserror_records_relay_unreachable(
     assert _health_events(emitted)[-1]["last_relay_tunnel_error"] == (
         REASON_RELAY_TUNNEL_UNREACHABLE
     )
+
+
+@pytest.mark.asyncio
+async def test_tunnel_dispatch_timeout_releases_global_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    client = relay_client.RelayClient(
+        instance_id="instance.test",
+        relay_endpoint="wss://relay.test",
+        service_token=SERVICE_TOKEN,
+        callosum_emit=lambda event, fields: emitted.append((event, dict(fields))),
+        dispatch_read_deadline_s=0.01,
+    )
+    tunnel = BlockingRecvTunnelWS()
+    router = ConnectRouter(tunnels={"slow": tunnel})
+    monkeypatch.setattr(relay_client.websockets, "connect", router)
+
+    await client._handle_tunnel("slow")
+
+    assert client._admission_gate.global_count == 0
+    assert _health_events(emitted)[-1]["last_relay_tunnel_error"] == (
+        REASON_RELAY_TUNNEL_UNREACHABLE
+    )
+
+
+@pytest.mark.asyncio
+async def test_cancelled_blob_tunnel_releases_global_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    emitted: list[tuple[str, dict[str, Any]]] = []
+    client = _client(emitted)
+    tunnel = FakeTunnelWS([b"SBO1rest"])
+    router = ConnectRouter(tunnels={"blob": tunnel})
+    receive_started = asyncio.Event()
+    release_receive = asyncio.Event()
+    monkeypatch.setattr(relay_client.websockets, "connect", router)
+
+    async def fake_receive(*_args: Any, **_kwargs: Any) -> None:
+        receive_started.set()
+        await release_receive.wait()
+
+    monkeypatch.setattr(blob_receiver, "receive_blob", fake_receive)
+    task = asyncio.create_task(client._handle_tunnel("blob"))
+    try:
+        await _wait_until(receive_started.is_set)
+        assert client._admission_gate.global_count == 1
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        release_receive.set()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert client._admission_gate.global_count == 0
 
 
 @pytest.mark.asyncio
