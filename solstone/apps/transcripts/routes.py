@@ -109,8 +109,10 @@ def _day_range_count(day: str, day_dir: Path) -> int:
 
     Reads the per-day ``stats.json`` cache via the stats routine's shared
     freshness primitive; on a fresh hit returns
-    ``transcript_ranges + percept_ranges``. On miss/stale/corrupt/old-schema it
-    falls back to a fresh raw cluster scan for THIS day only. Never writes,
+    ``transcript_ranges + percept_ranges + browser_segments``. On
+    miss/stale/corrupt/old-schema it falls back to a fresh raw segment scan for
+    THIS day only, counting the same three components (audio ranges + screen
+    ranges + browser segments) so both paths stay in parity. Never writes,
     deletes, or mtime-touches ``stats.json``.
     """
     payload = load_fresh_day_cache(day_dir)
