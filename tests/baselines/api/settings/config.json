@@ -14,8 +14,7 @@
     ]
   },
   "env": {
-    "PLAUD_ACCESS_TOKEN": false,
-    "REVAI_ACCESS_TOKEN": false
+    "PLAUD_ACCESS_TOKEN": false
   },
   "identity": {
     "aliases": [

@@ -136,6 +136,7 @@ def test_settings_config_projection_drops_thinking_provider_secrets(
             "ANTHROPIC_API_KEY": "anthropic-secret",
             "TEST_LEAK_SENTINEL": "arbitrary-secret",
             "REVAI_ACCESS_TOKEN": "revai-secret",
+            "PLAUD_ACCESS_TOKEN": "plaud-secret",
         },
         "providers": {
             "active": {
@@ -164,22 +165,16 @@ def test_settings_config_projection_drops_thinking_provider_secrets(
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
         "TEST_LEAK_SENTINEL",
+        "REVAI_ACCESS_TOKEN",
+        "plaud-secret",
         "anthropic",
         "claude-settings-leak-model",
         "endpoint_url",
         endpoint_credential,
     ):
         assert forbidden not in serialized_projection
-    assert set(payload["env"]) == {"REVAI_ACCESS_TOKEN", "PLAUD_ACCESS_TOKEN"}
-    assert payload["env"] == {
-        "REVAI_ACCESS_TOKEN": True,
-        "PLAUD_ACCESS_TOKEN": False,
-    }
-    assert set(payload["runtime_env"]) == {"REVAI_ACCESS_TOKEN", "PLAUD_ACCESS_TOKEN"}
-    assert payload["runtime_env"] == {
-        "REVAI_ACCESS_TOKEN": True,
-        "PLAUD_ACCESS_TOKEN": False,
-    }
+    assert payload["env"] == {"PLAUD_ACCESS_TOKEN": True}
+    assert payload["runtime_env"] == {"PLAUD_ACCESS_TOKEN": False}
 
 
 def test_settings_config_projection_treats_malformed_env_as_empty(settings_env):
@@ -189,7 +184,4 @@ def test_settings_config_projection_treats_malformed_env_as_empty(settings_env):
     response = client.get("/app/settings/api/config")
 
     assert response.status_code == 200
-    assert response.get_json()["env"] == {
-        "REVAI_ACCESS_TOKEN": False,
-        "PLAUD_ACCESS_TOKEN": False,
-    }
+    assert response.get_json()["env"] == {"PLAUD_ACCESS_TOKEN": False}
