@@ -7,7 +7,6 @@ import io
 import json
 import logging
 import os
-import signal  # noqa: F401 - retained with legacy supervisor test imports
 import socket
 import subprocess
 import sys
