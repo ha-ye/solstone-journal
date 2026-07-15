@@ -79,20 +79,20 @@
     },
     "local": {
       "context": null,
-      "detail": "Local models require a supported GPU. This computer has no GPU acceleration available.",
+      "detail": "Finish local model setup, then try the request again.",
       "interface": "generate",
       "model": "local/qwen3.5-4b",
-      "operator_detail": "reason_code=gpu_unavailable; provider=local; status=blocked; model=local/qwen3.5-4b; interface=generate",
+      "operator_detail": "reason_code=local_model_missing; provider=local; status=blocked; model=local/qwen3.5-4b; interface=generate",
       "provider": "local",
-      "reason_code": "gpu_unavailable",
+      "reason_code": "local_model_missing",
       "recovery_action": {
-        "href": "/app/thinking/#main",
-        "label": "Open Settings"
+        "href": "/app/thinking/#local-setup",
+        "label": "Open Local Model Setup"
       },
-      "semantic_key": "gpu_unavailable:local:local/qwen3.5-4b",
+      "semantic_key": "local_model_missing:local:local/qwen3.5-4b",
       "severity": "blocker",
       "status": "blocked",
-      "summary": "local models need GPU acceleration on this computer",
+      "summary": "local model setup is not finished",
       "work_key": null
     },
     "summary": {

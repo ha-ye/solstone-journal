@@ -23,6 +23,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
+from unittest.mock import patch
 
 FROZEN_DATE = "2026-04-15"
 FROZEN_TZ_OFFSET = -7
@@ -125,16 +126,50 @@ def isolated_app_env(journal: Path) -> Iterator[Path]:
     """Patch env so create_app(journal) is fully isolated."""
 
     journal = Path(journal).resolve()
-    prev_override = os.environ.get("SOLSTONE_JOURNAL")
-
-    os.environ["SOLSTONE_JOURNAL"] = str(journal)
+    overrides = {
+        "SOLSTONE_JOURNAL": str(journal),
+        # Match tests/conftest.py's deterministic unit-test runtime. Without
+        # these, baseline regeneration probes host GPU/supervisor state while
+        # test_api_baselines compares against the isolated test contract.
+        "SOL_SKIP_SUPERVISOR_CHECK": "1",
+        "SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES": "1",
+    }
+    previous = {key: os.environ.get(key) for key in overrides}
+    os.environ.update(overrides)
     try:
-        yield journal
+        from solstone.think.providers import local_cuda, local_vulkan
+
+        deterministic_backend = local_cuda.BackendChoice(
+            "vulkan",
+            "test default: no CUDA host",
+        )
+        deterministic_devices = [
+            local_vulkan.VulkanDevice(
+                1,
+                "NVIDIA GeForce GTX 1660 Ti",
+                local_vulkan.VK_TYPE_DISCRETE,
+                6390,
+            )
+        ]
+        with (
+            patch.object(
+                local_cuda,
+                "resolve_local_backend",
+                lambda _pin: deterministic_backend,
+            ),
+            patch.object(
+                local_vulkan,
+                "detect_gpus",
+                lambda: deterministic_devices,
+            ),
+        ):
+            yield journal
     finally:
-        if prev_override is None:
-            os.environ.pop("SOLSTONE_JOURNAL", None)
-        else:
-            os.environ["SOLSTONE_JOURNAL"] = prev_override
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def make_test_client(journal: Path):
