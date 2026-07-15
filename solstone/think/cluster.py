@@ -246,7 +246,7 @@ def _process_segment(
                 }
             )
 
-    # Process raw screen data from screen.jsonl and *_screen.jsonl
+    # Process screen and browser percept content.
     if percepts:
         screen_files = list(segment_path.glob("*screen.jsonl"))
         for screen_jsonl in screen_files:
@@ -823,7 +823,7 @@ def cluster(
     )
     if not entries:
         return (
-            f"No transcript or screen files found for date {day} in {day_dir}.",
+            f"No transcript, screen, or browser files found for date {day} in {day_dir}.",
             empty_counts,
         )
 
@@ -866,7 +866,7 @@ def cluster_period(
     )
     if not entries:
         return (
-            f"No transcript or screen files found for segment {segment}",
+            f"No transcript, screen, or browser files found for segment {segment}",
             empty_counts,
         )
 
@@ -886,7 +886,7 @@ def _load_entries_from_segment(
     Args:
         segment_dir: Path to segment directory (e.g., /path/to/20251109/163045_300)
         transcripts: Whether to load transcript content (JSONL and markdown)
-        percepts: Whether to load raw screen data from *screen.jsonl files
+        percepts: Whether to load screen and browser percept content
         agents: Whether to load agent output summaries from *.md files
 
     Returns:
@@ -959,7 +959,7 @@ def cluster_span(
 
     if not entries:
         return (
-            f"No transcript or screen files found in span: {', '.join(span)}",
+            f"No transcript, screen, or browser files found in span: {', '.join(span)}",
             empty_counts,
         )
 
