@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import gzip
 import hashlib
 import hmac
@@ -660,6 +661,51 @@ async def test_blob_ct_progress_timeout_with_drip_feed_releases_sender(
 
     assert ws.sent == [b"SBR1\x01\x00"]
     assert ws.closed is True
+    assert gate.sender_count(harness["sender_fp"]) == 0
+    assert gate.active_senders() == 0
+
+
+@pytest.mark.asyncio
+async def test_blob_cancel_mid_ciphertext_releases_sender(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _setup_browser_receiver(tmp_path, monkeypatch)
+    offer, enc, ct, _k_ack, _blob_id = _sealed_blob_parts(
+        harness["state"].instance_id,
+        harness["home_spki"],
+        harness["ext_private"],
+        harness["sender_fp_bytes"],
+        _browser_payload("ct-cancel", 18),
+    )
+    gate = BlobAdmissionGate(global_ceiling=10, sender_ceiling=1)
+    ws = BlockingBlobWs([offer + enc + ct[:1]])
+    task = asyncio.create_task(
+        blob_receiver.receive_blob(
+            BufferedWsReader(ws),
+            ws,
+            gate=gate,
+            ingest_post=harness["ingest_post"],
+            ct_deadline_s=30.0,
+        )
+    )
+    try:
+        for _ in range(100):
+            if ws.sent and gate.sender_count(harness["sender_fp"]) == 1:
+                break
+            await asyncio.sleep(0)
+        assert ws.sent == [b"SBR1\x01\x00"]
+        assert gate.sender_count(harness["sender_fp"]) == 1
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    finally:
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
     assert gate.sender_count(harness["sender_fp"]) == 0
     assert gate.active_senders() == 0
 
