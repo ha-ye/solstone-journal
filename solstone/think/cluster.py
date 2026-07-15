@@ -646,7 +646,8 @@ def scan_day(
         Tuple of (audio_ranges, screen_ranges, segments) where
         ranges are ``(start, end)`` pairs in ``HH:MM`` format, segments is a list
         of dicts with ``key``, ``start``, ``end``, ``types``, ``stream``, and
-        ``data_state``.
+        ``data_state``. ``types`` values are ``audio``, ``screen``, ``markdown``,
+        and ``browser``.
     """
     from solstone.think.utils import iter_segments, segment_parse
 
@@ -727,7 +728,8 @@ def cluster_segments(day: str) -> list[dict[str, Any]]:
         - key: segment directory name (HHMMSS_LEN format)
         - start: start time as HH:MM
         - end: end time as HH:MM
-        - types: list of content types present ("audio", "screen", or both)
+        - types: list of content types present ("audio", "screen", "markdown",
+          "browser")
         - data_state: per-modality state for non-absent modalities
     """
     _, _, segments = scan_day(day)

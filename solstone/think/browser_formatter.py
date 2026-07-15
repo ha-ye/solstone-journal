@@ -20,7 +20,6 @@ def format_browser(
     context: dict | None = None,
 ) -> tuple[list[dict], dict]:
     """Format browser JSONL entries to markdown chunks."""
-    _ctx = context or {}
     meta: dict[str, Any] = {"indexer": {"agent": "browser"}}
     chunks: list[dict[str, Any]] = []
 

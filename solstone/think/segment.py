@@ -300,7 +300,7 @@ def _check_stream_json_valid(seg_dir: Path | None) -> tuple[bool, str]:
 
 
 def _check_content_files(seg_dir: Path | None) -> tuple[bool, str]:
-    """Verify transcript content files exist."""
+    """Verify segment content files exist."""
     if seg_dir is None:
         return False, "segment directory missing"
 
