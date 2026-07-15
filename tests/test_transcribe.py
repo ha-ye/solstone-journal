@@ -5,6 +5,7 @@
 
 import json
 import shutil
+import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -256,100 +257,68 @@ class TestLoadAudio:
             assert result.dtype == np.float32
             assert len(result) == sample_rate
 
-    @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
     def test_m4a_returns_numpy_array(self):
         """M4A files should return a numpy array with audio content."""
-        import subprocess
+        # Generated with:
+        # ffmpeg -y -f lavfi \
+        #   -i "sine=frequency=440:duration=0.5:sample_rate=16000" \
+        #   -c:a aac -b:a 64k \
+        #   tests/fixtures/audio/aac_single_track.m4a
+        m4a_path = Path(__file__).parent / "fixtures" / "audio" / "aac_single_track.m4a"
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create source FLAC
-            flac_path = Path(tmpdir) / "source.flac"
-            sample_rate = 16000
-            duration = 0.5
-            t = np.linspace(0, duration, int(sample_rate * duration), dtype=np.float32)
-            data = 0.5 * np.sin(2 * np.pi * 440 * t)
-            sf.write(flac_path, data, sample_rate, format="FLAC")
+        audio = load_audio(m4a_path)
 
-            # Convert to M4A
-            m4a_path = Path(tmpdir) / "test.m4a"
-            result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(flac_path),
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "64k",
-                    str(m4a_path),
-                ],
-                capture_output=True,
-            )
-            assert result.returncode == 0
+        assert isinstance(audio, np.ndarray)
+        assert audio.dtype == np.float32
+        assert len(audio) > 0
 
-            # Test loading returns numpy array
-            audio = load_audio(m4a_path)
-            assert isinstance(audio, np.ndarray)
-            assert audio.dtype == np.float32
-            assert len(audio) > 0
-
-    @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
     def test_multi_track_m4a_mixes_streams(self):
         """load_audio should mix multiple M4A audio streams together."""
-        import subprocess
+        # Generated with:
+        # ffmpeg -y -f lavfi -i "anullsrc=r=16000:cl=mono" \
+        #   -f lavfi -i "sine=frequency=440:duration=1:sample_rate=16000,volume=4" \
+        #   -map 0:a -map 1:a -c:a aac -b:a 64k -t 1 \
+        #   tests/fixtures/audio/aac_multi_track.m4a
+        m4a_path = Path(__file__).parent / "fixtures" / "audio" / "aac_multi_track.m4a"
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            # Create two mono FLAC files to combine into multi-track M4A
-            track0_path = Path(tmpdir) / "track0.flac"
-            track1_path = Path(tmpdir) / "track1.flac"
-            m4a_path = Path(tmpdir) / "test.m4a"
+        audio = load_audio(m4a_path)
 
-            # Track 0: silence (system audio - no content)
-            # Track 1: 440Hz sine wave (microphone - has voice)
-            sample_rate = 16000
-            duration = 1.0  # 1 second
-            t = np.linspace(0, duration, int(sample_rate * duration), dtype=np.float32)
+        assert isinstance(audio, np.ndarray)
+        assert audio.dtype == np.float32
 
-            track0_data = np.zeros_like(t)  # Silence
-            track1_data = 0.5 * np.sin(2 * np.pi * 440 * t)  # 440Hz tone
+        # The mixed audio should have content from track 1 (the sine wave)
+        # AAC compression affects amplitude, so use loose threshold
+        rms = np.sqrt(np.mean(audio**2))
+        assert rms > 0.1, f"Mixed audio should contain signal, got RMS={rms}"
 
-            sf.write(track0_path, track0_data, sample_rate, format="FLAC")
-            sf.write(track1_path, track1_data, sample_rate, format="FLAC")
+    @pytest.mark.integration
+    @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
+    def test_m4a_ffmpeg_round_trip_decodes(self, tmp_path):
+        m4a_path = tmp_path / "round-trip.m4a"
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=0.5:sample_rate=16000",
+                "-c:a",
+                "aac",
+                "-b:a",
+                "64k",
+                str(m4a_path),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
 
-            # Use ffmpeg to create multi-track M4A
-            result = subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-i",
-                    str(track0_path),
-                    "-i",
-                    str(track1_path),
-                    "-map",
-                    "0:a",
-                    "-map",
-                    "1:a",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "64k",
-                    str(m4a_path),
-                ],
-                capture_output=True,
-                text=True,
-            )
-            assert result.returncode == 0, f"ffmpeg failed: {result.stderr}"
+        audio = load_audio(m4a_path)
 
-            audio = load_audio(m4a_path)
-
-            assert isinstance(audio, np.ndarray)
-            assert audio.dtype == np.float32
-
-            # The mixed audio should have content from track 1 (the sine wave)
-            # AAC compression affects amplitude, so use loose threshold
-            rms = np.sqrt(np.mean(audio**2))
-            assert rms > 0.1, f"Mixed audio should contain signal, got RMS={rms}"
+        assert isinstance(audio, np.ndarray)
+        assert audio.dtype == np.float32
+        assert len(audio) > 0
 
     @pytest.mark.parametrize("suffix", sorted(AUDIO_EXTENSIONS - {".m4a"}))
     def test_load_audio_decodes_ext(self, tmp_path, suffix):

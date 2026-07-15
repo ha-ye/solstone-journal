@@ -268,7 +268,7 @@ def test_garbage_and_zero_byte_inputs_exit_corrupt(tmp_path):
         assert "detail" in payload
 
 
-def test_truncation_behavior_is_pinned_to_pdfium_observations(tmp_path):
+def test_deep_truncation_maps_to_corrupt_exit(tmp_path):
     clean = tmp_path / "clean.pdf"
     deep = tmp_path / "deep.pdf"
     drop_startxref = tmp_path / "drop-startxref.pdf"
@@ -278,6 +278,15 @@ def test_truncation_behavior_is_pinned_to_pdfium_observations(tmp_path):
     deep_result = _run_worker("inspect", str(deep))
     assert deep_result.returncode == 4
     assert _single_json(deep_result)["error"] == "corrupt"
+
+
+@pytest.mark.integration
+def test_mild_truncation_is_silently_repaired_by_pdfium(tmp_path):
+    clean = tmp_path / "clean.pdf"
+    deep = tmp_path / "deep.pdf"
+    drop_startxref = tmp_path / "drop-startxref.pdf"
+    drop_eof = tmp_path / "drop-eof.pdf"
+    write_truncation_fixtures(clean, deep, drop_startxref, drop_eof)
 
     clean_payload = _single_json(_run_worker("extract", str(clean)))
     for mild_truncation in (drop_startxref, drop_eof):

@@ -3,135 +3,54 @@
 
 from __future__ import annotations
 
-import json
-import os
-import select
+import asyncio
+import io
 import signal
-import subprocess
-import sys
-import textwrap
-import time
 
 import pytest
 
+from solstone.think import talents
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics")
-def test_talent_main_sigterm_exits_without_cancelled_traceback(tmp_path):
-    journal = tmp_path / "journal"
-    journal.mkdir()
-    (journal / "config").mkdir()
-    (journal / "config" / "journal.json").write_text(
-        json.dumps(
-            {"providers": {"active": {"provider": "test", "model": "test-model"}}}
-        ),
-        encoding="utf-8",
-    )
 
-    talent_dir = tmp_path / "talent"
-    talent_dir.mkdir()
-    (talent_dir / "test_cogitate.md").write_text(
-        '{\n  "type": "cogitate",\n  "title": "Test Cogitate"\n}\n\nTest prompt\n',
-        encoding="utf-8",
-    )
+def test_talent_main_cancellation_exits_without_cancelled_traceback(
+    monkeypatch, capsys
+):
+    def fake_run(coro):
+        coro.close()
+        raise asyncio.CancelledError
 
-    sitecustomize = tmp_path / "sitecustomize.py"
-    sitecustomize.write_text(
-        textwrap.dedent(
-            f"""
-            import asyncio
-            import pathlib
-            import sys
-            import types
+    monkeypatch.setattr(talents.asyncio, "run", fake_run)
 
-            import solstone.think.providers as providers
-            import solstone.think.talent as talent
+    with pytest.raises(SystemExit) as exc:
+        talents.main()
 
-            talent.TALENT_DIR = pathlib.Path({str(talent_dir)!r})
+    assert exc.value.code == 0
+    captured = capsys.readouterr()
+    assert "Traceback" not in captured.err
+    assert "CancelledError" not in captured.err
 
-            fake_provider = types.ModuleType("solstone_test_provider")
 
-            async def run_cogitate(config, on_event=None):
-                sys.stderr.write("provider-awaiting\\n")
-                sys.stderr.flush()
-                await asyncio.sleep(30)
+def test_talent_main_async_registers_sigterm_cancel_handler(monkeypatch):
+    monkeypatch.setattr(talents.sys, "argv", ["talents"])
+    monkeypatch.setattr(talents, "require_solstone", lambda: None)
+    monkeypatch.setattr(talents.sys, "stdin", io.StringIO(""))
+    recorded = []
 
-            fake_provider.run_cogitate = run_cogitate
-            providers.PROVIDER_REGISTRY["test"] = "solstone_test_provider"
-            providers.PROVIDER_METADATA["test"] = {{
-                "label": "Test",
-                "env_key": "",
-            }}
-            sys.modules["solstone_test_provider"] = fake_provider
-            """
-        ).lstrip(),
-        encoding="utf-8",
-    )
+    async def runner():
+        loop = asyncio.get_running_loop()
 
-    env = os.environ.copy()
-    env["SOLSTONE_JOURNAL"] = str(journal)
-    env["SOL_SKIP_SUPERVISOR_CHECK"] = "1"
-    env["PYTHONUNBUFFERED"] = "1"
-    env["PYTHONPATH"] = (
-        str(tmp_path)
-        if not env.get("PYTHONPATH")
-        else str(tmp_path) + os.pathsep + env["PYTHONPATH"]
-    )
+        def record_signal_handler(sig, cb, *_args):
+            recorded.append((sig, cb))
 
-    proc = subprocess.Popen(
-        [sys.executable, "-m", "solstone.think.talents"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=env,
-    )
+        def ignore_signal_handler(_sig):
+            return None
 
-    request = {
-        "name": "test_cogitate",
-        "prompt": "hello",
-    }
-    assert proc.stdin is not None
-    proc.stdin.write(json.dumps(request).encode("utf-8") + b"\n")
-    proc.stdin.flush()
+        monkeypatch.setattr(loop, "add_signal_handler", record_signal_handler)
+        monkeypatch.setattr(loop, "remove_signal_handler", ignore_signal_handler)
+        await talents.main_async()
 
-    assert proc.stderr is not None
-    stderr_seen = bytearray()
-    deadline = time.monotonic() + 5
-    while b"provider-awaiting" not in stderr_seen and time.monotonic() < deadline:
-        remaining = max(0, deadline - time.monotonic())
-        readable, _, _ = select.select([proc.stderr], [], [], remaining)
-        if not readable:
-            break
-        line = proc.stderr.readline()
-        if not line:
-            break
-        stderr_seen.extend(line)
+    asyncio.run(runner())
 
-    if b"provider-awaiting" not in stderr_seen:
-        try:
-            stdout, stderr_rest = proc.communicate(timeout=1)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            stdout, stderr_rest = proc.communicate()
-        pytest.fail(
-            "talent process did not reach provider await\n"
-            f"stdout={stdout.decode(errors='replace')}\n"
-            f"stderr={(bytes(stderr_seen) + stderr_rest).decode(errors='replace')}"
-        )
-
-    proc.send_signal(signal.SIGTERM)
-
-    try:
-        stdout, stderr_rest = proc.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        stdout, stderr_rest = proc.communicate()
-        pytest.fail(
-            "talent process did not exit after SIGTERM\n"
-            f"stdout={stdout.decode(errors='replace')}\n"
-            f"stderr={(bytes(stderr_seen) + stderr_rest).decode(errors='replace')}"
-        )
-
-    stderr = bytes(stderr_seen) + stderr_rest
-    assert proc.returncode == 0, stderr.decode(errors="replace")
-    assert b"Traceback" not in stderr
-    assert b"CancelledError" not in stderr
+    sigterm_cbs = [cb for sig, cb in recorded if sig == signal.SIGTERM]
+    assert sigterm_cbs
+    assert all(getattr(cb, "__name__", "") == "cancel" for cb in sigterm_cbs)

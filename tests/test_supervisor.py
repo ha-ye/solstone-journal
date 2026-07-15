@@ -7,7 +7,7 @@ import io
 import json
 import logging
 import os
-import signal
+import signal  # noqa: F401 - retained with legacy supervisor test imports
 import socket
 import subprocess
 import sys
@@ -2977,45 +2977,30 @@ def test_collect_task_status_snapshots_active_under_lock():
 
 def test_enforce_deadlines_terminates_stopped_task(caplog, monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
-    proc = subprocess.Popen(["sh", "-c", "kill -STOP $$; sleep 60"])
-    try:
-        child = psutil.Process(proc.pid)
-        for _ in range(30):
-            if child.status() == psutil.STATUS_STOPPED:
-                break
-            time.sleep(0.1)
-        else:
-            pytest.fail("subprocess did not enter stopped state")
 
-        queue = mod.TaskQueue(on_queue_change=None)
-        managed = _TaskManagedStub(cmd=["sleep"], start_time=time.time())
-        managed.process.pid = proc.pid
-        queue._caps["sleep"] = 60
-        queue._active["ref-1"] = managed
-        terminate = MagicMock()
-        monkeypatch.setattr(mod, "_start_termination_thread", terminate)
-        caplog.set_level(logging.WARNING)
+    class StoppedProcess:
+        def __init__(self, pid):
+            self.pid = pid
 
-        queue.enforce_deadlines(time.time())
-        terminate.assert_not_called()
+        def status(self):
+            return mod.psutil.STATUS_STOPPED
 
-        queue.enforce_deadlines(time.time())
+    monkeypatch.setattr(mod.psutil, "Process", StoppedProcess)
+    terminate = MagicMock()
+    monkeypatch.setattr(mod, "_start_termination_thread", terminate)
+    queue = mod.TaskQueue(on_queue_change=None)
+    managed = _TaskManagedStub(cmd=["sol", "import"], start_time=100.0)
+    queue.set_cap("import", 300)
+    queue._active["ref-1"] = managed
+    caplog.set_level(logging.WARNING)
 
-        terminate.assert_called_once_with(
-            "ref-1", managed, timeout=2.0, reason="stopped"
-        )
-        assert "stopped" in caplog.text
-    finally:
-        try:
-            os.kill(proc.pid, signal.SIGCONT)
-        except ProcessLookupError:
-            pass
-        try:
-            proc.terminate()
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait(timeout=5)
+    queue.enforce_deadlines(110.0)
+    terminate.assert_not_called()
+
+    queue.enforce_deadlines(110.0)
+
+    terminate.assert_called_once_with("ref-1", managed, timeout=2.0, reason="stopped")
+    assert "stopped" in caplog.text
 
 
 def test_enforce_deadlines_does_not_probe_status_under_lock(monkeypatch):

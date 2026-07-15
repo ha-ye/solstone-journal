@@ -43,6 +43,8 @@ def client(tmp_path, monkeypatch):
     segment_dir = journal / "chronicle" / DAY / STREAM / SEGMENT
     segment_dir.mkdir(parents=True)
     shutil.copyfile(FIXTURE_MEDIA, segment_dir / MEDIA_FILE)
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not installed")
     build_moov_at_tail_m4a(segment_dir / AUDIO_FILE, 3.0)
     (segment_dir / IMAGE_FILE).write_bytes(b"\xff\xd8\xff\xe0jpeg")
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))

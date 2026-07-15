@@ -42,6 +42,10 @@ from solstone.think.importers import health_schema
 FIXTURE_DAY = "20260304"
 FIXTURE_STREAM = "default"
 FIXTURE_SEGMENT = "090000_300"
+_requires_ffmpeg = pytest.mark.skipif(
+    shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
+    reason="ffmpeg/ffprobe not installed",
+)
 
 
 def _apple_health_card_stream() -> str:
@@ -1557,6 +1561,8 @@ def test_segment_content_falls_back_to_segment_window_duration(client, journal_c
     assert duration > 0
 
 
+@pytest.mark.integration
+@_requires_ffmpeg
 def test_moov_at_tail_m4a_fixture_has_tail_moov_and_true_duration(tmp_path):
     media_path = tmp_path / "tail-moov.m4a"
 
@@ -1570,6 +1576,7 @@ def test_moov_at_tail_m4a_fixture_has_tail_moov_and_true_duration(tmp_path):
     assert b"mvhd" not in head
 
 
+@_requires_ffmpeg
 def test_segment_content_returns_finite_duration_for_moov_at_tail_audio(
     client, journal_copy, tmp_path
 ):
@@ -1589,6 +1596,7 @@ def test_segment_content_returns_finite_duration_for_moov_at_tail_audio(
     assert duration == pytest.approx(true_duration, abs=1.0)
 
 
+@_requires_ffmpeg
 def test_segment_content_does_not_probe_served_m4a(
     client, journal_copy, tmp_path, monkeypatch
 ):
