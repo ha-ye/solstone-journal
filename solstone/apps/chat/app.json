@@ -1,6 +1,12 @@
 {
   "icon": "💬",
   "label": "chat",
-  "date_nav": true,
-  "allow_future_dates": false
+  "date_nav": {
+    "mount": "content",
+    "unit": {
+      "one": "message",
+      "other": "messages",
+      "none": "no messages"
+    }
+  }
 }

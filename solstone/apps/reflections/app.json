@@ -1,8 +1,15 @@
 {
   "icon": "🌙",
   "label": "reflections",
-  "date_nav": true,
-  "allow_future_dates": false,
+  "date_nav": {
+    "mount": "content",
+    "unit": {
+      "one": "reflection",
+      "other": "reflections",
+      "none": "no reflection"
+    },
+    "step": "week"
+  },
   "facets": {
     "disabled": true
   }

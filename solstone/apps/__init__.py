@@ -28,10 +28,12 @@ app.json fields (all optional):
       "label": "Custom Label", # Display label (default: title-cased app name)
       "facets": {},            # Facet options: {"disabled": true} to hide facet bar
       "date_nav": {"mount": "content", "unit": {"one": "item", ...}},
-                              # Normalized {unit, allow_future, mount} config;
+                              # Normalized {unit, allow_future, mount, step} config;
                               # legacy true -> {unit: None,
                               # allow_future: <allow_future_dates>,
-                              # mount: "chrome"}
+                              # mount: "chrome", step: None};
+                              # step: "week" makes the leaf level week rows
+                              # (reflections only)
       "app_bar": false,        # Hide the universal chat bar on this app (default: true)
       "allow_future_dates": true, # Allow future dates in month picker (default: false)
     }
@@ -73,6 +75,7 @@ def _parse_date_nav(metadata: dict) -> dict | None:
             "unit": None,
             "allow_future": bool(metadata.get("allow_future_dates", False)),
             "mount": "chrome",
+            "step": None,
         }
 
     if not isinstance(date_nav, dict):
@@ -83,6 +86,10 @@ def _parse_date_nav(metadata: dict) -> dict | None:
         raise AppConfigError("date_nav.mount must be 'chrome' or 'content'")
 
     unit = date_nav.get("unit")
+    step = date_nav.get("step")
+    if step not in (None, "week"):
+        raise AppConfigError("date_nav.step must be 'week' or omitted")
+
     allow_future = bool(
         date_nav.get("allow_future", metadata.get("allow_future_dates", False))
     )
@@ -94,7 +101,7 @@ def _parse_date_nav(metadata: dict) -> dict | None:
             "{kind: 'currency'}"
         )
 
-    return {"unit": unit, "allow_future": allow_future, "mount": mount}
+    return {"unit": unit, "allow_future": allow_future, "mount": mount, "step": step}
 
 
 def _valid_content_date_nav_unit(unit: Any) -> bool:

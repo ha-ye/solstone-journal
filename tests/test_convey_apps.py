@@ -71,11 +71,13 @@ def test_parse_date_nav_normalizes_legacy_and_content_configs():
         "unit": None,
         "allow_future": True,
         "mount": "chrome",
+        "step": None,
     }
     assert _parse_date_nav({"date_nav": {"unit": {"one": "log"}}}) == {
         "unit": {"one": "log"},
         "allow_future": False,
         "mount": "chrome",
+        "step": None,
     }
     assert _parse_date_nav(
         {
@@ -92,6 +94,7 @@ def test_parse_date_nav_normalizes_legacy_and_content_configs():
         "unit": {"one": "segment", "other": "segments", "none": "no segments"},
         "allow_future": False,
         "mount": "content",
+        "step": None,
     }
     assert _parse_date_nav(
         {"date_nav": {"mount": "content", "unit": {"kind": "currency"}}}
@@ -99,6 +102,29 @@ def test_parse_date_nav_normalizes_legacy_and_content_configs():
         "unit": {"kind": "currency"},
         "allow_future": False,
         "mount": "content",
+        "step": None,
+    }
+    assert _parse_date_nav(
+        {
+            "date_nav": {
+                "mount": "content",
+                "unit": {
+                    "one": "reflection",
+                    "other": "reflections",
+                    "none": "no reflection",
+                },
+                "step": "week",
+            }
+        }
+    ) == {
+        "unit": {
+            "one": "reflection",
+            "other": "reflections",
+            "none": "no reflection",
+        },
+        "allow_future": False,
+        "mount": "content",
+        "step": "week",
     }
 
     with pytest.raises(AppConfigError):
@@ -107,6 +133,16 @@ def test_parse_date_nav_normalizes_legacy_and_content_configs():
         _parse_date_nav({"date_nav": {"mount": "content"}})
     with pytest.raises(AppConfigError):
         _parse_date_nav({"date_nav": {"mount": "content", "unit": {"one": "log"}}})
+    with pytest.raises(AppConfigError):
+        _parse_date_nav(
+            {
+                "date_nav": {
+                    "mount": "content",
+                    "unit": {"one": "log", "other": "logs", "none": "no logs"},
+                    "step": "month",
+                }
+            }
+        )
 
 
 def test_shell_payload_emits_normalized_date_nav(monkeypatch):
@@ -135,17 +171,22 @@ def test_shell_payload_emits_normalized_date_nav(monkeypatch):
     assert sorted(content_apps) == [
         "activities",
         "body",
+        "chat",
+        "reflections",
         "sol",
         "speakers",
         "timeline",
         "tokens",
         "transcripts",
     ]
-    assert sorted(chrome_apps) == ["chat", "reflections"]
+    assert sorted(chrome_apps) == []
     assert apps["news"]["date_nav"] is None
     for name, app in apps.items():
         if app["date_nav"]:
             assert app["date_nav"]["allow_future"] is (name == "activities")
+            assert app["date_nav"]["step"] == (
+                "week" if name == "reflections" else None
+            )
 
 
 def test_get_facets_data_adds_icon_svg_and_preserves_emoji(monkeypatch):
