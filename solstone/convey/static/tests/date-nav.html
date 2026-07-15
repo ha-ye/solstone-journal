@@ -101,6 +101,28 @@
       window.DateNav.isSelectableFutureDay('20991231', { allow_future: false }, now),
       false
     );
+    equal('week control label', window.DateNav.weekControlLabel('20260712', now), 'Week of Jul 12');
+    equal('week control label other year', window.DateNav.weekControlLabel('20251228', now), "Week of Dec 28 '25");
+    equal('week heading this week', window.DateNav.weekHeadingLabel('20260712', now), 'This week');
+    equal('week heading last week', window.DateNav.weekHeadingLabel('20260705', now), 'Last week');
+    equal('week heading older week', window.DateNav.weekHeadingLabel('20260628', now), 'Week of Jun 28');
+    equal('stepDay day step', window.DateNav.stepDay('20260308', 1, {}), '20260309');
+    equal('stepDay week step', window.DateNav.stepDay('20260308', 1, { step: 'week' }), '20260315');
+    equal('sundayOf mid-week', window.DateNav.sundayOf('20260310'), '20260308');
+
+    let steppedSunday = '20260308';
+    const steppedSundays = new Set();
+    for (let index = 0; index < 7; index += 1) {
+      steppedSunday = window.DateNav.stepDay(steppedSunday, 1, { step: 'week' });
+      steppedSundays.add(steppedSunday);
+      const target = new Date(
+        Number(steppedSunday.slice(0, 4)),
+        Number(steppedSunday.slice(4, 6)) - 1,
+        Number(steppedSunday.slice(6, 8))
+      );
+      assert(`week step target ${index + 1} is Sunday`, target.getDay() === 0);
+    }
+    equal('week step targets are unique', steppedSundays.size, 7);
 
     equal('bad current path is dayless', window.DateNav.day(), null);
     equal('general app path parses day', window.DateNav.parseDayFromPath('/app/sol/20260714'), '20260714');
@@ -115,7 +137,7 @@
       { mount: 'content', unit: { one: 'reading', other: 'readings', none: 'no readings' } },
       { index: { coverage: { start: '20260703', end: '20260704' }, months: { 202607: 4 } } }
     );
-    equal('dayless label', document.querySelector('[data-date-nav-label]')?.textContent, 'pick a day 📅');
+    equal('dayless label', document.querySelector('[data-date-nav-label]')?.textContent, 'pick a day');
     assert('dayless prev hidden', document.querySelector('[data-date-nav-prev]')?.hidden === true);
     assert('dayless next hidden', document.querySelector('[data-date-nav-next]')?.hidden === true);
     equal('dayless heading emptied', document.querySelector('[data-date-nav-heading]')?.textContent, '');
@@ -167,6 +189,56 @@
     const selectedCell = document.querySelector('[data-date-nav-cell="day"][data-value="20260304"]');
     assert('currency aria is formatted dollars', selectedCell?.getAttribute('aria-label')?.includes('$0.48'));
     assert('currency aria is not items literal', !(selectedCell?.getAttribute('aria-label') || '').includes('0.4823 items'));
+
+    await mount(
+      'reflections',
+      '/app/reflections/20260310',
+      {
+        mount: 'content',
+        unit: { one: 'reflection', other: 'reflections', none: 'no reflection' },
+        step: 'week'
+      },
+      {
+        index: { coverage: { start: '20260301', end: '20260329' }, months: { 202603: 3 } },
+        stats: { 202603: { 20260301: 1, 20260308: 1, 20260315: 1 } }
+      }
+    );
+    equal('week mounted canonical day', window.DateNav.day(), '20260308');
+    equal('week mounted control label', document.querySelector('[data-date-nav-label]')?.textContent, 'Week of Mar 8');
+    document.querySelector('[data-date-nav-trigger]')?.click();
+    await tick();
+    await tick();
+    equal('week grid is one column', document.querySelector('[data-date-nav-grid]')?.dataset.cols, '1');
+    const weekValues = Array.from(document.querySelectorAll('[data-date-nav-cell="week"]')).map((cell) => cell.dataset.value);
+    equal('week grid Sunday count', weekValues.length, 5);
+    ['20260301', '20260308', '20260315', '20260322', '20260329'].forEach((value) => {
+      assert(`week grid includes ${value}`, weekValues.includes(value));
+    });
+    ['20260301', '20260308', '20260315'].forEach((value) => {
+      assert(
+        `present week ${value} enabled`,
+        document.querySelector(`[data-date-nav-cell="week"][data-value="${value}"]`)?.disabled === false
+      );
+    });
+    ['20260322', '20260329'].forEach((value) => {
+      assert(
+        `absent week ${value} disabled`,
+        document.querySelector(`[data-date-nav-cell="week"][data-value="${value}"]`)?.disabled === true
+      );
+    });
+    assert(
+      'canonicalized selected week',
+      document
+        .querySelector('[data-date-nav-cell="week"][data-value="20260308"]')
+        ?.classList.contains('date-nav-content__cell--selected') === true
+    );
+    const firstIntensity = document
+      .querySelector('[data-date-nav-cell="week"][data-value="20260301"]')
+      ?.style.getPropertyValue('--intensity');
+    const secondIntensity = document
+      .querySelector('[data-date-nav-cell="week"][data-value="20260308"]')
+      ?.style.getPropertyValue('--intensity');
+    equal('present week intensity matches', firstIntensity, secondIntensity);
 
     assert('summary', failures === 0, failures ? `${failures} failure(s)` : 'all checks passed');
   }
