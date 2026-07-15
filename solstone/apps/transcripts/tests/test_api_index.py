@@ -33,14 +33,17 @@ def _expected_nonzero_days(journal: Path) -> dict[str, int]:
 def test_api_index_reports_nonzero_coverage_and_months(
     client: Any,
     journal_copy: Path,
+    seed_browser_fixture_inventory: Any,
 ) -> None:
+    seed_browser_fixture_inventory()
+
     response = client.get("/app/transcripts/api/index")
     assert response.status_code == 200
     body = response.get_json()
 
     expected_days = _expected_nonzero_days(journal_copy)
     assert min(expected_days) == "20240101"
-    assert max(expected_days) == "20260520"
+    assert max(expected_days) == "20260703"
     assert body["coverage"] == {
         "start": min(expected_days),
         "end": max(expected_days),

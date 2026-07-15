@@ -60,8 +60,10 @@ def _build_journal(base_path):
     day = journal / "chronicle" / "20240101"
     seg1 = day / "default" / "123456_300"
     seg2 = day / "default" / "134500_300"
+    browser_seg = day / "workstation.browser" / "140000_300"
     seg1.mkdir(parents=True)
     seg2.mkdir(parents=True)
+    browser_seg.mkdir(parents=True)
     (day / "talents").mkdir(parents=True)
 
     audio_lines = [
@@ -83,6 +85,19 @@ def _build_journal(base_path):
     )
 
     (seg2 / "audio.flac").write_bytes(b"fLaC")
+    browser_lines = [
+        {
+            "t": "segment_start",
+            "ts": 1704117600000,
+            "site": "docs.example.com",
+            "title": "Stats Browser Fixture",
+            "adapter": "docs",
+            "blocks": [{"type": "text", "text": "browser stats fixture"}],
+        }
+    ]
+    (browser_seg / "browser_docs-example-com.jsonl").write_text(
+        "\n".join(json.dumps(line) for line in browser_lines) + "\n"
+    )
     (day / "talents" / "schedule.json").write_text("[]")
 
     facet_dir = journal / "facets" / "work"

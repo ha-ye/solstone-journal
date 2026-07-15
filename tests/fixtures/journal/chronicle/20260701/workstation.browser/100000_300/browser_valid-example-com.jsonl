@@ -1,0 +1,2 @@
+{"t":"segment_start","ts":1782921600000,"rel":0,"site":"valid.example.com","url":"https://valid.example.com/page","title":"Valid Browser Fixture","adapter":"","ctx":"page","n":2,"blocks":[{"type":"heading","text":"Valid Browser Fixture"},{"type":"text","text":"Valid file beside a corrupt one."}]}
+{"t":"delta","ts":1782921610000,"rel":10000,"site":"valid.example.com","adapter":"","ctx":"page","op":"add","block":{"type":"text","text":"Valid delta still renders."}}

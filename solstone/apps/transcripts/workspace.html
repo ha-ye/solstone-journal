@@ -264,6 +264,11 @@ body.has-app-bar .tr-card {
   border: 1px solid #eab308;
 }
 
+.tr-seg-browser {
+  background: rgba(147, 197, 253, 0.55);
+  border: 1px solid #2563eb;
+}
+
 .tr-seg-markdown {
   background: rgba(147, 197, 253, 0.6);
   border: 1px solid #3b82f6;
@@ -1162,6 +1167,11 @@ body.has-app-bar .tr-zoom {
   border: 1px solid #3b82f6;
 }
 
+.tr-zoom-pill-browser {
+  background: linear-gradient(135deg, rgba(96, 165, 250, 0.78), rgba(191, 219, 254, 0.68));
+  border: 1px solid #2563eb;
+}
+
 .tr-zoom-pill-both {
   background: linear-gradient(to right, rgba(134, 239, 172, 0.75), rgba(194, 234, 155, 0.7) 50%, rgba(253, 230, 138, 0.75));
   border: 1px solid #84cc16;
@@ -1622,6 +1632,11 @@ body.has-app-bar .tr-zoom {
   border-left: 3px solid #facc15;
 }
 
+.tr-entry-browser {
+  border-left: 3px solid #60a5fa;
+  cursor: default;
+}
+
 .tr-entry-time {
   flex-shrink: 0;
   width: 48px;
@@ -1644,6 +1659,26 @@ body.has-app-bar .tr-zoom {
   font-size: 11px;
   color: #9ca3af;
   margin-top: 2px;
+}
+
+.tr-entry-browser .tr-entry-content {
+  display: grid;
+  gap: 6px;
+}
+
+.tr-browser-site {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.tr-browser-title {
+  color: #6b7280;
+  font-weight: 400;
 }
 
 .tr-entry-thumb {
@@ -1989,6 +2024,7 @@ body.presentation-mode .tr-now-marker { border-top-width: 3px; }
 body.presentation-mode .tr-seg { width: 48px; box-shadow: 0 2px 4px rgba(0,0,0,.10); }
 body.presentation-mode .tr-seg-audio { background: rgba(74, 222, 128, 0.85); border-width: 2px; }
 body.presentation-mode .tr-seg-screen { background: rgba(234, 179, 8, 0.85); border-width: 2px; }
+body.presentation-mode .tr-seg-browser { background: rgba(96, 165, 250, 0.85); border-width: 2px; }
 body.presentation-mode .tr-zoom-pill { font-weight: 700; }
 body.presentation-mode .tr-content { padding: 8px 28px 28px; gap: 20px; }
 body.presentation-mode .tr-title { font-size: 28px; color: #0b1220; }
@@ -3151,9 +3187,24 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     });
   }
 
+  function browserOnlySegments(segments) {
+    return (segments || []).filter(seg => {
+      const types = seg.types || [];
+      return types.includes('browser') && !types.includes('audio') && !types.includes('screen');
+    });
+  }
+
   function addSegmentIndicator(type, startMin, endMin, column, streams = [], state = 'analyzed', think = null, segment = null) {
     const el = document.createElement('div');
-    el.className = 'tr-seg ' + (type === 'screen' ? 'tr-seg-screen' : type === 'markdown' ? 'tr-seg-markdown' : 'tr-seg-audio');
+    el.className = 'tr-seg ' + (
+      type === 'screen'
+        ? 'tr-seg-screen'
+        : type === 'markdown'
+          ? 'tr-seg-markdown'
+          : type === 'browser'
+            ? 'tr-seg-browser'
+            : 'tr-seg-audio'
+    );
     if (state === 'pending') {
       el.classList.add('tr-seg-pending');
     } else if (state === 'analyzing') {
@@ -3351,6 +3402,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       const hasAudio = seg.types.includes('audio');
       const hasScreen = seg.types.includes('screen');
       const hasMarkdown = seg.types.includes('markdown');
+      const hasBrowser = seg.types.includes('browser');
       const dataState = seg.data_state || {};
       const hasPendingAdvertised = (seg.types || []).some(
         type => dataState[type] && dataState[type] !== 'analyzed'
@@ -3364,6 +3416,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         pill.classList.add('tr-zoom-pill-audio');
       } else if (hasMarkdown) {
         pill.classList.add('tr-zoom-pill-markdown');
+      } else if (hasBrowser) {
+        pill.classList.add('tr-zoom-pill-browser');
       } else {
         pill.classList.add('tr-zoom-pill-screen');
       }
@@ -3374,7 +3428,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       } else if (seg.think === 'awaiting') {
         pill.classList.add('tr-zoom-pill-awaiting');
       }
-      const typeLabel = (hasAudio && hasScreen) ? 'audio and screen' : hasAudio ? 'audio' : hasMarkdown ? 'import' : 'screen';
+      const typeLabel = (hasAudio && hasScreen) ? 'audio and screen' : hasAudio ? 'audio' : hasMarkdown ? 'import' : hasBrowser ? 'pages' : 'screen';
 
       if (selectedSegment && selectedSegment.key === seg.key) {
         pill.classList.add('tr-active');
@@ -3383,7 +3437,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       pill.style.top = zoomY(visStart) + 'px';
       pill.style.height = Math.max(4, zoomY(visEnd) - zoomY(visStart)) + 'px';
       const duration = Math.round(visEnd - visStart);
-      const typeDesc = (hasAudio && hasScreen) ? 'audio + screen' : hasAudio ? 'audio' : hasMarkdown ? 'import' : 'screen';
+      const typeDesc = (hasAudio && hasScreen) ? 'audio + screen' : hasAudio ? 'audio' : hasMarkdown ? 'import' : hasBrowser ? 'pages' : 'screen';
       const segmentStatusLabel = hasAnalyzingAdvertised ? 'analyzing' : hasPendingAdvertised ? 'pending' : seg.think === 'awaiting' ? AWAITING_THINKING_LABEL : '';
       const statusSuffix = segmentStatusLabel ? ' · ' + segmentStatusLabel : '';
       const ariaStatusSuffix = segmentStatusLabel ? ', ' + segmentStatusLabel : '';
@@ -3652,6 +3706,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     if (dataState.screen) {
       addTab('screen', 'screen');
     }
+    if (dataState.browser) {
+      addTab('browser', 'pages');
+    }
     if ((data.signals?.events || []).length > 0) {
       addTab('signals', 'signals');
     }
@@ -3689,9 +3746,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       tabPanes[tabId] = pane;
 
       if (tabId === 'transcript') {
-        renderSegmentTimeline(segmentData, true, true, pane);
+        renderSegmentTimeline(segmentData, true, true, pane, true);
       } else if (tabId === 'audio') {
-        renderSegmentTimeline(segmentData, true, false, pane);
+        renderSegmentTimeline(segmentData, true, false, pane, false);
       } else if (tabId === 'screen') {
         const segmentToken = selectedSegment?.key;
         pane.innerHTML = window.SurfaceState.loading({ text: 'Loading screen entries...' });
@@ -3708,7 +3765,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
             if (tabPanes[tabId] !== pane) {
               return;
             }
-            renderSegmentTimeline(segmentData, false, true, pane);
+            renderSegmentTimeline(segmentData, false, true, pane, false);
           })
           .catch(() => {
             if (!selectedSegment || selectedSegment.key !== segmentToken) {
@@ -3722,6 +3779,8 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
               desc: 'something went wrong decoding the screen data. try selecting the segment again.'
             });
           });
+      } else if (tabId === 'browser') {
+        renderSegmentTimeline(segmentData, false, false, pane, true);
       } else if (tabId === 'signals') {
         renderSignalsTab(segmentData, pane);
       } else if (tabId.startsWith('md-')) {
@@ -4093,10 +4152,13 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     targetEl.innerHTML = html;
   }
 
-  function renderSegmentTimeline(data, showAudio, showScreen, targetEl) {
+  function renderSegmentTimeline(data, showAudio, showScreen, targetEl, showBrowser = true) {
+    const browserOnlyView = showBrowser && !showAudio && !showScreen;
     const chunks = (data.chunks || []).filter(c => {
+      if (browserOnlyView && c.type !== 'browser') return false;
       if (c.type === 'audio' && !showAudio) return false;
       if (c.type === 'screen' && !showScreen) return false;
+      if (c.type === 'browser' && !showBrowser) return false;
       return true;
     });
     const dataState = data.data_state || {};
@@ -4134,11 +4196,12 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
           return;
         }
       }
-      const tabType = !showScreen ? 'audio' : !showAudio ? 'screen' : 'transcript';
+      const tabType = showBrowser && !showAudio && !showScreen ? 'browser' : !showScreen ? 'audio' : !showAudio ? 'screen' : 'transcript';
       const tabEmptyMap = {
         transcript: { icon: emptyIcons.transcript, heading: 'no transcript entries', desc: 'this segment has no transcript content' },
         audio: { icon: emptyIcons.audio, heading: 'no audio entries', desc: 'this segment has no audio content' },
-        screen: { icon: emptyIcons.screen, heading: 'no screen entries', desc: 'this segment has no screen observations' }
+        screen: { icon: emptyIcons.screen, heading: 'no screen entries', desc: 'this segment has no screen observations' },
+        browser: { icon: emptyIcons.transcript, heading: 'no page entries', desc: 'this segment has no page content' }
       };
       const emptyInfo = tabEmptyMap[tabType] || tabEmptyMap.transcript;
       targetEl.innerHTML = window.SurfaceState.empty(emptyInfo);
@@ -4199,6 +4262,19 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         html += `<div class="tr-entry tr-entry-transcript" data-idx="${idx}" data-type="${escapeHtml(item.type)}" data-timestamp="${item.timestamp}" role="listitem" tabindex="0">`;
         html += `<div class="tr-entry-time">${timeStr}</div>`;
         html += '<div class="tr-entry-content">';
+        html += `<div class="tr-entry-text">${markdown}</div>`;
+        html += '</div></div>';
+      } else if (item.type === 'browser') {
+        const timeStr = item.time || '';
+        const markdown = window.AppServices.renderMarkdown(item.markdown) || '';
+        const source = item.source_ref || {};
+        const siteName = source.site_name || source.site || source.file || 'pages';
+        const title = source.title || '';
+        html += `<div class="tr-entry tr-entry-browser" data-idx="${idx}" data-type="browser" data-timestamp="${item.timestamp}" role="listitem">`;
+        html += `<div class="tr-entry-time">${timeStr}</div>`;
+        html += '<div class="tr-entry-content">';
+        html += '<span class="sr-only">pages: </span>';
+        html += `<div class="tr-browser-site">${escapeHtml(siteName)}${title ? `<span class="tr-browser-title">${escapeHtml(title)}</span>` : ''}</div>`;
         html += `<div class="tr-entry-text">${markdown}</div>`;
         html += '</div></div>';
       } else if (item.type === 'screen') {
@@ -4787,6 +4863,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       markdownOnlySegments(data.segments).forEach(seg => {
         addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think, seg);
       });
+      browserOnlySegments(data.segments).forEach(seg => {
+        addSegmentIndicator('browser', parseTime(seg.start), parseTime(seg.end), 1, [seg.stream], 'analyzed', seg.think, seg);
+      });
       fetchDayBodyWindow()
         .then(payload => {
           dayBodyWindow = payload;
@@ -5088,6 +5167,9 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         });
         markdownOnlySegments(allSegments).forEach(seg => {
           addSegmentIndicator('markdown', parseTime(seg.start), parseTime(seg.end), 0, [seg.stream], 'analyzed', seg.think, seg);
+        });
+        browserOnlySegments(allSegments).forEach(seg => {
+          addSegmentIndicator('browser', parseTime(seg.start), parseTime(seg.end), 1, [seg.stream], 'analyzed', seg.think, seg);
         });
         renderBodyEvents(dayBodyWindow);
       })

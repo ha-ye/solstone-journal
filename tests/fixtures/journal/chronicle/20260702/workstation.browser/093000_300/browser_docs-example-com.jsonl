@@ -1,0 +1,2 @@
+{"t":"segment_start","ts":1783006230000,"rel":30000,"site":"docs.example.com","url":"https://docs.example.com/browser-order","title":"Browser Ordering Fixture","adapter":"docs","ctx":"doc","n":2,"blocks":[{"type":"heading","text":"Browser Ordering Fixture"},{"type":"text","text":"This browser row sorts between audio rows."}]}
+{"t":"delta","ts":1783006235000,"rel":35000,"site":"docs.example.com","adapter":"docs","ctx":"doc","op":"update","block":{"type":"text","text":"Ordering update remains between audio rows."}}

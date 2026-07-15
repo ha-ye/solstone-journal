@@ -619,7 +619,7 @@ def test_root_stats_contains_backlog_contract_fields():
     }
 
 
-def test_stats_schema_v7_accepts_segment_repair_backlog_day():
+def test_stats_schema_v8_accepts_segment_repair_backlog_day():
     stats_mod = importlib.import_module("solstone.think.journal_stats")
     schema_mod = importlib.import_module("solstone.think.stats_schema")
 
@@ -656,7 +656,7 @@ def test_stats_schema_v7_accepts_segment_repair_backlog_day():
 
     data = js.to_dict()
 
-    assert schema_mod.SCHEMA_VERSION == 7
+    assert schema_mod.SCHEMA_VERSION == 8
     assert schema_mod.validate(data) == []
     assert data["backlog"]["days"][0]["segment_repair_status"] == "degraded"
 

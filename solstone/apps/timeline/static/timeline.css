@@ -891,6 +891,11 @@
   border-color: color-mix(in srgb, var(--coral), white 65%);
   color: color-mix(in srgb, var(--coral), var(--ink) 50%);
 }
+.timeline-shell .segment-cell.avail-browser:not(.timeline-focus) {
+  background: color-mix(in srgb, var(--blue), white 94%);
+  border-color: color-mix(in srgb, var(--blue), white 68%);
+  color: color-mix(in srgb, var(--blue), var(--ink) 45%);
+}
 .timeline-shell .segment-cell.avail-both:not(.timeline-focus) {
   background: color-mix(in srgb, var(--accent), white 90%);
   border-color: color-mix(in srgb, var(--accent), white 60%);
@@ -1132,6 +1137,41 @@
   transform: translate(-50%, -6px) scale(1.4);
 }
 
+.timeline-shell .river-browser {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 34px;
+  transform: translateY(-50%);
+  z-index: 3;
+  pointer-events: none;
+}
+
+.timeline-shell .river-browser-mark {
+  position: absolute;
+  top: 50%;
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--blue), var(--ink) 20%);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--blue), white 82%);
+  opacity: 0.76;
+  cursor: pointer;
+  pointer-events: auto;
+  transform: translate(-50%, -50%) rotate(45deg);
+  transition: opacity 140ms ease, transform 140ms ease, background 140ms ease;
+}
+
+.timeline-shell .river-browser-mark:hover,
+.timeline-shell .river-browser-mark:focus-visible,
+.timeline-shell .river-browser-mark.is-active {
+  opacity: 1;
+  background: color-mix(in srgb, var(--blue), white 65%);
+  transform: translate(-50%, -50%) rotate(45deg) scale(1.45);
+}
+
 .timeline-shell .river-audio {
   position: absolute;
   bottom: 0;
@@ -1289,6 +1329,85 @@
   color: var(--muted);
   opacity: 0.7;
   text-transform: lowercase;
+}
+
+.timeline-shell .seg-browser-section {
+  display: grid;
+  gap: 8px;
+}
+
+.timeline-shell .seg-browser-section + .seg-browser-section {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--soft-line);
+}
+
+.timeline-shell .seg-browser-header {
+  display: grid;
+  gap: 2px;
+}
+
+.timeline-shell .seg-browser-header h3 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.2;
+}
+
+.timeline-shell .seg-browser-title {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.timeline-shell .seg-browser-error {
+  padding: 7px 9px;
+  border-left: 3px solid var(--coral);
+  background: color-mix(in srgb, var(--coral), white 90%);
+  color: color-mix(in srgb, var(--coral), var(--ink) 40%);
+  font-size: 0.78rem;
+}
+
+.timeline-shell .seg-browser-entry {
+  padding: 8px 10px;
+  border-left: 2px solid color-mix(in srgb, var(--blue), white 55%);
+  background: color-mix(in srgb, var(--blue), white 96%);
+}
+
+.timeline-shell .seg-browser-entry.is-focus {
+  border-left-color: var(--blue);
+  background: color-mix(in srgb, var(--blue), white 90%);
+}
+
+.timeline-shell .seg-browser-entry-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.timeline-shell .seg-browser-markdown {
+  color: var(--ink);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.timeline-shell .seg-browser-markdown p {
+  margin: 0 0 6px;
+}
+
+.timeline-shell .seg-browser-markdown p:last-child {
+  margin-bottom: 0;
+}
+
+.timeline-shell .seg-browser-markdown pre,
+.timeline-shell .seg-browser-pre {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid var(--soft-line);
+  border-radius: 4px;
+  white-space: pre-wrap;
 }
 
 .timeline-shell .segment-footer {

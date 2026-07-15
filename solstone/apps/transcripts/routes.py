@@ -53,11 +53,11 @@ from solstone.convey.utils import (
 from solstone.observe.hear import format_audio
 from solstone.observe.screen import format_screen
 from solstone.observe.utils import AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
+from solstone.think.browser_formatter import format_browser
 from solstone.think.cluster import (
     cluster,
     cluster_period,
     cluster_range,
-    cluster_scan,
     cluster_segments,
     cluster_span,
     scan_day,
@@ -116,9 +116,14 @@ def _day_range_count(day: str, day_dir: Path) -> int:
     payload = load_fresh_day_cache(day_dir)
     if payload is not None:
         day_stats = payload["stats"]
-        return int(day_stats["transcript_ranges"]) + int(day_stats["percept_ranges"])
-    audio_ranges, screen_ranges = cluster_scan(day)
-    return len(audio_ranges) + len(screen_ranges)
+        return (
+            int(day_stats["transcript_ranges"])
+            + int(day_stats["percept_ranges"])
+            + int(day_stats["browser_segments"])
+        )
+    audio_ranges, screen_ranges, segments = scan_day(day)
+    browser_segments = sum(1 for s in segments if "browser" in s.get("types", ()))
+    return len(audio_ranges) + len(screen_ranges) + browser_segments
 
 
 def _attach_think_to_segments(segments: list[dict[str, Any]], day: str) -> None:
@@ -495,6 +500,29 @@ def _local_time_from_timestamp(timestamp_ms: int) -> str:
     if timestamp_ms <= 0:
         return ""
     return datetime.fromtimestamp(timestamp_ms / 1000).strftime("%H:%M:%S")
+
+
+def _first_browser_segment_start(entries: list[dict]) -> dict[str, Any] | None:
+    for entry in entries:
+        if entry.get("t") == "segment_start":
+            return entry
+    return None
+
+
+def _browser_site_name(filename: str, segment_start: dict[str, Any] | None) -> str:
+    segment_start = segment_start or {}
+    adapter = str(segment_start.get("adapter") or "").strip()
+    if adapter:
+        return adapter.title()
+    site = str(segment_start.get("site") or "").strip()
+    if site:
+        return site
+    stem = filename
+    if stem.startswith("browser_"):
+        stem = stem[len("browser_") :]
+    if stem.endswith(".jsonl"):
+        stem = stem[: -len(".jsonl")]
+    return stem.replace("-", ".") or filename
 
 
 def _load_segment_signals(segment_dir_path: Path) -> dict[str, Any]:
@@ -1210,6 +1238,57 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
             )
             continue
 
+    # Process browser files. Browser timestamps are absolute epoch-ms values.
+    browser_files = glob(os.path.join(segment_dir, "browser_*.jsonl"))
+    for browser_path in sorted(browser_files):
+        try:
+            entries = _load_jsonl(browser_path)
+            formatted_chunks, meta = format_browser(
+                entries, {"file_path": browser_path}
+            )
+            if meta.get("error") and not formatted_chunks:
+                raise ValueError(str(meta["error"]))
+
+            filename = os.path.basename(browser_path)
+            segment_start = _first_browser_segment_start(entries)
+            site = str((segment_start or {}).get("site") or "")
+            title = str((segment_start or {}).get("title") or "")
+            adapter = str((segment_start or {}).get("adapter") or "")
+            site_name = _browser_site_name(filename, segment_start)
+
+            for chunk in formatted_chunks:
+                source = chunk.get("source", {})
+                timestamp = int(chunk.get("timestamp") or 0)
+                chunks.append(
+                    {
+                        "type": "browser",
+                        "time": _local_time_from_timestamp(timestamp),
+                        "timestamp": timestamp,
+                        "markdown": chunk.get("markdown", ""),
+                        "source_ref": {
+                            "site": site,
+                            "title": title,
+                            "adapter": adapter,
+                            "site_name": site_name,
+                            "file": filename,
+                            "op": source.get("op") or source.get("t"),
+                        },
+                    }
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to parse browser segment %s", browser_path, exc_info=True
+            )
+            warning_details.append(
+                {
+                    "type": "browser",
+                    "file": str(browser_path),
+                    "message": str(exc),
+                    "ts": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+                }
+            )
+            continue
+
     markdown_chunks_added = False
     if _is_markdown_only_segment(segment_dir_path, stream):
         time_str = _format_time_from_offset(segment_key, 0)
@@ -1283,6 +1362,8 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
                 data_state[modality] = state
     if markdown_chunks_added:
         data_state["markdown"] = DataState.ANALYZED.value
+    if any(chunk["type"] == "browser" for chunk in chunks):
+        data_state["browser"] = DataState.ANALYZED.value
     # Get cost data for this segment
     cost_data = get_usage_cost(day, segment=segment_key)
 

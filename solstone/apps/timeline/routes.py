@@ -22,6 +22,7 @@ from solstone.convey.reasons import (
     TIMELINE_MONTH_NOT_FOUND,
 )
 from solstone.convey.utils import error_response
+from solstone.think.browser_formatter import format_browser
 from solstone.think.utils import DEFAULT_STREAM, iter_segments, segment_key
 
 timeline_bp = Blueprint(
@@ -182,8 +183,11 @@ def _build_day(day: str) -> dict[str, Any]:
         buckets[hh][bucket].append(
             {
                 "origin": _segment_origin(day, stream, seg),
+                "stream": stream,
+                "key": seg,
                 "has_audio": (seg_path / "audio.jsonl").is_file(),
                 "has_screen": any(seg_path.glob("*screen.jsonl")),
+                "has_browser": any(seg_path.glob("browser_*.jsonl")),
             }
         )
 
@@ -194,7 +198,9 @@ def _build_day(day: str) -> dict[str, Any]:
             return 1
         if seg["has_audio"]:
             return 2
-        return 3
+        if seg["has_browser"]:
+            return 3
+        return 4
 
     hours_avail: dict[str, dict[str, Any]] = {}
     for hh in range(24):
@@ -205,12 +211,23 @@ def _build_day(day: str) -> dict[str, Any]:
             if segs:
                 segs.sort(key=rank)
                 best = segs[0]
+                browser_candidates = [seg for seg in segs if seg["has_browser"]]
+                browser = (
+                    min(
+                        browser_candidates,
+                        key=lambda seg: (seg["key"], seg["stream"], seg["origin"]),
+                    )
+                    if browser_candidates
+                    else None
+                )
                 bucket_list.append(
                     {
                         "minute": minute,
                         "best_origin": best["origin"],
                         "has_audio": best["has_audio"],
                         "has_screen": best["has_screen"],
+                        "has_browser": any(seg["has_browser"] for seg in segs),
+                        "browser_origin": browser["origin"] if browser else None,
                         "segment_count": len(segs),
                     }
                 )
@@ -221,6 +238,8 @@ def _build_day(day: str) -> dict[str, Any]:
                         "best_origin": None,
                         "has_audio": False,
                         "has_screen": False,
+                        "has_browser": False,
+                        "browser_origin": None,
                         "segment_count": 0,
                     }
                 )
@@ -259,6 +278,75 @@ def _read_jsonl(path: Path) -> tuple[dict[str, Any], list[dict[str, Any]]] | Non
         return None
 
 
+def _read_browser_jsonl(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    return rows
+
+
+def _first_browser_segment_start(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for row in rows:
+        if row.get("t") == "segment_start":
+            return row
+    return None
+
+
+def _browser_site_name(filename: str, segment_start: dict[str, Any] | None) -> str:
+    segment_start = segment_start or {}
+    adapter = str(segment_start.get("adapter") or "").strip()
+    if adapter:
+        return adapter.title()
+    site = str(segment_start.get("site") or "").strip()
+    if site:
+        return site
+    stem = filename
+    if stem.startswith("browser_"):
+        stem = stem[len("browser_") :]
+    if stem.endswith(".jsonl"):
+        stem = stem[: -len(".jsonl")]
+    return stem.replace("-", ".") or filename
+
+
+def _load_browser_file(path: Path) -> dict[str, Any]:
+    filename = path.name
+    try:
+        rows = _read_browser_jsonl(path)
+        segment_start = _first_browser_segment_start(rows)
+        chunks, meta = format_browser(rows, {"file_path": path})
+        if meta.get("error") and not chunks:
+            raise ValueError(str(meta["error"]))
+        return {
+            "file": filename,
+            "site_name": _browser_site_name(filename, segment_start),
+            "site": str((segment_start or {}).get("site") or ""),
+            "title": str((segment_start or {}).get("title") or ""),
+            "entries": [
+                {
+                    "ts": int(chunk.get("timestamp") or 0),
+                    "kind": (
+                        "snapshot"
+                        if chunk.get("source", {}).get("t") == "segment_start"
+                        else "change"
+                    ),
+                    "markdown": chunk.get("markdown", ""),
+                }
+                for chunk in chunks
+            ],
+            "error": None,
+        }
+    except Exception:
+        return {
+            "file": filename,
+            "site_name": _browser_site_name(filename, None),
+            "site": "",
+            "title": "",
+            "entries": [],
+            "error": "couldn't read this file",
+        }
+
+
 def _load_segment(day: str, stream: str, seg: str) -> dict[str, Any]:
     key = (str(_journal_root()), day, stream, seg)
     if key in _seg_cache:
@@ -272,6 +360,7 @@ def _load_segment(day: str, stream: str, seg: str) -> dict[str, Any]:
         "segment": seg,
         "audio": None,
         "screen": None,
+        "browser": [],
     }
 
     if seg_dir.is_dir():
@@ -292,6 +381,9 @@ def _load_segment(day: str, stream: str, seg: str) -> dict[str, Any]:
                     "frames": frames,
                     "filename": screen_files[0].name,
                 }
+
+        browser_files = sorted(seg_dir.glob("browser_*.jsonl"))
+        out["browser"] = [_load_browser_file(path) for path in browser_files]
     else:
         out["error"] = f"segment dir not found: {seg_dir}"
 

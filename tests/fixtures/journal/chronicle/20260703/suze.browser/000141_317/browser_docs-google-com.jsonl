@@ -1,0 +1,2 @@
+{"t":"segment_start","ts":1783046560000,"rel":59000,"site":"docs.google.com","url":"https://docs.google.com/document/d/browser-stream","title":"Browser Stream Notes","adapter":"docs","ctx":"doc","n":2,"blocks":[{"type":"heading","text":"Browser Stream Notes"},{"type":"text","text":"Fixture covers two browser site files."}]}
+{"t":"delta","ts":1783046572000,"rel":71000,"site":"docs.google.com","adapter":"docs","ctx":"doc","op":"add","block":{"type":"text","text":"Added timeline browser-origin note."}}

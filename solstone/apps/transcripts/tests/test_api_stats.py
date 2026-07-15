@@ -80,7 +80,7 @@ def test_hit_returns_count_without_raw_scanner(
 ) -> None:
     _populate_day_caches(journal_copy)
     scanner = Mock(side_effect=AssertionError("raw scanner should not be called"))
-    monkeypatch.setattr(routes, "cluster_scan", scanner)
+    monkeypatch.setattr(routes, "scan_day", scanner)
 
     body = _get_month(client)
 
@@ -95,9 +95,9 @@ def test_fallback_on_missing_cache(
 ) -> None:
     _populate_day_caches(journal_copy)
     _cache_file(journal_copy).unlink()
-    real_cluster_scan = routes.cluster_scan
-    scanner = Mock(side_effect=real_cluster_scan)
-    monkeypatch.setattr(routes, "cluster_scan", scanner)
+    real_scan_day = routes.scan_day
+    scanner = Mock(side_effect=real_scan_day)
+    monkeypatch.setattr(routes, "scan_day", scanner)
 
     body = _get_month(client)
 
@@ -142,9 +142,9 @@ def test_mixed_month_isolates_fallback(
 ) -> None:
     _populate_day_caches(journal_copy)
     _write_corrupt_cache(journal_copy, SIBLING_DAY)
-    real_cluster_scan = routes.cluster_scan
-    scanner = Mock(side_effect=real_cluster_scan)
-    monkeypatch.setattr(routes, "cluster_scan", scanner)
+    real_scan_day = routes.scan_day
+    scanner = Mock(side_effect=real_scan_day)
+    monkeypatch.setattr(routes, "scan_day", scanner)
 
     body = _get_month(client)
 
@@ -194,3 +194,19 @@ def test_root_aggregate_independence(client: Any, journal_copy: Path) -> None:
     body = _get_month(client)
 
     assert body[REFERENCE_DAY] == REFERENCE_COUNT
+
+
+def test_browser_segments_count_in_date_nav_stats(
+    client: Any,
+    seed_browser_fixture_inventory: Any,
+) -> None:
+    seed_browser_fixture_inventory()
+
+    response = client.get("/app/transcripts/api/stats/202607")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "20260701": 1,
+        "20260702": 2,
+        "20260703": 1,
+    }

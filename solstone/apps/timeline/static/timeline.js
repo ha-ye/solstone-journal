@@ -60,6 +60,21 @@ function segmentTimeLabel(meta, secondsFromStart) {
          String(ss).padStart(2, "0");
 }
 
+function segmentEpochBaseMs(meta) {
+  return new Date(`${meta.day}T00:00:00`).getTime() + meta.startSec * 1000;
+}
+
+function browserTimeLabel(epochMs) {
+  const dt = new Date(Number(epochMs) || 0);
+  return String(dt.getHours()).padStart(2, "0") + ":" +
+         String(dt.getMinutes()).padStart(2, "0") + ":" +
+         String(dt.getSeconds()).padStart(2, "0");
+}
+
+function browserOffsetSeconds(meta, epochMs) {
+  return (Number(epochMs) - segmentEpochBaseMs(meta)) / 1000;
+}
+
 // ── Data loaders (lazy, cached) ──────────────────────────────────────
 
 async function loadIndex() {
@@ -353,7 +368,7 @@ function frameDetailText(frame) {
 }
 
 function clearActiveMarks() {
-  for (const el of document.querySelectorAll(".river-tick.is-active, .river-audio-dot.is-active")) {
+  for (const el of document.querySelectorAll(".river-tick.is-active, .river-audio-dot.is-active, .river-browser-mark.is-active")) {
     el.classList.remove("is-active");
   }
 }
@@ -363,6 +378,67 @@ function clearActiveMarks() {
 // without re-fetching.
 let _activeSegment = null;
 let _activeMeta = null;
+let _activeBrowserFiles = [];
+
+function renderTimelineMarkdown(value) {
+  const markdown = String(value || "");
+  if (window.AppServices?.renderMarkdown) {
+    return window.AppServices.renderMarkdown(markdown);
+  }
+  return `<pre class="seg-browser-pre">${escapeHtml(markdown)}</pre>`;
+}
+
+function hasBrowserContent(browserFiles) {
+  return (browserFiles || []).some((site) => site && (site.error || (site.entries || []).length));
+}
+
+function browserChangeCount(browserFiles) {
+  return (browserFiles || []).reduce((total, site) => {
+    return total + (site.entries || []).filter((entry) => entry.kind === "change").length;
+  }, 0);
+}
+
+function renderBrowserSections(browserFiles, focusSiteIndex = null, focusEntryIndex = null) {
+  const sections = (browserFiles || []).map((site, siteIndex) => {
+    if (!site || (!site.error && !(site.entries || []).length)) return "";
+    const siteName = site.site_name || site.site || site.file || "pages";
+    const title = site.title ? `<div class="seg-browser-title">${escapeHtml(site.title)}</div>` : "";
+    const error = site.error ? `<div class="seg-browser-error">${escapeHtml(site.error)}</div>` : "";
+    const rows = (site.entries || []).map((entry, entryIndex) => {
+      const isFocus = siteIndex === focusSiteIndex && entryIndex === focusEntryIndex;
+      const kind = entry.kind === "snapshot" ? "snapshot" : "change";
+      return `
+        <article class="seg-browser-entry ${isFocus ? "is-focus" : ""}">
+          <div class="seg-browser-entry-meta">
+            <span class="seg-detail-time">${browserTimeLabel(entry.ts)}</span>
+            <span class="seg-detail-cat" style="--cat:var(--teal)">${kind}</span>
+          </div>
+          <div class="seg-browser-markdown">${renderTimelineMarkdown(entry.markdown)}</div>
+        </article>
+      `;
+    }).join("");
+    return `
+      <section class="seg-browser-section">
+        <header class="seg-browser-header">
+          <h3>${escapeHtml(siteName)}</h3>
+          ${title}
+        </header>
+        ${error}
+        ${rows}
+      </section>
+    `;
+  }).join("");
+  return sections || `<div class="seg-detail-empty">no page content in this slice</div>`;
+}
+
+function showBrowserDetail(siteIndex, entryIndex) {
+  const detail = document.getElementById("segment-detail");
+  if (!detail || !_activeBrowserFiles.length) return;
+  detail.innerHTML = renderBrowserSections(_activeBrowserFiles, siteIndex, entryIndex);
+  clearActiveMarks();
+  const active = document.querySelector(`.river-browser-mark[data-browser-site="${siteIndex}"][data-browser-entry="${entryIndex}"]`);
+  if (active) active.classList.add("is-active");
+}
 
 function showSegmentDetail(frameId) {
   const detail = document.getElementById("segment-detail");
@@ -427,7 +503,11 @@ function showSegmentAudioDetail(audioIndex) {
 
 function clearSegmentDetail() {
   const detail = document.getElementById("segment-detail");
-  if (detail) detail.innerHTML = `<div class="seg-detail-empty">click a tick or audio dot on the river to see what sol observed at that moment</div>`;
+  if (detail) {
+    detail.innerHTML = hasBrowserContent(_activeBrowserFiles)
+      ? renderBrowserSections(_activeBrowserFiles)
+      : `<div class="seg-detail-empty">click a tick, audio dot, or page mark to inspect that moment</div>`;
+  }
   clearActiveMarks();
 }
 
@@ -625,9 +705,10 @@ async function dispatchBootView() {
 async function prefetchSegmentForMinute(hour, minute) {
   const buckets = segmentAvail[`${selectedMonth}:${selectedDay}:${hour}`] || [];
   const bucket = buckets[Math.floor(minute / 5)] || null;
-  if (bucket && bucket.best_origin) {
-    await loadSegment(bucket.best_origin);
-  }
+  const origins = [];
+  if (bucket?.best_origin) origins.push(bucket.best_origin);
+  if (bucket?.browser_origin && bucket.browser_origin !== bucket.best_origin) origins.push(bucket.browser_origin);
+  await Promise.all(origins.map((origin) => loadSegment(origin)));
 }
 
 async function applyHash(hash) {
@@ -1040,7 +1121,7 @@ async function renderMinute(monthIndex, day, hour) {
   const yyyymmdd = isoDay(monthIndex, day);
   if (yyyymmdd) await loadDay(yyyymmdd);
   const buckets = segmentAvail[`${monthIndex}:${day}:${hour}`] || [];
-  if (!buckets.some((bucket) => bucket && bucket.best_origin)) {
+  if (!buckets.some((bucket) => bucket && (bucket.best_origin || bucket.browser_origin))) {
     timeline.innerHTML = renderEmptyState(
       "nothing observed in this hour",
       `there are no segment observations for ${formatTime(hour, 0)}.`,
@@ -1077,18 +1158,20 @@ async function renderMinute(monthIndex, day, hour) {
             const minute = segmentIndex * 5;
             const event = eventMinutes.get(minute);
             const bucket = buckets[segmentIndex] || null;
-            const hasData = !!(bucket && bucket.best_origin);
+            const hasData = !!(bucket && (bucket.best_origin || bucket.browser_origin));
             // Availability tint: both = accent, screen-only = teal,
-            // audio-only = coral, none = grey/disabled.
+            // audio-only = coral, pages-only = blue, none = grey/disabled.
             let availClass = "avail-none";
             if (hasData && bucket.has_audio && bucket.has_screen) availClass = "avail-both";
             else if (hasData && bucket.has_screen) availClass = "avail-screen";
             else if (hasData && bucket.has_audio) availClass = "avail-audio";
+            else if (hasData && bucket.has_browser) availClass = "avail-browser";
             const classes = ["segment-cell", event ? `timeline-focus timeline-${event.side}` : "", availClass].filter(Boolean).join(" ");
             const availLabel = hasData
               ? (bucket.has_audio && bucket.has_screen ? "audio + screen"
                  : bucket.has_screen ? "screen only"
-                 : bucket.has_audio ? "audio only" : "metadata only")
+                 : bucket.has_audio ? "audio only"
+                 : bucket.has_browser ? "pages" : "metadata only")
               : "no observation";
             const label = `${formatTime(hour, minute)} · ${availLabel}${event ? `, ${event.title}` : ""}`;
             const disabled = hasData ? "" : "disabled aria-disabled=\"true\"";
@@ -1149,16 +1232,18 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
   const bucketIdx = Math.floor(minute / 5);
   const bucket = buckets[bucketIdx] || null;
   const origin = bucket && bucket.best_origin ? bucket.best_origin : null;
+  const browserOrigin = bucket && bucket.browser_origin ? bucket.browser_origin : null;
+  const metaOrigin = origin || browserOrigin;
 
   // No data → render an empty-state river. (Cell shouldn't have been
   // clickable in the first place; this is a defensive fallback.)
-  if (!origin) {
+  if (!metaOrigin) {
     return renderEmptySegment(monthIndex, day, hour, minute, focusLabel);
   }
 
   // Derive the segment's wall-clock start from its segment name's HHMMSS.
   // origin format: "YYYYMMDD/<stream>/<HHMMSS_LEN>" or "YYYYMMDD/<HHMMSS_LEN>"
-  const parts = origin.split("/");
+  const parts = metaOrigin.split("/");
   const segName = parts[parts.length - 1];
   const segMatch = /^(\d{2})(\d{2})(\d{2})_(\d{1,6})$/.exec(segName);
   const startSec = segMatch ? parseInt(segMatch[1],10)*3600 + parseInt(segMatch[2],10)*60 + parseInt(segMatch[3],10) : (hour*3600 + minute*60);
@@ -1167,19 +1252,27 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
   const dayStr = `${parts[0].slice(0,4)}-${parts[0].slice(4,6)}-${parts[0].slice(6,8)}`;
   const meta = { day: dayStr, startSec, durationSec: dur, stream };
 
-  const sample = await loadSegment(origin);
-  if (!sample) {
+  const sample = origin ? await loadSegment(origin) : null;
+  const browserSample = browserOrigin && browserOrigin !== origin
+    ? await loadSegment(browserOrigin)
+    : sample;
+  const primarySample = sample || browserSample;
+  if (!primarySample) {
     return renderEmptySegment(monthIndex, day, hour, minute, focusLabel);
   }
 
   // Stash for the click-driven detail handlers.
-  _activeSegment = sample;
+  _activeSegment = primarySample;
   _activeMeta = meta;
+  _activeBrowserFiles = browserSample?.browser || [];
 
-  const audioHeader = sample.audio?.header || {};
-  const screenHeader = sample.screen?.header || {};
-  const audioLines = sample.audio?.lines || [];
-  const screenFrames = sample.screen?.frames || [];
+  const audioHeader = primarySample.audio?.header || {};
+  const screenHeader = primarySample.screen?.header || {};
+  const audioLines = primarySample.audio?.lines || [];
+  const screenFrames = primarySample.screen?.frames || [];
+  const browserFiles = _activeBrowserFiles;
+  const browserHasContent = hasBrowserContent(browserFiles);
+  const pageUpdateCount = browserChangeCount(browserFiles);
 
   const setting = audioHeader.setting || screenHeader.setting || "—";
   const rawTopics = audioHeader.topics ?? "";
@@ -1224,7 +1317,22 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
           aria-label="${escapeHtml(tipText)}"
           type="button"></button>`;
       }).join("")
-    : `<div class="river-empty">no microphone input in this slice</div>`;
+    : (browserHasContent ? "" : `<div class="river-empty">no microphone input in this slice</div>`);
+
+  const browserMarks = browserFiles.map((site, siteIndex) => {
+    return (site.entries || []).map((entry, entryIndex) => {
+      if (entry.kind !== "change") return "";
+      const offset = Math.max(0, Math.min(dur, browserOffsetSeconds(meta, entry.ts)));
+      const tipText = `${browserTimeLabel(entry.ts)} · ${site.site_name || site.site || "pages"}\n${(entry.markdown || "").slice(0, 200)}`;
+      return `<button class="river-browser-mark"
+        data-browser-site="${siteIndex}"
+        data-browser-entry="${entryIndex}"
+        style="left:${fmtPct(offset)};"
+        title="${escapeHtml(tipText)}"
+        aria-label="${escapeHtml(tipText)}"
+        type="button"></button>`;
+    }).join("");
+  }).join("");
 
   // Minute markers along the axis: 0, 60, 120, 180, 240, (the right edge is the segment end)
   const axisMarks = [0, 60, 120, 180, 240].map((s) =>
@@ -1252,7 +1360,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
         <header class="segment-header">
           <div class="seg-header-row">
             <span class="seg-header-time">${meta.day} · ${startHHMM} → ${endHHMM} · ${minutesStr}</span>
-            <span class="seg-header-mid">${escapeHtml(meta.stream || "—")} observer</span>
+            <span class="seg-header-mid">${escapeHtml(meta.stream || "—")}</span>
             <span class="seg-header-end">${escapeHtml(setting)} setting</span>
           </div>
           ${topics.length ? `<div class="seg-topics">${topics.map((t) => `<span class="topic-chip">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
@@ -1265,19 +1373,23 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
           <div class="river-axis">
             ${axisMarks}
           </div>
+          <div class="river-browser" aria-label="page updates">
+            ${browserMarks}
+          </div>
           <div class="river-audio" aria-label="microphone input">
             ${audioMarks}
           </div>
         </div>
 
         <div class="segment-detail" id="segment-detail">
-          <div class="seg-detail-empty">click a tick or audio dot on the river to see what sol observed at that moment</div>
+          ${browserHasContent ? renderBrowserSections(browserFiles) : `<div class="seg-detail-empty">click a tick, audio dot, or page mark to inspect that moment</div>`}
         </div>
 
         <footer class="segment-footer">
           ${screenFrames.length} frames analyzed
           · ${audioLines.length} transcript line${audioLines.length === 1 ? "" : "s"}
           · ${featuredCount} frames with extracted text
+          · ${pageUpdateCount} page update${pageUpdateCount === 1 ? "" : "s"}
         </footer>
       </section>
     </div>
@@ -1298,6 +1410,15 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
       const idx = parseInt(dot.getAttribute("data-audio-index"), 10);
       if (dot.classList.contains("is-active")) clearSegmentDetail();
       else showSegmentAudioDetail(idx);
+    });
+  }
+  for (const mark of document.querySelectorAll(".river-browser-mark[data-browser-site]")) {
+    mark.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const siteIndex = parseInt(mark.getAttribute("data-browser-site"), 10);
+      const entryIndex = parseInt(mark.getAttribute("data-browser-entry"), 10);
+      if (mark.classList.contains("is-active")) clearSegmentDetail();
+      else showBrowserDetail(siteIndex, entryIndex);
     });
   }
 }

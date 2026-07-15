@@ -401,10 +401,14 @@ class JournalStats:
 
         stats["transcript_ranges"] = 0
         stats["percept_ranges"] = 0
+        stats["browser_segments"] = 0
         try:
             audio_ranges, screen_ranges, segments = cluster_scan_day(day)
             stats["transcript_ranges"] = len(audio_ranges)
             stats["percept_ranges"] = len(screen_ranges)
+            stats["browser_segments"] = sum(
+                1 for segment in segments if "browser" in segment.get("types", ())
+            )
             completion = classify_segment_completion(
                 segments,
                 read_segment_progress(day),

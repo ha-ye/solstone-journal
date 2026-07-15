@@ -304,6 +304,8 @@ def test_day_known_includes_hours_avail(client):
         "best_origin": "20260510/100000_300",
         "has_audio": True,
         "has_screen": True,
+        "has_browser": False,
+        "browser_origin": None,
         "segment_count": 1,
     }
 
@@ -323,6 +325,77 @@ def test_day_known_includes_hours_avail(client):
     assert hour13["has_screen"] is True
 
     assert payload["hours_avail"]["10"]["buckets"][1]["best_origin"] is None
+
+
+def test_day_browser_only_bucket_and_segment_payload(client, timeline_env):
+    corrupt = (
+        timeline_env
+        / "chronicle"
+        / "20260510"
+        / "workstation.browser"
+        / "140000_300"
+        / "browser_corrupt-example-com.jsonl"
+    )
+    corrupt.write_text("{bad json\n", encoding="utf-8")
+
+    day_response = client.get(f"/app/timeline/api/day/{DAY}")
+
+    assert day_response.status_code == 200
+    payload = day_response.get_json()
+    bucket = payload["hours_avail"]["14"]["buckets"][0]
+    assert bucket["has_browser"] is True
+    assert bucket["has_audio"] is False
+    assert bucket["has_screen"] is False
+    assert bucket["best_origin"] == "20260510/workstation.browser/140000_300"
+    assert bucket["browser_origin"] == "20260510/workstation.browser/140000_300"
+
+    segment_response = client.get(
+        f"/app/timeline/api/segment/{DAY}/workstation.browser/140000_300"
+    )
+    assert segment_response.status_code == 200
+    segment = segment_response.get_json()
+    browser_files = {item["file"]: item for item in segment["browser"]}
+
+    docs = browser_files["browser_docs-example-com.jsonl"]
+    assert docs["site_name"] == "Docs"
+    assert docs["site"] == "docs.example.com"
+    assert docs["title"] == "Timeline Browser Only"
+    assert [entry["kind"] for entry in docs["entries"]] == ["snapshot", "change"]
+    assert [entry["ts"] for entry in docs["entries"]] == [
+        1778443200000,
+        1778443215000,
+    ]
+    assert docs["error"] is None
+
+    corrupt = browser_files["browser_corrupt-example-com.jsonl"]
+    assert corrupt["site_name"] == "corrupt.example.com"
+    assert corrupt["entries"] == []
+    assert corrupt["error"] == "couldn't read this file"
+
+
+def test_day_mixed_bucket_keeps_best_origin_and_loads_browser_origin(client):
+    day_response = client.get(f"/app/timeline/api/day/{DAY}")
+
+    assert day_response.status_code == 200
+    payload = day_response.get_json()
+    bucket = payload["hours_avail"]["15"]["buckets"][0]
+    assert bucket["has_browser"] is True
+    assert bucket["has_audio"] is True
+    assert bucket["has_screen"] is True
+    assert bucket["best_origin"] == "20260510/default/150000_300"
+    assert bucket["browser_origin"] == "20260510/workstation.browser/150000_300"
+
+    browser_response = client.get(
+        f"/app/timeline/api/segment/{DAY}/workstation.browser/150000_300"
+    )
+    assert browser_response.status_code == 200
+    browser_payload = browser_response.get_json()
+    assert browser_payload["browser"][0]["site_name"] == "Mail"
+    assert browser_payload["browser"][0]["title"] == "Timeline Mixed Browser"
+    assert [entry["kind"] for entry in browser_payload["browser"][0]["entries"]] == [
+        "snapshot",
+        "change",
+    ]
 
 
 def test_day_bad_input_returns_400(client):

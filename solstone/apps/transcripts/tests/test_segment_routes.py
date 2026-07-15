@@ -2,6 +2,7 @@
 # Copyright (c) 2026 sol pbc
 
 import builtins
+import datetime as datetime_module
 import io
 import json
 import math
@@ -586,6 +587,111 @@ def test_segment_content_happy_path_returns_segment_payload(client):
     assert data["data_state"] == {"audio": "analyzed", "screen": "analyzed"}
     assert set(data["media_purged"]) == {"audio", "screen"}
     assert all(isinstance(value, bool) for value in data["media_purged"].values())
+
+
+def test_segment_content_merges_browser_between_audio_chunks(
+    client,
+    journal_copy,
+    seed_browser_fixture_inventory,
+):
+    seed_browser_fixture_inventory()
+    browser_path = (
+        journal_copy
+        / "chronicle"
+        / "20260702"
+        / "workstation.browser"
+        / "093000_300"
+        / "browser_docs-example-com.jsonl"
+    )
+    rows = [
+        json.loads(line)
+        for line in browser_path.read_text(encoding="utf-8").splitlines()
+    ]
+    # format_audio anchors offsets to the segment's naive local-tz base.
+    base = int(datetime_module.datetime(2026, 7, 2, 9, 30, 0).timestamp() * 1000)
+    rows[0]["ts"] = base + 30000
+    rows[1]["ts"] = base + 35000
+    browser_path.write_text(
+        "\n".join(json.dumps(row) for row in rows) + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(
+        "/app/transcripts/api/segment/20260702/workstation.browser/093000_300"
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert [chunk["type"] for chunk in data["chunks"]] == [
+        "audio",
+        "browser",
+        "browser",
+        "audio",
+    ]
+    ts = [chunk["timestamp"] for chunk in data["chunks"]]
+    assert ts == sorted(ts)
+    assert len(set(ts)) == 4
+    assert ts[0] < ts[1] < ts[2] < ts[3]
+    assert data["data_state"]["browser"] == "analyzed"
+
+
+def test_segment_content_browser_only_reads_multiple_site_files(
+    client,
+    seed_browser_fixture_inventory,
+):
+    seed_browser_fixture_inventory()
+
+    response = client.get(
+        "/app/transcripts/api/segment/20260703/suze.browser/000141_317"
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    browser_chunks = [chunk for chunk in data["chunks"] if chunk["type"] == "browser"]
+    site_names = {chunk["source_ref"]["site_name"] for chunk in browser_chunks}
+    assert {"Gmail", "Docs"} <= site_names
+    assert data["data_state"]["browser"] == "analyzed"
+
+
+def test_segment_content_browser_corrupt_file_warns_and_keeps_valid_site(
+    client,
+    seed_browser_fixture_inventory,
+):
+    seed_browser_fixture_inventory()
+
+    response = client.get(
+        "/app/transcripts/api/segment/20260701/workstation.browser/100000_300"
+    )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    browser_chunks = [chunk for chunk in data["chunks"] if chunk["type"] == "browser"]
+    assert data["warnings"] >= 1
+    assert any(detail["type"] == "browser" for detail in data["warning_details"])
+    assert any(
+        chunk["source_ref"]["site_name"] == "valid.example.com"
+        for chunk in browser_chunks
+    )
+    assert data["data_state"]["browser"] == "analyzed"
+
+
+def test_browser_only_segment_list_think_verdict_is_not_awaiting(
+    client,
+    seed_browser_fixture_inventory,
+):
+    seed_browser_fixture_inventory()
+
+    response = client.get("/app/transcripts/api/segments/20260703")
+
+    assert response.status_code == 200
+    segments = response.get_json()["segments"]
+    browser_segment = next(
+        segment
+        for segment in segments
+        if segment["stream"] == "suze.browser" and segment["key"] == "000141_317"
+    )
+    assert browser_segment["data_state"]["browser"] == "analyzed"
+    assert browser_segment["think"] not in {"awaiting", "stuck"}
 
 
 def test_markdown_only_import_segment_lists_as_markdown(client, journal_copy):
