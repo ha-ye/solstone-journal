@@ -308,13 +308,11 @@ def test_terminal_phase_remap(
             raw_phase == "error",
         ),
     )
+    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
 
     response = thinking_client.post("/app/thinking/api/scout/enable")
 
     assert response.status_code == 202
-    _wait_until(
-        lambda: _scout_status(thinking_client)["operation"]["phase"] == expected_phase
-    )
     assert _scout_status(thinking_client)["operation"]["phase"] == expected_phase
 
 

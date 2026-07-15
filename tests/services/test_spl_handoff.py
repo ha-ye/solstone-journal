@@ -6,7 +6,6 @@ from __future__ import annotations
 import io
 import json
 import ssl
-import time
 import urllib.error
 import urllib.parse
 from pathlib import Path
@@ -30,6 +29,19 @@ TEST_INSTANCE_ID = "00000000-0000-4000-8000-000000000000"
 TEST_NONCE = "TESTNONCE"
 TEST_BASE_URL = "https://services.test"
 TEST_SUBSCRIBE_URL = "https://services.test/account/subscription"
+
+
+class _InlineThread:
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+    def join(self, timeout=None):
+        return None
 
 
 class FakeResponse:
@@ -120,15 +132,6 @@ def _run(
         nonce=nonce,
         **kwargs,
     )
-
-
-def _wait_until(predicate, timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("timed out waiting for condition")
 
 
 def test_approved_handoff_enables_spl(journal_copy: Path, monkeypatch) -> None:
@@ -630,6 +633,7 @@ def test_run_spl_handoff_local_error_retryable_without_enabled_state(
 
 def test_run_spl_handoff_maps_needs_subscription_to_operation(
     journal_copy: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     result = spl_handoff.run_spl_handoff(
         nonce=TEST_NONCE,
@@ -650,19 +654,16 @@ def test_run_spl_handoff_maps_needs_subscription_to_operation(
 
     operations.clear_registry()
     try:
+        monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
         operations.start_operation(
             "spl",
             "spl_enable",
             "https://services.test/enable/spl?nonce=TESTNONCE",
             lambda: result,
         )
-        _wait_until(
-            lambda: (
-                operations.operation_for_service("spl")["phase"] == "needs_subscription"
-            )
-        )
         operation = operations.operation_for_service("spl")
         assert operation is not None
+        assert operation["phase"] == "needs_subscription"
         assert operation["subscribe_url"] == TEST_SUBSCRIBE_URL
     finally:
         operations.clear_registry()

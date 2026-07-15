@@ -18,6 +18,19 @@ from solstone.think.services import operations, spp, spp_handoff, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
 
 
+class _InlineThread:
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        self._target(*self._args, **self._kwargs)
+
+    def join(self, timeout=None):
+        return None
+
+
 class _FakeChannel:
     def __init__(self, verdict: object) -> None:
         self.verdict = verdict
@@ -115,6 +128,7 @@ def test_enable_confidential_returns_operation_and_lands_not_verified(
         )
 
     monkeypatch.setattr(spp_handoff, "run_confidential_handoff", runner)
+    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
 
     response = thinking_client.post("/app/thinking/api/confidential/enable")
 
@@ -124,14 +138,6 @@ def test_enable_confidential_returns_operation_and_lands_not_verified(
     assert data["operation"]["phase"] == "starting"
     assert (
         data["operation"]["portal_url"] == "http://portal.test/enable/spp?nonce=NONCE"
-    )
-    _wait_until(
-        lambda: (
-            _providers(thinking_client)["active_lane"]["confidential_operation"][
-                "phase"
-            ]
-            == "not_verified"
-        )
     )
     payload = _providers(thinking_client)
     assert payload["active_lane"]["lane"] == "confidential"
@@ -154,18 +160,11 @@ def test_enable_confidential_early_access_stays_off(
         return operations.HandoffResult("early_access", None, False)
 
     monkeypatch.setattr(spp_handoff, "run_confidential_handoff", runner)
+    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
 
     response = thinking_client.post("/app/thinking/api/confidential/enable")
 
     assert response.status_code == 202
-    _wait_until(
-        lambda: (
-            _providers(thinking_client)["active_lane"]["confidential_operation"][
-                "phase"
-            ]
-            == "early_access"
-        )
-    )
     payload = _providers(thinking_client)
     assert payload["active_lane"]["confidential_enabled"] is False
     assert payload["active_lane"]["confidential_provenance_configured"] is False
@@ -320,14 +319,10 @@ def test_confidential_routes_and_provider_payload_are_secret_free(
         return operations.HandoffResult("enabled", "not yet verified", False)
 
     monkeypatch.setattr(spp_handoff, "run_confidential_handoff", runner)
+    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
 
     start = thinking_client.post("/app/thinking/api/confidential/enable")
     assert start.status_code == 202
-    _wait_until(
-        lambda: _providers(thinking_client)["active_lane"][
-            "confidential_provenance_configured"
-        ]
-    )
     providers_enabled = thinking_client.get("/app/thinking/api/providers")
     disable = thinking_client.post("/app/thinking/api/confidential/disable")
     providers_disabled = thinking_client.get("/app/thinking/api/providers")
