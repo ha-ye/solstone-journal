@@ -7,13 +7,19 @@ import io
 import os
 import shutil
 import tarfile
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from solstone.think import parakeet_readiness
-from solstone.think.journal_config import read_journal_config
+from solstone.think.journal_config import (
+    hold_config_lock,
+    read_journal_config,
+    write_journal_config,
+)
+from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.providers import fit_report, parakeet_install
 from solstone.think.providers.install_state import read_install_status
 
@@ -224,6 +230,111 @@ def test_install_parakeet_writes_distinct_binary_and_model_metadata(
     assert slot["model_revision"] == parakeet_readiness.PARAKEET_CPP_MODEL_REVISION
     assert slot["model_path"] == str(parakeet_install.model_path())
     assert Path(slot["model_path"]).is_file()
+
+
+def test_write_parakeet_metadata_waits_for_config_lock_and_preserves_commits(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _init_journal(tmp_path, monkeypatch)
+    journal_path = tmp_path
+    write_journal_config(
+        {
+            "setup": {"completed_at": "2026-07-01T00:00:00+00:00"},
+            "service": {"port": 5015},
+            "providers": {"bundled": {}},
+        },
+        journal_path,
+    )
+    done = threading.Event()
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            parakeet_install._write_parakeet_metadata(
+                {"model_repo": "openai/parakeet-test"},
+                journal_path=journal_path,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+        else:
+            done.set()
+
+    with hold_config_lock(journal_path):
+        config = read_journal_config(journal_path)
+        config["setup"]["completed_by"] = "setup-writer"
+        config["service"]["host"] = "127.0.0.1"
+        write_journal_config(config, journal_path)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert not done.wait(timeout=0.5)
+
+    assert done.wait(timeout=2)
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert errors == []
+
+    persisted = read_journal_config(journal_path)
+    assert persisted["setup"]["completed_at"] == "2026-07-01T00:00:00+00:00"
+    assert persisted["setup"]["completed_by"] == "setup-writer"
+    assert persisted["service"]["port"] == 5015
+    assert persisted["service"]["host"] == "127.0.0.1"
+    assert (
+        persisted["providers"]["bundled"]["parakeet"]["model_repo"]
+        == "openai/parakeet-test"
+    )
+
+
+def test_write_parakeet_metadata_rejects_unknown_key_without_lock(
+    monkeypatch,
+) -> None:
+    entered: list[object] = []
+
+    @contextmanager
+    def recording_lock(journal_path=None):
+        entered.append(journal_path)
+        yield
+
+    monkeypatch.setattr(parakeet_install, "hold_config_lock", recording_lock)
+
+    with pytest.raises(ValueError) as exc_info:
+        parakeet_install._write_parakeet_metadata({"unexpected": "value"})
+
+    assert str(exc_info.value) == "unknown parakeet install metadata key: unexpected"
+    assert entered == []
+
+
+def test_write_parakeet_metadata_propagates_config_lock_timeout_without_config_io(
+    monkeypatch,
+) -> None:
+    timeout = LockTimeout(path=Path("busy.lock"), timeout=0.01)
+    read_calls: list[object] = []
+    write_calls: list[object] = []
+
+    @contextmanager
+    def busy_lock(journal_path=None):
+        raise timeout
+        yield
+
+    def fail_read(journal_path=None):
+        read_calls.append(journal_path)
+        pytest.fail("read_journal_config should not run before lock acquisition")
+
+    def fail_write(config, journal_path=None):
+        write_calls.append((config, journal_path))
+        pytest.fail("write_journal_config should not run before lock acquisition")
+
+    monkeypatch.setattr(parakeet_install, "hold_config_lock", busy_lock)
+    monkeypatch.setattr(parakeet_install, "read_journal_config", fail_read)
+    monkeypatch.setattr(parakeet_install, "write_journal_config", fail_write)
+
+    with pytest.raises(LockTimeout) as exc_info:
+        parakeet_install._write_parakeet_metadata({"model_repo": "openai/test"})
+
+    assert exc_info.value is timeout
+    assert read_calls == []
+    assert write_calls == []
 
 
 def test_install_parakeet_blocks_before_downloads(tmp_path, monkeypatch) -> None:

@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, TypedDict, cast, get_args
 
-from solstone.think.journal_config import read_journal_config, write_journal_config
+from solstone.think.journal_config import (
+    hold_config_lock,
+    read_journal_config,
+    write_journal_config,
+)
 
 InstallState = Literal[
     "idle",
@@ -144,19 +148,20 @@ def write_install_status(
     scope: _InstallScope,
     journal_path: str | Path | None = None,
 ) -> None:
-    config = read_journal_config(journal_path)
-    slot = (
-        config.setdefault("providers", {})
-        .setdefault(scope, {})
-        .setdefault(status["name"], {})
-    )
-    slot["install_state"] = status["install_state"]
-    slot["last_transition_at"] = status["last_transition_at"]
-    slot["last_progress_at"] = status["last_progress_at"]
-    slot["install_error"] = status["install_error"]
-    slot["progress_bytes_received"] = status["progress_bytes_received"]
-    slot["progress_bytes_total"] = status["progress_bytes_total"]
-    write_journal_config(config, journal_path)
+    with hold_config_lock(journal_path):
+        config = read_journal_config(journal_path)
+        slot = (
+            config.setdefault("providers", {})
+            .setdefault(scope, {})
+            .setdefault(status["name"], {})
+        )
+        slot["install_state"] = status["install_state"]
+        slot["last_transition_at"] = status["last_transition_at"]
+        slot["last_progress_at"] = status["last_progress_at"]
+        slot["install_error"] = status["install_error"]
+        slot["progress_bytes_received"] = status["progress_bytes_received"]
+        slot["progress_bytes_total"] = status["progress_bytes_total"]
+        write_journal_config(config, journal_path)
 
 
 __all__ = [

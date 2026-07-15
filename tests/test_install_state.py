@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import get_args
@@ -25,6 +27,13 @@ from solstone.apps.thinking.install_copy import (
     INSTALL_PHASE_RESOLVING,
     INSTALL_PHASE_VERIFYING,
 )
+from solstone.think.journal_config import (
+    hold_config_lock,
+    read_journal_config,
+    write_journal_config,
+)
+from solstone.think.journal_io.errors import LockTimeout
+from solstone.think.providers import install_state
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     TERMINAL_STATES,
@@ -298,6 +307,171 @@ def test_write_install_status_creates_bundled_key_chain(journal_config):
 
     persisted = json.loads(config_path.read_text(encoding="utf-8"))
     assert persisted["providers"]["bundled"]["local"]["install_state"] == "installing"
+
+
+def test_write_install_status_waits_for_explicit_config_lock_and_preserves_commits(
+    journal_config,
+):
+    config_path = journal_config(
+        {
+            "setup": {"completed_at": "2026-07-01T00:00:00+00:00"},
+            "service": {"port": 5015},
+            "unrelated": "seeded",
+            "providers": {"bundled": {}},
+        }
+    )
+    journal_path = config_path.parent.parent
+    status = bump_progress(
+        transition_state(make_idle_status("anthropic"), new_state="downloading"),
+        received=42,
+        total=100,
+    )
+    done = threading.Event()
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            write_install_status(status, scope="bundled", journal_path=journal_path)
+        except BaseException as exc:
+            errors.append(exc)
+        else:
+            done.set()
+
+    with hold_config_lock(journal_path):
+        config = read_journal_config(journal_path)
+        config["concurrent_unrelated"] = "committed while locked"
+        write_journal_config(config, journal_path)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert not done.wait(timeout=0.5)
+
+    assert done.wait(timeout=2)
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert errors == []
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["unrelated"] == "seeded"
+    assert persisted["concurrent_unrelated"] == "committed while locked"
+    assert persisted["setup"]["completed_at"] == "2026-07-01T00:00:00+00:00"
+    assert persisted["service"]["port"] == 5015
+    slot = persisted["providers"]["bundled"]["anthropic"]
+    assert slot["install_state"] == "downloading"
+    assert slot["progress_bytes_received"] == 42
+    assert slot["progress_bytes_total"] == 100
+
+
+def test_write_install_status_waits_for_default_config_lock_and_preserves_commits(
+    journal_config,
+):
+    config_path = journal_config(
+        {
+            "setup": {"completed_at": "2026-07-01T00:00:00+00:00"},
+            "service": {"port": 5015},
+            "unrelated": "seeded",
+            "providers": {"bundled": {}},
+        }
+    )
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
+    status = bump_progress(
+        transition_state(make_idle_status("anthropic"), new_state="downloading"),
+        received=11,
+        total=20,
+    )
+    done = threading.Event()
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            write_install_status(status, scope="bundled")
+        except BaseException as exc:
+            errors.append(exc)
+        else:
+            done.set()
+
+    with hold_config_lock(None):
+        config = read_journal_config(None)
+        config["default_path_concurrent"] = "committed while locked"
+        write_journal_config(config, None)
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        assert not done.wait(timeout=0.5)
+
+    assert done.wait(timeout=2)
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert errors == []
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["unrelated"] == "seeded"
+    assert persisted["default_path_concurrent"] == "committed while locked"
+    assert persisted["setup"]["completed_at"] == "2026-07-01T00:00:00+00:00"
+    assert persisted["service"]["port"] == 5015
+    slot = persisted["providers"]["bundled"]["anthropic"]
+    assert slot["install_state"] == "downloading"
+    assert slot["progress_bytes_received"] == 11
+    assert slot["progress_bytes_total"] == 20
+
+
+def test_write_install_status_preserves_setup_and_service_fields(journal_config):
+    config_path = journal_config(
+        {
+            "setup": {"completed_at": "2026-07-01T00:00:00+00:00"},
+            "service": {"restart_policy": "always"},
+            "providers": {"bundled": {}},
+        }
+    )
+    status = bump_progress(
+        transition_state(make_idle_status("anthropic"), new_state="downloading"),
+        received=5,
+        total=10,
+    )
+
+    write_install_status(status, scope="bundled")
+
+    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    assert persisted["setup"]["completed_at"] == "2026-07-01T00:00:00+00:00"
+    assert persisted["service"]["restart_policy"] == "always"
+    assert persisted["providers"]["bundled"]["anthropic"]["install_state"] == (
+        "downloading"
+    )
+
+
+def test_write_install_status_propagates_config_lock_timeout_without_config_io(
+    monkeypatch,
+):
+    timeout = LockTimeout(path=Path("busy.lock"), timeout=0.01)
+    read_calls: list[object] = []
+    write_calls: list[object] = []
+
+    @contextmanager
+    def busy_lock(journal_path=None):
+        raise timeout
+        yield
+
+    def fail_read(journal_path=None):
+        read_calls.append(journal_path)
+        pytest.fail("read_journal_config should not run before lock acquisition")
+
+    def fail_write(config, journal_path=None):
+        write_calls.append((config, journal_path))
+        pytest.fail("write_journal_config should not run before lock acquisition")
+
+    monkeypatch.setattr(install_state, "hold_config_lock", busy_lock)
+    monkeypatch.setattr(install_state, "read_journal_config", fail_read)
+    monkeypatch.setattr(install_state, "write_journal_config", fail_write)
+
+    status = transition_state(make_idle_status("anthropic"), new_state="downloading")
+    with pytest.raises(LockTimeout) as exc_info:
+        install_state.write_install_status(status, scope="bundled")
+
+    assert exc_info.value is timeout
+    assert read_calls == []
+    assert write_calls == []
 
 
 def test_progress_byte_counters_persist_and_round_trip(journal_config):
