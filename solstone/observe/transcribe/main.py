@@ -7,34 +7,22 @@ Transcription pipeline:
 1. VAD stage: Run Silero VAD to detect speech and filter silent files early
 2. Audio reduction: Trim long silence gaps for faster processing
 3. Transcription: Dispatch to the configured or resource-aware STT backend
-4. Enrichment: Extract topics, setting, emotions, and warnings via LLM (optional)
-5. Embeddings: Generate voice embeddings for each sentence using wespeaker-resnet34
-6. Output: JSONL format compatible with format_audio() in observe/hear.py
+4. Embeddings: Generate voice embeddings for each sentence using wespeaker-resnet34
+5. Output: JSONL format compatible with format_audio() in observe/hear.py
 
 Output files:
-- <stem>.jsonl: Transcript with HH:MM:SS timestamps, topics, setting, emotions
+- <stem>.jsonl: Transcript with HH:MM:SS timestamps and optional speaker labels
 - <stem>.npz: Sentence-level voice embeddings indexed by statement id
 
 Configuration (journal config transcribe section):
-- transcribe.backend: STT backend ("parakeet", "parakeet-cpp", "confidential", "revai", "gemini"). If unset, auto-selected by lane and resources.
-- transcribe.enrich: Enable/disable LLM enrichment (default: true)
+- transcribe.backend: STT backend ("parakeet", "parakeet-cpp", "confidential"). If unset, auto-selected by lane and resources.
 - transcribe.preserve_all: Keep audio files even when no speech detected (default: false)
 - transcribe.min_speech_seconds: Minimum speech duration to proceed. Default: 1.0
-- transcribe.noise_upgrade: Auto-switch to Rev.ai for noisy recordings (default: true)
-- transcribe.noise_upgrade_min_speech_ratio: Min speech/loud ratio required for noisy upgrade (default: 0.3). Filters out music and other non-speech noise.
 
 Parakeet backend settings (transcribe.parakeet):
 - model_version: Parakeet model version ("v3"). Default: "v3"
 - cache_dir: Optional helper cache directory
 - timeout_sec: Helper timeout in seconds. Default: 120.0
-
-Rev.ai backend settings (transcribe.revai):
-- model: Rev.ai transcriber ("fusion", "machine", "low_cost"). Default: "fusion"
-- Automatically loads recent entity names as custom vocabulary for improved recognition
-
-Gemini backend settings (transcribe.gemini):
-- No configuration needed (model resolved by think.models context system)
-- Includes speaker diarization
 
 Platform optimizations:
 - Apple Silicon hosts use the CoreML Parakeet helper.
@@ -70,7 +58,7 @@ from solstone.apps.settings.install_copy import (
     STT_EXPLICIT_LOCAL_LOW_TEMPLATE,
     STT_LOCAL_REQUIREMENTS_TEMPLATE,
     STT_LOCAL_UNSUPPORTED,
-    STT_NO_KEY_RECOVERY,
+    STT_NO_LOCAL_STT_RECOVERY,
 )
 from solstone.apps.speakers.encoder_config import (
     OVERLAP_DETECTOR_ID,
@@ -155,9 +143,6 @@ WESPEAKER_MODEL_SHA256 = (
 )
 PYANNOTE_OVERLAP_MODEL_SHA256 = OVERLAP_DETECTOR_SHA256
 
-# Number of recent entity names to load for transcription context
-ENTITY_NAMES_LIMIT = 40
-
 # Module-level embedder cache
 _embedder_session: ort.InferenceSession | None = None
 
@@ -172,17 +157,15 @@ def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -
     available_bytes = read_available_bytes()
     floor_bytes = stt_local_floor_bytes()
     local_backend = local_stt_backend()
-    google_key_present = bool(os.getenv("GOOGLE_API_KEY"))
     configured_backend = transcribe_config.get("backend")
     explicit_backend = args.backend or configured_backend
     if explicit_backend:
         if explicit_backend not in BACKEND_REGISTRY:
             logging.warning(
-                "Configured STT backend %r is unavailable; using %s",
+                "Configured STT backend %r is unavailable; treating it as unset",
                 explicit_backend,
-                DEFAULT_BACKEND,
             )
-            explicit_backend = DEFAULT_BACKEND
+            explicit_backend = None
     from solstone.think.services import spp
 
     confidential_lane_active = spp.confidential_provenance() is not None
@@ -190,7 +173,6 @@ def resolve_default_backend(args: argparse.Namespace, transcribe_config: dict) -
     backend = resolve_stt_backend_choice(
         explicit_backend,
         available_bytes,
-        google_key_present=google_key_present,
         floor_bytes=floor_bytes,
         local_backend=local_backend,
         confidential_lane_active=confidential_lane_active,
@@ -243,7 +225,7 @@ def _surface_stt_requirement(
         if available_gb is None
         else STT_DETECTED_MEMORY_TEMPLATE.format(available_gb=available_gb)
     )
-    logging.error("%s %s %s", requirement, detected, STT_NO_KEY_RECOVERY)
+    logging.error("%s %s %s", requirement, detected, STT_NO_LOCAL_STT_RECOVERY)
 
 
 def _select_onnx_providers() -> list[str]:
@@ -507,8 +489,8 @@ def _failure_label(exc: Exception) -> str:
     """The exception's type name -- the only part of it safe to put on the bus.
 
     Exception *messages* are not safe: SchemaValidationError embeds a preview of the
-    raw model output (think/models.py), and transcribe/gemini.py interpolates that
-    into its own message, so a message could carry transcript text onto the event.
+    raw model output (think/models.py), and provider wrappers may interpolate
+    that into their own messages, so a message could carry transcript text onto the event.
     The full message and traceback go to the handler log, which is where the health
     UI already deep-links.  Keeping only the type name makes the content-free
     guarantee structural instead of a per-exception audit that any new provider
@@ -685,7 +667,6 @@ def _statements_to_jsonl(
     model_info: dict,
     source: str | None = None,
     observer: str | None = None,
-    enrichment: dict | None = None,
     vad_result: VadResult | None = None,
     segment_meta: dict | None = None,
     backend: str | None = None,
@@ -704,12 +685,10 @@ def _statements_to_jsonl(
         model_info: Dict with model, device, compute_type from backend
         source: Optional source label (e.g., "mic", "sys")
         observer: Optional observer name for metadata
-        enrichment: Optional enrichment data with topics, setting, warning, and
-            per-statement corrected text and emotions
         vad_result: Optional VAD result for noise detection metadata
         segment_meta: Optional metadata dict from SEGMENT_META env var
-            (facet, setting, host, platform, etc.). Setting overrides enrichment.
-        backend: Optional STT backend name (e.g., "parakeet", "revai")
+            (facet, setting, host, platform, etc.).
+        backend: Optional STT backend name (e.g., "parakeet")
         overlap_fraction: Optional fraction of speech containing overlapping speakers
         overlap_detector: Optional overlap detector identifier
         processing_record: Optional _solstone_processing record
@@ -746,17 +725,7 @@ def _statements_to_jsonl(
         metadata["overlap_fraction"] = round(float(overlap_fraction), 4)
         metadata["overlap_detector"] = overlap_detector
 
-    # Add enrichment metadata if available
-    if enrichment:
-        if "topics" in enrichment:
-            metadata["topics"] = enrichment["topics"]
-        if "setting" in enrichment:
-            metadata["setting"] = enrichment["setting"]
-        if "warning" in enrichment and enrichment["warning"]:
-            metadata["warning"] = enrichment["warning"]
-
     # Add segment metadata (from SEGMENT_META env var)
-    # These fields override any enrichment values (e.g., setting)
     if segment_meta:
         for key, value in segment_meta.items():
             metadata[key] = value
@@ -768,13 +737,8 @@ def _statements_to_jsonl(
 
     lines = [json.dumps(metadata)]
 
-    # Get enriched statements list (positional matching)
-    enriched_statements = []
-    if enrichment and "statements" in enrichment:
-        enriched_statements = enrichment["statements"]
-
     # Build entry lines
-    for i, stmt in enumerate(statements):
+    for stmt in statements:
         # Calculate absolute timestamp (handle None for invalid timestamps)
         start_seconds = stmt["start"] if stmt["start"] is not None else 0.0
         stmt_dt = base_datetime + datetime.timedelta(seconds=start_seconds)
@@ -787,22 +751,9 @@ def _statements_to_jsonl(
         if source:
             entry["source"] = source
 
-        # Pass through speaker ID if present (from diarized backends like Rev.ai, Gemini)
+        # Pass through speaker ID if present from local diarization.
         if "speaker" in stmt:
             entry["speaker"] = stmt["speaker"]
-
-        # Add corrected text and emotion from enrichment by position
-        if i < len(enriched_statements):
-            enriched = enriched_statements[i]
-            if isinstance(enriched, dict):
-                # Add corrected text only if different from original
-                corrected = enriched.get("corrected", "")
-                if corrected and corrected != stmt["text"]:
-                    entry["corrected"] = corrected
-                # Add emotion (overrides emotion from statement)
-                emotion = enriched.get("emotion", "")
-                if emotion:
-                    entry["emotion"] = emotion
 
         lines.append(json.dumps(entry))
 
@@ -873,7 +824,6 @@ def process_audio(
     reduction: AudioReduction | None = None,
     reduced_audio: np.ndarray | None = None,
     backend: str | None = None,
-    entity_names: list[str] | None = None,
     *,
     sound_tags: dict | None = None,
     timings: _StageTimings | None = None,
@@ -882,7 +832,6 @@ def process_audio(
 
     This is the main orchestration function that coordinates:
     - STT backend dispatch
-    - Enrichment (optional)
     - Embedding generation
     - Output file writing
     - Event emission
@@ -896,7 +845,6 @@ def process_audio(
         reduction: Optional AudioReduction mapping for timestamp restoration
         reduced_audio: Optional reduced audio buffer (used if reduction provided)
         backend: STT backend name. If omitted, uses DEFAULT_BACKEND.
-        entity_names: Optional list of entity names for STT and enrichment context
         sound_tags: Optional ambient sound-tag metadata computed from full audio
         timings: Stage-timing accumulator carrying the pre-STT stages measured by
             _process_one. A fresh one is created when called without it.
@@ -938,15 +886,7 @@ def process_audio(
         except json.JSONDecodeError:
             logging.warning(f"Invalid SEGMENT_META JSON: {segment_meta_str[:100]}")
 
-    # Gemini uses chunk-based transcription with VAD segments for timestamp accuracy
-    # Other backends use reduced audio with post-hoc timestamp restoration
-    use_gemini_chunks = backend == "gemini" and vad_result.speech_segments
-
-    if use_gemini_chunks:
-        # Gemini: use full audio buffer with VAD segments for chunking
-        stt_buffer = audio_buffer
-    elif reduced_audio is not None:
-        # Other backends: use reduced audio
+    if reduced_audio is not None:
         stt_buffer = reduced_audio
     else:
         stt_buffer = audio_buffer
@@ -954,19 +894,9 @@ def process_audio(
     try:
         # Dispatch to STT backend
         with timings.time("asr"):
-            if use_gemini_chunks:
-                # Pass VAD segments to Gemini for chunk-based transcription
-                statements = stt_transcribe(
-                    resolved_backend,
-                    stt_buffer,
-                    SAMPLE_RATE,
-                    backend_config,
-                    speech_segments=vad_result.speech_segments,
-                )
-            else:
-                statements = stt_transcribe(
-                    resolved_backend, stt_buffer, SAMPLE_RATE, backend_config
-                )
+            statements = stt_transcribe(
+                resolved_backend, stt_buffer, SAMPLE_RATE, backend_config
+            )
 
         # Get model info for metadata (dynamic import based on backend)
         backend_module = get_backend(resolved_backend)
@@ -1044,17 +974,6 @@ def process_audio(
         if suffix.endswith("_audio") and suffix != "audio":
             source = suffix[:-6]  # Remove "_audio" suffix
 
-        # Run enrichment if enabled (extracts topics, setting, emotions, corrections)
-        enrichment = None
-        enrich_enabled = config.get("transcribe", {}).get("enrich", True)
-        if enrich_enabled:
-            from solstone.observe.enrich import enrich_transcript
-
-            with timings.time("enrich"):
-                enrichment = enrich_transcript(
-                    stt_buffer, SAMPLE_RATE, statements, entity_names=entity_names
-                )
-
         # Generate embeddings before timestamp restoration
         # Use reduced audio buffer if available for consistent timestamps
         with timings.time("embed"):
@@ -1066,9 +985,8 @@ def process_audio(
                 audio_buffer
             )
 
-        # Restore original timestamps if audio was reduced (non-Gemini backends only)
-        # Gemini with chunks already has timestamps in original audio time
-        if reduction and not use_gemini_chunks:
+        # Restore original timestamps if audio was reduced.
+        if reduction:
             from solstone.observe.vad import restore_statement_timestamps
 
             statements = restore_statement_timestamps(statements, reduction)
@@ -1082,39 +1000,38 @@ def process_audio(
         # speech and diarization adds no value.  Otherwise reuse the pyannote
         # log-probs computed above so the diarizer skips its own pyannote pass.
         _DIARIZE_MIN_OVERLAP = 0.05
-        if resolved_backend in {"parakeet", "confidential"}:
-            if overlap_fraction_value < _DIARIZE_MIN_OVERLAP:
-                logging.info(
-                    "  Skipping diarization: overlap=%.2f (threshold %.2f)",
-                    overlap_fraction_value,
-                    _DIARIZE_MIN_OVERLAP,
-                )
-            else:
-                try:
-                    from solstone.observe.transcribe.diarize import diarize_auto_k
+        if overlap_fraction_value < _DIARIZE_MIN_OVERLAP:
+            logging.info(
+                "  Skipping diarization: overlap=%.2f (threshold %.2f)",
+                overlap_fraction_value,
+                _DIARIZE_MIN_OVERLAP,
+            )
+        else:
+            try:
+                from solstone.observe.transcribe.diarize import diarize_auto_k
 
-                    with timings.time("diarize"):
-                        labels = diarize_auto_k(
-                            raw_path,
-                            statements,
-                            avg_log_probs=pyannote_logprobs,
-                            audio=audio_buffer,
-                        )
-                    assigned = 0
-                    for stmt, lbl in zip(statements, labels):
-                        if lbl is not None:
-                            stmt["speaker"] = lbl
-                            assigned += 1
-                    logging.info(
-                        "  Local diarization: %d/%d sentences labeled (overlap=%.2f)",
-                        assigned,
-                        len(statements),
-                        overlap_fraction_value,
+                with timings.time("diarize"):
+                    labels = diarize_auto_k(
+                        raw_path,
+                        statements,
+                        avg_log_probs=pyannote_logprobs,
+                        audio=audio_buffer,
                     )
-                except Exception:
-                    logging.exception(
-                        "Local diarization failed; speaker labels will be absent"
-                    )
+                assigned = 0
+                for stmt, lbl in zip(statements, labels):
+                    if lbl is not None:
+                        stmt["speaker"] = lbl
+                        assigned += 1
+                logging.info(
+                    "  Local diarization: %d/%d sentences labeled (overlap=%.2f)",
+                    assigned,
+                    len(statements),
+                    overlap_fraction_value,
+                )
+            except Exception:
+                logging.exception(
+                    "Local diarization failed; speaker labels will be absent"
+                )
 
         # Convert to JSONL format (now with original timestamps)
         raw_filename = f"{raw_path.stem}{raw_path.suffix}"
@@ -1131,7 +1048,6 @@ def process_audio(
             model_info,
             source,
             observer,
-            enrichment,
             vad_result,
             segment_meta,
             resolved_backend,
@@ -1294,7 +1210,6 @@ def _process_one(
     args: argparse.Namespace,
     transcribe_config: dict,
     default_backend: str,
-    entity_names: list[str],
 ) -> None:
     """Run the full transcription pipeline for a single audio file."""
     min_speech_seconds = transcribe_config.get(
@@ -1428,44 +1343,6 @@ def _process_one(
     # CLI --backend flag overrides the invocation-level default
     backend = args.backend or default_backend
 
-    # Check for noise upgrade: auto-switch to Rev.ai for noisy recordings
-    # Only applies when:
-    # - No explicit CLI --backend flag (respect user's explicit choice)
-    # - Not already using Rev.ai
-    # - noise_upgrade is enabled (default: true)
-    # - Audio is noisy
-    # - Rev.ai token is available
-    noise_upgrade = transcribe_config.get("noise_upgrade", True)
-    min_ratio = transcribe_config.get("noise_upgrade_min_speech_ratio", 0.3)
-    from solstone.think.services import spp
-
-    confidential_lane_active = spp.confidential_provenance() is not None
-    if (
-        not args.backend
-        and noise_upgrade
-        and not confidential_lane_active
-        and backend != "revai"
-        and vad_result.is_noisy()
-    ):
-        from solstone.observe.transcribe.revai import has_token
-
-        ratio = vad_result.loud_speech_ratio
-        if ratio is not None and ratio < min_ratio:
-            logging.info(
-                "Noisy audio (RMS=%.4f) looks like non-speech (loud_speech_ratio=%.2f < %.2f), "
-                "skipping Rev.ai upgrade",
-                vad_result.noisy_rms,
-                ratio,
-                min_ratio,
-            )
-        elif has_token():
-            logging.info(
-                "Noisy audio detected (RMS=%.4f, loud_speech_ratio=%s), upgrading to Rev.ai backend",
-                vad_result.noisy_rms,
-                f"{ratio:.2f}" if ratio is not None else "n/a",
-            )
-            backend = "revai"
-
     if backend == "confidential":
         audio_seconds = len(audio_buffer) / SAMPLE_RATE
         if audio_seconds > CONFIDENTIAL_STT_MAX_AUDIO_SECONDS:
@@ -1482,20 +1359,7 @@ def _process_one(
                 raise SystemExit(1)
 
     # Get backend-specific config from nested structure
-    if backend == "revai":
-        from solstone.observe.transcribe.revai import (
-            DEFAULT_MODEL as REVAI_DEFAULT_MODEL,
-        )
-
-        revai_config = transcribe_config.get("revai", {})
-        model = revai_config.get("model", REVAI_DEFAULT_MODEL)
-        backend_config = {
-            "model": model,
-        }
-        # Pass entities to Rev.ai for custom vocabulary
-        if entity_names:
-            backend_config["entities"] = entity_names
-    elif _uses_parakeet_cpp(backend):
+    if _uses_parakeet_cpp(backend):
         parakeet_cpp_config = transcribe_config.get("parakeet-cpp", {})
         backend_config = {k: v for k, v in parakeet_cpp_config.items() if k == "device"}
     elif backend == "parakeet":
@@ -1512,10 +1376,6 @@ def _process_one(
                 "quantization",
             )
         }
-    elif backend == "gemini":
-        # Gemini backend - model resolved by think.models based on context
-        # Entity names handled by enrich step, not passed to transcription
-        backend_config = {}
     elif backend == "confidential":
         backend_config = {}
     else:
@@ -1532,7 +1392,6 @@ def _process_one(
         reduction=reduction,
         reduced_audio=reduced_audio,
         backend=backend,
-        entity_names=entity_names,
         sound_tags=sound_tags,
         timings=timings,
     )
@@ -1577,12 +1436,6 @@ def main():
     transcribe_config = config.get("transcribe", {})
     default_backend = resolve_default_backend(args, transcribe_config)
 
-    from solstone.think.entities import load_recent_entity_names
-
-    entity_names = load_recent_entity_names(limit=ENTITY_NAMES_LIMIT)
-    if entity_names:
-        logging.info(f"Loaded {len(entity_names)} entities for transcription context")
-
     if args.all:
         processed = 0
         skipped = 0
@@ -1606,7 +1459,6 @@ def main():
                             args,
                             transcribe_config,
                             default_backend,
-                            entity_names,
                         )
                         processed += 1
                     except SystemExit as exit_signal:
@@ -1660,7 +1512,7 @@ def main():
             f"but parent is: {audio_path.parent.name}"
         )
 
-    _process_one(audio_path, args, transcribe_config, default_backend, entity_names)
+    _process_one(audio_path, args, transcribe_config, default_backend)
 
 
 if __name__ == "__main__":

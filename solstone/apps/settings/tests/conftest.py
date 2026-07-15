@@ -53,15 +53,10 @@ def settings_env(tmp_path, monkeypatch):
                 },
                 "transcribe": {
                     "backend": "parakeet",
-                    "enrich": True,
-                    "noise_upgrade": False,
                     "parakeet": {
                         "model_version": "v3",
                         "device": "auto",
                         "timeout_sec": 120.0,
-                    },
-                    "revai": {
-                        "model": "fusion",
                     },
                 },
                 "observe": {"tmux": {"enabled": True, "capture_interval": 5}},

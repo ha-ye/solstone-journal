@@ -121,7 +121,7 @@ def test_process_audio_speech_writes_sound_tags_and_keeps_audio(
     with (
         patch(
             "solstone.observe.transcribe.main.get_config",
-            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+            return_value={"transcribe": {"preserve_all": False}},
         ),
         patch(
             "solstone.observe.transcribe.main.get_journal",
@@ -372,7 +372,6 @@ def test_vad_no_speech_preserve_path_writes_empty_record(
             args,
             {"preserve_all": True},
             "parakeet",
-            [],
         )
 
     assert raw_path.exists()
@@ -411,7 +410,6 @@ def test_vad_no_speech_with_tags_writes_empty_jsonl_then_deletes_audio(
             args,
             {"preserve_all": False},
             "parakeet",
-            [],
         )
 
     jsonl_path = raw_path.with_suffix(".jsonl")
@@ -446,7 +444,6 @@ def test_vad_no_speech_non_salient_writes_empty_record_then_deletes_audio(
             args,
             {"preserve_all": False},
             "parakeet",
-            [],
         )
 
     assert not raw_path.exists()
@@ -485,7 +482,6 @@ def test_vad_no_speech_write_failure_preserves_audio(
                 args,
                 {"preserve_all": False},
                 "parakeet",
-                [],
             )
 
     assert raw_path.exists()
@@ -519,7 +515,6 @@ def test_vad_no_speech_tagger_raise_writes_empty_record_without_tags(
             args,
             {"preserve_all": False},
             "parakeet",
-            [],
         )
 
     assert not raw_path.exists()
@@ -605,7 +600,6 @@ def test_filtered_raw_deletion_leaves_terminal_processing_record(
                 args,
                 {"preserve_all": False},
                 "parakeet",
-                [],
             )
 
     jsonl_path = raw_path.with_suffix(".jsonl")

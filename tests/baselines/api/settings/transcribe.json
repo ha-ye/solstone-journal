@@ -1,27 +1,9 @@
 {
   "api_keys": {
-    "gemini": false,
     "parakeet": false,
-    "parakeet-cpp": false,
-    "revai": false
+    "parakeet-cpp": false
   },
   "backends": [
-    {
-      "description": "Cloud-based transcription with speaker identification",
-      "env_key": "GOOGLE_API_KEY",
-      "label": "Gemini - Cloud with speaker diarization",
-      "name": "gemini",
-      "settings": []
-    },
-    {
-      "description": "Cloud-based transcription with speaker identification",
-      "env_key": "REVAI_ACCESS_TOKEN",
-      "label": "Rev.ai - Cloud with speaker diarization",
-      "name": "revai",
-      "settings": [
-        "model"
-      ]
-    },
     {
       "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses the supervised parakeet.cpp server. Requires `make install`.",
       "env_key": null,
@@ -46,27 +28,20 @@
   "config": {
     "backend": "parakeet",
     "confidential_audio": true,
-    "enrich": true,
-    "noise_upgrade": true,
     "parakeet": {
       "device": "auto",
       "model_version": "v3",
       "timeout_sec": 120.0
-    },
-    "revai": {
-      "model": "fusion"
     }
   },
+  "parakeet_uses_cpp": true,
   "resource": {
-    "auto_switched": "<normalized>",
     "available_memory_gb": "<normalized>",
     "detected": "<normalized>",
-    "force_local_hint": "<normalized>",
     "min_ram_gb": "<normalized>",
     "needs_setup": "<normalized>",
     "notice": "<normalized>",
     "requirement": "<normalized>"
   },
-  "parakeet_uses_cpp": true,
   "runtime_label": "Linux parakeet.cpp"
 }

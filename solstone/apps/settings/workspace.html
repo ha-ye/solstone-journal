@@ -2380,22 +2380,12 @@ button:focus:not(:focus-visible) {
     <!-- API Keys Section -->
     <section class="settings-section" id="section-apikeys" role="tabpanel" aria-labelledby="tab-apikeys">
       <h2>API keys</h2>
-      <p class="settings-section-desc">configure service tokens for transcription and imports. tokens are stored in your journal config.</p>
+      <p class="settings-section-desc">configure service tokens for imports. tokens are stored in your journal config.</p>
 
       <form class="settings-form" onsubmit="return false;">
       <div style="margin-bottom: 1em;">
         <button type="button" id="revalidateAllKeys" class="btn-secondary" onclick="revalidateAllKeys()">re-validate all keys</button>
         <span id="revalidateStatus" style="margin-left: 0.5em; font-size: 0.85em;"></span>
-      </div>
-      <div class="settings-field">
-        <label for="field-env-revai">Rev.ai</label>
-        <div class="password-wrap">
-          <input type="password" id="field-env-revai" data-section="env" data-key="REVAI_ACCESS_TOKEN" placeholder="enter access token" autocomplete="off" data-1p-ignore data-lpignore="true" data-bwignore="true">
-          <button type="button" class="password-toggle" data-toggle="field-env-revai" title="show token">
-            <span>&#128065;</span>
-          </button>
-        </div>
-        <small>audio transcription for imported files. <a href="https://www.rev.ai/access_token" target="_blank">get token</a></small>
       </div>
       <div class="settings-field">
         <label for="field-env-plaud">Plaud</label>
@@ -2437,28 +2427,6 @@ button:focus:not(:focus-visible) {
         <span>&#9888;</span>
         <span id="transcribeResourceNoticeText"></span>
       </div>
-
-      <!-- Rev.ai-specific settings -->
-      <fieldset id="revai-settings" class="backend-settings" style="display:none">
-        <div class="settings-field">
-          <label for="field-revai-model">model</label>
-          <select id="field-revai-model">
-            <option value="fusion" selected>Fusion - Best quality (default)</option>
-            <option value="machine">Machine - Fast automated</option>
-            <option value="low_cost">Low Cost - Budget option</option>
-          </select>
-          <small>Rev.ai transcription model</small>
-        </div>
-      </fieldset>
-
-      <!-- Gemini-specific settings (informational only) -->
-      <fieldset id="gemini-settings" class="backend-settings" style="display:none">
-        <p class="settings-field-note">
-          Gemini combines transcription and enrichment in a single API call, providing
-          speaker diarization, emotion detection, and topic extraction automatically.
-          Model selection is handled in Thinking.
-        </p>
-      </fieldset>
 
       <fieldset id="parakeet-settings" class="backend-settings" style="display:none">
         <div class="settings-field">
@@ -2509,34 +2477,12 @@ button:focus:not(:focus-visible) {
       <div class="settings-field" style="margin-top: 1.5em;">
         <div class="toggle-container" style="justify-content: flex-start; gap: 1em;">
           <label class="toggle-switch toggle-positive">
-            <input type="checkbox" id="field-transcribe-enrich" data-section="transcribe" data-key="enrich">
-            <span class="slider"></span>
-          </label>
-          <label for="field-transcribe-enrich" class="toggle-label" style="cursor: pointer;">enrich transcripts</label>
-        </div>
-        <small>Use AI to extract topics, correct transcription errors, and add descriptions</small>
-      </div>
-
-      <div class="settings-field">
-        <div class="toggle-container" style="justify-content: flex-start; gap: 1em;">
-          <label class="toggle-switch toggle-positive">
             <input type="checkbox" id="field-transcribe-preserve" data-section="transcribe" data-key="preserve_all">
             <span class="slider"></span>
           </label>
           <label for="field-transcribe-preserve" class="toggle-label" style="cursor: pointer;">preserve silent audio</label>
         </div>
         <small>Keep audio files even when no speech is detected</small>
-      </div>
-
-      <div class="settings-field">
-        <div class="toggle-container" style="justify-content: flex-start; gap: 1em;">
-          <label class="toggle-switch toggle-positive">
-            <input type="checkbox" id="field-transcribe-noise-upgrade" data-section="transcribe" data-key="noise_upgrade">
-            <span class="slider"></span>
-          </label>
-          <label for="field-transcribe-noise-upgrade" class="toggle-label" style="cursor: pointer;">noise upgrade</label>
-        </div>
-        <small>automatically use Rev.ai for noisy audio (requires Rev.ai token)</small>
       </div>
       </form>
     </section>
@@ -3719,14 +3665,8 @@ function populateFields(config) {
   const parakeetCpp = transcribe['parakeet-cpp'] || {};
   setValue('field-parakeet-cpp-device', parakeetCpp.device || 'auto');
 
-  // Rev.ai settings (nested)
-  const revai = transcribe.revai || {};
-  setValue('field-revai-model', revai.model || 'fusion');
-
-  // Shared settings - enrich and noise_upgrade default to true when not set
-  document.getElementById('field-transcribe-enrich').checked = transcribe.enrich !== false;
+  // Shared settings
   document.getElementById('field-transcribe-preserve').checked = transcribe.preserve_all || false;
-  document.getElementById('field-transcribe-noise-upgrade').checked = transcribe.noise_upgrade !== false;
 
   // Support settings
   const support = config.support || {};
@@ -3748,7 +3688,6 @@ function populateFields(config) {
   const env = config.env || {};
   const sysEnv = config.runtime_env || {};
   keyValidationData = config.key_validation || {};
-  updateEnvStatus('field-env-revai', env.REVAI_ACCESS_TOKEN, sysEnv.REVAI_ACCESS_TOKEN);
   updateEnvStatus('field-env-plaud', env.PLAUD_ACCESS_TOKEN, sysEnv.PLAUD_ACCESS_TOKEN);
 
   document.querySelectorAll('[data-section][data-key]').forEach((el) => {
@@ -3790,7 +3729,7 @@ function updateEnvStatus(fieldId, isJournalConfigured, isSystemConfigured) {
 
     // Add validation status for transcription/import service tokens.
     const providerName = fieldId.replace('field-env-', '');
-    if (['revai', 'plaud'].includes(providerName)) {
+    if (['plaud'].includes(providerName)) {
       const validation = keyValidationData[providerName];
       const oldValidation = label.querySelector('.key-validation-status');
       if (oldValidation) oldValidation.remove();
@@ -3831,7 +3770,6 @@ async function revalidateAllKeys() {
     }
     const env = configData?.env || {};
     const sysEnv = configData?.runtime_env || {};
-    updateEnvStatus('field-env-revai', env.REVAI_ACCESS_TOKEN, sysEnv.REVAI_ACCESS_TOKEN);
     updateEnvStatus('field-env-plaud', env.PLAUD_ACCESS_TOKEN, sysEnv.PLAUD_ACCESS_TOKEN);
     status.textContent = 'done';
     status.className = 'key-status-valid';
@@ -5059,7 +4997,7 @@ function renderTranscribeResourceNotice(resource) {
   const notice = document.getElementById('transcribeResourceNotice');
   const text = document.getElementById('transcribeResourceNoticeText');
   if (!notice || !text) return;
-  const show = !!(resource?.auto_switched || resource?.needs_setup);
+  const show = !!resource?.needs_setup;
   if (!show) {
     text.textContent = '';
     notice.style.display = 'none';
@@ -5067,7 +5005,6 @@ function renderTranscribeResourceNotice(resource) {
   }
   const lines = [];
   if (resource.notice) lines.push(resource.notice);
-  if (resource.force_local_hint) lines.push(resource.force_local_hint);
   text.textContent = lines.join(' ');
   notice.style.display = 'flex';
 }
@@ -5125,8 +5062,6 @@ function switchTranscribeBackend(backend, config) {
   const showParakeetCppSettings = backend === 'parakeet-cpp' || (backend === 'parakeet' && parakeetUsesCpp);
   document.getElementById('parakeet-settings').style.display = (backend === 'parakeet' && !parakeetUsesCpp) ? 'block' : 'none';
   document.getElementById('parakeet-cpp-settings').style.display = showParakeetCppSettings ? 'block' : 'none';
-  document.getElementById('revai-settings').style.display = backend === 'revai' ? 'block' : 'none';
-  document.getElementById('gemini-settings').style.display = backend === 'gemini' ? 'block' : 'none';
 
   // Find the backend metadata
   const backendInfo = transcribeBackends.find(b => b.name === backend);
@@ -5144,16 +5079,6 @@ function switchTranscribeBackend(backend, config) {
     }
   } else if (warning) {
     warning.style.display = 'none';
-  }
-
-  // Disable enrich toggle for gemini (it has integrated enrichment)
-  const enrichCheckbox = document.getElementById('field-transcribe-enrich');
-  const enrichField = enrichCheckbox?.closest('.settings-field');
-  if (enrichCheckbox && enrichField) {
-    const isGemini = backend === 'gemini';
-    enrichCheckbox.disabled = isGemini;
-    enrichField.style.opacity = isGemini ? '0.5' : '1';
-    enrichField.title = isGemini ? 'Gemini includes integrated enrichment' : '';
   }
 }
 
@@ -5174,10 +5099,8 @@ document.getElementById('field-transcribe-backend').addEventListener('change', a
       if (transcribeResource) {
         transcribeResource = {
           ...transcribeResource,
-          auto_switched: false,
           needs_setup: false,
           notice: '',
-          force_local_hint: '',
         };
         renderTranscribeResourceInfo(transcribeResource);
         renderTranscribeResourceNotice(transcribeResource);
@@ -5202,29 +5125,6 @@ document.getElementById('backendKeyLink')?.addEventListener('click', (e) => {
 document.getElementById('plaudApiKeysLink')?.addEventListener('click', (e) => {
   e.preventDefault();
   switchSection('apikeys');
-});
-
-// Rev.ai settings change handlers
-document.getElementById('field-revai-model')?.addEventListener('change', async (e) => {
-  const value = e.target.value;
-
-  try {
-    const response = await fetch('api/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ section: 'transcribe', data: { revai: { model: value } } })
-    });
-    const result = await response.json();
-    if (result.success) {
-      configData = result.config;
-      showFieldStatus(e.target, 'saved');
-    } else {
-      throw new Error(result.error);
-    }
-  } catch (err) {
-    console.error('Error saving revai setting:', err);
-    showFieldStatus(e.target, 'error', err.message);
-  }
 });
 
 ['field-parakeet-model-version', 'field-parakeet-device', 'field-parakeet-timeout'].forEach(id => {

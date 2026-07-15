@@ -6,7 +6,7 @@
 This module handles loading entities from storage:
 - load_entities: Load attached or detected entities for a facet
 - load_all_attached_entities: Load from all facets with deduplication
-- load_entity_names / load_recent_entity_names: For transcription context
+- load_entity_names / load_recent_entity_names: Speech-friendly names for prompts
 """
 
 import json
@@ -273,7 +273,7 @@ def _is_speakable(name: str) -> bool:
     """Check if a name is suitable for speech recognition vocabularies.
 
     Allows letters, digits, spaces, periods, hyphens, and apostrophes.
-    Must contain at least one letter (Rev.ai requirement).
+    Must contain at least one letter for recognizer vocabulary quality.
     Rejects underscores and other programming symbols.
 
     Args:
@@ -420,7 +420,7 @@ def load_entity_names(
 
 
 def load_recent_entity_names(*, limit: int = 20) -> list[str] | None:
-    """Load recently active entity names for transcription context.
+    """Load recently active entity names for prompt context.
 
     Returns spoken-form names from the most recently seen entities across all
     facets. Caller is responsible for formatting the list as needed.

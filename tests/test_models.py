@@ -363,8 +363,6 @@ def test_prompt_contexts_in_registry():
     assert "observe.describe.frame" in registry
     assert registry["observe.describe.frame"]["group"] == "Observe"
 
-    assert "observe.enrich" in registry
-
     assert "detect.created" in registry
 
 

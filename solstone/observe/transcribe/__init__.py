@@ -14,9 +14,8 @@ Terminology:
 
 Available backends:
 - parakeet: Default local backend via Apple Silicon helper or Linux parakeet.cpp
+- parakeet-cpp: Explicit Linux local backend via the supervised parakeet.cpp server
 - confidential: Operated attested STT over the verified confidential forwarder
-- revai: Rev.ai cloud API (speaker diarization)
-- gemini: Google Gemini API (speaker diarization)
 
 Backend Interface:
     Each backend module must export a transcribe() function:
@@ -35,7 +34,7 @@ Backend Interface:
         "end": float,           # seconds
         "text": str,            # transcribed text
         "words": list[dict] | None,  # word-level data if available
-        "speaker": int | None,  # speaker ID (revai/gemini, 1-indexed)
+        "speaker": int | None,  # speaker ID assigned by local diarization
     }
 
     Word format (when available):
@@ -62,8 +61,6 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 BACKEND_REGISTRY: dict[str, str] = {
-    "revai": "solstone.observe.transcribe.revai",
-    "gemini": "solstone.observe.transcribe.gemini",
     "parakeet": "solstone.observe.transcribe.parakeet",
     "parakeet-cpp": "solstone.observe.transcribe._parakeet_cpp",
     "confidential": "solstone.observe.transcribe.confidential",
@@ -77,22 +74,6 @@ BACKEND_REGISTRY: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 BACKEND_METADATA: dict[str, dict] = {
-    "revai": {
-        "label": "Rev.ai - Cloud with speaker diarization",
-        "description": "Cloud-based transcription with speaker identification",
-        "env_key": "REVAI_ACCESS_TOKEN",
-        "settings": ["model"],
-        "local": False,
-        "selectable": True,
-    },
-    "gemini": {
-        "label": "Gemini - Cloud with speaker diarization",
-        "description": "Cloud-based transcription with speaker identification",
-        "env_key": "GOOGLE_API_KEY",
-        "settings": [],
-        "local": False,
-        "selectable": True,
-    },
     "parakeet": {
         "label": "Parakeet - Local processing (Apple Silicon CoreML or Linux parakeet.cpp)",
         "description": "On-device speech recognition via Parakeet TDT; macOS uses a FluidAudio/CoreML helper, Linux uses the supervised parakeet.cpp server. Requires `make install`.",
@@ -206,7 +187,6 @@ def transcribe(
     audio: "np.ndarray",
     sample_rate: int,
     config: dict,
-    speech_segments: list[tuple[float, float]] | None = None,
 ) -> list[dict]:
     """Dispatch transcription to the specified backend.
 
@@ -215,8 +195,6 @@ def transcribe(
         audio: Audio buffer (float32, mono)
         sample_rate: Sample rate in Hz (typically 16000)
         config: Backend-specific configuration dict
-        speech_segments: Optional VAD speech segments for chunk-based transcription.
-            Currently only used by the Gemini backend for timestamp anchoring.
 
     Returns:
         List of statement dicts with id, start, end, text, and optionally words
@@ -255,11 +233,6 @@ def transcribe(
         raise ConfidentialTranscribeDeferral("confidential_lane_inactive")
 
     backend_mod = get_backend(backend)
-
-    # Pass speech_segments to backends that support it (currently only Gemini)
-    if backend == "gemini" and speech_segments is not None:
-        return backend_mod.transcribe(audio, sample_rate, config, speech_segments)
-
     return backend_mod.transcribe(audio, sample_rate, config)
 
 

@@ -135,10 +135,9 @@ def _public_facet_record(name: str, data: dict[str, object]) -> dict[str, object
 # API keys that can be configured in the env section
 # Used for system env checks and allowed env fields validation
 API_KEY_ENV_VARS = [
-    "REVAI_ACCESS_TOKEN",
     "PLAUD_ACCESS_TOKEN",
 ]
-SERVICE_KEY_VALIDATION_KEYS = frozenset({"revai", "plaud"})
+SERVICE_KEY_VALIDATION_KEYS = frozenset({"plaud"})
 
 
 def _compute_runtime_label() -> str:
@@ -175,6 +174,12 @@ def _project_transcribe_config(
     from solstone.observe.transcribe.config import confidential_audio_enabled
 
     supported_backends = set(BACKEND_REGISTRY)
+    scalar_keys = {
+        "backend",
+        "preserve_all",
+        "confidential_audio",
+        "min_speech_seconds",
+    }
     projected: dict[str, Any] = {}
     for key, value in transcribe_config.items():
         if key in supported_backends:
@@ -188,9 +193,10 @@ def _project_transcribe_config(
             }
             continue
 
-        # Backend subtrees are dict-shaped. Drop stale removed backend configs
-        # such as the former Whisper subtree while preserving scalar settings.
+        # Backend subtrees are dict-shaped. Drop stale removed backend configs.
         if isinstance(value, dict):
+            continue
+        if key not in scalar_keys:
             continue
         projected[key] = copy.deepcopy(value)
 
@@ -320,9 +326,7 @@ def update_config() -> Any:
             "journal": ["name"],
             "transcribe": [
                 "backend",
-                "enrich",
                 "preserve_all",
-                "noise_upgrade",
                 "confidential_audio",
             ],
             "support": ["enabled", "proactive", "anonymous_feedback", "portal_url"],
@@ -409,9 +413,7 @@ def update_config() -> Any:
                             ),
                         )
                 for bool_key in (
-                    "enrich",
                     "preserve_all",
-                    "noise_upgrade",
                     "confidential_audio",
                 ):
                     if bool_key in data and not isinstance(data[bool_key], bool):
@@ -440,13 +442,9 @@ def update_config() -> Any:
             if section == "env" and changed_fields:
                 key_validation = config.setdefault("service_key_validation", {})
 
-                # Validate service tokens (Rev.ai, Plaud) — not AI providers,
-                # so they use their own validators instead of think.providers.
+                # Validate service tokens (Plaud) — not AI providers, so they use
+                # their own validators instead of think.providers.
                 SERVICE_TOKEN_VALIDATORS = {
-                    "REVAI_ACCESS_TOKEN": (
-                        "revai",
-                        "solstone.observe.transcribe.revai",
-                    ),
                     "PLAUD_ACCESS_TOKEN": (
                         "plaud",
                         "solstone.think.importers.plaud",
@@ -608,7 +606,6 @@ def get_transcribe() -> Any:
                 api_keys[backend["name"]] = bool(os.getenv(env_key))
             else:
                 api_keys[backend["name"]] = True  # Local backends always available
-        google_key_present = bool(api_keys.get("gemini"))
         configured_backend = transcribe_config.get("backend")
         confidential_audio = bool(transcribe_config.get("confidential_audio"))
         try:
@@ -616,7 +613,6 @@ def get_transcribe() -> Any:
 
             confidential_lane_active = spp.confidential_provenance() is not None
             resource = transcribe_resource.get_transcribe_resource_payload(
-                google_key_present=google_key_present,
                 configured_backend=configured_backend,
                 confidential_lane_active=confidential_lane_active,
                 confidential_audio=confidential_audio,
@@ -816,12 +812,11 @@ def _sol_voice_response(settings: SolVoiceSettings) -> dict[str, Any]:
 
 
 def _compute_key_validation(config: dict[str, Any]) -> dict[str, Any]:
-    """Validate configured Rev.ai and Plaud tokens without mutating config."""
+    """Validate configured Plaud tokens without mutating config."""
 
     env_config = config.get("env", {})
     key_validation: dict[str, Any] = {}
     service_token_validators = {
-        "REVAI_ACCESS_TOKEN": ("revai", "solstone.observe.transcribe.revai"),
         "PLAUD_ACCESS_TOKEN": ("plaud", "solstone.think.importers.plaud"),
     }
     for env_var, (val_key, module_path) in service_token_validators.items():
@@ -850,7 +845,7 @@ def validate_all_keys() -> Any:
             config = get_journal_config()
             key_validation = _compute_key_validation(config)
             existing = config.setdefault("service_key_validation", {})
-            for key in ("revai", "plaud"):
+            for key in ("plaud",):
                 existing.pop(key, None)
             existing.update(key_validation)
             write_journal_config(config)

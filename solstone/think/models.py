@@ -298,7 +298,7 @@ def _confidential_attestation_verifier() -> Callable[[dict[str, Any]], None]:
 #
 # Examples:
 #   - observe.describe.frame    -> observe module, describe feature, frame operation
-#   - observe.enrich            -> observe module, enrich feature (no sub-operation)
+#   - observe.extract           -> observe module, extract feature (no sub-operation)
 #   - talent.system.meetings      -> talent module, system source, meetings config
 #   - talent.entities.observer    -> talent module, entities app, observer config
 #   - app.chat.title            -> apps module, chat app, title operation
@@ -318,9 +318,7 @@ def _confidential_attestation_verifier() -> Callable[[dict[str, Any]], None]:
 # Each must have: context, label, group in YAML frontmatter.
 PROMPT_PATHS: List[str] = [
     "observe/describe.md",
-    "observe/enrich.md",
     "observe/extract.md",
-    "observe/transcribe/gemini.md",
     "think/detect_created.md",
     "think/detect_transcript_segment.md",
     "think/detect_transcript_json.md",
@@ -342,7 +340,7 @@ def _discover_prompt_contexts() -> Dict[str, Dict[str, Any]]:
     """Load context metadata from prompt files listed in PROMPT_PATHS.
 
     Each file must have YAML frontmatter with:
-    - context: The context string (e.g., "observe.enrich")
+    - context: The context string (e.g., "observe.extract")
     - label: Human-readable name
     - group: Settings UI category
 

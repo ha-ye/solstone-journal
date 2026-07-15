@@ -189,20 +189,10 @@ def _stt_audio() -> np.ndarray:
 def _install_stt_backend_mocks(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    gemini_result=AssertionError("gemini audio egress attempted"),
-    revai_result=AssertionError("revai audio egress attempted"),
     parakeet_result=AssertionError("parakeet dispatch attempted"),
     confidential_result=AssertionError("confidential dispatch attempted"),
 ) -> dict[str, Mock]:
     targets = {
-        "gemini": (
-            "solstone.observe.transcribe.gemini.transcribe",
-            gemini_result,
-        ),
-        "revai": (
-            "solstone.observe.transcribe.revai.transcribe",
-            revai_result,
-        ),
         "parakeet": (
             "solstone.observe.transcribe.parakeet.transcribe",
             parakeet_result,
@@ -603,21 +593,15 @@ def test_confidential_stt_attestation_failure_blocks_remote_audio_egress(
         transcribe("confidential", _stt_audio(), 16000, {})
     assert confidential_exc.value.reason_code == "attestation_unreachable"
 
-    with pytest.raises(ConfidentialAudioEgressError):
-        transcribe("gemini", _stt_audio(), 16000, {})
-    with pytest.raises(ConfidentialAudioEgressError):
-        transcribe("revai", _stt_audio(), 16000, {})
     monkeypatch.setitem(
         BACKEND_REGISTRY,
         "future-remote",
-        "solstone.observe.transcribe.gemini",
+        "solstone.observe.transcribe.parakeet",
     )
     with pytest.raises(ConfidentialAudioEgressError):
         transcribe("future-remote", _stt_audio(), 16000, {})
 
     assert transcribe("parakeet", _stt_audio(), 16000, {}) == []
-    mocks["gemini"].assert_not_called()
-    mocks["revai"].assert_not_called()
     mocks["parakeet"].assert_called_once()
     httpx_post.assert_not_called()
     establish.assert_called_once()
@@ -644,8 +628,6 @@ def test_confidential_stt_stale_session_defers_before_egress(tmp_path, monkeypat
         transcribe("confidential", _stt_audio(), 16000, {})
 
     assert exc_info.value.reason_code == "attestation_stale"
-    mocks["gemini"].assert_not_called()
-    mocks["revai"].assert_not_called()
     mocks["parakeet"].assert_not_called()
     httpx_post.assert_not_called()
 
@@ -664,7 +646,6 @@ def test_confidential_stt_setting_off_gate_blocks_confidential_only(
     monkeypatch.setattr("httpx.post", httpx_post)
 
     from solstone.observe.transcribe import (
-        ConfidentialAudioEgressError,
         ConfidentialTranscribeDeferral,
         transcribe,
     )
@@ -672,48 +653,18 @@ def test_confidential_stt_setting_off_gate_blocks_confidential_only(
     with pytest.raises(ConfidentialTranscribeDeferral) as exc_info:
         transcribe("confidential", _stt_audio(), 16000, {})
     assert exc_info.value.reason_code == "confidential_audio_disabled"
-    with pytest.raises(ConfidentialAudioEgressError):
-        transcribe("gemini", _stt_audio(), 16000, {})
-    with pytest.raises(ConfidentialAudioEgressError):
-        transcribe("revai", _stt_audio(), 16000, {})
 
     assert transcribe("parakeet", _stt_audio(), 16000, {}) == []
     mocks["confidential"].assert_not_called()
-    mocks["gemini"].assert_not_called()
-    mocks["revai"].assert_not_called()
     mocks["parakeet"].assert_called_once()
     httpx_post.assert_not_called()
 
 
-def test_confidential_stt_lane_inactive_refuses_confidential_without_passthrough(
-    tmp_path,
-    monkeypatch,
-):
-    _empty_journal(tmp_path, monkeypatch)
-    _write_journal_config(
-        tmp_path,
-        {"env": {"GOOGLE_API_KEY": "test-google-key", "REVAI_ACCESS_TOKEN": "revai"}},
-    )
-    mocks = _install_stt_backend_mocks(
-        monkeypatch,
-        gemini_result=["gemini-dispatched"],
-        revai_result=["revai-dispatched"],
-    )
-    httpx_post = Mock(side_effect=AssertionError("passthrough URL posted to"))
-    monkeypatch.setattr("httpx.post", httpx_post)
+def test_stt_registry_has_no_owner_selectable_cloud_backends():
+    from solstone.observe.transcribe import BACKEND_METADATA, BACKEND_REGISTRY
 
-    from solstone.observe.transcribe import ConfidentialTranscribeDeferral, transcribe
-
-    with pytest.raises(ConfidentialTranscribeDeferral) as exc_info:
-        transcribe("confidential", _stt_audio(), 16000, {})
-    assert exc_info.value.reason_code == "confidential_lane_inactive"
-    assert transcribe("gemini", _stt_audio(), 16000, {}) == ["gemini-dispatched"]
-    assert transcribe("revai", _stt_audio(), 16000, {}) == ["revai-dispatched"]
-
-    mocks["confidential"].assert_not_called()
-    mocks["gemini"].assert_called_once()
-    mocks["revai"].assert_called_once()
-    httpx_post.assert_not_called()
+    for name in BACKEND_REGISTRY:
+        assert BACKEND_METADATA[name]["local"] is True or name == "confidential"
 
 
 def test_confidential_stt_posts_only_to_verified_forwarder(tmp_path, monkeypatch):

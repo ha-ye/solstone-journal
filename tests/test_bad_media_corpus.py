@@ -324,7 +324,6 @@ def _drive_transcribe(
         argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
         {"preserve_all": preserve_all},
         "parakeet",
-        [],
     )
 
     jsonl_path = audio_path.with_suffix(".jsonl")
@@ -563,7 +562,6 @@ def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
         argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
         {"preserve_all": True},
         "parakeet",
-        [],
     )
 
     jsonl_path = audio_path.with_suffix(".jsonl")
@@ -589,7 +587,6 @@ def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
         argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
         {"preserve_all": True},
         "parakeet",
-        [],
     )
 
     assert load_audio_spy.call_count == 0

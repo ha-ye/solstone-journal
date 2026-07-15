@@ -23,7 +23,6 @@ API_ENV_KEYS = (
     "GOOGLE_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
-    "REVAI_ACCESS_TOKEN",
     "PLAUD_ACCESS_TOKEN",
     "GOOGLE_APPLICATION_CREDENTIALS",
 )
@@ -74,9 +73,6 @@ def fake_validators(monkeypatch: pytest.MonkeyPatch) -> None:
         return {"valid": True, "token": token[-4:]}
 
     monkeypatch.setattr(settings_routes, "datetime", _FixedDateTime)
-    monkeypatch.setattr(
-        "solstone.observe.transcribe.revai.validate_token", validate_token
-    )
     monkeypatch.setattr("solstone.think.importers.plaud.validate_token", validate_token)
 
 
@@ -114,7 +110,6 @@ def test_show_and_read_verbs_select_http_fields(journal_copy: Path) -> None:
     ]
     assert show_payload["identity"]["name"] == "Test User"
     assert list(show_payload["keys"]) == [
-        "REVAI_ACCESS_TOKEN",
         "PLAUD_ACCESS_TOKEN",
     ]
 
@@ -131,7 +126,6 @@ def test_show_and_read_verbs_select_http_fields(journal_copy: Path) -> None:
 def test_settings_config_projects_service_validation_only(journal_copy: Path) -> None:
     config = _read_config(journal_copy)
     config["service_key_validation"] = {
-        "revai": {"valid": True, "timestamp": "2026-01-01T00:00:00+00:00"},
         "plaud": {"valid": False, "error": "bad token"},
     }
     _write_config(journal_copy, config)
@@ -140,7 +134,6 @@ def test_settings_config_projects_service_validation_only(journal_copy: Path) ->
 
     assert "providers" not in payload
     assert payload["key_validation"] == {
-        "revai": {"valid": True, "timestamp": "2026-01-01T00:00:00+00:00"},
         "plaud": {"valid": False, "error": "bad token"},
     }
 
@@ -152,8 +145,7 @@ def test_keys_set_clear_validate_and_invalid_env(
     invalid = runner.invoke(settings_call.app, ["keys", "set", "BOGUS", "value"])
     assert invalid.exit_code == 1
     assert invalid.stderr == (
-        "Invalid env var: BOGUS. Must be one of: "
-        "REVAI_ACCESS_TOKEN, PLAUD_ACCESS_TOKEN\n"
+        "Invalid env var: BOGUS. Must be one of: PLAUD_ACCESS_TOKEN\n"
     )
 
     ai_key = runner.invoke(
@@ -166,11 +158,11 @@ def test_keys_set_clear_validate_and_invalid_env(
 
     service_set = runner.invoke(
         settings_call.app,
-        ["keys", "set", "REVAI_ACCESS_TOKEN", "revai-token"],
+        ["keys", "set", "PLAUD_ACCESS_TOKEN", "plaud-token"],
     )
     assert service_set.exit_code == 0
     assert json.loads(service_set.stdout) == {
-        "env_var": "REVAI_ACCESS_TOKEN",
+        "env_var": "PLAUD_ACCESS_TOKEN",
         "set": True,
         "validation": {
             "valid": True,
@@ -178,14 +170,14 @@ def test_keys_set_clear_validate_and_invalid_env(
             "timestamp": "2026-04-17T12:00:00+00:00",
         },
     }
-    assert _read_config(journal_copy)["service_key_validation"]["revai"]["valid"]
+    assert _read_config(journal_copy)["service_key_validation"]["plaud"]["valid"]
     keys_shown = runner.invoke(settings_call.app, ["keys", "show"])
     assert keys_shown.exit_code == 0
-    assert "revai-token" not in keys_shown.stdout
+    assert "plaud-token" not in keys_shown.stdout
 
-    cleared = runner.invoke(settings_call.app, ["keys", "clear", "REVAI_ACCESS_TOKEN"])
-    _assert_json(cleared, {"env_var": "REVAI_ACCESS_TOKEN", "cleared": True})
-    assert _read_config(journal_copy)["env"]["REVAI_ACCESS_TOKEN"] == ""
+    cleared = runner.invoke(settings_call.app, ["keys", "clear", "PLAUD_ACCESS_TOKEN"])
+    _assert_json(cleared, {"env_var": "PLAUD_ACCESS_TOKEN", "cleared": True})
+    assert _read_config(journal_copy)["env"]["PLAUD_ACCESS_TOKEN"] == ""
 
     before = (journal_copy / "config" / "journal.json").read_text(encoding="utf-8")
     validate = runner.invoke(settings_call.app, ["keys", "validate"])
@@ -210,25 +202,16 @@ def test_transcribe_setters(journal_copy: Path) -> None:
     )
     assert transcribe_bad.exit_code == 1
     assert transcribe_bad.stderr == (
-        "Invalid backend: invalid. Must be one of: gemini, parakeet, parakeet-cpp, revai\n"
+        "Invalid backend: invalid. Must be one of: parakeet, parakeet-cpp\n"
     )
 
     transcribe_set = runner.invoke(
         settings_call.app,
-        ["transcribe", "set-backend", "gemini"],
+        ["transcribe", "set-backend", "parakeet-cpp"],
     )
     assert transcribe_set.exit_code == 0
-    assert json.loads(transcribe_set.stdout)["backend"] == "gemini"
-    assert _read_config(journal_copy)["transcribe"]["backend"] == "gemini"
-
-    options = runner.invoke(
-        settings_call.app,
-        ["transcribe", "set", "--no-enrich", "--no-noise-upgrade"],
-    )
-    assert options.exit_code == 0
-    payload = json.loads(options.stdout)
-    assert payload["enrich"] is False
-    assert payload["noise_upgrade"] is False
+    assert json.loads(transcribe_set.stdout)["backend"] == "parakeet-cpp"
+    assert _read_config(journal_copy)["transcribe"]["backend"] == "parakeet-cpp"
 
 
 def test_processing_show_uses_effective_settings_endpoint(

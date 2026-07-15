@@ -169,11 +169,14 @@ Example transcript file:
 
 **Metadata line (first line):**
 - `raw` – path to processed audio file (required)
-- `backend` – STT backend used (e.g., "parakeet", "revai")
-- `model` – model used for transcription (e.g., "medium.en", "revai-fusion")
-- `device` – device used for inference (e.g., "cuda", "cpu", "cloud")
-- `compute_type` – compute precision used (e.g., "float16", "int8", "api")
+- `backend` – STT backend used (e.g., "parakeet", "parakeet-cpp")
+- `model` – model used for transcription (e.g., "parakeet-tdt-0.6b-v3")
+- `device` – device used for inference (e.g., "cuda", "cpu", "coreml")
+- `compute_type` – compute precision used (e.g., "float16", "int8")
 - `observer` – observer name if transcribed from an observer source (optional)
+- `topics` – legacy enrichment topics, still present in some existing journals
+- `setting` – legacy enrichment setting, still present in some existing journals
+- `warning` – legacy enrichment warning, still present in some existing journals
 - `imported` – object with import metadata for external files (optional):
   - `id` – unique import identifier
   - `facet` – facet name for entity extraction
@@ -183,9 +186,9 @@ Example transcript file:
 - `start` – timestamp in HH:MM:SS format (required)
 - `text` – transcribed text (required)
 - `source` – audio source: "mic" or "sys" (optional)
-- `speaker` – speaker identifier, numeric or string (optional, not currently populated)
-- `corrected` – LLM-corrected version of text (optional, added during enrichment)
-- `description` – tone or delivery description, e.g., "enthusiastic", "questioning" (optional, added during enrichment)
+- `speaker` – speaker identifier, numeric or string (optional, from local diarization)
+- `corrected` – legacy LLM-corrected version of text, still present in some existing journals
+- `description` – legacy tone or delivery description, e.g., "enthusiastic", "questioning", still present in some existing journals
 
 ### Screen frame extracts
 

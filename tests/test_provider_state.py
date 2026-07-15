@@ -168,12 +168,12 @@ def test_classify_provider_error_matches_provider_exception_names():
         ),
         (
             _provider_exc(
-                "google.genai.errors",
+                "provider_sdk.errors",
                 "ClientError",
                 attrs={"_status_code": 403},
             ),
             "google",
-            "provider_key_invalid",
+            "unknown",
         ),
         (
             _provider_exc("anthropic", "RateLimitError"),
@@ -182,21 +182,21 @@ def test_classify_provider_error_matches_provider_exception_names():
         ),
         (
             _provider_exc(
-                "google.genai.errors",
+                "provider_sdk.errors",
                 "ClientError",
                 attrs={"_status_code": 429},
             ),
             "google",
-            "provider_quota_exceeded",
+            "unknown",
         ),
         (
             _provider_exc(
-                "google.genai.errors",
+                "provider_sdk.errors",
                 "ClientError",
                 attrs={"_status_text": "RESOURCE_EXHAUSTED"},
             ),
             "google",
-            "provider_quota_exceeded",
+            "unknown",
         ),
         (_provider_exc("openai", "APITimeoutError"), "openai", "chat_timeout"),
         (_provider_exc("httpx", "TimeoutException"), "openai", "chat_timeout"),
@@ -212,7 +212,7 @@ def test_classify_provider_error_matches_provider_exception_names():
             "provider_unavailable",
         ),
         (
-            _provider_exc("google.genai.errors", "ServerError"),
+            _provider_exc("provider_sdk.errors", "ServerError"),
             "google",
             "provider_unavailable",
         ),
@@ -231,7 +231,7 @@ def test_classify_provider_error_matches_provider_exception_names():
             "provider_unavailable",
         ),
         (
-            _provider_exc("google.genai.errors", "UnknownApiResponseError"),
+            _provider_exc("provider_sdk.errors", "UnknownApiResponseError"),
             "google",
             "provider_response_invalid",
         ),

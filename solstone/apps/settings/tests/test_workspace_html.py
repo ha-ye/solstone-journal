@@ -59,10 +59,7 @@ class _SettingsFormButtonParser(HTMLParser):
 
 def test_apikeys_inputs_are_masked_by_default():
     text = _workspace_text()
-    keys = (
-        "REVAI_ACCESS_TOKEN",
-        "PLAUD_ACCESS_TOKEN",
-    )
+    keys = ("PLAUD_ACCESS_TOKEN",)
 
     for key in keys:
         match = re.search(rf'<input[^>]*\bdata-key="{key}"[^>]*>', text)

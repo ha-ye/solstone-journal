@@ -26,7 +26,6 @@ EXPECTED_HEAVY = {
     "faster_whisper",
     "torch",
     "pandas",
-    "google.genai",
     "huggingface_hub",
     "litellm",
 }
@@ -63,5 +62,5 @@ def test_injected_heavy_import_goes_red_and_names_offender() -> None:
 def test_heavy_constant_is_single_source_of_truth() -> None:
     module = _load_script_module()
 
-    assert len(module.HEAVY) == 16
+    assert len(module.HEAVY) == 15
     assert set(module.HEAVY) == EXPECTED_HEAVY

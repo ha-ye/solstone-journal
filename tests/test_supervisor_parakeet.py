@@ -421,22 +421,19 @@ def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
         "machine",
         "backend",
         "available_bytes",
-        "google_key",
         "confidential",
         "confidential_audio",
         "local_backend",
         "expected",
     ),
     [
-        ("linux", "x86_64", None, 5 * 1024**3, False, False, True, "parakeet", True),
-        ("linux", "x86_64", None, 3 * 1024**3, False, False, True, "parakeet", False),
-        ("linux", "x86_64", None, 3 * 1024**3, True, False, True, "parakeet", False),
+        ("linux", "x86_64", None, 5 * 1024**3, False, True, "parakeet", True),
+        ("linux", "x86_64", None, 3 * 1024**3, False, True, "parakeet", False),
         (
             "linux",
             "x86_64",
             "parakeet",
             3 * 1024**3,
-            False,
             False,
             True,
             "parakeet",
@@ -448,48 +445,22 @@ def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
             "parakeet-cpp",
             3 * 1024**3,
             False,
-            False,
             True,
             "parakeet",
             True,
         ),
-        (
-            "linux",
-            "x86_64",
-            "revai",
-            5 * 1024**3,
-            False,
-            False,
-            True,
-            "parakeet",
-            False,
-        ),
-        (
-            "linux",
-            "x86_64",
-            "gemini",
-            5 * 1024**3,
-            False,
-            False,
-            True,
-            "parakeet",
-            False,
-        ),
-        ("linux", "aarch64", None, 5 * 1024**3, False, False, True, "parakeet", True),
+        ("linux", "aarch64", None, 5 * 1024**3, False, True, "parakeet", True),
         (
             "linux",
             "aarch64",
             "parakeet",
             3 * 1024**3,
             False,
-            False,
             True,
             "parakeet",
             True,
         ),
-        ("darwin", "arm64", None, 5 * 1024**3, False, False, True, "parakeet", False),
-        ("linux", "x86_64", "gemini", 3 * 1024**3, True, True, True, "parakeet", False),
-        ("linux", "x86_64", "revai", 3 * 1024**3, False, True, True, "parakeet", False),
+        ("darwin", "arm64", None, 5 * 1024**3, False, True, "parakeet", False),
         (
             "linux",
             "x86_64",
@@ -497,13 +468,12 @@ def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
             3 * 1024**3,
             True,
             True,
-            True,
             "parakeet",
             True,
         ),
-        ("linux", "x86_64", None, 3 * 1024**3, True, True, True, "parakeet", False),
-        ("linux", "x86_64", None, 3 * 1024**3, True, True, False, "parakeet", True),
-        ("linux", "x86_64", None, 3 * 1024**3, True, True, True, None, False),
+        ("linux", "x86_64", None, 3 * 1024**3, True, True, "parakeet", False),
+        ("linux", "x86_64", None, 3 * 1024**3, True, False, "parakeet", True),
+        ("linux", "x86_64", None, 3 * 1024**3, True, True, None, False),
     ],
 )
 def test_linux_stt_uses_parakeet_cpp_truth_table(
@@ -512,7 +482,6 @@ def test_linux_stt_uses_parakeet_cpp_truth_table(
     machine: str,
     backend: str | None,
     available_bytes: int,
-    google_key: bool,
     confidential: bool,
     confidential_audio: bool,
     local_backend: str | None,
@@ -534,10 +503,7 @@ def test_linux_stt_uses_parakeet_cpp_truth_table(
         "solstone.think.services.spp.confidential_provenance",
         lambda: {"enabled_at": "2026-05-24T00:00:00Z"} if confidential else None,
     )
-    if google_key:
-        monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    else:
-        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
     assert supervisor.linux_stt_uses_parakeet_cpp() is expected
 
@@ -569,7 +535,11 @@ def test_start_parakeet_server_early_returns_for_other_backend(
     monkeypatch.setattr(
         supervisor,
         "read_journal_config",
-        lambda: {"transcribe": {"backend": "gemini"}},
+        lambda: {"transcribe": {"backend": "confidential"}},
+    )
+    monkeypatch.setattr(
+        "solstone.think.services.spp.confidential_provenance",
+        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
     )
 
     assert supervisor.start_parakeet_server() is None

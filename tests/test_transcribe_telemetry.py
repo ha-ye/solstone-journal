@@ -75,7 +75,7 @@ def _run_success(
     with (
         patch(
             "solstone.observe.transcribe.main.get_config",
-            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+            return_value={"transcribe": {"preserve_all": False}},
         ),
         patch(
             "solstone.observe.transcribe.main.get_journal",
@@ -145,7 +145,6 @@ def _run_parakeet_cpp_process_one_event(
                 args,
                 {"backend": "parakeet-cpp", "parakeet-cpp": parakeet_cpp_config},
                 "parakeet-cpp",
-                [],
             )
 
     assert exc_info.value.code == expected_exit
@@ -161,10 +160,9 @@ def test_success_event_carries_stage_timings_and_envelope(
     assert kwargs["outcome"] == "transcribed"
     timings = kwargs["timings"]
     # Stages that ran inside process_audio. decode/vad/reduce are measured in
-    # _process_one, which this test calls past; enrich is disabled by config and
-    # diarization is skipped for parakeet-cpp -- so neither may appear.
+    # _process_one, which this test calls past; diarization is skipped because
+    # the mocked overlap is below threshold.
     assert {"asr_ms", "embed_ms", "overlap_ms", "write_ms"} <= set(timings)
-    assert "enrich_ms" not in timings
     assert "diarize_ms" not in timings
     assert all(isinstance(v, int) and v >= 0 for v in timings.values())
 
@@ -187,7 +185,7 @@ def test_success_event_is_content_free(
     serialized = json.dumps(kwargs, default=str)
     assert TRANSCRIPT_SENTINEL not in serialized
 
-    # And none of the enrichment-derived content fields ride along either.
+    # Content fields stay out of the event envelope.
     for banned in ("text", "words", "statements", "topics", "setting", "emotions"):
         assert banned not in kwargs
 
@@ -321,15 +319,12 @@ def test_failed_event_is_content_free_even_when_the_exception_message_is_not(
 ) -> None:
     """The failed path must not put an exception *message* on the bus.
 
-    Real exception messages can embed model output: SchemaValidationError carries a
-    preview of the raw response, and transcribe/gemini.py interpolates it into its
-    own message. So the event carries the exception *type*, never the message.
+    Real exception messages can embed model output from provider wrappers. So the
+    event carries the exception *type*, never the message.
     """
     from solstone.observe.transcribe.main import process_audio
 
-    leaky = RuntimeError(
-        f"Gemini response failed schema validation: preview={TRANSCRIPT_SENTINEL!r}"
-    )
+    leaky = RuntimeError(f"Provider response included preview={TRANSCRIPT_SENTINEL!r}")
 
     with (
         patch("solstone.observe.transcribe.main.stt_transcribe", side_effect=leaky),
@@ -340,7 +335,7 @@ def test_failed_event_is_content_free_even_when_the_exception_message_is_not(
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
         with pytest.raises(SystemExit) as exc_info:
-            process_audio(raw_path, audio_buffer, vad_result, {}, backend="gemini")
+            process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet")
 
     assert exc_info.value.code == 1
     kwargs = mock_send.call_args.kwargs

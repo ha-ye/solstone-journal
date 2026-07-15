@@ -285,7 +285,7 @@ class TestDefaultSttReady:
         config_path = journal / "config" / "journal.json"
         config_path.parent.mkdir(parents=True)
         config_path.write_text(
-            json.dumps({"transcribe": {"backend": "gemini"}}),
+            json.dumps({"transcribe": {"backend": "confidential"}}),
             encoding="utf-8",
         )
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
@@ -298,7 +298,7 @@ class TestDefaultSttReady:
         result = doctor.default_stt_ready_check(args(doctor))
 
         assert result.status == "skip"
-        assert "gemini" in result.detail
+        assert "confidential" in result.detail
 
     def test_journal_less_host_defaults_to_parakeet_without_creating_journal(
         self, doctor, monkeypatch, tmp_path

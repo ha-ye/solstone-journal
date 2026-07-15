@@ -53,7 +53,6 @@ Backend-specific policy:
 |---------|-----------------|
 | `parakeet` / `parakeet-cpp` | Local STT. Supervised-server unavailability defers; live-server bad responses and contract failures fail loudly. |
 | `confidential` | Hosted STT over the verified loopback forwarder. Lane, attestation, backpressure, transport, rejected-request, unexpected-status, and bad-200 contract failures defer with hosted reason codes. |
-| `gemini` / `revai` | Third-party cloud STT. Under the confidential lane, raw-audio egress is denied before provider dispatch. |
 
 | Condition | Classified as | Why |
 |-----------|--------------|-----|
@@ -132,7 +131,7 @@ One event name, five outcomes. Every attempt emits exactly one event.
 | `output` | journal-relative path of the `.jsonl` | success |
 | `reason` | machine reason (table above) | deferred, failed |
 | `error` | exception **type name** — never the message (see below) | failed |
-| `backend` | STT backend name (`parakeet-cpp`, `gemini`, …) | whenever resolved |
+| `backend` | STT backend name (`parakeet`, `parakeet-cpp`, or `confidential`) | whenever resolved |
 | `device` | resolved placement (`cpu` / `gpu`) when a placement record exists; configured device otherwise | whenever known (see below) |
 | `model` | model filename | success, and failures after the backend reported it |
 | `audio_seconds` | original decoded length, 1 dp | whenever decoded |
@@ -156,7 +155,6 @@ the jsonl and the npz) reports its total.
 | `vad_ms` | `run_vad` |
 | `reduce_ms` | `reduce_audio` (absent when reduction was skipped) |
 | `asr_ms` | `stt_transcribe` — the STT call itself |
-| `enrich_ms` | `enrich_transcript` (absent when enrichment is disabled) |
 | `embed_ms` | sentence-embedding generation |
 | `overlap_ms` | overlap + log-prob computation |
 | `diarize_ms` | local diarization (absent when skipped — the common case) |
@@ -174,10 +172,11 @@ nowhere in the serialized event payload — on the success path *and* the failed
 
 **`error` is the exception's type name, never its message.** This is the load-bearing
 detail, and it is structural rather than a matter of care: exception *messages* can
-embed model output. `SchemaValidationError` (`think/models.py`) builds its message with
-a ~197-character preview of the raw response, and `transcribe/gemini.py` interpolates
-that into a `RuntimeError` of its own. Putting `str(e)` on the bus would therefore
-publish transcript text whenever a Gemini response failed schema validation.
+embed provider output. `SchemaValidationError` (`think/models.py`) builds its message
+with a ~197-character preview of the raw response, and provider wrappers may
+interpolate that into their own exceptions. Putting `str(e)` on the bus would
+therefore publish transcript text whenever a provider response failed schema
+validation.
 
 Carrying only `type(e).__name__` makes the guarantee hold by construction, so a new
 provider exception cannot quietly reintroduce the leak. The full message and traceback

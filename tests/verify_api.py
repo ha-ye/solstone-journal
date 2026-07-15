@@ -472,6 +472,16 @@ def normalize(data: Any, journal_path: str) -> Any:
                 for k in result:
                     if isinstance(result[k], bool):
                         result[k] = False
+            if key == "resource" and {
+                "available_memory_gb",
+                "detected",
+                "min_ram_gb",
+                "needs_setup",
+                "notice",
+                "requirement",
+            } <= set(result):
+                for item_key in result:
+                    result[item_key] = "<normalized>"
             return result
 
         if isinstance(value, list):

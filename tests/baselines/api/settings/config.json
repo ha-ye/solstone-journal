@@ -36,23 +36,17 @@
     "timezone": "America/Denver"
   },
   "runtime_env": {
-    "PLAUD_ACCESS_TOKEN": false,
-    "REVAI_ACCESS_TOKEN": false
+    "PLAUD_ACCESS_TOKEN": false
   },
   "setup": {
     "completed_at": 1700000000000
   },
   "transcribe": {
     "backend": "parakeet",
-    "enrich": true,
-    "noise_upgrade": true,
     "parakeet": {
       "device": "auto",
       "model_version": "v3",
       "timeout_sec": 120.0
-    },
-    "revai": {
-      "model": "fusion"
     }
   }
 }

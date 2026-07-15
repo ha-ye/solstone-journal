@@ -176,15 +176,6 @@ def _status_code(exc: BaseException) -> int | None:
     return value if isinstance(value, int) else None
 
 
-def _status_text(exc: BaseException) -> str:
-    return str(
-        getattr(exc, "status", "")
-        or getattr(exc, "_status", "")
-        or getattr(exc, "_status_text", "")
-        or ""
-    ).upper()
-
-
 def _contains_any(text: str, patterns: tuple[str, ...]) -> bool:
     return any(pattern in text for pattern in patterns)
 
@@ -260,10 +251,8 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
 
         is_anthropic = _module_matches(exc_module, "anthropic")
         is_openai = _module_matches(exc_module, "openai")
-        is_google = _module_matches(exc_module, "google.genai")
         is_httpx = _module_matches(exc_module, "httpx")
         status_code = _status_code(exc)
-        status_text = _status_text(exc)
 
         if (is_anthropic or is_openai) and _exception_name_matches(
             exc_name,
@@ -271,21 +260,9 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
             ("AuthenticationError", "PermissionDeniedError"),
         ):
             return "provider_key_invalid"
-        if (
-            is_google
-            and _exception_name_matches(exc_name, exc_qualname, ("ClientError",))
-            and status_code in (401, 403)
-        ):
-            return "provider_key_invalid"
 
         if (is_anthropic or is_openai) and _exception_name_matches(
             exc_name, exc_qualname, ("RateLimitError",)
-        ):
-            return "provider_quota_exceeded"
-        if (
-            is_google
-            and _exception_name_matches(exc_name, exc_qualname, ("ClientError",))
-            and (status_code == 429 or status_text == "RESOURCE_EXHAUSTED")
         ):
             return "provider_quota_exceeded"
 
@@ -330,10 +307,6 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
             exc_name, exc_qualname, ("InternalServerError",)
         ):
             return "provider_unavailable"
-        if is_google and _exception_name_matches(
-            exc_name, exc_qualname, ("ServerError",)
-        ):
-            return "provider_unavailable"
         if (
             (
                 (is_anthropic or is_openai)
@@ -347,11 +320,6 @@ def classify_provider_error(exc: BaseException, provider: str) -> str:
             )
         ) and (status_code or 0) >= 500:
             return "provider_unavailable"
-
-        if is_google and _exception_name_matches(
-            exc_name, exc_qualname, ("UnknownApiResponseError",)
-        ):
-            return "provider_response_invalid"
 
         if isinstance(exc, RuntimeError):
             if _contains_any(message_lower, _CLI_UNAVAILABLE_PATTERNS):

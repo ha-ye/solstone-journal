@@ -89,7 +89,9 @@ def test_process_audio_confidential_cloud_refusal_defers_honestly(
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
         with pytest.raises(SystemExit) as exc_info:
-            process_audio(raw_path, audio_buffer, vad_result, {}, backend="gemini")
+            process_audio(
+                raw_path, audio_buffer, vad_result, {}, backend="confidential"
+            )
 
     assert exc_info.value.code == EXIT_PROVIDER_BLOCKED
     assert raw_path.exists()
@@ -98,7 +100,7 @@ def test_process_audio_confidential_cloud_refusal_defers_honestly(
     kwargs = mock_send.call_args.kwargs
     assert kwargs["outcome"] == "deferred"
     assert kwargs["reason"] == "confidential_egress_blocked"
-    assert kwargs["backend"] == "gemini"
+    assert kwargs["backend"] == "confidential"
 
 
 def test_deferred_event_fires_on_every_attempt(
@@ -200,10 +202,6 @@ def test_batch_all_continues_past_a_deferred_file(
             "solstone.observe.transcribe.main.resolve_default_backend",
             return_value="parakeet-cpp",
         ),
-        patch(
-            "solstone.think.entities.load_recent_entity_names",
-            return_value=[],
-        ),
     ):
         main()
 
@@ -265,7 +263,7 @@ def test_process_one_builds_parakeet_cpp_backend_config(
             side_effect=fake_process_audio,
         ),
     ):
-        _process_one(audio_path, args, transcribe_config, "parakeet-cpp", [])
+        _process_one(audio_path, args, transcribe_config, "parakeet-cpp")
 
     assert captured == {
         "backend": "parakeet-cpp",

@@ -157,7 +157,6 @@ def linux_stt_uses_parakeet_cpp() -> bool:
     selected = resolve_stt_backend_choice(
         backend if isinstance(backend, str) else None,
         read_available_bytes(),
-        google_key_present=bool(os.getenv("GOOGLE_API_KEY")),
         floor_bytes=stt_local_floor_bytes(),
         local_backend=local_stt_backend(),
         confidential_lane_active=confidential,

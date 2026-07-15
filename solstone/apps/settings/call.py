@@ -20,11 +20,9 @@ from solstone.think.convey_client import ConveyClientError, convey_cli, get_clie
 # used in the "Invalid env var" message); reconstructed here rather than
 # imported (HTTP-only gate) or read from the response (Flask sorts JSON keys).
 _API_KEY_ENV_VARS = [
-    "REVAI_ACCESS_TOKEN",
     "PLAUD_ACCESS_TOKEN",
 ]
 _SERVICE_KEY_VALIDATION_NAME = {
-    "REVAI_ACCESS_TOKEN": "revai",
     "PLAUD_ACCESS_TOKEN": "plaud",
 }
 
@@ -301,25 +299,6 @@ def transcribe_set_backend(
         _exit_with(f"Invalid backend: {backend}. Must be one of: {', '.join(valid)}")
     update = _post_config("transcribe", {"backend": backend})
     _echo_json(update.get("config", {}).get("transcribe", {}))
-
-
-@transcribe_app.command("set")
-@convey_cli
-def transcribe_set(
-    enrich: bool | None = typer.Option(None, "--enrich/--no-enrich"),
-    noise_upgrade: bool | None = typer.Option(
-        None, "--noise-upgrade/--no-noise-upgrade"
-    ),
-) -> None:
-    """Set transcription options."""
-
-    data: dict[str, Any] = {}
-    if enrich is not None:
-        data["enrich"] = enrich
-    if noise_upgrade is not None:
-        data["noise_upgrade"] = noise_upgrade
-    response = _post_config("transcribe", data)
-    _echo_json(response.get("config", {}).get("transcribe", {}))
 
 
 @identity_app.command("show")

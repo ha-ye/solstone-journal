@@ -517,7 +517,7 @@ def test_process_audio_failed_embeddings_write_emits_failed_event(tmp_path):
         ),
         patch(
             "solstone.observe.transcribe.main.get_config",
-            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+            return_value={"transcribe": {"preserve_all": False}},
         ),
         patch(
             "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
@@ -586,7 +586,7 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
         ),
         patch(
             "solstone.observe.transcribe.main.get_config",
-            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+            return_value={"transcribe": {"preserve_all": False}},
         ),
         patch(
             "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
@@ -658,7 +658,7 @@ def test_process_audio_records_analyzed_processing(tmp_path):
         ),
         patch(
             "solstone.observe.transcribe.main.get_config",
-            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+            return_value={"transcribe": {"preserve_all": False}},
         ),
         patch(
             "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
@@ -728,7 +728,7 @@ def test_process_audio_silent_filtered_writes_empty_record(tmp_path):
         ),
         patch(
             "solstone.observe.transcribe.main.get_config",
-            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+            return_value={"transcribe": {"preserve_all": False}},
         ),
         patch("solstone.observe.transcribe.main.stt_transcribe", return_value=[]),
         patch(
@@ -780,7 +780,7 @@ def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
         ),
         patch(
             "solstone.observe.transcribe.main.get_config",
-            return_value={"transcribe": {"preserve_all": False, "enrich": False}},
+            return_value={"transcribe": {"preserve_all": False}},
         ),
         patch(
             "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
@@ -808,6 +808,117 @@ def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
     lines = jsonl_path.read_text(encoding="utf-8").splitlines()
     assert jsonl_path.exists()
     assert "speaker" not in json.loads(lines[1])
+
+
+def test_process_audio_diarizes_parakeet_cpp_when_overlap_meets_threshold(tmp_path):
+    from solstone.observe.transcribe.main import process_audio
+
+    raw_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.m4a"
+    )
+    raw_path.parent.mkdir(parents=True)
+    raw_path.touch()
+    audio_buffer = np.zeros(10 * SAMPLE_RATE, dtype=np.float32)
+    vad_result = VadResult(
+        duration=10.0,
+        speech_duration=5.0,
+        has_speech=True,
+        speech_segments=[(1.0, 6.0)],
+    )
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hi"}]
+    backend_module = MagicMock()
+    backend_module.get_model_info.return_value = {
+        "model": "unit",
+        "device": "cpu",
+        "compute_type": "int8",
+    }
+    logprobs = np.zeros((589, 7), dtype=np.float32)
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.get_journal",
+            return_value=str(raw_path.parents[4]),
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_config",
+            return_value={"transcribe": {"preserve_all": False}},
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_transcribe", return_value=statements
+        ),
+        patch(
+            "solstone.observe.transcribe.main.get_backend", return_value=backend_module
+        ),
+        patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
+        patch(
+            "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
+            return_value=(0.5, logprobs),
+        ),
+        patch(
+            "solstone.observe.transcribe.diarize.diarize_auto_k",
+            return_value=[2],
+        ) as mock_diarize,
+        patch("solstone.observe.transcribe.main.callosum_send"),
+    ):
+        process_audio(raw_path, audio_buffer, vad_result, {}, backend="parakeet-cpp")
+
+    mock_diarize.assert_called_once()
+    kwargs = mock_diarize.call_args.kwargs
+    assert kwargs["avg_log_probs"] is logprobs
+    assert kwargs["audio"] is audio_buffer
+
+    jsonl_path = raw_path.with_suffix(".jsonl")
+    lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[1])["speaker"] == 2
+
+
+def test_legacy_transcript_enrichment_fields_remain_reader_compatible(tmp_path):
+    from solstone.observe.hear import load_transcript
+
+    jsonl_path = (
+        tmp_path / "chronicle" / "20260416" / "default" / "120000_300" / "audio.jsonl"
+    )
+    jsonl_path.parent.mkdir(parents=True)
+    jsonl_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "raw": "audio.m4a",
+                        "topics": ["planning", "shipping"],
+                        "setting": "office",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "start": "00:00:02",
+                        "text": "raw transcript",
+                        "corrected": "corrected transcript",
+                        "emotion": "excited",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    metadata, entries, formatted_text = load_transcript(jsonl_path)
+
+    assert metadata["topics"] == ["planning", "shipping"]
+    assert metadata["setting"] == "office"
+    assert entries == [
+        {
+            "start": "00:00:02",
+            "text": "raw transcript",
+            "corrected": "corrected transcript",
+            "emotion": "excited",
+        }
+    ]
+    assert "Topics: planning, shipping" in formatted_text
+    assert "Setting: office" in formatted_text
+    assert "[00:00:02] corrected transcript *(excited)*" in formatted_text
+    assert "raw transcript" not in formatted_text
 
 
 class TestJSONLFormat:

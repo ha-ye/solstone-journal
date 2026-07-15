@@ -39,7 +39,6 @@ def resolve_stt_backend_choice(
     explicit_backend: str | None,
     available_bytes: int | None,
     *,
-    google_key_present: bool,
     floor_bytes: int | None,
     local_backend: str | None,
     confidential_lane_active: bool,
@@ -52,8 +51,6 @@ def resolve_stt_backend_choice(
         if confidential_lane_active and confidential_audio_enabled:
             return "confidential"
         return local_backend if local_backend is not None else STT_SURFACE
-    if explicit_backend in {"gemini", "revai"}:
-        return explicit_backend
 
     if confidential_lane_active and confidential_audio_enabled:
         return "confidential"
@@ -68,8 +65,6 @@ def resolve_stt_backend_choice(
     )
     if local_fits:
         return local_backend
-    if google_key_present:
-        return "gemini"
     return STT_SURFACE
 
 

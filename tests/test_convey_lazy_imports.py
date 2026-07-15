@@ -20,7 +20,6 @@ FORBIDDEN = {
     "solstone.apps",
     "solstone.convey.apps",
     "solstone.convey.provider_readiness",
-    "google.genai",
     "openai",
     "anthropic",
 }

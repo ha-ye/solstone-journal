@@ -96,7 +96,6 @@ journal-host = [
     "solstone-journal-models==1.0.0",
     "python-dotenv",
     "pyhpke==0.6.4",
-    "google-genai>=1.62.0",
     "Flask[async]",
     "Markdown",
     "mistune",

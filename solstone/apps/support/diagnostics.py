@@ -30,7 +30,6 @@ _SECRET_KEYS = frozenset(
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
         "GOOGLE_API_KEY",
-        "REVAI_ACCESS_TOKEN",
         "PLAUD_ACCESS_TOKEN",
         "password",
         "secret",

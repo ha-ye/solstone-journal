@@ -39,8 +39,6 @@ BLOCKED_FAMILIES = (
     "jinja2",
     "anthropic",
     "openai",
-    "google.genai",
-    "google.generativeai",
     "httpx",
     "numpy",
     "PIL",

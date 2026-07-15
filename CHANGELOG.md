@@ -8,6 +8,8 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 
 ### Changed
 
+- journal audio transcription now uses only the local Parakeet paths or the confidential lane; legacy Rev.ai/Gemini STT, default transcript enrichment, noisy-audio cloud upgrade, and the `google-genai` dependency were removed.
+- machines below the local STT memory floor now surface a local/confidential setup requirement instead of falling back to hosted Google transcription.
 - thinking now has one active brain for every task: bundled local by default, a personal OpenAI, Anthropic, or Google AI Studio key, or an owner-supplied OpenAI-compatible endpoint. legacy split lanes, tier and talent routing, Vertex support, and duplicate cloud-provider adapters have been removed.
 
 ## [0.8.7] - 2026-07-15

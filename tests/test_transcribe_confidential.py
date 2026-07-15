@@ -470,7 +470,6 @@ def test_process_one_builds_confidential_backend_config(tmp_path: Path) -> None:
             argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
             {"backend": "confidential"},
             "confidential",
-            [],
         )
 
     assert captured == {"backend": "confidential", "backend_config": {}}
@@ -489,7 +488,7 @@ def test_process_one_routes_over_cap_confidential_audio_to_local(
         int((CONFIDENTIAL_STT_MAX_AUDIO_SECONDS + 1) * SAMPLE_RATE),
         dtype=np.float32,
     )
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
 
     def fake_process_audio(
         _audio_path,
@@ -522,7 +521,6 @@ def test_process_one_routes_over_cap_confidential_audio_to_local(
             argparse.Namespace(backend=None, cpu=False, model=None, redo=False),
             {},
             "confidential",
-            [],
         )
 
     assert captured == {"backend": "parakeet", "backend_config": {}}

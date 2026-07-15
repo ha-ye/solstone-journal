@@ -107,7 +107,6 @@ The `env` block stores configuration as environment variables that solstone load
     "GOOGLE_API_KEY": "your-google-api-key",
     "ANTHROPIC_API_KEY": "your-anthropic-api-key",
     "OPENAI_API_KEY": "your-openai-api-key",
-    "REVAI_ACCESS_TOKEN": "your-revai-token",
     "PLAUD_ACCESS_TOKEN": "your-plaud-token"
   }
 }
@@ -115,7 +114,7 @@ The `env` block stores configuration as environment variables that solstone load
 
 **Managed provider keys are journal-config-exclusive.** For the managed provider API keys — `GOOGLE_API_KEY`, `OPENAI_API_KEY`, and `ANTHROPIC_API_KEY` — the journal config `env` section is the authoritative and exclusive source. At CLI startup, solstone loads the `env` block into the environment and then strips any of these managed keys that is *not* set in journal config, so a value set only in the shell is never used. This keeps the journal config the single, predictable place that decides which provider keys are in effect (useful when the journal is synced across machines).
 
-Other variables declared in the `env` block (for example `REVAI_ACCESS_TOKEN`, `PLAUD_ACCESS_TOKEN`) are loaded into the environment at startup as well.
+Other variables declared in the `env` block (for example `PLAUD_ACCESS_TOKEN`) are loaded into the environment at startup as well.
 
 ### Template usage examples
 
@@ -139,28 +138,21 @@ The `transcribe` block configures audio transcription settings for `journal tran
 {
   "transcribe": {
     "backend": "parakeet",
-    "enrich": true,
     "preserve_all": false,
     "confidential_audio": true,
-    "noise_upgrade_min_speech_ratio": 0.3,
     "parakeet": {
       "model_version": "v3",
       "device": "auto",
       "timeout_sec": 120.0
-    },
-    "revai": {
-      "model": "fusion"
     }
   }
 }
 ```
 
 **Top-level fields:**
-- `backend` (string) – STT backend to use: `"parakeet"` (default local processing), `"parakeet-cpp"` (Linux-only local processing via a supervised parakeet.cpp server), `"confidential"` (operated attested STT when the confidential lane is active), `"revai"` (cloud with speaker diarization), or `"gemini"` (cloud with speaker diarization). Default: `"parakeet"`.
-- `enrich` (boolean) – Enable LLM enrichment for topic extraction and transcript correction. Default: `true`.
+- `backend` (string) – STT backend to use: `"parakeet"` (default local processing), `"parakeet-cpp"` (Linux-only local processing via a supervised parakeet.cpp server), or `"confidential"` (operated attested STT when the confidential lane is active). Default: `"parakeet"`.
 - `preserve_all` (boolean) – Keep audio files even when no speech is detected. When `false`, silent recordings are deleted to save disk space. Default: `false`.
 - `confidential_audio` (boolean) – Allow confidential hosted STT when the confidential lane is active. Absent means `true`; set to `false` to keep STT on local placement.
-- `noise_upgrade_min_speech_ratio` (number) – Min speech/loud ratio required for noisy upgrade (default: `0.3`). Filters out music and other non-speech noise.
 
 **Parakeet backend settings** (`transcribe.parakeet`):
 - `model_version` (string) – Parakeet model version: `"v3"`. Default: `"v3"`.
@@ -169,9 +161,6 @@ The `transcribe` block configures audio transcription settings for `journal tran
 
 **Parakeet.cpp backend settings** (`transcribe.parakeet-cpp`):
 - `device` (string) – Runtime preference for the parakeet.cpp server: `"auto"` (use GPU if available, else CPU) or `"cpu"`. Default: `"auto"`.
-
-**Rev.ai backend settings** (`transcribe.revai`):
-- `model` (string) – Rev.ai transcriber model: `"fusion"` (best quality), `"machine"` (fast automated), or `"low_cost"`. Default: `"fusion"`.
 
 Voice embeddings (wespeaker-resnet34) use CoreML with CPU fallback on Darwin and CPU-only elsewhere.
 

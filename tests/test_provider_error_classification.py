@@ -188,28 +188,6 @@ def test_classifies_openai_sdk_rate_timeout_network_and_5xx_errors():
     assert classify_provider_error(server_exc, "openai") == "provider_unavailable"
 
 
-def test_classifies_google_sdk_errors():
-    errors = pytest.importorskip("google.genai.errors")
-
-    auth_exc = errors.ClientError(
-        401,
-        {"error": {"status": "UNAUTHENTICATED", "message": "bad key"}},
-    )
-    assert classify_provider_error(auth_exc, "google") == "provider_key_invalid"
-
-    rate_exc = errors.ClientError(
-        429,
-        {"error": {"status": "RESOURCE_EXHAUSTED", "message": "quota"}},
-    )
-    assert classify_provider_error(rate_exc, "google") == "provider_quota_exceeded"
-
-    server_exc = errors.ServerError(
-        503,
-        {"error": {"status": "UNAVAILABLE", "message": "down"}},
-    )
-    assert classify_provider_error(server_exc, "google") == "provider_unavailable"
-
-
 def test_classifies_httpx_errors():
     httpx = pytest.importorskip("httpx")
     request = httpx.Request("GET", "http://localhost:11434")

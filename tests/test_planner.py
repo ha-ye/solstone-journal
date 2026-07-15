@@ -3,34 +3,6 @@
 
 import importlib
 import sys
-from types import SimpleNamespace
-
-
-def _setup_genai(monkeypatch):
-    import types
-
-    google_mod = types.ModuleType("google")
-    genai_mod = types.ModuleType("google.genai")
-
-    class DummyModels:
-        def generate_content(self, *a, **k):
-            DummyModels.kwargs = {"args": a, "kwargs": k}
-            return SimpleNamespace(text="plan")
-
-    class DummyClient:
-        def __init__(self, *a, **k):
-            self.models = SimpleNamespace(
-                generate_content=DummyModels().generate_content
-            )
-
-    genai_mod.Client = DummyClient
-    genai_mod.types = types.SimpleNamespace(
-        GenerateContentConfig=lambda **k: SimpleNamespace(**k),
-        ThinkingConfig=lambda **k: SimpleNamespace(**k),
-    )
-    google_mod.genai = genai_mod
-    monkeypatch.setitem(sys.modules, "google", google_mod)
-    monkeypatch.setitem(sys.modules, "google.genai", genai_mod)
 
 
 def test_generate_plan(monkeypatch):

@@ -27,7 +27,6 @@ HEAVY = (
     "faster_whisper",
     "torch",
     "pandas",
-    "google.genai",
     "huggingface_hub",
     "litellm",
 )

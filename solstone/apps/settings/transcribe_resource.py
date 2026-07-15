@@ -6,13 +6,11 @@
 from __future__ import annotations
 
 from solstone.apps.settings.install_copy import (
-    STT_AUTO_SWITCH_NOTICE,
     STT_DETECTED_MEMORY_TEMPLATE,
     STT_DETECTED_MEMORY_UNKNOWN,
-    STT_FORCE_LOCAL_HINT,
     STT_LOCAL_REQUIREMENTS_TEMPLATE,
     STT_LOCAL_UNSUPPORTED,
-    STT_NO_KEY_RECOVERY,
+    STT_NO_LOCAL_STT_RECOVERY,
 )
 from solstone.observe.transcribe.resource import (
     STT_SURFACE,
@@ -25,7 +23,6 @@ from solstone.think.providers.memory import gb, read_available_bytes
 
 def get_transcribe_resource_payload(
     *,
-    google_key_present: bool,
     configured_backend: str | None,
     confidential_lane_active: bool,
     confidential_audio: bool,
@@ -37,31 +34,21 @@ def get_transcribe_resource_payload(
     selected_backend = resolve_stt_backend_choice(
         configured_backend,
         available_bytes,
-        google_key_present=google_key_present,
         floor_bytes=floor_bytes,
         local_backend=local_backend,
         confidential_lane_active=confidential_lane_active,
         confidential_audio_enabled=confidential_audio,
     )
-    auto_switched = selected_backend == "gemini"
     needs_setup = selected_backend == STT_SURFACE
-    notice = ""
-    force_local_hint = ""
-    if auto_switched:
-        notice = STT_AUTO_SWITCH_NOTICE
-        force_local_hint = STT_FORCE_LOCAL_HINT
-    elif needs_setup:
-        notice = STT_NO_KEY_RECOVERY
+    notice = STT_NO_LOCAL_STT_RECOVERY if needs_setup else ""
 
     return {
         "min_ram_gb": None if floor_bytes is None else floor_bytes // 1024**3,
         "available_memory_gb": gb(available_bytes),
         "requirement": _requirement_text(floor_bytes),
         "detected": _detected_text(available_bytes),
-        "auto_switched": auto_switched,
         "needs_setup": needs_setup,
         "notice": notice,
-        "force_local_hint": force_local_hint,
     }
 
 
@@ -74,10 +61,8 @@ def fallback_transcribe_resource_payload() -> dict[
         "available_memory_gb": None,
         "requirement": STT_LOCAL_UNSUPPORTED,
         "detected": STT_DETECTED_MEMORY_UNKNOWN,
-        "auto_switched": False,
         "needs_setup": False,
         "notice": "",
-        "force_local_hint": "",
     }
 
 

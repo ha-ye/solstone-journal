@@ -50,7 +50,6 @@ def test_main_accepts_journal_relative_path(tmp_path, monkeypatch):
             return_value="090000_300",
         ),
         patch("solstone.observe.transcribe.main._build_base_event", return_value={}),
-        patch("solstone.think.entities.load_recent_entity_names", return_value=[]),
         patch(
             "solstone.observe.transcribe.main.read_available_bytes",
             return_value=8 * 1024**3,
@@ -147,7 +146,6 @@ def test_all_batch_processes_unprocessed_skips_transcribed(
 
     with (
         patch("solstone.observe.transcribe.main._process_one", mock_process_one),
-        patch("solstone.think.entities.load_recent_entity_names", return_value=[]),
         patch(
             "solstone.observe.transcribe.main.read_available_bytes",
             return_value=8 * 1024**3,
@@ -185,7 +183,6 @@ def test_all_redo_reprocesses_transcribed(tmp_path, monkeypatch):
 
     with (
         patch("solstone.observe.transcribe.main._process_one", mock_process_one),
-        patch("solstone.think.entities.load_recent_entity_names", return_value=[]),
         patch(
             "solstone.observe.transcribe.main.read_available_bytes",
             return_value=8 * 1024**3,
@@ -211,25 +208,24 @@ def test_all_and_audio_path_mutually_exclusive(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.setattr("sys.argv", ["sol transcribe", "--all", "some/audio.wav"])
 
-    with patch("solstone.think.entities.load_recent_entity_names", return_value=[]):
-        from solstone.observe.transcribe.main import main
+    from solstone.observe.transcribe.main import main
 
-        with (
-            patch(
-                "solstone.observe.transcribe.main.read_available_bytes",
-                return_value=8 * 1024**3,
-            ),
-            patch(
-                "solstone.observe.transcribe.main.stt_local_floor_bytes",
-                return_value=4 * 1024**3,
-            ),
-            patch(
-                "solstone.observe.transcribe.main.local_stt_backend",
-                return_value="parakeet",
-            ),
-        ):
-            with pytest.raises(SystemExit):
-                main()
+    with (
+        patch(
+            "solstone.observe.transcribe.main.read_available_bytes",
+            return_value=8 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_local_floor_bytes",
+            return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
+    ):
+        with pytest.raises(SystemExit):
+            main()
 
 
 def test_neither_all_nor_audio_path_errors(tmp_path, monkeypatch):
@@ -237,28 +233,57 @@ def test_neither_all_nor_audio_path_errors(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     monkeypatch.setattr("sys.argv", ["sol transcribe"])
 
-    with patch("solstone.think.entities.load_recent_entity_names", return_value=[]):
-        from solstone.observe.transcribe.main import main
+    from solstone.observe.transcribe.main import main
 
-        with pytest.raises(SystemExit):
-            main()
+    with pytest.raises(SystemExit):
+        main()
 
 
-def test_resolve_default_backend_auto_switches_to_gemini(monkeypatch):
-    transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
+def test_main_google_key_decoy_below_floor_surfaces_local_requirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    journal = tmp_path / "journal"
+    audio_file = (
+        journal / "chronicle" / "20260201" / "default" / "090000_300" / "audio.wav"
+    )
+    audio_file.parent.mkdir(parents=True)
+    audio_file.write_bytes(b"audio")
 
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
-    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 2 * 1024**3)
-    monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
-    monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
+    monkeypatch.setattr("sys.argv", ["sol transcribe", str(audio_file)])
 
-    assert transcribe_main.resolve_default_backend(_args(), {}) == "gemini"
+    from solstone.observe.transcribe.main import main
+
+    with (
+        patch(
+            "solstone.observe.transcribe.main.read_available_bytes",
+            return_value=2 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.stt_local_floor_bytes",
+            return_value=4 * 1024**3,
+        ),
+        patch(
+            "solstone.observe.transcribe.main.local_stt_backend",
+            return_value="parakeet",
+        ),
+        patch("solstone.observe.transcribe.main._process_one") as mock_process_one,
+    ):
+        with caplog.at_level(logging.ERROR):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+
+    assert exc_info.value.code == 1
+    assert audio_file.exists()
+    mock_process_one.assert_not_called()
+    assert "Local transcription needs about 4 GB" in caplog.text
 
 
 def test_resolve_default_backend_auto_selects_confidential_under_lane(monkeypatch):
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
 
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
@@ -273,7 +298,7 @@ def test_resolve_default_backend_auto_selects_confidential_under_lane(monkeypatc
 def test_resolve_default_backend_explicit_local_wins_under_lane(monkeypatch):
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
 
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
@@ -291,7 +316,7 @@ def test_resolve_default_backend_explicit_local_wins_under_lane(monkeypatch):
 def test_resolve_default_backend_confidential_fallback_never_cloud(monkeypatch, caplog):
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
 
-    monkeypatch.setenv("GOOGLE_API_KEY", "test-key")
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 1 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
@@ -348,18 +373,29 @@ def test_resolve_default_backend_warns_but_honors_explicit_local(monkeypatch, ca
     assert "Free memory is below 4 GB" in caplog.text
 
 
-def test_resolve_default_backend_honors_config_backend(monkeypatch):
+def test_resolve_default_backend_stale_config_routes_to_confidential_under_lane(
+    monkeypatch, caplog
+):
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
 
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
     monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 2 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
-
-    assert (
-        transcribe_main.resolve_default_backend(_args(), {"backend": "gemini"})
-        == "gemini"
+    monkeypatch.setattr(
+        "solstone.think.services.spp.confidential_provenance",
+        lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
     )
+
+    with caplog.at_level(logging.WARNING):
+        backend = transcribe_main.resolve_default_backend(
+            _args(), {"backend": "removed-stt"}
+        )
+
+    assert backend == "confidential"
+    assert caplog.messages == [
+        "Configured STT backend 'removed-stt' is unavailable; treating it as unset"
+    ]
 
 
 def test_resolve_default_backend_uses_parakeet_when_memory_fits(monkeypatch):
@@ -379,29 +415,26 @@ def test_resolve_default_backend_falls_back_when_configured_backend_is_removed(
     transcribe_main = importlib.import_module("solstone.observe.transcribe.main")
 
     monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
-    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 3 * 1024**3)
+    monkeypatch.setattr(transcribe_main, "read_available_bytes", lambda: 5 * 1024**3)
     monkeypatch.setattr(transcribe_main, "stt_local_floor_bytes", lambda: 4 * 1024**3)
     monkeypatch.setattr(transcribe_main, "local_stt_backend", lambda: "parakeet")
 
-    assert (
-        transcribe_main.resolve_default_backend(_args(), {"backend": "removed-local"})
-        == "parakeet"
-    )
-    assert "unavailable" in caplog.text
+    with caplog.at_level(logging.WARNING):
+        backend = transcribe_main.resolve_default_backend(
+            _args(), {"backend": "removed-local"}
+        )
+
+    assert backend == "parakeet"
+    assert caplog.messages == [
+        "Configured STT backend 'removed-local' is unavailable; treating it as unset"
+    ]
 
 
 def test_all_batch_reads_memory_once_and_reuses_default_backend(tmp_path, monkeypatch):
     journal = _make_batch_journal(tmp_path)
     config_dir = journal / "config"
     config_dir.mkdir()
-    (config_dir / "journal.json").write_text(
-        json.dumps(
-            {
-                "identity": {"name": "Test"},
-                "env": {"GOOGLE_API_KEY": "test-key"},
-            }
-        )
-    )
+    (config_dir / "journal.json").write_text(json.dumps({"identity": {"name": "Test"}}))
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     monkeypatch.setattr("sys.argv", ["sol transcribe", "--all", "--redo"])
     calls = 0
@@ -409,13 +442,12 @@ def test_all_batch_reads_memory_once_and_reuses_default_backend(tmp_path, monkey
     def fake_read_available_bytes():
         nonlocal calls
         calls += 1
-        return 2 * 1024**3
+        return 5 * 1024**3
 
     mock_process_one = MagicMock()
 
     with (
         patch("solstone.observe.transcribe.main._process_one", mock_process_one),
-        patch("solstone.think.entities.load_recent_entity_names", return_value=[]),
         patch(
             "solstone.observe.transcribe.main.read_available_bytes",
             fake_read_available_bytes,
@@ -435,4 +467,4 @@ def test_all_batch_reads_memory_once_and_reuses_default_backend(tmp_path, monkey
 
     assert calls == 1
     assert mock_process_one.call_count == 2
-    assert {call.args[3] for call in mock_process_one.call_args_list} == {"gemini"}
+    assert {call.args[3] for call in mock_process_one.call_args_list} == {"parakeet"}
