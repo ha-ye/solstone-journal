@@ -4,7 +4,7 @@ Multimodal capture and AI-powered analysis of desktop activity.
 
 ## Observer Architecture
 
-Observers are independent capture agents that upload segments to solstone via the HTTP ingest API (`/app/observer/ingest/<key>`). Each observer runs as its own process with its own lifecycle — solstone core is the journal + processing engine.
+Observers are independent capture agents that upload segments to solstone via `POST /app/observer/ingest`; the observer key/handle rides in the `X-Solstone-Observer` header (falling back to `Authorization: Bearer <handle>`), not the URL path. Each observer runs as its own process with its own lifecycle — solstone core is the journal + processing engine.
 
 | Observer | What it captures | Repo | Runs as |
 |----------|-----------------|------|---------|
@@ -47,7 +47,7 @@ journal observer revoke <name>
 ```
 Observers (standalone, per-platform repos)
        ↓ HTTP multipart upload
-Observer Ingest API (/app/observer/ingest/<key>)
+Observer Ingest API (POST /app/observer/ingest — key via X-Solstone-Observer header)
        ↓
    Raw media files (*.flac, *.webm, tmux_*.jsonl)
        ↓
@@ -94,7 +94,7 @@ Each observer is a standalone package in its own repo (see the Observer Architec
 - **`solstone-macos`** — screen + audio capture on macOS; native Swift menu-bar app.
 - **`solstone-tmux`** — tmux terminal-session capture; runs as a systemd user service.
 
-All upload segments via the same HTTP ingest API (`/app/observer/ingest/<key>`).
+All upload segments via the same HTTP ingest API (`POST /app/observer/ingest`), with the observer key/handle carried in `X-Solstone-Observer` (or `Authorization: Bearer <handle>` fallback), not the URL.
 
 Observer ingest derives duplicate identity from the journal segment directory on
 disk, not from an append-only history index. For an upload, the server looks

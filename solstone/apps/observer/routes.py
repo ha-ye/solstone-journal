@@ -1102,6 +1102,8 @@ def ingest_upload() -> Any:
     - "ok": New segment accepted
     - "duplicate": All files already received (no processing triggered)
     - "collision": Conflicting content saved with an adjusted key
+    - "conflict": Sidecar/metadata conflicts with an existing segment
+    - "failed": Upload rejected — contract-invalid, or no available segment slot after retries
     """
     observer, key_prefix, error = resolve_observer_identity()
     if error is not None:
