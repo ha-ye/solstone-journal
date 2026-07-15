@@ -2626,6 +2626,150 @@ def test_file_importer_writes_manifest(tmp_path, monkeypatch):
     assert not list(imports_dir.rglob("import.json"))
 
 
+def test_file_importer_hard_fail_zero_entries_skips_manifest(tmp_path, monkeypatch):
+    """All-hard-failed file import writes no dedup manifest, so an identical
+    re-run re-attempts (process called again) and again exits non-zero instead
+    of matching a phantom 'already imported' manifest.
+
+    Uses the non-document `ics` mock, so it also proves the guard lives at the
+    shared cli.py call site and is importer-agnostic (not PDF/document-specific).
+    """
+    mod = importlib.import_module("solstone.think.importers.cli")
+
+    ics_file = tmp_path / "calendar.ics"
+    ics_file.write_text("BEGIN:VCALENDAR\nEND:VCALENDAR")
+
+    mock_imp = _make_mock_file_importer()
+    mock_imp.process.return_value = ImportResult(
+        entries_written=0,
+        entities_seeded=0,
+        files_created=[],
+        errors=["calendar.ics: broken"],
+        summary="0 events imported",
+        hard_failures=("calendar.ics: broken",),
+    )
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        "solstone.think.importers.file_importer.get_file_importer",
+        lambda name: mock_imp,
+    )
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+
+    imports_dir = tmp_path / "imports"
+
+    # First run: hard fails, exits non-zero, writes no manifest.
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "sol import",
+            str(ics_file),
+            "--source",
+            "ics",
+            "--timestamp",
+            "20250101_120000",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc1:
+        mod.main()
+    assert exc1.value.code == 1
+    assert mock_imp.process.call_count == 1
+    assert list(imports_dir.rglob("manifest.json")) == []
+
+    # Second identical run (no --force): no phantom manifest to match, so the
+    # importer re-attempts and again exits non-zero.
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "sol import",
+            str(ics_file),
+            "--source",
+            "ics",
+            "--timestamp",
+            "20250101_120001",
+        ],
+    )
+    with pytest.raises(SystemExit) as exc2:
+        mod.main()
+    assert exc2.value.code == 1
+    assert mock_imp.process.call_count == 2
+    assert list(imports_dir.rglob("manifest.json")) == []
+
+
+def test_file_importer_partial_success_with_hard_failures_writes_manifest(
+    tmp_path, monkeypatch
+):
+    """File importer partial success still writes a dedup manifest."""
+    mod = importlib.import_module("solstone.think.importers.cli")
+
+    ics_file = tmp_path / "calendar.ics"
+    ics_file.write_text("BEGIN:VCALENDAR\nEND:VCALENDAR")
+
+    mock_imp = _make_mock_file_importer()
+    mock_imp.process.return_value = ImportResult(
+        entries_written=5,
+        entities_seeded=1,
+        files_created=["/journal/20250101/import.ics/imported.jsonl"],
+        errors=["b.ics: broken"],
+        summary="5 of 6 imported",
+        hard_failures=("b.ics: broken",),
+    )
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["sol import", str(ics_file), "--source", "ics"],
+    )
+    monkeypatch.setattr(
+        "solstone.think.importers.file_importer.get_file_importer",
+        lambda name: mock_imp,
+    )
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+
+    with pytest.raises(SystemExit):
+        mod.main()
+
+    assert len(list((tmp_path / "imports").rglob("manifest.json"))) == 1
+
+
+def test_file_importer_nothing_to_import_writes_manifest(tmp_path, monkeypatch):
+    """File importer clean no-op still writes a dedup manifest."""
+    mod = importlib.import_module("solstone.think.importers.cli")
+
+    ics_file = tmp_path / "calendar.ics"
+    ics_file.write_text("BEGIN:VCALENDAR\nEND:VCALENDAR")
+
+    mock_imp = _make_mock_file_importer()
+    mock_imp.process.return_value = ImportResult(
+        entries_written=0,
+        entities_seeded=0,
+        files_created=[],
+        errors=[],
+        summary="Nothing to import",
+    )
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(
+        "sys.argv",
+        ["sol import", str(ics_file), "--source", "ics"],
+    )
+    monkeypatch.setattr(
+        "solstone.think.importers.file_importer.get_file_importer",
+        lambda name: mock_imp,
+    )
+    monkeypatch.setattr(mod, "CallosumConnection", lambda **kwargs: MagicMock())
+    monkeypatch.setattr(mod, "get_rev", lambda: "test-rev")
+    monkeypatch.setattr(mod, "_status_emitter", lambda: None)
+
+    mod.main()
+
+    assert len(list((tmp_path / "imports").rglob("manifest.json"))) == 1
+
+
 def test_obsidian_process_segments(tmp_path, monkeypatch):
     """Obsidian importer writes creation-moment segments with markdown output."""
     mod = importlib.import_module("solstone.think.importers.obsidian")

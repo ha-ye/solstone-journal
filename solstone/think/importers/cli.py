@@ -1112,22 +1112,32 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
                         entries_written=result.entries_written,
                     )
 
-            # Write import manifest for dedup tracking
-            from solstone.think.importers.shared import read_provenance, write_manifest
+            # Write the dedup manifest — unless the run hard-failed on every
+            # item (entries_written == 0 with hard_failures present). A manifest
+            # in that case is a phantom: the next identical run (no --force)
+            # would match it via find_manifest_by_hash and report a false
+            # "already imported (0 entries)" success instead of re-attempting.
+            # Partial success (some entries + some failures) and a clean
+            # "nothing to import" (0 entries, no failures) both still write.
+            if result.entries_written > 0 or not result.hard_failures:
+                from solstone.think.importers.shared import (
+                    read_provenance,
+                    write_manifest,
+                )
 
-            _prov = read_provenance(journal_root, args.timestamp)
+                _prov = read_provenance(journal_root, args.timestamp)
 
-            write_manifest(
-                journal_root,
-                import_id=_import_id,
-                source_type=_file_importer.name,
-                source_hash=_source_hash,
-                entry_count=result.entries_written,
-                files_created=result.files_created,
-                imported_via=_prov["imported_via"],
-                link_id=_prov["link_id"],
-                observer_handle=_prov["observer_handle"],
-            )
+                write_manifest(
+                    journal_root,
+                    import_id=_import_id,
+                    source_type=_file_importer.name,
+                    source_hash=_source_hash,
+                    entry_count=result.entries_written,
+                    files_created=result.files_created,
+                    imported_via=_prov["imported_via"],
+                    link_id=_prov["link_id"],
+                    observer_handle=_prov["observer_handle"],
+                )
 
             if args.json:
                 print(
@@ -1325,9 +1335,11 @@ def _import_one_from_args(args: argparse.Namespace) -> dict[str, Any] | None:
             [processing_results["target_day"], processing_results["target_day"]],
         )
 
-        # Write dedup manifest for audio/text imports. File importers already wrote
-        # theirs in the file-importer branch above (line ~887); guard prevents a
-        # double write since all branches fall through this common tail.
+        # Write dedup manifest for audio/text imports. File importers already
+        # wrote theirs in the `if _file_importer is not None:` branch above
+        # (which now skips the write when a run hard-fails to zero entries);
+        # this `_file_importer is None` guard prevents a double write since all
+        # branches fall through this common tail.
         if _file_importer is None:
             from solstone.think.importers.shared import read_provenance, write_manifest
 
