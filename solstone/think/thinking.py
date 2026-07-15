@@ -4839,29 +4839,26 @@ def main() -> None:
                 **daily_complete_payload,
             )
 
+        segment_repair_suffix = ""
+        if not args.segment:
+            segment_repair_suffix = (
+                "; segment repairs: "
+                f"{_format_segment_repair_yield(cleared_pre, remaining_pre)}"
+            )
+
         # Build log message
         msg = "think"
         if args.refresh:
             msg += " --refresh"
         if fail_count:
             msg += f" failed={fail_count}"
-        if not args.segment:
-            msg += (
-                "; segment repairs: "
-                f"{_format_segment_repair_yield(cleared_pre, remaining_pre)}"
-            )
+        msg += segment_repair_suffix
         day_log(day, msg)
 
         duration_ms = int((time.time() - start_time) * 1000)
-        summary_suffix = ""
-        if not args.segment:
-            summary_suffix = (
-                "; segment repairs: "
-                f"{_format_segment_repair_yield(cleared_pre, remaining_pre)}"
-            )
         logging.info(
             f"Think completed in {duration_ms}ms: "
-            f"{success_count} succeeded, {fail_count} failed{summary_suffix}"
+            f"{success_count} succeeded, {fail_count} failed{segment_repair_suffix}"
         )
 
         if fail_count > 0:

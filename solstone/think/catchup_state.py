@@ -565,6 +565,9 @@ def record_outcome(
                 else:
                     last_outcome = _mapped_non_completion(exit_status)
                     record["last_outcome"] = last_outcome
+                    record["cleared"] = None
+                    record["remaining"] = None
+                    record["exit_reason"] = None
                     consecutive = int(record.get("consecutive_non_completion") or 0) + 1
                     next_retry_at = ended_at + _backoff_delay(consecutive)
                     record["consecutive_non_completion"] = consecutive
@@ -652,6 +655,7 @@ def record_segment_repair_attempt(day: str, *, started_at: float) -> None:
                 record["cleared"] = None
                 record["remaining"] = None
                 record["exit_reason"] = None
+                record["last_outcome"] = ""
             record["fingerprint"] = fingerprint
             record["attempts"] = int(record.get("attempts") or 0) + 1
             record["last_attempt_at"] = started_at
