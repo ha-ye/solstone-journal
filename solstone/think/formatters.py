@@ -217,6 +217,11 @@ FORMATTERS: dict[str, tuple[str, str, bool]] = {
     "*/*/*/*_transcript.jsonl": ("solstone.observe.hear", "format_audio", False),
     "*/*/*/screen.jsonl": ("solstone.observe.screen", "format_screen", False),
     "*/*/*/*_screen.jsonl": ("solstone.observe.screen", "format_screen", False),
+    "*/*/*/browser_*.jsonl": (
+        "solstone.think.browser_formatter",
+        "format_browser",
+        True,
+    ),
     "*/chat/*/chat.jsonl": ("solstone.think.chat_formatter", "format_chat", True),
     "*/*/*/talents/sense.json": (
         "solstone.think.entities.formatting",

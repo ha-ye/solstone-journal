@@ -304,9 +304,13 @@ def _check_content_files(seg_dir: Path | None) -> tuple[bool, str]:
     if seg_dir is None:
         return False, "segment directory missing"
 
-    if (seg_dir / "audio.jsonl").exists() or (seg_dir / "screen.jsonl").exists():
+    if (
+        (seg_dir / "audio.jsonl").exists()
+        or (seg_dir / "screen.jsonl").exists()
+        or any(path.is_file() for path in seg_dir.glob("browser_*.jsonl"))
+    ):
         return True, "content files present"
-    return False, "no audio.jsonl or screen.jsonl"
+    return False, "no audio.jsonl, screen.jsonl, or browser_*.jsonl"
 
 
 def _check_backward_chain(

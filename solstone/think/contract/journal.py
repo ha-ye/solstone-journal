@@ -325,6 +325,8 @@ def schema_for_filename(
         return schemas.get("audio-jsonl")
     if filename == "screen.jsonl" or filename.endswith("_screen.jsonl"):
         return schemas.get("screen-jsonl")
+    if filename.startswith("browser_") and filename.endswith(".jsonl"):
+        return schemas.get("browser-jsonl")
     return None
 
 

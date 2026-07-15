@@ -328,6 +328,46 @@ def test_verify_all_pass(tmp_path, monkeypatch, capsys):
     assert "7/7 checks passed" in out
 
 
+def test_verify_browser_content_passes(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    segment = _make_segment(
+        tmp_path,
+        "20240101",
+        "suze.browser",
+        "090000_300",
+        stream_json={
+            "stream": "suze.browser",
+            "prev_day": None,
+            "prev_segment": None,
+            "seq": 1,
+        },
+        audio=False,
+        screen=False,
+    )
+    (segment / "browser_mail-google-com.jsonl").write_text(
+        '{"t":"segment_start","ts":1}\n',
+        encoding="utf-8",
+    )
+    streams_dir = tmp_path / "streams"
+    streams_dir.mkdir()
+    (streams_dir / "suze.browser.json").write_text(
+        json.dumps({"last_day": "20240101", "last_segment": "090000_300", "seq": 1})
+    )
+
+    args = argparse.Namespace(
+        path="20240101/suze.browser/090000_300",
+        day=None,
+        json_output=False,
+        subcommand="verify",
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cmd_verify(args)
+
+    out = capsys.readouterr().out
+    assert excinfo.value.code == 0
+    assert "PASS  content files present" in out
+
+
 def test_verify_missing_stream_json(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _make_segment(tmp_path, "20240101", "default", "090000_300", stream_json=None)
@@ -384,7 +424,10 @@ def test_verify_missing_content(tmp_path, monkeypatch, capsys):
 
     out = capsys.readouterr().out
     assert excinfo.value.code == 1
-    assert "FAIL  content files present: no audio.jsonl or screen.jsonl" in out
+    assert (
+        "FAIL  content files present: no audio.jsonl, screen.jsonl, or browser_*.jsonl"
+        in out
+    )
 
 
 def test_verify_broken_backward_chain(tmp_path, monkeypatch, capsys):

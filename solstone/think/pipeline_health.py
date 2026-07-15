@@ -51,7 +51,7 @@ SEGMENT_FLOOR_TALENTS: tuple[str, ...] = ("documents",)
 SEGMENT_NONGATING_TALENTS: tuple[str, ...] = ("entities:detection",)
 # A legacy segment talent is non-blocking only once its replacement has completed.
 SEGMENT_SUPERSEDED_TALENTS: dict[str, str] = {"entities": "entities:detection"}
-SEGMENT_NO_PROCESSING_MODALITIES = frozenset({"markdown"})
+SEGMENT_NO_PROCESSING_MODALITIES = frozenset({"markdown", "browser"})
 # Floor talents are capped after repeated failures spanning at least two hours.
 CAP = 5
 MIN_SPAN_MS = 7_200_000

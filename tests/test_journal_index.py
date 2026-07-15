@@ -1698,6 +1698,28 @@ def test_search_journal_results_include_stream(monkeypatch):
         assert r["metadata"]["stream"] == "default"
 
 
+def test_browser_fixture_chunks_include_stream_and_agent(monkeypatch):
+    """Browser formatter chunks keep segment stream and formatter agent."""
+    from solstone.think.indexer.journal import get_journal_index, index_file
+
+    journal = Path("tests/fixtures/journal").resolve()
+    rel = "20260703/suze.browser/000141_317/browser_mail-google-com.jsonl"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    index_file(str(journal), rel)
+
+    conn, _ = get_journal_index(str(journal))
+    rows = conn.execute(
+        "SELECT agent, stream FROM chunks WHERE path=? ORDER BY idx",
+        (rel,),
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 6
+    assert {agent for agent, _stream in rows} == {"browser"}
+    assert {stream for _agent, stream in rows} == {"suze.browser"}
+
+
 def test_search_counts_stream_filter(monkeypatch):
     """search_counts filters by stream and includes streams aggregation."""
     from solstone.think.indexer.journal import scan_journal, search_counts

@@ -30,7 +30,8 @@
         ],
         "notes": "Accepted producer paths are stream-qualified. Readers tolerate older flat and prefixed names.",
         "producer_write_paths": [
-          "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{stream.json,ingest.json,audio.jsonl,screen.jsonl}"
+          "chronicle/YYYYMMDD/{stream}/HHMMSS_LEN/{stream.json,ingest.json,audio.jsonl,screen.jsonl}",
+          "chronicle/YYYYMMDD/{host}.browser/HHMMSS_LEN/browser_{host-slug}.jsonl"
         ],
         "stage": "accepted"
       },
@@ -196,6 +197,133 @@
         }
       },
       "source": "solstone/observe/transcribe/audio.schema.json"
+    },
+    "browser-jsonl": {
+      "schema": {
+        "$defs": {
+          "header": {
+            "additionalProperties": true,
+            "properties": {
+              "adapter": {
+                "type": "string"
+              },
+              "block": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "blocks": {
+                "type": "array"
+              },
+              "ctx": {
+                "type": "string"
+              },
+              "n": {
+                "type": "integer"
+              },
+              "op": {
+                "type": "string"
+              },
+              "rel": {
+                "type": "number"
+              },
+              "site": {
+                "type": "string"
+              },
+              "t": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "ts": {
+                "type": "number"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "ts"
+            ],
+            "type": "object"
+          },
+          "record": {
+            "additionalProperties": true,
+            "properties": {
+              "adapter": {
+                "type": "string"
+              },
+              "block": {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              "blocks": {
+                "type": "array"
+              },
+              "ctx": {
+                "type": "string"
+              },
+              "n": {
+                "type": "integer"
+              },
+              "op": {
+                "type": "string"
+              },
+              "rel": {
+                "type": "number"
+              },
+              "site": {
+                "type": "string"
+              },
+              "t": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "ts": {
+                "type": "number"
+              },
+              "url": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "t",
+              "ts"
+            ],
+            "type": "object"
+          }
+        },
+        "$id": "solstone-journal-format:browser-jsonl",
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "additionalProperties": true,
+        "title": "Browser stream JSONL",
+        "type": "object",
+        "x-journal-contract": {
+          "allowed_producers": [
+            "solstone-browser extension via ingest"
+          ],
+          "file_kind": "headered_jsonl",
+          "format_id": "browser-jsonl",
+          "key_fields": [
+            "t",
+            "ts",
+            "site",
+            "op",
+            "block",
+            "blocks"
+          ],
+          "producer_write_paths": [
+            "chronicle/YYYYMMDD/{host}.browser/HHMMSS_LEN/browser_{host-slug}.jsonl"
+          ],
+          "reference_writer": "none (external solstone-browser extension via observer ingest)",
+          "schema_owner": "think.browser",
+          "write_discipline": "append-only JSONL via observer ingest"
+        }
+      },
+      "source": "solstone/think/browser.schema.json"
     },
     "observer-ingest-envelope": {
       "schema": {

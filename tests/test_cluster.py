@@ -960,6 +960,41 @@ def test_scan_day_empty(tmp_path, monkeypatch):
     assert mod.scan_day("20250101") == ([], [], [])
 
 
+def test_detect_data_state_reads_browser_fixture():
+    mod = importlib.import_module("solstone.think.cluster")
+    segment = (
+        Path("tests/fixtures/journal/chronicle")
+        / "20260703"
+        / "suze.browser"
+        / "000141_317"
+    )
+
+    assert mod._detect_data_state(segment) == {"browser": "analyzed"}
+    assert mod.read_segment_data_state("20260703", "000141_317", "suze.browser") == {
+        "browser": "analyzed"
+    }
+
+
+def test_scan_day_emits_browser_only_fixture():
+    mod = importlib.import_module("solstone.think.cluster")
+
+    audio_ranges, screen_ranges, segments = mod.scan_day("20260703")
+
+    assert audio_ranges == []
+    assert screen_ranges == []
+    assert segments == [
+        {
+            "key": "000141_317",
+            "start": "00:01",
+            "end": "00:06",
+            "types": ["browser"],
+            "stream": "suze.browser",
+            "data_state": {"browser": "analyzed"},
+        }
+    ]
+    assert mod.cluster_segments("20260703") == segments
+
+
 def test_scan_day_marks_stub_screen_pending(tmp_path, monkeypatch):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     day_dir = day_path("20240101")

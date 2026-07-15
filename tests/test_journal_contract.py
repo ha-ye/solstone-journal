@@ -25,6 +25,7 @@ def test_journal_contract_bundle_discovers_writer_adjacent_schemas() -> None:
         "stream-json",
         "audio-jsonl",
         "screen-jsonl",
+        "browser-jsonl",
     }.issubset(formats)
 
     for entry in bundle["schemas"].values():
@@ -171,7 +172,7 @@ def test_validate_journal_tree_accepts_no_raw_at_rest_files(tmp_path) -> None:
     assert journal.validate_journal_tree(tmp_path, journal.build_bundle()) == []
 
 
-def test_schema_for_filename_selects_screen_and_audio_sidecars() -> None:
+def test_schema_for_filename_selects_browser_screen_and_audio_sidecars() -> None:
     bundle = journal.build_bundle()
 
     for filename in (
@@ -179,8 +180,61 @@ def test_schema_for_filename_selects_screen_and_audio_sidecars() -> None:
         "audio.jsonl",
         "123456_screen.jsonl",
         "src_audio.jsonl",
+        "browser_mail-google-com.jsonl",
     ):
         assert journal.schema_for_filename(filename, bundle) is not None
+
+
+def test_contract_validator_accepts_browser_fixture() -> None:
+    bundle = journal.build_bundle()
+    schema = journal.schema_for_filename("browser_mail-google-com.jsonl", bundle)
+    fixture = (
+        journal.ROOT
+        / "tests"
+        / "fixtures"
+        / "journal"
+        / "chronicle"
+        / "20260703"
+        / "suze.browser"
+        / "000141_317"
+        / "browser_mail-google-com.jsonl"
+    ).read_bytes()
+
+    assert schema is not None
+    assert (
+        journal.validate_contract_file("browser_mail-google-com.jsonl", fixture, schema)
+        == []
+    )
+
+
+def test_contract_validator_accepts_browser_delta_first() -> None:
+    bundle = journal.build_bundle()
+    schema = journal.schema_for_filename("browser_mail-google-com.jsonl", bundle)
+
+    assert schema is not None
+    issues = journal.validate_contract_file(
+        "browser_mail-google-com.jsonl",
+        b'{"t":"delta","ts":1,"op":"add","block":{"text":"hello"}}\n',
+        schema,
+    )
+
+    assert issues == []
+
+
+def test_contract_validator_rejects_browser_non_object_row() -> None:
+    bundle = journal.build_bundle()
+    schema = journal.schema_for_filename("browser_mail-google-com.jsonl", bundle)
+
+    assert schema is not None
+    issues = journal.validate_contract_file(
+        "browser_mail-google-com.jsonl",
+        b'{"t":"segment_start","ts":1}\n["bad"]\n',
+        schema,
+    )
+
+    assert len(issues) == 1
+    assert issues[0].path == "browser_mail-google-com.jsonl:2"
+    assert issues[0].message == "line must be a JSON object"
 
 
 def test_journal_contract_docs_cover_floor_and_maintenance_playbook() -> None:

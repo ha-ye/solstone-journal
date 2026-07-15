@@ -69,6 +69,17 @@ class TestRegistry:
         assert formatter is not None
         assert formatter.__name__ == "format_screen"
 
+    def test_get_formatter_browser(self):
+        """Test pattern matching for browser_*.jsonl files."""
+        from solstone.think.formatters import get_formatter
+
+        formatter = get_formatter(
+            "20260703/suze.browser/000141_317/browser_mail-google-com.jsonl"
+        )
+
+        assert formatter is not None
+        assert formatter.__name__ == "format_browser"
+
     def test_get_formatter_activity_output(self):
         """Test pattern matching for activity output markdown."""
         from solstone.think.formatters import get_formatter

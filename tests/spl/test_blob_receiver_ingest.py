@@ -117,12 +117,17 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
         assert response.status_code == 200
         return response.get_json()
 
+    first_payload = _browser_payload("first", 1)
+    second_payload = _browser_payload("second", 2)
+    third_payload = _browser_payload("third", 3)
+    late_payload = _browser_payload("late", 4)
+
     first_ws, first_k_ack, first_blob_id = _sealed_blob_ws(
         state.instance_id,
         home_key.public_spki_der,
         ext_private,
         sender_fp_bytes,
-        b'{"event":"first"}\n',
+        first_payload,
     )
 
     await blob_receiver.receive_blob(
@@ -141,14 +146,14 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
         / "120000_300"
         / "browser_browserhost.jsonl"
     )
-    assert stored.read_bytes() == b'{"event":"first"}\n'
+    assert stored.read_bytes() == first_payload
 
     second_ws, second_k_ack, second_blob_id = _sealed_blob_ws(
         state.instance_id,
         home_key.public_spki_der,
         ext_private,
         sender_fp_bytes,
-        b'{"event":"first"}\n',
+        first_payload,
     )
 
     await blob_receiver.receive_blob(
@@ -169,7 +174,7 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
         home_key.public_spki_der,
         ext_private,
         sender_fp_bytes,
-        b'{"event":"second"}\n',
+        second_payload,
         segment="120500_300",
     )
 
@@ -188,7 +193,7 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
         / "browserhost.browser"
         / "120500_300"
         / "browser_browserhost.jsonl"
-    ).read_bytes() == b'{"event":"second"}\n'
+    ).read_bytes() == second_payload
     assert handles_seen == [observer_handle, observer_handle, observer_handle]
 
     AuthorizedClients(authorized_clients_path()).remove(
@@ -199,7 +204,7 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
         home_key.public_spki_der,
         ext_private,
         sender_fp_bytes,
-        b'{"event":"third"}\n',
+        third_payload,
     )
 
     await blob_receiver.receive_blob(
@@ -242,7 +247,7 @@ async def test_blob_receiver_ingests_and_acknowledges_duplicate_via_real_observe
         home_key.public_spki_der,
         late_private,
         late_sender_fp_bytes,
-        b'{"event":"late"}\n',
+        late_payload,
         host="latebrowser",
         segment="121000_300",
     )
@@ -376,6 +381,21 @@ def _add_tar_file(tar: tarfile.TarFile, name: str, content: bytes) -> None:
     info = tarfile.TarInfo(name)
     info.size = len(content)
     tar.addfile(info, io.BytesIO(content))
+
+
+def _browser_payload(text: str, ts: int) -> bytes:
+    return (
+        json.dumps(
+            {
+                "t": "delta",
+                "ts": ts,
+                "op": "add",
+                "block": {"type": "text", "text": text},
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        + b"\n"
+    )
 
 
 def _ack_tag(k_ack: bytes, status: int, blob_id: bytes) -> bytes:

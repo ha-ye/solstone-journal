@@ -603,6 +603,12 @@ def _detect_data_state(seg_path: Path) -> dict[str, str]:
     if screen_state != DataState.ABSENT.value:
         state["screen"] = screen_state
 
+    browser_jsonl_files = sorted(
+        path for path in seg_path.glob("browser_*.jsonl") if path.is_file()
+    )
+    if any(_has_nonempty_text(path) for path in browser_jsonl_files):
+        state["browser"] = DataState.ANALYZED.value
+
     return state
 
 
@@ -660,7 +666,7 @@ def scan_day(
         data_state = _detect_data_state(seg_path) if start_time else {}
         types = [
             modality
-            for modality in ("audio", "screen", "markdown")
+            for modality in ("audio", "screen", "markdown", "browser")
             if modality in data_state
         ]
 
