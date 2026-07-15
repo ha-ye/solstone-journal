@@ -70,7 +70,7 @@ def test_transcribe_payload_marks_linux_parakeet_cpp_runtime(
     from solstone.apps.settings import routes
 
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
@@ -91,7 +91,7 @@ def test_parakeet_cpp_device_round_trips_through_settings_config(settings_env) -
     from solstone.think import supervisor
 
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",

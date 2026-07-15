@@ -407,7 +407,7 @@ def test_state_missing_identity_returns_default_names(tmp_path, monkeypatch):
     config_dir = journal / "config"
     config_dir.mkdir(parents=True)
     (config_dir / "journal.json").write_text(
-        json.dumps({"setup": {"completed_at": "2026-05-09T00:00:00Z"}}) + "\n",
+        json.dumps({"setup": {"completed_at": 1700000000000}}) + "\n",
         encoding="utf-8",
     )
     _set_today(monkeypatch, "20990110")

@@ -10,7 +10,7 @@ from solstone.convey import create_app
 
 def _settings_client(settings_env):
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     config_path = journal_path / "config" / "journal.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     facet_dir = journal_path / "facets" / "known"

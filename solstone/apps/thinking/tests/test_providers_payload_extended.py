@@ -44,7 +44,7 @@ def _settings_client_with_journal(settings_env, thinking_app):
     from solstone.convey import state
 
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
@@ -156,7 +156,7 @@ def test_get_providers_reports_none_lane_when_no_engine_selected(
 ):
     journal_path, config = settings_env(
         {
-            "setup": {"completed_at": "2026-05-23T00:00:00Z"},
+            "setup": {"completed_at": 1700000000000},
             "env": {},
             "providers": {"contexts": {}, "models": {}},
         }

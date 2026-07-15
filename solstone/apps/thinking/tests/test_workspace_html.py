@@ -17,7 +17,7 @@ STATIC = Path(__file__).resolve().parents[1] / "static" / "thinking.js"
 
 def test_workspace_renders_each_lane(settings_env):
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
@@ -114,7 +114,7 @@ def test_workspace_renders_each_lane(settings_env):
 
 def test_thinking_literal_paths_resolve(settings_env):
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
@@ -137,7 +137,7 @@ def test_thinking_state_degrades_when_initial_payload_fails(
     from solstone.apps.thinking import routes
 
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
@@ -507,7 +507,7 @@ def test_thinking_copy_payload_shape_carries_deck_blocks() -> None:
 
 def test_thinking_state_serves_byo_model_copy_bytes(settings_env) -> None:
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",

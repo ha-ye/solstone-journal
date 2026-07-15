@@ -19,7 +19,7 @@ def chat_client(tmp_path, monkeypatch):
     (config_dir / "journal.json").write_text(
         json.dumps(
             {
-                "setup": {"completed_at": "2026-05-09T00:00:00Z"},
+                "setup": {"completed_at": 1700000000000},
             }
         )
         + "\n",

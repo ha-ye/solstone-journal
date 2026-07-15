@@ -19,7 +19,7 @@ HOSTILE_ARCH = "<script>alert(1)</script>"
 
 def _client(settings_env, *, confidential: bool = False):
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     if confidential:
         config.setdefault("services", {})["confidential"] = {
             "enabled_at": "2026-05-24T00:00:00Z",

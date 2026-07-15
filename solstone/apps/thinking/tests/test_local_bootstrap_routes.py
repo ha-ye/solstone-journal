@@ -36,7 +36,7 @@ def _client(journal_path):
 
 def _settings_config() -> dict:
     return {
-        "setup": {"completed_at": "2026-05-09T00:00:00Z"},
+        "setup": {"completed_at": 1700000000000},
         "providers": {
             "generate": {"provider": "google", "model": "gemini-flash-latest"},
             "cogitate": {"provider": "openai", "model": "gpt-5.4-mini"},

@@ -191,6 +191,8 @@ def _write_journal_config(journal_path, config):
         ({"setup": {"completed_at": 1.5}}, True),
         ({"setup": {"completed_at": 0}}, False),
         ({"setup": {"completed_at": None}}, False),
+        ({"setup": {"completed_at": True}}, False),
+        ({"setup": {"completed_at": False}}, False),
         ({}, False),
         ({"setup": {"completed_at": "foo"}}, False),
         ({"identity": {"name": "Active User"}}, False),

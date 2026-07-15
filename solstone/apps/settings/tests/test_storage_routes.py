@@ -45,7 +45,7 @@ def _write(path: Path, content: str = "x") -> Path:
 
 
 def test_storage_get_includes_journal_log_retention_defaults(settings_env):
-    journal_path, _config = settings_env({"setup": {"completed_at": "2026-05-09"}})
+    journal_path, _config = settings_env({"setup": {"completed_at": 1700000000000}})
     client = _client(journal_path)
 
     response = client.get("/app/settings/api/storage")
@@ -58,7 +58,7 @@ def test_storage_get_includes_journal_log_retention_defaults(settings_env):
 def test_storage_put_journal_logs_preserves_raw_media_and_reverse(settings_env):
     journal_path, _config = settings_env(
         {
-            "setup": {"completed_at": "2026-05-09"},
+            "setup": {"completed_at": 1700000000000},
             "retention": {
                 "raw_media": "days",
                 "raw_media_days": 21,
@@ -107,7 +107,7 @@ def test_storage_put_journal_logs_preserves_raw_media_and_reverse(settings_env):
     ],
 )
 def test_storage_put_journal_logs_validates_values(settings_env, payload):
-    journal_path, _config = settings_env({"setup": {"completed_at": "2026-05-09"}})
+    journal_path, _config = settings_env({"setup": {"completed_at": 1700000000000}})
     client = _client(journal_path)
 
     response = client.put("/app/settings/api/storage", json=payload)
@@ -119,7 +119,7 @@ def test_storage_put_journal_logs_validates_values(settings_env, payload):
 def test_storage_prune_logs_dry_run_serializes_result_and_deletes_nothing(
     settings_env,
 ):
-    journal_path, _config = settings_env({"setup": {"completed_at": "2026-05-09"}})
+    journal_path, _config = settings_env({"setup": {"completed_at": 1700000000000}})
     old_token = _write(journal_path / "tokens" / f"{_old_day()}.jsonl")
     client = _client(journal_path)
 
@@ -144,7 +144,7 @@ def test_storage_prune_logs_dry_run_serializes_result_and_deletes_nothing(
 
 
 def test_storage_prune_logs_serializes_root_task_log_dry_run(settings_env):
-    journal_path, _config = settings_env({"setup": {"completed_at": "2026-05-09"}})
+    journal_path, _config = settings_env({"setup": {"completed_at": 1700000000000}})
     old_line = _root_task_log_line(_old_day(), "old root line")
     root_log = journal_path / "task_log.txt"
     root_log.write_bytes(old_line)
@@ -167,7 +167,7 @@ def test_storage_prune_logs_serializes_root_task_log_dry_run(settings_env):
 def test_storage_prune_logs_disabled_config_deletes_nothing(settings_env):
     journal_path, _config = settings_env(
         {
-            "setup": {"completed_at": "2026-05-09"},
+            "setup": {"completed_at": 1700000000000},
             "retention": {"journal_logs": {"enabled": False, "days": 30}},
         }
     )
@@ -190,7 +190,7 @@ def test_storage_prune_logs_disabled_config_deletes_nothing(settings_env):
 
 
 def test_storage_prune_logs_validates_days(settings_env):
-    journal_path, _config = settings_env({"setup": {"completed_at": "2026-05-09"}})
+    journal_path, _config = settings_env({"setup": {"completed_at": 1700000000000}})
     client = _client(journal_path)
 
     response = client.post(
@@ -203,7 +203,7 @@ def test_storage_prune_logs_validates_days(settings_env):
 
 
 def test_storage_prune_logs_serializes_partial_errors(settings_env, monkeypatch):
-    journal_path, _config = settings_env({"setup": {"completed_at": "2026-05-09"}})
+    journal_path, _config = settings_env({"setup": {"completed_at": 1700000000000}})
     client = _client(journal_path)
     result = PruneResult(
         enabled=True,

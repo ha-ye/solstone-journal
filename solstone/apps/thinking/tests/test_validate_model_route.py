@@ -14,7 +14,7 @@ from solstone.convey import create_app
 @pytest.fixture
 def settings_client_with_journal(settings_env):
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     config_path = journal_path / "config" / "journal.json"
     config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     app = create_app(str(journal_path))

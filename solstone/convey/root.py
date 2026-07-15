@@ -36,6 +36,7 @@ from solstone.think.utils import (
     ensure_journal_config,
     get_config,
     get_journal,
+    journal_is_active,
 )
 
 from . import bridge as convey_bridge
@@ -57,16 +58,6 @@ from .secure_listener.wsgi import CERTLESS_PAIR_ENDPOINTS
 from .utils import error_response, error_response_with_reason
 
 logger = logging.getLogger(__name__)
-
-
-def _is_setup_complete() -> bool:
-    """Check if initial setup has been completed."""
-    try:
-        config = get_config()
-        return bool(config.get("setup", {}).get("completed_at"))
-    except Exception:
-        # Intended fail-closed-on-unreadable-config: require setup flow.
-        return False
 
 
 bp = Blueprint(
@@ -132,7 +123,7 @@ def require_access() -> Any:
         )
 
     # Check setup state
-    if not _is_setup_complete():
+    if not journal_is_active(get_journal()):
         return redirect(url_for("root.init"))
 
     return None
@@ -326,7 +317,7 @@ def init_local_capability() -> Any:
 
 @bp.route("/init")
 def init() -> Any:
-    if _is_setup_complete():
+    if journal_is_active(get_journal()):
         return redirect(url_for("root.index"))
 
     # Preserve the setup page's historical config materialization on page load;

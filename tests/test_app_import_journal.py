@@ -18,7 +18,7 @@ def _temp_journal(monkeypatch, tmp_path):
     (config_dir / "journal.json").write_text(
         json.dumps(
             {
-                "setup": {"completed_at": "2026-04-26T00:00:00Z"},
+                "setup": {"completed_at": 1700000000000},
             }
         ),
         encoding="utf-8",

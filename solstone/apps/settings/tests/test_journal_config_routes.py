@@ -12,7 +12,7 @@ from solstone.think.utils import get_config
 
 def _base_config() -> dict:
     return {
-        "setup": {"completed_at": "2026-05-09T00:00:00Z"},
+        "setup": {"completed_at": 1700000000000},
     }
 
 

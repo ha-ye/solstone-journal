@@ -812,7 +812,11 @@ def journal_is_active(path: str | Path) -> bool:
         with open(config_path, "r", encoding="utf-8") as f:
             config = json.load(f)
         completed = config["setup"]["completed_at"]
-        return isinstance(completed, (int, float)) and completed > 0
+        return (
+            isinstance(completed, (int, float))
+            and not isinstance(completed, bool)
+            and completed > 0
+        )
     except (
         OSError,
         json.JSONDecodeError,

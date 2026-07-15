@@ -60,7 +60,7 @@ def _client(journal_path):
 
 def _ready_journal(settings_env):
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     (journal_path / "config" / "journal.json").write_text(
         json.dumps(config, indent=2) + "\n",
         encoding="utf-8",
@@ -213,7 +213,7 @@ def test_transcribe_route_includes_resource_block(settings_env, monkeypatch):
 
 def test_transcribe_route_passes_confidential_lane_flag(settings_env, monkeypatch):
     journal_path, config = settings_env()
-    config["setup"] = {"completed_at": "2026-05-23T00:00:00Z"}
+    config["setup"] = {"completed_at": 1700000000000}
     config.setdefault("services", {})["confidential"] = {
         "enabled_at": "2026-05-24T00:00:00Z"
     }
