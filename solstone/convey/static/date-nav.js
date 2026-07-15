@@ -985,7 +985,8 @@
   }
 
   function handleFacetSwitch(event) {
-    // Transcripts has facets disabled, so this refetch path is unexercised in L1.
+    // Re-tint heat for the newly selected facet: content-mount apps with facets
+    // enabled (chat, activities, sol) refetch index and month stats here.
     state.facet = event.detail?.facet || null;
     state.monthCache.clear();
     fetchIndex(true).then(() => {
