@@ -443,7 +443,7 @@
       state.heading.hidden = !heading;
     }
     const label = state.host?.querySelector('[data-date-nav-label]');
-    if (label) label.textContent = dayless ? 'pick a day 📅' : controlLabel(state.day);
+    if (label) label.textContent = dayless ? 'pick a day' : controlLabel(state.day);
     if (state.warning) state.warning.hidden = !state.warningVisible;
     if (state.trigger) {
       state.trigger.setAttribute('aria-expanded', String(state.open));
