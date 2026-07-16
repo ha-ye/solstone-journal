@@ -113,6 +113,7 @@
               "speaker_labels_busy",
               "speaker_not_found",
               "speaker_owner_centroid_required",
+              "speaker_owner_identity_required",
               "speaker_owner_voice_too_close",
               "speaker_review_unavailable",
               "speaker_sentence_missing",

@@ -88,6 +88,7 @@ from solstone.convey.reasons import (
     SPEAKER_LABELS_BUSY,
     SPEAKER_NOT_FOUND,
     SPEAKER_OWNER_CENTROID_REQUIRED,
+    SPEAKER_OWNER_IDENTITY_REQUIRED,
     SPEAKER_OWNER_VOICE_TOO_CLOSE,
     SPEAKER_REVIEW_UNAVAILABLE,
     SPEAKER_SENTENCE_MISSING,
@@ -363,6 +364,15 @@ def _load_speaker_labels(segment_dir: Path) -> dict | None:
         return None
 
 
+def _speaker_sentence_needs_review(
+    label: dict | None, labels_data: dict | None
+) -> bool:
+    """Return the shared web/CLI review flag for one sentence."""
+    if label:
+        return label.get("confidence") == "medium" or not label.get("speaker")
+    return True if labels_data else False
+
+
 def _load_speaker_corrections(segment_dir: Path) -> list[dict]:
     """Load speaker_corrections.json from a segment's talents/ directory.
 
@@ -424,6 +434,157 @@ def _ensure_attribution_target(entity_id: str) -> EntityDict | None:
     if identity is None or identity[0] != entity_id:
         return None
     return ensure_principal_entity()
+
+
+def _assign_attribution_impl(
+    day: Any,
+    stream: Any,
+    segment_key: Any,
+    source: Any,
+    sentence_id: Any,
+    speaker: Any,
+) -> Any:
+    """Assign a speaker to a sentence, inserting a label row when a stub omitted it."""
+    if not all([day, stream, segment_key, source, sentence_id is not None, speaker]):
+        return error_response(
+            MISSING_REQUIRED_FIELD,
+            detail="Missing required fields",
+        )
+    if not isinstance(day, str) or not DATE_RE.fullmatch(day):
+        return error_response(
+            INVALID_DAY,
+            detail="Use a valid day, stream, and segment, then pick a sentence.",
+        )
+    if not isinstance(segment_key, str) or not SEGMENT_KEY_RE.fullmatch(segment_key):
+        return error_response(
+            INVALID_SEGMENT_OR_STREAM,
+            detail="Use a valid day, stream, and segment, then pick a sentence.",
+        )
+    if not isinstance(stream, str) or not STREAM_RE.fullmatch(stream):
+        return error_response(
+            INVALID_SEGMENT_OR_STREAM,
+            detail="Use a valid day, stream, and segment, then pick a sentence.",
+        )
+    try:
+        sentence_id_int = int(sentence_id)
+    except (TypeError, ValueError):
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="Use a numeric sentence id.",
+        )
+    speaker_id = str(speaker)
+
+    segment_dir = get_segment_path(day, segment_key, stream)
+    labels_data = _load_speaker_labels(segment_dir)
+    if not labels_data:
+        return error_response(
+            SPEAKER_REVIEW_UNAVAILABLE,
+            detail="No speaker labels found",
+        )
+
+    label = None
+    for item in labels_data.get("labels", []):
+        if item.get("sentence_id") == sentence_id_int:
+            label = item
+            break
+
+    existing_speaker = label.get("speaker") if label else None
+    if existing_speaker == speaker_id and label.get("method") == "user_assigned":
+        return success_response({"status": "already_assigned"})
+    if existing_speaker:
+        return error_response(
+            SPEAKER_ATTRIBUTION_STATE_INVALID,
+            detail="Pick a sentence without a speaker.",
+        )
+
+    sentences, _ = _load_sentences(day, segment_key, source, stream=stream)
+    if not any(sentence.get("id") == sentence_id_int for sentence in sentences):
+        return error_response(
+            SPEAKER_SENTENCE_MISSING,
+            detail="Pick a different sentence with an embedding.",
+        )
+
+    emb = _get_sentence_embedding(
+        day, segment_key, source, sentence_id_int, stream=stream
+    )
+    if emb is None:
+        return error_response(
+            SPEAKER_SENTENCE_MISSING,
+            detail="Pick a different sentence with an embedding.",
+        )
+
+    target_entity = _ensure_attribution_target(speaker_id)
+    if not target_entity:
+        return error_response(
+            SPEAKER_NOT_FOUND,
+            detail=f"Entity '{speaker_id}' not found",
+        )
+    if target_entity.get("blocked"):
+        return error_response(
+            ENTITY_BLOCKED,
+            detail="Choose an unblocked speaker.",
+        )
+
+    principal_id = _principal_id_or_none()
+    if speaker_id != principal_id and _check_owner_contamination(emb):
+        return error_response(
+            SPEAKER_OWNER_VOICE_TOO_CLOSE,
+            detail="Embedding too similar to owner voice; cannot save",
+        )
+
+    try:
+        _save_voiceprint(
+            speaker_id, emb, day, segment_key, source, sentence_id_int, stream=stream
+        )
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
+
+    old_method = label.get("method") if label else None
+    try:
+        apply_label_patches(
+            segment_dir,
+            {
+                sentence_id_int: {
+                    "speaker": speaker_id,
+                    "confidence": "high",
+                    "method": "user_assigned",
+                }
+            },
+            allow_insert=True,
+        )
+    except LockTimeout as exc:
+        return _labels_busy_response(exc)
+
+    try:
+        append_speaker_correction(
+            segment_dir,
+            {
+                "sentence_id": sentence_id_int,
+                "original_speaker": None,
+                "corrected_speaker": speaker_id,
+                "original_method": old_method,
+                "timestamp": now_ms(),
+            },
+        )
+    except LockTimeout as exc:
+        return _labels_busy_response(exc)
+
+    log_app_action(
+        app="speakers",
+        facet=None,
+        action="attribution_assign",
+        params={
+            "day": day,
+            "stream": stream,
+            "segment_key": segment_key,
+            "source": source,
+            "sentence_id": sentence_id_int,
+            "speaker": speaker_id,
+        },
+    )
+    _maybe_bootstrap_owner_from_attestation(principal_id, speaker_id)
+
+    return success_response({"status": "assigned", "speaker": speaker_id})
 
 
 def _voiceprint_busy_response(exc: LockTimeout) -> Any:
@@ -972,14 +1133,16 @@ def api_review(day: str, stream: str, segment_key: str, source: str) -> Any:
 
             sentence["confidence"] = confidence
             sentence["method"] = method
-            sentence["needs_review"] = confidence == "medium" or not entity_id
+            sentence["needs_review"] = _speaker_sentence_needs_review(
+                label, labels_data
+            )
         else:
             sentence["speaker_entity_id"] = None
             sentence["speaker_name"] = None
             sentence["confidence"] = None
             sentence["method"] = None
             sentence["is_owner"] = False
-            sentence["needs_review"] = True if labels_data else False
+            sentence["needs_review"] = _speaker_sentence_needs_review(None, labels_data)
 
         correction = correction_map.get(sid)
         sentence["is_correction"] = sentence.get("method") in {
@@ -1369,129 +1532,9 @@ def api_assign_attribution() -> Any:
     source = data.get("source")
     sentence_id = data.get("sentence_id")
     speaker = data.get("speaker")
-
-    if not all([day, stream, segment_key, source, sentence_id is not None, speaker]):
-        return error_response(
-            MISSING_REQUIRED_FIELD,
-            detail="Missing required fields",
-        )
-    if not DATE_RE.fullmatch(day):
-        return error_response(INVALID_DAY, detail="Invalid day format")
-    if not SEGMENT_KEY_RE.fullmatch(segment_key):
-        return error_response(
-            INVALID_SEGMENT_OR_STREAM,
-            detail="Invalid segment key",
-        )
-    if not STREAM_RE.fullmatch(stream):
-        return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
-
-    target_entity = _ensure_attribution_target(speaker)
-    if not target_entity:
-        return error_response(
-            SPEAKER_NOT_FOUND,
-            detail=f"Entity '{speaker}' not found",
-        )
-    if target_entity.get("blocked"):
-        return error_response(
-            ENTITY_BLOCKED,
-            detail=f"Entity '{speaker}' is blocked",
-        )
-
-    segment_dir = get_segment_path(day, segment_key, stream)
-    labels_data = _load_speaker_labels(segment_dir)
-    if not labels_data:
-        return error_response(
-            SPEAKER_REVIEW_UNAVAILABLE,
-            detail="No speaker labels found",
-        )
-
-    label = None
-    for item in labels_data.get("labels", []):
-        if item.get("sentence_id") == sentence_id:
-            label = item
-            break
-
-    if label is None:
-        return error_response(
-            SPEAKER_SENTENCE_MISSING,
-            detail="Sentence not found in labels",
-        )
-
-    existing_speaker = label.get("speaker")
-    if existing_speaker == speaker and label.get("method") == "user_assigned":
-        return success_response({"status": "already_assigned"})
-    if existing_speaker:
-        return error_response(
-            SPEAKER_ATTRIBUTION_STATE_INVALID,
-            detail="sentence already has a speaker",
-        )
-
-    emb = _get_sentence_embedding(day, segment_key, source, sentence_id, stream=stream)
-    if emb is None:
-        return error_response(
-            SPEAKER_SENTENCE_MISSING,
-            detail="Sentence embedding not found",
-        )
-
-    principal_id = _principal_id_or_none()
-    if speaker != principal_id and _check_owner_contamination(emb):
-        return error_response(
-            SPEAKER_OWNER_VOICE_TOO_CLOSE,
-            detail="Embedding too similar to owner voice — cannot save",
-        )
-
-    try:
-        _save_voiceprint(
-            speaker, emb, day, segment_key, source, sentence_id, stream=stream
-        )
-    except LockTimeout as exc:
-        return _voiceprint_busy_response(exc)
-
-    try:
-        apply_label_patches(
-            segment_dir,
-            {
-                sentence_id: {
-                    "speaker": speaker,
-                    "confidence": "high",
-                    "method": "user_assigned",
-                }
-            },
-            allow_insert=False,
-        )
-    except LockTimeout as exc:
-        return _labels_busy_response(exc)
-
-    try:
-        append_speaker_correction(
-            segment_dir,
-            {
-                "sentence_id": sentence_id,
-                "original_speaker": None,
-                "corrected_speaker": speaker,
-                "original_method": label.get("method"),
-                "timestamp": now_ms(),
-            },
-        )
-    except LockTimeout as exc:
-        return _labels_busy_response(exc)
-
-    log_app_action(
-        app="speakers",
-        facet=None,
-        action="attribution_assign",
-        params={
-            "day": day,
-            "stream": stream,
-            "segment_key": segment_key,
-            "source": source,
-            "sentence_id": sentence_id,
-            "speaker": speaker,
-        },
+    return _assign_attribution_impl(
+        day, stream, segment_key, source, sentence_id, speaker
     )
-    _maybe_bootstrap_owner_from_attestation(principal_id, speaker)
-
-    return success_response({"status": "assigned", "speaker": speaker})
 
 
 @speakers_bp.route("/api/owner/status")
@@ -1594,6 +1637,33 @@ def api_owner_build_from_tags() -> Any:
             },
         )
     return jsonify(result)
+
+
+@speakers_bp.route("/api/owner/tag-cli", methods=["POST"])
+def api_cli_owner_tag() -> Any:
+    """Tag one sentence as the configured owner voice through the shared assign path."""
+    data = request.get_json(silent=True)
+    if not data:
+        return error_response(MISSING_REQUEST_BODY, detail="No data provided")
+
+    principal_id = _principal_id_or_none()
+    if principal_id is None:
+        identity = principal_identity_or_none()
+        if identity is None:
+            return error_response(
+                SPEAKER_OWNER_IDENTITY_REQUIRED,
+                detail="Set your journal identity before tagging your voice.",
+            )
+        principal_id = identity[0]
+
+    return _assign_attribution_impl(
+        data.get("day"),
+        data.get("stream"),
+        data.get("segment_key"),
+        data.get("source"),
+        data.get("sentence_id"),
+        principal_id,
+    )
 
 
 @speakers_bp.route("/api/owner/confirm", methods=["POST"])

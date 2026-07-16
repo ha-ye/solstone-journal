@@ -382,6 +382,11 @@ SPEAKER_NOT_FOUND = Reason(
     "I couldn't find that speaker. They may have been removed — try refreshing the page.",
     404,
 )
+SPEAKER_OWNER_IDENTITY_REQUIRED = Reason(
+    "speaker_owner_identity_required",
+    "Set your journal identity before tagging your voice.",
+    400,
+)
 SPEAKER_VOICEPRINT_BUSY = Reason(
     "speaker_voiceprint_busy",
     "I couldn't update that voice right now because it was busy. Try again in a moment.",

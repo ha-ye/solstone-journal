@@ -262,6 +262,42 @@ def _save_principal_manual_tags(
     return embeddings
 
 
+def _write_prefilter_failing_candidate_pool(env) -> Path:
+    path = env.journal / "awareness" / "speaker_candidates.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "next_id": 2,
+                "candidates": [
+                    {
+                        "cand_id": 1,
+                        "centroid": [1.0] + [0.0] * 255,
+                        "n_segments": 1,
+                        "n_intervals": 1,
+                        "total_duration_s": 5.0,
+                        "source_segments": [
+                            {
+                                "day": SERVE_AUDIO_DAY,
+                                "stream": SERVE_AUDIO_STREAM,
+                                "segment_key": SERVE_AUDIO_SEGMENT,
+                                "source": SERVE_AUDIO_SOURCE,
+                                "cluster_label": 1,
+                            }
+                        ],
+                        "confirmed_entity": None,
+                        "status": "pending",
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_normalize_embedding():
     """Test L2 normalization of embeddings."""
     from solstone.apps.speakers.routes import _normalize_embedding
@@ -612,19 +648,32 @@ def test_check_owner_contamination_prefers_confirmed_centroid(speakers_env):
 
 
 def test_api_owner_build_from_tags(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
     from solstone.apps.speakers.routes import speakers_bp
 
     env = speakers_env()
     principal_dir = env.create_entity("Self Person", is_principal=True)
-    for idx in range(3):
+    batch_count = 3
+    batch_size = OWNER_BOOTSTRAP_MIN_STMTS // batch_count
+    seeded_count = 0
+    for idx in range(batch_count):
+        count = (
+            OWNER_BOOTSTRAP_MIN_STMTS - seeded_count
+            if idx == batch_count - 1
+            else batch_size
+        )
+        seeded_count += count
         _save_principal_manual_tags(
             env,
             "self_person",
-            10,
+            count,
             day="20240101",
             segment_key=f"{9 + idx:02d}0000_300",
             source="audio",
         )
+
+    centroid_path = principal_dir / "owner_centroid.npz"
+    assert not centroid_path.exists()
 
     app = Flask(__name__)
     app.register_blueprint(speakers_bp)
@@ -636,8 +685,123 @@ def test_api_owner_build_from_tags(speakers_env):
     assert resp.status_code == 200
     assert data["status"] == "confirmed"
     assert data["principal_id"] == "self_person"
-    assert data["cluster_size"] == 30
-    assert (principal_dir / "owner_centroid.npz").exists()
+    assert data["cluster_size"] == seeded_count
+    assert centroid_path.exists()
+    with np.load(centroid_path, allow_pickle=False) as centroid:
+        assert int(np.asarray(centroid["cluster_size"]).item()) == seeded_count
+
+
+def test_api_owner_bootstrap_full_loop_from_stubbed_labels(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.apps.speakers.tests.test_owner import (
+        _candidate_record,
+        _source_segment,
+        _write_candidate_pool,
+    )
+
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    embeddings = np.zeros((OWNER_BOOTSTRAP_MIN_STMTS, 256), dtype=np.float32)
+    embeddings[:, 0] = 1.0
+    env.create_segment(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [SERVE_AUDIO_SOURCE],
+        embeddings=embeddings,
+    )
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [],
+        metadata={"skipped": True, "reason": "pre-bootstrap owner"},
+    )
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [
+                    _source_segment(
+                        SERVE_AUDIO_DAY,
+                        SERVE_AUDIO_SEGMENT,
+                        stream=SERVE_AUDIO_STREAM,
+                        source=SERVE_AUDIO_SOURCE,
+                    )
+                ],
+                n_intervals=1,
+            )
+        ],
+    )
+
+    assert _load_labels(env) == {
+        "labels": [],
+        "skipped": True,
+        "reason": "pre-bootstrap owner",
+    }
+    centroid_path = env.journal / "entities" / OWNER_ID / "owner_centroid.npz"
+    assert not centroid_path.exists()
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        detect_resp = client.post("/app/speakers/api/owner/detect")
+        detect = detect_resp.get_json()
+
+        assert detect_resp.status_code == 200
+        assert detect["status"] == "low_quality"
+        assert detect["next_step"] == "seed_manual_tags"
+        assert detect["manual_tags_count"] == 0
+        assert detect["segments_available"] == 1
+        assert detect["embeddings_available"] == 1
+
+        for sentence_id in range(1, OWNER_BOOTSTRAP_MIN_STMTS + 1):
+            tag_resp = client.post(
+                "/app/speakers/api/owner/tag-cli",
+                json={
+                    "day": SERVE_AUDIO_DAY,
+                    "stream": SERVE_AUDIO_STREAM,
+                    "segment_key": SERVE_AUDIO_SEGMENT,
+                    "source": SERVE_AUDIO_SOURCE,
+                    "sentence_id": sentence_id,
+                },
+            )
+            assert tag_resp.status_code == 200
+            assert tag_resp.get_json()["status"] == "assigned"
+
+        labels = _load_labels(env)
+        assert labels["labels"] == [
+            {
+                "sentence_id": sentence_id,
+                "speaker": OWNER_ID,
+                "confidence": "high",
+                "method": "user_assigned",
+            }
+            for sentence_id in range(1, OWNER_BOOTSTRAP_MIN_STMTS + 1)
+        ]
+        assert labels["skipped"] is True
+        assert labels["reason"] == "pre-bootstrap owner"
+
+        assert centroid_path.exists()
+        with np.load(centroid_path, allow_pickle=False) as centroid:
+            assert set(centroid.files) == {
+                "centroid",
+                "cluster_size",
+                "threshold",
+                "last_refreshed_at",
+            }
+            assert int(np.asarray(centroid["cluster_size"]).item()) == (
+                OWNER_BOOTSTRAP_MIN_STMTS
+            )
+
+        build_resp = client.post("/app/speakers/api/owner/build-from-tags")
+        build = build_resp.get_json()
+
+    assert build_resp.status_code == 200
+    assert build["status"] == "confirmed"
+    assert build["principal_id"] == OWNER_ID
+    assert build["cluster_size"] == OWNER_BOOTSTRAP_MIN_STMTS
 
 
 def test_load_embeddings_file(speakers_env):
@@ -1192,6 +1356,49 @@ def test_api_assign_creates_principal_from_identity(speakers_env):
     assert labels["labels"][0]["speaker"] == OWNER_ID
     assert labels["labels"][0]["method"] == "user_assigned"
     assert _voiceprint_row_count(env) == 1
+
+
+def test_api_owner_tag_creates_principal_from_identity_and_counts_tag(speakers_env):
+    from solstone.apps.speakers.owner import load_manual_tag_stats
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+    env.set_identity(preferred=OWNER_DISPLAY_NAME)
+    env.create_segment(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [SERVE_AUDIO_SOURCE],
+        num_sentences=1,
+    )
+    env.create_speaker_labels(
+        SERVE_AUDIO_DAY,
+        SERVE_AUDIO_SEGMENT,
+        [],
+        metadata={"skipped": True, "reason": "pre-bootstrap owner"},
+    )
+    assert not (env.journal / "entities" / OWNER_ID).exists()
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        resp = client.post(
+            "/app/speakers/api/owner/tag-cli",
+            json={
+                "day": SERVE_AUDIO_DAY,
+                "stream": SERVE_AUDIO_STREAM,
+                "segment_key": SERVE_AUDIO_SEGMENT,
+                "source": SERVE_AUDIO_SOURCE,
+                "sentence_id": 1,
+            },
+        )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "assigned"
+    entity = _load_owner_entity(env)
+    assert entity["is_principal"] is True
+    assert entity["name"] == OWNER_DISPLAY_NAME
+    assert load_manual_tag_stats(OWNER_ID)["manual_tags_count"] == 1
 
 
 def test_api_correct_creates_principal_from_identity(speakers_env):
