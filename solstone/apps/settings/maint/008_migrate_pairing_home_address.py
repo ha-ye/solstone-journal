@@ -48,15 +48,12 @@ def migrate(config: dict[str, Any]) -> bool:
     if not isinstance(pairing, dict) or "host_url" not in pairing:
         return False
 
-    changed = False
     home_address = _legacy_host_url_to_home_address(pairing.get("host_url"))
-    if home_address is not None and pairing.get("home_address") != home_address:
+    if home_address is not None:
         pairing["home_address"] = home_address
-        changed = True
 
     pairing.pop("host_url")
-    changed = True
-    return changed
+    return True
 
 
 def main() -> None:

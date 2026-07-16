@@ -495,6 +495,27 @@ def test_api_status_does_not_mint_pairing_nonces(link_env, monkeypatch) -> None:
     assert not nonce_path.exists()
 
 
+def test_api_status_does_not_write_journal_config(link_env, monkeypatch) -> None:
+    env = link_env()
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+    config_path = env.journal / "config" / "journal.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "setup": {"completed_at": 1700000000000},
+                "pairing": {"home_address": "192.168.1.44:7657"},
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    before = config_path.read_bytes()
+
+    _get_status(env)
+
+    assert config_path.read_bytes() == before
+
+
 def test_no_secrets_in_response(link_env, monkeypatch) -> None:
     env = link_env()
     _write_service_token(env, "TOPSECRET_TOKEN_VALUE")
