@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -49,6 +49,9 @@ from solstone.think.utils import get_journal
 
 logger = logging.getLogger("solstone.backup.engine")
 
+ARCHIVE_TAG = "solstone-archive"
+ARCHIVE_BACKUP_TIMEOUT_SECONDS = 6 * 60 * 60
+ARCHIVE_LS_TIMEOUT_SECONDS = 30 * 60
 BACKUP_EXCLUDES = (
     # Rebuildable derived data — never in snapshots (unchanged).
     "*.sqlite*",
@@ -94,6 +97,22 @@ class BackupResult:
 class PruneResult:
     status: str
     error_reason: str | None
+
+
+@dataclass(frozen=True)
+class ArchiveFileVerdict:
+    path: str
+    confirmed: bool
+    expected_size: int
+    observed_size: int | None
+    snapshot_id: str
+
+
+@dataclass(frozen=True)
+class ArchiveCheckResult:
+    status: str
+    error_reason: str | None
+    verdicts: tuple[ArchiveFileVerdict, ...] | None
 
 
 @dataclass(frozen=True)
@@ -165,6 +184,10 @@ def _backup_args() -> list[str]:
     for pattern in BACKUP_EXCLUDES:
         args.extend(["--exclude", pattern])
     return args
+
+
+def _archive_backup_args(paths: Sequence[Path]) -> list[str]:
+    return ["backup", *[str(path) for path in paths], "--tag", ARCHIVE_TAG]
 
 
 def _assemble_backend_env(
@@ -288,6 +311,75 @@ def _record_prune_error(*, reason: str) -> PruneResult:
     return PruneResult(status="error", error_reason=reason)
 
 
+def _archive_backup_error(
+    *,
+    reason: str,
+    returncode: int | None = None,
+) -> BackupResult:
+    logger.warning(
+        "backup archive completed returncode=%s reason_code=%s",
+        returncode,
+        reason,
+    )
+    return BackupResult(status="error", snapshot_id=None, error_reason=reason)
+
+
+def _archive_check_error(
+    *,
+    reason: str,
+    returncode: int | None = None,
+) -> ArchiveCheckResult:
+    logger.warning(
+        "backup archive check completed returncode=%s reason_code=%s",
+        returncode,
+        reason,
+    )
+    return ArchiveCheckResult(status="error", error_reason=reason, verdicts=None)
+
+
+def _archive_snapshot_id(records: list[object]) -> str | None:
+    for record in records:
+        if not isinstance(record, dict) or record.get("message_type") != "snapshot":
+            continue
+        snapshot_id = record.get("id")
+        return snapshot_id if isinstance(snapshot_id, str) and snapshot_id else None
+    return None
+
+
+def _archive_node_sizes(records: list[object]) -> dict[str, int]:
+    observed: dict[str, int] = {}
+    for record in records:
+        if not isinstance(record, dict) or record.get("message_type") != "node":
+            continue
+        path = record.get("path")
+        size = record.get("size")
+        if isinstance(path, str) and type(size) is int:
+            observed[path] = size
+    return observed
+
+
+def _archive_file_verdicts(
+    *,
+    snapshot_id: str,
+    expected_sizes: Mapping[Path, int],
+    observed_sizes: Mapping[str, int],
+) -> tuple[ArchiveFileVerdict, ...]:
+    verdicts: list[ArchiveFileVerdict] = []
+    for path, expected_size in expected_sizes.items():
+        path_text = str(path)
+        observed_size = observed_sizes.get(path_text)
+        verdicts.append(
+            ArchiveFileVerdict(
+                path=path_text,
+                confirmed=observed_size == expected_size,
+                expected_size=expected_size,
+                observed_size=observed_size,
+                snapshot_id=snapshot_id,
+            )
+        )
+    return tuple(verdicts)
+
+
 def run_backup() -> BackupResult:
     try:
         runtime = _resolve_runtime(scope="backup")
@@ -363,6 +455,119 @@ def run_backup() -> BackupResult:
     return _record_backup_error(reason=reason, snapshot_id=partial_snapshot_id)
 
 
+def run_archive_backup(paths: Sequence[Path]) -> BackupResult:
+    """Snapshot explicit archive targets.
+
+    Unlike run_backup(), every non-success result returns snapshot_id=None,
+    including restic exit 3 with a parseable summary snapshot id.
+    """
+    try:
+        runtime = _resolve_runtime(scope="backup")
+    except HostedCredsUnavailable as exc:
+        return _archive_backup_error(reason=exc.reason_code)
+    except _ResticUnavailable:
+        return _archive_backup_error(reason="restic_unavailable")
+    except _RcloneUnavailable:
+        return _archive_backup_error(reason="rclone_unavailable")
+
+    if runtime is None:
+        return BackupResult(status="skipped", snapshot_id=None, error_reason=None)
+
+    with _runtime_backend(runtime, scope="backup", operation="archive") as backend:
+        if backend is None:
+            return _archive_backup_error(reason="failed")
+        _recover_stale_lock(runtime, backend)
+        result = run_restic(
+            _session_args(backend, _archive_backup_args(paths)),
+            repository=backend.destination.repository,
+            password=runtime.keys.daily_key,
+            restic_path=runtime.restic_path,
+            backend_env=backend.backend_env,
+            json=True,
+            timeout=ARCHIVE_BACKUP_TIMEOUT_SECONDS,
+        )
+
+    summary = select_summary(result.json)
+    snapshot_id = None
+    if summary is not None:
+        raw_snapshot_id = summary.get("snapshot_id")
+        if isinstance(raw_snapshot_id, str) and raw_snapshot_id:
+            snapshot_id = raw_snapshot_id
+
+    if result.returncode == 0 and snapshot_id is not None:
+        logger.info(
+            "backup archive completed returncode=%s reason_code=ok",
+            result.returncode,
+        )
+        return BackupResult(status="ok", snapshot_id=snapshot_id, error_reason=None)
+
+    reason = (
+        "unknown"
+        if result.returncode == 0
+        else reason_for_returncode(result.returncode)
+    )
+    return _archive_backup_error(reason=reason, returncode=result.returncode)
+
+
+def check_archive_snapshot_files(
+    snapshot_id: str,
+    expected_sizes: Mapping[Path, int],
+) -> ArchiveCheckResult:
+    try:
+        runtime = _resolve_runtime(scope="backup")
+    except HostedCredsUnavailable as exc:
+        return _archive_check_error(reason=exc.reason_code)
+    except _ResticUnavailable:
+        return _archive_check_error(reason="restic_unavailable")
+    except _RcloneUnavailable:
+        return _archive_check_error(reason="rclone_unavailable")
+
+    if runtime is None:
+        return ArchiveCheckResult(status="skipped", error_reason=None, verdicts=None)
+
+    with _runtime_backend(
+        runtime,
+        scope="backup",
+        operation="archive check",
+    ) as backend:
+        if backend is None:
+            return _archive_check_error(reason="failed")
+        result = run_restic(
+            _session_args(backend, ["ls", "--long", snapshot_id]),
+            repository=backend.destination.repository,
+            password=runtime.keys.daily_key,
+            restic_path=runtime.restic_path,
+            backend_env=backend.backend_env,
+            json=True,
+            timeout=ARCHIVE_LS_TIMEOUT_SECONDS,
+        )
+
+    if result.returncode != 0:
+        return _archive_check_error(
+            reason=reason_for_returncode(result.returncode),
+            returncode=result.returncode,
+        )
+
+    parsed = result.json
+    if not isinstance(parsed, list):
+        return _archive_check_error(reason="failed", returncode=result.returncode)
+
+    checked_snapshot_id = _archive_snapshot_id(parsed)
+    if checked_snapshot_id is None:
+        return _archive_check_error(reason="failed", returncode=result.returncode)
+
+    verdicts = _archive_file_verdicts(
+        snapshot_id=checked_snapshot_id,
+        expected_sizes=expected_sizes,
+        observed_sizes=_archive_node_sizes(parsed),
+    )
+    logger.info(
+        "backup archive check completed returncode=%s reason_code=ok",
+        result.returncode,
+    )
+    return ArchiveCheckResult(status="ok", error_reason=None, verdicts=verdicts)
+
+
 def run_prune() -> PruneResult:
     try:
         runtime = _resolve_runtime(scope="maintenance")
@@ -402,6 +607,8 @@ def run_prune() -> PruneResult:
                     str(retention.get("weekly", 4)),
                     "--keep-monthly",
                     str(retention.get("monthly", 12)),
+                    "--keep-tag",
+                    ARCHIVE_TAG,
                     "--prune",
                 ],
             ),
@@ -439,16 +646,23 @@ def request_backup_now() -> bool:
 
 
 __all__ = [
+    "ARCHIVE_BACKUP_TIMEOUT_SECONDS",
+    "ARCHIVE_LS_TIMEOUT_SECONDS",
+    "ARCHIVE_TAG",
     "BACKUP_MAX_RUNTIME",
     "BACKUP_TIMEOUT_SECONDS",
     "INITIAL_BACKUP_TIMEOUT_SECONDS",
+    "ArchiveCheckResult",
+    "ArchiveFileVerdict",
     "BackupResult",
     "PRUNE_MAX_REPACK_SIZE",
     "PRUNE_MAX_RUNTIME",
     "PRUNE_TIMEOUT_SECONDS",
     "PruneResult",
     "UNLOCK_TIMEOUT_SECONDS",
+    "check_archive_snapshot_files",
     "request_backup_now",
+    "run_archive_backup",
     "run_backup",
     "run_prune",
 ]

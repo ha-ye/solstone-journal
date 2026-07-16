@@ -512,7 +512,8 @@ def test_run_prune_unlocks_then_forgets_with_prune_and_repack_bound(
     assert result == engine.PruneResult(status="ok", error_reason=None)
     assert calls[0][0] == ["unlock"]
     assert calls[0][1]["timeout"] == engine.UNLOCK_TIMEOUT_SECONDS
-    assert calls[1] == (
+    forget_call = next(call for call in calls if call[0][0] == "forget")
+    assert forget_call == (
         [
             "forget",
             "--keep-hourly",
@@ -523,6 +524,8 @@ def test_run_prune_unlocks_then_forgets_with_prune_and_repack_bound(
             "4",
             "--keep-monthly",
             "5",
+            "--keep-tag",
+            engine.ARCHIVE_TAG,
             "--prune",
         ],
         {
@@ -537,7 +540,7 @@ def test_run_prune_unlocks_then_forgets_with_prune_and_repack_bound(
             "max_repack_size": engine.PRUNE_MAX_REPACK_SIZE,
         },
     )
-    assert "json" not in calls[1][1]
+    assert "json" not in forget_call[1]
     record_prune_result.assert_called_once_with(
         status="ok",
         time=2000,
@@ -606,6 +609,661 @@ def test_run_prune_restic_unavailable_records_last_prune(
         time=4000,
         error_reason="restic_unavailable",
     )
+
+
+def test_archive_backup_uses_explicit_targets_and_tag_matches_prune_keep_tag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        _valid_backup_config(
+            retention={"hourly": 2, "daily": 3, "weekly": 4, "monthly": 5}
+        ),
+    )
+    before_config = _config_path(tmp_path).read_bytes()
+    targets = [Path("/archive/a.mov"), Path("/archive/b.wav")]
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        if args == ["unlock"]:
+            return _restic_result(0, args=args)
+        if args and args[0] == "backup":
+            return _restic_result(
+                0,
+                parsed_json={
+                    "message_type": "summary",
+                    "snapshot_id": "archive-snap",
+                },
+                args=args,
+            )
+        return _restic_result(0, args=args)
+
+    record_backup_result = Mock()
+    record_prune_result = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine, "record_prune_result", record_prune_result)
+    monkeypatch.setattr(engine.time, "time", lambda: 7000)
+
+    archive_result = engine.run_archive_backup(targets)
+
+    assert archive_result == engine.BackupResult(
+        status="ok",
+        snapshot_id="archive-snap",
+        error_reason=None,
+    )
+    assert calls[0][0] == ["unlock"]
+    archive_call = next(call for call in calls if call[0][0] == "backup")
+    archive_args = archive_call[0]
+    assert archive_call == (
+        [
+            "backup",
+            str(targets[0]),
+            str(targets[1]),
+            "--tag",
+            engine.ARCHIVE_TAG,
+        ],
+        {
+            "repository": "s3:safe-bucket/path",
+            "password": "daily-secret",
+            "restic_path": Path("/restic"),
+            "backend_env": {
+                "AWS_ACCESS_KEY_ID": "access-key",
+                "AWS_SECRET_ACCESS_KEY": "secret-key",
+            },
+            "json": True,
+            "timeout": engine.ARCHIVE_BACKUP_TIMEOUT_SECONDS,
+        },
+    )
+    assert str(tmp_path) not in archive_args
+    assert _config_path(tmp_path).read_bytes() == before_config
+    record_backup_result.assert_not_called()
+    record_prune_result.assert_not_called()
+
+    prune_result = engine.run_prune()
+
+    assert prune_result == engine.PruneResult(status="ok", error_reason=None)
+    forget_call = next(call for call in calls if call[0][0] == "forget")
+    forget_args = forget_call[0]
+    archive_tag = archive_args[archive_args.index("--tag") + 1]
+    prune_tag = forget_args[forget_args.index("--keep-tag") + 1]
+    assert prune_tag == archive_tag
+    assert archive_tag == engine.ARCHIVE_TAG
+    assert _config_path(tmp_path).read_bytes() == before_config
+    record_backup_result.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "parsed_json", "expected_reason"),
+    [
+        (0, None, "unknown"),
+        (
+            3,
+            {"message_type": "summary", "snapshot_id": "partial-archive"},
+            "incomplete",
+        ),
+        (11, None, "locked"),
+        (77, None, "failed"),
+    ],
+)
+def test_archive_backup_failures_do_not_record_or_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    parsed_json: Any | None,
+    expected_reason: str,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _valid_backup_config())
+    before_config = _config_path(tmp_path).read_bytes()
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        if args == ["unlock"]:
+            return _restic_result(0, args=args)
+        return _restic_result(returncode, parsed_json=parsed_json, args=args)
+
+    record_backup_result = Mock()
+    record_prune_result = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine, "record_prune_result", record_prune_result)
+
+    result = engine.run_archive_backup([Path("/archive/a.mov")])
+
+    assert result == engine.BackupResult(
+        status="error",
+        snapshot_id=None,
+        error_reason=expected_reason,
+    )
+    assert calls[0][0] == ["unlock"]
+    assert calls[1][0] == [
+        "backup",
+        "/archive/a.mov",
+        "--tag",
+        engine.ARCHIVE_TAG,
+    ]
+    assert calls[1][1]["json"] is True
+    assert calls[1][1]["timeout"] == engine.ARCHIVE_BACKUP_TIMEOUT_SECONDS
+    assert _config_path(tmp_path).read_bytes() == before_config
+    record_backup_result.assert_not_called()
+    record_prune_result.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "backup_config",
+    [
+        {"enabled": False},
+        {
+            "enabled": True,
+            "daily_key": "daily-secret",
+            "recovery_key": "R" * 64,
+        },
+        {
+            "enabled": True,
+            "destination": {
+                "repository": "s3:safe-bucket/path",
+                "backend": "s3",
+                "credentials": {
+                    "access_key_id": "access-key",
+                    "secret_access_key": "secret-key",
+                },
+            },
+        },
+    ],
+)
+def test_archive_backup_skips_when_runtime_guard_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backup_config: dict[str, Any],
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {"backup": backup_config})
+    before_config = _config_path(tmp_path).read_bytes()
+    ensure_restic = Mock()
+    run_restic = Mock()
+    record_backup_result = Mock()
+    record_prune_result = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", ensure_restic)
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine, "record_prune_result", record_prune_result)
+
+    result = engine.run_archive_backup([Path("/archive/a.mov")])
+
+    assert result == engine.BackupResult(
+        status="skipped",
+        snapshot_id=None,
+        error_reason=None,
+    )
+    ensure_restic.assert_not_called()
+    run_restic.assert_not_called()
+    record_backup_result.assert_not_called()
+    record_prune_result.assert_not_called()
+    assert _config_path(tmp_path).read_bytes() == before_config
+
+
+@pytest.mark.parametrize(
+    ("config", "ensure_restic", "expected_reason"),
+    [
+        (
+            _valid_backup_config(),
+            Mock(side_effect=RuntimeError("download failed")),
+            "restic_unavailable",
+        ),
+        (
+            {
+                "backup": {
+                    "enabled": True,
+                    "destination": {
+                        "repository": "s3:safe-bucket/path",
+                        "backend": "s3",
+                        "credentials": {"access_key_id": "access-key"},
+                    },
+                    "daily_key": "daily-secret",
+                    "recovery_key": "R" * 64,
+                }
+            },
+            Mock(return_value=Path("/restic")),
+            "failed",
+        ),
+    ],
+)
+def test_archive_backup_resolution_errors_do_not_record_or_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, Any],
+    ensure_restic: Mock,
+    expected_reason: str,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, config)
+    before_config = _config_path(tmp_path).read_bytes()
+    run_restic = Mock()
+    record_backup_result = Mock()
+    record_prune_result = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", ensure_restic)
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine, "record_prune_result", record_prune_result)
+
+    result = engine.run_archive_backup([Path("/archive/a.mov")])
+
+    assert result == engine.BackupResult(
+        status="error",
+        snapshot_id=None,
+        error_reason=expected_reason,
+    )
+    run_restic.assert_not_called()
+    record_backup_result.assert_not_called()
+    record_prune_result.assert_not_called()
+    assert _config_path(tmp_path).read_bytes() == before_config
+
+
+def test_check_archive_snapshot_files_confirms_exact_size_and_uses_header_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _valid_backup_config())
+    before_config = _config_path(tmp_path).read_bytes()
+    target = Path("/archive/file.wav")
+    full_snapshot_id = "abc123fullsnapshotid"
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        return _restic_result(
+            0,
+            parsed_json=[
+                {
+                    "message_type": "snapshot",
+                    "struct_type": "snapshot",
+                    "id": full_snapshot_id,
+                },
+                {
+                    "message_type": "node",
+                    "struct_type": "node",
+                    "path": str(target),
+                    "name": target.name,
+                    "type": "file",
+                    "size": 42,
+                },
+            ],
+            args=args,
+        )
+
+    record_backup_result = Mock()
+    record_prune_result = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine, "record_prune_result", record_prune_result)
+
+    result = engine.check_archive_snapshot_files("abc123", {target: 42})
+
+    assert result == engine.ArchiveCheckResult(
+        status="ok",
+        error_reason=None,
+        verdicts=(
+            engine.ArchiveFileVerdict(
+                path=str(target),
+                confirmed=True,
+                expected_size=42,
+                observed_size=42,
+                snapshot_id=full_snapshot_id,
+            ),
+        ),
+    )
+    assert calls == [
+        (
+            ["ls", "--long", "abc123"],
+            {
+                "repository": "s3:safe-bucket/path",
+                "password": "daily-secret",
+                "restic_path": Path("/restic"),
+                "backend_env": {
+                    "AWS_ACCESS_KEY_ID": "access-key",
+                    "AWS_SECRET_ACCESS_KEY": "secret-key",
+                },
+                "json": True,
+                "timeout": engine.ARCHIVE_LS_TIMEOUT_SECONDS,
+            },
+        )
+    ]
+    assert _config_path(tmp_path).read_bytes() == before_config
+    record_backup_result.assert_not_called()
+    record_prune_result.assert_not_called()
+
+
+def test_check_archive_snapshot_files_reports_missing_and_size_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _valid_backup_config())
+    before_config = _config_path(tmp_path).read_bytes()
+    mismatch = Path("/archive/file.wav")
+    directory = Path("/archive/dir")
+    missing = Path("/archive/missing.wav")
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        return _restic_result(
+            0,
+            parsed_json=[
+                {
+                    "message_type": "snapshot",
+                    "struct_type": "snapshot",
+                    "id": "full-snap",
+                },
+                {
+                    "message_type": "node",
+                    "struct_type": "node",
+                    "path": str(mismatch),
+                    "name": mismatch.name,
+                    "type": "file",
+                    "size": 7,
+                },
+                {
+                    "message_type": "node",
+                    "struct_type": "node",
+                    "path": str(directory),
+                    "name": directory.name,
+                    "type": "dir",
+                },
+            ],
+            args=args,
+        )
+
+    record_backup_result = Mock()
+    record_prune_result = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine, "record_prune_result", record_prune_result)
+
+    result = engine.check_archive_snapshot_files(
+        "full-snap",
+        {
+            mismatch: 42,
+            directory: 0,
+            missing: 5,
+        },
+    )
+
+    assert result == engine.ArchiveCheckResult(
+        status="ok",
+        error_reason=None,
+        verdicts=(
+            engine.ArchiveFileVerdict(
+                path=str(mismatch),
+                confirmed=False,
+                expected_size=42,
+                observed_size=7,
+                snapshot_id="full-snap",
+            ),
+            engine.ArchiveFileVerdict(
+                path=str(directory),
+                confirmed=False,
+                expected_size=0,
+                observed_size=None,
+                snapshot_id="full-snap",
+            ),
+            engine.ArchiveFileVerdict(
+                path=str(missing),
+                confirmed=False,
+                expected_size=5,
+                observed_size=None,
+                snapshot_id="full-snap",
+            ),
+        ),
+    )
+    assert _config_path(tmp_path).read_bytes() == before_config
+    record_backup_result.assert_not_called()
+    record_prune_result.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("returncode", "parsed_json", "expected_reason"),
+    [
+        (11, None, "locked"),
+        (0, None, "failed"),
+        (
+            0,
+            {
+                "message_type": "snapshot",
+                "struct_type": "snapshot",
+                "id": "header-only",
+            },
+            "failed",
+        ),
+        (
+            0,
+            [
+                {
+                    "message_type": "node",
+                    "struct_type": "node",
+                    "path": "/archive/file.wav",
+                    "type": "file",
+                    "size": 5,
+                }
+            ],
+            "failed",
+        ),
+    ],
+)
+def test_check_archive_snapshot_files_tool_failures_have_no_verdicts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    parsed_json: Any | None,
+    expected_reason: str,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _valid_backup_config())
+    before_config = _config_path(tmp_path).read_bytes()
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        return _restic_result(returncode, parsed_json=parsed_json, args=args)
+
+    record_backup_result = Mock()
+    record_prune_result = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine, "record_prune_result", record_prune_result)
+
+    result = engine.check_archive_snapshot_files(
+        "snap",
+        {Path("/archive/file.wav"): 5},
+    )
+
+    assert result == engine.ArchiveCheckResult(
+        status="error",
+        error_reason=expected_reason,
+        verdicts=None,
+    )
+    assert calls[0][0] == ["ls", "--long", "snap"]
+    assert calls[0][1]["json"] is True
+    assert calls[0][1]["timeout"] == engine.ARCHIVE_LS_TIMEOUT_SECONDS
+    assert _config_path(tmp_path).read_bytes() == before_config
+    record_backup_result.assert_not_called()
+    record_prune_result.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "backup_config",
+    [
+        {"enabled": False},
+        {
+            "enabled": True,
+            "daily_key": "daily-secret",
+            "recovery_key": "R" * 64,
+        },
+        {
+            "enabled": True,
+            "destination": {
+                "repository": "s3:safe-bucket/path",
+                "backend": "s3",
+                "credentials": {
+                    "access_key_id": "access-key",
+                    "secret_access_key": "secret-key",
+                },
+            },
+        },
+    ],
+)
+def test_check_archive_snapshot_files_skips_when_runtime_guard_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    backup_config: dict[str, Any],
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {"backup": backup_config})
+    before_config = _config_path(tmp_path).read_bytes()
+    ensure_restic = Mock()
+    run_restic = Mock()
+    record_backup_result = Mock()
+    record_prune_result = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", ensure_restic)
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine, "record_prune_result", record_prune_result)
+
+    result = engine.check_archive_snapshot_files(
+        "snap",
+        {Path("/archive/file.wav"): 5},
+    )
+
+    assert result == engine.ArchiveCheckResult(
+        status="skipped",
+        error_reason=None,
+        verdicts=None,
+    )
+    ensure_restic.assert_not_called()
+    run_restic.assert_not_called()
+    record_backup_result.assert_not_called()
+    record_prune_result.assert_not_called()
+    assert _config_path(tmp_path).read_bytes() == before_config
+
+
+def test_operated_archive_backup_and_check_use_append_only_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    before_config = _config_path(tmp_path).read_bytes()
+    captured_scopes: list[str] = []
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_fetch(
+        _binding: HostedBinding,
+        *,
+        scope: str,
+    ) -> HostedCredentials:
+        captured_scopes.append(scope)
+        return HostedCredentials(
+            access_key_id="AKID",
+            secret_access_key="SAK",
+            session_token="SESS",
+            endpoint="https://acct.r2.cloudflarestorage.com",
+            expires_at="2026-07-13T12:00:00Z",
+        )
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        if "unlock" in args:
+            return _restic_result(0, args=args)
+        if "backup" in args:
+            return _restic_result(
+                0,
+                parsed_json={
+                    "message_type": "summary",
+                    "snapshot_id": "archive-snap",
+                },
+                args=args,
+            )
+        return _restic_result(
+            0,
+            parsed_json=[
+                {
+                    "message_type": "snapshot",
+                    "struct_type": "snapshot",
+                    "id": "archive-snap-full",
+                }
+            ],
+            args=args,
+        )
+
+    record_backup_result = Mock()
+    record_prune_result = Mock()
+    monkeypatch.setattr(engine, "fetch_hosted_credentials", fake_fetch)
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "ensure_rclone", Mock(return_value=Path("/rclone")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine, "record_backup_result", record_backup_result)
+    monkeypatch.setattr(engine, "record_prune_result", record_prune_result)
+
+    archive_result = engine.run_archive_backup([Path("/archive/a.mov")])
+    check_result = engine.check_archive_snapshot_files(
+        "archive-snap",
+        {Path("/archive/a.mov"): 5},
+    )
+
+    assert archive_result.status == "ok"
+    assert check_result.status == "ok"
+    assert captured_scopes == ["operated", "operated"]
+    archive_call = next(call for call in calls if "backup" in call[0])
+    assert archive_call[0][:4] == [
+        "-o",
+        "rclone.program=/rclone",
+        "-o",
+        "rclone.args=serve restic --stdio --append-only --config /dev/null",
+    ]
+    assert archive_call[0][4] == "backup"
+    ls_call = next(call for call in calls if "ls" in call[0])
+    assert ls_call[0][:4] == [
+        "-o",
+        "rclone.program=/rclone",
+        "-o",
+        "rclone.args=serve restic --stdio --append-only --config /dev/null",
+    ]
+    assert ls_call[0][4:7] == ["ls", "--long", "archive-snap"]
+    assert ls_call[1]["json"] is True
+    assert ls_call[1]["timeout"] == engine.ARCHIVE_LS_TIMEOUT_SECONDS
+    assert sum(1 for args, _kwargs in calls if "unlock" in args) == 1
+    assert _config_path(tmp_path).read_bytes() == before_config
+    record_backup_result.assert_not_called()
+    record_prune_result.assert_not_called()
 
 
 def test_malformed_backend_env_records_failed_without_raw_exception(
