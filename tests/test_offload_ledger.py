@@ -14,7 +14,6 @@ import pytest
 
 from solstone.think.offload_ledger import (
     EVENT_OFFLOAD,
-    EVENT_RESTORE,
     OffloadFile,
     append_offload_event,
     append_restore_event,
@@ -83,22 +82,6 @@ def _offload_record(
         "segment": segment,
         "snapshot_id": snapshot_id,
         "files": [{"name": name, "bytes": size, "sha256": sha256}],
-    }
-
-
-def _restore_record(
-    *,
-    day: str,
-    stream: str,
-    segment: str,
-    time: int = 1,
-) -> dict:
-    return {
-        "event_kind": EVENT_RESTORE,
-        "time": time,
-        "day": day,
-        "stream": stream,
-        "segment": segment,
     }
 
 
