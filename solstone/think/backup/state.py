@@ -65,6 +65,10 @@ BACKUP_DEFAULTS: dict[str, Any] = {
         "time": None,
         "status": None,
         "reason": None,
+        "last_ok_time": None,
+        "files_offloaded": 0,
+        "bytes_offloaded": 0,
+        "ran_out_of_media": False,
     },
     "last_verification": {
         "time": None,
@@ -305,6 +309,9 @@ def record_offload_result(
     status: str,
     time: int | None,
     reason: str | None = None,
+    files_offloaded: int,
+    bytes_offloaded: int,
+    ran_out_of_media: bool,
 ) -> None:
     """Record the last media-offload run.
 
@@ -317,10 +324,19 @@ def record_offload_result(
     with hold_config_lock():
         config = read_journal_config()
         backup = _writable_backup_section(config)
+        prior = backup.get("last_offload")
+        prior_last_ok_time = (
+            prior.get("last_ok_time") if isinstance(prior, dict) else None
+        )
+        last_ok_time = time if status == "ok" else prior_last_ok_time
         backup["last_offload"] = {
             "time": time,
             "status": status,
             "reason": reason,
+            "last_ok_time": last_ok_time,
+            "files_offloaded": files_offloaded,
+            "bytes_offloaded": bytes_offloaded,
+            "ran_out_of_media": ran_out_of_media,
         }
         write_journal_config(config)
 

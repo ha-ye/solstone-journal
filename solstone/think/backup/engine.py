@@ -53,6 +53,7 @@ logger = logging.getLogger("solstone.backup.engine")
 
 ARCHIVE_TAG = "solstone-archive"
 ARCHIVE_BACKUP_TIMEOUT_SECONDS = 6 * 60 * 60
+ARCHIVE_RETRY_LOCK = "30m"
 ARCHIVE_LS_TIMEOUT_SECONDS = 30 * 60
 BACKUP_EXCLUDES = (
     # Rebuildable derived data — never in snapshots (unchanged).
@@ -204,7 +205,14 @@ def _backup_args() -> list[str]:
 
 
 def _archive_backup_args(paths: Sequence[Path]) -> list[str]:
-    return ["backup", *[str(path) for path in paths], "--tag", ARCHIVE_TAG]
+    return [
+        "--retry-lock",
+        ARCHIVE_RETRY_LOCK,
+        "backup",
+        *[str(path) for path in paths],
+        "--tag",
+        ARCHIVE_TAG,
+    ]
 
 
 def _assemble_backend_env(
@@ -768,6 +776,7 @@ def request_verification_now() -> bool:
 __all__ = [
     "ARCHIVE_BACKUP_TIMEOUT_SECONDS",
     "ARCHIVE_LS_TIMEOUT_SECONDS",
+    "ARCHIVE_RETRY_LOCK",
     "ARCHIVE_TAG",
     "ArchiveCheckResult",
     "ArchiveFileVerdict",

@@ -16,6 +16,7 @@ from solstone.think.backup.engine import (
     run_verification,
 )
 from solstone.think.maintenance import MaintenanceRoutine
+from solstone.think.offload import OFFLOAD_MAX_RUNTIME, run_offload
 from solstone.think.utils import require_solstone
 
 
@@ -64,6 +65,48 @@ def run_verification_routine(args: list[str]) -> int:
     return 0
 
 
+def run_offload_routine(args: list[str]) -> int:
+    require_solstone()
+    parser = argparse.ArgumentParser(prog="journal maintenance run backup:offload")
+    parser.add_argument("--dry-run", action="store_true")
+    parsed = parser.parse_args(args)
+
+    result = run_offload(dry_run=parsed.dry_run)
+    if result.dry_run:
+        selected_files = sum(detail.files for detail in result.details)
+        selected_bytes = sum(detail.bytes for detail in result.details)
+        segments = ",".join(
+            f"{detail.day}/{detail.stream}/{detail.segment}:{detail.bytes}"
+            for detail in result.details
+        )
+        if result.status == "stalled":
+            print(f"backup offload: stalled reason={result.reason} dry_run=true")
+        elif result.status == "skipped":
+            print("backup offload: skipped dry_run=true")
+        else:
+            print(
+                "backup offload: ok dry_run=true "
+                f"selected_files={selected_files} selected_bytes={selected_bytes} "
+                f"ran_out_of_media={result.ran_out_of_media} segments={segments}"
+            )
+    elif result.status == "ok":
+        print(
+            "backup offload: ok "
+            f"files_offloaded={result.files_offloaded} "
+            f"bytes_offloaded={result.bytes_offloaded} "
+            f"ran_out_of_media={result.ran_out_of_media}"
+        )
+    elif result.status == "skipped":
+        print("backup offload: skipped")
+    else:
+        print(
+            f"backup offload: stalled reason={result.reason} "
+            f"files_offloaded={result.files_offloaded} "
+            f"bytes_offloaded={result.bytes_offloaded}"
+        )
+    return 0
+
+
 ROUTINES = [
     MaintenanceRoutine(
         name="run",
@@ -85,5 +128,12 @@ ROUTINES = [
         every="weekly",
         run=run_verification_routine,
         max_runtime=VERIFY_MAX_RUNTIME,
+    ),
+    MaintenanceRoutine(
+        name="offload",
+        description="offload verified raw media after backup.",
+        every="daily",
+        run=run_offload_routine,
+        max_runtime=OFFLOAD_MAX_RUNTIME,
     ),
 ]

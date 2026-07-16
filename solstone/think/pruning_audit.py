@@ -36,8 +36,10 @@ def write_prune_audit(
     Callers are responsible for invoking this only after real work: not dry-run,
     not disabled, and at least one file or directory actually deleted.
     """
-    if kind not in {"journal_logs", "raw_media"}:
-        raise ValueError("kind must be 'journal_logs' or 'raw_media'")
+    if kind not in {"journal_logs", "raw_media", "raw_media_offload"}:
+        raise ValueError(
+            "kind must be 'journal_logs', 'raw_media', or 'raw_media_offload'"
+        )
 
     outcome = AuditOutcome(kind=kind)
     for day, message in per_day_messages.items():

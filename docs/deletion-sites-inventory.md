@@ -37,6 +37,12 @@ Inventory of every non-test, non-scratch, non-atomic-tmp destructive removal (`s
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `solstone/think/retention.py:578` | raw media files in gate-eligible segments | retention purge on eligible segments | `resolve_segment_gate()` plus retention-policy eligibility | per-segment `write_prune_audit()` record plus `_write_retention_log()` summary | yes | `✅` | reference template for this sweep |
 
+## think/offload
+
+| file:line | target | trigger | path validation | audit log | dry-run | class | why |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `solstone/think/offload.py:314` | raw media files archived and verified in gate-eligible segments | `backup:offload` media offload pass under configured budget/floor pressure | `get_raw_media_files()` segment-local selection plus unchanged `resolve_segment_gate()` eligibility | durable offload ledger append before unlink plus per-segment `write_prune_audit(kind="raw_media_offload")` record | yes | `✅` | retention-style raw-media delete with stricter archive-confirm-before-delete ordering |
+
 ## think/log_retention
 
 | file:line | target | trigger | path validation | audit log | dry-run | class | why |
