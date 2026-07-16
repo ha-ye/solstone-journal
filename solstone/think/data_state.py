@@ -130,14 +130,13 @@ def derive_modality_state(
     failed_path = _failed_path(seg_path, modality)
 
     verdict, _payload, _detail = _classify_marker(marker_path, has_chunks=has_chunks)
+    state = record.get("state") if record is not None else None
+    if state == STATE_FAILED:
+        return DataState.FAILED.value
     if verdict == "chunks_win":
         return DataState.ANALYZED.value
-    if record is not None:
-        state = record.get("state")
-        if state == STATE_EMPTY:
-            return DataState.EMPTY.value
-        if state == STATE_FAILED:
-            return DataState.FAILED.value
+    if state == STATE_EMPTY:
+        return DataState.EMPTY.value
     if verdict in {"corrupt", "stale"}:
         return DataState.FAILED.value
     if verdict == "active":

@@ -381,6 +381,27 @@ class TestResolveSegmentGate:
         assert gate.verdict == "failed"
         assert gate.failed_files == {"right_screen.jsonl": "failed"}
 
+    def test_screen_analyzed_sibling_does_not_mask_chunk_bearing_failed_sibling(
+        self, tmp_path
+    ):
+        seg = _make_segment(tmp_path, video=True, screen_extract=False)
+        (seg / "left_screen.webm").write_bytes(b"video")
+        (seg / "right_screen.webm").write_bytes(b"video")
+        _write_screen_success(seg / "left_screen.jsonl", "left_screen.webm")
+        _write_jsonl(
+            seg / "right_screen.jsonl",
+            {
+                "raw": "right_screen.webm",
+                "_solstone_processing": _processing_record(STATE_FAILED),
+            },
+            {"timestamp": 0.0, "content": {}},
+        )
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"right_screen.jsonl": "failed"}
+
     def test_pending_and_analyzing_are_incomplete_not_blocked(self, tmp_path):
         pending = _make_segment(tmp_path / "pending", audio=True, audio_extract=False)
         _write_jsonl(pending / "audio.jsonl", {"raw": "audio.flac"})
@@ -763,6 +784,50 @@ class TestPurge:
         assert log_entry["blocked_failed_details"] == result.blocked_failed_details
         assert log_entry["partial_error"] is False
         assert not (journal / "health" / "pruning-runs").exists()
+
+    def test_processed_policy_partial_failure_blocks_failed_segment_and_prunes_clean_sibling(
+        self, tmp_path, monkeypatch
+    ):
+        journal = tmp_path / "journal"
+        failed_segment = journal / "chronicle" / "20260115" / "default" / "100000_300"
+        failed_segment.mkdir(parents=True)
+        (failed_segment / "screen.mp4").write_bytes(b"failed-video")
+        _write_jsonl(
+            failed_segment / "screen.jsonl",
+            {
+                "raw": "screen.mp4",
+                "_solstone_processing": _processing_record(STATE_FAILED),
+            },
+            {"timestamp": 0.0, "content": {}},
+        )
+        (failed_segment / "stream.json").write_text('{"stream":"default"}')
+        (failed_segment / "talents").mkdir()
+
+        clean_segment = journal / "chronicle" / "20260115" / "default" / "103000_300"
+        clean_segment.mkdir(parents=True)
+        (clean_segment / "screen.mp4").write_bytes(b"clean-video")
+        _write_screen_success(clean_segment / "screen.jsonl", "screen.mp4")
+        (clean_segment / "stream.json").write_text('{"stream":"default"}')
+        (clean_segment / "talents").mkdir()
+        _install_test_journal(journal, monkeypatch)
+
+        result = purge(
+            config=RetentionConfig(default=RetentionPolicy(mode="processed")),
+            dry_run=False,
+        )
+
+        assert result.files_deleted == 1
+        assert result.segments_blocked_failed == 1
+        assert result.blocked_failed_details == [
+            {
+                "day": "20260115",
+                "stream": "default",
+                "segment": "100000_300",
+                "files": {"screen.jsonl": "failed"},
+            }
+        ]
+        assert (failed_segment / "screen.mp4").exists()
+        assert not (clean_segment / "screen.mp4").exists()
 
     def test_audit_partial_error_is_surfaced(self, tmp_path, monkeypatch):
         journal = self._setup_journal(tmp_path, monkeypatch)

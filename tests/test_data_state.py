@@ -44,6 +44,37 @@ def test_derive_chunks_win_beats_processing_record(tmp_path) -> None:
     assert state == DataState.ANALYZED.value
 
 
+def test_derive_failed_record_beats_chunk_rows(tmp_path) -> None:
+    segment = tmp_path / "090000_300"
+    segment.mkdir()
+
+    state = derive_modality_state(
+        segment,
+        "screen",
+        has_chunks=True,
+        has_jsonl=True,
+        has_raw=True,
+        record={"state": STATE_FAILED},
+    )
+
+    assert state == DataState.FAILED.value
+
+
+def test_derive_chunk_rows_without_record_are_analyzed(tmp_path) -> None:
+    segment = tmp_path / "090000_300"
+    segment.mkdir()
+
+    state = derive_modality_state(
+        segment,
+        "screen",
+        has_chunks=True,
+        has_jsonl=True,
+        has_raw=True,
+    )
+
+    assert state == DataState.ANALYZED.value
+
+
 def test_derive_empty_record_beats_failed_marker(tmp_path) -> None:
     segment = tmp_path / "090000_300"
     segment.mkdir()
