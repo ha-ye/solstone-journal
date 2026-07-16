@@ -109,10 +109,86 @@
 
 /* Results summary */
 .search-summary {
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
   font-size: 0.85rem;
   color: #6b7280;
   margin-bottom: 1rem;
   font-variant-numeric: tabular-nums;
+}
+
+.search-range-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+  border: 1px solid var(--orange-ink);
+  border-radius: 999px;
+  background: var(--orange-wash);
+  color: var(--orange-ink);
+  font: inherit;
+  font-weight: 600;
+}
+
+.search-range-chip button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--orange-ink);
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+  padding: 0;
+}
+
+.search-range-chip button:hover {
+  background: var(--paper);
+}
+
+.search-range-chip button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.search-day-grid-card {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  margin-bottom: 1rem;
+  padding: 1rem;
+}
+
+.search-day-grid-card[hidden] {
+  display: none;
+}
+
+.search-day-grid-card h2 {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 1rem;
+  line-height: 1.2;
+  margin: 0 0 0.25rem;
+}
+
+.search-day-grid-card p {
+  color: var(--ink-soft-paper);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin: 0 0 0.85rem;
+}
+
+.search-day-grid-host {
+  min-width: 0;
+}
+
+.search-day-grid-legend {
+  margin-top: 0.75rem;
 }
 
 /* Day cards */
@@ -478,6 +554,13 @@ button.day-header {
       <div class="search-summary" id="search-summary" role="status" aria-live="polite" style="display: none;"></div>
       <div id="search-announcer" class="visually-hidden" aria-live="polite"></div>
 
+      <section class="search-day-grid-card" id="search-day-grid-card" hidden>
+        <h2>when</h2>
+        <p>click a day — or click two, or drag, to pick a range</p>
+        <div class="search-day-grid-host" id="search-day-grid-host"></div>
+        <div class="search-day-grid-legend" id="search-day-grid-legend"></div>
+      </section>
+
       <div id="results-container">
         <div class="surface-state surface-state--empty" id="search-empty">
           <div class="surface-state-icon" aria-hidden="true">🔍</div>
@@ -512,12 +595,24 @@ button.day-header {
   let currentFacet = '';
   let currentAgent = '';
   let dayOffset = 0;
+  let currentRange;
+  let lastSearchKey = null;
+  let mountedDayGridKey = null;
+  let forceDayGridRemount = false;
   let searchController = null;
   let loadMoreController = null;
+  const dayGridUnit = { one: 'match', other: 'matches', none: 'no matches' };
+  const searchMonthShort = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
 
   // DOM elements
   const resultsContainer = document.getElementById('results-container');
   const searchSummary = document.getElementById('search-summary');
+  const dayGridCard = document.getElementById('search-day-grid-card');
+  const dayGridHost = document.getElementById('search-day-grid-host');
+  const dayGridLegend = document.getElementById('search-day-grid-legend');
   const searchEmpty = document.getElementById('search-empty');
   const loadMoreDaysBtn = document.getElementById('load-more-days');
   const facetList = document.getElementById('facet-list');
@@ -556,11 +651,7 @@ button.day-header {
     currentQuery = query;
     dayOffset = 0;
     updateHash();
-    if (query) {
-      doSearch(true);
-    } else {
-      showEmpty();
-    }
+    doSearch(true);
   };
 
   // Listen for search submissions from app bar
@@ -591,11 +682,7 @@ button.day-header {
       }));
       searchInput.value = q;
 
-      if (q) {
-        doSearch(true);
-      } else {
-        showEmpty();
-      }
+      doSearch(true);
     }
   }
 
@@ -605,6 +692,59 @@ button.day-header {
     if (currentFacet) params.set('facet', currentFacet);
     if (currentAgent) params.set('agent', currentAgent);
     window.location.hash = params.toString();
+  }
+
+  function parseSearchDay(day) {
+    if (typeof day !== 'string' || !/^\d{8}$/.test(day)) return null;
+    const year = Number(day.slice(0, 4));
+    const month = Number(day.slice(4, 6));
+    const date = Number(day.slice(6, 8));
+    const parsed = new Date(year, month - 1, date);
+    if (
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() !== month - 1 ||
+      parsed.getDate() !== date
+    ) {
+      return null;
+    }
+    return parsed;
+  }
+
+  function formatSearchDay(day) {
+    const parsed = parseSearchDay(day);
+    if (!parsed) return day;
+    return `${searchMonthShort[parsed.getMonth()]} ${parsed.getDate()}`;
+  }
+
+  function formatSearchRange(range) {
+    if (!range) return '';
+    const from = formatSearchDay(range.from);
+    const to = formatSearchDay(range.to);
+    return range.from === range.to ? from : `${from} – ${to}`;
+  }
+
+  function sameRange(left, right) {
+    if (!left && !right) return true;
+    if (!left || !right) return false;
+    return left.from === right.from && left.to === right.to;
+  }
+
+  function dayGridKey() {
+    return JSON.stringify([currentQuery, currentFacet, currentAgent]);
+  }
+
+  function setSearchRange(range) {
+    const next = range ? { from: range.from, to: range.to } : null;
+    if (sameRange(currentRange, next)) return;
+    currentRange = next;
+    doSearch(true);
+  }
+
+  function clearSearchRangeFromChip() {
+    if (!currentRange) return;
+    currentRange = null;
+    forceDayGridRemount = true;
+    doSearch(true);
   }
 
   // Load more days
@@ -620,6 +760,10 @@ button.day-header {
 
   // Main search function
   function doSearch(reset) {
+    const key = dayGridKey();
+    if (key !== lastSearchKey) currentRange = null;
+    lastSearchKey = key;
+
     if (!currentQuery) {
       showEmpty();
       return;
@@ -639,6 +783,10 @@ button.day-header {
     url.searchParams.set('offset', dayOffset);
     if (currentFacet) url.searchParams.set('facet', currentFacet);
     if (currentAgent) url.searchParams.set('agent', currentAgent);
+    if (currentRange) {
+      url.searchParams.set('day_from', currentRange.from);
+      url.searchParams.set('day_to', currentRange.to);
+    }
 
     fetch(url, { signal: searchController.signal })
       .then(r => {
@@ -649,6 +797,7 @@ button.day-header {
         if (reset) {
           resultsContainer.innerHTML = '';
           renderFilters(data.facets, data.talents || []);
+          renderSearchDayGrid(data);
         }
 
         renderResults(data, reset);
@@ -658,6 +807,7 @@ button.day-header {
       .catch(err => {
         if (err.name === 'AbortError') return;
         console.error('Search error:', err);
+        if (reset) hideSearchDayGrid();
         resultsContainer.innerHTML = window.SurfaceState.error({
           heading: 'something went wrong with that search',
           desc: 'could be a network issue or the server might be busy — give it a moment',
@@ -671,10 +821,46 @@ button.day-header {
   }
 
   function showEmpty() {
+    hideSearchDayGrid();
     resultsContainer.innerHTML = '';
     resultsContainer.appendChild(searchEmpty.cloneNode(true));
     searchSummary.style.display = 'none';
     loadMoreDaysBtn.style.display = 'none';
+  }
+
+  function hideSearchDayGrid() {
+    dayGridCard.hidden = true;
+    mountedDayGridKey = null;
+    window.DayGrid.mount(dayGridHost, {
+      data: null,
+      mode: 'select',
+      unit: dayGridUnit,
+      onRange: setSearchRange
+    });
+    dayGridLegend.replaceChildren();
+  }
+
+  function renderSearchDayGrid(data) {
+    const key = dayGridKey();
+    const shouldRemount = forceDayGridRemount || key !== mountedDayGridKey;
+    forceDayGridRemount = false;
+    if (!shouldRemount) return;
+
+    const gate = window.DayGrid.gate(data.day_grid, { minSpanDays: 70, minActiveDays: 3 });
+    if (!gate.ok) {
+      hideSearchDayGrid();
+      return;
+    }
+
+    dayGridCard.hidden = false;
+    window.DayGrid.mount(dayGridHost, {
+      data: data.day_grid,
+      mode: 'select',
+      unit: dayGridUnit,
+      onRange: setSearchRange
+    });
+    window.DayGrid.legend(dayGridLegend, { unit: dayGridUnit });
+    mountedDayGridKey = key;
   }
 
   function renderFilters(facets, talents) {
@@ -907,17 +1093,33 @@ button.day-header {
   }
 
   function updateSummary(data) {
-    if (data.total === 0) {
+    if (data.total === 0 && !currentRange) {
       searchSummary.style.display = 'none';
       announce('no results found');
       return;
     }
 
-    let summary = `${data.total} result${data.total !== 1 ? 's' : ''} across ${data.total_days} day${data.total_days !== 1 ? 's' : ''}`;
+    let summary = `${data.total} match${data.total !== 1 ? 'es' : ''} across ${data.total_days} day${data.total_days !== 1 ? 's' : ''}`;
     if (data.relaxed) summary += ' · showing broader matches';
-    searchSummary.textContent = summary;
-    searchSummary.style.display = 'block';
-    announce(searchSummary.textContent);
+    searchSummary.replaceChildren(document.createTextNode(summary));
+
+    const rangeLabel = formatSearchRange(currentRange);
+    if (rangeLabel) {
+      const chip = document.createElement('span');
+      chip.className = 'search-range-chip';
+      const label = document.createElement('span');
+      label.textContent = rangeLabel;
+      const clearButton = document.createElement('button');
+      clearButton.type = 'button';
+      clearButton.setAttribute('aria-label', 'clear range');
+      clearButton.textContent = '×';
+      clearButton.onclick = clearSearchRangeFromChip;
+      chip.append(label, clearButton);
+      searchSummary.appendChild(chip);
+    }
+
+    searchSummary.style.display = 'flex';
+    announce(rangeLabel ? `${summary} · ${rangeLabel}` : summary);
   }
 
   function updateLoadMoreButton(data) {

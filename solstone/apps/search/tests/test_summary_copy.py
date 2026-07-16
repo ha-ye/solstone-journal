@@ -4,10 +4,10 @@
 from pathlib import Path
 
 
-def test_summary_pluralizes_result_and_day():
+def test_summary_pluralizes_match_and_day():
     html = (Path(__file__).resolve().parents[1] / "workspace.html").read_text(
         encoding="utf-8"
     )
 
-    assert "result${data.total !== 1 ? 's' : ''}" in html
+    assert "match${data.total !== 1 ? 'es' : ''}" in html
     assert "day${data.total_days !== 1 ? 's' : ''}" in html
