@@ -11,7 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from solstone.think import offload_restore
+from solstone.think import offload, offload_restore
 from solstone.think.backup import engine
 from solstone.think.backup.hosted import (
     HostedBinding,
@@ -23,7 +23,10 @@ from solstone.think.offload_ledger import (
     OffloadFile,
     append_offload_event,
     append_restore_event,
+    ledger_path_for_day,
+    summarize_day,
 )
+from solstone.think.retention import get_raw_media_files
 from solstone.think.utils import DEFAULT_STREAM
 
 DAY = "20260101"
@@ -65,6 +68,37 @@ def _backup_config(*, mode: str = "byo", enabled: bool = True) -> dict[str, Any]
             },
         }
     return backup
+
+
+def _offload_ready_config(*, budget_bytes: int = 1) -> dict[str, Any]:
+    backup = _backup_config()
+    backup["last_backup"] = {
+        "time": 100,
+        "snapshot_id": "full-snapshot",
+        "status": "ok",
+        "error_reason": None,
+    }
+    backup["last_verification"] = {
+        "time": 100,
+        "status": "ok",
+        "reason": None,
+        "last_ok_time": 2_000_000_000,
+        "checked_subset": "all",
+    }
+    backup["offload"] = {
+        "enabled": True,
+        "budget_bytes": budget_bytes,
+        "floor_bytes": None,
+    }
+    return backup
+
+
+def _offload_file(name: str, content: bytes) -> OffloadFile:
+    return OffloadFile(
+        name=name,
+        bytes=len(content),
+        sha256=hashlib.sha256(content).hexdigest(),
+    )
 
 
 def _segment_dir(journal: Path, *, stream: str = DEFAULT_STREAM) -> Path:
@@ -201,6 +235,7 @@ def test_restore_day_uses_daily_key_default_layout_and_no_pipeline(
         "bytes_expected": len(CONTENT),
         "bytes_restored": len(CONTENT),
     }
+    assert get_raw_media_files(segment_dir) == [segment_dir / "audio.wav"]
 
 
 def test_restore_day_operated_uses_backup_scope_and_append_only_session(
@@ -279,6 +314,11 @@ def test_restore_day_maps_restic_returncode_reasons(
 
     assert result.status == "error"
     assert result.reason == reason
+    last_restore = json.loads(_config_path(tmp_path).read_text(encoding="utf-8"))[
+        "backup"
+    ]["last_restore"]
+    assert last_restore["status"] == "error"
+    assert last_restore["reason"] == reason
 
 
 def test_missing_include_exit_zero_is_verified_as_error(
@@ -311,9 +351,12 @@ def test_verification_failure_rolls_back_recorded_attempted_files(
     _write_config(tmp_path, _backup_config())
     segment_dir = _segment_dir(tmp_path)
     _seed_ledger()
+    unrelated = segment_dir / "notes.txt"
+    unrelated.write_text("keep me", encoding="utf-8")
+    ledger_before = ledger_path_for_day(DAY).read_text(encoding="utf-8")
 
     def fake_run_restic(args: list[str], **_kwargs: Any) -> ResticResult:
-        (segment_dir / "audio.wav").write_bytes(b"wrong")
+        (segment_dir / "audio.wav").write_bytes(b"audio-v2")
         return _restic_result(0, args)
 
     monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
@@ -325,6 +368,106 @@ def test_verification_failure_rolls_back_recorded_attempted_files(
     assert result.status == "error"
     assert result.reason == "verification_failed"
     assert not (segment_dir / "audio.wav").exists()
+    assert unrelated.read_text(encoding="utf-8") == "keep me"
+    assert ledger_path_for_day(DAY).read_text(encoding="utf-8") == ledger_before
+
+
+def test_tool_failure_rolls_back_remnant_before_later_offload_can_replace_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _offload_ready_config())
+    segment_dir = _segment_dir(tmp_path)
+    (segment_dir / "audio.jsonl").write_text(
+        json.dumps({"raw": "audio.wav"})
+        + "\n"
+        + json.dumps({"start": "00:00:00", "text": "ok"})
+        + "\n",
+        encoding="utf-8",
+    )
+    recorded_files = (
+        _offload_file("audio.wav", b"one"),
+        _offload_file("call.wav", b"two"),
+        _offload_file("room.wav", b"tre"),
+    )
+    append_offload_event(
+        day=DAY,
+        stream=DEFAULT_STREAM,
+        segment=SEGMENT,
+        snapshot_id="snap-original",
+        files=recorded_files,
+        time=100,
+    )
+    ledger_before = ledger_path_for_day(DAY).read_text(encoding="utf-8")
+
+    def fake_restore(args: list[str], **_kwargs: Any) -> ResticResult:
+        (segment_dir / "audio.wav").write_bytes(b"one")
+        return _restic_result(77, args)
+
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(offload_restore, "device_free_bytes", lambda: 5_000_000_000)
+    monkeypatch.setattr(offload_restore, "run_restic", fake_restore)
+
+    result = offload_restore.restore_day(DAY)
+
+    assert result.status == "error"
+    assert result.reason == "failed"
+    assert not (segment_dir / "audio.wav").exists()
+    assert ledger_path_for_day(DAY).read_text(encoding="utf-8") == ledger_before
+    summary = summarize_day(DAY)
+    assert summary.offloaded_file_count == 3
+    assert tuple(file.name for file in summary.segments[0].files) == (
+        "audio.wav",
+        "call.wav",
+        "room.wav",
+    )
+
+    archive_calls: list[list[Path]] = []
+
+    def fake_archive(paths: list[Path]) -> engine.BackupResult:
+        archive_calls.append(paths)
+        return engine.BackupResult(
+            status="ok",
+            snapshot_id="snap-remnant",
+            error_reason=None,
+        )
+
+    def fake_check(
+        snapshot_id: str,
+        expected_sizes: dict[Path, int],
+    ) -> engine.ArchiveCheckResult:
+        return engine.ArchiveCheckResult(
+            status="ok",
+            error_reason=None,
+            verdicts=tuple(
+                engine.ArchiveFileVerdict(
+                    path=str(path),
+                    confirmed=True,
+                    expected_size=size,
+                    observed_size=size,
+                    snapshot_id=snapshot_id,
+                )
+                for path, size in expected_sizes.items()
+            ),
+        )
+
+    monkeypatch.setattr(offload, "run_archive_backup", fake_archive)
+    monkeypatch.setattr(offload, "check_archive_snapshot_files", fake_check)
+    monkeypatch.setattr(offload, "device_free_bytes", lambda: 0)
+
+    offload_result = offload.run_offload()
+
+    assert offload_result.status == "ok"
+    assert archive_calls == []
+    assert ledger_path_for_day(DAY).read_text(encoding="utf-8") == ledger_before
+    after = summarize_day(DAY)
+    assert after.offloaded_file_count == 3
+    assert tuple(file.name for file in after.segments[0].files) == (
+        "audio.wav",
+        "call.wav",
+        "room.wav",
+    )
 
 
 def test_restore_all_degraded_after_partial_success_continues(
@@ -376,6 +519,11 @@ def test_restore_all_degraded_after_partial_success_continues(
     assert call_count == 2
     assert (first / "audio.wav").exists()
     assert not (second / "audio.wav").exists()
+    last_restore = json.loads(_config_path(tmp_path).read_text(encoding="utf-8"))[
+        "backup"
+    ]["last_restore"]
+    assert last_restore["status"] == "degraded"
+    assert last_restore["reason"] == "verification_failed"
 
 
 def test_restore_all_runs_oldest_first(
@@ -422,29 +570,82 @@ def test_restore_all_runs_oldest_first(
     assert restored_targets == [older_dir, newer_dir]
 
 
-def test_restore_refuses_when_free_space_guard_fails(
+@pytest.mark.parametrize(
+    ("free_bytes", "expected_status", "restic_calls"),
+    [
+        (3_000_000_000, "error", 1),
+        (2_999_999_999, "refused", 0),
+    ],
+)
+def test_restore_free_space_guard_checks_both_sides_of_boundary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    free_bytes: int,
+    expected_status: str,
+    restic_calls: int,
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     _write_config(tmp_path, _backup_config())
     _segment_dir(tmp_path)
+    expected_bytes = 2_000_000_000
+    assert expected_bytes + offload_restore.RESTORE_RESERVE_BYTES == 3_000_000_000
     append_offload_event(
         day=DAY,
         stream=DEFAULT_STREAM,
         segment=SEGMENT,
         snapshot_id="snap1",
-        files=[OffloadFile(name="huge.wav", bytes=2_000_000_000, sha256=SHA)],
+        files=[OffloadFile(name="huge.wav", bytes=expected_bytes, sha256=SHA)],
         time=100,
     )
-    run_restic = Mock()
-    monkeypatch.setattr(offload_restore, "device_free_bytes", lambda: 2_999_999_999)
+    run_restic = Mock(side_effect=lambda args, **_kwargs: _restic_result(77, args))
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(offload_restore, "device_free_bytes", lambda: free_bytes)
     monkeypatch.setattr(offload_restore, "run_restic", run_restic)
 
     result = offload_restore.restore_day(DAY)
 
+    assert result.status == expected_status
+    assert run_restic.call_count == restic_calls
+    last_restore = json.loads(_config_path(tmp_path).read_text(encoding="utf-8"))[
+        "backup"
+    ]["last_restore"]
+    assert last_restore["status"] == expected_status
+    if expected_status == "refused":
+        assert result.reason == "insufficient_free_space"
+        assert last_restore["reason"] == "insufficient_free_space"
+    else:
+        assert result.reason == "failed"
+        assert last_restore["reason"] == "failed"
+
+
+def test_restore_all_refuses_when_sum_exceeds_guard_even_if_each_day_fits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _backup_config())
+    per_day_bytes = 2_000_000_000
+    free_bytes = 3_000_000_000
+    assert per_day_bytes + offload_restore.RESTORE_RESERVE_BYTES <= free_bytes
+    assert per_day_bytes * 2 + offload_restore.RESTORE_RESERVE_BYTES > free_bytes
+    for day in ("20260101", "20260102"):
+        append_offload_event(
+            day=day,
+            stream=DEFAULT_STREAM,
+            segment=SEGMENT,
+            snapshot_id=f"snap-{day}",
+            files=[OffloadFile(name="huge.wav", bytes=per_day_bytes, sha256=SHA)],
+            time=100,
+        )
+    run_restic = Mock()
+    monkeypatch.setattr(offload_restore, "device_free_bytes", lambda: free_bytes)
+    monkeypatch.setattr(offload_restore, "run_restic", run_restic)
+
+    result = offload_restore.restore_all()
+
     assert result.status == "refused"
     assert result.reason == "insufficient_free_space"
+    assert result.segments_selected == 2
     run_restic.assert_not_called()
 
 
@@ -462,6 +663,11 @@ def test_restore_no_op_and_backup_not_ready_reasons(
     assert no_op.status == "no_op"
     assert no_op.reason == "nothing_to_restore"
     run_restic.assert_not_called()
+    last_restore = json.loads(_config_path(tmp_path).read_text(encoding="utf-8"))[
+        "backup"
+    ]["last_restore"]
+    assert last_restore["status"] == "no_op"
+    assert last_restore["reason"] == "nothing_to_restore"
 
     _segment_dir(tmp_path)
     _seed_ledger()
@@ -480,6 +686,30 @@ def test_restore_no_op_and_backup_not_ready_reasons(
 
     assert not_ready.status == "error"
     assert not_ready.reason == "backup_not_ready"
+    last_restore = json.loads(_config_path(tmp_path).read_text(encoding="utf-8"))[
+        "backup"
+    ]["last_restore"]
+    assert last_restore["status"] == "error"
+    assert last_restore["reason"] == "backup_not_ready"
+
+
+def test_restore_reports_segment_missing_without_restic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _backup_config())
+    _seed_ledger()
+    run_restic = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(offload_restore, "device_free_bytes", lambda: 5_000_000_000)
+    monkeypatch.setattr(offload_restore, "run_restic", run_restic)
+
+    result = offload_restore.restore_day(DAY)
+
+    assert result.status == "error"
+    assert result.reason == "segment_missing"
+    run_restic.assert_not_called()
 
 
 def test_restore_tool_unavailable_and_ledger_degraded_reasons(

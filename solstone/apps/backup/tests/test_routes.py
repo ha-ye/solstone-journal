@@ -24,6 +24,13 @@ from solstone.think.backup.hosted import (
     HostedCredsUnavailable,
 )
 from solstone.think.backup.restore import RestoreResult
+from solstone.think.offload_ledger import OffloadFile, append_offload_event
+from solstone.think.offload_measurement import (
+    RawMediaUsage,
+    SuggestedOffloadDefaults,
+)
+from solstone.think.offload_restore import OffloadStatusMeasurement
+from solstone.think.utils import DEFAULT_STREAM
 
 CONSENT_URL = "https://services.test/enable/backup?nonce=NONCE"
 SUBSCRIBE_URL = "https://services.test/plan"
@@ -315,6 +322,49 @@ def test_offload_status_route_returns_measurements_and_degraded_signal(
     assert data["operation"] is None
 
 
+def test_offload_status_cache_keeps_ledger_degraded_signal_fresh(
+    backup_env,
+    monkeypatch,
+) -> None:
+    env = backup_env()
+    calls = 0
+
+    def fake_measurement() -> OffloadStatusMeasurement:
+        nonlocal calls
+        calls += 1
+        return OffloadStatusMeasurement(
+            usage=RawMediaUsage(total_bytes=0, total_files=0, per_day=()),
+            free_bytes=900,
+            total_bytes=1000,
+            suggested_defaults=SuggestedOffloadDefaults(
+                budget_bytes=500,
+                floor_bytes=100,
+            ),
+        )
+
+    monkeypatch.setattr(backup_routes, "measure_offload_status", fake_measurement)
+    append_offload_event(
+        day="20260101",
+        stream=DEFAULT_STREAM,
+        segment="090000_300",
+        snapshot_id="snap1",
+        files=[OffloadFile(name="audio.wav", bytes=10, sha256="a" * 64)],
+        time=100,
+    )
+
+    clean = env.client.get("/app/backup/offload/status").get_json()
+    ledger = env.journal / "health" / "offload" / "20260101.jsonl"
+    ledger.write_bytes(b"\xff")
+    degraded = env.client.get("/app/backup/offload/status").get_json()
+
+    assert calls == 1
+    assert clean["backup_only"]["degraded"] is False
+    assert clean["backup_only"]["total_bytes"] == 10
+    assert degraded["backup_only"]["degraded"] is True
+    assert degraded["backup_only"]["total_bytes"] == 0
+    assert degraded["backup_only"]["unreadable_ledgers"]
+
+
 def test_offload_config_preserves_enabled_and_rejects_bad_values(
     backup_env,
     monkeypatch,
@@ -543,8 +593,8 @@ def test_offload_restore_rejects_invalid_day_before_side_effects(
     env = backup_env()
     restore_day = Mock()
     restore_all = Mock()
-    monkeypatch.setattr(backup_routes, "restore_offload_day", restore_day)
-    monkeypatch.setattr(backup_routes, "restore_offload_all", restore_all)
+    monkeypatch.setattr(backup_routes, "restore_day", restore_day)
+    monkeypatch.setattr(backup_routes, "restore_all", restore_all)
 
     response = env.client.post(
         "/app/backup/offload/restore",
@@ -580,7 +630,7 @@ def test_offload_restore_route_accepts_day_with_offload_enabled_or_disabled(
         },
     )
     restore_day = Mock(return_value=SimpleNamespace(status="ok", reason=None))
-    monkeypatch.setattr(backup_routes, "restore_offload_day", restore_day)
+    monkeypatch.setattr(backup_routes, "restore_day", restore_day)
 
     response = env.client.post(
         "/app/backup/offload/restore",
@@ -603,8 +653,8 @@ def test_offload_restore_route_accepts_all_and_rejects_mixed_scope(
         return_value=SimpleNamespace(status="no_op", reason="nothing_to_restore")
     )
     restore_day = Mock()
-    monkeypatch.setattr(backup_routes, "restore_offload_all", restore_all)
-    monkeypatch.setattr(backup_routes, "restore_offload_day", restore_day)
+    monkeypatch.setattr(backup_routes, "restore_all", restore_all)
+    monkeypatch.setattr(backup_routes, "restore_day", restore_day)
 
     response = env.client.post("/app/backup/offload/restore", json={"all": True})
     final = _wait_for_phase(env, wait_until_helper, "done")
@@ -636,7 +686,7 @@ def test_offload_restore_busy_path_uses_single_long_op_slot(
         release.wait(2)
         return SimpleNamespace(status="ok", reason=None)
 
-    monkeypatch.setattr(backup_routes, "restore_offload_day", slow_restore)
+    monkeypatch.setattr(backup_routes, "restore_day", slow_restore)
 
     first = env.client.post("/app/backup/offload/restore", json={"day": "20260228"})
     wait_until_helper(started.is_set)

@@ -540,7 +540,7 @@ def test_offload_restore_day_json_delegates_to_restore_engine(
             details=(),
         )
     )
-    monkeypatch.setattr(backup_cli, "restore_offload_day", restore_day)
+    monkeypatch.setattr(backup_cli, "restore_day", restore_day)
 
     result = CliRunner().invoke(
         backup_cli.app,
@@ -570,7 +570,7 @@ def test_offload_restore_all_and_invalid_scope(
             details=(),
         )
     )
-    monkeypatch.setattr(backup_cli, "restore_offload_all", restore_all)
+    monkeypatch.setattr(backup_cli, "restore_all", restore_all)
 
     all_result = CliRunner().invoke(backup_cli.app, ["offload", "restore", "--all"])
     mixed_result = CliRunner().invoke(
