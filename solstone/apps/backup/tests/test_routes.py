@@ -12,6 +12,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import pytest
+
 from solstone.apps.backup import routes as backup_routes
 from solstone.apps.backup.copy import backup_copy_values
 from solstone.convey.config import DEFAULT_APP_ORDER
@@ -170,6 +172,11 @@ def test_backup_spa_shell_workspace_and_route_resolution(backup_env) -> None:
         ("/app/backup/enable-hosted", "POST"),
         ("/app/backup/destination", "POST"),
         ("/app/backup/backup-now", "POST"),
+        ("/app/backup/offload/status", "GET"),
+        ("/app/backup/offload/config", "POST"),
+        ("/app/backup/offload/enable", "POST"),
+        ("/app/backup/offload/disable", "POST"),
+        ("/app/backup/offload/restore", "POST"),
         ("/app/backup/recovery-key/rotate", "POST"),
         ("/app/backup/retention", "POST"),
         ("/app/backup/teardown", "POST"),
@@ -237,6 +244,408 @@ def test_retention_validation_errors_return_invalid_config_value(backup_env) -> 
 
     assert response.status_code == 400
     assert response.get_json()["reason_code"] == "invalid_config_value"
+
+
+def _offload_status_payload(enabled: bool = False) -> dict:
+    return {
+        "offload": {
+            "enabled": enabled,
+            "budget_bytes": 100,
+            "floor_bytes": 50,
+        },
+        "last_offload": {"status": "ok"},
+        "last_verification": {"status": "ok"},
+        "last_restore": {"status": "no_op", "reason": "nothing_to_restore"},
+        "device": {"free_bytes": 900, "total_bytes": 1000},
+        "suggested_defaults": {"budget_bytes": 500, "floor_bytes": 100},
+        "raw_media": {"total_bytes": 300, "total_files": 3},
+        "backup_only": {
+            "total_bytes": 200,
+            "total_files": 2,
+            "total_segments": 1,
+            "total_days": 1,
+            "degraded": True,
+            "skipped_records": 4,
+            "unreadable_ledgers": ["health/offload/20260101.jsonl"],
+        },
+        "days": [
+            {
+                "day": "20260101",
+                "raw_media_bytes": 300,
+                "raw_media_files": 3,
+                "backup_only_bytes": 200,
+                "backup_only_files": 2,
+                "backup_only_segments": 1,
+                "degraded": True,
+                "skipped_records": 4,
+                "unreadable_ledgers": ["health/offload/20260101.jsonl"],
+            }
+        ],
+    }
+
+
+def test_offload_status_route_returns_measurements_and_degraded_signal(
+    backup_env,
+    monkeypatch,
+) -> None:
+    env = backup_env()
+    build_offload_status = Mock(return_value=_offload_status_payload(enabled=True))
+    monkeypatch.setattr(backup_routes, "build_offload_status", build_offload_status)
+
+    response = env.client.get("/app/backup/offload/status")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["offload"] == {
+        "enabled": True,
+        "budget_bytes": 100,
+        "floor_bytes": 50,
+    }
+    assert data["last_offload"] == {"status": "ok"}
+    assert data["last_verification"] == {"status": "ok"}
+    assert data["last_restore"] == {
+        "status": "no_op",
+        "reason": "nothing_to_restore",
+    }
+    assert data["device"] == {"free_bytes": 900, "total_bytes": 1000}
+    assert data["suggested_defaults"] == {"budget_bytes": 500, "floor_bytes": 100}
+    assert data["backup_only"]["degraded"] is True
+    assert data["backup_only"]["skipped_records"] == 4
+    assert data["days"][0]["degraded"] is True
+    assert data["operation"] is None
+
+
+def test_offload_config_preserves_enabled_and_rejects_bad_values(
+    backup_env,
+    monkeypatch,
+) -> None:
+    env = backup_env()
+    _write_config(
+        env,
+        {
+            "backup": {
+                "offload": {
+                    "enabled": True,
+                    "budget_bytes": 10,
+                    "floor_bytes": 5,
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        backup_routes,
+        "build_offload_status",
+        Mock(return_value=_offload_status_payload(enabled=True)),
+    )
+
+    response = env.client.post(
+        "/app/backup/offload/config",
+        json={"budget_bytes": 100, "floor_bytes": 50},
+    )
+    invalid = env.client.post(
+        "/app/backup/offload/config",
+        json={"budget_bytes": 0, "floor_bytes": 50},
+    )
+
+    assert response.status_code == 200
+    assert invalid.status_code == 400
+    assert invalid.get_json()["reason_code"] == "invalid_config_value"
+    assert json.loads(_config_path(env).read_text(encoding="utf-8"))["backup"][
+        "offload"
+    ] == {
+        "enabled": True,
+        "budget_bytes": 100,
+        "floor_bytes": 50,
+    }
+
+
+def test_offload_enable_gates_and_requests_first_verification(
+    backup_env,
+    monkeypatch,
+) -> None:
+    env = backup_env()
+    request_verification_now = Mock(return_value=True)
+    monkeypatch.setattr(
+        backup_routes,
+        "build_offload_status",
+        Mock(return_value=_offload_status_payload(enabled=True)),
+    )
+    monkeypatch.setattr(
+        backup_routes,
+        "request_verification_now",
+        request_verification_now,
+    )
+
+    _write_config(
+        env,
+        {
+            "backup": {
+                "enabled": False,
+                "confirmed_recovery_key": True,
+                "daily_key": "daily-secret",
+                "recovery_key": "A" * 64,
+                "offload": {
+                    "enabled": False,
+                    "budget_bytes": 10,
+                    "floor_bytes": 5,
+                },
+            }
+        },
+    )
+    disabled = env.client.post("/app/backup/offload/enable")
+
+    _write_config(
+        env,
+        {
+            "backup": {
+                "enabled": True,
+                "confirmed_recovery_key": False,
+                "daily_key": "daily-secret",
+                "recovery_key": "A" * 64,
+                "offload": {
+                    "enabled": False,
+                    "budget_bytes": 10,
+                    "floor_bytes": 5,
+                },
+            }
+        },
+    )
+    unconfirmed = env.client.post("/app/backup/offload/enable")
+
+    _write_config(
+        env,
+        {
+            "backup": {
+                "enabled": True,
+                "confirmed_recovery_key": True,
+                "daily_key": "daily-secret",
+                "recovery_key": "A" * 64,
+                "offload": {
+                    "enabled": False,
+                    "budget_bytes": 10,
+                    "floor_bytes": 5,
+                },
+            }
+        },
+    )
+    enabled = env.client.post("/app/backup/offload/enable")
+
+    assert disabled.status_code == 400
+    assert disabled.get_json()["reason_code"] == "invalid_operation_for_state"
+    assert unconfirmed.status_code == 400
+    assert unconfirmed.get_json()["reason_code"] == "backup_not_confirmed"
+    assert enabled.status_code == 200
+    assert json.loads(_config_path(env).read_text(encoding="utf-8"))["backup"][
+        "offload"
+    ] == {
+        "enabled": True,
+        "budget_bytes": 10,
+        "floor_bytes": 5,
+    }
+    request_verification_now.assert_called_once_with()
+
+
+def test_offload_enable_does_not_request_verification_after_first_run(
+    backup_env,
+    monkeypatch,
+) -> None:
+    env = backup_env()
+    request_verification_now = Mock(return_value=True)
+    monkeypatch.setattr(
+        backup_routes,
+        "build_offload_status",
+        Mock(return_value=_offload_status_payload(enabled=True)),
+    )
+    monkeypatch.setattr(
+        backup_routes,
+        "request_verification_now",
+        request_verification_now,
+    )
+    _write_config(
+        env,
+        {
+            "backup": {
+                "enabled": True,
+                "confirmed_recovery_key": True,
+                "daily_key": "daily-secret",
+                "recovery_key": "A" * 64,
+                "last_verification": {"status": "ok"},
+                "offload": {
+                    "enabled": False,
+                    "budget_bytes": 10,
+                    "floor_bytes": 5,
+                },
+            }
+        },
+    )
+
+    response = env.client.post("/app/backup/offload/enable")
+
+    assert response.status_code == 200
+    request_verification_now.assert_not_called()
+
+
+def test_offload_disable_preserves_config_and_does_not_touch_ledger_or_media(
+    backup_env,
+    monkeypatch,
+) -> None:
+    env = backup_env()
+    ledger = env.journal / "health" / "offload" / "20260101.jsonl"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_text('{"event_kind":"offload"}\n', encoding="utf-8")
+    media = env.journal / "chronicle" / "20260101" / "090000_300" / "audio.wav"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"raw")
+    _write_config(
+        env,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "daily-secret",
+                "recovery_key": "A" * 64,
+                "confirmed_recovery_key": True,
+                "custom_marker": {"keep": True},
+                "offload": {
+                    "enabled": True,
+                    "budget_bytes": 10,
+                    "floor_bytes": 5,
+                },
+            }
+        },
+    )
+    monkeypatch.setattr(
+        backup_routes,
+        "build_offload_status",
+        Mock(return_value=_offload_status_payload(enabled=False)),
+    )
+
+    response = env.client.post("/app/backup/offload/disable")
+
+    assert response.status_code == 200
+    backup = json.loads(_config_path(env).read_text(encoding="utf-8"))["backup"]
+    assert backup["mode"] == "operated"
+    assert backup["daily_key"] == "daily-secret"
+    assert backup["custom_marker"] == {"keep": True}
+    assert backup["offload"] == {
+        "enabled": False,
+        "budget_bytes": 10,
+        "floor_bytes": 5,
+    }
+    assert ledger.read_text(encoding="utf-8") == '{"event_kind":"offload"}\n'
+    assert media.read_bytes() == b"raw"
+
+
+def test_offload_restore_rejects_invalid_day_before_side_effects(
+    backup_env,
+    monkeypatch,
+) -> None:
+    env = backup_env()
+    restore_day = Mock()
+    restore_all = Mock()
+    monkeypatch.setattr(backup_routes, "restore_offload_day", restore_day)
+    monkeypatch.setattr(backup_routes, "restore_offload_all", restore_all)
+
+    response = env.client.post(
+        "/app/backup/offload/restore",
+        json={"day": "20260230"},
+    )
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_day"
+    restore_day.assert_not_called()
+    restore_all.assert_not_called()
+    assert not (env.journal / "chronicle" / "20260230").exists()
+
+
+@pytest.mark.parametrize("offload_enabled", [True, False])
+def test_offload_restore_route_accepts_day_with_offload_enabled_or_disabled(
+    backup_env,
+    monkeypatch,
+    wait_until_helper,
+    offload_enabled: bool,
+) -> None:
+    env = backup_env()
+    _write_config(
+        env,
+        {
+            "backup": {
+                "enabled": True,
+                "offload": {
+                    "enabled": offload_enabled,
+                    "budget_bytes": 10,
+                    "floor_bytes": 5,
+                },
+            }
+        },
+    )
+    restore_day = Mock(return_value=SimpleNamespace(status="ok", reason=None))
+    monkeypatch.setattr(backup_routes, "restore_offload_day", restore_day)
+
+    response = env.client.post(
+        "/app/backup/offload/restore",
+        json={"day": "20260228"},
+    )
+    final = _wait_for_phase(env, wait_until_helper, "done")
+
+    assert response.status_code == 202
+    assert final["reason_code"] is None
+    restore_day.assert_called_once_with("20260228")
+
+
+def test_offload_restore_route_accepts_all_and_rejects_mixed_scope(
+    backup_env,
+    monkeypatch,
+    wait_until_helper,
+) -> None:
+    env = backup_env()
+    restore_all = Mock(
+        return_value=SimpleNamespace(status="no_op", reason="nothing_to_restore")
+    )
+    restore_day = Mock()
+    monkeypatch.setattr(backup_routes, "restore_offload_all", restore_all)
+    monkeypatch.setattr(backup_routes, "restore_offload_day", restore_day)
+
+    response = env.client.post("/app/backup/offload/restore", json={"all": True})
+    final = _wait_for_phase(env, wait_until_helper, "done")
+    backup_routes._clear_registry()
+    mixed = env.client.post(
+        "/app/backup/offload/restore",
+        json={"all": True, "day": "20260228"},
+    )
+
+    assert response.status_code == 202
+    assert final["reason_code"] == "nothing_to_restore"
+    restore_all.assert_called_once_with()
+    restore_day.assert_not_called()
+    assert mixed.status_code == 400
+    assert mixed.get_json()["reason_code"] == "invalid_request_value"
+
+
+def test_offload_restore_busy_path_uses_single_long_op_slot(
+    backup_env,
+    monkeypatch,
+    wait_until_helper,
+) -> None:
+    env = backup_env()
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_restore(_day: str) -> SimpleNamespace:
+        started.set()
+        release.wait(2)
+        return SimpleNamespace(status="ok", reason=None)
+
+    monkeypatch.setattr(backup_routes, "restore_offload_day", slow_restore)
+
+    first = env.client.post("/app/backup/offload/restore", json={"day": "20260228"})
+    wait_until_helper(started.is_set)
+    second = env.client.post("/app/backup/offload/restore", json={"day": "20260228"})
+    release.set()
+
+    assert first.status_code == 202
+    assert second.status_code == 503
+    assert second.get_json()["reason_code"] == "backup_busy"
 
 
 def test_rotate_restore_and_teardown_routes_call_engine_hooks(

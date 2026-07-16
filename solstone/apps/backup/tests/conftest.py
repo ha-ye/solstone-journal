@@ -27,8 +27,10 @@ class Env:
 @pytest.fixture(autouse=True)
 def clear_backup_registry():
     backup_routes._clear_registry()
+    backup_routes._clear_measurement_cache()
     yield
     backup_routes._clear_registry()
+    backup_routes._clear_measurement_cache()
 
 
 @pytest.fixture

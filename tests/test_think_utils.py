@@ -25,6 +25,7 @@ from solstone.think.utils import (
     get_journal_info,
     get_project_root,
     iter_segments,
+    resolve_segment_dir,
     segment_key,
     segment_parse,
     segment_path,
@@ -75,6 +76,43 @@ def test_segment_path_create_rejects_escaping_components(monkeypatch, tmp_path):
         segment_path("20240101", "143022_300", "../../outside")
 
     assert not (tmp_path / "outside").exists()
+
+
+def test_resolve_segment_dir_preserves_iter_segments_default_layout(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    day_dir = day_path("20240101")
+    default_segment = day_dir / "143022_300"
+    named_segment = day_dir / "camera" / "143022_300"
+    default_segment.mkdir()
+    named_segment.mkdir(parents=True)
+
+    assert (
+        resolve_segment_dir(
+            "20240101",
+            stream=DEFAULT_STREAM,
+            segment="143022_300",
+        )
+        == default_segment
+    )
+    assert (
+        resolve_segment_dir(
+            "20240101",
+            stream="camera",
+            segment="143022_300",
+        )
+        == named_segment
+    )
+
+    missing = resolve_segment_dir(
+        "20240102",
+        stream=DEFAULT_STREAM,
+        segment="090000_300",
+    )
+    assert missing == tmp_path / "chronicle" / "20240102" / "090000_300"
+    assert not missing.exists()
 
 
 def setup_entities_new_structure(

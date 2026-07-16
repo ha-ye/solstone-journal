@@ -21,6 +21,8 @@ from solstone.think.backup.restore import RestoreResult
 from solstone.think.backup.rotation import RotationResult
 from solstone.think.backup.state import BackupKeys
 from solstone.think.backup.teardown import TeardownResult
+from solstone.think.offload import OffloadResult, OffloadSegmentDetail
+from solstone.think.offload_restore import OffloadRestoreResult
 
 
 def _config_path(journal: Path) -> Path:
@@ -110,6 +112,7 @@ def test_registry_and_command_tree(monkeypatch: pytest.MonkeyPatch) -> None:
         "prune",
         "status",
         "recovery-key",
+        "offload",
         "restore",
         "off",
     ):
@@ -124,6 +127,12 @@ def test_registry_and_command_tree(monkeypatch: pytest.MonkeyPatch) -> None:
     assert recovery_help.exit_code == 0
     assert "show" in recovery_help.output
     assert "rotate" in recovery_help.output
+
+    offload_help = runner.invoke(backup_cli.app, ["offload", "--help"])
+    assert offload_help.exit_code == 0
+    assert "status" in offload_help.output
+    assert "run" in offload_help.output
+    assert "restore" in offload_help.output
 
 
 @pytest.mark.parametrize(
@@ -455,6 +464,128 @@ def test_prune_maps_engine_status(
 
     assert invoke_result.exit_code == expected_exit
     assert expected_text in invoke_result.output
+
+
+def test_offload_status_json_delegates_to_status_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = {
+        "offload": {"enabled": True, "budget_bytes": 100, "floor_bytes": 50},
+        "raw_media": {"total_bytes": 30, "total_files": 3},
+        "backup_only": {"total_bytes": 20, "degraded": False},
+    }
+    build_offload_status = Mock(return_value=payload)
+    monkeypatch.setattr(backup_cli, "build_offload_status", build_offload_status)
+
+    result = CliRunner().invoke(backup_cli.app, ["offload", "status", "--json"])
+
+    assert result.exit_code == 0
+    assert json.loads(result.output) == payload
+    build_offload_status.assert_called_once_with()
+
+
+def test_offload_run_delegates_to_existing_pass_and_formats_like_maintenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run_offload(*, dry_run: bool) -> OffloadResult:
+        captured["dry_run"] = dry_run
+        return OffloadResult(
+            status="ok",
+            reason=None,
+            files_offloaded=0,
+            bytes_offloaded=0,
+            ran_out_of_media=False,
+            dry_run=True,
+            details=(
+                OffloadSegmentDetail(
+                    day="20260101",
+                    stream="_default",
+                    segment="090000_300",
+                    files=2,
+                    bytes=50,
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(backup_cli, "run_offload", fake_run_offload)
+
+    result = CliRunner().invoke(backup_cli.app, ["offload", "run", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert captured == {"dry_run": True}
+    assert (
+        "backup offload: ok dry_run=true selected_files=2 selected_bytes=50 "
+        "ran_out_of_media=False segments=20260101/_default/090000_300:50"
+        in result.output
+    )
+
+
+def test_offload_restore_day_json_delegates_to_restore_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    restore_day = Mock(
+        return_value=OffloadRestoreResult(
+            status="ok",
+            reason=None,
+            scope="day",
+            day="20260228",
+            segments_selected=1,
+            segments_restored=1,
+            files_expected=2,
+            files_restored=2,
+            bytes_expected=50,
+            bytes_restored=50,
+            details=(),
+        )
+    )
+    monkeypatch.setattr(backup_cli, "restore_offload_day", restore_day)
+
+    result = CliRunner().invoke(
+        backup_cli.app,
+        ["offload", "restore", "20260228", "--json"],
+    )
+
+    assert result.exit_code == 0
+    assert json.loads(result.output)["day"] == "20260228"
+    restore_day.assert_called_once_with("20260228")
+
+
+def test_offload_restore_all_and_invalid_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    restore_all = Mock(
+        return_value=OffloadRestoreResult(
+            status="no_op",
+            reason="nothing_to_restore",
+            scope="all",
+            day=None,
+            segments_selected=0,
+            segments_restored=0,
+            files_expected=0,
+            files_restored=0,
+            bytes_expected=0,
+            bytes_restored=0,
+            details=(),
+        )
+    )
+    monkeypatch.setattr(backup_cli, "restore_offload_all", restore_all)
+
+    all_result = CliRunner().invoke(backup_cli.app, ["offload", "restore", "--all"])
+    mixed_result = CliRunner().invoke(
+        backup_cli.app,
+        ["offload", "restore", "20260228", "--all"],
+    )
+    missing_result = CliRunner().invoke(backup_cli.app, ["offload", "restore"])
+
+    assert all_result.exit_code == 0
+    assert "status=no_op reason=nothing_to_restore" in all_result.output
+    restore_all.assert_called_once_with()
+    assert mixed_result.exit_code == 1
+    assert "Use either a day or --all" in mixed_result.output
+    assert missing_result.exit_code == 1
+    assert "Provide a day or --all" in missing_result.output
 
 
 def test_recovery_key_show_prints_display_only(

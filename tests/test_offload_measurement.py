@@ -11,6 +11,7 @@ import pytest
 from solstone.think import offload_measurement
 from solstone.think.offload_measurement import (
     device_free_bytes,
+    device_total_bytes,
     measure_raw_media_usage,
     suggest_offload_defaults,
 )
@@ -104,6 +105,20 @@ def test_device_free_bytes_uses_disk_usage_free(
     monkeypatch.setattr(offload_measurement.shutil, "disk_usage", fake_disk_usage)
 
     assert device_free_bytes() == 850 * GB
+
+
+def test_device_total_bytes_uses_disk_usage_total(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+
+    def fake_disk_usage(path: Path) -> SimpleNamespace:
+        assert path == tmp_path
+        return SimpleNamespace(total=1000 * GB, used=100 * GB, free=850 * GB)
+
+    monkeypatch.setattr(offload_measurement.shutil, "disk_usage", fake_disk_usage)
+
+    assert device_total_bytes() == 1000 * GB
 
 
 @pytest.mark.parametrize(

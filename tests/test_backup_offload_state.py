@@ -167,6 +167,19 @@ def test_offload_state_records_and_status_view(
         "last_ok_time": None,
         "checked_subset": None,
     }
+    assert config["last_restore"] == {
+        "time": None,
+        "status": None,
+        "reason": None,
+        "scope": None,
+        "day": None,
+        "segments_selected": 0,
+        "segments_restored": 0,
+        "files_expected": 0,
+        "files_restored": 0,
+        "bytes_expected": 0,
+        "bytes_restored": 0,
+    }
 
     state.record_offload_result(
         status="ok",
@@ -185,6 +198,32 @@ def test_offload_state_records_and_status_view(
         ran_out_of_media=False,
     )
     state.record_verification_result(status="skipped", time=None, reason="disabled")
+    state.record_restore_result(
+        status="ok",
+        time=200,
+        reason=None,
+        scope="day",
+        day="20260101",
+        segments_selected=2,
+        segments_restored=2,
+        files_expected=5,
+        files_restored=5,
+        bytes_expected=500,
+        bytes_restored=500,
+    )
+    state.record_restore_result(
+        status="error",
+        time=210,
+        reason="verification_failed",
+        scope="day",
+        day="20260102",
+        segments_selected=1,
+        segments_restored=0,
+        files_expected=2,
+        files_restored=0,
+        bytes_expected=200,
+        bytes_restored=0,
+    )
 
     backup = _read_config(tmp_path)["backup"]
     assert backup["last_offload"] == {
@@ -203,6 +242,19 @@ def test_offload_state_records_and_status_view(
         "last_ok_time": None,
         "checked_subset": None,
     }
+    assert backup["last_restore"] == {
+        "time": 210,
+        "status": "error",
+        "reason": "verification_failed",
+        "scope": "day",
+        "day": "20260102",
+        "segments_selected": 1,
+        "segments_restored": 0,
+        "files_expected": 2,
+        "files_restored": 0,
+        "bytes_expected": 200,
+        "bytes_restored": 0,
+    }
     with pytest.raises(ValueError):
         state.record_offload_result(
             status="degraded",
@@ -213,6 +265,20 @@ def test_offload_state_records_and_status_view(
         )
     with pytest.raises(ValueError):
         state.record_verification_result(status="stalled", time=1)
+    with pytest.raises(ValueError):
+        state.record_restore_result(
+            status="skipped",
+            time=1,
+            reason=None,
+            scope="day",
+            day="20260101",
+            segments_selected=0,
+            segments_restored=0,
+            files_expected=0,
+            files_restored=0,
+            bytes_expected=0,
+            bytes_restored=0,
+        )
 
     view = state.status_view()
     assert view["offload"] == {
@@ -222,6 +288,7 @@ def test_offload_state_records_and_status_view(
     }
     assert view["last_offload"] == backup["last_offload"]
     assert view["last_verification"] == backup["last_verification"]
+    assert view["last_restore"] == backup["last_restore"]
 
 
 def test_verification_record_preserves_last_ok_and_clears_failed_subset(
