@@ -122,6 +122,12 @@ class RetryBatch:
                     should_fail = attempt == 0
                 elif self.mode == "phase3" and request.request_type.value == "category":
                     should_fail = attempt == 0
+                elif (
+                    self.mode == "phase3_exhausted"
+                    and request.request_type.value == "category"
+                    and request.frame_id == 1
+                ):
+                    should_fail = True
                 elif self.mode == "one_frame_exhausted" and request.frame_id == 1:
                     should_fail = request.request_type.value == "describe"
 
@@ -187,7 +193,7 @@ async def test_capacity_class_describe_errors_retry_and_promote_output(
 
 
 @pytest.mark.asyncio
-async def test_capacity_class_exhausted_frame_with_successful_sibling_stays_analyzed(
+async def test_capacity_class_exhausted_frame_with_successful_sibling_marks_failed(
     tmp_path, monkeypatch
 ):
     video_path = _video_path(tmp_path)
@@ -210,11 +216,52 @@ async def test_capacity_class_exhausted_frame_with_successful_sibling_stays_anal
     )
 
     rows = _jsonl_rows(output_path)
-    assert rows[0]["_solstone_processing"]["state"] == "analyzed"
+    assert rows[0]["_solstone_processing"]["state"] == "failed"
+    assert rows[0]["_solstone_processing"]["reason_code"] == "analysis_failed"
     failed = next(row for row in rows[1:] if row["frame_id"] == 1)
     succeeded = next(row for row in rows[1:] if row["frame_id"] == 2)
     assert "error" in failed
     assert succeeded["analysis"]["primary"] == "code"
+    _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_phase3_extraction_error_demotes_record_but_ships_row(
+    tmp_path, monkeypatch
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(
+        video_path, [_frame(1, frame_bytes), _frame(2, frame_bytes)], monkeypatch
+    )
+    _install_fakes(monkeypatch, mode="phase3_exhausted")
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [1],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    rows = _jsonl_rows(output_path)
+    assert rows[0]["_solstone_processing"]["state"] == "failed"
+    assert rows[0]["_solstone_processing"]["reason_code"] == "analysis_failed"
+    assert {row["frame_id"] for row in rows[1:]} == {1, 2}
+    enhanced = next(row for row in rows[1:] if row["frame_id"] == 1)
+    sibling = next(row for row in rows[1:] if row["frame_id"] == 2)
+    assert enhanced["enhanced"] is True
+    assert enhanced["content"] == {}
+    assert "error" in enhanced
+    assert "pending" not in enhanced
+    assert enhanced["requests"][-1]["category"] == "code"
+    assert enhanced["requests"][-1]["retries"] == 4
+    assert sibling["enhanced"] is False
+    assert "error" not in sibling
     _assert_no_describe_temp(output_path.parent)
 
 

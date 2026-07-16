@@ -738,7 +738,6 @@ class VideoProcessor:
 
         # Stream output to a same-directory temp, then promote only at terminal points.
         temp_path: Optional[Path] = None
-        promoted = False
         if output_path is not None:
             temp_file = tempfile.NamedTemporaryFile(
                 mode="w",
@@ -752,13 +751,52 @@ class VideoProcessor:
         else:
             output_file = None
 
-        def _promote() -> None:
-            nonlocal promoted
+        def _promote(state: str, reason_code: str) -> None:
             if output_file is not None and not output_file.closed:
                 output_file.close()
-            if temp_path is not None and output_path is not None:
-                install_file(temp_path, output_path)
-                promoted = True
+            if temp_path is None or output_path is None:
+                return
+
+            final_file = tempfile.NamedTemporaryFile(
+                mode="w",
+                dir=output_path.parent,
+                prefix=".describe_",
+                suffix=".jsonl.tmp",
+                delete=False,
+            )
+            final_path = Path(final_file.name)
+            try:
+                header = self._build_metadata_header()
+                header["_solstone_processing"] = build_processing_record(
+                    state=state,
+                    reason_code=reason_code,
+                    handler=HANDLER_DESCRIBE,
+                    input_size=self.video_path.stat().st_size,
+                )
+                final_file.write(json.dumps(header) + "\n")
+                with temp_path.open() as rows:
+                    for line in rows:
+                        final_file.write(line)
+                final_file.close()
+                install_file(final_path, output_path)
+            finally:
+                if not final_file.closed:
+                    final_file.close()
+                final_path.unlink(missing_ok=True)
+
+        emitted_frame_ids: set[int] = set()
+        emitted_row_has_error = False
+
+        def _emit_row(result: dict) -> None:
+            nonlocal emitted_row_has_error
+            result_line = json.dumps(result)
+            if output_file:
+                output_file.write(result_line + "\n")
+            emitted_frame_ids.add(result["frame_id"])
+            if "error" in result:
+                emitted_row_has_error = True
+            if logger.isEnabledFor(logging.DEBUG):
+                print(result_line, flush=True)
 
         try:
             frame_provider, _ = resolve_provider("generate")
@@ -807,6 +845,8 @@ class VideoProcessor:
                 )
 
                 batch.add(req)
+
+            qualified_ids = {frame_data["frame_id"] for frame_data in qualified_frames}
 
             # Clear qualified_frames now that all requests are created
             self.qualified_frames.clear()
@@ -891,29 +931,7 @@ class VideoProcessor:
                 f"({failed_frames} failed)"
             )
 
-            # Determine the processing outcome now that analysis has run, then
-            # write the metadata header (row 1) with the record before any chunk
-            # row or promote. Precedence: corrupt input -> no decodable frames
-            # -> all-frames-failed -> analyzed.
             all_frames_failed = total_frames > 0 and failed_frames == total_frames
-            if self.decode_failed:
-                state, reason_code = STATE_FAILED, REASON_CORRUPT_INPUT
-            elif not had_qualified_frames:
-                state, reason_code = STATE_EMPTY, REASON_NO_DECODABLE_FRAMES
-            elif all_frames_failed:
-                state, reason_code = STATE_FAILED, REASON_ANALYSIS_FAILED
-            else:
-                state, reason_code = STATE_ANALYZED, REASON_OK
-
-            if output_file:
-                header = self._build_metadata_header()
-                header["_solstone_processing"] = build_processing_record(
-                    state=state,
-                    reason_code=reason_code,
-                    handler=HANDLER_DESCRIBE,
-                    input_size=self.video_path.stat().st_size,
-                )
-                output_file.write(json.dumps(header) + "\n")
 
             # All frames failed: promote the header-only failed output as a
             # terminal record. Existing describe/sense re-entry guards treat
@@ -929,7 +947,7 @@ class VideoProcessor:
                     "Promoted header-only failed output; segment will not be "
                     f"reprocessed until --redo. {error_detail}"
                 )
-                _promote()
+                _promote(STATE_FAILED, REASON_ANALYSIS_FAILED)
                 raise RuntimeError(
                     f"All {total_frames} frame(s) failed vision analysis after retries"
                 )
@@ -1002,11 +1020,7 @@ class VideoProcessor:
                     # Not selected or failed - output immediately with enhanced=false
                     result["enhanced"] = False
 
-                    result_line = json.dumps(result)
-                    if output_file:
-                        output_file.write(result_line + "\n")
-                    if logger.isEnabledFor(logging.DEBUG):
-                        print(result_line, flush=True)
+                    _emit_row(result)
 
                     # Release frame bytes
                     req.frame_bytes = None
@@ -1039,11 +1053,7 @@ class VideoProcessor:
                 if not extractions:
                     result["enhanced"] = False
 
-                    result_line = json.dumps(result)
-                    if output_file:
-                        output_file.write(result_line + "\n")
-                    if logger.isEnabledFor(logging.DEBUG):
-                        print(result_line, flush=True)
+                    _emit_row(result)
 
                     req.frame_bytes = None
                     req.json_analysis = None
@@ -1188,11 +1198,7 @@ class VideoProcessor:
                 if result["pending"] <= 0:
                     del result["pending"]
 
-                    result_line = json.dumps(result)
-                    if output_file:
-                        output_file.write(result_line + "\n")
-                    if logger.isEnabledFor(logging.DEBUG):
-                        print(result_line, flush=True)
+                    _emit_row(result)
 
                     # Clean up
                     del frame_results[req.frame_id]
@@ -1200,12 +1206,30 @@ class VideoProcessor:
                         frame_images[req.frame_id].close()
                         del frame_images[req.frame_id]
 
-            _promote()
+            for frame_id, result in list(frame_results.items()):
+                result["error"] = "Extraction never completed"
+                result.pop("pending", None)
+                _emit_row(result)
+                del frame_results[frame_id]
+                if frame_id in frame_images:
+                    frame_images[frame_id].close()
+                    del frame_images[frame_id]
+
+            if self.decode_failed:
+                state, reason_code = STATE_FAILED, REASON_CORRUPT_INPUT
+            elif not had_qualified_frames:
+                state, reason_code = STATE_EMPTY, REASON_NO_DECODABLE_FRAMES
+            elif not emitted_row_has_error and emitted_frame_ids == qualified_ids:
+                state, reason_code = STATE_ANALYZED, REASON_OK
+            else:
+                state, reason_code = STATE_FAILED, REASON_ANALYSIS_FAILED
+
+            _promote(state, reason_code)
         finally:
-            # Close output and discard any unpromoted temp.
+            # Close output and discard the transient row temp.
             if output_file is not None and not output_file.closed:
                 output_file.close()
-            if temp_path is not None and not promoted:
+            if temp_path is not None:
                 temp_path.unlink(missing_ok=True)
 
             # Clean up any remaining frame images (in case of exception)

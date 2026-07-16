@@ -245,8 +245,8 @@ async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
             "qualified_count": 2,
             "_solstone_processing": {
                 "schema": "solstone.processing.v1",
-                "state": "analyzed",
-                "reason_code": "ok",
+                "state": "failed",
+                "reason_code": "analysis_failed",
                 "handler": "describe",
                 "attempted_at": "2026-06-30T12:00:00Z",
                 "input_size": 5,
@@ -285,6 +285,126 @@ async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
     assert output_path.read_text() == expected
     assert output_path.name in [path.name for path in output_path.parent.iterdir()]
     _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_mid_phase3_provider_deselect_flushes_failed_row(tmp_path, monkeypatch):
+    from solstone.think import models
+
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(video_path, [_frame(1, 0.0, frame_bytes)], monkeypatch)
+    _install_fakes(
+        monkeypatch,
+        {
+            1: {
+                "response": json.dumps(
+                    {"primary": "code", "secondary": "none", "overlap": True}
+                )
+            }
+        },
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [1],
+    )
+    provider_results = iter(
+        [
+            ("google", "gemini-test"),
+            (models.NO_BRAIN_PROVIDER, ""),
+        ]
+    )
+    monkeypatch.setattr(
+        models,
+        "resolve_provider",
+        lambda _interface: next(provider_results),
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    rows = _jsonl_rows(output_path)
+    assert rows[0]["_solstone_processing"]["state"] == "failed"
+    assert rows[0]["_solstone_processing"]["reason_code"] == "analysis_failed"
+    assert len(rows) == 2
+    result = rows[1]
+    assert result["frame_id"] == 1
+    assert result["enhanced"] is True
+    assert result["content"] == {}
+    assert result["error"] == "Extraction never completed"
+    assert "pending" not in result
+    _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_partial_failure_describe_sidecar_is_not_terminal_processing_proof(
+    tmp_path, monkeypatch
+):
+    from solstone.apps.observer.processing_proof import has_terminal_processing_proof
+
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _processor(
+        video_path,
+        [
+            _frame(1, 0.0, frame_bytes),
+            _frame(2, 1.25, frame_bytes),
+        ],
+        monkeypatch,
+    )
+    _install_fakes(
+        monkeypatch,
+        {
+            1: {},
+            2: {"fail": True, "error": "boom"},
+        },
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    assert has_terminal_processing_proof(video_path, video_path.stat().st_size) is False
+
+    clean_video_path = _video_path(tmp_path / "clean")
+    clean_output_path = clean_video_path.with_suffix(".jsonl")
+    clean_processor = _processor(
+        clean_video_path,
+        [_frame(1, 0.0, frame_bytes)],
+        monkeypatch,
+    )
+    _install_fakes(monkeypatch, {1: {}})
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    await clean_processor.process_with_vision(
+        max_concurrent=1,
+        output_path=clean_output_path,
+        work_key="20250101/143022_300/screen",
+    )
+
+    assert (
+        has_terminal_processing_proof(clean_video_path, clean_video_path.stat().st_size)
+        is True
+    )
+    _assert_no_describe_temp(output_path.parent)
+    _assert_no_describe_temp(clean_output_path.parent)
 
 
 @pytest.mark.asyncio
