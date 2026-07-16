@@ -13,8 +13,10 @@ from pathlib import Path
 import pytest
 
 from solstone.observe.processing_record import (
+    REASON_CORRUPT_INPUT,
     REASON_NO_DECODABLE_FRAMES,
     STATE_EMPTY,
+    STATE_FAILED,
     build_processing_record,
 )
 from solstone.think.cluster import cluster_segments
@@ -213,6 +215,24 @@ def _seed_segment(
             reason_code=REASON_NO_DECODABLE_FRAMES,
             handler="describe",
             input_size=0,
+        )
+        (segment_dir / "screen.jsonl").write_text(
+            json.dumps(
+                {
+                    "raw": "screen.webm",
+                    "type": "screencast",
+                    "_solstone_processing": record,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    elif state == "failed_final":
+        record = build_processing_record(
+            state=STATE_FAILED,
+            reason_code=REASON_CORRUPT_INPUT,
+            handler="describe",
+            input_size=3,
         )
         (segment_dir / "screen.jsonl").write_text(
             json.dumps(
@@ -656,6 +676,7 @@ def test_segment_fully_sensed_rejects_unfinished_states(state):
 def test_segment_fully_sensed_accepts_done_states():
     assert segment_fully_sensed({"screen": "analyzed", "audio": "purged"}) is True
     assert segment_fully_sensed({"screen": "empty"}) is True
+    assert segment_fully_sensed({"screen": "failed_final"}) is True
 
 
 def test_segment_fully_thought_idle_short_circuits():
@@ -1180,6 +1201,26 @@ def test_empty_segment_is_not_counted_not_sensed(segment_journal):
 
     assert completion.not_sensed == 0
     assert all(blocker["dimension"] != "not_sensed" for blocker in completion.blockers)
+
+
+def test_failed_final_segment_is_fully_sensed_and_censused(segment_journal):
+    day = "20990422"
+    _seed_segment(segment_journal, day, SEGMENT, state="failed_final")
+    _write_health(
+        segment_journal,
+        day,
+        "001_segment.jsonl",
+        _complete_segment_events(SEGMENT),
+    )
+
+    completion = classify_segment_completion(
+        cluster_segments(day),
+        read_segment_progress(day),
+    )
+
+    assert completion.blockers == []
+    assert completion.not_sensed == 0
+    assert completion.exhausted == (SEGMENT,)
 
 
 def test_idle_segment_does_not_block_day(segment_journal, monkeypatch):

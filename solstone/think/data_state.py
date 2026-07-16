@@ -11,7 +11,11 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from pathlib import Path
 
-from solstone.observe.processing_record import STATE_EMPTY, STATE_FAILED
+from solstone.observe.processing_record import (
+    STATE_EMPTY,
+    STATE_FAILED,
+    is_failure_exhausted,
+)
 
 ANALYZING_STALE_SECONDS = 1800
 
@@ -24,6 +28,7 @@ class DataState(StrEnum):
     PENDING = "pending"
     ANALYZING = "analyzing"
     FAILED = "failed"
+    FAILED_FINAL = "failed_final"
     PURGED = "purged"
     ABSENT = "absent"
 
@@ -132,7 +137,11 @@ def derive_modality_state(
     verdict, _payload, _detail = _classify_marker(marker_path, has_chunks=has_chunks)
     state = record.get("state") if record is not None else None
     if state == STATE_FAILED:
-        return DataState.FAILED.value
+        return (
+            DataState.FAILED_FINAL.value
+            if is_failure_exhausted(record)
+            else DataState.FAILED.value
+        )
     if verdict == "chunks_win":
         return DataState.ANALYZED.value
     if state == STATE_EMPTY:

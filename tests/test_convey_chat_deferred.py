@@ -94,6 +94,7 @@ def _backlog(
         not_thought=not_thought,
         total=total,
         capped=0,
+        exhausted=(),
     )
     return SegmentBacklog(
         days=(day,),

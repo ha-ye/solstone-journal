@@ -576,7 +576,9 @@ def test_corrupt_audio_decode_records_failed_without_vad_or_stt(
     assert stt_spy.call_count == 0
     assert vad_spy.call_count == 0
     assert load_audio_spy.call_count == 1
-    assert read_segment_data_state(DAY, SEGMENT) == {"audio": DataState.FAILED.value}
+    assert read_segment_data_state(DAY, SEGMENT) == {
+        "audio": DataState.FAILED_FINAL.value
+    }
 
     load_audio_spy.reset_mock()
     stt_spy.reset_mock()
@@ -623,7 +625,7 @@ def test_ac4_corrupt_screen_is_failed_distinct_from_empty(segment_journal, monke
         "screen": DataState.EMPTY.value
     }
     assert read_segment_data_state(DAY, "122000_300") == {
-        "screen": DataState.FAILED.value
+        "screen": DataState.FAILED_FINAL.value
     }
     assert DataState.FAILED != DataState.EMPTY
 
@@ -655,8 +657,8 @@ def test_ac5_all_frames_fail_is_analysis_failed_distinct(
     assert record["reason_code"] != REASON_CORRUPT_INPUT
     assert record["reason_code"] != REASON_NO_DECODABLE_FRAMES
     assert record["state"] != STATE_ANALYZED
-    # Both corrupt_input and analysis_failed derive DataState.FAILED; the
-    # distinction survives only in the processing-record reason_code.
+    # analysis_failed without attempts remains retryable; corrupt_input derives
+    # DataState.FAILED_FINAL from the processing-record reason_code.
     assert read_segment_data_state(DAY, SEGMENT) == {"screen": DataState.FAILED.value}
 
 

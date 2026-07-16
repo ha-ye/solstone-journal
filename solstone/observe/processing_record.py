@@ -8,12 +8,16 @@ records into the metadata header (row 1) of the JSONL they already produce, so
 a downstream reader lode can derive per-segment processing state without
 re-deriving it from raw media. This module is the one authoritative source of
 the closed state / reason_code / handler / schema vocabulary; neither handler
-may carry these literals inline.
+may carry these literals inline. Failed describe records may also carry an
+``attempts`` counter; absent attempts means 0, and
+``FAILED_ATTEMPT_BOUND`` is the shared retry exhaustion bound.
 """
 
 from datetime import datetime, timezone
 
 SCHEMA = "solstone.processing.v1"
+FAILED_ATTEMPT_BOUND = 3
+ATTEMPTS_KEY = "attempts"
 
 # state values (closed set)
 STATE_ANALYZED = "analyzed"
@@ -31,6 +35,18 @@ REASON_ANALYSIS_FAILED = "analysis_failed"
 # handler values (closed set)
 HANDLER_DESCRIBE = "describe"
 HANDLER_TRANSCRIBE = "transcribe"
+
+
+def is_failure_exhausted(record: dict | None) -> bool:
+    """Return whether a failed processing record has reached terminal exhaustion."""
+    if not isinstance(record, dict) or record.get("state") != STATE_FAILED:
+        return False
+    if record.get("reason_code") == REASON_CORRUPT_INPUT:
+        return True
+    attempts = record.get(ATTEMPTS_KEY, 0)
+    if isinstance(attempts, bool) or not isinstance(attempts, int):
+        attempts = 0
+    return attempts >= FAILED_ATTEMPT_BOUND
 
 
 def now_iso_utc() -> str:

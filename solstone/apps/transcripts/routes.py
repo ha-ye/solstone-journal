@@ -1481,7 +1481,9 @@ def reprocess_segment(day: str, stream: str, segment_key: str) -> Any:
             }
         )
 
-    if state == DataState.FAILED.value:
+    if state in {DataState.FAILED.value, DataState.FAILED_FINAL.value}:
+        # Reprocess deletes the jsonl; clear stale failed markers before they
+        # can out-rank a legitimately re-running segment.
         repair_modality_markers(
             segment_dir_path,
             modality,

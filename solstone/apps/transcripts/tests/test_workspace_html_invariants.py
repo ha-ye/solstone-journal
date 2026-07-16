@@ -32,6 +32,24 @@ def test_workspace_html_renders_awaiting_thinking_state():
     assert "rg.think" in text
 
 
+def test_workspace_html_failed_final_reuses_failed_affordance():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+    failed_renderer = text.split("function renderFailedDataState", 1)[1].split(
+        "function renderDataStateAffordance", 1
+    )[0]
+    affordance = text.split("function renderDataStateAffordance", 1)[1].split(
+        "function tabExists", 1
+    )[0]
+
+    assert "function renderFailedDataState(modality)" in text
+    assert "dataStateCopy(modality, 'failed')" in failed_renderer
+    assert "state === 'failed' || state === 'failed_final'" in affordance
+    assert "return renderFailedDataState(modality);" in affordance
+    assert "dataState[modality] === 'failed_final'" in text
+
+
 def test_workspace_html_wires_body_window_panel_and_strip():
     workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
 

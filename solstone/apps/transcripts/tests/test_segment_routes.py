@@ -32,7 +32,11 @@ from solstone.apps.transcripts.tests._media_helpers import (
     read_true_duration_seconds,
     top_level_atom_order,
 )
-from solstone.observe.processing_record import STATE_EMPTY
+from solstone.observe.processing_record import (
+    FAILED_ATTEMPT_BOUND,
+    STATE_EMPTY,
+    STATE_FAILED,
+)
 from solstone.think.data_state import ANALYZING_STALE_SECONDS
 from solstone.think.importers import health_schema
 
@@ -2003,6 +2007,44 @@ def test_reprocess_segment_failed_unlinks_failed_marker(
     day = "20990126"
     segment = "090000_300"
     segment_dir = _write_raw_pending_segment(journal_copy, day, "alpha", segment)
+    failed = segment_dir / ".analyze_failed_screen"
+    failed.write_text(
+        '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen", '
+        '"reason": "exit_1", "failed_at": "2026-05-20T09:00:10Z", "detail": "x"}\n',
+        encoding="utf-8",
+    )
+    _stub_reprocess_spawn(monkeypatch)
+
+    response = client.post(
+        f"/app/transcripts/api/segment/{day}/alpha/{segment}/reprocess",
+        json={"modality": "screen"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["repair_status"] == "accepted"
+    assert not failed.exists()
+    assert (segment_dir / ".analyzing_screen").exists()
+
+
+def test_reprocess_segment_failed_final_unlinks_failed_marker(
+    client, journal_copy, monkeypatch
+):
+    day = "20990126"
+    segment = "091000_300"
+    segment_dir = _write_raw_pending_segment(journal_copy, day, "alpha", segment)
+    _write_jsonl(
+        segment_dir / "screen.jsonl",
+        [
+            {
+                "raw": "screen.webm",
+                "_solstone_processing": {
+                    "state": STATE_FAILED,
+                    "reason_code": "analysis_failed",
+                    "attempts": FAILED_ATTEMPT_BOUND,
+                },
+            }
+        ],
+    )
     failed = segment_dir / ".analyze_failed_screen"
     failed.write_text(
         '{"started_at": "2026-05-20T09:00:00Z", "modality": "screen", '

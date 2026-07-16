@@ -13,7 +13,11 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from solstone.observe.processing_record import STATE_EMPTY, STATE_FAILED
+from solstone.observe.processing_record import (
+    FAILED_ATTEMPT_BOUND,
+    STATE_EMPTY,
+    STATE_FAILED,
+)
 from solstone.think.retention import (
     RetentionConfig,
     RetentionPolicy,
@@ -36,8 +40,8 @@ def _write_jsonl(path: Path, *records: dict) -> None:
     )
 
 
-def _processing_record(state: str) -> dict:
-    return {
+def _processing_record(state: str, *, attempts: int | None = None) -> dict:
+    record = {
         "schema": "solstone.processing.v1",
         "state": state,
         "reason_code": "test",
@@ -45,6 +49,9 @@ def _processing_record(state: str) -> dict:
         "attempted_at": "2026-01-01T00:00:00Z",
         "input_size": 1,
     }
+    if attempts is not None:
+        record["attempts"] = attempts
+    return record
 
 
 def _write_audio_success(path: Path, raw: str = "audio.flac") -> None:
@@ -275,6 +282,24 @@ class TestResolveSegmentGate:
 
         assert gate.verdict == "failed"
         assert gate.failed_files == {"audio.jsonl": "failed"}
+
+    def test_failed_final_audio_record_blocks(self, tmp_path):
+        seg = _make_segment(tmp_path, audio=True, audio_extract=False)
+        _write_jsonl(
+            seg / "audio.jsonl",
+            {
+                "raw": "audio.flac",
+                "_solstone_processing": _processing_record(
+                    STATE_FAILED,
+                    attempts=FAILED_ATTEMPT_BOUND,
+                ),
+            },
+        )
+
+        gate = resolve_segment_gate(seg)
+
+        assert gate.verdict == "failed"
+        assert gate.failed_files == {"audio.jsonl": "failed_final"}
 
     def test_corrupt_analyzing_marker_blocks(self, tmp_path):
         seg = _make_segment(tmp_path, audio=True, audio_extract=False)
@@ -784,6 +809,42 @@ class TestPurge:
         assert log_entry["blocked_failed_details"] == result.blocked_failed_details
         assert log_entry["partial_error"] is False
         assert not (journal / "health" / "pruning-runs").exists()
+
+    def test_processed_policy_failed_final_holds_raw(self, tmp_path, monkeypatch):
+        journal = tmp_path / "journal"
+        segment = journal / "chronicle" / "20260115" / "default" / "100000_300"
+        segment.mkdir(parents=True)
+        (segment / "screen.mp4").write_bytes(b"failed-video")
+        _write_jsonl(
+            segment / "screen.jsonl",
+            {
+                "raw": "screen.mp4",
+                "_solstone_processing": _processing_record(
+                    STATE_FAILED,
+                    attempts=FAILED_ATTEMPT_BOUND,
+                ),
+            },
+        )
+        (segment / "stream.json").write_text('{"stream":"default"}')
+        (segment / "talents").mkdir()
+        _install_test_journal(journal, monkeypatch)
+
+        result = purge(
+            config=RetentionConfig(default=RetentionPolicy(mode="processed")),
+            dry_run=False,
+        )
+
+        assert result.files_deleted == 0
+        assert result.segments_blocked_failed == 1
+        assert result.blocked_failed_details == [
+            {
+                "day": "20260115",
+                "stream": "default",
+                "segment": "100000_300",
+                "files": {"screen.jsonl": "failed_final"},
+            }
+        ]
+        assert (segment / "screen.mp4").exists()
 
     def test_processed_policy_partial_failure_blocks_failed_segment_and_prunes_clean_sibling(
         self, tmp_path, monkeypatch

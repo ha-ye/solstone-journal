@@ -60,6 +60,7 @@ SENSED_TERMINAL_STATES = frozenset(
         DataState.ANALYZED.value,
         DataState.PURGED.value,
         DataState.EMPTY.value,
+        DataState.FAILED_FINAL.value,
     }
 )
 STUCK_FAIL_THRESHOLD = 3
@@ -111,6 +112,7 @@ class SegmentCompletion:
     not_thought: int
     total: int
     capped: int
+    exhausted: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -273,6 +275,7 @@ def summarize_pipeline_day(day: str) -> dict:
             "persisted": 0,
             "talents_fired": False,
         },
+        "exhausted_segments": {"count": 0, "segments": []},
     }
 
     try:
@@ -403,6 +406,12 @@ def summarize_pipeline_day(day: str) -> dict:
             cluster_segments(day),
             read_segment_progress(day),
         )
+        # Exhausted segments are sensed-terminal and leave not_sensed blockers;
+        # this census is the remaining signal that their raw media is held.
+        summary["exhausted_segments"] = {
+            "count": len(completion.exhausted),
+            "segments": list(completion.exhausted),
+        }
         if completion.not_thought > 0:
             # The kind now means segments sensed-but-not-thought, not zero runs.
             summary["anomalies"].append(
@@ -956,7 +965,8 @@ def segment_fully_sensed(data_state: dict[str, str]) -> bool:
 
     ``data_state`` is the per-segment dict from ``cluster_segments``; it already
     omits absent modalities, so an absent modality cannot peg a segment. Empty
-    outputs are terminal; failed outputs still block sensing completion.
+    outputs and exhausted failures are terminal; retryable failed outputs still
+    block sensing completion.
     """
     return all(state in SENSED_TERMINAL_STATES for state in data_state.values())
 
@@ -1027,18 +1037,22 @@ def classify_segment_completion(
     not_sensed = 0
     not_thought = 0
     capped = 0
+    exhausted: set[str] = set()
 
     for seg in segments:
         if not segment_requires_processing(seg):
             continue
         key = seg["key"]
+        data_state = seg["data_state"]
         segment_progress = lookup_segment_progress(progress, seg["stream"], key)
         if segment_progress is not None and segment_progress.capped:
             capped += 1
-        if not segment_fully_sensed(seg["data_state"]):
+        if any(state == DataState.FAILED_FINAL.value for state in data_state.values()):
+            exhausted.add(key)
+        if not segment_fully_sensed(data_state):
             detail = ",".join(
                 f"{modality}={state}"
-                for modality, state in sorted(seg["data_state"].items())
+                for modality, state in sorted(data_state.items())
                 if state not in SENSED_TERMINAL_STATES
             )
             blockers.append(
@@ -1068,6 +1082,7 @@ def classify_segment_completion(
         not_thought=not_thought,
         total=len(segments),
         capped=capped,
+        exhausted=tuple(sorted(exhausted)),
     )
 
 

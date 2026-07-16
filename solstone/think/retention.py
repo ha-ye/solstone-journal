@@ -174,8 +174,8 @@ def _collect_extraction_states(
         )
         if state == "malformed":
             failed_files[path.name] = "malformed"
-        elif state == DataState.FAILED.value:
-            failed_files[path.name] = DataState.FAILED.value
+        elif state in {DataState.FAILED.value, DataState.FAILED_FINAL.value}:
+            failed_files[path.name] = state
         elif state in {DataState.PENDING.value, DataState.ANALYZING.value}:
             incomplete = True
         elif state in {DataState.ANALYZED.value, DataState.EMPTY.value}:
