@@ -26,6 +26,10 @@ Commands:
     sol call speakers seed-from-imports [--commit] [--json]
     sol call speakers suggest [--limit N] [--json]
     sol call speakers detect [--json]
+    sol call speakers build-from-tags [--json]
+    sol call speakers tag-owner <day> <stream> <segment> <source> <sentence-id> [--json]
+    sol call speakers sentences <day> <stream> <segment> <source> [--json]
+    sol call speakers day-segments <day> [--limit N] [--json]
     sol call speakers confirm-owner [--backfill] [--json]
     sol call speakers reject-owner
     sol call speakers owner-ready
@@ -38,8 +42,13 @@ from typing import Any
 import typer
 
 from solstone.convey.reasons import (
+    ENTITY_BLOCKED,
+    INVALID_DAY,
+    INVALID_SEGMENT_OR_STREAM,
     SPEAKER_COMMAND_FAILED,
     SPEAKER_OWNER_CENTROID_REQUIRED,
+    SPEAKER_OWNER_IDENTITY_REQUIRED,
+    SPEAKER_SENTENCE_MISSING,
 )
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
@@ -66,7 +75,7 @@ def _exit_owner_centroid_required(err: ConveyClientError) -> None:
 
 
 def _exit_speaker_command_failed(err: ConveyClientError) -> None:
-    typer.echo(err.detail, err=True)
+    typer.echo(err.detail or err.error, err=True)
     raise typer.Exit(1) from err
 
 
@@ -652,6 +661,132 @@ def detect_cmd(
     """Run owner voice candidate detection."""
     result = _request("POST", "/app/speakers/api/owner/detect")
     typer.echo(json.dumps(result, indent=2, default=str))
+
+
+@app.command("build-from-tags")
+@convey_cli
+def build_from_tags_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Build the owner voice centroid from validated manual owner tags."""
+    result = _request("POST", "/app/speakers/api/owner/build-from-tags")
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+
+    if result.get("status") == "confirmed":
+        typer.echo(
+            "Owner centroid confirmed from manual tags "
+            f"(principal: {result['principal_id']}, cluster_size: {result['cluster_size']})"
+        )
+        return
+
+    if result.get("status") == "low_quality":
+        typer.echo("Owner manual tags are not ready.")
+        typer.echo(f"Reason: {result.get('low_quality_reason')}")
+        typer.echo(f"Observed: {result.get('observed_value')}")
+        typer.echo(f"Threshold: {result.get('threshold_value')}")
+        typer.echo(f"Manual tags: {result.get('manual_tags_count')}")
+        typer.echo(f"Next step: {result.get('next_step')}")
+        typer.echo(f"Guidance: {result.get('guidance')}")
+        return
+
+    typer.echo(json.dumps(result, indent=2, default=str))
+
+
+@app.command("tag-owner")
+@convey_cli
+def tag_owner_cmd(
+    day: str = typer.Argument(..., help="Day in YYYYMMDD format."),
+    stream: str = typer.Argument(..., help="Stream name."),
+    segment: str = typer.Argument(..., help="Segment key (HHMMSS_LEN)."),
+    source: str = typer.Argument(..., help="Audio source stem."),
+    sentence_id: int = typer.Argument(..., help="Sentence id to tag."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Tag one sentence as the owner voice."""
+    try:
+        result = _request(
+            "POST",
+            "/app/speakers/api/owner/tag-cli",
+            json_body={
+                "day": day,
+                "stream": stream,
+                "segment_key": segment,
+                "source": source,
+                "sentence_id": sentence_id,
+            },
+        )
+    except ConveyClientError as err:
+        if err.reason_code in {
+            ENTITY_BLOCKED.code,
+            INVALID_DAY.code,
+            INVALID_SEGMENT_OR_STREAM.code,
+            SPEAKER_OWNER_IDENTITY_REQUIRED.code,
+            SPEAKER_SENTENCE_MISSING.code,
+        }:
+            _exit_speaker_command_failed(err)
+        raise
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+
+    if result.get("status") == "already_assigned":
+        typer.echo(
+            f"Owner sentence already tagged: {day}/{stream}/{segment} #{sentence_id}"
+        )
+    else:
+        typer.echo(f"Tagged owner sentence: {day}/{stream}/{segment} #{sentence_id}")
+
+
+@app.command("sentences")
+@convey_cli
+def sentences_cmd(
+    day: str = typer.Argument(..., help="Day in YYYYMMDD format."),
+    stream: str = typer.Argument(..., help="Stream name."),
+    segment: str = typer.Argument(..., help="Segment key (HHMMSS_LEN)."),
+    source: str = typer.Argument(..., help="Audio source stem."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """List sentence ids for one speaker-review source."""
+    body = _request(
+        "GET", f"/app/speakers/api/review-cli/{day}/{stream}/{segment}/{source}"
+    )
+    if json_output:
+        typer.echo(json.dumps(body, indent=2, default=str))
+        return
+
+    typer.echo(f"Sentences for {day}/{stream}/{segment}/{source}:")
+    for sentence in body["sentences"]:
+        marker = "*" if sentence.get("has_embedding") else "-"
+        typer.echo(f"{marker} {sentence['sentence_id']}: {sentence['text']}")
+
+
+@app.command("day-segments")
+@convey_cli
+def day_segments_cmd(
+    day: str = typer.Argument(..., help="Day in YYYYMMDD format."),
+    limit: int = typer.Option(20, "--limit", "-n", help="Maximum segments to return."),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """List speaker-review segments for a day."""
+    body = _request(
+        "GET",
+        f"/app/speakers/api/segments-cli/{day}",
+        params={"limit": limit},
+    )
+    if json_output:
+        typer.echo(json.dumps(body, indent=2, default=str))
+        return
+
+    typer.echo(
+        f"Showing {body['returned']} of {body['total']} segments "
+        f"(limit {body['limit']})"
+    )
+    for segment in body["segments"]:
+        sources = ", ".join(segment.get("sources", []))
+        typer.echo(f"{segment['stream']}/{segment['key']}: {sources}")
 
 
 @app.command("confirm-owner")

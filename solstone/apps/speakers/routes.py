@@ -969,6 +969,39 @@ def api_segments(day: str) -> Any:
     return jsonify({"segments": segments, "total": total})
 
 
+@speakers_bp.route("/api/segments-cli/<day>")
+def api_cli_segments(day: str) -> Any:
+    """Return a bounded day segment list for CLI callers."""
+    if not DATE_RE.fullmatch(day):
+        return error_response(INVALID_DAY, detail="Invalid day format")
+
+    try:
+        limit = int(request.args.get("limit", 20))
+    except (ValueError, TypeError):
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="Invalid limit parameter",
+        )
+    if limit < 1:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="Limit must be at least 1",
+        )
+
+    segments = _scan_segment_embeddings(day)
+    segments.sort(key=lambda s: s["key"])
+    total = len(segments)
+    return success_response(
+        {
+            "day": day,
+            "segments": segments[:limit],
+            "returned": min(limit, total),
+            "limit": limit,
+            "total": total,
+        }
+    )
+
+
 def _segment_has_speaker(
     day: str, stream: str, segment_key: str, entity_id: str
 ) -> bool:
@@ -1224,6 +1257,62 @@ def api_review(day: str, stream: str, segment_key: str, source: str) -> Any:
                 "needs_review": needs_review_count,
                 "corrections": corrections_count,
             },
+        }
+    )
+
+
+@speakers_bp.route("/api/review-cli/<day>/<stream>/<segment_key>/<source>")
+def api_cli_review(day: str, stream: str, segment_key: str, source: str) -> Any:
+    """Return sentence rows for CLI callers without browser-only review payload."""
+    if not DATE_RE.fullmatch(day):
+        return error_response(INVALID_DAY, detail="Invalid day format")
+    if not validate_segment_key(segment_key):
+        return error_response(
+            INVALID_SEGMENT_OR_STREAM,
+            detail="Invalid segment key",
+        )
+    if not STREAM_RE.fullmatch(stream):
+        return error_response(INVALID_SEGMENT_OR_STREAM, detail="Invalid stream")
+
+    sentences, _ = _load_sentences(day, segment_key, source, stream=stream)
+    if not sentences:
+        return error_response(
+            SPEAKER_REVIEW_UNAVAILABLE,
+            detail="No transcript found",
+        )
+
+    segment_dir = get_segment_path(day, segment_key, stream, create=False)
+    labels_data = _load_speaker_labels(segment_dir)
+    label_map: dict[int, dict] = {}
+    if labels_data:
+        for label in labels_data.get("labels", []):
+            sid = label.get("sentence_id")
+            if sid is not None:
+                label_map[int(sid)] = label
+
+    rows = []
+    for sentence in sentences:
+        sentence_id = int(sentence["id"])
+        label = label_map.get(sentence_id)
+        rows.append(
+            {
+                "sentence_id": sentence_id,
+                "text": sentence.get("text", ""),
+                "has_embedding": bool(sentence.get("has_embedding")),
+                "speaker": label.get("speaker") if label else None,
+                "confidence": label.get("confidence") if label else None,
+                "method": label.get("method") if label else None,
+                "needs_review": _speaker_sentence_needs_review(label, labels_data),
+            }
+        )
+
+    return success_response(
+        {
+            "day": day,
+            "stream": stream,
+            "segment_key": segment_key,
+            "source": source,
+            "sentences": rows,
         }
     )
 

@@ -14,7 +14,15 @@ from typer.testing import CliRunner
 import solstone.apps.speakers.call as speakers_call
 import solstone.apps.speakers.routes as speakers_routes
 from solstone.apps.speakers.call import app
-from solstone.convey.reasons import SPEAKER_LABELS_BUSY, SPEAKER_VOICEPRINT_BUSY
+from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
+from solstone.convey.reasons import (
+    ENTITY_BLOCKED,
+    INVALID_SEGMENT_OR_STREAM,
+    SPEAKER_LABELS_BUSY,
+    SPEAKER_OWNER_IDENTITY_REQUIRED,
+    SPEAKER_SENTENCE_MISSING,
+    SPEAKER_VOICEPRINT_BUSY,
+)
 from solstone.think.convey_client import ConveyClient
 from solstone.think.journal_io import LockTimeout
 from tests._baseline_harness import make_test_client, mark_setup_complete
@@ -130,6 +138,16 @@ def _assert_json_stdout(result, expected: Any) -> None:
     assert result.exit_code == 0
     assert json.loads(result.stdout) == expected
     assert result.stderr == ""
+
+
+def _owner_tag_guidance(manual_tags_count: int) -> str:
+    needed = OWNER_BOOTSTRAP_MIN_STMTS - manual_tags_count
+    return (
+        "Use sol call speakers tag-owner <day> <stream> <segment> "
+        "<source> <sentence-id> on owner sentences in raw media until "
+        f"you have {OWNER_BOOTSTRAP_MIN_STMTS} validated owner tags; "
+        f"{needed} more needed. Then run sol call speakers build-from-tags."
+    )
 
 
 def test_status_full_section_and_unknown(
@@ -664,6 +682,322 @@ def test_detect_success_json_and_busy_owner_voice(
     assert busy.exit_code == 1
     assert busy.stdout == ""
     assert busy.stderr == f"{SPEAKER_VOICEPRINT_BUSY.message}\n"
+
+
+def test_build_from_tags_low_quality_json_and_busy(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manual_tags_count = 2
+    low_quality = {
+        "status": "low_quality",
+        "source": "manual_tags",
+        "recommendation": "low_quality",
+        "segments_available": manual_tags_count,
+        "embeddings_available": manual_tags_count,
+        "low_quality_reason": "too_few_stmts",
+        "observed_value": float(manual_tags_count),
+        "threshold_value": float(OWNER_BOOTSTRAP_MIN_STMTS),
+        "manual_tags_count": manual_tags_count,
+        "can_build_from_tags": False,
+        "next_step": "seed_manual_tags",
+        "guidance": _owner_tag_guidance(manual_tags_count),
+    }
+    monkeypatch.setattr(
+        speakers_routes,
+        "bootstrap_owner_from_manual_tags",
+        lambda: low_quality,
+    )
+
+    text = runner.invoke(app, ["build-from-tags"])
+    json_result = runner.invoke(app, ["build-from-tags", "--json"])
+
+    assert text.exit_code == 0
+    assert text.stderr == ""
+    assert text.stdout == (
+        "Owner manual tags are not ready.\n"
+        "Reason: too_few_stmts\n"
+        f"Observed: {float(manual_tags_count)}\n"
+        f"Threshold: {float(OWNER_BOOTSTRAP_MIN_STMTS)}\n"
+        f"Manual tags: {manual_tags_count}\n"
+        "Next step: seed_manual_tags\n"
+        f"Guidance: {_owner_tag_guidance(manual_tags_count)}\n"
+    )
+    _assert_json_stdout(json_result, low_quality)
+
+    monkeypatch.setattr(
+        speakers_routes,
+        "bootstrap_owner_from_manual_tags",
+        lambda: {"error_kind": "voiceprint_busy", "error": "locked"},
+    )
+    busy = runner.invoke(app, ["build-from-tags"])
+
+    assert busy.exit_code == 1
+    assert busy.stdout == ""
+    assert busy.stderr == f"{SPEAKER_VOICEPRINT_BUSY.message}\n"
+
+
+def test_tag_owner_success_retry_safe_actionable_errors_and_busy(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    args = ["tag-owner", "20260101", "mic", "120000_10", "mic_audio", "1"]
+    monkeypatch.setattr(speakers_routes, "_principal_id_or_none", lambda: "jer")
+    monkeypatch.setattr(
+        speakers_routes,
+        "_assign_attribution_impl",
+        lambda *_unused: speakers_routes.success_response({"status": "assigned"}),
+    )
+
+    assigned = runner.invoke(app, args)
+
+    assert assigned.exit_code == 0
+    assert assigned.stderr == ""
+    assert assigned.stdout == ("Tagged owner sentence: 20260101/mic/120000_10 #1\n")
+
+    monkeypatch.setattr(
+        speakers_routes,
+        "_assign_attribution_impl",
+        lambda *_unused: speakers_routes.success_response(
+            {"status": "already_assigned"}
+        ),
+    )
+    already = runner.invoke(app, args)
+
+    assert already.exit_code == 0
+    assert already.stderr == ""
+    assert already.stdout == (
+        "Owner sentence already tagged: 20260101/mic/120000_10 #1\n"
+    )
+
+    cases = [
+        (
+            "sentence missing",
+            SPEAKER_SENTENCE_MISSING,
+            "Pick a different sentence with an embedding.",
+        ),
+        (
+            "no embedding",
+            SPEAKER_SENTENCE_MISSING,
+            "Pick a different sentence with an embedding.",
+        ),
+        (
+            "invalid segment",
+            INVALID_SEGMENT_OR_STREAM,
+            "Use a valid day, stream, and segment, then pick a sentence.",
+        ),
+        ("blocked entity", ENTITY_BLOCKED, "Choose an unblocked speaker."),
+    ]
+    for _case, reason, detail in cases:
+
+        def attribution_error(*_unused, reason=reason, detail=detail):
+            return speakers_routes.error_response(reason, detail=detail)
+
+        monkeypatch.setattr(
+            speakers_routes,
+            "_assign_attribution_impl",
+            attribution_error,
+        )
+        result = runner.invoke(app, args)
+
+        assert result.exit_code == 1
+        assert result.stdout == ""
+        assert result.stderr == f"{detail}\n"
+
+    monkeypatch.setattr(
+        speakers_routes,
+        "_assign_attribution_impl",
+        lambda *_unused: speakers_routes.error_response(
+            SPEAKER_VOICEPRINT_BUSY, detail="locked"
+        ),
+    )
+    voice_busy = runner.invoke(app, args)
+
+    assert voice_busy.exit_code == 1
+    assert voice_busy.stdout == ""
+    assert voice_busy.stderr == f"{SPEAKER_VOICEPRINT_BUSY.message}\n"
+
+    monkeypatch.setattr(
+        speakers_routes,
+        "_assign_attribution_impl",
+        lambda *_unused: speakers_routes.error_response(
+            SPEAKER_LABELS_BUSY, detail="locked"
+        ),
+    )
+    labels_busy = runner.invoke(app, args)
+
+    assert labels_busy.exit_code == 1
+    assert labels_busy.stdout == ""
+    assert labels_busy.stderr == f"{SPEAKER_LABELS_BUSY.message}\n"
+
+
+def test_tag_owner_identity_required_error(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(speakers_routes, "_principal_id_or_none", lambda: None)
+    monkeypatch.setattr(speakers_routes, "principal_identity_or_none", lambda: None)
+
+    result = runner.invoke(
+        app, ["tag-owner", "20260101", "mic", "120000_10", "mic_audio", "1"]
+    )
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == f"{SPEAKER_OWNER_IDENTITY_REQUIRED.message}\n"
+
+
+def test_sentences_projects_sentence_id_text_and_json(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        speakers_routes,
+        "_load_sentences",
+        lambda day, segment_key, source, stream=None: (
+            [
+                {"id": 1, "text": "hello owner sentence", "has_embedding": True},
+                {"id": 2, "text": "missing embedding", "has_embedding": False},
+            ],
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        speakers_routes,
+        "_load_speaker_labels",
+        lambda _segment_dir: {
+            "labels": [],
+            "skipped": True,
+            "reason": "pre-bootstrap owner",
+        },
+    )
+    stub_json_result = runner.invoke(
+        app, ["sentences", "20260101", "mic", "120000_10", "mic_audio", "--json"]
+    )
+
+    _assert_json_stdout(
+        stub_json_result,
+        {
+            "success": True,
+            "day": "20260101",
+            "stream": "mic",
+            "segment_key": "120000_10",
+            "source": "mic_audio",
+            "sentences": [
+                {
+                    "sentence_id": 1,
+                    "text": "hello owner sentence",
+                    "has_embedding": True,
+                    "speaker": None,
+                    "confidence": None,
+                    "method": None,
+                    "needs_review": True,
+                },
+                {
+                    "sentence_id": 2,
+                    "text": "missing embedding",
+                    "has_embedding": False,
+                    "speaker": None,
+                    "confidence": None,
+                    "method": None,
+                    "needs_review": True,
+                },
+            ],
+        },
+    )
+
+    monkeypatch.setattr(
+        speakers_routes,
+        "_load_speaker_labels",
+        lambda _segment_dir: {
+            "labels": [
+                {
+                    "sentence_id": 1,
+                    "speaker": "jer",
+                    "confidence": "high",
+                    "method": "user_assigned",
+                }
+            ]
+        },
+    )
+
+    text = runner.invoke(
+        app, ["sentences", "20260101", "mic", "120000_10", "mic_audio"]
+    )
+    json_result = runner.invoke(
+        app, ["sentences", "20260101", "mic", "120000_10", "mic_audio", "--json"]
+    )
+
+    assert text.exit_code == 0
+    assert text.stderr == ""
+    assert text.stdout == (
+        "Sentences for 20260101/mic/120000_10/mic_audio:\n"
+        "* 1: hello owner sentence\n"
+        "- 2: missing embedding\n"
+    )
+    _assert_json_stdout(
+        json_result,
+        {
+            "success": True,
+            "day": "20260101",
+            "stream": "mic",
+            "segment_key": "120000_10",
+            "source": "mic_audio",
+            "sentences": [
+                {
+                    "sentence_id": 1,
+                    "text": "hello owner sentence",
+                    "has_embedding": True,
+                    "speaker": "jer",
+                    "confidence": "high",
+                    "method": "user_assigned",
+                    "needs_review": False,
+                },
+                {
+                    "sentence_id": 2,
+                    "text": "missing embedding",
+                    "has_embedding": False,
+                    "speaker": None,
+                    "confidence": None,
+                    "method": None,
+                    "needs_review": True,
+                },
+            ],
+        },
+    )
+
+
+def test_day_segments_reports_total_when_limited(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        speakers_routes,
+        "_scan_segment_embeddings",
+        lambda day: [
+            {"stream": "sys", "key": "100000_60", "sources": ["sys_audio"]},
+            {"stream": "mic", "key": "090000_60", "sources": ["mic_audio"]},
+        ],
+    )
+
+    text = runner.invoke(app, ["day-segments", "20260101", "--limit", "1"])
+    json_result = runner.invoke(
+        app, ["day-segments", "20260101", "--limit", "1", "--json"]
+    )
+
+    assert text.exit_code == 0
+    assert text.stderr == ""
+    assert text.stdout == (
+        "Showing 1 of 2 segments (limit 1)\nmic/090000_60: mic_audio\n"
+    )
+    _assert_json_stdout(
+        json_result,
+        {
+            "success": True,
+            "day": "20260101",
+            "segments": [
+                {"stream": "mic", "key": "090000_60", "sources": ["mic_audio"]}
+            ],
+            "returned": 1,
+            "limit": 1,
+            "total": 2,
+        },
+    )
 
 
 def test_confirm_owner_text_backfill_json_and_family2_error(
