@@ -4,13 +4,24 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
-## [Unreleased]
+## [0.8.8] - 2026-07-16
+
+### Added
+
+- your journal now keeps pages from the solstone browser extension: what you read in the browser shows up in the timeline and transcripts, site by site, and sol's thinking works from pages along with everything else.
 
 ### Changed
 
 - journal audio transcription now uses only the local Parakeet paths or the confidential lane; legacy Rev.ai/Gemini STT, default transcript enrichment, noisy-audio cloud upgrade, and the `google-genai` dependency were removed.
 - machines below the local STT memory floor now surface a local/confidential setup requirement instead of falling back to hosted Google transcription.
 - thinking now has one active brain for every task: bundled local by default, a personal OpenAI, Anthropic, or Google AI Studio key, or an owner-supplied OpenAI-compatible endpoint. legacy split lanes, tier and talent routing, Vertex support, and duplicate cloud-provider adapters have been removed.
+
+### Fixed
+
+- a key set for an owner-supplied thinking endpoint could appear in error details when a request failed. keys are now removed from every error, event, and trace.
+- the settings page's data included whether cloud thinking keys were set. it no longer does; thinking is the only place that holds provider configuration.
+- pointing thinking at your own compatible endpoint is more dependable: requests no longer carry local-only fields some endpoints rejected, and an endpoint that can't be reached now says so quickly instead of timing out.
+- the bundled local model now downloads at full speed on first setup; some installs saw it crawl at a fraction of their connection's speed.
 
 ## [0.8.7] - 2026-07-15
 
