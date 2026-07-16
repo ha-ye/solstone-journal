@@ -859,6 +859,102 @@ def test_detect_owner_candidate_missing_segment_dir_marks_no_cluster(speakers_en
     assert get_current()["voiceprint"]["status"] == "no_cluster"
 
 
+def test_detect_owner_candidate_no_cluster_carries_manual_guidance(speakers_env):
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    speakers_env()
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "no_cluster"
+    assert result["reason"] == "pool_missing"
+    assert result["next_step"] == "seed_manual_tags"
+    assert result["manual_tags_count"] == 0
+    assert result["can_build_from_tags"] is False
+    assert result["guidance"]
+
+
+def test_owner_guidance_next_step_reflects_manual_tag_readiness(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [_source_segment("20240101", "090000_300", stream="mic")],
+                n_intervals=1,
+            )
+        ],
+    )
+
+    shortfall = detect_owner_candidate()
+
+    env.create_entity("Self Person", is_principal=True)
+    embeddings = np.zeros((OWNER_BOOTSTRAP_MIN_STMTS, 256), dtype=np.float32)
+    embeddings[:, 0] = 1.0
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "100000_300",
+        embeddings,
+        durations_s=np.full(OWNER_BOOTSTRAP_MIN_STMTS, 2.0, dtype=np.float32),
+    )
+    ready = detect_owner_candidate()
+
+    assert shortfall["status"] == "low_quality"
+    assert shortfall["next_step"] == "seed_manual_tags"
+    assert shortfall["can_build_from_tags"] is False
+    assert ready["status"] == "low_quality"
+    assert ready["next_step"] == "build_from_tags"
+    assert ready["can_build_from_tags"] is True
+    assert ready["manual_tags_count"] == OWNER_BOOTSTRAP_MIN_STMTS
+
+
+def test_owner_guidance_is_read_time_only(speakers_env, monkeypatch):
+    from solstone.apps.speakers import owner as owner_module
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    writes: list[dict] = []
+
+    def capture_update(_key: str, payload: dict):
+        writes.append(payload)
+
+    monkeypatch.setattr(owner_module, "update_state", capture_update)
+
+    no_cluster = detect_owner_candidate()
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [_source_segment("20240101", "090000_300", stream="mic")],
+                n_intervals=1,
+            )
+        ],
+    )
+    low_quality = detect_owner_candidate()
+
+    assert no_cluster["next_step"] == "seed_manual_tags"
+    assert low_quality["next_step"] == "seed_manual_tags"
+    assert [set(payload) for payload in writes] == [
+        {"status", "segments_checked", "attempted_at"},
+        {
+            "status",
+            "source",
+            "low_quality_reason",
+            "observed_value",
+            "threshold_value",
+            "segments_checked",
+            "attempted_at",
+        },
+    ]
+
+
 def test_detect_owner_candidate_reuses_persisted_candidate(speakers_env, monkeypatch):
     from solstone.apps.speakers import owner as owner_module
     from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
@@ -949,25 +1045,33 @@ def test_detect_owner_candidate_confirmed_short_circuit_idempotent(
 
 
 def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
-    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+    from solstone.apps.speakers.encoder_config import (
+        OWNER_BOOTSTRAP_MIN_STMTS,
+        OWNER_THRESHOLD,
+    )
     from solstone.apps.speakers.owner import bootstrap_owner_from_manual_tags
 
     env = speakers_env()
     principal_dir = env.create_entity("Self Person", is_principal=True)
     principal_id = "self_person"
     rng = np.random.default_rng(4)
-    base = np.zeros((10, 256), dtype=np.float32)
+    batch_count = 3
+    batch_size = OWNER_BOOTSTRAP_MIN_STMTS // batch_count
+    final_batch_size = OWNER_BOOTSTRAP_MIN_STMTS - (batch_size * (batch_count - 1))
+    base = np.zeros((max(batch_size, final_batch_size), 256), dtype=np.float32)
     base[:, 0] = 1.0
-    durations = np.full(10, 2.4, dtype=np.float32)
-    for idx in range(3):
-        embeddings = base + rng.normal(scale=0.01, size=(10, 256)).astype(np.float32)
+    durations = np.full(base.shape[0], 2.4, dtype=np.float32)
+    for idx, count in enumerate([batch_size, batch_size, final_batch_size]):
+        embeddings = base[:count] + rng.normal(scale=0.01, size=(count, 256)).astype(
+            np.float32
+        )
         _save_manual_owner_tags(
             env,
             principal_id,
             "20240101",
             f"{9 + idx:02d}0000_300",
             embeddings,
-            durations_s=durations,
+            durations_s=durations[:count],
         )
 
     result = bootstrap_owner_from_manual_tags()
@@ -975,7 +1079,7 @@ def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
     owner_path = principal_dir / "owner_centroid.npz"
     assert result["status"] == "confirmed"
     assert result["principal_id"] == principal_id
-    assert result["cluster_size"] == 30
+    assert result["cluster_size"] == OWNER_BOOTSTRAP_MIN_STMTS
     assert owner_path.exists()
     with np.load(owner_path, allow_pickle=False) as data:
         assert set(data.files) == {
@@ -988,7 +1092,7 @@ def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
         cluster_size = int(np.asarray(data["cluster_size"]).item())
         threshold = float(np.asarray(data["threshold"]).item())
         last_refreshed_at = str(np.asarray(data["last_refreshed_at"]).item())
-    assert cluster_size == 30
+    assert cluster_size == OWNER_BOOTSTRAP_MIN_STMTS
     assert np.isclose(np.linalg.norm(centroid), 1.0)
     assert np.isclose(threshold, OWNER_THRESHOLD)
     assert last_refreshed_at.endswith("Z")
@@ -996,6 +1100,7 @@ def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
 
 
 def test_bootstrap_owner_from_manual_tags_too_few_stmts(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
     from solstone.apps.speakers.owner import (
         LOW_QUALITY_REASON_TOO_FEW_STMTS,
         bootstrap_owner_from_manual_tags,
@@ -1005,13 +1110,14 @@ def test_bootstrap_owner_from_manual_tags_too_few_stmts(speakers_env):
     env.create_entity("Self Person", is_principal=True)
     embeddings = np.zeros((10, 256), dtype=np.float32)
     embeddings[:, 0] = 1.0
+    validated_count = int(embeddings.shape[0])
     _save_manual_owner_tags(
         env,
         "self_person",
         "20240101",
         "090000_300",
         embeddings,
-        durations_s=np.full(10, 2.0, dtype=np.float32),
+        durations_s=np.full(validated_count, 2.0, dtype=np.float32),
     )
 
     result = bootstrap_owner_from_manual_tags()
@@ -1019,6 +1125,10 @@ def test_bootstrap_owner_from_manual_tags_too_few_stmts(speakers_env):
     assert result["status"] == "low_quality"
     assert result["source"] == "manual_tags"
     assert result["low_quality_reason"] == LOW_QUALITY_REASON_TOO_FEW_STMTS
+    assert result["observed_value"] == validated_count
+    assert result["threshold_value"] == OWNER_BOOTSTRAP_MIN_STMTS
+    assert result["manual_tags_count"] == validated_count
+    assert result["next_step"] == "seed_manual_tags"
     assert get_current()["voiceprint"]["source"] == "manual_tags"
 
 
@@ -1561,6 +1671,7 @@ def test_api_owner_status_candidate(speakers_env):
 
 
 def test_api_owner_status_low_quality(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
     from solstone.apps.speakers.routes import speakers_bp
 
     speakers_env()
@@ -1570,7 +1681,7 @@ def test_api_owner_status_low_quality(speakers_env):
             "status": "low_quality",
             "low_quality_reason": "too_few_stmts",
             "observed_value": 5,
-            "threshold_value": 30,
+            "threshold_value": OWNER_BOOTSTRAP_MIN_STMTS,
             "segments_checked": 1,
             "attempted_at": "2026-03-15T12:00:00",
         },
@@ -1587,13 +1698,21 @@ def test_api_owner_status_low_quality(speakers_env):
         "source": "candidate_pool",
         "low_quality_reason": "too_few_stmts",
         "observed_value": 5,
-        "threshold_value": 30,
+        "threshold_value": OWNER_BOOTSTRAP_MIN_STMTS,
         "manual_tags_count": 0,
         "segments_available": 0,
         "segments_with_embeddings": 0,
         "embeddings_available": 0,
         "streams_represented": 0,
         "can_build_from_tags": False,
+        "next_step": "seed_manual_tags",
+        "guidance": (
+            "Use sol call speakers tag-owner <day> <stream> <segment> "
+            "<source> <sentence-id> on owner sentences in raw media until "
+            f"you have {OWNER_BOOTSTRAP_MIN_STMTS} validated owner tags; "
+            f"{OWNER_BOOTSTRAP_MIN_STMTS} more needed. Then run "
+            "sol call speakers build-from-tags."
+        ),
     }
 
 

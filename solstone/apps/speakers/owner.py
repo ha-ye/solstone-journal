@@ -127,6 +127,7 @@ def _bail_low_quality(
     source: str,
 ) -> dict[str, Any]:
     """Record and return a locked low-quality owner detection result."""
+    manual_guidance = load_owner_manual_bootstrap_guidance(_principal_id_or_none())
     _mark_low_quality(
         reason,
         observed,
@@ -143,6 +144,10 @@ def _bail_low_quality(
         "low_quality_reason": reason,
         "observed_value": float(observed),
         "threshold_value": float(threshold),
+        "manual_tags_count": int(manual_guidance["manual_tags_count"]),
+        "can_build_from_tags": bool(manual_guidance["can_build_from_tags"]),
+        "next_step": str(manual_guidance["next_step"]),
+        "guidance": str(manual_guidance["guidance"]),
     }
 
 
@@ -448,6 +453,45 @@ def load_manual_tag_stats(principal_id: str) -> dict[str, int]:
     }
 
 
+def load_owner_manual_bootstrap_guidance(principal_id: str | None) -> dict[str, Any]:
+    """Return manual owner-tag progress and next-step guidance."""
+    manual_stats = (
+        load_manual_tag_stats(principal_id)
+        if principal_id is not None
+        else {"manual_tags_count": 0, "streams_represented": 0}
+    )
+    manual_tags_count = int(manual_stats["manual_tags_count"])
+    can_build = manual_tags_count >= OWNER_BOOTSTRAP_MIN_STMTS
+    if can_build:
+        return {
+            "manual_tags_count": manual_tags_count,
+            "streams_represented": int(manual_stats["streams_represented"]),
+            "can_build_from_tags": True,
+            "next_step": "build_from_tags",
+            "guidance": (
+                f"You have {manual_tags_count} validated owner tags "
+                f"(minimum {OWNER_BOOTSTRAP_MIN_STMTS}). Run "
+                "sol call speakers build-from-tags to save your owner voice; "
+                "add more with sol call speakers tag-owner <day> <stream> "
+                "<segment> <source> <sentence-id> if needed."
+            ),
+        }
+
+    needed = OWNER_BOOTSTRAP_MIN_STMTS - manual_tags_count
+    return {
+        "manual_tags_count": manual_tags_count,
+        "streams_represented": int(manual_stats["streams_represented"]),
+        "can_build_from_tags": False,
+        "next_step": "seed_manual_tags",
+        "guidance": (
+            "Use sol call speakers tag-owner <day> <stream> <segment> "
+            "<source> <sentence-id> on owner sentences in raw media until "
+            f"you have {OWNER_BOOTSTRAP_MIN_STMTS} validated owner tags; "
+            f"{needed} more needed. Then run sol call speakers build-from-tags."
+        ),
+    }
+
+
 def _safe_scandir(path: Path) -> list[os.DirEntry[str]]:
     try:
         return list(os.scandir(path))
@@ -521,18 +565,13 @@ def load_owner_bootstrap_diagnostics(
 ) -> dict[str, int | bool]:
     """Return counts that drive owner bootstrap diagnostics surfaces."""
     inventory = load_owner_embedding_inventory()
-    manual_stats = (
-        load_manual_tag_stats(principal_id)
-        if principal_id is not None
-        else {"manual_tags_count": 0, "streams_represented": 0}
-    )
-    manual_tags_count = int(manual_stats["manual_tags_count"])
+    manual_guidance = load_owner_manual_bootstrap_guidance(principal_id)
     return {
-        "manual_tags_count": manual_tags_count,
+        "manual_tags_count": int(manual_guidance["manual_tags_count"]),
         "segments_available": int(inventory["segments_available"]),
         "embeddings_available": int(inventory["embeddings_available"]),
-        "streams_represented": int(manual_stats["streams_represented"]),
-        "can_build_from_tags": manual_tags_count >= OWNER_BOOTSTRAP_MIN_STMTS,
+        "streams_represented": int(manual_guidance["streams_represented"]),
+        "can_build_from_tags": bool(manual_guidance["can_build_from_tags"]),
     }
 
 
@@ -763,6 +802,7 @@ def _candidate_no_cluster(
     segments_available: int,
     embeddings_available: int,
 ) -> dict[str, Any]:
+    manual_guidance = load_owner_manual_bootstrap_guidance(_principal_id_or_none())
     _mark_no_cluster(segments_checked)
     return {
         "status": "no_cluster",
@@ -771,6 +811,10 @@ def _candidate_no_cluster(
         "segments_available": int(segments_available),
         "embeddings_available": int(embeddings_available),
         "recommendation": "no_cluster",
+        "manual_tags_count": int(manual_guidance["manual_tags_count"]),
+        "can_build_from_tags": bool(manual_guidance["can_build_from_tags"]),
+        "next_step": str(manual_guidance["next_step"]),
+        "guidance": str(manual_guidance["guidance"]),
     }
 
 

@@ -62,6 +62,7 @@ from solstone.apps.speakers.owner import (
     ensure_principal_entity,
     load_owner_bootstrap_diagnostics,
     load_owner_centroid,
+    load_owner_manual_bootstrap_guidance,
     load_owner_provisional_centroid,
     owner_detection_ready,
     principal_identity_or_none,
@@ -1524,6 +1525,7 @@ def api_owner_status() -> Any:
         )
 
     if status == "low_quality":
+        guidance = load_owner_manual_bootstrap_guidance(_principal_id_or_none())
         return jsonify(
             {
                 "status": "low_quality",
@@ -1532,6 +1534,8 @@ def api_owner_status() -> Any:
                 "observed_value": voiceprint.get("observed_value", 0.0),
                 "threshold_value": voiceprint.get("threshold_value", 0.0),
                 **diagnostics,
+                "next_step": guidance["next_step"],
+                "guidance": guidance["guidance"],
             }
         )
 
