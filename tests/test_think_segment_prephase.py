@@ -1566,7 +1566,7 @@ def test_segments_default_local_slot_fallback_logs_once_across_call_sites(
 ):
     """Discovery failure yields the floor value and logs the fallback once.
 
-    ``--segments`` calls ``_default_segment_workers()`` twice in one process:
+    ``--segments`` calls ``default_segment_workers()`` twice in one process:
     once in argument validation and once in the run path. The tmp journal has
     no ``health/local.port``, so discovery fails without any network I/O.
     """

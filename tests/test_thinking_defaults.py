@@ -281,21 +281,22 @@ def test_describe_default_confidential_endpoint_uses_cpu_formula_and_does_not_pr
 
 
 @pytest.mark.parametrize(
-    ("mode", "configured", "args_jobs", "effective_procs"),
+    "effective_procs",
     [
-        ("watch", 1, None, 1),
-        ("watch", 4, None, 4),
-        ("day", 1, 1, 1),
-        ("day", 1, 2, 2),
-        ("day", 4, 1, 4),
-        ("day", 4, 2, 4),
+        pytest.param(1, id="watch-config-1"),
+        pytest.param(4, id="watch-config-4"),
+        pytest.param(1, id="day-config-1-jobs-1"),
+        pytest.param(2, id="day-config-1-jobs-2"),
+        pytest.param(4, id="day-config-4-jobs-1"),
+        pytest.param(4, id="day-config-4-jobs-2"),
     ],
 )
 @pytest.mark.parametrize("slots", [1, 2, 4])
 def test_describe_per_proc_product_matrix_and_residual_log_once(
-    monkeypatch, caplog, mode, configured, args_jobs, effective_procs, slots
+    monkeypatch, caplog, effective_procs, slots
 ):
-    del mode, configured, args_jobs
+    # Sense-mode mapping to effective_procs is covered by
+    # test_main_registers_describe_with_policy_per_proc_jobs.
     monkeypatch.setattr(fanout_policy, "_describe_uses_local", lambda: True)
     _pin_slots(monkeypatch, slots)
     caplog.set_level(logging.INFO)

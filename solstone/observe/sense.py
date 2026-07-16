@@ -1379,14 +1379,12 @@ def main():
     describe_effective_procs = (
         max(args.jobs, describe_configured) if args.day else describe_configured
     )
-    describe_per_proc_jobs = fanout_policy.describe_per_proc_jobs(
-        describe_effective_procs
-    )
+    describe_jobs = fanout_policy.describe_per_proc_jobs(describe_effective_procs)
     for ext in VIDEO_EXTENSIONS:
         sensor.register(
             f"*{ext}",
             "describe",
-            ["journal", "describe", "{file}", "-j", str(describe_per_proc_jobs)],
+            ["journal", "describe", "{file}", "-j", str(describe_jobs)],
         )
 
     for ext in IMAGE_EXTENSIONS:
