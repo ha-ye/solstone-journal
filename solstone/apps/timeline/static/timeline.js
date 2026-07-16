@@ -1008,8 +1008,8 @@ async function renderDay(monthIndex, day) {
   layoutDay();
 }
 
-// Generic layout primitive used by every "axis with events above and
-// below" view (hour view, day view, eventually month + year). For each
+// Generic layout primitive used by each axis view with events above and below
+// (month, day, and hour). For each
 // side: each card's ideal left = its anchor cell's center − cardWidth/2;
 // sort by anchor key; forward-pass to push apart any overlap; then draw
 // SVG dotted connectors from card edge to anchor cell edge so slants

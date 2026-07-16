@@ -262,13 +262,11 @@
         cell.className = 'daygrid-cell daygrid-cell--pad';
         cell.setAttribute('aria-hidden', 'true');
       } else if ((isRolled || isPending) && count > 0) {
-        cell = config.mode === 'navigate'
-          ? document.createElement('a')
-          : document.createElement('span');
+        cell = document.createElement('a');
         cell.className = 'daygrid-cell';
         cell.setAttribute(DAY_ATTR, cursor);
         cell.textContent = String(Number(cursor.slice(6, 8)));
-        if (config.mode === 'navigate') cell.href = joinPath(config.appPath, cursor);
+        cell.href = joinPath(config.appPath, cursor);
         if (cursor === today) cell.classList.add('daygrid-cell--today');
         if (isRolled) {
           cell.classList.add('daygrid-cell--data');
@@ -358,8 +356,6 @@
 
     const grid = document.createElement('div');
     grid.className = 'daygrid-track';
-    grid.setAttribute('role', 'grid');
-    grid.setAttribute('aria-label', 'timeline days');
     for (const item of built.cells) grid.appendChild(item.element);
     body.appendChild(grid);
     scroller.appendChild(body);
