@@ -774,12 +774,15 @@ def test_ledger_event_with_media_absent_is_skipped_without_reading_summary(
     )
     archive = Mock()
     monkeypatch.setattr(offload, "run_archive_backup", archive)
-    monkeypatch.setattr(
-        offload,
-        "summarize_segment",
-        Mock(side_effect=AssertionError("pass must not read ledger summaries")),
-        raising=False,
-    )
+    summary_symbols = {"summarize_segment", "summarize_day", "summarize_journal"}
+    assert summary_symbols.isdisjoint(vars(offload))
+    for name in summary_symbols:
+        monkeypatch.setattr(
+            offload_ledger,
+            name,
+            Mock(side_effect=AssertionError("pass must not read ledger summaries")),
+            raising=True,
+        )
 
     result = offload.run_offload()
 

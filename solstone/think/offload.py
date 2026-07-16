@@ -265,8 +265,6 @@ def _offload_segment(
     counters: _Counters,
 ) -> OffloadResult | None:
     prepared = _prepare_raw_files(raw_files)
-    if not prepared:
-        return None
 
     archive = run_archive_backup([file.path for file in prepared])
     stall_reason = _archive_stall_reason(archive)
