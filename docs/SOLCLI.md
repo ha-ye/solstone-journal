@@ -273,10 +273,10 @@ instead of false failures. Its battery is:
 
 - `disk_space` — advisory.
 - `host_dependencies`, `config_dir_readable`, `journal_dir_writable`,
-  `supervisor_conflict`, `service_identity`, `service_running`, `journal_sync`,
+  `service_identity`, `service_running`, `journal_sync`,
   `stale_alias_symlink` — blockers.
   Stale `journal` aliases warn, never block, and `journal setup` repairs them.
-- `supervisor_conflict` — macOS only; fails when journal.app and the legacy
+- `supervisor_conflict` — blocker; macOS only; fails when journal.app and the legacy
   LaunchAgent are both supervising one journal. The proven-conflict action is
   `journal service uninstall`; other diagnoses remain visible with their actions
   withheld until the topology is resolved.
