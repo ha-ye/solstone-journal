@@ -377,6 +377,23 @@ def segment_path(day: str, segment: str, stream: str, *, create: bool = True) ->
     return path
 
 
+def resolve_segment_dir(day: str, *, stream: str, segment: str) -> Path:
+    """Return an existing segment directory path without creating it.
+
+    This helper preserves the on-disk default-stream layout used by
+    ``iter_segments``: default stream segments live directly under the day
+    directory, while named streams live under ``<day>/<stream>/<segment>``.
+    It exists alongside ``segment_path`` because ``segment_path`` always places
+    the stream component on disk and has the transposed ``(day, segment,
+    stream)`` argument order.  Keyword-only ``stream`` and ``segment`` avoid
+    repeating that bug class in read-only callers.
+    """
+    day_dir = day_path(day, create=False)
+    if stream == DEFAULT_STREAM:
+        return day_dir / segment
+    return day_dir / stream / segment
+
+
 def day_from_path(path: str | Path) -> str | None:
     """Extract the YYYYMMDD day from a journal path.
 

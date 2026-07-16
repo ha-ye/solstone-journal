@@ -26,7 +26,7 @@ from solstone.think.utils import (
     day_is_complete,
     day_path,
     now_ms,
-    segment_path,
+    resolve_segment_dir,
     updated_days,
 )
 
@@ -1104,9 +1104,8 @@ def _segment_dir_for_backlog(
     stream: str | None,
     segment: str,
 ) -> Path:
-    if stream in (None, DEFAULT_STREAM):
-        return day_path(day, create=False) / segment
-    return segment_path(day, segment, stream, create=False)
+    resolved_stream = DEFAULT_STREAM if stream is None else stream
+    return resolve_segment_dir(day, stream=resolved_stream, segment=segment)
 
 
 def _read_failed_marker(
