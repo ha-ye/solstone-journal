@@ -56,7 +56,7 @@ def apostrophe_search_client(tmp_path, monkeypatch):
     scan_journal(str(journal), full=True)
 
     app = create_app(journal=str(journal))
-    return app.test_client(), seeded_day
+    return app.test_client(), seeded_day, yesterday, control_day
 
 
 def _get_json(response) -> dict[str, Any]:
@@ -66,7 +66,7 @@ def _get_json(response) -> dict[str, Any]:
 
 
 def test_search_api_finds_single_apostrophe_term(apostrophe_search_client):
-    client, _ = apostrophe_search_client
+    client, *_ = apostrophe_search_client
 
     response = client.get("/app/search/api/search", query_string={"q": "it's"})
 
@@ -77,7 +77,7 @@ def test_search_api_finds_single_apostrophe_term(apostrophe_search_client):
 
 
 def test_search_api_finds_apostrophe_operator_query(apostrophe_search_client):
-    client, _ = apostrophe_search_client
+    client, *_ = apostrophe_search_client
 
     response = client.get(
         "/app/search/api/search", query_string={"q": "O'Brien AND dogs"}
@@ -90,7 +90,7 @@ def test_search_api_finds_apostrophe_operator_query(apostrophe_search_client):
 
 
 def test_search_api_finds_temporal_apostrophe_query(apostrophe_search_client):
-    client, _ = apostrophe_search_client
+    client, *_ = apostrophe_search_client
 
     response = client.get(
         "/app/search/api/search", query_string={"q": "yesterday's meeting"}
@@ -103,7 +103,7 @@ def test_search_api_finds_temporal_apostrophe_query(apostrophe_search_client):
 
 
 def test_search_api_sentinel_bounds_preserve_temporal_query(apostrophe_search_client):
-    client, _ = apostrophe_search_client
+    client, _seeded_day, yesterday, control_day = apostrophe_search_client
     query = {"q": "yesterday's meeting"}
 
     plain_response = client.get("/app/search/api/search", query_string=query)
@@ -118,15 +118,13 @@ def test_search_api_sentinel_bounds_preserve_temporal_query(apostrophe_search_cl
     sentinel_payload = _get_json(sentinel_response)
     assert sentinel_payload == plain_payload
 
-    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-    control_day = (datetime.now() - timedelta(days=2)).strftime("%Y%m%d")
     returned_days = [group["day"] for group in sentinel_payload["days"]]
     assert returned_days == [yesterday]
     assert control_day not in returned_days
 
 
 def test_search_api_apostrophe_only_is_json_not_500(apostrophe_search_client):
-    client, _ = apostrophe_search_client
+    client, *_ = apostrophe_search_client
 
     response = client.get("/app/search/api/search", query_string={"q": "'"})
 
@@ -137,7 +135,7 @@ def test_search_api_apostrophe_only_is_json_not_500(apostrophe_search_client):
 
 
 def test_day_results_api_handles_apostrophe_query(apostrophe_search_client):
-    client, seeded_day = apostrophe_search_client
+    client, seeded_day, *_ = apostrophe_search_client
 
     response = client.get(
         "/app/search/api/day_results",

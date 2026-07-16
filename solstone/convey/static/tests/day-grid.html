@@ -512,6 +512,48 @@
     equal('select same-cell pointer wiggle follow-up click anchors only', selected.ranges.length, 0);
     assert('select same-cell pointer wiggle follow-up click paints anchor', mar4.classList.contains('daygrid-cell--range-endpoint'));
 
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    mar20 = root.querySelector('[data-daygrid-date="20260320"]');
+    const originalSetPointerCapture = root.setPointerCapture;
+    const outsidePointerId = 41;
+    let capturedPointerId = null;
+    root.setPointerCapture = (pointerId) => {
+      capturedPointerId = pointerId;
+    };
+    const outsideMar4Rect = mar4.getBoundingClientRect();
+    const outsideRootRect = root.getBoundingClientRect();
+    mar4.dispatchEvent(new PointerCtor('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId: outsidePointerId,
+      clientX: outsideMar4Rect.left + outsideMar4Rect.width / 2,
+      clientY: outsideMar4Rect.top + outsideMar4Rect.height / 2
+    }));
+    equal('select drag captures pointer for outside release', capturedPointerId, outsidePointerId);
+    root.dispatchEvent(new PointerCtor('pointerup', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId: outsidePointerId,
+      clientX: outsideRootRect.right + 20,
+      clientY: outsideRootRect.bottom + 20
+    }));
+    const outsideMar20Rect = mar20.getBoundingClientRect();
+    mar20.dispatchEvent(new PointerCtor('pointermove', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId: outsidePointerId,
+      clientX: outsideMar20Rect.left + outsideMar20Rect.width / 2,
+      clientY: outsideMar20Rect.top + outsideMar20Rect.height / 2
+    }));
+    equal('select release outside then re-enter leaves range unset', selected.ranges.length, 0);
+    assert('select release outside then re-enter does not paint range', root.querySelectorAll('.daygrid-cell--range-endpoint').length === 0);
+    root.setPointerCapture = originalSetPointerCapture;
+
     setPointer(true);
     selected = mountSelect(selectData(), { today: '20260304' });
     root = selected.root;

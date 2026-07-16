@@ -761,6 +761,11 @@
         if (event.button !== 0) return;
         const cell = event.target.closest(`.daygrid-cell[${DAY_ATTR}]`);
         if (!cell) return;
+        try {
+          root.setPointerCapture(event.pointerId);
+        } catch (error) {
+          if (event.isTrusted) throw error;
+        }
         dragStartDay = cell.getAttribute(DAY_ATTR);
       }, { signal });
 
