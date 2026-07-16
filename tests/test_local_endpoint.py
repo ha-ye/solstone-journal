@@ -7,12 +7,26 @@ import json
 import traceback
 
 import pytest
+from aiohttp import ClientConnectorError
+from aiohttp.client_reqrep import ConnectionKey
 
 from solstone.think.providers import local_endpoint
 
 
 def _config(payload: dict) -> dict:
     return {"providers": {"local": payload}}
+
+
+def _connection_key(host: str = "byo.example") -> ConnectionKey:
+    return ConnectionKey(
+        host=host,
+        port=443,
+        is_ssl=True,
+        ssl=True,
+        proxy=None,
+        proxy_auth=None,
+        proxy_headers_hash=None,
+    )
 
 
 @pytest.mark.parametrize(
@@ -397,6 +411,51 @@ def test_redact_event_payload_recurses_through_values():
     assert redacted["status"] == 503
     assert redacted["ok"] is False
     assert redacted["none"] is None
+
+
+def test_redact_exception_credential_preserves_connection_key_graph():
+    sentinel = "SENTINEL-BYO-CRED-CONNKEY-2cf6d8"
+    unchanged_key = _connection_key()
+    unchanged_container = {
+        "headers": ["content-type"],
+        "route": ("connect", unchanged_key),
+    }
+
+    assert (
+        local_endpoint.redact_event_payload(unchanged_container, sentinel)
+        is unchanged_container
+    )
+
+    credential_key = _connection_key(host=f"byo-{sentinel}.example")
+    redacted_key = local_endpoint.redact_event_payload(credential_key, sentinel)
+    assert type(redacted_key) is type(credential_key)
+    assert redacted_key.host == "byo-***.example"
+
+    raised = ClientConnectorError(unchanged_key, OSError("connect failed"))
+    cause = RuntimeError(f"cause {sentinel}")
+    context = ValueError({"context": [sentinel]})
+    raised.__cause__ = cause
+    raised.__context__ = context
+    cause.__context__ = raised
+    raised.add_note(f"provider note {sentinel}")
+    cause.add_note(f"cause note {sentinel}")
+    context.payload = {"headers": {"Authorization": f"Bearer {sentinel}"}}
+
+    redacted = local_endpoint.redact_exception_credential(raised, sentinel)
+
+    assert redacted is raised
+    assert raised._conn_key is unchanged_key
+    assert "Cannot connect to host byo.example:443" in str(raised)
+    serialized = "".join(
+        traceback.format_exception(type(raised), raised, raised.__traceback__)
+    )
+    assert sentinel not in serialized
+    assert "***" in serialized
+    assert sentinel not in str(cause)
+    assert sentinel not in str(context)
+    assert sentinel not in repr(vars(context))
+    assert raised.__notes__ == ["provider note ***"]
+    assert cause.__notes__ == ["cause note ***"]
 
 
 def test_redact_exception_credential_scrubs_chain():

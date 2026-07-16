@@ -246,17 +246,41 @@ def redact_event_payload(payload: Any, credential: str | None) -> Any:
 
     if not credential:
         return payload
-    if isinstance(payload, dict):
-        return {
-            key: redact_event_payload(value, credential)
-            for key, value in payload.items()
-        }
-    if isinstance(payload, list):
-        return [redact_event_payload(item, credential) for item in payload]
-    if isinstance(payload, tuple):
-        return tuple(redact_event_payload(item, credential) for item in payload)
     if isinstance(payload, str):
-        return payload.replace(credential, "***")
+        return payload.replace(credential, "***") if credential in payload else payload
+    if isinstance(payload, dict):
+        redacted = {}
+        changed = False
+        for key, value in payload.items():
+            redacted_value = redact_event_payload(value, credential)
+            if redacted_value is not value:
+                changed = True
+            redacted[key] = redacted_value
+        return redacted if changed else payload
+    if isinstance(payload, list):
+        items = []
+        changed = False
+        for item in payload:
+            redacted_item = redact_event_payload(item, credential)
+            if redacted_item is not item:
+                changed = True
+            items.append(redacted_item)
+        return items if changed else payload
+    if isinstance(payload, tuple):
+        items = []
+        changed = False
+        for item in payload:
+            redacted_item = redact_event_payload(item, credential)
+            if redacted_item is not item:
+                changed = True
+            items.append(redacted_item)
+        if not changed:
+            return payload
+        if hasattr(payload, "_fields"):
+            return type(payload)._make(items)
+        if type(payload) is tuple:
+            return tuple(items)
+        return payload
     return payload
 
 
