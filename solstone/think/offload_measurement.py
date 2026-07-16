@@ -66,6 +66,10 @@ def device_free_bytes() -> int:
     return shutil.disk_usage(Path(get_journal())).free
 
 
+def device_total_bytes() -> int:
+    return shutil.disk_usage(Path(get_journal())).total
+
+
 def suggest_offload_defaults(total_bytes: int) -> SuggestedOffloadDefaults:
     if type(total_bytes) is not int or total_bytes <= 0:
         raise ValueError("total_bytes must be a positive integer")
@@ -80,6 +84,7 @@ __all__ = [
     "RawMediaUsage",
     "SuggestedOffloadDefaults",
     "device_free_bytes",
+    "device_total_bytes",
     "measure_raw_media_usage",
     "suggest_offload_defaults",
 ]

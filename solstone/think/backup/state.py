@@ -77,10 +77,24 @@ BACKUP_DEFAULTS: dict[str, Any] = {
         "last_ok_time": None,
         "checked_subset": None,
     },
+    "last_restore": {
+        "time": None,
+        "status": None,
+        "reason": None,
+        "scope": None,
+        "day": None,
+        "segments_selected": 0,
+        "segments_restored": 0,
+        "files_expected": 0,
+        "files_restored": 0,
+        "bytes_expected": 0,
+        "bytes_restored": 0,
+    },
 }
 OFFLOAD_KEYS = ("enabled", "budget_bytes", "floor_bytes")
 OFFLOAD_STATUSES = ("ok", "skipped", "stalled", "error")
 RETENTION_KEYS = ("hourly", "daily", "weekly", "monthly")
+RESTORE_STATUSES = ("ok", "no_op", "refused", "degraded", "error")
 VERIFICATION_STATUSES = ("ok", "skipped", "error")
 
 
@@ -377,6 +391,57 @@ def record_verification_result(
         write_journal_config(config)
 
 
+def record_restore_result(
+    *,
+    status: str,
+    time: int | None,
+    reason: str | None,
+    scope: str,
+    day: str | None,
+    segments_selected: int,
+    segments_restored: int,
+    files_expected: int,
+    files_restored: int,
+    bytes_expected: int,
+    bytes_restored: int,
+) -> None:
+    """Record the last on-demand media restore attempt."""
+    if status not in RESTORE_STATUSES:
+        raise ValueError(
+            "backup restore status must be ok, no_op, refused, degraded, or error"
+        )
+    if scope not in {"day", "all"}:
+        raise ValueError("backup restore scope must be day or all")
+    for value in (
+        segments_selected,
+        segments_restored,
+        files_expected,
+        files_restored,
+        bytes_expected,
+        bytes_restored,
+    ):
+        if type(value) is not int or value < 0:
+            raise ValueError("backup restore counters must be non-negative integers")
+
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["last_restore"] = {
+            "time": time,
+            "status": status,
+            "reason": reason,
+            "scope": scope,
+            "day": day,
+            "segments_selected": segments_selected,
+            "segments_restored": segments_restored,
+            "files_expected": files_expected,
+            "files_restored": files_restored,
+            "bytes_expected": bytes_expected,
+            "bytes_restored": bytes_restored,
+        }
+        write_journal_config(config)
+
+
 def status_view() -> dict[str, Any]:
     config = get_backup_config()
     destination = config["destination"]
@@ -407,6 +472,7 @@ def status_view() -> dict[str, Any]:
         "last_prune": config["last_prune"],
         "last_offload": config["last_offload"],
         "last_verification": config["last_verification"],
+        "last_restore": config["last_restore"],
         "hosted": hosted,
     }
 
@@ -416,6 +482,7 @@ __all__ = [
     "BackupKeys",
     "OFFLOAD_KEYS",
     "OFFLOAD_STATUSES",
+    "RESTORE_STATUSES",
     "VERIFICATION_STATUSES",
     "clear_backup_config",
     "generate_and_store_keys",
@@ -425,6 +492,7 @@ __all__ = [
     "record_backup_result",
     "record_offload_result",
     "record_prune_result",
+    "record_restore_result",
     "record_verification_result",
     "set_destination",
     "set_enabled",

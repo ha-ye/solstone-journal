@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import sys
+from dataclasses import asdict
 from typing import NoReturn
 
 import typer
@@ -38,13 +39,25 @@ from solstone.think.backup.state import (
     status_view,
 )
 from solstone.think.backup.teardown import teardown_backup
+from solstone.think.offload import OffloadResult, run_offload
+from solstone.think.offload_restore import (
+    build_offload_status,
+)
+from solstone.think.offload_restore import (
+    restore_all as restore_offload_all,
+)
+from solstone.think.offload_restore import (
+    restore_day as restore_offload_day,
+)
 from solstone.think.utils import init_cli_runtime
 
 app = typer.Typer(help="Manage solstone backup.", no_args_is_help=True)
 destination_app = typer.Typer(help="Manage backup destination.", no_args_is_help=True)
 recovery_key_app = typer.Typer(help="Manage backup recovery key.", no_args_is_help=True)
+offload_app = typer.Typer(help="Manage media offload.", no_args_is_help=True)
 app.add_typer(destination_app, name="destination")
 app.add_typer(recovery_key_app, name="recovery-key")
+app.add_typer(offload_app, name="offload")
 
 _BACKEND_REQUIRED_CREDENTIALS = {
     "s3": ("access_key_id", "secret_access_key"),
@@ -313,6 +326,107 @@ def prune() -> None:
         typer.echo("Retention prune complete.")
         return
     raise RuntimeError(f"unknown prune status: {result.status}")
+
+
+def _print_offload_result(result: OffloadResult) -> None:
+    if result.dry_run:
+        selected_files = sum(detail.files for detail in result.details)
+        selected_bytes = sum(detail.bytes for detail in result.details)
+        segments = ",".join(
+            f"{detail.day}/{detail.stream}/{detail.segment}:{detail.bytes}"
+            for detail in result.details
+        )
+        if result.status == "stalled":
+            typer.echo(f"backup offload: stalled reason={result.reason} dry_run=true")
+        elif result.status == "skipped":
+            typer.echo("backup offload: skipped dry_run=true")
+        else:
+            typer.echo(
+                "backup offload: ok dry_run=true "
+                f"selected_files={selected_files} selected_bytes={selected_bytes} "
+                f"ran_out_of_media={result.ran_out_of_media} segments={segments}"
+            )
+    elif result.status == "ok":
+        typer.echo(
+            "backup offload: ok "
+            f"files_offloaded={result.files_offloaded} "
+            f"bytes_offloaded={result.bytes_offloaded} "
+            f"ran_out_of_media={result.ran_out_of_media}"
+        )
+    elif result.status == "skipped":
+        typer.echo("backup offload: skipped")
+    else:
+        typer.echo(
+            f"backup offload: stalled reason={result.reason} "
+            f"files_offloaded={result.files_offloaded} "
+            f"bytes_offloaded={result.bytes_offloaded}"
+        )
+
+
+@offload_app.command("status")
+def offload_status(
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Print machine-readable JSON.",
+    ),
+) -> None:
+    """Show media offload status."""
+    payload = build_offload_status()
+    if json_output:
+        _echo_json(payload)
+        return
+    offload = payload["offload"]
+    raw = payload["raw_media"]
+    backup_only = payload["backup_only"]
+    typer.echo(
+        "backup offload: "
+        f"enabled={offload['enabled']} "
+        f"raw_media_bytes={raw['total_bytes']} "
+        f"backup_only_bytes={backup_only['total_bytes']} "
+        f"degraded={backup_only['degraded']}"
+    )
+
+
+@offload_app.command("run")
+def offload_run(
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview media offload."),
+) -> None:
+    """Run media offload now."""
+    _print_offload_result(run_offload(dry_run=dry_run))
+
+
+@offload_app.command("restore")
+def offload_restore(
+    day: str | None = typer.Argument(None, help="Day to restore in YYYYMMDD form."),
+    all_: bool = typer.Option(False, "--all", help="Restore all offloaded media."),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Print machine-readable JSON.",
+    ),
+) -> None:
+    """Restore offloaded media for one day or all days."""
+    if all_ and day is not None:
+        _die("Use either a day or --all, not both.")
+    if not all_ and day is None:
+        _die("Provide a day or --all.")
+    try:
+        result = restore_offload_all() if all_ else restore_offload_day(str(day))
+    except ValueError:
+        _die("Invalid day.")
+    if json_output:
+        _echo_json(asdict(result))
+    else:
+        typer.echo(
+            "backup offload restore: "
+            f"status={result.status} reason={result.reason} "
+            f"segments_restored={result.segments_restored} "
+            f"files_restored={result.files_restored} "
+            f"bytes_restored={result.bytes_restored}"
+        )
+    if result.status in {"refused", "degraded", "error"}:
+        raise typer.Exit(1)
 
 
 @recovery_key_app.command("show")

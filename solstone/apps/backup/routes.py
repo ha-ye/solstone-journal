@@ -10,6 +10,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from flask import Blueprint, Response, current_app, jsonify, request
@@ -20,6 +21,7 @@ from solstone.convey.reasons import (
     BACKUP_OPERATION_FAILED,
     BACKUP_UNAVAILABLE,
     INVALID_CONFIG_VALUE,
+    INVALID_DAY,
     INVALID_OPERATION_FOR_STATE,
     INVALID_REQUEST_VALUE,
     MISSING_REQUIRED_FIELD,
@@ -31,7 +33,7 @@ from solstone.think.backup.destination import (
     DestinationStatus,
     validate_destination,
 )
-from solstone.think.backup.engine import request_backup_now
+from solstone.think.backup.engine import request_backup_now, request_verification_now
 from solstone.think.backup.hosted import (
     HostedCredsUnavailable,
     fetch_hosted_credentials,
@@ -46,20 +48,32 @@ from solstone.think.backup.rotation import rotate_recovery_key
 from solstone.think.backup.runner import reason_for_returncode
 from solstone.think.backup.state import (
     generate_and_store_keys,
+    get_backup_config,
     get_destination,
     get_keys,
     set_destination,
     set_enabled,
     set_mode,
+    set_offload,
     set_recovery_key_confirmed,
     set_retention,
     status_view,
 )
 from solstone.think.backup.teardown import teardown_backup
+from solstone.think.offload_restore import (
+    build_offload_status,
+)
+from solstone.think.offload_restore import (
+    restore_all as restore_offload_all,
+)
+from solstone.think.offload_restore import (
+    restore_day as restore_offload_day,
+)
 from solstone.think.services.spb_handoff import (
     build_spb_handoff_url,
     run_spb_handoff,
 )
+from solstone.think.utils import DATE_RE
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +89,13 @@ OPERATION_KEY = "backup"
 OPERATION_GRACE_SECONDS = 30.0
 ENABLE_TIMEOUT = 30.0
 DESTINATION_PROBE_TIMEOUT = 30.0
+MEASUREMENT_CACHE_TTL_SECONDS = 60.0
 RETENTION_KEYS = ("hourly", "daily", "weekly", "monthly")
 S3_REQUIRED = ("access_key_id", "secret_access_key")
 B2_REQUIRED = ("account_id", "account_key")
-TERMINAL_PHASES = frozenset({"done", "needs_subscription", "error", "degraded"})
+TERMINAL_PHASES = frozenset(
+    {"done", "needs_subscription", "error", "degraded", "refused"}
+)
 
 
 @dataclass
@@ -102,11 +119,33 @@ class OpOutcome:
 
 _REGISTRY_LOCK = threading.Lock()
 _REGISTRY: dict[str, OperationEntry] = {}
+_MEASUREMENT_LOCK = threading.Lock()
+_MEASUREMENT_CACHE: tuple[float, dict[str, Any]] | None = None
 
 
 def _clear_registry() -> None:
     with _REGISTRY_LOCK:
         _REGISTRY.clear()
+
+
+def _clear_measurement_cache() -> None:
+    global _MEASUREMENT_CACHE
+    with _MEASUREMENT_LOCK:
+        _MEASUREMENT_CACHE = None
+
+
+def _offload_status_snapshot() -> dict[str, Any]:
+    global _MEASUREMENT_CACHE
+    now = time.monotonic()
+    with _MEASUREMENT_LOCK:
+        if (
+            _MEASUREMENT_CACHE is not None
+            and _MEASUREMENT_CACHE[0] + MEASUREMENT_CACHE_TTL_SECONDS >= now
+        ):
+            return {**_MEASUREMENT_CACHE[1], "operation": _current_operation()}
+        snapshot = build_offload_status()
+        _MEASUREMENT_CACHE = (now, snapshot)
+        return {**snapshot, "operation": _current_operation()}
 
 
 def _sweep_operations_locked(now: float) -> None:
@@ -175,6 +214,12 @@ def _run_long_op(entry: OperationEntry, thunk: Callable[[], OpOutcome]) -> None:
         elif outcome.status in {"ok", "done", "skipped"}:
             entry.phase = "done"
             entry.reason_code = None
+        elif outcome.status == "no_op":
+            entry.phase = "done"
+            entry.reason_code = outcome.reason_code
+        elif outcome.status == "refused":
+            entry.phase = "refused"
+            entry.reason_code = outcome.reason_code or "failed"
         elif outcome.status == "degraded":
             entry.phase = "degraded"
             entry.reason_code = outcome.reason_code
@@ -214,6 +259,50 @@ def _start_long_op(
 def _json_body() -> dict[str, Any] | None:
     payload = request.get_json(silent=True)
     return payload if isinstance(payload, dict) else None
+
+
+def _valid_restore_day(value: Any) -> str | None:
+    if not isinstance(value, str) or DATE_RE.fullmatch(value) is None:
+        return None
+    try:
+        datetime.strptime(value, "%Y%m%d")
+    except ValueError:
+        return None
+    return value
+
+
+def _offload_with_enabled(enabled: bool) -> dict[str, Any]:
+    current = get_backup_config()["offload"]
+    budget = current.get("budget_bytes")
+    floor = current.get("floor_bytes")
+    if enabled and (budget is None or floor is None):
+        defaults = build_offload_status()["suggested_defaults"]
+        budget = budget if budget is not None else defaults["budget_bytes"]
+        floor = floor if floor is not None else defaults["floor_bytes"]
+    return {
+        "enabled": enabled,
+        "budget_bytes": budget,
+        "floor_bytes": floor,
+    }
+
+
+def _offload_config_from_payload(
+    payload: dict[str, Any],
+) -> dict[str, Any] | tuple[Response, int]:
+    try:
+        budget = payload["budget_bytes"]
+        floor = payload["floor_bytes"]
+    except KeyError:
+        return error_response(INVALID_CONFIG_VALUE)
+    if type(budget) is not int or budget <= 0:
+        return error_response(INVALID_CONFIG_VALUE)
+    if type(floor) is not int or floor <= 0:
+        return error_response(INVALID_CONFIG_VALUE)
+    return {
+        "enabled": bool(get_backup_config()["offload"].get("enabled")),
+        "budget_bytes": budget,
+        "floor_bytes": floor,
+    }
 
 
 def _required_string(
@@ -270,7 +359,7 @@ def _destination_status_payload(status: DestinationStatus) -> dict[str, Any]:
 def _result_outcome(result: Any) -> OpOutcome:
     return OpOutcome(
         status=str(getattr(result, "status", "error")),
-        reason_code=getattr(result, "reason_code", None),
+        reason_code=getattr(result, "reason_code", getattr(result, "reason", None)),
     )
 
 
@@ -409,6 +498,88 @@ def index() -> Response:
 @backup_bp.route("/status")
 def status() -> tuple[Response, int]:
     return jsonify({"success": True, **_status_snapshot()}), 200
+
+
+@backup_bp.route("/offload/status")
+def offload_status() -> tuple[Response, int]:
+    return jsonify({"success": True, **_offload_status_snapshot()}), 200
+
+
+@backup_bp.route("/offload/config", methods=["POST"])
+def offload_config() -> tuple[Any, int]:
+    payload = _json_body()
+    if payload is None:
+        return error_response(INVALID_CONFIG_VALUE, detail="missing request body")
+    offload = _offload_config_from_payload(payload)
+    if isinstance(offload, tuple):
+        return offload
+    try:
+        set_offload(offload)
+    except ValueError:
+        return error_response(INVALID_CONFIG_VALUE)
+    _clear_measurement_cache()
+    return success_response(_offload_status_snapshot())
+
+
+@backup_bp.route("/offload/enable", methods=["POST"])
+def offload_enable() -> tuple[Any, int]:
+    config = get_backup_config()
+    if config["enabled"] is not True:
+        return error_response(
+            INVALID_OPERATION_FOR_STATE,
+            detail="backup is disabled",
+        )
+    if config["confirmed_recovery_key"] is not True:
+        return error_response(BACKUP_NOT_CONFIRMED)
+    if get_keys() is None:
+        return error_response(
+            INVALID_OPERATION_FOR_STATE,
+            detail="backup keys are missing",
+        )
+
+    try:
+        set_offload(_offload_with_enabled(True))
+    except ValueError:
+        return error_response(INVALID_CONFIG_VALUE)
+    if config["last_verification"].get("status") is None:
+        request_verification_now()
+    _clear_measurement_cache()
+    return success_response(_offload_status_snapshot())
+
+
+@backup_bp.route("/offload/disable", methods=["POST"])
+def offload_disable() -> tuple[Any, int]:
+    try:
+        set_offload(_offload_with_enabled(False))
+    except ValueError:
+        return error_response(INVALID_CONFIG_VALUE)
+    _clear_measurement_cache()
+    return success_response(_offload_status_snapshot())
+
+
+@backup_bp.route("/offload/restore", methods=["POST"])
+def offload_restore() -> tuple[dict[str, Any], int] | tuple[Response, int]:
+    payload = _json_body()
+    if payload is None:
+        return error_response(MISSING_REQUIRED_FIELD, detail="missing request body")
+
+    if payload.get("all") is True:
+        if "day" in payload:
+            return error_response(INVALID_REQUEST_VALUE)
+        thunk = restore_offload_all
+    else:
+        day = _valid_restore_day(payload.get("day"))
+        if day is None:
+            return error_response(INVALID_DAY)
+
+        def thunk() -> Any:
+            return restore_offload_day(day)
+
+    return _start_long_op(
+        "offload_restore",
+        "restoring",
+        lambda: _result_outcome(thunk()),
+    )
 
 
 @backup_bp.route("/keys/generate", methods=["POST"])
