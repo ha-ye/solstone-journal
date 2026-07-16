@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from datetime import date
 from pathlib import Path
@@ -13,7 +14,7 @@ import pytest
 
 from solstone.apps.timeline import routes
 
-from .conftest import seed_segment
+from .conftest import FIXTURES, seed_segment
 
 DAY = "20260510"
 MONTH = "202605"
@@ -58,6 +59,24 @@ def empty_client(empty_timeline_env):
 def _assert_spa_shell(response):
     assert response.status_code == 200
     assert b'data-solstone-shell="spa"' in response.data
+
+
+def _month_offset(today: date, delta: int) -> str:
+    month_index = today.year * 12 + today.month - 1 + delta
+    year, month_zero = divmod(month_index, 12)
+    return f"{year:04d}{month_zero + 1:02d}"
+
+
+def _copied_fixture_client(tmp_path: Path, monkeypatch, fixture_name: str):
+    journal = tmp_path / fixture_name / "journal"
+    shutil.copytree(FIXTURES / fixture_name / "journal", journal)
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+
+    from solstone.convey import create_app
+
+    app = create_app(str(journal))
+    app.config.update(TESTING=True)
+    return app.test_client()
 
 
 def test_workspace_root_renders(client):
@@ -134,16 +153,49 @@ def test_timeline_static_literal_paths_resolve(client):
         assert endpoint
 
 
-def test_empty_journal_index_returns_empty_recent_months(empty_client):
+def test_timeline_client_cap_lift_year_view_strings_removed():
+    static_dir = Path(__file__).resolve().parents[1] / "static"
+    source = "\n".join(
+        [
+            (static_dir / "timeline.js").read_text(encoding="utf-8"),
+            (static_dir / "timeline.css").read_text(encoding="utf-8"),
+        ]
+    )
+
+    for needle in (
+        "this day is outside the current timeline window.",
+        "this month is outside the current timeline window.",
+        "renderYear",
+        "year-view",
+        "timeline-node",
+        "timeline-card",
+        "milestone",
+        "yearEvent",
+        "Return to year view",
+    ):
+        assert needle not in source
+
+
+def test_empty_journal_index_returns_current_month_only(empty_client):
     response = empty_client.get("/app/timeline/api/overview")
 
     assert response.status_code == 200
     payload = response.get_json()
-    assert len(payload["months"]) == 12
-    for month in payload["months"]:
-        assert month["month_top"] == []
-        assert month["day_count"] == 0
-        assert month["days_with_data"] == []
+    assert [month["ym"] for month in payload["months"]] == [
+        date.today().strftime("%Y%m")
+    ]
+    month = payload["months"][0]
+    assert set(month) == {
+        "ym",
+        "year",
+        "month_num",
+        "days_in_month",
+        "first_weekday",
+        "day_count",
+        "days_with_data",
+    }
+    assert month["day_count"] == 0
+    assert month["days_with_data"] == []
 
 
 def test_index_metadata_absent_when_master_minimal(empty_client, empty_timeline_env):
@@ -160,7 +212,7 @@ def test_index_metadata_absent_when_master_minimal(empty_client, empty_timeline_
     assert payload["data_through"] is None
 
 
-def test_index_shape_and_size(client):
+def test_index_shape_and_size(client, timeline_env):
     response = client.get("/app/timeline/api/overview")
 
     assert response.status_code == 200
@@ -173,7 +225,6 @@ def test_index_shape_and_size(client):
         "model",
         "data_through",
         "months",
-        "year_top",
     }
     assert payload["generated_at"] == 1770000000
     assert isinstance(payload["generated_at"], int)
@@ -181,13 +232,20 @@ def test_index_shape_and_size(client):
     assert isinstance(payload["model"], str)
     assert payload["data_through"] == DAY
     assert isinstance(payload["data_through"], str)
-    assert len(payload["months"]) == 12
+    master = json.loads((timeline_env / "timeline.json").read_text(encoding="utf-8"))
+    coverage_months = set(master["months"])
+    coverage_months.update(day[:6] for day in routes._day_segment_counts())
+    yms = [month["ym"] for month in payload["months"]]
+    assert yms[0] == min(coverage_months)
+    assert yms[-1] == max(max(coverage_months), date.today().strftime("%Y%m"))
+    assert yms == routes._month_span(yms[0], yms[-1])
     month = next(m for m in payload["months"] if m["ym"] == MONTH)
     assert month["day_count"] == 1
     assert month["days_with_data"] == [DAY]
-    assert month["month_top"][0]["title"] == "Timeline Port"
     assert "days" not in month
-    assert [item["month"] for item in payload["year_top"]] == ["202604", "202605"]
+    assert "mlabel" not in month
+    assert "month_top" not in month
+    assert "month_rationale" not in month
 
 
 def _chronicle_snapshot(journal: Path) -> dict[Path, int]:
@@ -242,6 +300,71 @@ def test_api_index_is_read_only(client, timeline_env):
 
     assert response.status_code == 200
     assert _chronicle_snapshot(timeline_env) == before
+
+
+def test_grid_payload_rolled_up_day(client):
+    response = client.get("/app/timeline/api/grid")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert set(payload) == {"coverage", "days", "pending"}
+    assert payload["coverage"] == {"start": DAY, "end": DAY}
+    assert payload["days"] == {DAY: 7}
+    assert payload["pending"] == {}
+
+
+def test_grid_payload_day_after_watermark_is_pending(client, timeline_env):
+    pending_day = "20260511"
+    seed_segment(timeline_env, pending_day, "090000_300")
+
+    response = client.get("/app/timeline/api/grid")
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    assert payload["coverage"] == {"start": DAY, "end": pending_day}
+    assert payload["days"] == {DAY: 7}
+    assert payload["pending"] == {pending_day: 1}
+
+
+def test_grid_payload_no_watermark_makes_segments_pending(tmp_path, monkeypatch):
+    client = _copied_fixture_client(tmp_path, monkeypatch, "empty_segments_no_rollup")
+
+    response = client.get("/app/timeline/api/grid")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "coverage": {"start": DAY, "end": DAY},
+        "days": {},
+        "pending": {DAY: 1},
+    }
+
+
+def test_grid_payload_empty_journal(tmp_path, monkeypatch):
+    client = _copied_fixture_client(tmp_path, monkeypatch, "empty_no_dir")
+
+    response = client.get("/app/timeline/api/grid")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"coverage": None, "days": {}, "pending": {}}
+
+
+def test_overview_months_include_old_segment_through_current_month(
+    empty_client, empty_timeline_env
+):
+    old_month = _month_offset(date.today(), -14)
+    old_day = f"{old_month}10"
+    seed_segment(empty_timeline_env, old_day, "090000_300")
+
+    overview = empty_client.get("/app/timeline/api/overview")
+    grid = empty_client.get("/app/timeline/api/grid")
+
+    assert overview.status_code == 200
+    yms = [month["ym"] for month in overview.get_json()["months"]]
+    assert yms[0] == old_month
+    assert yms[-1] == date.today().strftime("%Y%m")
+    assert yms == routes._month_span(old_month, yms[-1])
+    assert grid.status_code == 200
+    assert grid.get_json()["pending"] == {old_day: 1}
 
 
 def test_month_known_shape(client):
@@ -500,23 +623,19 @@ def test_stats_cache_invalidates_on_mtime(empty_client, empty_timeline_env):
 
 def test_master_cache_invalidates_on_mtime(client, timeline_env):
     first = client.get("/app/timeline/api/overview").get_json()
-    first_title = next(m for m in first["months"] if m["ym"] == MONTH)["month_top"][0][
-        "title"
-    ]
-    assert first_title == "Timeline Port"
+    first_count = next(m for m in first["months"] if m["ym"] == MONTH)["day_count"]
+    assert first_count == 1
 
     timeline_path = timeline_env / "timeline.json"
     data = json.loads(timeline_path.read_text(encoding="utf-8"))
-    data["months"][MONTH]["month_top"][0]["title"] = "Updated Timeline"
+    data["months"][MONTH]["day_count"] = 9
     timeline_path.write_text(json.dumps(data) + "\n", encoding="utf-8")
     bumped = time.time() + 2
     os.utime(timeline_path, (bumped, bumped))
 
     second = client.get("/app/timeline/api/overview").get_json()
-    second_title = next(m for m in second["months"] if m["ym"] == MONTH)["month_top"][
-        0
-    ]["title"]
-    assert second_title == "Updated Timeline"
+    second_count = next(m for m in second["months"] if m["ym"] == MONTH)["day_count"]
+    assert second_count == 9
 
 
 def test_segment_lru_eviction(client, timeline_env):

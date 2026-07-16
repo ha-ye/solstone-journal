@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import calendar
 import functools
 import json
 import re
@@ -15,6 +14,7 @@ from typing import Any
 from flask import Blueprint, current_app, jsonify, redirect, url_for
 
 from solstone.convey import state
+from solstone.convey.day_grid import build_day_grid_payload
 from solstone.convey.reasons import (
     INVALID_DAY,
     INVALID_MONTH,
@@ -58,20 +58,6 @@ def _load_master() -> dict:
     return _master_cache
 
 
-def _recent_12_months(today: date | None = None) -> list[str]:
-    if today is None:
-        today = date.today()
-    out: list[str] = []
-    cur_y, cur_m = today.year, today.month
-    for delta in range(11, -1, -1):
-        y, m = cur_y, cur_m - delta
-        while m <= 0:
-            m += 12
-            y -= 1
-        out.append(f"{y:04d}{m:02d}")
-    return out
-
-
 def _days_in_month(ym: str) -> int:
     y = int(ym[:4])
     m = int(ym[4:6])
@@ -90,11 +76,49 @@ def _days_with_data(month_data: dict[str, Any]) -> list[str]:
     return sorted(month_data.get("days_with_data") or [])
 
 
+def _month_span(start: str, end: str) -> list[str]:
+    y, m = int(start[:4]), int(start[4:6])
+    end_y, end_m = int(end[:4]), int(end[4:6])
+    out: list[str] = []
+    while (y, m) <= (end_y, end_m):
+        out.append(f"{y:04d}{m:02d}")
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+    return out
+
+
+def _coverage_months(
+    master: dict[str, Any],
+    day_counts: dict[str, int],
+    today: date | None = None,
+) -> list[str]:
+    current_month = (today or date.today()).strftime("%Y%m")
+    month_keys = {
+        ym
+        for ym in (master.get("months") or {})
+        if isinstance(ym, str) and _MONTH_RE.fullmatch(ym)
+    }
+    month_keys.update(day[:6] for day in day_counts if _DAY_RE.fullmatch(day))
+    if not month_keys:
+        return [current_month]
+    return _month_span(min(month_keys), max(max(month_keys), current_month))
+
+
+def _rollup_watermark(master: dict[str, Any] | None = None) -> str | None:
+    source = master if master is not None else _load_master()
+    days_seen: list[str] = []
+    for month in (source.get("months") or {}).values():
+        days_seen.extend(_days_with_data(month))
+    return max(days_seen) if days_seen else None
+
+
 def _build_index() -> dict[str, Any]:
     master = _load_master()
     months_data = master.get("months", {})
-    yms = _recent_12_months()
-    ym_set = set(yms)
+    day_counts = _day_segment_counts()
+    yms = _coverage_months(master, day_counts)
 
     months_meta = []
     for ym in yms:
@@ -102,34 +126,22 @@ def _build_index() -> dict[str, Any]:
         months_meta.append(
             {
                 "ym": ym,
-                "mlabel": f"{calendar.month_name[int(ym[4:6])]} {ym[:4]}",
                 "year": int(ym[:4]),
                 "month_num": int(ym[4:6]),
                 "days_in_month": _days_in_month(ym),
                 "first_weekday": _first_weekday(ym),
                 "day_count": m.get("day_count", 0),
                 "days_with_data": _days_with_data(m),
-                "month_top": m.get("month_top", []),
-                "month_rationale": m.get("month_rationale", ""),
             }
         )
-
-    year_top = [
-        entry for entry in master.get("year_top", []) if entry.get("month") in ym_set
-    ]
-    days_seen: list[str] = []
-    for entry in months_meta:
-        days_seen.extend(entry.get("days_with_data") or [])
-    data_through = max(days_seen) if days_seen else None
 
     return {
         "now": datetime.now().isoformat(),
         "today": date.today().strftime("%Y%m%d"),
         "generated_at": master.get("generated_at"),
         "model": master.get("model"),
-        "data_through": data_through,
+        "data_through": _rollup_watermark(master),
         "months": months_meta,
-        "year_top": year_top,
     }
 
 
@@ -142,8 +154,6 @@ def _build_month(ym: str) -> dict[str, Any] | None:
         "ym": ym,
         "generated_at": master.get("generated_at"),
         "model": master.get("model"),
-        "month_top": m.get("month_top", []),
-        "month_rationale": m.get("month_rationale", ""),
         "day_count": m.get("day_count", 0),
         "days_with_data": _days_with_data(m),
         "days": {
@@ -507,6 +517,11 @@ def timeline_stats(ym: str) -> Any:
 @timeline_bp.route("/api/overview")
 def timeline_overview() -> Any:
     return jsonify(_build_index())
+
+
+@timeline_bp.route("/api/grid")
+def timeline_grid() -> Any:
+    return jsonify(build_day_grid_payload(_day_segment_counts(), _rollup_watermark()))
 
 
 @timeline_bp.route("/api/index")

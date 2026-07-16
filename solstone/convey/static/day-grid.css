@@ -1,0 +1,210 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* Copyright (c) 2026 sol pbc */
+
+.daygrid {
+  --daygrid-cell: 13px;
+  --daygrid-gap: 3px;
+  --daygrid-radius: 3px;
+  position: relative;
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  color: var(--ink);
+}
+
+.daygrid-scroller {
+  position: relative;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: visible;
+  padding: var(--space-5) 0 var(--space-2);
+  scrollbar-gutter: stable;
+}
+
+.daygrid-body {
+  display: grid;
+  gap: var(--space-1);
+  width: max-content;
+  min-width: 100%;
+}
+
+.daygrid-months {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: var(--daygrid-cell);
+  gap: var(--daygrid-gap);
+  min-height: 18px;
+  color: var(--ink-faint-paper);
+  font-size: var(--text-min);
+  font-weight: var(--weight-medium);
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.daygrid-months span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.daygrid-months a {
+  min-width: 0;
+  overflow: hidden;
+  color: inherit;
+  text-decoration: none;
+  text-overflow: ellipsis;
+}
+
+.daygrid-months a:hover,
+.daygrid-months a:focus-visible {
+  color: var(--focus);
+  outline: 0;
+  text-decoration: underline;
+}
+
+.daygrid-track {
+  display: grid;
+  grid-auto-flow: column;
+  grid-template-rows: repeat(7, var(--daygrid-cell));
+  grid-auto-columns: var(--daygrid-cell);
+  gap: var(--daygrid-gap);
+}
+
+.daygrid-cell {
+  display: grid;
+  place-items: center;
+  width: var(--daygrid-cell);
+  height: var(--daygrid-cell);
+  border: 1px solid var(--hairline);
+  border-radius: var(--daygrid-radius);
+  background: var(--cream-bright);
+  color: var(--ink-faint-paper);
+  font: inherit;
+  font-size: 0;
+  line-height: 1;
+  padding: 0;
+  text-decoration: none;
+}
+
+.daygrid-cell[href] {
+  cursor: pointer;
+}
+
+.daygrid-cell--data {
+  border-color: color-mix(in srgb, var(--orange) calc(var(--daygrid-heat, 0) * 80%), var(--hairline));
+  background: color-mix(
+    in srgb,
+    var(--orange) calc(var(--daygrid-heat, 0) * 100%),
+    var(--orange-wash)
+  );
+}
+
+.daygrid-cell--pending {
+  border-color: var(--warn);
+  background: repeating-linear-gradient(
+    135deg,
+    var(--warn-wash) 0,
+    var(--warn-wash) 3px,
+    var(--cream-bright) 3px,
+    var(--cream-bright) 6px
+  );
+}
+
+.daygrid-cell--empty {
+  background: var(--paper);
+}
+
+.daygrid-cell--pad {
+  border-color: transparent;
+  background: transparent;
+}
+
+.daygrid-cell--today {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.daygrid-cell[href]:hover,
+.daygrid-cell:focus-visible {
+  border-color: var(--focus);
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.daygrid-cell[aria-disabled="true"] {
+  cursor: default;
+}
+
+.daygrid-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  color: var(--ink-faint-paper);
+  font-size: var(--text-min);
+}
+
+.daygrid-legend-scale,
+.daygrid-legend-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.daygrid-legend-swatch {
+  display: inline-block;
+  width: var(--daygrid-cell);
+  height: var(--daygrid-cell);
+  border: 1px solid var(--hairline);
+  border-radius: var(--daygrid-radius);
+  background: color-mix(
+    in srgb,
+    var(--orange) calc(var(--daygrid-heat, 0) * 100%),
+    var(--orange-wash)
+  );
+}
+
+.daygrid-legend-pending-mark {
+  display: inline-block;
+  width: var(--daygrid-cell);
+  height: var(--daygrid-cell);
+  border: 1px solid var(--warn);
+  border-radius: var(--daygrid-radius);
+  background: repeating-linear-gradient(
+    135deg,
+    var(--warn-wash) 0,
+    var(--warn-wash) 3px,
+    var(--cream-bright) 3px,
+    var(--cream-bright) 6px
+  );
+}
+
+.daygrid-peek {
+  position: absolute;
+  z-index: 3;
+  max-width: min(220px, calc(100% - var(--space-4)));
+  transform: translateX(-50%);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--hairline-2);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--ink) 12%, transparent);
+  color: var(--ink-soft-paper);
+  font-size: var(--text-min);
+  line-height: 1.25;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .daygrid {
+    --daygrid-cell: 12px;
+    --daygrid-gap: 3px;
+  }
+
+  .daygrid-legend {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

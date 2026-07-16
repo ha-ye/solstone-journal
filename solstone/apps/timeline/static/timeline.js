@@ -6,7 +6,10 @@ const segmentAvail = {};        // "monthIdx:day:hour" → buckets (12 entries)
 const dayCache = new Map();      // "YYYYMMDD" → /app/timeline/api/day response
 const segCache = new Map();      // "<day>/<stream>/<seg>" → /app/timeline/api/segment response
 const monthCache = {};
-const timelineMeta = { generatedAt: null, model: null, dataThrough: null };
+let gridCache = null;
+let gridInflight = null;
+let gridGeneration = 0;
+let timelineUnit = null;
 
 const ACCENT_ROTATION = ["blue", "teal", "amber", "coral"];
 const MONTH_FULL_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -91,12 +94,9 @@ async function loadIndex() {
       console.warn("/app/timeline/api/overview returned unreadable JSON; showing timeline error", e);
       return { state: "error" };
     }
-    timelineMeta.generatedAt = idx.generated_at ?? null;
-    timelineMeta.model = idx.model ?? null;
-    timelineMeta.dataThrough = idx.data_through ?? null;
     rebuildMonthsFromIndex(idx);
-    const state = months.every((m) => !m.yearEvent && !(m.day_count > 0)) ? "empty" : "data";
-    console.info(`loaded /app/timeline/api/overview (${idx.months.length} months, year_top=${idx.year_top.length})`);
+    const state = months.every((m) => !(m.day_count > 0)) ? "empty" : "data";
+    console.info(`loaded /app/timeline/api/overview (${idx.months.length} months)`);
     return { state };
   } catch (e) {
     console.warn("/app/timeline/api/overview fetch failed; showing timeline error", e);
@@ -104,13 +104,51 @@ async function loadIndex() {
   }
 }
 
+async function loadGrid(force = false) {
+  if (!force && gridCache) return gridCache;
+  if (!force && gridInflight) return gridInflight;
+
+  const generation = gridGeneration;
+  gridInflight = (async () => {
+    try {
+      const res = await fetch("/app/timeline/api/grid", { cache: "no-store" });
+      if (!res.ok) {
+        console.info(`/app/timeline/api/grid failed (${res.status}); showing timeline error`);
+        return null;
+      }
+      const payload = await res.json();
+      if (generation === gridGeneration) {
+        gridCache = payload && typeof payload === "object" ? payload : null;
+      }
+      return gridCache;
+    } catch (e) {
+      console.warn("/app/timeline/api/grid fetch failed; showing timeline error", e);
+      return null;
+    } finally {
+      gridInflight = null;
+    }
+  })();
+  return gridInflight;
+}
+
+async function loadTimelineUnit() {
+  if (timelineUnit) return timelineUnit;
+  if (!window.whenShellReady) {
+    throw new Error("timeline date_nav unit requires shell readiness");
+  }
+  return window.whenShellReady((shell) => {
+    const app = (shell?.apps || []).find((item) => item.name === "timeline");
+    if (!app?.date_nav?.unit) {
+      throw new Error("timeline date_nav unit missing");
+    }
+    timelineUnit = app.date_nav.unit;
+    return timelineUnit;
+  });
+}
+
 function rebuildMonthsFromIndex(idx) {
   const newMonths = idx.months.map((m, i) => {
     const fullName = MONTH_FULL_NAMES[m.month_num - 1];
-    const head = (m.month_top || [])[0] || null;
-    const yearEvent = head
-      ? { title: head.title, text: head.description, origin: head.origin || "" }
-      : null;
     return {
       name: fullName,
       short: fullName.slice(0, 3).toUpperCase(),
@@ -120,8 +158,6 @@ function rebuildMonthsFromIndex(idx) {
       accent: ACCENT_ROTATION[i % 4],
       days: m.days_in_month,
       first_weekday: m.first_weekday,
-      side: i % 2 === 0 ? "top" : "bottom",
-      yearEvent,
       dayEvents: {},
       day_count: m.day_count,
       days_with_data: new Set(m.days_with_data || []),
@@ -212,6 +248,12 @@ function clearRollupCaches() {
   realHourPlan = {};
   realDayPlan = {};
   for (const key of Object.keys(segmentAvail)) delete segmentAvail[key];
+}
+
+function clearGridCache() {
+  gridGeneration += 1;
+  gridCache = null;
+  gridInflight = null;
 }
 
 function populateDayLookups(monthIdx, yyyymmdd, data) {
@@ -534,16 +576,6 @@ function renderOriginChip(origin) {
   return `<a class="timeline-origin-chip" href="/app/activities/${parts.day}">→ ${parts.hh}:${parts.mm}</a>`;
 }
 
-function renderYearFooter(dataThrough) {
-  if (!dataThrough || !/^\d{8}$/.test(dataThrough)) return "";
-  const y = dataThrough.slice(0, 4);
-  const m = parseInt(dataThrough.slice(4, 6), 10) - 1;
-  const d = parseInt(dataThrough.slice(6, 8), 10);
-  const date = new Date(Date.UTC(parseInt(y, 10), m, d));
-  const monthName = date.toLocaleString("en-US", { month: "long", timeZone: "UTC" });
-  return `<footer class="timeline-data-through">data through ${monthName} ${d}, ${y}</footer>`;
-}
-
 function renderDayProvenance(generatedAt, model) {
   if (!generatedAt || !model) return "";
   const date = new Date(generatedAt * 1000);
@@ -663,7 +695,7 @@ function syncPathStateFromLocation() {
 
 async function dispatchBootView() {
   if (currentView === "year") {
-    renderYear();
+    await renderAllHistory();
     return;
   }
 
@@ -672,7 +704,7 @@ async function dispatchBootView() {
     if (!month) {
       timeline.innerHTML = renderEmptyState(
         "month not in timeline",
-        "this month is outside the current timeline window.",
+        "this month has no timeline data.",
       );
       return;
     }
@@ -689,7 +721,7 @@ async function dispatchBootView() {
     if (!day || !month) {
       timeline.innerHTML = renderEmptyState(
         "day not in timeline",
-        "this day is outside the current timeline window.",
+        "this day has no timeline data.",
       );
       return;
     }
@@ -699,7 +731,7 @@ async function dispatchBootView() {
     return;
   }
 
-  renderYear();
+  await renderAllHistory();
 }
 
 async function prefetchSegmentForMinute(hour, minute) {
@@ -763,8 +795,46 @@ async function applyHash(hash) {
   return dispatchBootView();
 }
 
-function renderYear() {
-  if (months.every((m) => !m.yearEvent && !(m.day_count > 0))) {
+function formatHistoryStart(day) {
+  if (!/^\d{8}$/.test(day || "")) return "";
+  return `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}`;
+}
+
+function allHistorySummary(data, unit) {
+  const nav = window.DateNav;
+  const seenDays = new Set();
+  let total = 0;
+  for (const [day, value] of Object.entries(data.days || {})) {
+    const count = nav.coerceCount(value);
+    if (count > 0) {
+      total += count;
+      seenDays.add(day);
+    }
+  }
+  for (const [day, value] of Object.entries(data.pending || {})) {
+    const count = nav.coerceCount(value);
+    if (count > 0) {
+      total += count;
+      seenDays.add(day);
+    }
+  }
+  const activeDays = seenDays.size;
+  return {
+    total: nav.countLabel(total, unit),
+    activeDays,
+    activeDayLabel: activeDays === 1 ? "active day" : "active days",
+    coverageStart: formatHistoryStart(data.coverage?.start || ""),
+  };
+}
+
+async function renderAllHistory() {
+  const [gridData, unit] = await Promise.all([loadGrid(), loadTimelineUnit()]);
+  if (!gridData) {
+    timeline.innerHTML = renderErrorState();
+    return;
+  }
+  const gate = window.DayGrid.gate(gridData, { minSpanDays: 70, minActiveDays: 14 });
+  if (!gate.ok) {
     timeline.innerHTML = renderEmptyState(
       "no timeline data yet",
       "once sol experiences a day alongside you and keeps it in your journal, that day will show up here",
@@ -772,31 +842,28 @@ function renderYear() {
     );
     return;
   }
+  const summary = allHistorySummary(gridData, unit);
 
   timeline.innerHTML = `
-    <div class="year-view">
-      ${months
-        .map(
-          (month, index) => `
-            <article class="milestone timeline-${month.side} accent-${month.accent}" style="grid-column: ${index + 1}">
-              ${month.yearEvent ? `
-                <div class="timeline-card">
-                  <div class="timeline-date">${month.name} ${month.year || ""}</div>
-                  <h2>${escapeHtml(month.yearEvent.title)}</h2>
-                  <p>${escapeHtml(month.yearEvent.text)}</p>
-                  ${renderOriginChip(month.yearEvent.origin)}
-                </div>
-              ` : ""}
-              <button class="timeline-node" type="button" data-month="${index}" aria-label="Open ${month.name} ${month.year || ""}">
-                ${month.short}
-              </button>
-            </article>
-          `,
-        )
-        .join("")}
-      ${renderYearFooter(timelineMeta.dataThrough)}
+    <div class="timeline-history-view">
+      <section class="timeline-history-lede" aria-label="timeline history summary">
+        <h2>all history</h2>
+        <p>${escapeHtml(summary.total)} across ${summary.activeDays} ${summary.activeDayLabel} since ${escapeHtml(summary.coverageStart)}</p>
+      </section>
+      <div class="timeline-history-grid" data-timeline-daygrid></div>
+      <div class="timeline-history-legend" data-timeline-daygrid-legend></div>
     </div>
   `;
+  const host = timeline.querySelector("[data-timeline-daygrid]");
+  const legendHost = timeline.querySelector("[data-timeline-daygrid-legend]");
+  window.DayGrid.mount(host, {
+    data: gridData,
+    unit,
+    mode: "navigate",
+    appPath: "/app/timeline",
+    monthLinks: true,
+  });
+  window.DayGrid.legend(legendHost, { unit });
 }
 
 async function renderMonth(index) {
@@ -826,7 +893,7 @@ async function renderMonth(index) {
         <svg class="month-connectors" aria-hidden="true"></svg>
 
         <div class="timeline-focus-heading">
-          <button class="timeline-focus-node" type="button" data-month="${index}" aria-label="Return to year view">
+          <button class="timeline-focus-node" type="button" data-month="${index}" aria-label="Return to all history">
             ${month.short}
           </button>
         </div>
@@ -1613,7 +1680,7 @@ timeline.addEventListener("click", async (event) => {
     selectedHour = null;
     selectedMinute = null;
     history.pushState({}, "", "/app/timeline/year");
-    renderYear();
+    await renderAllHistory();
     return;
   }
 
@@ -1660,6 +1727,7 @@ window.timelineRefresh = {
   },
   index() {
     clearRollupCaches();
+    clearGridCache();
     return loadIndex().then((result) => {
       if (result.state === "error") {
         timeline.innerHTML = renderErrorState();
