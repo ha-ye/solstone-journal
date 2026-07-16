@@ -127,8 +127,14 @@
     return dayString(now);
   }
 
-  function displayDay(day) {
-    return `${day.slice(0, 4)}-${day.slice(4, 6)}-${day.slice(6, 8)}`;
+  // The peek and the cell's accessible name are prose, not an instrument reading:
+  // they get the shared human ladder (Today / Yesterday / Last Saturday /
+  // Saturday, July 11), never a hand-rolled ISO string a screen reader spells out.
+  // The ladder is anchored to the mount's own `today`, so the day the peek calls
+  // "Today" is always the day wearing the today ring.
+  function displayDay(day, today) {
+    const now = today ? dateFromDay(today) : null;
+    return now ? dateNav().headingLabel(day, now) : dateNav().headingLabel(day);
   }
 
   function monthLabel(month) {
@@ -258,10 +264,10 @@
     return root;
   }
 
-  function cellLabel(day, count, unit, pending) {
+  function cellLabel(day, count, unit, pending, today) {
     const label = dateNav().countLabel(count, unit);
     const suffix = pending ? ', rollup pending' : '';
-    return `${displayDay(day)}: ${label}${suffix}`;
+    return `${displayDay(day, today)}: ${label}${suffix}`;
   }
 
   function buildCells(data, config, today) {
@@ -318,7 +324,7 @@
           } else {
             cell.classList.add('daygrid-cell--pending');
           }
-          const label = cellLabel(cursor, count, config.unit, isPending && !isRolled);
+          const label = cellLabel(cursor, count, config.unit, isPending && !isRolled, today);
           cell.setAttribute('aria-label', label);
           cell.title = label;
           cell.tabIndex = -1;
@@ -330,7 +336,7 @@
           cell.setAttribute('aria-disabled', 'true');
           cell.textContent = String(Number(cursor.slice(6, 8)));
           if (cursor === today) cell.classList.add('daygrid-cell--today');
-          const label = cellLabel(cursor, 0, config.unit, false);
+          const label = cellLabel(cursor, 0, config.unit, false, today);
           cell.setAttribute('aria-label', label);
           cell.title = label;
           cell.tabIndex = -1;
@@ -497,7 +503,7 @@
       const isRolled = own(data.days, day);
       const isPending = own(data.pending, day);
       const count = isRolled ? data.days[day] : data.pending?.[day] || 0;
-      const label = cellLabel(day, count, config.unit, isPending && !isRolled);
+      const label = cellLabel(day, count, config.unit, isPending && !isRolled, config.today);
       const text = document.createElement('span');
       text.textContent = label;
       peek.replaceChildren(text);
