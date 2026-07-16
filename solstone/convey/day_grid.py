@@ -8,7 +8,10 @@ from typing import Any
 
 
 def build_day_grid_payload(
-    counts: Mapping[str, int], watermark: str | None
+    counts: Mapping[str, int],
+    watermark: str | None,
+    *,
+    coverage: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     days: dict[str, int] = {}
     pending: dict[str, int] = {}
@@ -20,6 +23,11 @@ def build_day_grid_payload(
         else:
             pending[day] = count
 
-    all_days = sorted([*days, *pending])
-    coverage = {"start": all_days[0], "end": all_days[-1]} if all_days else None
-    return {"coverage": coverage, "days": days, "pending": pending}
+    if coverage is not None:
+        grid_coverage = dict(coverage)
+    else:
+        all_days = sorted([*days, *pending])
+        grid_coverage = (
+            {"start": all_days[0], "end": all_days[-1]} if all_days else None
+        )
+    return {"coverage": grid_coverage, "days": days, "pending": pending}

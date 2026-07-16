@@ -71,6 +71,38 @@ def test_day_grid_payload_generalizes_to_apps_without_pending_days():
     assert payload["coverage"] == {"start": "20400507", "end": "20400511"}
 
 
+def test_day_grid_payload_uses_explicit_coverage_override():
+    counts = {
+        "20400610": 4,
+        "20400612": 2,
+    }
+
+    payload = build_day_grid_payload(
+        counts,
+        max(counts),
+        coverage={"start": "20400101", "end": "20401231"},
+    )
+
+    assert set(payload) == {"coverage", "days", "pending"}
+    assert payload["coverage"] == {"start": "20400101", "end": "20401231"}
+    assert payload["days"] == counts
+    assert payload["pending"] == {}
+
+
+def test_day_grid_payload_empty_counts_accepts_empty_corpus_coverage_override():
+    payload = build_day_grid_payload(
+        {},
+        None,
+        coverage={"start": "20400701", "end": "20400731"},
+    )
+
+    assert payload == {
+        "coverage": {"start": "20400701", "end": "20400731"},
+        "days": {},
+        "pending": {},
+    }
+
+
 def test_day_grid_css_uses_neutral_pending_marker():
     css_path = (
         Path(__file__).resolve().parents[1]

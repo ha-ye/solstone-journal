@@ -6,14 +6,20 @@ from __future__ import annotations
 import html
 import re
 import sqlite3
+from datetime import datetime
 from typing import Any
 
 from flask import Blueprint, jsonify, request
 
-from solstone.convey.reasons import SEARCH_FAILED
+from solstone.convey.day_grid import build_day_grid_payload
+from solstone.convey.reasons import INVALID_DAY, SEARCH_FAILED
 from solstone.convey.utils import error_response, format_date, parse_pagination_params
 from solstone.think.facets import get_facets
-from solstone.think.indexer.journal import search_counts, search_journal
+from solstone.think.indexer.journal import (
+    get_corpus_day_coverage,
+    search_counts,
+    search_journal,
+)
 
 search_bp = Blueprint(
     "app:search",
@@ -53,6 +59,9 @@ AGENT_LABELS = {
     "import": "Import",
 }
 
+DAY_RE = re.compile(r"^\d{8}$")
+DAY_BOUND_SENTINELS = {"00000000", "99999999"}
+
 
 def _parse_facet_filter() -> str | None:
     """Parse facet filter from request args."""
@@ -67,6 +76,46 @@ def _parse_agent_filter() -> str | None:
 def _parse_stream_filter() -> str | None:
     """Parse stream filter from request args."""
     return request.args.get("stream", "").strip() or None
+
+
+def _parse_day_bound(name: str) -> str | None:
+    """Parse a day range bound from request args."""
+    value = request.args.get(name, "").strip()
+    if not value or value in DAY_BOUND_SENTINELS:
+        return None
+    return value
+
+
+def _validate_day_bound(name: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not DAY_RE.fullmatch(value):
+        return f"{name} must be YYYYMMDD"
+    try:
+        datetime.strptime(value, "%Y%m%d")
+    except ValueError:
+        return f"{name} must be a real day"
+    return None
+
+
+def _parse_day_range_filter() -> tuple[str | None, str | None, str | None]:
+    day_from = _parse_day_bound("day_from")
+    day_to = _parse_day_bound("day_to")
+    for name, value in (("day_from", day_from), ("day_to", day_to)):
+        error = _validate_day_bound(name, value)
+        if error:
+            return day_from, day_to, error
+    if day_from and day_to and day_from > day_to:
+        return day_from, day_to, "day_from must be <= day_to"
+    return day_from, day_to, None
+
+
+def _day_in_range(day: str, day_from: str | None, day_to: str | None) -> bool:
+    if day_from and day < day_from:
+        return False
+    if day_to and day > day_to:
+        return False
+    return True
 
 
 def _highlight_query_terms(text: str, query: str) -> str:
@@ -134,13 +183,20 @@ def search_journal_api() -> Any:
         offset: Day offset for pagination (default 0)
         facet: Filter by facet name (optional, empty string for no-facet items)
         agent: Filter by single agent (optional)
+        stream: Filter by stream name (optional)
+        day_from: Inclusive day range start (optional, YYYYMMDD)
+        day_to: Inclusive day range end (optional, YYYYMMDD)
 
     Returns:
         JSON with:
-        - total: Total match count
+        - total: Total match count (range-scoped when day_from/day_to is active)
+        - total_days: Count of day groups after range filtering
+        - showing_days: Count of day groups in this page
+        - relaxed: Whether search used relaxed matching
         - days: List of day groups, each with date info and results
         - facets: List of facets with counts for filter sidebar
         - talents: List of talents with counts for filter sidebar
+        - day_grid: {coverage, days, pending} payload for the day grid
     """
     query = request.args.get("q", "").strip()
 
@@ -151,6 +207,10 @@ def search_journal_api() -> Any:
     facet_filter = _parse_facet_filter()
     agent_filter = _parse_agent_filter()
     stream_filter = _parse_stream_filter()
+    day_from_filter, day_to_filter, day_range_error = _parse_day_range_filter()
+    if day_range_error:
+        return error_response(INVALID_DAY, detail=day_range_error)
+    range_active = day_from_filter is not None or day_to_filter is not None
 
     # Load facet metadata for enriching results
     facets_map = get_facets()
@@ -171,9 +231,23 @@ def search_journal_api() -> Any:
             relax=True,
         )
         day_counts = dict(filtered_counts["days"])
+        day_grid = build_day_grid_payload(
+            day_counts,
+            max(day_counts, default=None),
+            coverage=get_corpus_day_coverage(),
+        )
 
         # Determine which days to show (sorted descending)
-        sorted_days = sorted(day_counts.keys(), reverse=True)
+        sorted_days = [
+            day
+            for day in sorted(day_counts.keys(), reverse=True)
+            if _day_in_range(day, day_from_filter, day_to_filter)
+        ]
+        total = (
+            sum(day_counts.get(day, 0) for day in sorted_days)
+            if range_active
+            else filtered_counts["total"]
+        )
 
         # Apply day pagination
         paginated_days = sorted_days[day_offset : day_offset + 20]
@@ -241,13 +315,14 @@ def search_journal_api() -> Any:
 
     return jsonify(
         {
-            "total": filtered_counts["total"],
+            "total": total,
             "total_days": len(sorted_days),
             "showing_days": len(days_response),
             "relaxed": filtered_counts["relaxed"],
             "days": days_response,
             "facets": facets_list,
             "talents": agents_list,
+            "day_grid": day_grid,
         }
     )
 

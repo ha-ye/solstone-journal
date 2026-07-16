@@ -1519,6 +1519,19 @@ def search_counts(
     }
 
 
+def get_corpus_day_coverage() -> dict[str, str] | None:
+    """Return the indexed corpus day span, or None when no dated chunks exist."""
+    conn, _ = get_journal_index()
+    row = conn.execute(
+        "SELECT MIN(day), MAX(day) FROM chunks WHERE day != ''"
+    ).fetchone()
+    conn.close()
+
+    if not row or not row[0] or not row[1]:
+        return None
+    return {"start": row[0], "end": row[1]}
+
+
 def _load_index_entity_dicts() -> list[dict[str, Any]]:
     """Load identity entities as entity dicts for name resolution.
 

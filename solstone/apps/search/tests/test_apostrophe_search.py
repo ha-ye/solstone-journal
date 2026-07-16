@@ -46,6 +46,13 @@ def apostrophe_search_client(tmp_path, monkeypatch):
         "# Yesterday\n\nReviewed yesterday's meeting notes.\n"
     )
 
+    control_day = (datetime.now() - timedelta(days=2)).strftime("%Y%m%d")
+    control_dir = journal / "chronicle" / control_day / "talents"
+    control_dir.mkdir(parents=True, exist_ok=True)
+    (control_dir / "flow.md").write_text(
+        "# Control\n\nReviewed control meeting notes.\n"
+    )
+
     scan_journal(str(journal), full=True)
 
     app = create_app(journal=str(journal))
@@ -93,6 +100,29 @@ def test_search_api_finds_temporal_apostrophe_query(apostrophe_search_client):
     payload = _get_json(response)
     assert payload["total"] >= 1
     assert payload["days"]
+
+
+def test_search_api_sentinel_bounds_preserve_temporal_query(apostrophe_search_client):
+    client, _ = apostrophe_search_client
+    query = {"q": "yesterday's meeting"}
+
+    plain_response = client.get("/app/search/api/search", query_string=query)
+    sentinel_response = client.get(
+        "/app/search/api/search",
+        query_string={**query, "day_from": "00000000", "day_to": "99999999"},
+    )
+
+    assert plain_response.status_code == 200
+    assert sentinel_response.status_code == 200
+    plain_payload = _get_json(plain_response)
+    sentinel_payload = _get_json(sentinel_response)
+    assert sentinel_payload == plain_payload
+
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+    control_day = (datetime.now() - timedelta(days=2)).strftime("%Y%m%d")
+    returned_days = [group["day"] for group in sentinel_payload["days"]]
+    assert returned_days == [yesterday]
+    assert control_day not in returned_days
 
 
 def test_search_api_apostrophe_only_is_json_not_500(apostrophe_search_client):
