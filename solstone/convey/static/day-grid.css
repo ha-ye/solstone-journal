@@ -132,6 +132,7 @@
   border-radius: var(--daygrid-radius);
   background: var(--cream-bright);
   color: var(--ink-faint-paper);
+  appearance: none;
   font: inherit;
   font-size: 0;
   line-height: 1;
@@ -139,7 +140,8 @@
   text-decoration: none;
 }
 
-.daygrid-cell[href] {
+.daygrid-cell[href],
+button.daygrid-cell {
   cursor: pointer;
 }
 
@@ -177,6 +179,22 @@
 .daygrid-cell--today {
   outline: 1px solid var(--ink-faint-paper);
   outline-offset: 1px;
+}
+
+.daygrid-cell--range-endpoint {
+  border-color: var(--orange);
+  background: var(--orange);
+  color: var(--orange-ink);
+  opacity: 1;
+}
+
+.daygrid-cell--range-inner {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--orange) 45%, transparent);
+  opacity: 1;
+}
+
+.daygrid-cell--range-outside {
+  opacity: 0.28;
 }
 
 .daygrid-cell[href]:hover,
@@ -274,6 +292,21 @@
 .daygrid-peek-open:focus-visible {
   outline: 0;
   text-decoration: underline;
+}
+
+.daygrid-peek-hint {
+  display: block;
+  margin-top: 2px;
+  color: var(--ink-faint-paper);
+}
+
+.daygrid-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
 }
 
 @media (max-width: 768px) {

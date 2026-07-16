@@ -137,6 +137,12 @@
     return now ? dateNav().headingLabel(day, now) : dateNav().headingLabel(day);
   }
 
+  function rangeFor(first, second) {
+    return first <= second
+      ? { from: first, to: second }
+      : { from: second, to: first };
+  }
+
   function monthLabel(month) {
     const index = Number(month.slice(4, 6)) - 1;
     return MONTH_SHORT[index];
@@ -204,7 +210,8 @@
   function renderMonthLabels(block, config) {
     const row = document.createElement('div');
     row.className = 'daygrid-months';
-    if (!config.monthLinks) row.setAttribute('aria-hidden', 'true');
+    const linkMonths = config.mode === 'navigate' && config.monthLinks;
+    if (!linkMonths) row.setAttribute('aria-hidden', 'true');
 
     const ranges = monthColumnRanges(block);
     let month = `${String(block.year).padStart(4, '0')}01`;
@@ -212,13 +219,13 @@
     while (month <= lastMonth) {
       const range = ranges.get(month);
       if (range) {
-        const label = config.monthLinks
+        const label = linkMonths
           ? document.createElement('a')
           : document.createElement('span');
         label.textContent = monthLabel(month);
         label.style.gridColumnStart = String(range.start);
         label.style.gridColumnEnd = `span ${range.end - range.start + 1}`;
-        if (config.monthLinks) label.href = joinPath(config.appPath, month);
+        if (linkMonths) label.href = joinPath(config.appPath, month);
         row.appendChild(label);
       }
       const next = addMonths(month, 1);
@@ -312,11 +319,15 @@
           cell.className = 'daygrid-cell daygrid-cell--pad';
           cell.setAttribute('aria-hidden', 'true');
         } else if ((isRolled || isPending) && count > 0) {
-          cell = document.createElement('a');
+          cell = document.createElement(config.mode === 'select' ? 'button' : 'a');
           cell.className = 'daygrid-cell';
           cell.setAttribute(DAY_ATTR, cursor);
           cell.textContent = String(Number(cursor.slice(6, 8)));
-          cell.href = joinPath(config.appPath, cursor);
+          if (config.mode === 'select') {
+            cell.type = 'button';
+          } else {
+            cell.href = joinPath(config.appPath, cursor);
+          }
           if (cursor === today) cell.classList.add('daygrid-cell--today');
           if (isRolled) {
             cell.classList.add('daygrid-cell--data');
@@ -329,11 +340,15 @@
           cell.title = label;
           cell.tabIndex = -1;
         } else {
-          cell = document.createElement('span');
+          cell = document.createElement(config.mode === 'select' ? 'button' : 'span');
           cell.className = 'daygrid-cell daygrid-cell--empty';
           cell.setAttribute(DAY_ATTR, cursor);
-          cell.setAttribute('role', 'button');
-          cell.setAttribute('aria-disabled', 'true');
+          if (config.mode === 'select') {
+            cell.type = 'button';
+          } else {
+            cell.setAttribute('role', 'button');
+            cell.setAttribute('aria-disabled', 'true');
+          }
           cell.textContent = String(Number(cursor.slice(6, 8)));
           if (cursor === today) cell.classList.add('daygrid-cell--today');
           const label = cellLabel(cursor, 0, config.unit, false, today);
@@ -366,14 +381,16 @@
       mode: options?.mode || 'navigate',
       appPath: options?.appPath || '',
       monthLinks: Boolean(options?.monthLinks),
+      onRange: typeof options?.onRange === 'function' ? options.onRange : null,
       today: validDay(options?.today) ? options.today : todayString(),
     };
-    if (config.mode !== 'navigate') {
-      throw new Error('DayGrid.mount supports mode "navigate"');
+    if (!['navigate', 'select'].includes(config.mode)) {
+      throw new Error('DayGrid.mount supports mode "navigate" or "select"');
     }
-    if (!config.appPath) {
+    if (config.mode === 'navigate' && !config.appPath) {
       throw new Error('DayGrid.mount requires appPath');
     }
+    if (config.mode !== 'navigate') config.monthLinks = false;
     return config;
   }
 
@@ -455,7 +472,10 @@
     const peek = document.createElement('div');
     peek.className = 'daygrid-peek';
     peek.hidden = true;
-    root.append(scroller, peek);
+    const live = document.createElement('div');
+    live.className = 'daygrid-live';
+    live.setAttribute('aria-live', 'polite');
+    root.append(scroller, peek, live);
     host.appendChild(root);
 
     const focusable = built.focusable;
@@ -463,6 +483,11 @@
     let active = byDay.get(targetDay) || focusable[0] || null;
     let peekCell = null;
     let armedCell = null;
+    let selectionAnchor = null;
+    let previewDay = null;
+    let selectedRange = null;
+    let dragStartDay = null;
+    let suppressNextSelectClick = false;
     const coarsePointer = Boolean(
       window.matchMedia && window.matchMedia('(pointer: coarse)').matches
     );
@@ -497,6 +522,93 @@
       armedCell = null;
     }
 
+    function announce(message) {
+      live.textContent = '';
+      window.setTimeout(() => {
+        if (!signal.aborted) live.textContent = message;
+      }, 0);
+    }
+
+    function syncRangeClasses() {
+      const current = selectionAnchor
+        ? rangeFor(selectionAnchor, previewDay || selectionAnchor)
+        : selectedRange;
+      for (const item of focusable) {
+        const cell = item.element;
+        cell.classList.remove(
+          'daygrid-cell--range-endpoint',
+          'daygrid-cell--range-inner',
+          'daygrid-cell--range-outside'
+        );
+        if (!current) continue;
+        if (item.day < current.from || item.day > current.to) {
+          cell.classList.add('daygrid-cell--range-outside');
+        } else if (item.day === current.from || item.day === current.to) {
+          cell.classList.add('daygrid-cell--range-endpoint');
+        } else {
+          cell.classList.add('daygrid-cell--range-inner');
+        }
+      }
+    }
+
+    function startAnchor(day) {
+      selectionAnchor = day;
+      previewDay = day;
+      selectedRange = null;
+      syncRangeClasses();
+      announce(`range starts ${displayDay(day, config.today)} — pick the last day`);
+    }
+
+    function commitRange(range) {
+      selectionAnchor = null;
+      previewDay = null;
+      selectedRange = range;
+      syncRangeClasses();
+      announce(`showing ${displayDay(range.from, config.today)} to ${displayDay(range.to, config.today)}`);
+      if (config.onRange) config.onRange({ ...range });
+    }
+
+    function clearPendingAnchor() {
+      if (!selectionAnchor) return false;
+      selectionAnchor = null;
+      previewDay = null;
+      syncRangeClasses();
+      announce('range cleared');
+      if (config.onRange) config.onRange(null);
+      return true;
+    }
+
+    function clearAppliedRange() {
+      if (!selectedRange) return false;
+      selectedRange = null;
+      syncRangeClasses();
+      announce('range cleared');
+      if (config.onRange) config.onRange(null);
+      return true;
+    }
+
+    function updatePreview(day) {
+      if (!selectionAnchor) return;
+      previewDay = day;
+      syncRangeClasses();
+    }
+
+    function activateSelectCell(cell) {
+      const day = cell.getAttribute(DAY_ATTR);
+      if (!day) return;
+      if (!selectionAnchor) {
+        startAnchor(day);
+        return;
+      }
+      commitRange(rangeFor(selectionAnchor, day));
+    }
+
+    function cellAtPoint(event) {
+      const node = document.elementFromPoint(event.clientX, event.clientY);
+      const cell = node?.closest?.(`.daygrid-cell[${DAY_ATTR}]`);
+      return cell && root.contains(cell) ? cell : null;
+    }
+
     function showPeek(cell) {
       const day = cell.getAttribute(DAY_ATTR);
       if (!day) return;
@@ -507,6 +619,12 @@
       const text = document.createElement('span');
       text.textContent = label;
       peek.replaceChildren(text);
+      if (config.mode === 'select' && selectionAnchor) {
+        const hint = document.createElement('span');
+        hint.className = 'daygrid-peek-hint';
+        hint.textContent = `finishes the range from ${displayDay(selectionAnchor, config.today)}`;
+        peek.appendChild(hint);
+      }
       if (cell.matches('a[href]')) {
         const open = document.createElement('a');
         open.className = 'daygrid-peek-open';
@@ -534,7 +652,8 @@
     }
 
     root.addEventListener('keydown', (event) => {
-      if (!event.target.closest(`.daygrid-cell[${DAY_ATTR}]`)) return;
+      const targetCell = event.target.closest(`.daygrid-cell[${DAY_ATTR}]`);
+      if (!targetCell) return;
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
         event.preventDefault();
         moveFocus(event.key);
@@ -562,10 +681,15 @@
         return;
       }
       if (
-        (event.key === 'Enter' || event.key === ' ') &&
-        event.target.closest('.daygrid-cell--empty')
+        event.key === 'Enter' ||
+        event.key === ' '
       ) {
-        event.preventDefault();
+        if (config.mode === 'select') {
+          event.preventDefault();
+          activateSelectCell(targetCell);
+        } else if (targetCell.closest('.daygrid-cell--empty')) {
+          event.preventDefault();
+        }
       }
     }, { signal });
 
@@ -573,6 +697,15 @@
       if (event.target.closest('.daygrid-peek-open')) return;
       const cell = event.target.closest(`.daygrid-cell[${DAY_ATTR}]`);
       if (!cell) return;
+      if (config.mode === 'select') {
+        event.preventDefault();
+        if (suppressNextSelectClick) {
+          suppressNextSelectClick = false;
+          return;
+        }
+        activateSelectCell(cell);
+        return;
+      }
       if (cell.closest('.daygrid-cell--empty')) {
         event.preventDefault();
         if (coarsePointer && event.detail > 0) {
@@ -598,6 +731,7 @@
       if (cell) {
         const item = byDay.get(cell.getAttribute(DAY_ATTR));
         if (item) applyTabStop(item, false);
+        updatePreview(cell.getAttribute(DAY_ATTR));
         showPeek(cell);
       }
     }, { signal });
@@ -608,7 +742,10 @@
 
     root.addEventListener('mouseover', (event) => {
       const cell = event.target.closest(`.daygrid-cell[${DAY_ATTR}]`);
-      if (cell) showPeek(cell);
+      if (cell) {
+        updatePreview(cell.getAttribute(DAY_ATTR));
+        showPeek(cell);
+      }
     }, { signal });
 
     root.addEventListener('mouseout', (event) => {
@@ -619,8 +756,58 @@
       if (peekCell && !peek.hidden) showPeek(peekCell);
     }, { signal, passive: true });
 
+    if (config.mode === 'select' && !coarsePointer) {
+      root.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0) return;
+        const cell = event.target.closest(`.daygrid-cell[${DAY_ATTR}]`);
+        if (!cell) return;
+        dragStartDay = cell.getAttribute(DAY_ATTR);
+      }, { signal });
+
+      root.addEventListener('pointermove', (event) => {
+        if (!dragStartDay) return;
+        const cell = cellAtPoint(event);
+        if (!cell) return;
+        const day = cell.getAttribute(DAY_ATTR);
+        if (day !== dragStartDay) {
+          if (selectionAnchor !== dragStartDay) startAnchor(dragStartDay);
+          updatePreview(day);
+          showPeek(cell);
+        }
+      }, { signal });
+
+      root.addEventListener('pointerup', (event) => {
+        if (!dragStartDay) return;
+        const startDay = dragStartDay;
+        dragStartDay = null;
+        const cell = cellAtPoint(event) ||
+          event.target.closest(`.daygrid-cell[${DAY_ATTR}]`);
+        if (!cell) return;
+        const endDay = cell.getAttribute(DAY_ATTR);
+        const shouldCommit = endDay !== startDay;
+        if (!shouldCommit) return;
+        commitRange(rangeFor(startDay, endDay));
+        suppressNextSelectClick = true;
+        window.setTimeout(() => {
+          suppressNextSelectClick = false;
+        }, 0);
+      }, { signal });
+
+      root.addEventListener('pointercancel', () => {
+        dragStartDay = null;
+      }, { signal });
+    }
+
     document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape') hidePeek();
+      if (event.key !== 'Escape') return;
+      hidePeek();
+      if (
+        config.mode === 'select' &&
+        root.contains(document.activeElement) &&
+        (clearPendingAnchor() || clearAppliedRange())
+      ) {
+        event.preventDefault();
+      }
     }, { signal });
 
     document.addEventListener('pointerdown', (event) => {

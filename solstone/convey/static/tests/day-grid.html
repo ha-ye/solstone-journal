@@ -135,6 +135,21 @@
     });
   }
 
+  function mountSelect(data, opts = {}) {
+    const host = createHost();
+    const ranges = [];
+    const root = window.DayGrid.mount(host, {
+      data,
+      unit,
+      mode: 'select',
+      onRange(value) {
+        ranges.push(value ? { ...value } : value);
+      },
+      ...opts
+    });
+    return { host, root, ranges };
+  }
+
   function keydownEvent(target, init) {
     const event = new KeyboardEvent('keydown', {
       bubbles: true,
@@ -174,6 +189,17 @@
         20260102: 4,
       },
       pending: { 20250108: 1 }
+    };
+  }
+
+  function selectData() {
+    return {
+      coverage: { start: '20260301', end: '20260331' },
+      days: {
+        20260304: 2,
+        20260320: 4,
+      },
+      pending: { 20260310: 1 }
     };
   }
 
@@ -441,6 +467,140 @@
     root = mounted.root;
     equal('active day href', root.querySelector('[data-daygrid-date="20260101"]').getAttribute('href'), '/app/timeline/20260101');
     equal('month label href', root.querySelector('.daygrid-months a').getAttribute('href'), '/app/timeline/202601');
+
+    setPointer(false);
+    let selected = mountSelect(selectData(), { today: '20260304', monthLinks: true });
+    root = selected.root;
+    let mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    let mar20 = root.querySelector('[data-daygrid-date="20260320"]');
+    clickObserved(selected.host, mar20);
+    equal('select reverse first click anchors only', selected.ranges.length, 0);
+    clickObserved(selected.host, mar4);
+    equal('select reverse order range from', selected.ranges[0]?.from, '20260304');
+    equal('select reverse order range to', selected.ranges[0]?.to, '20260320');
+
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    mar20 = root.querySelector('[data-daygrid-date="20260320"]');
+    clickObserved(selected.host, mar4);
+    clickObserved(selected.host, mar20);
+    equal('select forward order range from', selected.ranges[0]?.from, '20260304');
+    equal('select forward order range to', selected.ranges[0]?.to, '20260320');
+
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    mar20 = root.querySelector('[data-daygrid-date="20260320"]');
+    const PointerCtor = window.PointerEvent || MouseEvent;
+    mar20.dispatchEvent(new PointerCtor('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+    mar4.dispatchEvent(new PointerCtor('pointerup', { bubbles: true, cancelable: true, button: 0 }));
+    equal('select fine pointer drag range from', selected.ranges[0]?.from, '20260304');
+    equal('select fine pointer drag range to', selected.ranges[0]?.to, '20260320');
+
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    const mar4Rect = mar4.getBoundingClientRect();
+    const mar4X = mar4Rect.left + mar4Rect.width / 2;
+    const mar4Y = mar4Rect.top + mar4Rect.height / 2;
+    mar4.dispatchEvent(new PointerCtor('pointerdown', { bubbles: true, cancelable: true, button: 0, clientX: mar4X, clientY: mar4Y }));
+    mar4.dispatchEvent(new PointerCtor('pointermove', { bubbles: true, cancelable: true, button: 0, clientX: mar4X + 4, clientY: mar4Y }));
+    mar4.dispatchEvent(new PointerCtor('pointerup', { bubbles: true, cancelable: true, button: 0, clientX: mar4X + 4, clientY: mar4Y }));
+    equal('select same-cell pointer wiggle leaves range unset', selected.ranges.length, 0);
+    clickObserved(selected.host, mar4);
+    equal('select same-cell pointer wiggle follow-up click anchors only', selected.ranges.length, 0);
+    assert('select same-cell pointer wiggle follow-up click paints anchor', mar4.classList.contains('daygrid-cell--range-endpoint'));
+
+    setPointer(true);
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    mar20 = root.querySelector('[data-daygrid-date="20260320"]');
+    mar20.dispatchEvent(new PointerCtor('pointerdown', { bubbles: true, cancelable: true, button: 0 }));
+    mar4.dispatchEvent(new PointerCtor('pointerup', { bubbles: true, cancelable: true, button: 0 }));
+    equal('select coarse pointer drag is not bound', selected.ranges.length, 0);
+    setPointer(false);
+
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    clickObserved(selected.host, mar4);
+    clickObserved(selected.host, mar4);
+    equal('select same cell range from', selected.ranges[0]?.from, '20260304');
+    equal('select same cell range to', selected.ranges[0]?.to, '20260304');
+
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    mar20 = root.querySelector('[data-daygrid-date="20260320"]');
+    mar4.focus();
+    clickObserved(selected.host, mar4);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    equal('select escape clears anchor', selected.ranges[0], null);
+    clickObserved(selected.host, mar4);
+    clickObserved(selected.host, mar20);
+    mar20.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    equal('select escape clears applied range', selected.ranges[2], null);
+
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    mar20 = root.querySelector('[data-daygrid-date="20260320"]');
+    clickObserved(selected.host, mar4);
+    clickObserved(selected.host, mar20);
+    outside.tabIndex = -1;
+    outside.focus();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    equal('select escape outside leaves range callbacks untouched', selected.ranges.length, 1);
+    assert('select escape outside leaves endpoint painted', mar4.classList.contains('daygrid-cell--range-endpoint'));
+
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    const emptySelect = root.querySelector('[data-daygrid-date="20260311"]');
+    equal('select empty cell is a button', emptySelect.tagName, 'BUTTON');
+    equal('select empty cell is not aria-disabled', emptySelect.getAttribute('aria-disabled'), null);
+    clickObserved(selected.host, emptySelect);
+    clickObserved(selected.host, emptySelect);
+    equal('select empty cell activates from', selected.ranges[0]?.from, '20260311');
+    equal('select empty cell activates to', selected.ranges[0]?.to, '20260311');
+
+    mounted = mount(selectData(), { today: '20260304' });
+    root = mounted.root;
+    const emptyNavigate = root.querySelector('[data-daygrid-date="20260311"]');
+    equal('navigate empty cell stays span', emptyNavigate.tagName, 'SPAN');
+    equal('navigate empty cell stays disabled', emptyNavigate.getAttribute('aria-disabled'), 'true');
+    observed = clickObserved(mounted.host, emptyNavigate, 1);
+    assert('navigate empty cell click remains inert', observed?.defaultPrevented === true);
+
+    const noPathHost = createHost();
+    let noPathError = null;
+    let noPathRoot = null;
+    try {
+      noPathRoot = window.DayGrid.mount(noPathHost, {
+        data: selectData(),
+        unit,
+        mode: 'select'
+      });
+    } catch (error) {
+      noPathError = error;
+    }
+    equal('select no appPath does not throw', noPathError, null);
+    equal('select month labels are not links', noPathRoot?.querySelectorAll('.daygrid-months a').length ?? -1, 0);
+
+    selected = mountSelect(selectData(), { today: '20260304' });
+    root = selected.root;
+    mar4 = root.querySelector('[data-daygrid-date="20260304"]');
+    mar20 = root.querySelector('[data-daygrid-date="20260320"]');
+    mar4.focus();
+    keydown(mar4, 'Enter');
+    equal('select enter anchors only', selected.ranges.length, 0);
+    mar20.focus();
+    keydown(mar20, ' ');
+    equal('select space commits from', selected.ranges[0]?.from, '20260304');
+    equal('select space commits to', selected.ranges[0]?.to, '20260320');
+    resetPointer();
 
     if (failures > 0) {
       throw new Error(`${failures} day-grid smoke assertion(s) failed`);
