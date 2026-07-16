@@ -68,8 +68,137 @@ def _write_probe_script(tmp_path: Path, body: str) -> Path:
     return script
 
 
+class _FakeStream:
+    def __init__(
+        self,
+        chunks: list[bytes],
+        chunk_times: list[float],
+        total: int | None,
+        clock: list[float],
+    ) -> None:
+        self._chunks = chunks
+        self._chunk_times = chunk_times
+        self.headers = {"content-length": str(total)} if total is not None else {}
+        self._clock = clock
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        return False
+
+    def raise_for_status(self):
+        return None
+
+    def iter_bytes(self):
+        for chunk, t in zip(self._chunks, self._chunk_times, strict=True):
+            self._clock[0] = t
+            yield chunk
+
+
+def _download_with_fake_stream(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    chunks: list[bytes],
+    chunk_times: list[float],
+) -> tuple[Path, list[tuple[int, int | None]]]:
+    clock = [0.0]
+    total = sum(len(chunk) for chunk in chunks)
+    calls: list[tuple[int, int | None]] = []
+    monkeypatch.setattr(local_install.time, "monotonic", lambda: clock[0])
+
+    def fake_stream(method, url, **_kwargs):
+        assert method == "GET"
+        assert url == "https://example.test/artifact"
+        return _FakeStream(chunks, chunk_times, total, clock)
+
+    def record_progress(received: int, reported_total: int | None) -> None:
+        calls.append((received, reported_total))
+
+    monkeypatch.setattr("httpx.stream", fake_stream)
+    dest = tmp_path / "artifact.bin"
+    local_install._download_file(
+        "https://example.test/artifact",
+        dest,
+        on_progress=record_progress,
+    )
+    return dest, calls
+
+
 def test_install_hint_literal() -> None:
     assert local_install.install_hint() == "journal install-provider local"
+
+
+def test_download_file_rate_limits_many_progress_chunks(tmp_path, monkeypatch):
+    chunks = [b"x"] * 20
+    chunk_times = [index * 0.01 for index in range(len(chunks))]
+
+    _dest, calls = _download_with_fake_stream(
+        tmp_path, monkeypatch, chunks, chunk_times
+    )
+
+    total = sum(len(chunk) for chunk in chunks)
+    assert calls == [(1, total), (total, total)]
+    assert len(calls) < len(chunks)
+
+
+def test_download_file_emits_first_progress_promptly(tmp_path, monkeypatch):
+    chunks = [b"abc", b"de"]
+    chunk_times = [0.4, 0.5]
+
+    _dest, calls = _download_with_fake_stream(
+        tmp_path, monkeypatch, chunks, chunk_times
+    )
+
+    assert calls[0] == (len(chunks[0]), sum(len(chunk) for chunk in chunks))
+
+
+def test_download_file_emits_interval_crossing_progress(tmp_path, monkeypatch):
+    chunks = [b"a", b"bb", b"ccc", b"dddd", b"eeeee"]
+    chunk_times = [0.0, 0.1, 0.2, 1.5, 1.6]
+
+    _dest, calls = _download_with_fake_stream(
+        tmp_path, monkeypatch, chunks, chunk_times
+    )
+
+    total = sum(len(chunk) for chunk in chunks)
+    boundary_received = sum(len(chunk) for chunk in chunks[:4])
+    assert calls == [(1, total), (boundary_received, total), (total, total)]
+
+
+def test_download_file_emits_final_progress_once_with_dedupe(tmp_path, monkeypatch):
+    chunks = [b"aa", b"bbb"]
+
+    _dest, inside_window_calls = _download_with_fake_stream(
+        tmp_path,
+        monkeypatch,
+        chunks,
+        [0.0, 0.2],
+    )
+    total = sum(len(chunk) for chunk in chunks)
+    assert inside_window_calls[-1] == (total, total)
+    assert inside_window_calls.count((total, total)) == 1
+
+    _dest, last_chunk_emit_calls = _download_with_fake_stream(
+        tmp_path,
+        monkeypatch,
+        chunks,
+        [0.0, 1.5],
+    )
+    assert len(last_chunk_emit_calls) == 2
+    assert last_chunk_emit_calls.count((total, total)) == 1
+
+
+def test_download_file_writes_dest_and_replaces_tmp(tmp_path, monkeypatch):
+    chunks = [b"ab", b"cd", b"ef"]
+    chunk_times = [0.0, 0.1, 0.2]
+
+    dest, _calls = _download_with_fake_stream(
+        tmp_path, monkeypatch, chunks, chunk_times
+    )
+
+    assert dest.read_bytes() == b"".join(chunks)
+    assert not dest.with_suffix(dest.suffix + ".tmp").exists()
 
 
 @pytest.mark.parametrize(

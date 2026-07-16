@@ -16,6 +16,7 @@ import platform
 import shutil
 import stat
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -46,6 +47,7 @@ from solstone.think.utils import get_journal
 LOG = logging.getLogger(__name__)
 LOCAL_PROVIDER_NAME = "local"
 _PROBE_TIMEOUT_SECONDS = 10
+_PROGRESS_MIN_INTERVAL_SECONDS = 1.0  # rate-limit durable install-progress writes to ~1/sec (download throughput fix)
 _LOCAL_METADATA_KEYS = frozenset(
     {
         "binary_artifact",
@@ -353,13 +355,25 @@ def _download_file(
         total_header = response.headers.get("content-length")
         total = int(total_header) if total_header and total_header.isdigit() else None
         received = 0
+        last_emit = time.monotonic()
+        last_emitted_received = -1
+        first_chunk = True
         with tmp.open("wb") as handle:
             for chunk in response.iter_bytes():
-                if chunk:
-                    handle.write(chunk)
-                    received += len(chunk)
-                    if on_progress is not None:
-                        on_progress(received, total)
+                if not chunk:
+                    continue
+                handle.write(chunk)
+                received += len(chunk)
+                if on_progress is None:
+                    continue
+                now = time.monotonic()
+                if first_chunk or now - last_emit >= _PROGRESS_MIN_INTERVAL_SECONDS:
+                    on_progress(received, total)
+                    last_emit = now
+                    last_emitted_received = received
+                    first_chunk = False
+    if on_progress is not None and received != last_emitted_received:
+        on_progress(received, total)
     tmp.replace(dest)
 
 
