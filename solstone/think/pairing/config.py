@@ -1,27 +1,26 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Shared pairing host-address configuration."""
+"""Shared pairing home-address configuration."""
 
 from __future__ import annotations
 
 import ipaddress
 from typing import Any
-from urllib.parse import urlsplit
 
 from solstone.think.journal_config import write_journal_config
-from solstone.think.service import DEFAULT_SERVICE_PORT
-from solstone.think.utils import get_config, read_service_port
+from solstone.think.link import interface_watcher
+from solstone.think.utils import get_config
 
-HOST_URL_INVALID = "enter an ipv4 address and port, like 192.168.1.44:7657"
-HOST_URL_HOSTNAME_UNSUPPORTED = (
+HOME_ADDRESS_INVALID = "enter an ipv4 address and port, like 192.168.1.44:7657"
+HOME_ADDRESS_HOSTNAME_UNSUPPORTED = (
     "this needs an ip address — to reach home by name from anywhere, "
     "turn on your private network"
 )
 
 
-class InvalidHostUrl(Exception):
-    """Raised when a manual host URL cannot be normalized."""
+class InvalidHomeAddress(Exception):
+    """Raised when a manual home address cannot be normalized."""
 
 
 def _pairing_config() -> dict[str, Any]:
@@ -38,85 +37,79 @@ def _clean_str(value: Any) -> str | None:
 
 
 def _input_looks_like_hostname(host: str) -> bool:
-    return ":" not in host and any(char.isalpha() for char in host)
+    return any(char.isalpha() for char in host) and all(
+        char.isalnum() or char in ".-" for char in host
+    )
 
 
-def validate_host_url(value: str) -> str:
-    """Normalize a manual host URL to ``http://<IPv4>:<port>``."""
+def is_usable_ipv4(value: Any) -> bool:
+    """Return whether value is a non-special IPv4 address usable for pairing."""
+
+    try:
+        ipv4 = ipaddress.IPv4Address(value)
+    except (TypeError, ValueError):
+        return False
+    return not (
+        ipv4.is_loopback
+        or ipv4.is_unspecified
+        or ipv4.is_link_local
+        or ipv4.is_multicast
+    )
+
+
+def validate_home_address(value: str) -> str:
+    """Normalize a manual home address to ``<IPv4>:<secure-listener-port>``."""
 
     cleaned = value.strip()
-    if not cleaned:
-        raise InvalidHostUrl(HOST_URL_INVALID)
+    if not cleaned or "://" in cleaned or "/" in cleaned:
+        raise InvalidHomeAddress(HOME_ADDRESS_INVALID)
 
-    candidate = cleaned if "://" in cleaned else f"http://{cleaned}"
-    parsed = urlsplit(candidate)
-    if parsed.scheme != "http" or not parsed.netloc:
-        raise InvalidHostUrl(HOST_URL_INVALID)
-    if parsed.username is not None or parsed.password is not None:
-        raise InvalidHostUrl(HOST_URL_INVALID)
-    if parsed.query or parsed.fragment:
-        raise InvalidHostUrl(HOST_URL_INVALID)
-    if parsed.path not in ("", "/"):
-        raise InvalidHostUrl(HOST_URL_INVALID)
+    host, sep, port_text = cleaned.rpartition(":")
+    if sep != ":" or not host or not port_text:
+        if _input_looks_like_hostname(cleaned):
+            raise InvalidHomeAddress(HOME_ADDRESS_HOSTNAME_UNSUPPORTED)
+        raise InvalidHomeAddress(HOME_ADDRESS_INVALID)
 
-    host = parsed.hostname or ""
     try:
         ipv4 = ipaddress.IPv4Address(host)
     except ValueError as exc:
         if _input_looks_like_hostname(host):
-            raise InvalidHostUrl(HOST_URL_HOSTNAME_UNSUPPORTED) from exc
-        raise InvalidHostUrl(HOST_URL_INVALID) from exc
+            raise InvalidHomeAddress(HOME_ADDRESS_HOSTNAME_UNSUPPORTED) from exc
+        raise InvalidHomeAddress(HOME_ADDRESS_INVALID) from exc
 
     try:
-        port = parsed.port
+        port = int(port_text)
     except ValueError as exc:
-        raise InvalidHostUrl(HOST_URL_INVALID) from exc
-    if port is None or port < 1 or port > 65535:
-        raise InvalidHostUrl(HOST_URL_INVALID)
+        raise InvalidHomeAddress(HOME_ADDRESS_INVALID) from exc
+    if port != interface_watcher.LINK_DIRECT_PORT or not is_usable_ipv4(str(ipv4)):
+        raise InvalidHomeAddress(HOME_ADDRESS_INVALID)
 
-    return f"http://{ipv4}:{port}"
-
-
-def get_host_url_override() -> str | None:
-    return _clean_str(_pairing_config().get("host_url"))
+    return f"{ipv4}:{port}"
 
 
-def override_host_port() -> str | None:
-    override = get_host_url_override()
-    if override is None:
-        return None
-    parsed = urlsplit(override)
-    return f"{parsed.hostname}:{parsed.port}"
+def get_home_address() -> str | None:
+    return _clean_str(_pairing_config().get("home_address"))
 
 
-def get_host_url() -> str:
-    configured = get_host_url_override()
-    if configured is not None:
-        return configured
-    convey_port = read_service_port("convey") or DEFAULT_SERVICE_PORT
-    return f"http://localhost:{convey_port}"
-
-
-def set_host_url(canonical: str) -> None:
+def set_home_address(canonical: str) -> None:
     config = get_config()
-    config.setdefault("pairing", {})["host_url"] = canonical
+    config.setdefault("pairing", {})["home_address"] = canonical
     write_journal_config(config)
 
 
-def clear_host_url() -> None:
+def clear_home_address() -> None:
     config = get_config()
-    config.setdefault("pairing", {})["host_url"] = None
+    config.setdefault("pairing", {})["home_address"] = None
     write_journal_config(config)
 
 
 __all__ = [
-    "HOST_URL_HOSTNAME_UNSUPPORTED",
-    "HOST_URL_INVALID",
-    "InvalidHostUrl",
-    "clear_host_url",
-    "get_host_url",
-    "get_host_url_override",
-    "override_host_port",
-    "set_host_url",
-    "validate_host_url",
+    "HOME_ADDRESS_HOSTNAME_UNSUPPORTED",
+    "HOME_ADDRESS_INVALID",
+    "InvalidHomeAddress",
+    "clear_home_address",
+    "get_home_address",
+    "is_usable_ipv4",
+    "set_home_address",
+    "validate_home_address",
 ]

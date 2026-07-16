@@ -76,11 +76,11 @@ OBSERVER_CALLOSUM_LIVE_LABEL = "live"
 def format_convey_status(
     *,
     bind: str,
-    host_url: str,
+    dashboard_url: str,
 ) -> str:
     """Return the locked convey status block."""
 
-    return f"convey\n  bind:              {bind}\n  host url:          {host_url}"
+    return f"convey\n  bind:              {bind}\n  dashboard url:     {dashboard_url}"
 
 
 __all__ = [

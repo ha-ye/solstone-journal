@@ -267,6 +267,7 @@ def test_workspace_home_candidate_picker_js_paths(link_env) -> None:
     submit_end = body.index("async function applyHostAddressOverride", submit_start)
     submit_body = body[submit_start:submit_end]
     assert "'/app/network/host-address'" in submit_body
+    assert "JSON.stringify({ home_address: address })" in submit_body
     assert "setHostAddressError('');" in submit_body
     assert "return await refreshStatus();" in submit_body
 

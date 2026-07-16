@@ -11,7 +11,6 @@ import sys
 
 from solstone.convey.cli import _resolve_bind_host
 from solstone.convey.copy import format_convey_status
-from solstone.think.pairing.config import get_host_url
 from solstone.think.service import DEFAULT_SERVICE_PORT
 from solstone.think.utils import (
     read_service_port,
@@ -19,17 +18,17 @@ from solstone.think.utils import (
 )
 
 
-def _host_url_status_value() -> str:
-    return get_host_url()
-
-
 def _convey_port() -> int:
     return read_service_port("convey") or DEFAULT_SERVICE_PORT
 
 
+def _dashboard_url() -> str:
+    return f"http://localhost:{_convey_port()}"
+
+
 def _status_payload() -> dict[str, str]:
     return {
-        "effective_host_url": get_host_url(),
+        "dashboard_url": _dashboard_url(),
     }
 
 
@@ -43,7 +42,7 @@ def _print_status(*, as_json: bool) -> None:
     print(
         format_convey_status(
             bind=f"{bind_host}:{port}",
-            host_url=_host_url_status_value(),
+            dashboard_url=f"http://localhost:{port}",
         )
     )
 
@@ -57,7 +56,7 @@ def main() -> None:
 
     status_parser = convey_subparsers.add_parser(
         "status",
-        help="Show convey bind and host-URL status",
+        help="Show convey bind and dashboard URL status",
     )
     status_parser.add_argument(
         "--json",

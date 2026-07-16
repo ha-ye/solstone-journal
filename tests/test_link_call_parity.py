@@ -63,6 +63,8 @@ def _nonces() -> NonceStore:
 def _install_pair_watcher(
     monkeypatch: pytest.MonkeyPatch,
     endpoints: list[LocalEndpoint] | None = None,
+    *,
+    route_ipv4: str | None = "192.168.1.50",
 ) -> None:
     if endpoints is None:
         endpoints = [LocalEndpoint(ip="192.168.1.50", port=7657, scope="lan")]
@@ -71,6 +73,7 @@ def _install_pair_watcher(
         "get_interface_watcher",
         lambda: _StubWatcher(endpoints),
     )
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: route_ipv4)
 
 
 def _add_device(
@@ -347,7 +350,7 @@ def test_pair_reports_nonce_consumed_fallback(runner, monkeypatch):
 
 
 def test_pair_reports_no_lan_address_without_nonce(runner, monkeypatch):
-    _install_pair_watcher(monkeypatch, [])
+    _install_pair_watcher(monkeypatch, [], route_ipv4=None)
 
     result = runner.invoke(
         link_call.app,

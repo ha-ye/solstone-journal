@@ -73,7 +73,7 @@
     }
   },
   "pairing": {
-    "host_url": null
+    "home_address": null
   },
   "backup": {
     "enabled": false,

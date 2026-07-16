@@ -11,9 +11,7 @@ from typing import Any
 
 import typer
 
-from solstone.convey.reasons import (
-    INVALID_CONFIG_VALUE,
-)
+from solstone.convey.reasons import INVALID_CONFIG_VALUE
 from solstone.think.convey_client import ConveyClientError, convey_cli, get_client
 
 # Mirrors solstone.apps.settings.routes.API_KEY_ENV_VARS (the canonical order
@@ -155,47 +153,10 @@ def processing_set(
     _echo_json(response.get("config", {}).get("processing", {}))
 
 
-@convey_app.command("host-url")
-@convey_cli
-def convey_host_url(
-    url: str | None = typer.Argument(
-        None, help="Absolute URL to advertise to devices."
-    ),
-    auto: bool = typer.Option(
-        False, "--auto", help="Clear the manual host URL override."
-    ),
-    show: bool = typer.Option(False, "--show", help="Show the effective host URL."),
-) -> None:
-    """Manage the host URL advertised to remote devices."""
-
-    if sum(bool(flag) for flag in (url is not None, auto, show)) != 1:
-        _exit_with("error: choose exactly one of <url>, --auto, or --show")
-    if show:
-        result = _request("GET", "/app/settings/api/convey/host-url")
-        typer.echo(result["host_url"])
-        return
-    if auto:
-        _request("POST", "/app/settings/api/convey/host-url", json_body={"auto": True})
-        typer.echo("host url cleared. auto-detect is active.")
-        return
-    assert url is not None
-    try:
-        result = _request(
-            "POST",
-            "/app/settings/api/convey/host-url",
-            json_body={"url": url},
-        )
-    except ConveyClientError as err:
-        if err.reason_code == INVALID_CONFIG_VALUE.code and err.detail:
-            _exit_with(err.detail)
-        raise
-    typer.echo(f"host url set: {result['host_url']}")
-
-
 @convey_app.command("status")
 @convey_cli
 def convey_status() -> None:
-    """Show Convey network and host-URL status."""
+    """Show Convey network and dashboard URL status."""
 
     result = _request("GET", "/app/settings/api/convey/status")
     typer.echo(result["status_text"])

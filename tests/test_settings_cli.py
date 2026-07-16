@@ -21,14 +21,14 @@ def test_status_json_does_not_require_running_stack(
     monkeypatch,
     capsys,
 ):
-    monkeypatch.setattr(settings_cli, "get_host_url", lambda: "http://localhost:5015")
+    monkeypatch.setattr(settings_cli, "read_service_port", lambda service: 5015)
 
     _run(monkeypatch, ["convey", "status", "--json"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
     assert payload == {
-        "effective_host_url": "http://localhost:5015",
+        "dashboard_url": "http://localhost:5015",
     }
     assert captured.err == ""
 

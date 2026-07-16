@@ -47,6 +47,10 @@ from solstone.apps.network.copy import (
     link_copy_payload,
 )
 from solstone.apps.network.crockford32 import encode as crockford_encode
+from solstone.apps.network.home_candidates import (
+    VPN_SCOPES,
+    resolve_pair_link_candidates,
+)
 from solstone.apps.network.relay_link import (
     derive_rk,
     encode_pair_window_link,
@@ -98,11 +102,11 @@ from solstone.think.link.paths import (
 )
 from solstone.think.link.window import read_posture
 from solstone.think.pairing.config import (
-    InvalidHostUrl,
-    clear_host_url,
-    override_host_port,
-    set_host_url,
-    validate_host_url,
+    InvalidHomeAddress,
+    clear_home_address,
+    get_home_address,
+    set_home_address,
+    validate_home_address,
 )
 from solstone.think.services import operations, spl, spl_handoff
 from solstone.think.services import status as service_status
@@ -113,9 +117,6 @@ from solstone.think.utils import get_journal, now_ms
 logger = logging.getLogger(__name__)
 _SENDER_INSTANCE_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,256}$")
 VALID_ROLES = {"", "phone", "observer", "peer"}
-# Overlay (Tailscale/CGNAT) endpoints the watcher scopes `vpn`; surfaced via
-# /api/status and ordered after lan/ula in pair-link candidates.
-VPN_SCOPES = {"vpn"}
 _HEALTH_FRESHNESS_MS = 90_000
 journal_sources = import_module("solstone.apps.import.journal_sources")
 create_state_directory = journal_sources.create_state_directory
@@ -190,35 +191,20 @@ def _current_local_endpoints() -> list[LocalEndpoint]:
     return watcher.snapshot() if watcher else []
 
 
-def _list_pair_link_candidates() -> list[str]:
-    """Return up to 4 watcher IPv4 candidates.
+@dataclass(frozen=True)
+class HomeAddressStatus:
+    home_address: str | None
+    lan_accessible: bool
+    candidates: list[str]
+    home_candidates: list[dict[str, Any]]
+    home_candidates_state: str
+    home_candidates_error: str | None
 
-    vpn-scoped candidates always order after lan/ula ones, and the default-route
-    promotion happens only within the route IP's own scope group — a vpn route IP
-    never displaces an available lan candidate. Results are deduped and capped.
-    """
-    non_vpn: list[str] = []
-    vpn: list[str] = []
-    for endpoint in _current_local_endpoints():
-        address = ipaddress.ip_address(endpoint.ip)
-        if not isinstance(address, ipaddress.IPv4Address):
-            continue
-        (vpn if endpoint.scope in VPN_SCOPES else non_vpn).append(str(address))
 
-    route_ip = _detect_lan_ip()
-    for group in (non_vpn, vpn):
-        if route_ip in group:
-            group.remove(route_ip)
-            group.insert(0, route_ip)
-            break
+def _resolve_pair_link_candidates(endpoints: list[LocalEndpoint]) -> list[str]:
+    """Return resolved direct-pairing IPv4 candidates from local evidence."""
 
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for candidate in (*non_vpn, *vpn):
-        if candidate not in seen:
-            deduped.append(candidate)
-            seen.add(candidate)
-    return deduped[:4]
+    return resolve_pair_link_candidates(endpoints, _detect_lan_ip())
 
 
 def _secure_listener_port() -> int:
@@ -231,11 +217,13 @@ def _secure_listener_port() -> int:
     return interface_watcher.LINK_DIRECT_PORT
 
 
-def _home_candidate_entries() -> list[dict[str, Any]]:
+def _home_candidate_entries(
+    home_address: str | None,
+    candidates: list[str],
+) -> list[dict[str, Any]]:
     port = _secure_listener_port()
-    detected = [f"{ip}:{port}" for ip in _list_pair_link_candidates()]
-    override = override_host_port()
-    selected = override or (detected[0] if detected else None)
+    detected = [f"{ip}:{port}" for ip in candidates]
+    selected = home_address or (detected[0] if detected else None)
 
     entries: list[dict[str, Any]] = [
         {
@@ -245,10 +233,10 @@ def _home_candidate_entries() -> list[dict[str, Any]]:
         }
         for address in detected
     ]
-    if override is not None and override not in detected:
+    if home_address is not None and home_address not in detected:
         entries.append(
             {
-                "address": override,
+                "address": home_address,
                 "selected": True,
                 "source": "override",
             }
@@ -256,11 +244,53 @@ def _home_candidate_entries() -> list[dict[str, Any]]:
     return entries
 
 
-def _effective_home_address() -> tuple[bool, str | None]:
-    override_addr = override_host_port()
-    if override_addr is not None:
-        return True, override_addr
-    return _is_lan_accessible(), None
+def _home_address_host(home_address: str) -> str:
+    return home_address.partition(":")[0]
+
+
+def _home_address_status() -> tuple[HomeAddressStatus, list[LocalEndpoint]]:
+    home_address = get_home_address()
+    try:
+        endpoints = _current_local_endpoints()
+        candidates = _resolve_pair_link_candidates(endpoints)
+    except Exception:
+        logger.exception("link home candidate collection failed")
+        if home_address is not None:
+            candidates = [_home_address_host(home_address)]
+            return (
+                HomeAddressStatus(
+                    home_address=home_address,
+                    lan_accessible=True,
+                    candidates=candidates,
+                    home_candidates=_home_candidate_entries(home_address, []),
+                    home_candidates_state="ready",
+                    home_candidates_error=None,
+                ),
+                [],
+            )
+        return (
+            HomeAddressStatus(
+                home_address=None,
+                lan_accessible=False,
+                candidates=[],
+                home_candidates=[],
+                home_candidates_state="unavailable",
+                home_candidates_error=link_copy.HOME_CANDIDATES_ERROR,
+            ),
+            [],
+        )
+
+    return (
+        HomeAddressStatus(
+            home_address=home_address,
+            lan_accessible=home_address is not None or bool(candidates),
+            candidates=candidates,
+            home_candidates=_home_candidate_entries(home_address, candidates),
+            home_candidates_state="ready",
+            home_candidates_error=None,
+        ),
+        endpoints,
+    )
 
 
 def _detect_lan_ip() -> str | None:
@@ -345,18 +375,6 @@ class PairStartResponse:
 
 def _jsonify_preserving_order(payload: dict[str, Any]) -> Response:
     return Response(_json.dumps(payload), mimetype="application/json")
-
-
-def _is_lan_accessible() -> bool:
-    """Check whether the journal's home address is reachable on the LAN.
-
-    Feeds the home-address reachability status on /link. Best-effort: the
-    signal is the Host header the dashboard loaded under.
-    """
-    hostname, _, _ = request.host.partition(":")
-    if hostname in ("localhost", "127.0.0.1", "::1"):
-        return bool(_detect_lan_ip())
-    return True
 
 
 def _derive_relay_state(token_present: bool) -> str:
@@ -487,28 +505,23 @@ def api_status() -> Any:
     token = load_service_token()
     token_present = token is not None
     ca_fp = _ca_fingerprint() if ca_dir().exists() else None
-    lan_accessible, home_address = _effective_home_address()
+    home_status, local_endpoints = _home_address_status()
     posture = read_posture()
     relay_state = (
         _derive_spl_relay_state(token_present, health, now_ms_val)
         if posture == "spl"
         else _derive_relay_state(token_present)
     )
-    reachability = _derive_reachability(lan_accessible, posture, relay_state)
+    reachability = _derive_reachability(
+        home_status.lan_accessible,
+        posture,
+        relay_state,
+    )
     vpn_candidates = [
         {"label": ep.scope, "address": f"{ep.ip}:{ep.port}"}
-        for ep in _current_local_endpoints()
+        for ep in local_endpoints
         if ep.scope in VPN_SCOPES
     ]
-    try:
-        home_candidates = _home_candidate_entries()
-        home_candidates_state = "ready"
-        home_candidates_error = None
-    except Exception:
-        logger.exception("link home candidate collection failed")
-        home_candidates = []
-        home_candidates_state = "unavailable"
-        home_candidates_error = link_copy.HOME_CANDIDATES_ERROR
     return jsonify(
         {
             "instance_id": state.instance_id if state else None,
@@ -516,7 +529,7 @@ def api_status() -> Any:
             "enrolled": token_present,
             "relay_url": relay_url(),
             "ca_fingerprint": ca_fp,
-            "lan_accessible": lan_accessible,
+            "lan_accessible": home_status.lan_accessible,
             "posture": posture,
             "reachability": reachability,
             "relay_state": relay_state,
@@ -531,11 +544,11 @@ def api_status() -> Any:
             "last_relay_tunnel_error_at": (
                 health["last_relay_tunnel_error_at"] if health else None
             ),
-            "home_address": home_address,
+            "home_address": home_status.home_address,
             "vpn": {"active": None, "candidates": vpn_candidates},
-            "home_candidates": home_candidates,
-            "home_candidates_state": home_candidates_state,
-            "home_candidates_error": home_candidates_error,
+            "home_candidates": home_status.home_candidates,
+            "home_candidates_state": home_status.home_candidates_state,
+            "home_candidates_error": home_status.home_candidates_error,
         }
     )
 
@@ -617,21 +630,21 @@ def private_link_disable() -> tuple[Response, int]:
 
 
 @network_bp.route("/host-address", methods=["POST"])
-def set_host_address() -> Any:
+def set_home_address_route() -> Any:
     payload = request.get_json(silent=True) or {}
     if not isinstance(payload, dict):
         payload = {}
-    raw_address = payload.get("address")
-    address = raw_address if isinstance(raw_address, str) else None
+    raw_address = payload.get("home_address")
+    home_address = raw_address if isinstance(raw_address, str) else None
     try:
-        if address is not None and address.strip():
-            set_host_url(validate_host_url(address))
+        if home_address is not None and home_address.strip():
+            set_home_address(validate_home_address(home_address))
         else:
-            clear_host_url()
-    except InvalidHostUrl as exc:
+            clear_home_address()
+    except InvalidHomeAddress as exc:
         return error_response(INVALID_CONFIG_VALUE, detail=str(exc))
-    _, home_address = _effective_home_address()
-    return jsonify({"ok": True, "home_address": home_address})
+    home_status, _ = _home_address_status()
+    return jsonify({"ok": True, "home_address": home_status.home_address})
 
 
 @network_bp.get("/local-endpoints")
@@ -701,11 +714,15 @@ def pair_start() -> Any:
     else:
         ca_fp = _ca_fingerprint()
         port = _secure_listener_port()
-        override = override_host_port()
-        if override is not None:
-            candidates = [override.partition(":")[0]]
+        home_address = get_home_address()
+        if home_address is not None:
+            candidates = [_home_address_host(home_address)]
         else:
-            candidates = _list_pair_link_candidates()
+            try:
+                candidates = _resolve_pair_link_candidates(_current_local_endpoints())
+            except Exception:
+                logger.exception("link pair-start candidate collection failed")
+                candidates = []
         if not candidates:
             return error_response(
                 PAIRING_REQUEST_INVALID,

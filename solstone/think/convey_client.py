@@ -23,7 +23,6 @@ import requests
 import typer
 from requests.adapters import TimeoutSauce
 
-from solstone.think.pairing.config import get_host_url_override
 from solstone.think.service import DEFAULT_SERVICE_PORT
 from solstone.think.utils import read_service_port, require_solstone
 
@@ -81,9 +80,6 @@ class ConveyTimeoutError(ConveyClientError):
 
 
 def resolve_base_url() -> str:
-    override = get_host_url_override()
-    if override is not None:
-        return override
     port = read_service_port("convey") or DEFAULT_SERVICE_PORT
     return f"http://localhost:{port}"
 

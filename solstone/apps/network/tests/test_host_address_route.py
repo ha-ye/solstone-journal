@@ -19,7 +19,7 @@ def test_host_address_sets_canonical_override(link_env) -> None:
 
     response = env.client.post(
         "/app/network/host-address",
-        json={"address": "http://192.168.1.44:7657"},
+        json={"home_address": "192.168.1.44:7657"},
     )
 
     assert response.status_code == 200
@@ -27,9 +27,7 @@ def test_host_address_sets_canonical_override(link_env) -> None:
         "ok": True,
         "home_address": "192.168.1.44:7657",
     }
-    assert (
-        _read_config(env.journal)["pairing"]["host_url"] == "http://192.168.1.44:7657"
-    )
+    assert _read_config(env.journal)["pairing"]["home_address"] == "192.168.1.44:7657"
 
 
 def test_host_address_normalizes_bare_ipv4_port(link_env) -> None:
@@ -37,27 +35,26 @@ def test_host_address_normalizes_bare_ipv4_port(link_env) -> None:
 
     response = env.client.post(
         "/app/network/host-address",
-        json={"address": "192.168.1.44:7657"},
+        json={"home_address": " 192.168.1.44:7657 "},
     )
 
     assert response.status_code == 200
     assert response.get_json()["home_address"] == "192.168.1.44:7657"
-    assert (
-        _read_config(env.journal)["pairing"]["host_url"] == "http://192.168.1.44:7657"
-    )
+    assert _read_config(env.journal)["pairing"]["home_address"] == "192.168.1.44:7657"
 
 
 def test_host_address_clears_on_empty_null_or_missing(link_env) -> None:
     env = link_env()
 
-    for body in ({"address": ""}, {"address": None}, {}):
+    for body in ({"home_address": ""}, {"home_address": None}, {}):
         env.client.post(
-            "/app/network/host-address", json={"address": "192.168.1.44:7657"}
+            "/app/network/host-address",
+            json={"home_address": "192.168.1.44:7657"},
         )
         response = env.client.post("/app/network/host-address", json=body)
 
         assert response.status_code == 200
-        assert _read_config(env.journal)["pairing"]["host_url"] is None
+        assert _read_config(env.journal)["pairing"]["home_address"] is None
 
 
 def test_host_address_rejects_hostname_without_writing(link_env) -> None:
@@ -66,13 +63,13 @@ def test_host_address_rejects_hostname_without_writing(link_env) -> None:
 
     response = env.client.post(
         "/app/network/host-address",
-        json={"address": "mylab.local:7657"},
+        json={"home_address": "mylab.local:7657"},
     )
 
     assert response.status_code == 400
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
-    assert payload["detail"] == pairing_config.HOST_URL_HOSTNAME_UNSUPPORTED
+    assert payload["detail"] == pairing_config.HOME_ADDRESS_HOSTNAME_UNSUPPORTED
     assert _read_config(env.journal) == before
 
 
@@ -82,11 +79,11 @@ def test_host_address_rejects_malformed_without_writing(link_env) -> None:
 
     response = env.client.post(
         "/app/network/host-address",
-        json={"address": "http://192.168.1.44"},
+        json={"home_address": "http://192.168.1.44"},
     )
 
     assert response.status_code == 400
     payload = response.get_json()
     assert payload["reason_code"] == "invalid_config_value"
-    assert payload["detail"] == pairing_config.HOST_URL_INVALID
+    assert payload["detail"] == pairing_config.HOME_ADDRESS_INVALID
     assert _read_config(env.journal) == before

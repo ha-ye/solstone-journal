@@ -99,10 +99,10 @@ def _write_service_token(env: Any, token: str = "secret-token-xyz") -> None:
     )
 
 
-def _write_host_override(env: Any, address: str) -> None:
+def _write_home_address(env: Any, address: str) -> None:
     config_path = env.journal / "config" / "journal.json"
     config = json.loads(config_path.read_text("utf-8"))
-    config["pairing"] = {"host_url": f"http://{address}"}
+    config["pairing"] = {"home_address": address}
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
 
@@ -148,12 +148,9 @@ def test_direct_healthy_reports_online(link_env, monkeypatch) -> None:
     assert data["relay_state"] == "not-enrolled"
 
 
-def test_direct_reports_host_address_override(link_env, monkeypatch) -> None:
+def test_direct_reports_manual_home_address(link_env, monkeypatch) -> None:
     env = link_env()
-    config_path = env.journal / "config" / "journal.json"
-    config = json.loads(config_path.read_text("utf-8"))
-    config["pairing"] = {"host_url": "http://192.168.1.44:7657"}
-    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    _write_home_address(env, "192.168.1.44:7657")
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
 
     data = _get_status(env)
@@ -165,10 +162,7 @@ def test_direct_reports_host_address_override(link_env, monkeypatch) -> None:
 
 def test_host_address_override_unblocks_lan_unreachable(link_env, monkeypatch) -> None:
     env = link_env()
-    config_path = env.journal / "config" / "journal.json"
-    config = json.loads(config_path.read_text("utf-8"))
-    config["pairing"] = {"host_url": "http://192.168.1.44:7657"}
-    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    _write_home_address(env, "192.168.1.44:7657")
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
 
     data = _get_status(env)
@@ -179,7 +173,7 @@ def test_host_address_override_unblocks_lan_unreachable(link_env, monkeypatch) -
 
 
 def test_loopback_only_is_lan_unreachable(link_env, monkeypatch) -> None:
-    env = link_env()
+    env = link_env(local_endpoints=[])
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
 
     data = _get_status(env)
@@ -189,8 +183,24 @@ def test_loopback_only_is_lan_unreachable(link_env, monkeypatch) -> None:
     assert data["reachability"] == "lan-unreachable"
 
 
+def test_empty_snapshot_route_fallback_reports_online(link_env, monkeypatch) -> None:
+    env = link_env(local_endpoints=[])
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    data = _get_status(env)
+
+    assert data["lan_accessible"] is True
+    assert data["home_address"] is None
+    assert data["reachability"] == "online"
+    assert data["home_candidates"] == [
+        {"address": "192.168.1.50:7657", "selected": True, "source": "detected"}
+    ]
+    assert data["home_candidates_state"] == "ready"
+    assert data["home_candidates_error"] is None
+
+
 def test_lan_unreachable_precedence_over_spl(link_env, monkeypatch) -> None:
-    env = link_env()
+    env = link_env(local_endpoints=[])
     _write_config(env, link={"posture": "spl"})
     _write_service_token(env)
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
@@ -401,7 +411,7 @@ def test_home_candidates_override_in_detected_selects_detected(
             LocalEndpoint(ip="192.168.1.51", port=7657, scope="lan"),
         ]
     )
-    _write_host_override(env, "192.168.1.51:7657")
+    _write_home_address(env, "192.168.1.51:7657")
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
 
     data = _get_status(env)
@@ -419,7 +429,7 @@ def test_home_candidates_override_not_detected_appends_override(
     env = link_env(
         local_endpoints=[LocalEndpoint(ip="192.168.1.50", port=7657, scope="lan")]
     )
-    _write_host_override(env, "192.168.1.44:7657")
+    _write_home_address(env, "192.168.1.44:7657")
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
 
     data = _get_status(env)
@@ -437,17 +447,41 @@ def test_home_candidates_unavailable_keeps_status_200(
     env = link_env()
     monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
 
-    def fail_candidates() -> list[str]:
+    def fail_candidates(endpoints: list[LocalEndpoint]) -> list[str]:
         raise RuntimeError("watcher exploded")
 
-    monkeypatch.setattr(link_routes, "_list_pair_link_candidates", fail_candidates)
+    monkeypatch.setattr(link_routes, "_resolve_pair_link_candidates", fail_candidates)
 
     data = _get_status(env)
 
     assert data["home_candidates"] == []
     assert data["home_candidates_state"] == "unavailable"
     assert data["home_candidates_error"] == link_copy.HOME_CANDIDATES_ERROR
+    assert data["reachability"] == "lan-unreachable"
+
+
+def test_home_candidates_exception_with_override_stays_usable(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env()
+    _write_home_address(env, "192.168.1.44:7657")
+
+    def fail_candidates(endpoints: list[LocalEndpoint]) -> list[str]:
+        raise RuntimeError("watcher exploded")
+
+    monkeypatch.setattr(link_routes, "_resolve_pair_link_candidates", fail_candidates)
+
+    data = _get_status(env)
+
+    assert data["lan_accessible"] is True
+    assert data["home_address"] == "192.168.1.44:7657"
     assert data["reachability"] == "online"
+    assert data["home_candidates"] == [
+        {"address": "192.168.1.44:7657", "selected": True, "source": "override"}
+    ]
+    assert data["home_candidates_state"] == "ready"
+    assert data["home_candidates_error"] is None
 
 
 def test_api_status_does_not_mint_pairing_nonces(link_env, monkeypatch) -> None:

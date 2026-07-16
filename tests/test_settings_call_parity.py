@@ -325,7 +325,7 @@ def test_identity_and_observer_setters(journal_copy: Path) -> None:
     }
 
 
-def test_convey_status_host_url(
+def test_convey_status_dashboard_url(
     journal_copy: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -334,49 +334,23 @@ def test_convey_status_host_url(
     assert status.stdout == (
         "convey\n"
         "  bind:              127.0.0.1:5015\n"
-        "  host url:          http://localhost:5015\n"
+        "  dashboard url:     http://localhost:5015\n"
     )
+
+    config_before = _read_config(journal_copy)
+    manual_status = runner.invoke(settings_call.app, ["convey", "status"])
+    assert manual_status.exit_code == 0
+    assert "dashboard url:     http://localhost:5015" in manual_status.stdout
+    assert _read_config(journal_copy) == config_before
 
     calls = []
     with monkeypatch.context() as m:
         m.setattr(settings_call, "get_client", lambda: calls.append("called"))
-        conflict = runner.invoke(
-            settings_call.app,
-            ["convey", "host-url", "--auto", "--show"],
-        )
-    assert conflict.exit_code == 1
-    assert conflict.stderr == "error: choose exactly one of <url>, --auto, or --show\n"
+        missing = runner.invoke(settings_call.app, ["convey", "host-url"])
+    assert missing.exit_code != 0
+    assert "No such command" in missing.stderr
     assert calls == []
 
-    set_url = runner.invoke(
-        settings_call.app,
-        ["convey", "host-url", "192.168.1.44:5015"],
-    )
-    assert set_url.exit_code == 0
-    assert set_url.stdout == "host url set: http://192.168.1.44:5015\n"
-
-    show_url = runner.invoke(settings_call.app, ["convey", "host-url", "--show"])
-    assert show_url.exit_code == 0
-    assert show_url.stdout == "http://192.168.1.44:5015\n"
-
-    manual_status = runner.invoke(settings_call.app, ["convey", "status"])
-    assert manual_status.exit_code == 0
-    assert "host url:          http://192.168.1.44:5015" in manual_status.stdout
-
-    auto = runner.invoke(settings_call.app, ["convey", "host-url", "--auto"])
-    assert auto.exit_code == 0
-    assert auto.stdout == "host url cleared. auto-detect is active.\n"
-
-    bad_url = runner.invoke(settings_call.app, ["convey", "host-url", "/bad"])
-    assert bad_url.exit_code == 1
-    assert bad_url.stderr == "enter an ipv4 address and port, like 192.168.1.44:7657\n"
-
-    bad_host = runner.invoke(
-        settings_call.app,
-        ["convey", "host-url", "mylab.local:5015"],
-    )
-    assert bad_host.exit_code == 1
-    assert bad_host.stderr == (
-        "this needs an ip address — to reach home by name from anywhere, "
-        "turn on your private network\n"
-    )
+    client = make_test_client(journal_copy)
+    response = client.get("/app/settings/api/convey/host-url")
+    assert response.status_code == 404

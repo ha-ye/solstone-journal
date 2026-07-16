@@ -13,6 +13,7 @@ from solstone.apps.network import routes as link_routes
 from solstone.apps.network.crockford32 import decode as crockford_decode
 from solstone.apps.network.relay_link import decode_pair_window_link, derive_rk
 from solstone.think.link.ca import load_or_generate_ca
+from solstone.think.link.local_endpoints import LocalEndpoint
 from solstone.think.link.nonces import NONCE_TTL_SECONDS
 from solstone.think.link.paths import ca_dir
 
@@ -114,7 +115,7 @@ def test_pair_start_uses_host_address_override_for_direct_qr(link_env) -> None:
     env = link_env()
     config_path = env.journal / "config" / "journal.json"
     config = json.loads(config_path.read_text("utf-8"))
-    config["pairing"] = {"host_url": "http://192.0.2.44:7070"}
+    config["pairing"] = {"home_address": "192.0.2.44:7657"}
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
 
     response = env.client.post(
@@ -128,7 +129,6 @@ def test_pair_start_uses_host_address_override_for_direct_qr(link_env) -> None:
     assert decoded[0:2] == b"\x04\x01"
     assert decoded[2:6] == ipaddress.IPv4Address("192.0.2.44").packed
     assert int.from_bytes(decoded[6:8], "big") == link_routes._secure_listener_port()
-    assert int.from_bytes(decoded[6:8], "big") != 7070
 
 
 def test_pair_start_direct_pair_link_port_uses_secure_listener_source(
@@ -138,7 +138,7 @@ def test_pair_start_direct_pair_link_port_uses_secure_listener_source(
     env = link_env()
     config_path = env.journal / "config" / "journal.json"
     config = json.loads(config_path.read_text("utf-8"))
-    config["pairing"] = {"host_url": "http://192.0.2.44:7070"}
+    config["pairing"] = {"home_address": "192.0.2.44:7657"}
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
     monkeypatch.setattr(link_routes.interface_watcher, "LINK_DIRECT_PORT", 8765)
 
@@ -154,8 +154,12 @@ def test_pair_start_direct_pair_link_port_uses_secure_listener_source(
     assert int.from_bytes(decoded[6:8], "big") == 8765
 
 
-def test_pair_start_no_candidates_rejected_without_nonce(link_env) -> None:
+def test_pair_start_no_candidates_rejected_without_nonce(
+    link_env,
+    monkeypatch,
+) -> None:
     env = link_env(local_endpoints=[])
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: None)
 
     response = env.client.post(
         "/app/network/pair-start",
@@ -169,12 +173,130 @@ def test_pair_start_no_candidates_rejected_without_nonce(link_env) -> None:
     assert link_routes._nonces().snapshot() == []
 
 
+def test_pair_start_uses_route_fallback_when_snapshot_empty(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(local_endpoints=[])
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    response = env.client.post(
+        "/app/network/pair-start",
+        json={"device_label": "Test Phone"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    decoded = _decode_pair_link(payload["pair_link"])
+    assert decoded[0:2] == b"\x04\x01"
+    assert decoded[2:6] == ipaddress.IPv4Address("192.168.1.50").packed
+    assert int.from_bytes(decoded[6:8], "big") == link_routes._secure_listener_port()
+
+
+def test_pair_start_resolver_exception_rejected_without_nonce(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env()
+
+    def fail_candidates(endpoints):
+        raise RuntimeError("watcher exploded")
+
+    monkeypatch.setattr(link_routes, "_resolve_pair_link_candidates", fail_candidates)
+
+    response = env.client.post(
+        "/app/network/pair-start",
+        json={"device_label": "Test Phone"},
+    )
+
+    assert response.status_code == 400
+    payload = response.get_json()
+    assert payload["reason_code"] == "pairing_request_invalid"
+    assert payload["detail"] == "pair-link requires an IPv4 LAN address; none found"
+    assert link_routes._nonces().snapshot() == []
+
+
+def test_pair_start_override_survives_resolver_exception(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env()
+    config_path = env.journal / "config" / "journal.json"
+    config = json.loads(config_path.read_text("utf-8"))
+    config["pairing"] = {"home_address": "192.168.1.44:7657"}
+    config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
+
+    def fail_candidates(endpoints):
+        raise RuntimeError("watcher exploded")
+
+    monkeypatch.setattr(link_routes, "_resolve_pair_link_candidates", fail_candidates)
+
+    response = env.client.post(
+        "/app/network/pair-start",
+        json={"device_label": "Test Phone"},
+    )
+
+    assert response.status_code == 200
+    payload = response.get_json()
+    decoded = _decode_pair_link(payload["pair_link"])
+    assert decoded[0:2] == b"\x04\x01"
+    assert decoded[2:6] == ipaddress.IPv4Address("192.168.1.44").packed
+    assert int.from_bytes(decoded[6:8], "big") == link_routes._secure_listener_port()
+
+
+def test_pair_start_detected_order_matches_api_status(
+    link_env,
+    monkeypatch,
+) -> None:
+    env = link_env(
+        local_endpoints=[
+            LocalEndpoint(ip="192.168.1.51", port=1111, scope="lan"),
+            LocalEndpoint(ip="192.168.1.50", port=2222, scope="lan"),
+            LocalEndpoint(ip="192.168.1.52", port=3333, scope="lan"),
+        ]
+    )
+    monkeypatch.setattr(link_routes, "_detect_lan_ip", lambda: "192.168.1.50")
+
+    status_response = env.client.get(
+        "/app/network/api/status",
+        base_url="http://localhost:7657",
+    )
+    assert status_response.status_code == 200
+    status_payload = status_response.get_json()
+    status_addresses = [
+        entry["address"].partition(":")[0]
+        for entry in status_payload["home_candidates"]
+    ]
+
+    response = env.client.post(
+        "/app/network/pair-start",
+        json={"device_label": "Test Phone"},
+    )
+    assert response.status_code == 200
+    pair_addresses = _decode_pair_link_addresses(response.get_json()["pair_link"])
+
+    assert status_addresses == ["192.168.1.50", "192.168.1.51", "192.168.1.52"]
+    assert pair_addresses == status_addresses
+
+
 def _fragment(pair_link: str) -> str:
     return pair_link.rsplit("#", 1)[1]
 
 
 def _decode_pair_link(pair_link: str) -> bytes:
     return crockford_decode(_fragment(pair_link))
+
+
+def _decode_pair_link_addresses(pair_link: str) -> list[str]:
+    decoded = _decode_pair_link(pair_link)
+    if decoded[0:2] == b"\x04\x01":
+        return [str(ipaddress.IPv4Address(decoded[2:6]))]
+    assert decoded[0:2] == b"\x05\x01"
+    count = decoded[2]
+    return [
+        str(ipaddress.IPv4Address(decoded[offset : offset + 4]))
+        for offset in range(5, 5 + count * 4, 4)
+    ]
 
 
 def test_pair_start_spl_mints_relay_form_pair_link(link_env) -> None:

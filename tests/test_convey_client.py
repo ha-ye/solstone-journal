@@ -233,26 +233,21 @@ def test_non_envelope_error_raises_server_error_message() -> None:
     assert excinfo.value.error == SERVER_ERROR_MESSAGE
 
 
-def test_resolve_base_url_uses_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        convey_client,
-        "get_host_url_override",
-        lambda: "http://192.168.1.44:5015",
-    )
+def test_resolve_base_url_ignores_pairing_home_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(convey_client, "read_service_port", lambda service: 5099)
 
-    assert resolve_base_url() == "http://192.168.1.44:5015"
+    assert resolve_base_url() == "http://localhost:5099"
 
 
 def test_resolve_base_url_uses_recorded_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(convey_client, "get_host_url_override", lambda: None)
     monkeypatch.setattr(convey_client, "read_service_port", lambda service: 5099)
 
     assert resolve_base_url() == "http://localhost:5099"
 
 
 def test_resolve_base_url_uses_default_port(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(convey_client, "get_host_url_override", lambda: None)
     monkeypatch.setattr(convey_client, "read_service_port", lambda service: None)
 
     assert resolve_base_url() == "http://localhost:5015"

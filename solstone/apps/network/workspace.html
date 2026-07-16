@@ -956,7 +956,7 @@
     await window.apiJson('/app/network/host-address', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ address }),
+      body: JSON.stringify({ home_address: address }),
     });
     setHostAddressError('');
     return await refreshStatus();

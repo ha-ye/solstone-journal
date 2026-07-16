@@ -496,64 +496,9 @@ def update_config() -> Any:
         return _settings_operation_failed()
 
 
-def _host_url_status_value() -> str:
-    from solstone.think.pairing.config import get_host_url
-
-    return get_host_url()
-
-
-@settings_bp.route("/api/convey/host-url", methods=["GET", "POST"])
-def convey_host_url() -> Any:
-    """Read or update the host URL advertised to remote devices."""
-
-    from solstone.think.pairing.config import (
-        InvalidHostUrl,
-        clear_host_url,
-        get_host_url,
-        set_host_url,
-        validate_host_url,
-    )
-
-    try:
-        if request.method == "GET":
-            return jsonify({"host_url": get_host_url()})
-
-        request_data = request.get_json()
-        if not isinstance(request_data, dict):
-            return error_response(
-                INVALID_REQUEST_VALUE,
-                detail="Expected JSON object with url or auto",
-            )
-
-        has_url = "url" in request_data and request_data.get("url") is not None
-        auto = bool(request_data.get("auto", False))
-        if sum((has_url, auto)) != 1:
-            return error_response(
-                INVALID_REQUEST_VALUE,
-                detail="Provide exactly one of url or auto",
-            )
-
-        if auto:
-            clear_host_url()
-            return jsonify({"host_url": get_host_url(), "cleared": True})
-
-        raw_url = request_data.get("url")
-        if not isinstance(raw_url, str):
-            return error_response(INVALID_REQUEST_VALUE, detail="url must be a string")
-        try:
-            canonical = validate_host_url(raw_url)
-        except InvalidHostUrl as exc:
-            return error_response(INVALID_CONFIG_VALUE, detail=str(exc))
-        set_host_url(canonical)
-        return jsonify({"host_url": canonical})
-    except Exception:
-        logger.exception("error updating convey host url")
-        return _settings_operation_failed()
-
-
 @settings_bp.route("/api/convey/status")
 def convey_status() -> Any:
-    """Return formatted Convey bind and host URL status."""
+    """Return formatted Convey bind and dashboard URL status."""
 
     try:
         from solstone.convey.cli import _resolve_bind_host
@@ -562,11 +507,12 @@ def convey_status() -> Any:
 
         bind_host = _resolve_bind_host()
         port = read_service_port("convey") or DEFAULT_SERVICE_PORT
+        dashboard_url = f"http://localhost:{port}"
         status_text = convey_copy.format_convey_status(
             bind=f"{bind_host}:{port}",
-            host_url=_host_url_status_value(),
+            dashboard_url=dashboard_url,
         )
-        return jsonify({"status_text": status_text})
+        return jsonify({"dashboard_url": dashboard_url, "status_text": status_text})
     except Exception:
         logger.exception("error loading convey status")
         return _settings_operation_failed()

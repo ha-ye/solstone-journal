@@ -26,29 +26,31 @@ def test_pairing_config_defaults(journal_copy):
     payload["identity"] = {"name": "", "preferred": ""}
     _write_config(journal_copy, payload)
 
-    assert config.get_host_url() == "http://localhost:5015"
+    assert config.get_home_address() is None
 
 
-def test_pairing_host_url_reads_trimmed_value(journal_copy):
+def test_pairing_home_address_reads_trimmed_value(journal_copy):
     payload = _read_config(journal_copy)
     payload["pairing"] = {
-        "host_url": " http://192.168.1.44:6123 ",
+        "home_address": " 192.168.1.44:7657 ",
     }
     _write_config(journal_copy, payload)
 
-    assert config.get_host_url() == "http://192.168.1.44:6123"
+    assert config.get_home_address() == "192.168.1.44:7657"
 
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
-        ("192.168.1.44:5015", "http://192.168.1.44:5015"),
-        (" http://192.168.1.44:5015 ", "http://192.168.1.44:5015"),
-        ("http://192.168.1.44:5015/", "http://192.168.1.44:5015"),
+        ("192.168.1.44:7657", "192.168.1.44:7657"),
+        (" 192.168.1.44:7657 ", "192.168.1.44:7657"),
     ],
 )
-def test_validate_host_url_accepts_ipv4_port(raw: str, expected: str) -> None:
-    assert config.validate_host_url(raw) == expected
+def test_validate_home_address_accepts_ipv4_secure_port(
+    raw: str,
+    expected: str,
+) -> None:
+    assert config.validate_home_address(raw) == expected
 
 
 @pytest.mark.parametrize(
@@ -56,62 +58,79 @@ def test_validate_host_url_accepts_ipv4_port(raw: str, expected: str) -> None:
     [
         "",
         "   ",
-        "http://",
+        "http://192.168.1.44:7657",
         "192.168.1.44",
         "http://192.168.1.44",
         "192.168.1.44:0",
+        "192.168.1.44:5015",
         "192.168.1.44:65536",
         "192.168.1.44:notaport",
-        "https://192.168.1.44:5015",
-        "http://user@192.168.1.44:5015",
-        "http://192.168.1.44:5015/path",
-        "http://192.168.1.44:5015?x=1",
-        "http://192.168.1.44:5015#frag",
-        "http://[::1]:5015",
-        "http://[fe80::1]:5015",
+        "https://192.168.1.44:7657",
+        "user@192.168.1.44:7657",
+        "192.168.1.44:7657/path",
+        "192.168.1.44:7657?x=1",
+        "192.168.1.44:7657#frag",
+        "127.0.0.1:7657",
+        "0.0.0.0:7657",
+        "169.254.1.1:7657",
+        "224.0.0.1:7657",
+        "[::1]:7657",
+        "[fe80::1]:7657",
     ],
 )
-def test_validate_host_url_rejects_invalid_values(raw: str) -> None:
-    with pytest.raises(config.InvalidHostUrl) as excinfo:
-        config.validate_host_url(raw)
+def test_validate_home_address_rejects_invalid_values(raw: str) -> None:
+    with pytest.raises(config.InvalidHomeAddress) as excinfo:
+        config.validate_home_address(raw)
 
-    assert str(excinfo.value) == config.HOST_URL_INVALID
+    assert str(excinfo.value) == config.HOME_ADDRESS_INVALID
 
 
-@pytest.mark.parametrize("raw", ["mylab.local:5015", "http://home.local:5015"])
-def test_validate_host_url_rejects_hostname_with_sol_private_link_message(
+@pytest.mark.parametrize("raw", ["mylab.local:7657", "home.local"])
+def test_validate_home_address_rejects_hostname_with_private_link_message(
     raw: str,
 ) -> None:
-    with pytest.raises(config.InvalidHostUrl) as excinfo:
-        config.validate_host_url(raw)
+    with pytest.raises(config.InvalidHomeAddress) as excinfo:
+        config.validate_home_address(raw)
 
-    assert str(excinfo.value) == config.HOST_URL_HOSTNAME_UNSUPPORTED
-
-
-def test_host_url_override_round_trip(journal_copy) -> None:
-    canonical = config.validate_host_url("192.168.1.44:5015")
-
-    config.set_host_url(canonical)
-
-    assert _read_config(journal_copy)["pairing"]["host_url"] == canonical
-    assert config.get_host_url_override() == canonical
-    assert config.get_host_url() == canonical
-    assert config.override_host_port() == "192.168.1.44:5015"
-
-    config.clear_host_url()
-
-    assert _read_config(journal_copy)["pairing"]["host_url"] is None
-    assert config.get_host_url_override() is None
-    assert config.override_host_port() is None
+    assert str(excinfo.value) == config.HOME_ADDRESS_HOSTNAME_UNSUPPORTED
 
 
-def test_pairing_host_url_uses_localhost_without_manual_override(journal_copy):
-    payload = _read_config(journal_copy)
-    payload["pairing"] = {"host_url": None}
-    payload["convey"]["allow_network_access"] = True
-    _write_config(journal_copy, payload)
-    health_dir = journal_copy / "health"
-    health_dir.mkdir(parents=True, exist_ok=True)
-    (health_dir / "convey.port").write_text("6123", encoding="utf-8")
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("192.168.1.44", True),
+        ("10.0.0.5", True),
+        ("127.0.0.1", False),
+        ("0.0.0.0", False),
+        ("169.254.1.1", False),
+        ("224.0.0.1", False),
+        ("::1", False),
+        ("not-an-ip", False),
+        (None, False),
+    ],
+)
+def test_is_usable_ipv4(value: object, expected: bool) -> None:
+    assert config.is_usable_ipv4(value) is expected
 
-    assert config.get_host_url() == "http://localhost:6123"
+
+def test_home_address_round_trip(journal_copy) -> None:
+    canonical = config.validate_home_address("192.168.1.44:7657")
+
+    config.set_home_address(canonical)
+
+    assert _read_config(journal_copy)["pairing"]["home_address"] == canonical
+    assert config.get_home_address() == canonical
+
+    config.clear_home_address()
+
+    assert _read_config(journal_copy)["pairing"]["home_address"] is None
+    assert config.get_home_address() is None
+
+
+def test_validate_home_address_rejects_without_writing(journal_copy) -> None:
+    before = _read_config(journal_copy)
+
+    with pytest.raises(config.InvalidHomeAddress):
+        config.validate_home_address("192.168.1.44:5015")
+
+    assert _read_config(journal_copy) == before
