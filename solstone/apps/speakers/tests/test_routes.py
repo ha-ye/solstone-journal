@@ -262,42 +262,6 @@ def _save_principal_manual_tags(
     return embeddings
 
 
-def _write_prefilter_failing_candidate_pool(env) -> Path:
-    path = env.journal / "awareness" / "speaker_candidates.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "next_id": 2,
-                "candidates": [
-                    {
-                        "cand_id": 1,
-                        "centroid": [1.0] + [0.0] * 255,
-                        "n_segments": 1,
-                        "n_intervals": 1,
-                        "total_duration_s": 5.0,
-                        "source_segments": [
-                            {
-                                "day": SERVE_AUDIO_DAY,
-                                "stream": SERVE_AUDIO_STREAM,
-                                "segment_key": SERVE_AUDIO_SEGMENT,
-                                "source": SERVE_AUDIO_SOURCE,
-                                "cluster_label": 1,
-                            }
-                        ],
-                        "confirmed_entity": None,
-                        "status": "pending",
-                    }
-                ],
-            },
-            indent=2,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    return path
-
-
 def test_normalize_embedding():
     """Test L2 normalization of embeddings."""
     from solstone.apps.speakers.routes import _normalize_embedding

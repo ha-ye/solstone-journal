@@ -7,7 +7,9 @@ Auto-discovered by ``think.call`` and mounted as ``sol call speakers ...``.
 Every verb reaches the journal only over HTTP via the Convey client; this
 module imports no journal/domain function and performs no filesystem I/O.
 
-Speaker writer commands preview by default; pass ``--commit`` to persist.
+Commands with ``--commit`` preview by default and persist only when passed.
+Other write verbs, including ``tag-owner`` and ``build-from-tags``, persist
+immediately.
 For ``attribute-segment``, ``--save`` / ``--accumulate`` only take effect
 when ``--commit`` is also passed.
 
