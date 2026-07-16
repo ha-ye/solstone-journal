@@ -11,6 +11,7 @@ from solstone.observe.processing_record import (
     STATE_EMPTY,
     STATE_FAILED,
     is_failure_exhausted,
+    record_attempts,
 )
 from solstone.think.data_state import (
     DataState,
@@ -56,6 +57,15 @@ def test_is_failure_exhausted_uses_corrupt_input_or_attempt_bound() -> None:
             "attempts": FAILED_ATTEMPT_BOUND,
         }
     )
+
+
+def test_record_attempts_coerces_absent_or_malformed_to_zero() -> None:
+    assert record_attempts(None) == 0
+    assert record_attempts({}) == 0
+    assert record_attempts({"attempts": 2}) == 2
+    assert record_attempts({"attempts": None}) == 0
+    assert record_attempts({"attempts": "3"}) == 0
+    assert record_attempts({"attempts": True}) == 0
 
 
 def test_derive_chunks_win_beats_processing_record(tmp_path) -> None:

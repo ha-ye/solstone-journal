@@ -18,6 +18,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
+from solstone.observe.processing_record import (
+    FAILED_ATTEMPT_BOUND,
+    HANDLER_DESCRIBE,
+    HANDLER_TRANSCRIBE,
+    MAX_FIRST_ROW_BYTES,
+    REASON_ANALYSIS_FAILED,
+    REASON_CORRUPT_INPUT,
+    STATE_ANALYZED,
+    STATE_EMPTY,
+    STATE_FAILED,
+    read_processing_record_header,
+)
 from solstone.observe.sense import FileSensor, HandlerProcess, QueuedItem
 from solstone.think import admission
 from solstone.think.processing import (
@@ -97,6 +109,38 @@ def make_segment_file(
     file_path = segment_dir / filename
     file_path.write_text("content")
     return file_path
+
+
+def _processing_record(
+    *,
+    state: str,
+    handler: str = HANDLER_DESCRIBE,
+    reason_code: str = REASON_ANALYSIS_FAILED,
+    attempts: int | None = None,
+) -> dict:
+    record = {
+        "schema": "solstone.processing.v1",
+        "state": state,
+        "reason_code": reason_code,
+        "handler": handler,
+        "attempted_at": "2026-07-16T00:00:00Z",
+        "input_size": 7,
+    }
+    if attempts is not None:
+        record["attempts"] = attempts
+    return record
+
+
+def _write_processing_output(
+    media_path: Path,
+    record: dict | None,
+) -> Path:
+    header = {"raw": media_path.name}
+    if record is not None:
+        header["_solstone_processing"] = record
+    output_path = media_path.with_suffix(".jsonl")
+    output_path.write_text(json.dumps(header) + "\n", encoding="utf-8")
+    return output_path
 
 
 def _processing_settings(mode: str) -> ProcessingSettings:
@@ -746,6 +790,141 @@ def test_process_day_filters_stream_and_modality(tmp_path, monkeypatch):
     )
 
     assert processed == [("alpha", "audio.flac")]
+
+
+def test_process_day_reenters_only_retryable_describe_failures(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    cases = [
+        (
+            "143000_300",
+            _processing_record(state=STATE_ANALYZED, reason_code="ok"),
+            False,
+        ),
+        (
+            "143001_300",
+            _processing_record(
+                state=STATE_EMPTY,
+                reason_code="no_decodable_frames",
+            ),
+            False,
+        ),
+        ("143002_300", None, False),
+        (
+            "143003_300",
+            _processing_record(
+                state=STATE_FAILED,
+                reason_code=REASON_CORRUPT_INPUT,
+            ),
+            False,
+        ),
+        (
+            "143004_300",
+            _processing_record(
+                state=STATE_FAILED,
+                attempts=FAILED_ATTEMPT_BOUND,
+            ),
+            False,
+        ),
+        (
+            "143005_300",
+            _processing_record(
+                state=STATE_FAILED,
+                handler=HANDLER_TRANSCRIBE,
+                attempts=1,
+            ),
+            False,
+        ),
+        (
+            "143006_300",
+            _processing_record(state=STATE_FAILED),
+            True,
+        ),
+        (
+            "143007_300",
+            _processing_record(
+                state=STATE_FAILED,
+                attempts=FAILED_ATTEMPT_BOUND - 1,
+            ),
+            True,
+        ),
+    ]
+    for segment, record, _expected in cases:
+        media_path = make_segment_file(tmp_path, segment=segment)
+        _write_processing_output(media_path, record)
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    processed = []
+
+    def fake_run(queued_item, *_args):
+        processed.append(queued_item.file_path.parent.name)
+
+    monkeypatch.setattr(sensor, "_run_handler", fake_run)
+
+    sensor.process_day("20250101", max_jobs=1)
+
+    assert processed == [segment for segment, _record, expected in cases if expected]
+
+
+def test_process_day_reentry_uses_bounded_first_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    media_path = make_segment_file(tmp_path)
+    record = _processing_record(state=STATE_FAILED)
+    output_path = media_path.with_suffix(".jsonl")
+    output_path.write_bytes(
+        b'{"pad":"'
+        + (b"x" * MAX_FIRST_ROW_BYTES)
+        + b'","_solstone_processing":'
+        + json.dumps(record).encode("utf-8")
+        + b"}\n"
+    )
+
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    processed = []
+
+    def fake_run(queued_item, *_args):
+        processed.append(queued_item.file_path)
+
+    monkeypatch.setattr(sensor, "_run_handler", fake_run)
+
+    sensor.process_day("20250101", max_jobs=1)
+
+    assert processed == []
+
+
+def test_process_day_retries_failed_describe_until_attempt_bound(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    media_path = make_segment_file(tmp_path)
+    output_path = _write_processing_output(
+        media_path,
+        _processing_record(state=STATE_FAILED),
+    )
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    processed = []
+
+    def fake_run(queued_item, *_args):
+        processed.append(queued_item.file_path)
+        record = read_processing_record_header(output_path)
+        previous_attempts = record.get("attempts", 0) if record else 0
+        _write_processing_output(
+            media_path,
+            _processing_record(
+                state=STATE_FAILED,
+                attempts=previous_attempts + 1,
+            ),
+        )
+
+    monkeypatch.setattr(sensor, "_run_handler", fake_run)
+
+    for _ in range(4):
+        sensor.process_day("20250101", max_jobs=1)
+
+    assert processed == [media_path, media_path, media_path]
+    assert (
+        read_processing_record_header(output_path)["attempts"] == FAILED_ATTEMPT_BOUND
+    )
 
 
 def test_process_day_elevates_describe_only_in_batch_mode(tmp_path, monkeypatch):

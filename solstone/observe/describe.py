@@ -48,6 +48,9 @@ from solstone.observe.processing_record import (
     STATE_EMPTY,
     STATE_FAILED,
     build_processing_record,
+    read_processing_record_header,
+    record_attempts,
+    should_reenter_failed_describe,
 )
 from solstone.observe.utils import get_segment_key, resize_for_vlm
 from solstone.think.callosum import callosum_send
@@ -692,6 +695,7 @@ class VideoProcessor:
         max_concurrent: int,
         output_path: Optional[Path] = None,
         work_key: str | None = None,
+        previous_attempts: int = 0,
     ) -> None:
         """
         Process video and write vision analysis results to file.
@@ -767,11 +771,13 @@ class VideoProcessor:
             final_path = Path(final_file.name)
             try:
                 header = self._build_metadata_header()
+                attempts = previous_attempts + 1 if state == STATE_FAILED else None
                 header["_solstone_processing"] = build_processing_record(
                     state=state,
                     reason_code=reason_code,
                     handler=HANDLER_DESCRIBE,
                     input_size=self.video_path.stat().st_size,
+                    attempts=attempts,
                 )
                 final_file.write(json.dumps(header) + "\n")
                 with temp_path.open() as rows:
@@ -1312,14 +1318,18 @@ async def async_main():
 
     # Determine output path
     output_path = None
+    previous_attempts = 0
     if not args.frames_only:
         # Output JSONL in same directory, same stem (e.g., center_DP-3_screen.jsonl)
         output_path = video_path.with_suffix(".jsonl")
 
         # Skip if already processed (unless redo mode)
         if not args.redo and output_path.exists():
-            logger.info(f"Already processed: {video_path}")
-            return
+            record = read_processing_record_header(output_path)
+            if not should_reenter_failed_describe(record):
+                logger.info(f"Already processed: {video_path}")
+                return
+            previous_attempts = record_attempts(record)
 
         if output_path.exists():
             logger.warning(f"Overwriting existing analysis file: {output_path}")
@@ -1353,6 +1363,7 @@ async def async_main():
                 max_concurrent=max_concurrent,
                 output_path=output_path,
                 work_key=work_key,
+                previous_attempts=previous_attempts,
             )
 
             # Emit completion event

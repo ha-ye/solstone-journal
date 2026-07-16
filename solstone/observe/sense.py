@@ -25,6 +25,10 @@ from typing import Any, Dict, List, Optional
 
 from solstone import __version__
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
+from solstone.observe.processing_record import (
+    read_processing_record_header,
+    should_reenter_failed_describe,
+)
 from solstone.observe.utils import (
     AUDIO_EXTENSIONS,
     IMAGE_EXTENSIONS,
@@ -1047,7 +1051,9 @@ class FileSensor:
                 # Check if output JSONL exists (already processed)
                 output_path = file_path.with_suffix(".jsonl")
                 if output_path.exists():
-                    continue
+                    record = read_processing_record_header(output_path)
+                    if not should_reenter_failed_describe(record):
+                        continue
 
                 handler_info = self._match_pattern(file_path)
                 if handler_info:

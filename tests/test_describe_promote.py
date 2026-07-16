@@ -250,6 +250,7 @@ async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
                 "handler": "describe",
                 "attempted_at": "2026-06-30T12:00:00Z",
                 "input_size": 5,
+                "attempts": 1,
             },
         }
     )
@@ -918,6 +919,7 @@ async def test_all_frames_failed_promotes_header_only_then_raises(
                     "handler": "describe",
                     "attempted_at": "2026-06-30T12:00:00Z",
                     "input_size": 5,
+                    "attempts": 1,
                 },
             }
         )
@@ -927,7 +929,7 @@ async def test_all_frames_failed_promotes_header_only_then_raises(
 
 
 @pytest.mark.asyncio
-async def test_all_frames_failed_output_is_terminal_until_redo(tmp_path, monkeypatch):
+async def test_failed_promote_increments_previous_attempts(tmp_path, monkeypatch):
     video_path = _video_path(tmp_path)
     output_path = video_path.with_suffix(".jsonl")
     processor = _processor(video_path, [_frame(1, 0.0, _png_bytes())], monkeypatch)
@@ -938,23 +940,181 @@ async def test_all_frames_failed_output_is_terminal_until_redo(tmp_path, monkeyp
             max_concurrent=1,
             output_path=output_path,
             work_key="20250101/143022_300/screen",
+            previous_attempts=processing_record_module.FAILED_ATTEMPT_BOUND - 1,
         )
 
+    record = json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])[
+        "_solstone_processing"
+    ]
+    assert record["attempts"] == processing_record_module.FAILED_ATTEMPT_BOUND
+
+
+@pytest.mark.parametrize(
+    ("case", "record", "expected_constructed", "expected_previous_attempts"),
+    [
+        (
+            "analyzed",
+            {
+                "state": processing_record_module.STATE_ANALYZED,
+                "handler": processing_record_module.HANDLER_DESCRIBE,
+            },
+            False,
+            None,
+        ),
+        (
+            "empty",
+            {
+                "state": processing_record_module.STATE_EMPTY,
+                "handler": processing_record_module.HANDLER_DESCRIBE,
+            },
+            False,
+            None,
+        ),
+        ("no_record", None, False, None),
+        (
+            "corrupt_input",
+            {
+                "state": processing_record_module.STATE_FAILED,
+                "handler": processing_record_module.HANDLER_DESCRIBE,
+                "reason_code": processing_record_module.REASON_CORRUPT_INPUT,
+            },
+            False,
+            None,
+        ),
+        (
+            "exhausted_attempts",
+            {
+                "state": processing_record_module.STATE_FAILED,
+                "handler": processing_record_module.HANDLER_DESCRIBE,
+                "reason_code": processing_record_module.REASON_ANALYSIS_FAILED,
+                "attempts": processing_record_module.FAILED_ATTEMPT_BOUND,
+            },
+            False,
+            None,
+        ),
+        (
+            "failed_transcribe",
+            {
+                "state": processing_record_module.STATE_FAILED,
+                "handler": processing_record_module.HANDLER_TRANSCRIBE,
+                "reason_code": processing_record_module.REASON_ANALYSIS_FAILED,
+                "attempts": 1,
+            },
+            False,
+            None,
+        ),
+        (
+            "retryable_legacy_failed",
+            {
+                "state": processing_record_module.STATE_FAILED,
+                "handler": processing_record_module.HANDLER_DESCRIBE,
+                "reason_code": processing_record_module.REASON_ANALYSIS_FAILED,
+            },
+            True,
+            0,
+        ),
+        (
+            "retryable_failed_with_attempts",
+            {
+                "state": processing_record_module.STATE_FAILED,
+                "handler": processing_record_module.HANDLER_DESCRIBE,
+                "reason_code": processing_record_module.REASON_ANALYSIS_FAILED,
+                "attempts": processing_record_module.FAILED_ATTEMPT_BOUND - 1,
+            },
+            True,
+            processing_record_module.FAILED_ATTEMPT_BOUND - 1,
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_existing_output_reenters_only_retryable_describe_failures(
+    tmp_path,
+    monkeypatch,
+    case,
+    record,
+    expected_constructed,
+    expected_previous_attempts,
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    header = {"raw": video_path.name, "case": case}
+    if record is not None:
+        header["_solstone_processing"] = record
+    output_path.write_text(json.dumps(header) + "\n", encoding="utf-8")
     original = output_path.read_bytes()
     constructed = []
+    observed_previous_attempts = []
 
-    def fail_if_constructed(*args, **kwargs):
-        constructed.append((args, kwargs))
-        raise AssertionError("VideoProcessor should not reprocess existing output")
+    class FakeProcessor:
+        def __init__(self, path):
+            constructed.append(path)
 
-    monkeypatch.setattr(describe_module, "VideoProcessor", fail_if_constructed)
+        async def process_with_vision(self, **kwargs):
+            observed_previous_attempts.append(kwargs["previous_attempts"])
+
+    monkeypatch.setattr(describe_module, "VideoProcessor", FakeProcessor)
     monkeypatch.setattr(describe_module, "require_solstone", lambda: None)
+    monkeypatch.setattr(
+        describe_module, "_preflight_provider_readiness", lambda *a, **k: None
+    )
+    monkeypatch.setattr(describe_module, "callosum_send", lambda *a, **k: None)
     monkeypatch.setattr("sys.argv", ["journal describe", str(video_path)])
 
     await describe_module.async_main()
 
-    assert constructed == []
+    if expected_constructed:
+        assert constructed == [video_path]
+        assert observed_previous_attempts == [expected_previous_attempts]
+    else:
+        assert constructed == []
+        assert observed_previous_attempts == []
     assert output_path.read_bytes() == original
+
+
+@pytest.mark.asyncio
+async def test_redo_existing_output_does_not_read_previous_record(
+    tmp_path, monkeypatch
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    output_path.write_text(
+        json.dumps(
+            {
+                "raw": video_path.name,
+                "_solstone_processing": {
+                    "state": processing_record_module.STATE_FAILED,
+                    "handler": processing_record_module.HANDLER_DESCRIBE,
+                    "attempts": processing_record_module.FAILED_ATTEMPT_BOUND,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    observed_previous_attempts = []
+
+    class FakeProcessor:
+        def __init__(self, _path):
+            pass
+
+        async def process_with_vision(self, **kwargs):
+            observed_previous_attempts.append(kwargs["previous_attempts"])
+
+    def fail_if_read(_path):
+        raise AssertionError("--redo must not read the previous record")
+
+    monkeypatch.setattr(describe_module, "VideoProcessor", FakeProcessor)
+    monkeypatch.setattr(describe_module, "read_processing_record_header", fail_if_read)
+    monkeypatch.setattr(describe_module, "require_solstone", lambda: None)
+    monkeypatch.setattr(
+        describe_module, "_preflight_provider_readiness", lambda *a, **k: None
+    )
+    monkeypatch.setattr(describe_module, "callosum_send", lambda *a, **k: None)
+    monkeypatch.setattr("sys.argv", ["journal describe", "--redo", str(video_path)])
+
+    await describe_module.async_main()
+
+    assert observed_previous_attempts == [0]
 
 
 @pytest.mark.asyncio
@@ -1015,6 +1175,56 @@ async def test_provider_blocked_promotes_nothing_and_records_nothing(
 
     assert exc.value.code == EXIT_PROVIDER_BLOCKED
     assert not output_path.exists()
+    _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_provider_blocked_abort_preserves_existing_attempts(
+    tmp_path, monkeypatch
+):
+    import solstone.convey.provider_readiness as provider_readiness
+    from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
+
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    existing_header = {
+        "raw": video_path.name,
+        "_solstone_processing": {
+            "state": processing_record_module.STATE_FAILED,
+            "reason_code": processing_record_module.REASON_ANALYSIS_FAILED,
+            "handler": processing_record_module.HANDLER_DESCRIBE,
+            "attempts": 2,
+        },
+    }
+    output_path.write_text(json.dumps(existing_header) + "\n", encoding="utf-8")
+    original = output_path.read_text(encoding="utf-8")
+    processor = _processor(video_path, [_frame(1, 0.0, _png_bytes())], monkeypatch)
+    _install_fakes(
+        monkeypatch,
+        {1: {"fail": True, "error": "blocked", "reason_code": "rate_limited"}},
+    )
+    monkeypatch.setattr(provider_readiness, "is_blocking_reason", lambda _code: True)
+    monkeypatch.setattr(provider_readiness, "present_for_reason", lambda *a, **k: {})
+    monkeypatch.setattr(
+        describe_module, "_emit_blocked_notification", lambda _view: None
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        await processor.process_with_vision(
+            max_concurrent=1,
+            output_path=output_path,
+            work_key="20250101/143022_300/screen",
+            previous_attempts=2,
+        )
+
+    assert exc.value.code == EXIT_PROVIDER_BLOCKED
+    assert output_path.read_text(encoding="utf-8") == original
+    assert (
+        json.loads(output_path.read_text(encoding="utf-8").splitlines()[0])[
+            "_solstone_processing"
+        ]["attempts"]
+        == 2
+    )
     _assert_no_describe_temp(output_path.parent)
 
 

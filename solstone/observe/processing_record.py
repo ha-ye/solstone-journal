@@ -13,11 +13,14 @@ may carry these literals inline. Failed describe records may also carry an
 ``FAILED_ATTEMPT_BOUND`` is the shared retry exhaustion bound.
 """
 
+import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 SCHEMA = "solstone.processing.v1"
 FAILED_ATTEMPT_BOUND = 3
 ATTEMPTS_KEY = "attempts"
+MAX_FIRST_ROW_BYTES = 64 * 1024
 
 # state values (closed set)
 STATE_ANALYZED = "analyzed"
@@ -43,10 +46,52 @@ def is_failure_exhausted(record: dict | None) -> bool:
         return False
     if record.get("reason_code") == REASON_CORRUPT_INPUT:
         return True
+    return record_attempts(record) >= FAILED_ATTEMPT_BOUND
+
+
+def record_attempts(record: dict | None) -> int:
+    """Return a record's failure-attempt count; absent or malformed means 0."""
+    if not isinstance(record, dict):
+        return 0
     attempts = record.get(ATTEMPTS_KEY, 0)
     if isinstance(attempts, bool) or not isinstance(attempts, int):
-        attempts = 0
-    return attempts >= FAILED_ATTEMPT_BOUND
+        return 0
+    return attempts
+
+
+def read_processing_record_header(path: Path) -> dict | None:
+    """Read a JSONL header's `_solstone_processing` record within one bounded window."""
+    try:
+        with path.open("rb") as handle:
+            first_window = handle.read(MAX_FIRST_ROW_BYTES)
+    except OSError:
+        return None
+
+    if b"\n" not in first_window:
+        return None
+
+    first_line = first_window.split(b"\n", 1)[0]
+    try:
+        row = json.loads(first_line.decode("utf-8"))
+    except UnicodeDecodeError:
+        return None
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(row, dict):
+        return None
+    record = row.get("_solstone_processing")
+    return record if isinstance(record, dict) else None
+
+
+def should_reenter_failed_describe(record: dict | None) -> bool:
+    """Return whether an existing failed describe output should be retried."""
+    return (
+        isinstance(record, dict)
+        and record.get("state") == STATE_FAILED
+        and record.get("handler") == HANDLER_DESCRIBE
+        and not is_failure_exhausted(record)
+    )
 
 
 def now_iso_utc() -> str:
@@ -62,13 +107,15 @@ def build_processing_record(
     input_size: int,
     attempted_at: str | None = None,
     source: str | None = None,
+    attempts: int | None = None,
 ) -> dict:
     """Build a `_solstone_processing` header record for a determined outcome.
 
     `attempted_at` defaults to the current UTC instant; pass an explicit value
     only in tests. The outcome must be the one the handler *determined* while
     running — never a pre-stamped guess. `source` is a provenance tag set only
-    by the backfill.
+    by the backfill. `attempts` is present only on failing records; absent means
+    0, and callers never stamp `attempts: 0`.
     """
     record = {
         "schema": SCHEMA,
@@ -80,4 +127,6 @@ def build_processing_record(
     }
     if source is not None:
         record["source"] = source
+    if attempts is not None:
+        record[ATTEMPTS_KEY] = attempts
     return record
