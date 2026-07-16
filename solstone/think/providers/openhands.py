@@ -86,6 +86,7 @@ _LOCAL_OUTPUT_RESERVE_TOKENS = LOCAL_MIN_CONTEXT_TOKENS // 4
 _LOCAL_CONDENSER_MAX_TOKENS = LOCAL_MIN_CONTEXT_TOKENS * 11 // 16
 _LOCAL_CONDENSER_KEEP_FIRST = 4
 _GENERATE_NUM_RETRIES = 2
+_PROBE_MAX_OUTPUT_TOKENS = 16
 _GEMINI_MAX_OUTPUT_TOKENS = 65_535
 _ANTHROPIC_THINKING_BUFFER = 1_000
 _SCHEMA_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
@@ -195,7 +196,6 @@ def _build_llm(provider: str, model: str) -> Any:
                 retry_multiplier=1.0,
                 input_cost_per_token=0,
                 output_cost_per_token=0,
-                litellm_extra_body={"chat_template_kwargs": {"enable_thinking": False}},
             )
 
         from solstone.think.providers import local_server
@@ -1970,7 +1970,7 @@ def _probe(provider: str, model: str, api_key: str) -> None:
         model,
         provider=provider,
         temperature=None,
-        max_output_tokens=8,
+        max_output_tokens=_PROBE_MAX_OUTPUT_TOKENS,
         system_instruction=None,
         json_output=False,
         thinking_budget=None,

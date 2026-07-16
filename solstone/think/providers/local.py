@@ -246,7 +246,7 @@ def _build_request_body(
     max_output_tokens: int,
     json_output: bool,
     json_schema: dict | None,
-    apply_qwen_sampling: bool,
+    is_bundled: bool,
 ) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model_id,
@@ -254,11 +254,11 @@ def _build_request_body(
         "temperature": temperature,
         "max_tokens": max_output_tokens,
         "stream": False,
-        "chat_template_kwargs": {"enable_thinking": False},
     }
-    if apply_qwen_sampling:
+    if is_bundled:
         body.update(
             {
+                "chat_template_kwargs": {"enable_thinking": False},
                 "top_p": _QWEN_TOP_P,
                 "top_k": _QWEN_TOP_K,
                 "min_p": _QWEN_MIN_P,

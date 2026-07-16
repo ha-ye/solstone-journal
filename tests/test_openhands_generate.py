@@ -382,6 +382,28 @@ async def test_run_agenerate_transport_kwargs_do_not_shadow_llm_timeout(
     assert "timeout" not in getattr(llm, transport_attr)
 
 
+def test_validation_probe_uses_minimum_output_budget(fake_openhands):
+    assert openhands._PROBE_MAX_OUTPUT_TOKENS == 16
+
+    assert openhands.validate_key("openai", "key") == {"valid": True}
+    assert (
+        fake_openhands.LLM.instances[-1].max_output_tokens
+        == openhands._PROBE_MAX_OUTPUT_TOKENS
+    )
+
+    assert openhands.validate_key("google", "key") == {"valid": True}
+    assert (
+        fake_openhands.LLM.instances[-1].max_output_tokens
+        == openhands._PROBE_MAX_OUTPUT_TOKENS
+    )
+
+    assert openhands.validate_key("anthropic", "key") == {"valid": True}
+    assert (
+        fake_openhands.LLM.instances[-1].max_output_tokens
+        == openhands._PROBE_MAX_OUTPUT_TOKENS
+    )
+
+
 def test_validation_uses_runtime_probe_and_classifies_results(monkeypatch):
     monkeypatch.setattr(openhands, "_probe", lambda *args: None)
     assert openhands.validate_key("google", "key") == {"valid": True}

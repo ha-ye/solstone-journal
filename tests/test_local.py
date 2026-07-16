@@ -959,6 +959,14 @@ def test_run_generate_byo_posts_to_normalized_endpoint_and_skips_connect(monkeyp
 
     assert captured["url"] == "http://byo.example/openai/v1/chat/completions"
     assert captured["json"]["model"] == "served-model"
+    for key in (
+        "chat_template_kwargs",
+        "top_p",
+        "top_k",
+        "min_p",
+        "presence_penalty",
+    ):
+        assert key not in captured["json"]
     assert captured["headers"] == {"Authorization": "Bearer test-token-PLACEHOLDER"}
     assert local_budget.TRUNCATION_MARKER not in str(captured["json"])
     assert result["text"] == "hello"
@@ -1422,7 +1430,7 @@ def test_run_agenerate_confidential_with_stray_slots_skips_admission(monkeypatch
     assert captured["timeout"] == pytest.approx(1.0)
 
 
-def test_run_generate_byo_body_omits_bundled_qwen_sampling(monkeypatch):
+def test_run_generate_byo_body_omits_bundled_request_fields(monkeypatch):
     provider = _provider()
     monkeypatch.setattr(provider, "resolve_local_endpoint", _byo_endpoint)
     captured_posts = []
@@ -1476,7 +1484,6 @@ def test_run_generate_byo_body_omits_bundled_qwen_sampling(monkeypatch):
         "temperature": 0.4,
         "max_tokens": 7,
         "stream": False,
-        "chat_template_kwargs": {"enable_thinking": False},
     }
     assert captured_posts[1]["json"] == {
         "model": "served-model",
@@ -1484,7 +1491,6 @@ def test_run_generate_byo_body_omits_bundled_qwen_sampling(monkeypatch):
         "temperature": 0.5,
         "max_tokens": 11,
         "stream": False,
-        "chat_template_kwargs": {"enable_thinking": False},
         "response_format": {
             "type": "json_schema",
             "json_schema": {
@@ -1495,7 +1501,13 @@ def test_run_generate_byo_body_omits_bundled_qwen_sampling(monkeypatch):
         },
     }
     for post in captured_posts:
-        for key in ("top_p", "top_k", "min_p", "presence_penalty"):
+        for key in (
+            "chat_template_kwargs",
+            "top_p",
+            "top_k",
+            "min_p",
+            "presence_penalty",
+        ):
             assert key not in post["json"]
 
 
@@ -2204,9 +2216,9 @@ def test_openhands_local_byo_llm_kwargs(monkeypatch, credential, expected_key):
         "retry_multiplier": 1.0,
         "input_cost_per_token": 0,
         "output_cost_per_token": 0,
-        "litellm_extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     }
     assert "max_input_tokens" not in captured
+    assert "litellm_extra_body" not in captured
     waits = [
         min(
             captured["retry_max_wait"],

@@ -175,6 +175,18 @@ class LLM(FakeModel):
         return self.responses(messages, **kwargs)
 
 
+class ImageContent(FakeModel):
+    pass
+
+
+class Message(FakeModel):
+    pass
+
+
+class TextContent(FakeModel):
+    pass
+
+
 class Agent(FakeModel):
     pass
 
@@ -243,6 +255,7 @@ def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
     sdk_mod = types.ModuleType("openhands.sdk")
     event_mod = types.ModuleType("openhands.sdk.event")
     conversation_error_mod = types.ModuleType("openhands.sdk.event.conversation_error")
+    llm_mod = types.ModuleType("openhands.sdk.llm")
     tool_mod = types.ModuleType("openhands.sdk.tool")
     schema_mod = types.ModuleType("openhands.sdk.tool.schema")
     builtins_mod = types.ModuleType("openhands.sdk.tool.builtins")
@@ -253,6 +266,9 @@ def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
     sdk_mod.LLM = LLM
     sdk_mod.Agent = Agent
     sdk_mod.Conversation = Conversation
+    llm_mod.ImageContent = ImageContent
+    llm_mod.Message = Message
+    llm_mod.TextContent = TextContent
     event_mod.ActionEvent = ActionEvent
     event_mod.ObservationEvent = ObservationEvent
     event_mod.MessageEvent = MessageEvent
@@ -269,6 +285,7 @@ def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
 
     root_mod.sdk = sdk_mod
     sdk_mod.event = event_mod
+    sdk_mod.llm = llm_mod
     sdk_mod.tool = tool_mod
     event_mod.conversation_error = conversation_error_mod
     tool_mod.schema = schema_mod
@@ -282,6 +299,7 @@ def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
         "openhands.sdk": sdk_mod,
         "openhands.sdk.event": event_mod,
         "openhands.sdk.event.conversation_error": conversation_error_mod,
+        "openhands.sdk.llm": llm_mod,
         "openhands.sdk.tool": tool_mod,
         "openhands.sdk.tool.schema": schema_mod,
         "openhands.sdk.tool.builtins": builtins_mod,
@@ -302,4 +320,7 @@ def install_fake_openhands(monkeypatch: Any) -> types.SimpleNamespace:
         ConversationErrorEvent=ConversationErrorEvent,
         Conversation=Conversation,
         LLM=LLM,
+        ImageContent=ImageContent,
+        Message=Message,
+        TextContent=TextContent,
     )
