@@ -1,10 +1,14 @@
 /* SPDX-License-Identifier: AGPL-3.0-only */
 /* Copyright (c) 2026 sol pbc */
 
-.daygrid {
+.daygrid,
+.daygrid-legend {
   --daygrid-cell: 13px;
   --daygrid-gap: 3px;
   --daygrid-radius: 3px;
+}
+
+.daygrid {
   position: relative;
   display: grid;
   gap: var(--space-3);
@@ -23,9 +27,53 @@
 
 .daygrid-body {
   display: grid;
-  gap: var(--space-1);
+  gap: var(--space-4);
   width: max-content;
   min-width: 100%;
+}
+
+.daygrid-year-block {
+  display: grid;
+  grid-template-columns: max-content auto;
+  align-items: start;
+  width: max-content;
+  min-width: 100%;
+}
+
+.daygrid-gutter {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: grid;
+  grid-template-rows: 18px auto;
+  gap: var(--space-1);
+  padding-right: var(--space-2);
+  background: var(--paper);
+  color: var(--ink-faint-paper);
+  font-size: var(--text-min);
+  line-height: 1;
+}
+
+.daygrid-year-label {
+  align-self: end;
+  font-weight: var(--weight-medium);
+}
+
+.daygrid-weekdays {
+  display: grid;
+  grid-template-rows: repeat(7, var(--daygrid-cell));
+  gap: var(--daygrid-gap);
+}
+
+.daygrid-weekday-label {
+  display: grid;
+  align-items: center;
+  min-width: 28px;
+}
+
+.daygrid-year-grid {
+  display: grid;
+  gap: var(--space-1);
 }
 
 .daygrid-months {
@@ -100,14 +148,16 @@
 }
 
 .daygrid-cell--pending {
-  border-color: var(--warn);
-  background: repeating-linear-gradient(
-    135deg,
-    var(--warn-wash) 0,
-    var(--warn-wash) 3px,
-    var(--cream-bright) 3px,
-    var(--cream-bright) 6px
-  );
+  border-color: var(--hairline-2);
+  background: var(--cream-bright);
+}
+
+.daygrid-cell--pending::after {
+  content: "";
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--ink-faint-paper);
 }
 
 .daygrid-cell--empty {
@@ -120,7 +170,7 @@
 }
 
 .daygrid-cell--today {
-  outline: 2px solid var(--focus);
+  outline: 1px solid var(--ink-faint-paper);
   outline-offset: 1px;
 }
 
@@ -165,19 +215,26 @@
   );
 }
 
+.daygrid-legend-swatch--empty {
+  background: var(--paper);
+}
+
 .daygrid-legend-pending-mark {
-  display: inline-block;
+  display: inline-grid;
+  place-items: center;
   width: var(--daygrid-cell);
   height: var(--daygrid-cell);
-  border: 1px solid var(--warn);
+  border: 1px solid var(--hairline-2);
   border-radius: var(--daygrid-radius);
-  background: repeating-linear-gradient(
-    135deg,
-    var(--warn-wash) 0,
-    var(--warn-wash) 3px,
-    var(--cream-bright) 3px,
-    var(--cream-bright) 6px
-  );
+  background: var(--cream-bright);
+}
+
+.daygrid-legend-pending-mark::after {
+  content: "";
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--ink-faint-paper);
 }
 
 .daygrid-peek {
@@ -197,8 +254,26 @@
   white-space: nowrap;
 }
 
+.daygrid-peek[hidden] {
+  display: none;
+}
+
+.daygrid-peek-open {
+  pointer-events: auto;
+  color: var(--focus);
+  font-weight: var(--weight-medium);
+  text-decoration: none;
+}
+
+.daygrid-peek-open:hover,
+.daygrid-peek-open:focus-visible {
+  outline: 0;
+  text-decoration: underline;
+}
+
 @media (max-width: 768px) {
-  .daygrid {
+  .daygrid,
+  .daygrid-legend {
     --daygrid-cell: 12px;
     --daygrid-gap: 3px;
   }

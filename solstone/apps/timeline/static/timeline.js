@@ -833,8 +833,8 @@ async function renderAllHistory() {
     timeline.innerHTML = renderErrorState();
     return;
   }
-  const gate = window.DayGrid.gate(gridData, { minSpanDays: 70, minActiveDays: 14 });
-  if (!gate.ok) {
+  const summary = allHistorySummary(gridData, unit);
+  if (summary.activeDays === 0) {
     timeline.innerHTML = renderEmptyState(
       "no timeline data yet",
       "once sol experiences a day alongside you and keeps it in your journal, that day will show up here",
@@ -842,7 +842,6 @@ async function renderAllHistory() {
     );
     return;
   }
-  const summary = allHistorySummary(gridData, unit);
 
   timeline.innerHTML = `
     <div class="timeline-history-view">
@@ -856,13 +855,17 @@ async function renderAllHistory() {
   `;
   const host = timeline.querySelector("[data-timeline-daygrid]");
   const legendHost = timeline.querySelector("[data-timeline-daygrid-legend]");
-  window.DayGrid.mount(host, {
+  const mounted = window.DayGrid.mount(host, {
     data: gridData,
     unit,
     mode: "navigate",
     appPath: "/app/timeline",
     monthLinks: true,
   });
+  if (!mounted) {
+    timeline.innerHTML = renderErrorState();
+    return;
+  }
   window.DayGrid.legend(legendHost, { unit });
 }
 

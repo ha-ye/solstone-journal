@@ -8,6 +8,7 @@
     'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
   ];
+  const WEEKDAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
   const DAY_RE = /^\d{8}$/;
   const DAY_ATTR = 'data-daygrid-date';
   const stateByHost = new WeakMap();
@@ -132,7 +133,7 @@
 
   function monthLabel(month) {
     const index = Number(month.slice(4, 6)) - 1;
-    return `${MONTH_SHORT[index]} ${month.slice(0, 4)}`;
+    return MONTH_SHORT[index];
   }
 
   function firstOfMonth(day) {
@@ -168,21 +169,27 @@
     return { start: startIndex, length: Math.max(1, endIndex - startIndex + 1) };
   }
 
-  function renderMonthLabels(data, config, gridStart) {
+  function yearDay(year, suffix) {
+    return `${String(year).padStart(4, '0')}${suffix}`;
+  }
+
+  function saturdayOf(day) {
+    const sunday = sundayOf(day);
+    return sunday ? addDays(sunday, 6) : null;
+  }
+
+  function renderMonthLabels(block, config) {
     const row = document.createElement('div');
     row.className = 'daygrid-months';
     if (!config.monthLinks) row.setAttribute('aria-hidden', 'true');
 
-    const start = data.coverage.start;
-    const end = data.coverage.end;
-    let month = start.slice(0, 6);
-    while (month <= end.slice(0, 6)) {
+    let month = `${String(block.year).padStart(4, '0')}01`;
+    const lastMonth = `${String(block.year).padStart(4, '0')}12`;
+    while (month <= lastMonth) {
       const monthStart = `${month}01`;
       const monthEnd = lastOfMonth(monthStart);
-      const labelStart = monthStart < start ? start : monthStart;
-      const labelEnd = monthEnd && monthEnd > end ? end : monthEnd;
-      if (labelEnd) {
-        const weeks = spanWeeks(gridStart, labelStart, labelEnd);
+      if (monthEnd) {
+        const weeks = spanWeeks(block.gridStart, monthStart, monthEnd);
         const label = config.monthLinks
           ? document.createElement('a')
           : document.createElement('span');
@@ -213,7 +220,10 @@
     const less = document.createElement('span');
     less.textContent = 'less';
     scale.appendChild(less);
-    [0, 0.33, 0.66, 1].forEach((heat) => {
+    const empty = document.createElement('span');
+    empty.className = 'daygrid-legend-swatch daygrid-legend-swatch--empty';
+    scale.appendChild(empty);
+    [0.15, 0.45, 0.72, 1].forEach((heat) => {
       const swatch = document.createElement('span');
       swatch.className = 'daygrid-legend-swatch';
       swatch.style.setProperty('--daygrid-heat', String(heat));
@@ -241,61 +251,86 @@
   function buildCells(data, config, today) {
     const start = data.coverage.start;
     const end = data.coverage.end;
-    const gridStart = sundayOf(start);
-    const endSunday = sundayOf(end);
-    const gridEnd = endSunday ? addDays(endSunday, 6) : null;
-    if (!gridStart || !gridEnd) return null;
+    const startYear = Number(start.slice(0, 4));
+    const endYear = Number(end.slice(0, 4));
+    if (!Number.isInteger(startYear) || !Number.isInteger(endYear)) return null;
 
     const nav = dateNav();
     const maxCount = maxRolledCount(data);
-    const cells = [];
-    let cursor = gridStart;
-    while (cursor <= gridEnd) {
-      const inCoverage = cursor >= start && cursor <= end;
-      const isRolled = inCoverage && own(data.days, cursor);
-      const isPending = inCoverage && own(data.pending, cursor);
-      const rawCount = isRolled ? data.days[cursor] : data.pending?.[cursor];
-      const count = nav.coerceCount(rawCount);
-      let cell;
-      if (!inCoverage) {
-        cell = document.createElement('span');
-        cell.className = 'daygrid-cell daygrid-cell--pad';
-        cell.setAttribute('aria-hidden', 'true');
-      } else if ((isRolled || isPending) && count > 0) {
-        cell = document.createElement('a');
-        cell.className = 'daygrid-cell';
-        cell.setAttribute(DAY_ATTR, cursor);
-        cell.textContent = String(Number(cursor.slice(6, 8)));
-        cell.href = joinPath(config.appPath, cursor);
-        if (cursor === today) cell.classList.add('daygrid-cell--today');
-        if (isRolled) {
-          cell.classList.add('daygrid-cell--data');
-          cell.style.setProperty('--daygrid-heat', String(nav.heatIntensity(count, maxCount)));
+    const blocks = [];
+    const focusable = [];
+
+    for (let year = endYear; year >= startYear; year -= 1) {
+      const gridStart = sundayOf(yearDay(year, '0101'));
+      const gridEnd = saturdayOf(yearDay(year, '1231'));
+      if (!gridStart || !gridEnd) return null;
+
+      const block = {
+        year,
+        gridStart,
+        gridEnd,
+        cells: [],
+        rowItemsByWeekday: [[], [], [], [], [], [], []],
+      };
+
+      let cursor = gridStart;
+      while (cursor <= gridEnd) {
+        const cursorYear = Number(cursor.slice(0, 4));
+        const inCoverage = cursorYear === year && cursor >= start && cursor <= end;
+        const isRolled = inCoverage && own(data.days, cursor);
+        const isPending = inCoverage && own(data.pending, cursor);
+        const rawCount = isRolled ? data.days[cursor] : data.pending?.[cursor];
+        const count = nav.coerceCount(rawCount);
+        const date = dateFromDay(cursor);
+        if (!date) return null;
+        const weekday = date.getDay();
+        let cell;
+        if (!inCoverage) {
+          cell = document.createElement('span');
+          cell.className = 'daygrid-cell daygrid-cell--pad';
+          cell.setAttribute('aria-hidden', 'true');
+        } else if ((isRolled || isPending) && count > 0) {
+          cell = document.createElement('a');
+          cell.className = 'daygrid-cell';
+          cell.setAttribute(DAY_ATTR, cursor);
+          cell.textContent = String(Number(cursor.slice(6, 8)));
+          cell.href = joinPath(config.appPath, cursor);
+          if (cursor === today) cell.classList.add('daygrid-cell--today');
+          if (isRolled) {
+            cell.classList.add('daygrid-cell--data');
+            cell.style.setProperty('--daygrid-heat', String(nav.heatIntensity(count, maxCount)));
+          } else {
+            cell.classList.add('daygrid-cell--pending');
+          }
+          const label = cellLabel(cursor, count, config.unit, isPending && !isRolled);
+          cell.setAttribute('aria-label', label);
+          cell.title = label;
+          cell.tabIndex = -1;
         } else {
-          cell.classList.add('daygrid-cell--pending');
+          cell = document.createElement('span');
+          cell.className = 'daygrid-cell daygrid-cell--empty';
+          cell.setAttribute(DAY_ATTR, cursor);
+          cell.setAttribute('role', 'button');
+          cell.setAttribute('aria-disabled', 'true');
+          cell.textContent = String(Number(cursor.slice(6, 8)));
+          if (cursor === today) cell.classList.add('daygrid-cell--today');
+          const label = cellLabel(cursor, 0, config.unit, false);
+          cell.setAttribute('aria-label', label);
+          cell.title = label;
+          cell.tabIndex = -1;
         }
-        const label = cellLabel(cursor, count, config.unit, isPending && !isRolled);
-        cell.setAttribute('aria-label', label);
-        cell.title = label;
-        cell.tabIndex = -1;
-      } else {
-        cell = document.createElement('span');
-        cell.className = 'daygrid-cell daygrid-cell--empty';
-        cell.setAttribute(DAY_ATTR, cursor);
-        cell.setAttribute('role', 'button');
-        cell.setAttribute('aria-disabled', 'true');
-        cell.textContent = String(Number(cursor.slice(6, 8)));
-        if (cursor === today) cell.classList.add('daygrid-cell--today');
-        const label = cellLabel(cursor, 0, config.unit, false);
-        cell.setAttribute('aria-label', label);
-        cell.title = label;
-        cell.tabIndex = -1;
+        const item = { day: cursor, element: cell, inCoverage, block, weekday };
+        block.cells.push(item);
+        if (inCoverage) {
+          block.rowItemsByWeekday[weekday].push(item);
+          focusable.push(item);
+        }
+        cursor = addDays(cursor, 1);
+        if (!cursor) break;
       }
-      cells.push({ day: cursor, element: cell, inCoverage });
-      cursor = addDays(cursor, 1);
-      if (!cursor) break;
+      blocks.push(block);
     }
-    return { cells, gridStart };
+    return { blocks, focusable };
   }
 
   function clamp(value, min, max) {
@@ -318,6 +353,46 @@
       throw new Error('DayGrid.mount requires appPath');
     }
     return config;
+  }
+
+  function renderGutter(block) {
+    const gutter = document.createElement('div');
+    gutter.className = 'daygrid-gutter';
+    gutter.setAttribute('aria-hidden', 'true');
+
+    const year = document.createElement('span');
+    year.className = 'daygrid-year-label';
+    year.textContent = String(block.year);
+
+    const weekdays = document.createElement('div');
+    weekdays.className = 'daygrid-weekdays';
+    WEEKDAY_SHORT.forEach((label, index) => {
+      const item = document.createElement('span');
+      item.className = 'daygrid-weekday-label';
+      item.textContent = [1, 3, 5].includes(index) ? label : '';
+      weekdays.appendChild(item);
+    });
+
+    gutter.append(year, weekdays);
+    return gutter;
+  }
+
+  function renderBlock(block, config) {
+    const row = document.createElement('section');
+    row.className = 'daygrid-year-block';
+    row.setAttribute('aria-label', `${block.year} calendar`);
+
+    const grid = document.createElement('div');
+    grid.className = 'daygrid-year-grid';
+    grid.appendChild(renderMonthLabels(block, config));
+
+    const track = document.createElement('div');
+    track.className = 'daygrid-track';
+    for (const item of block.cells) track.appendChild(item.element);
+    grid.appendChild(track);
+
+    row.append(renderGutter(block), grid);
+    return row;
   }
 
   function mount(host, options = {}) {
@@ -352,12 +427,7 @@
 
     const body = document.createElement('div');
     body.className = 'daygrid-body';
-    body.appendChild(renderMonthLabels(data, config, built.gridStart));
-
-    const grid = document.createElement('div');
-    grid.className = 'daygrid-track';
-    for (const item of built.cells) grid.appendChild(item.element);
-    body.appendChild(grid);
+    for (const block of built.blocks) body.appendChild(renderBlock(block, config));
     scroller.appendChild(body);
 
     const peek = document.createElement('div');
@@ -366,10 +436,14 @@
     root.append(scroller, peek);
     host.appendChild(root);
 
-    const focusable = built.cells.filter((item) => item.inCoverage);
+    const focusable = built.focusable;
     const byDay = new Map(focusable.map((item) => [item.day, item]));
     let active = byDay.get(targetDay) || focusable[0] || null;
     let peekCell = null;
+    let armedCell = null;
+    const coarsePointer = Boolean(
+      window.matchMedia && window.matchMedia('(pointer: coarse)').matches
+    );
 
     function applyTabStop(next, shouldFocus) {
       if (!next) return;
@@ -398,6 +472,7 @@
     function hidePeek() {
       peek.hidden = true;
       peekCell = null;
+      armedCell = null;
     }
 
     function showPeek(cell) {
@@ -406,7 +481,17 @@
       const isRolled = own(data.days, day);
       const isPending = own(data.pending, day);
       const count = isRolled ? data.days[day] : data.pending?.[day] || 0;
-      peek.textContent = cellLabel(day, count, config.unit, isPending && !isRolled);
+      const label = cellLabel(day, count, config.unit, isPending && !isRolled);
+      const text = document.createElement('span');
+      text.textContent = label;
+      peek.replaceChildren(text);
+      if (cell.matches('a[href]')) {
+        const open = document.createElement('a');
+        open.className = 'daygrid-peek-open';
+        open.href = cell.href;
+        open.textContent = 'open →';
+        peek.appendChild(open);
+      }
       peek.hidden = false;
       peekCell = cell;
       const rootRect = root.getBoundingClientRect();
@@ -417,7 +502,13 @@
         Math.max(12, rootRect.width - 12)
       );
       peek.style.left = `${left}px`;
-      peek.style.top = `${Math.max(0, scroller.offsetTop - 34)}px`;
+      const peekHeight = peek.offsetHeight || 0;
+      const top = clamp(
+        cellRect.top - rootRect.top - peekHeight - 6,
+        0,
+        Math.max(0, rootRect.height - peekHeight)
+      );
+      peek.style.top = `${top}px`;
     }
 
     root.addEventListener('keydown', (event) => {
@@ -425,6 +516,27 @@
       if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
         event.preventDefault();
         moveFocus(event.key);
+        return;
+      }
+      if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        const item = byDay.get(event.target.closest(`.daygrid-cell[${DAY_ATTR}]`).getAttribute(DAY_ATTR)) || active;
+        const row = item?.block?.rowItemsByWeekday?.[item.weekday] || [];
+        const next = event.key === 'Home' ? row[0] : row[row.length - 1];
+        applyTabStop(next || item, true);
+        return;
+      }
+      if (
+        event.key.toLowerCase() === 't' &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        const todayItem = byDay.get(config.today);
+        if (todayItem) {
+          event.preventDefault();
+          applyTabStop(todayItem, true);
+        }
         return;
       }
       if (
@@ -436,9 +548,26 @@
     }, { signal });
 
     root.addEventListener('click', (event) => {
-      if (event.target.closest('.daygrid-cell--empty')) {
+      if (event.target.closest('.daygrid-peek-open')) return;
+      const cell = event.target.closest(`.daygrid-cell[${DAY_ATTR}]`);
+      if (!cell) return;
+      if (cell.closest('.daygrid-cell--empty')) {
         event.preventDefault();
-        event.stopPropagation();
+        if (coarsePointer && event.detail > 0) {
+          armedCell = cell;
+          showPeek(cell);
+        }
+        return;
+      }
+      if (
+        coarsePointer &&
+        event.detail > 0 &&
+        cell.matches('.daygrid-cell[href]') &&
+        armedCell !== cell
+      ) {
+        event.preventDefault();
+        armedCell = cell;
+        showPeek(cell);
       }
     }, { signal });
 
@@ -467,6 +596,14 @@
     scroller.addEventListener('scroll', () => {
       if (peekCell && !peek.hidden) showPeek(peekCell);
     }, { signal, passive: true });
+
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') hidePeek();
+    }, { signal });
+
+    document.addEventListener('pointerdown', (event) => {
+      if (!root.contains(event.target)) hidePeek();
+    }, { signal });
 
     applyTabStop(active, false);
 

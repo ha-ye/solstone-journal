@@ -4,8 +4,8 @@
 <title>day-grid.js smoke</title>
 <style>
   body { font: 14px/1.4 sans-serif; padding: 16px; }
-  .pass { color: #166534; }
-  .fail { color: #b91c1c; }
+  .pass { color: var(--success-ink); }
+  .fail { color: var(--danger); }
   #fixture { max-width: 640px; }
 </style>
 <link rel="stylesheet" href="../tokens.css">
@@ -13,13 +13,16 @@
 <h1>day-grid.js smoke</h1>
 <div id="results"></div>
 <div id="fixture"></div>
+<div id="outside">outside target</div>
 <script src="../date_format.js"></script>
 <script src="../date-nav.js"></script>
 <script src="../day-grid.js"></script>
 <script>
   const results = document.getElementById('results');
   const fixture = document.getElementById('fixture');
+  const outside = document.getElementById('outside');
   const unit = { one: 'segment', other: 'segments', none: 'no segments' };
+  const nativeMatchMedia = window.matchMedia;
   let failures = 0;
 
   function assert(name, condition, detail) {
@@ -46,6 +49,32 @@
       String(date.getDate()).padStart(2, '0');
   }
 
+  function sundayOf(day) {
+    const date = new Date(
+      Number(day.slice(0, 4)),
+      Number(day.slice(4, 6)) - 1,
+      Number(day.slice(6, 8))
+    );
+    date.setDate(date.getDate() - date.getDay());
+    return String(date.getFullYear()).padStart(4, '0') +
+      String(date.getMonth() + 1).padStart(2, '0') +
+      String(date.getDate()).padStart(2, '0');
+  }
+
+  function saturdayOf(day) {
+    return addDays(sundayOf(day), 6);
+  }
+
+  function daysInSpan(start, end) {
+    let count = 1;
+    let cursor = start;
+    while (cursor !== end) {
+      cursor = addDays(cursor, 1);
+      count += 1;
+    }
+    return count;
+  }
+
   function spanDays(start, count, value = 1) {
     const out = {};
     let day = start;
@@ -56,10 +85,47 @@
     return out;
   }
 
-  function mount(data, opts = {}) {
+  function frame() {
+    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+  }
+
+  function setPointer(coarse) {
+    window.matchMedia = (query) => ({
+      matches: query === '(pointer: coarse)' ? coarse : Boolean(nativeMatchMedia?.(query)?.matches),
+      media: query,
+      onchange: null,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      dispatchEvent() { return false; },
+    });
+  }
+
+  function resetPointer() {
+    window.matchMedia = nativeMatchMedia;
+  }
+
+  function createHost() {
     fixture.replaceChildren();
     const host = document.createElement('div');
     fixture.appendChild(host);
+    return host;
+  }
+
+  function mount(data, opts = {}) {
+    const host = createHost();
+    const root = window.DayGrid.mount(host, {
+      data,
+      unit,
+      mode: 'navigate',
+      appPath: '/app/timeline',
+      ...opts
+    });
+    return { host, root };
+  }
+
+  function mountInHost(host, data, opts = {}) {
     return window.DayGrid.mount(host, {
       data,
       unit,
@@ -69,11 +135,49 @@
     });
   }
 
-  function keydown(target, key) {
-    target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+  function keydownEvent(target, init) {
+    const event = new KeyboardEvent('keydown', {
+      bubbles: true,
+      cancelable: true,
+      ...init
+    });
+    target.dispatchEvent(event);
+    return event;
   }
 
-  function run() {
+  function keydown(target, key) {
+    return keydownEvent(target, { key });
+  }
+
+  function clickObserved(host, target, detail = 1) {
+    let observed = null;
+    host.addEventListener('click', (event) => {
+      observed = { defaultPrevented: event.defaultPrevented };
+      if (event.target.closest('a[href]')) event.preventDefault();
+    }, { once: true });
+    const event = new MouseEvent('click', { bubbles: true, cancelable: true, detail });
+    target.dispatchEvent(event);
+    return observed;
+  }
+
+  function tapObserved(host, cell) {
+    cell.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, detail: 0 }));
+    return clickObserved(host, cell, 1);
+  }
+
+  function multiYearData() {
+    return {
+      coverage: { start: '20241230', end: '20260102' },
+      days: {
+        20241231: 2,
+        20250107: 3,
+        20260102: 4,
+      },
+      pending: { 20250108: 1 }
+    };
+  }
+
+  async function run() {
     equal('public keys', Object.keys(window.DayGrid).join(','), 'mount,legend,gate');
 
     const short = window.DayGrid.gate({
@@ -97,128 +201,197 @@
     }, { minSpanDays: 70, minActiveDays: 14 });
     assert('gate accepts enough data', ok.ok === true);
 
-    let root = mount({
-      coverage: { start: '20260101', end: '20260320' },
-      days: spanDays('20260101', 14),
+    let mounted = mount(multiYearData(), { today: '20260102', monthLinks: true });
+    let root = mounted.root;
+    await frame();
+    const blocks = Array.from(root.querySelectorAll('.daygrid-year-block'));
+    equal('three year blocks', blocks.length, 3);
+    equal('blocks newest first', blocks.map((block) => block.querySelector('.daygrid-year-label').textContent).join(','), '2026,2025,2024');
+    for (const block of blocks) {
+      const year = block.querySelector('.daygrid-year-label').textContent;
+      const expected = daysInSpan(sundayOf(`${year}0101`), saturdayOf(`${year}1231`));
+      equal(`calendar true cell count ${year}`, block.querySelectorAll('.daygrid-track > .daygrid-cell').length, expected);
+    }
+    equal('boundary Dec 31 unique', root.querySelectorAll('[data-daygrid-date="20241231"]').length, 1);
+    equal('boundary Jan 1 unique', root.querySelectorAll('[data-daygrid-date="20250101"]').length, 1);
+
+    const labels = Array.from(root.querySelectorAll('.daygrid-months a'));
+    assert('month labels are bare months', labels.every((label) => /^[A-Z][a-z]{2}$/.test(label.textContent)));
+    equal('month href keeps YYYYMM', labels[0].getAttribute('href'), '/app/timeline/202601');
+
+    const target = root.querySelector(`[data-daygrid-date="${root.__dayGridScrollTarget}"]`);
+    const scroller = root.querySelector('.daygrid-scroller');
+    assert(
+      'scroll anchor target visible',
+      target.offsetLeft >= scroller.scrollLeft &&
+        target.offsetLeft + target.offsetWidth <= scroller.scrollLeft + scroller.clientWidth,
+      `target ${target.offsetLeft}-${target.offsetLeft + target.offsetWidth}, visible ${scroller.scrollLeft}-${scroller.scrollLeft + scroller.clientWidth}`
+    );
+
+    const dec31 = root.querySelector('[data-daygrid-date="20241231"]');
+    dec31.focus();
+    keydown(dec31, 'ArrowRight');
+    equal('cross-block right keeps weekday', document.activeElement.dataset.daygridDate, '20250107');
+    keydown(document.activeElement, 'ArrowLeft');
+    equal('cross-block left keeps weekday', document.activeElement.dataset.daygridDate, '20241231');
+
+    const juneWednesday = root.querySelector('[data-daygrid-date="20250604"]');
+    juneWednesday.focus();
+    keydown(juneWednesday, 'Home');
+    equal('home lands on first in-coverage weekday cell', document.activeElement.dataset.daygridDate, '20250101');
+    keydown(document.activeElement, 'End');
+    equal('end lands on last in-coverage weekday cell', document.activeElement.dataset.daygridDate, '20251231');
+
+    const modifiedT = keydownEvent(document.activeElement, { key: 't', ctrlKey: true });
+    equal('ctrl t does not move focus', document.activeElement.dataset.daygridDate, '20251231');
+    equal('ctrl t is not prevented', modifiedT.defaultPrevented, false);
+    keydown(document.activeElement, 't');
+    equal('t focuses today', document.activeElement.dataset.daygridDate, '20260102');
+    mounted = mount(multiYearData(), { today: '20270101' });
+    root = mounted.root;
+    const beforeT = root.querySelector('[data-daygrid-date="20250107"]');
+    beforeT.focus();
+    keydown(beforeT, 't');
+    equal('t outside coverage is no-op', document.activeElement.dataset.daygridDate, '20250107');
+
+    mounted = mount({
+      coverage: { start: '20260101', end: '20260105' },
+      days: { 20260101: 1 },
+      pending: { 20260103: 2 }
+    }, { today: '20260101' });
+    root = mounted.root;
+    const pending = root.querySelector('[data-daygrid-date="20260103"]');
+    assert('pending class present', pending.classList.contains('daygrid-cell--pending'));
+    const pendingStyle = getComputedStyle(pending);
+    equal('pending neutral border', pendingStyle.borderTopColor, 'rgb(226, 215, 191)');
+    equal('pending neutral dot', getComputedStyle(pending, '::after').backgroundColor, 'rgb(118, 118, 118)');
+    equal('pending has no heat value', pending.style.getPropertyValue('--daygrid-heat'), '');
+
+    const today = root.querySelector('[data-daygrid-date="20260101"]');
+    const todayStyle = getComputedStyle(today);
+    equal('today quiet outline width', todayStyle.outlineWidth, '1px');
+    equal('today quiet outline color', todayStyle.outlineColor, 'rgb(118, 118, 118)');
+    today.focus();
+    keydown(today, 'ArrowDown');
+    const focusStyle = getComputedStyle(document.activeElement);
+    equal('focus outline width', focusStyle.outlineWidth, '2px');
+    equal('focus outline color', focusStyle.outlineColor, 'rgb(176, 106, 26)');
+
+    const legendHost = document.createElement('div');
+    document.body.appendChild(legendHost);
+    window.DayGrid.legend(legendHost, { unit });
+    const swatches = Array.from(legendHost.querySelectorAll('.daygrid-legend-swatch'));
+    equal('legend swatch count', swatches.length, 5);
+    assert('legend first swatch true empty', swatches[0].classList.contains('daygrid-legend-swatch--empty'));
+    equal('legend heat samples', swatches.slice(1).map((swatch) => swatch.style.getPropertyValue('--daygrid-heat')).join(','), '0.15,0.45,0.72,1');
+    assert('legend swatches have width outside grid', swatches.every((swatch) => parseFloat(getComputedStyle(swatch).width) > 0));
+    assert('legend swatches have height outside grid', swatches.every((swatch) => parseFloat(getComputedStyle(swatch).height) > 0));
+
+    setPointer(true);
+    mounted = mount({
+      coverage: { start: '20260101', end: '20260108' },
+      days: { 20260101: 1, 20260102: 1 },
       pending: {}
-    }, { today: '20260202' });
-    equal('scroll target today in coverage', root.__dayGridScrollTarget, '20260202');
+    }, { today: '20260101' });
+    root = mounted.root;
+    let cell = root.querySelector('[data-daygrid-date="20260101"]');
+    let secondCell = root.querySelector('[data-daygrid-date="20260102"]');
+    let observed = tapObserved(mounted.host, cell);
+    assert('coarse first tap prevented', observed?.defaultPrevented === true);
+    assert('coarse first tap peeks', root.querySelector('.daygrid-peek').hidden === false);
+    observed = clickObserved(mounted.host, cell, 1);
+    assert('coarse second tap navigates', observed?.defaultPrevented === false);
+    tapObserved(mounted.host, cell);
+    observed = tapObserved(mounted.host, secondCell);
+    assert('different cell mid-peek re-peeks', observed?.defaultPrevented === true);
+    equal('different cell peek text', root.querySelector('.daygrid-peek').textContent.includes('2026-01-02'), true);
+    observed = clickObserved(mounted.host, root.querySelector('.daygrid-peek-open'), 1);
+    assert('peek open navigates', observed?.defaultPrevented === false);
+    tapObserved(mounted.host, cell);
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert('escape dismisses peek', root.querySelector('.daygrid-peek').hidden === true);
+    tapObserved(mounted.host, cell);
+    outside.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    outside.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }));
+    assert('outside tap dismisses peek', root.querySelector('.daygrid-peek').hidden === true);
+    observed = clickObserved(mounted.host, cell, 0);
+    assert('keyboard click navigates when coarse', observed?.defaultPrevented === false);
 
-    root = mount({
-      coverage: { start: '20260101', end: '20260320' },
-      days: { 20260101: 1, 20260215: 2 },
-      pending: { 20260310: 3 }
-    }, { today: '20260401' });
-    equal('scroll target newest data fallback', root.__dayGridScrollTarget, '20260310');
+    setPointer(false);
+    mounted = mount({
+      coverage: { start: '20260101', end: '20260108' },
+      days: { 20260101: 1 },
+      pending: {}
+    }, { today: '20260101' });
+    root = mounted.root;
+    cell = root.querySelector('[data-daygrid-date="20260101"]');
+    observed = clickObserved(mounted.host, cell, 1);
+    assert('fine pointer first click navigates', observed?.defaultPrevented === false);
+    resetPointer();
 
-    root = mount({
+    mounted = mount(multiYearData(), { today: '20260102' });
+    root = mounted.root;
+    const bottomCell = root.querySelector('[data-daygrid-date="20241231"]');
+    bottomCell.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true }));
+    const peek = root.querySelector('.daygrid-peek');
+    const rootRect = root.getBoundingClientRect();
+    const cellRect = bottomCell.getBoundingClientRect();
+    const firstBlockBottom = root.querySelector('.daygrid-year-block').getBoundingClientRect().bottom - rootRect.top;
+    const peekTop = parseFloat(peek.style.top);
+    assert('peek placement follows bottom block row', peekTop > firstBlockBottom && peekTop < cellRect.top - rootRect.top);
+
+    setPointer(true);
+    const host = createHost();
+    root = mountInHost(host, {
+      coverage: { start: '20260101', end: '20260108' },
+      days: { 20260101: 1 },
+      pending: {}
+    }, { today: '20260101' });
+    cell = root.querySelector('[data-daygrid-date="20260101"]');
+    tapObserved(host, cell);
+    root = mountInHost(host, {
+      coverage: { start: '20260101', end: '20260108' },
+      days: { 20260101: 1 },
+      pending: {}
+    }, { today: '20260101' });
+    equal('remount keeps one root', host.querySelectorAll('.daygrid').length, 1);
+    cell = root.querySelector('[data-daygrid-date="20260101"]');
+    observed = tapObserved(host, cell);
+    assert('remount clears stale armed cell', observed?.defaultPrevented === true);
+    resetPointer();
+
+    mounted = mount({
       coverage: { start: '20261101', end: '20261108' },
       days: spanDays('20261101', 8),
       pending: {}
     }, { today: '20261201' });
+    root = mounted.root;
     const dstDays = Array.from(root.querySelectorAll('[data-daygrid-date]'))
-      .map((cell) => cell.dataset.daygridDate)
+      .map((node) => node.dataset.daygridDate)
       .filter((day) => day >= '20261101' && day <= '20261108');
     equal('DST fallback week has eight dates', dstDays.length, 8);
     equal('DST fallback week is unique', new Set(dstDays).size, 8);
 
-    root = mount({
-      coverage: { start: '20260101', end: '20260105' },
-      days: { 20260101: 1, 20260102: 4 },
-      pending: { 20260103: 100 }
-    }, { today: '20260101' });
-    equal(
-      'heat max excludes pending',
-      root.querySelector('[data-daygrid-date="20260102"]').style.getPropertyValue('--daygrid-heat'),
-      String(window.DateNav.heatIntensity(4, 4))
-    );
-    equal(
-      'pending has no heat value',
-      root.querySelector('[data-daygrid-date="20260103"]').style.getPropertyValue('--daygrid-heat'),
-      ''
-    );
-
-    root = mount({
+    mounted = mount({
       coverage: { start: '20260101', end: '20260105' },
       days: { 20260101: 1 },
       pending: {}
     }, { today: '20260101', monthLinks: true });
+    root = mounted.root;
     equal('active day href', root.querySelector('[data-daygrid-date="20260101"]').getAttribute('href'), '/app/timeline/20260101');
     equal('month label href', root.querySelector('.daygrid-months a').getAttribute('href'), '/app/timeline/202601');
-
-    const legendHost = document.createElement('div');
-    window.DayGrid.legend(legendHost, { unit });
-    assert('legend mounts into host', Boolean(legendHost.querySelector('.daygrid-legend')));
-
-    const firstHost = fixture.firstElementChild;
-    let activeClicks = 0;
-    firstHost.addEventListener('click', (event) => {
-      const link = event.target.closest('.daygrid-cell[href]');
-      if (link) {
-        event.preventDefault();
-        activeClicks += 1;
-      }
-    });
-    window.DayGrid.mount(firstHost, {
-      data: {
-        coverage: { start: '20260101', end: '20260105' },
-        days: { 20260101: 1 },
-        pending: {}
-      },
-      unit,
-      mode: 'navigate',
-      appPath: '/app/timeline',
-      today: '20260101'
-    });
-    window.DayGrid.mount(firstHost, {
-      data: {
-        coverage: { start: '20260101', end: '20260105' },
-        days: { 20260101: 1 },
-        pending: {}
-      },
-      unit,
-      mode: 'navigate',
-      appPath: '/app/timeline',
-      today: '20260101'
-    });
-    equal('remount keeps one root', firstHost.querySelectorAll('.daygrid').length, 1);
-
-    root = firstHost.querySelector('.daygrid');
-    const pad = root.querySelector('.daygrid-cell--pad');
-    assert('pad hidden', pad?.getAttribute('aria-hidden') === 'true');
-    equal('pad not focusable', pad?.tabIndex, -1);
-
-    const empty = root.querySelector('[data-daygrid-date="20260102"]');
-    empty.focus();
-    keydown(empty, 'Enter');
-    empty.click();
-    equal('empty day does not activate', activeClicks, 0);
-    root.querySelector('[data-daygrid-date="20260101"]').click();
-    equal('active day activates', activeClicks, 1);
-
-    root = mount({
-      coverage: { start: '20260104', end: '20260110' },
-      days: { 20260104: 1, 20260110: 1 },
-      pending: {}
-    }, { today: '20260104' });
-    const sunday = root.querySelector('[data-daygrid-date="20260104"]');
-    sunday.focus();
-    keydown(sunday, 'ArrowUp');
-    equal('arrow up clamps on Sunday', document.activeElement.dataset.daygridDate, '20260104');
-    keydown(sunday, 'ArrowLeft');
-    equal('arrow left clamps at first week', document.activeElement.dataset.daygridDate, '20260104');
-    keydown(sunday, 'ArrowDown');
-    equal('arrow down moves within week', document.activeElement.dataset.daygridDate, '20260105');
-    const saturday = root.querySelector('[data-daygrid-date="20260110"]');
-    saturday.focus();
-    keydown(saturday, 'ArrowDown');
-    equal('arrow down clamps on Saturday', document.activeElement.dataset.daygridDate, '20260110');
 
     if (failures > 0) {
       throw new Error(`${failures} day-grid smoke assertion(s) failed`);
     }
   }
 
-  run();
+  run().catch((error) => {
+    const row = document.createElement('div');
+    row.className = 'fail';
+    row.textContent = `FAIL unhandled error - ${error.message}`;
+    results.appendChild(row);
+    throw error;
+  });
 </script>
 </html>

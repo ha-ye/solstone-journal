@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from solstone.convey.day_grid import build_day_grid_payload
 
 
@@ -67,3 +69,15 @@ def test_day_grid_payload_generalizes_to_apps_without_pending_days():
     assert payload["days"] == counts
     assert payload["pending"] == {}
     assert payload["coverage"] == {"start": "20400507", "end": "20400511"}
+
+
+def test_day_grid_css_uses_neutral_pending_marker():
+    css_path = (
+        Path(__file__).resolve().parents[1]
+        / "solstone"
+        / "convey"
+        / "static"
+        / "day-grid.css"
+    )
+
+    assert "--warn" not in css_path.read_text(encoding="utf-8")
