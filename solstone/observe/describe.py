@@ -54,6 +54,7 @@ from solstone.think.callosum import callosum_send
 from solstone.think.journal_io import install_file
 from solstone.think.markdown import bound_extraction_markdown
 from solstone.think.prompts import load_prompt
+from solstone.think.providers import fanout_policy
 from solstone.think.providers import state as provider_state
 from solstone.think.utils import (
     day_from_path,
@@ -688,7 +689,7 @@ class VideoProcessor:
 
     async def process_with_vision(
         self,
-        max_concurrent: int = 10,
+        max_concurrent: int,
         output_path: Optional[Path] = None,
         work_key: str | None = None,
     ) -> None:
@@ -703,7 +704,7 @@ class VideoProcessor:
         Parameters
         ----------
         max_concurrent : int
-            Maximum number of concurrent API requests (default: 10)
+            Maximum number of concurrent API requests.
         output_path : Optional[Path]
             Path to write JSONL output (when None, no output file is written)
         """
@@ -1257,8 +1258,8 @@ async def async_main():
         "-j",
         "--jobs",
         type=int,
-        default=10,
-        help="Max concurrent vision API requests (default: 10)",
+        default=None,
+        help="Max concurrent vision API requests (default: provider policy)",
     )
     parser.add_argument(
         "--frames-only",
@@ -1319,8 +1320,13 @@ async def async_main():
             output_qualified_frames(processor, qualified_frames)
         else:
             # New behavior: process with vision analysis
+            max_concurrent = (
+                args.jobs
+                if args.jobs is not None
+                else fanout_policy.describe_per_proc_jobs(1)
+            )
             await processor.process_with_vision(
-                max_concurrent=args.jobs,
+                max_concurrent=max_concurrent,
                 output_path=output_path,
                 work_key=work_key,
             )

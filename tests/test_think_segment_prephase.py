@@ -15,6 +15,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from solstone.think.providers import fanout_policy
 from tests.test_think_segment import _segment_configs, _write_sense_output
 
 DAY = "20240115"
@@ -187,11 +188,12 @@ def test_daily_health_log_keeps_segment_events_out(journal_copy, monkeypatch):
 
 def _forbid_slot_discovery(monkeypatch, mod):
     """Assert the non-local path never probes the local server."""
+    del mod
 
     def _unreachable() -> int:
         raise AssertionError("slot discovery must not run for non-local defaults")
 
-    monkeypatch.setattr(mod, "read_server_parallel_slots", _unreachable)
+    monkeypatch.setattr(fanout_policy, "read_server_parallel_slots", _unreachable)
 
 
 def _pin_describe_non_local(monkeypatch, mod):
@@ -200,7 +202,7 @@ def _pin_describe_non_local(monkeypatch, mod):
     The fixture journal resolves observe.* to google, but these tests assert an
     exact -j value; stub the predicate so they do not silently depend on that.
     """
-    monkeypatch.setattr(mod, "_describe_uses_local", lambda: False)
+    monkeypatch.setattr(fanout_policy, "_describe_uses_local", lambda: False)
     _forbid_slot_discovery(monkeypatch, mod)
 
 
@@ -211,12 +213,12 @@ def test_sense_repair_prephase_uses_default_describe_jobs(journal_copy, monkeypa
 
     _pin_describe_non_local(monkeypatch, mod)
 
-    monkeypatch.setattr(mod.os, "cpu_count", lambda: 16)
-    assert mod._default_describe_jobs() == 4
-    monkeypatch.setattr(mod.os, "cpu_count", lambda: 7)
-    assert mod._default_describe_jobs() == 1
-    monkeypatch.setattr(mod.os, "cpu_count", lambda: 8)
-    assert mod._default_describe_jobs() == 2
+    monkeypatch.setattr(fanout_policy.os, "cpu_count", lambda: 16)
+    assert fanout_policy.default_describe_jobs() == 4
+    monkeypatch.setattr(fanout_policy.os, "cpu_count", lambda: 7)
+    assert fanout_policy.default_describe_jobs() == 1
+    monkeypatch.setattr(fanout_policy.os, "cpu_count", lambda: 8)
+    assert fanout_policy.default_describe_jobs() == 2
 
     def fake_bounded(cmd, day, timeout=None):
         bounded_calls.append((cmd, day, timeout))
@@ -263,7 +265,7 @@ def test_daily_segment_prephase_timeout_is_nonfatal(journal_copy, monkeypatch):
 
     _patch_main_runtime(monkeypatch)
     _pin_describe_non_local(monkeypatch, mod)
-    monkeypatch.setattr(mod.os, "cpu_count", lambda: 16)
+    monkeypatch.setattr(fanout_policy.os, "cpu_count", lambda: 16)
     monkeypatch.setattr(mod, "run_bounded_phase", fake_bounded)
     monkeypatch.setattr(mod, "run_command", fake_command)
     monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
@@ -1573,21 +1575,21 @@ def test_segments_default_local_slot_fallback_logs_once_across_call_sites(
     journal = tmp_path / "journal"
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
     _patch_segment_run(monkeypatch, think, journal)
-    monkeypatch.setattr(think, "_segment_work_uses_local", lambda: True)
-    monkeypatch.setattr(think.os, "cpu_count", lambda: 12)
+    monkeypatch.setattr(fanout_policy, "_segment_work_uses_local", lambda: True)
+    monkeypatch.setattr(fanout_policy.os, "cpu_count", lambda: 12)
     monkeypatch.setattr("sys.argv", ["sol think", "--segments", "--day", DAY])
 
     assert not (journal / "health" / "local.port").exists()
 
     derived = []
-    original_default = think._default_segment_workers
+    original_default = fanout_policy.default_segment_workers
 
     def spy_default() -> int:
         value = original_default()
         derived.append(value)
         return value
 
-    monkeypatch.setattr(think, "_default_segment_workers", spy_default)
+    monkeypatch.setattr(fanout_policy, "default_segment_workers", spy_default)
 
     caplog.set_level(logging.INFO)
     with pytest.raises(SystemExit) as excinfo:
@@ -1621,10 +1623,10 @@ def test_segments_explicit_segment_workers_bypasses_local_default_at_call_site(
     _patch_segment_run(monkeypatch, think, journal)
 
     # The derived default would be 1; the CLI asks for 6.
-    monkeypatch.setattr(think, "_segment_work_uses_local", lambda: True)
-    monkeypatch.setattr(think, "read_server_parallel_slots", lambda: 1)
-    monkeypatch.setattr(think.os, "cpu_count", lambda: 12)
-    assert think._default_segment_workers() == 1
+    monkeypatch.setattr(fanout_policy, "_segment_work_uses_local", lambda: True)
+    monkeypatch.setattr(fanout_policy, "read_server_parallel_slots", lambda: 1)
+    monkeypatch.setattr(fanout_policy.os, "cpu_count", lambda: 12)
+    assert fanout_policy.default_segment_workers() == 1
 
     observed = []
     original_batch = think._run_segment_repair_batch

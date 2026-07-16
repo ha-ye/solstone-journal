@@ -166,11 +166,28 @@ _BYO_NETWORK_EXC_NAMES = frozenset(
 )
 
 
+_BYO_CAPACITY_EXC_NAMES = frozenset(
+    {
+        "ReadTimeout",
+        "PoolTimeout",
+        "TimeoutException",
+        "WriteTimeout",
+    }
+)
+
+
 def is_byo_network_error(exc: BaseException) -> bool:
     """True if the cause chain names a connection/timeout/network failure."""
 
     names = {type(item).__name__ for item in _exception_chain(exc)}
     return bool(_BYO_NETWORK_EXC_NAMES & names)
+
+
+def is_byo_capacity_error(exc: BaseException) -> bool:
+    """True if the cause chain names a serving-capacity timeout."""
+
+    names = {type(item).__name__ for item in _exception_chain(exc)}
+    return bool(_BYO_CAPACITY_EXC_NAMES & names)
 
 
 def classify_byo_cogitate_error(exc: BaseException) -> str | None:
@@ -305,6 +322,7 @@ __all__ = [
     "LocalEndpoint",
     "classify_byo_cogitate_error",
     "confidential_provenance_block",
+    "is_byo_capacity_error",
     "is_byo_network_error",
     "local_endpoint_reason_copy",
     "normalize_local_endpoint_url",

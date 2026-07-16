@@ -14,7 +14,6 @@ import argparse
 import fnmatch
 import json
 import logging
-import os
 import subprocess
 import sys
 import threading
@@ -58,7 +57,7 @@ from solstone.think.facets import (
     load_segment_facets,
 )
 from solstone.think.journal_io import atomic_replace
-from solstone.think.models import is_local_provider_needed, resolve_provider
+from solstone.think.models import is_local_provider_needed
 from solstone.think.pipeline_health import (
     SEGMENT_FLOOR_TALENTS,
     DeterministicFailure,
@@ -74,8 +73,7 @@ from solstone.think.pipeline_health import (
     segment_fully_thought,
     segment_requires_processing,
 )
-from solstone.think.providers.local_endpoint import resolve_local_endpoint
-from solstone.think.providers.local_server import read_server_parallel_slots
+from solstone.think.providers import fanout_policy
 from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, run_task
 from solstone.think.sense_splitter import (
     write_change_detection,
@@ -481,13 +479,7 @@ def _flush_batch_state_machines(
         )
 
 
-_CAP_LOGGED: set[str] = set()
 _LOCAL_PROVIDER_NEEDED: bool | None = None
-
-
-def reset_default_cap_log_state() -> None:
-    """Clear the per-process record of which cap lines have been logged."""
-    _CAP_LOGGED.clear()
 
 
 def reset_dispatch_admission_state() -> None:
@@ -503,67 +495,6 @@ def _dispatch_local_provider_needed() -> bool:
     if _LOCAL_PROVIDER_NEEDED is None:
         _LOCAL_PROVIDER_NEEDED = is_local_provider_needed()
     return _LOCAL_PROVIDER_NEEDED
-
-
-def _segment_work_uses_local() -> bool:
-    """Return True when segment-pipeline work can resolve to the local provider."""
-    return is_local_provider_needed()
-
-
-def _describe_uses_local() -> bool:
-    """Return True when screen-describe resolves to the local provider."""
-    provider, _ = resolve_provider("generate")
-    return provider == "local"
-
-
-def _local_fanout_slots() -> int | None:
-    endpoint = resolve_local_endpoint()
-    if endpoint.is_bundled:
-        return read_server_parallel_slots()
-    return endpoint.parallel_slots
-
-
-def _cap_default_at_local_slots(formula: int, log_key: str) -> int:
-    """Clamp a CPU-derived default to the local provider's client-side slots."""
-    slots = _local_fanout_slots()
-    if slots is None:
-        return formula
-    derived = min(formula, slots)
-    if derived < formula and log_key not in _CAP_LOGGED:
-        _CAP_LOGGED.add(log_key)
-        logging.info(
-            "%s capped provider=local slots=%d formula=%d derived=%d",
-            log_key,
-            slots,
-            formula,
-            derived,
-        )
-    return derived
-
-
-def _default_segment_workers() -> int:
-    """Return the default segment-level worker count for repair mode.
-
-    Capped at the local provider's client-side slot count when any
-    segment-pipeline work can resolve to a governed local lane.
-    """
-    cpu_count = os.cpu_count() or 2
-    formula = max(1, min(8, cpu_count // 2))
-    if not _segment_work_uses_local():
-        return formula
-    return _cap_default_at_local_slots(formula, "default_segment_workers")
-
-
-def _default_describe_jobs() -> int:
-    """Return the default screen-describe worker count for repair mode.
-
-    Capped at the local provider's client-side slot count when the describe
-    path resolves to a governed local lane.
-    """
-    formula = max(1, min(4, (os.cpu_count() or 2) // 4))
-    if not _describe_uses_local():
-        return formula
-    return _cap_default_at_local_slots(formula, "default_describe_jobs")
 
 
 def _select_segment_repair_targets(
@@ -3817,7 +3748,7 @@ def dry_run(
             "Pre-phase:  journal sense --day "
             + day
             + " -j "
-            + str(_default_describe_jobs())
+            + str(fanout_policy.default_describe_jobs())
         )
 
     if not all_prompts:
@@ -4226,7 +4157,9 @@ def main() -> None:
         )
 
     if args.segments:
-        segment_workers = args.segment_workers or _default_segment_workers()
+        segment_workers = (
+            args.segment_workers or fanout_policy.default_segment_workers()
+        )
         if args.jobs == 0 and segment_workers > 1:
             parser.error(
                 "--jobs 0 is incompatible with multi-worker --segments; "
@@ -4335,7 +4268,9 @@ def main() -> None:
                 sys.exit(1)
 
             selected = len(selected_segments)
-            segment_workers = args.segment_workers or _default_segment_workers()
+            segment_workers = (
+                args.segment_workers or fanout_policy.default_segment_workers()
+            )
             logging.info(
                 "Segment repair targets for %s: selected=%d complete=%d "
                 "raw_blocked=%d total=%d workers=%d jobs=%s",
@@ -4556,7 +4491,7 @@ def main() -> None:
                 "--day",
                 day,
                 "-j",
-                str(_default_describe_jobs()),
+                str(fanout_policy.default_describe_jobs()),
             ]
             if args.verbose:
                 cmd.append("-v")

@@ -8,6 +8,8 @@ from pathlib import Path
 
 import pytest
 
+from solstone.think.providers import fanout_policy
+
 DAY = "20240115"
 SEGMENT = "120000_300"
 STREAM = "default"
@@ -359,7 +361,7 @@ def test_segments_batch_forwards_live_false(
 
     # A tmp journal carries no local artifacts, so the real predicate resolves
     # non-local and the default must never probe the server.
-    monkeypatch.setattr(think, "read_server_parallel_slots", _unreachable)
+    monkeypatch.setattr(fanout_policy, "read_server_parallel_slots", _unreachable)
     monkeypatch.setattr(
         "sys.argv",
         [

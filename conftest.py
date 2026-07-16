@@ -160,9 +160,11 @@ def _reset_local_slot_sizing_state():
         local_server = sys.modules.get("solstone.think.providers.local_server")
         if local_server is not None:
             local_server.reset_parallel_slots_cache()
+        fanout_policy = sys.modules.get("solstone.think.providers.fanout_policy")
+        if fanout_policy is not None:
+            fanout_policy.reset_default_cap_log_state()
         thinking = sys.modules.get("solstone.think.thinking")
         if thinking is not None:
-            thinking.reset_default_cap_log_state()
             thinking.reset_dispatch_admission_state()
 
     _reset()

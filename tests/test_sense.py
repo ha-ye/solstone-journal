@@ -26,6 +26,7 @@ from solstone.think.processing import (
     ProcessingSettings,
     TimeWindowSettings,
 )
+from solstone.think.providers import fanout_policy
 from solstone.think.runner import DailyLogWriter as ProcessLogWriter
 from solstone.think.runner import _format_log_line
 
@@ -2277,6 +2278,64 @@ def test_main_rejects_invalid_stream_filter(tmp_path, monkeypatch):
     assert exc_info.value.code == 2
 
 
+def _registered_describe_commands(sensor: FileSensor) -> list[list[str]]:
+    return [
+        command
+        for handler_name, command in sensor.handlers.values()
+        if handler_name == "describe"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("argv", "configured", "expected_effective"),
+    [
+        (["journal sense"], 4, 4),
+        (["journal sense", "--day", "20250101", "-j", "2"], 4, 4),
+        (["journal sense", "--day", "20250101", "-j", "2"], 1, 2),
+    ],
+)
+def test_main_registers_describe_with_policy_per_proc_jobs(
+    tmp_path, monkeypatch, argv, configured, expected_effective
+):
+    from solstone.observe import sense
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    monkeypatch.setattr(sense, "require_solstone", lambda: None)
+    monkeypatch.setattr("sys.argv", argv)
+    effective_calls = []
+    observed_commands = []
+
+    def fake_resolve_concurrency(self, handler_name):
+        del self
+        return configured if handler_name == "describe" else 1
+
+    def fake_per_proc(effective_procs):
+        effective_calls.append(effective_procs)
+        return 9
+
+    def record_watch(self):
+        observed_commands.extend(_registered_describe_commands(self))
+        self.stop()
+
+    def record_day(self, *args, **kwargs):
+        del args, kwargs
+        observed_commands.extend(_registered_describe_commands(self))
+        self.stop()
+
+    monkeypatch.setattr(
+        sense.FileSensor, "_resolve_concurrency", fake_resolve_concurrency
+    )
+    monkeypatch.setattr(fanout_policy, "describe_per_proc_jobs", fake_per_proc)
+    monkeypatch.setattr(sense.FileSensor, "start", record_watch)
+    monkeypatch.setattr(sense.FileSensor, "process_day", record_day)
+
+    sense.main()
+
+    assert effective_calls == [expected_effective]
+    assert observed_commands
+    assert all(command[-2:] == ["-j", "9"] for command in observed_commands)
+
+
 def test_main_reprocess_screen_passes_stream_and_modality_filter(tmp_path, monkeypatch):
     from solstone.observe import sense
 
@@ -2289,6 +2348,9 @@ def test_main_reprocess_screen_passes_stream_and_modality_filter(tmp_path, monke
 
         def register(self, *_args, **_kwargs):
             pass
+
+        def _resolve_concurrency(self, _handler_name):
+            return 1
 
         def process_day(self, *args, **kwargs):
             calls.append((args, kwargs))
@@ -2344,6 +2406,9 @@ def test_main_reprocess_all_keeps_modality_filter_unset(tmp_path, monkeypatch):
 
         def register(self, *_args, **_kwargs):
             pass
+
+        def _resolve_concurrency(self, _handler_name):
+            return 1
 
         def process_day(self, *args, **kwargs):
             calls.append((args, kwargs))

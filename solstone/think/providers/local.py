@@ -26,6 +26,7 @@ from solstone.think.providers.local_endpoint import (
     LOCAL_ENDPOINT_CONTRACT_COPY,
     LOCAL_ENDPOINT_UNREACHABLE_COPY,
     classify_byo_cogitate_error,
+    is_byo_capacity_error,
     is_byo_network_error,
     local_endpoint_reason_copy,
     redact_local_endpoint_credential,
@@ -435,6 +436,8 @@ def _telemetry_record(
 
 
 def _classify_byo_generate_error(exc: BaseException) -> LocalProviderError:
+    if is_byo_capacity_error(exc):
+        return LocalCapacityExhausted()
     if is_byo_network_error(exc):
         return LocalProviderError(
             "local_endpoint_unreachable",

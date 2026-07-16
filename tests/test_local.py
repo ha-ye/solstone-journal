@@ -1641,18 +1641,40 @@ def test_run_generate_byo_network_error_maps_to_unreachable(monkeypatch):
 @pytest.mark.parametrize(
     "exc_name",
     [
+        "ReadTimeout",
+        "PoolTimeout",
+        "WriteTimeout",
+        "TimeoutException",
+    ],
+)
+def test_classify_byo_generate_error_capacity_names_are_non_blocking(exc_name):
+    provider = _provider()
+    from solstone.convey.provider_readiness import is_blocking_reason
+
+    inner = type(exc_name, (Exception,), {})(f"{exc_name} failed")
+    exc = RuntimeError("outer")
+    exc.__cause__ = inner
+
+    classified = provider._classify_byo_generate_error(exc)
+
+    assert classified.reason_code == "local_capacity_exhausted"
+    assert is_blocking_reason(classified.reason_code) is False
+
+
+@pytest.mark.parametrize(
+    "exc_name",
+    [
         "ConnectError",
         "APIConnectionError",
         "ConnectTimeout",
-        "ReadTimeout",
-        "PoolTimeout",
-        "TimeoutException",
         "NetworkError",
         "RequestError",
     ],
 )
-def test_classify_byo_generate_error_uses_shared_network_predicate(exc_name):
+def test_classify_byo_generate_error_unreachable_names_are_blocking(exc_name):
     provider = _provider()
+    from solstone.convey.provider_readiness import is_blocking_reason
+
     inner = type(exc_name, (Exception,), {})(f"{exc_name} failed")
     exc = RuntimeError("outer")
     exc.__cause__ = inner
@@ -1661,6 +1683,21 @@ def test_classify_byo_generate_error_uses_shared_network_predicate(exc_name):
 
     assert classified.reason_code == "local_endpoint_unreachable"
     assert str(classified) == provider.LOCAL_ENDPOINT_UNREACHABLE_COPY
+    assert is_blocking_reason(classified.reason_code) is True
+
+
+def test_classify_byo_generate_error_capacity_wins_mixed_chain():
+    provider = _provider()
+
+    capacity = type("ReadTimeout", (Exception,), {})("read timeout")
+    unreachable = type("ConnectError", (Exception,), {})("connect failed")
+    outer = RuntimeError("outer")
+    outer.__cause__ = unreachable
+    unreachable.__cause__ = capacity
+
+    classified = provider._classify_byo_generate_error(outer)
+
+    assert classified.reason_code == "local_capacity_exhausted"
 
 
 def test_classify_byo_generate_error_500_stays_contract_failed():

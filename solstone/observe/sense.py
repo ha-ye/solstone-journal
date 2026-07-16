@@ -33,6 +33,7 @@ from solstone.observe.utils import (
 from solstone.think import admission
 from solstone.think.callosum import CallosumConnection
 from solstone.think.processing import load_processing_settings
+from solstone.think.providers import fanout_policy
 from solstone.think.runner import KILL_REAP_GRACE_S
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
 from solstone.think.utils import (
@@ -1374,8 +1375,19 @@ def main():
         sensor.register(f"*{ext}", "transcribe", ["journal", "transcribe", "{file}"])
 
     # Video files in segment directories
+    describe_configured = sensor._resolve_concurrency("describe")
+    describe_effective_procs = (
+        max(args.jobs, describe_configured) if args.day else describe_configured
+    )
+    describe_per_proc_jobs = fanout_policy.describe_per_proc_jobs(
+        describe_effective_procs
+    )
     for ext in VIDEO_EXTENSIONS:
-        sensor.register(f"*{ext}", "describe", ["journal", "describe", "{file}"])
+        sensor.register(
+            f"*{ext}",
+            "describe",
+            ["journal", "describe", "{file}", "-j", str(describe_per_proc_jobs)],
+        )
 
     for ext in IMAGE_EXTENSIONS:
         sensor.register(f"*{ext}", "depict", ["journal", "depict", "{file}"])
