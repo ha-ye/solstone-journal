@@ -36,7 +36,7 @@ import plistlib
 import re
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
 from importlib.metadata import PackageNotFoundError, distribution
 from importlib.metadata import version as _pkg_version
@@ -70,6 +70,7 @@ from solstone.think.probe import (
 )
 from solstone.think.service import (
     check_service_target_identity,
+    inspect_supervisor_conflict,
     service_is_failed,
     service_is_installed,
 )
@@ -118,6 +119,7 @@ HOST_DEPENDENCY_REINSTALL_GUIDANCE = (
 )
 SERVICE_IDENTITY_CHECK = Check("service_identity", "blocker", ("linux", "darwin"))
 SERVICE_RUNNING_CHECK = Check("service_running", "blocker", ("linux", "darwin"))
+SUPERVISOR_CONFLICT_CHECK = Check("supervisor_conflict", "blocker", ("darwin",))
 LAUNCHD_STALE_PLIST_CHECK = Check("launchd_stale_plist", "advisory", ("darwin",))
 JOURNAL_SYNC_CHECK = Check("journal_sync", "blocker", ("linux", "darwin"))
 DEFAULT_STT_READY_CHECK = Check("default_stt_ready", "advisory", ("linux", "darwin"))
@@ -160,6 +162,23 @@ _OBSERVER_INGEST_FIX = (
 _ORPHAN_SEGMENT_PDF_FIX = (
     "journal maint --force settings:007_migrate_pdf_extractions, "
     "then re-run journal doctor"
+)
+_SUPERVISOR_CONFLICT_FIX = "journal service uninstall"
+_SUPERVISOR_CONFLICT_FIX_POINTER = (
+    "resolve the macOS supervisor conflict first: journal service uninstall"
+)
+_SUPERVISOR_TOPOLOGY_WARN_POINTER = (
+    "resolve the macOS supervisor topology warning before changing the journal service"
+)
+_UNSAFE_SERVICE_ACTIONS = (
+    "journal setup",
+    "journal service install",
+    "journal service start",
+    "journal service restart",
+)
+_LAUNCHD_STALE_PLIST_REPAIR_FIX = (
+    "run journal service uninstall, then run journal service install separately "
+    "to reinstall a headless background service"
 )
 
 
@@ -543,6 +562,40 @@ def service_running_check(args: Args) -> CheckResult:
     return make_result(SERVICE_RUNNING_CHECK, "ok", "journal service is running")
 
 
+def _format_unknown_axes(axes: tuple[str, ...]) -> str:
+    return ", ".join(axes)
+
+
+def supervisor_conflict_check(args: Args) -> CheckResult:
+    del args
+    evidence = inspect_supervisor_conflict()
+    if evidence.is_conflict:
+        return make_result(
+            SUPERVISOR_CONFLICT_CHECK,
+            "fail",
+            (
+                "macOS supervisor conflict: journal.app is running while the legacy "
+                f"LaunchAgent is installed or loaded ({evidence.detail})"
+            ),
+            _SUPERVISOR_CONFLICT_FIX,
+        )
+    unknown_axes = evidence.unknown_axes
+    if unknown_axes:
+        return make_result(
+            SUPERVISOR_CONFLICT_CHECK,
+            "warn",
+            (
+                "couldn't fully determine macOS supervisor topology; unknown "
+                f"axis(es): {_format_unknown_axes(unknown_axes)} ({evidence.detail})"
+            ),
+        )
+    return make_result(
+        SUPERVISOR_CONFLICT_CHECK,
+        "ok",
+        f"no macOS supervisor conflict ({evidence.detail})",
+    )
+
+
 def import_install_guard() -> tuple[object, object]:
     root_text = str(ROOT)
     if root_text not in sys.path:
@@ -748,7 +801,7 @@ def launchd_stale_plist_check(args: Args) -> CheckResult:
             check,
             "fail",
             f"could not parse plist: {type(exc).__name__}: {exc}",
-            "rm ~/Library/LaunchAgents/org.solpbc.solstone.plist && journal setup",
+            _LAUNCHD_STALE_PLIST_REPAIR_FIX,
         )
     program_arguments = data.get("ProgramArguments")
     if not isinstance(program_arguments, list) or not program_arguments:
@@ -756,7 +809,7 @@ def launchd_stale_plist_check(args: Args) -> CheckResult:
             check,
             "fail",
             "plist is missing ProgramArguments[0]",
-            "rm ~/Library/LaunchAgents/org.solpbc.solstone.plist && journal setup",
+            _LAUNCHD_STALE_PLIST_REPAIR_FIX,
         )
     executable = Path(str(program_arguments[0]))
     if not executable.exists():
@@ -764,7 +817,7 @@ def launchd_stale_plist_check(args: Args) -> CheckResult:
             check,
             "fail",
             f"plist points to missing executable: {executable}",
-            "rm ~/Library/LaunchAgents/org.solpbc.solstone.plist && journal setup",
+            _LAUNCHD_STALE_PLIST_REPAIR_FIX,
         )
     return make_result(check, "ok", f"launchd plist target exists ({executable})")
 
@@ -1103,6 +1156,7 @@ JOURNAL_CHECKS: list[tuple[Check, Runner]] = [
     (DISK_SPACE_CHECK, disk_space_check),
     (CONFIG_DIR_READABLE_CHECK, config_dir_readable_check),
     (JOURNAL_DIR_WRITABLE_CHECK, journal_dir_writable_journal),
+    (SUPERVISOR_CONFLICT_CHECK, supervisor_conflict_check),
     (SERVICE_IDENTITY_CHECK, service_identity_check),
     (SERVICE_RUNNING_CHECK, service_running_check),
     (JOURNAL_SYNC_CHECK, journal_sync_check),
@@ -1200,6 +1254,35 @@ def select_battery(args: Args) -> list[tuple[Check, Runner]]:
     return UNIVERSAL_CHECKS
 
 
+def _fix_mentions_unsafe_service_action(fix: str) -> bool:
+    return any(action in fix for action in _UNSAFE_SERVICE_ACTIONS)
+
+
+def _apply_supervisor_conflict_fix_policy(
+    results: list[CheckResult],
+) -> list[CheckResult]:
+    conflict = next(
+        (result for result in results if result.name == SUPERVISOR_CONFLICT_CHECK.name),
+        None,
+    )
+    if conflict is None or conflict.status not in {"fail", "warn"}:
+        return results
+
+    updated: list[CheckResult] = []
+    for result in results:
+        if result.name == SUPERVISOR_CONFLICT_CHECK.name or not result.fix:
+            updated.append(result)
+            continue
+        if conflict.status == "fail":
+            updated.append(replace(result, fix=_SUPERVISOR_CONFLICT_FIX_POINTER))
+            continue
+        if _fix_mentions_unsafe_service_action(result.fix):
+            updated.append(replace(result, fix=_SUPERVISOR_TOPOLOGY_WARN_POINTER))
+            continue
+        updated.append(result)
+    return updated
+
+
 def run_checks(
     args: Args,
     checks: list[tuple[Check, Runner]] | None = None,
@@ -1233,7 +1316,7 @@ def run_checks(
             )
             continue
         results.append(func(args))
-    return results
+    return _apply_supervisor_conflict_fix_policy(results)
 
 
 def print_result_line(result: CheckResult) -> None:

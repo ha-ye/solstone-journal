@@ -17,6 +17,67 @@ import pytest
 
 from solstone.think import service
 
+LAUNCHCTL_RUNNING_WITH_PID = """gui/501/org.solpbc.solstone = {
+\tactive count = 1
+\tpath = /Users/jer/Library/LaunchAgents/org.solpbc.solstone.plist
+\ttype = LaunchAgent
+\tstate = running
+\tprogram = /Users/jer/.local/bin/sol
+\tpid = 12345
+\tdomain = gui/501
+\tasid = 100012
+\tlast exit code = 0
+\trun interval = 0
+\tactive transactions = 0
+\tdefault environment = {
+\t\tPATH => /usr/bin:/bin
+\t}
+\tenvironment = {
+\t\tHOME => /Users/jer
+\t}
+\tdomain = gui/501
+\tminimum runtime = 10
+\texit timeout = 5
+\tendpoints = {
+\t}
+\tevent triggers = {
+\t}
+\tpid local dispatch queue = {
+\t\tjob state = running
+\t}
+}
+"""
+
+LAUNCHCTL_LOADED_NO_PID = """gui/501/org.solpbc.solstone = {
+\tactive count = 0
+\tpath = /Users/jer/Library/LaunchAgents/org.solpbc.solstone.plist
+\ttype = LaunchAgent
+\tstate = not running
+\tprogram = /Users/jer/.local/bin/sol
+\tdomain = gui/501
+\tasid = 100012
+\trun interval = 0
+\tactive transactions = 0
+\tdefault environment = {
+\t\tPATH => /usr/bin:/bin
+\t}
+\tenvironment = {
+\t\tHOME => /Users/jer
+\t}
+\tdomain = gui/501
+\tminimum runtime = 10
+\texit timeout = 5
+\tendpoints = {
+\t}
+\tevent triggers = {
+\t}
+\tpid local dispatch queue = {
+\t\tjob state = exited
+\t}
+\tlast exit code = 0
+}
+"""
+
 
 def _install_fake_launchd_clock(monkeypatch):
     fake = [0.0]
@@ -27,6 +88,76 @@ def _install_fake_launchd_clock(monkeypatch):
         lambda seconds: fake.__setitem__(0, fake[0] + seconds),
     )
     return fake
+
+
+class _FakeUids:
+    def __init__(self, real: int):
+        self.real = real
+
+
+class _FakeProcess:
+    def __init__(
+        self,
+        *,
+        pid: int = 99,
+        uid: int = 501,
+        name: str = "other",
+        exe: str = "/Applications/Other.app/Contents/MacOS/other",
+        uid_exc: Exception | None = None,
+        exe_exc: Exception | None = None,
+    ):
+        self.pid = pid
+        self._uid = uid
+        self._name = name
+        self._exe = exe
+        self._uid_exc = uid_exc
+        self._exe_exc = exe_exc
+        self.exe_called = False
+
+    def name(self) -> str:
+        return self._name
+
+    def uids(self) -> _FakeUids:
+        if self._uid_exc:
+            raise self._uid_exc
+        return _FakeUids(self._uid)
+
+    def exe(self) -> str:
+        self.exe_called = True
+        if self._exe_exc:
+            raise self._exe_exc
+        return self._exe
+
+
+def _patch_supervisor_conflict_inspection(
+    monkeypatch,
+    tmp_path: Path,
+    *,
+    launchctl_returncode: int = 1,
+    launchctl_stdout: str = "",
+    launchctl_stderr: str = "service not found",
+    processes: list[_FakeProcess] | None = None,
+) -> Path:
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(service.os, "getuid", lambda: 501)
+    plist_path = tmp_path / "org.solpbc.solstone.plist"
+    monkeypatch.setattr(service, "_plist_path", lambda: plist_path)
+    monkeypatch.setattr(
+        service.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0],
+            returncode=launchctl_returncode,
+            stdout=launchctl_stdout,
+            stderr=launchctl_stderr,
+        ),
+    )
+    monkeypatch.setattr(
+        service.psutil,
+        "process_iter",
+        lambda: [] if processes is None else processes,
+    )
+    return plist_path
 
 
 class TestPlatform:
@@ -310,38 +441,8 @@ class TestServiceHelpers:
         monkeypatch.setattr(service, "service_is_installed", lambda: True)
         monkeypatch.setattr(service, "_platform", lambda: "darwin")
         monkeypatch.setattr(service.os, "getuid", lambda: 501)
-        launchctl_stdout = """gui/501/org.solpbc.solstone = {
-\tactive count = 1
-\tpath = /Users/jer/Library/LaunchAgents/org.solpbc.solstone.plist
-\ttype = LaunchAgent
-\tstate = running
-\tprogram = /Users/jer/.local/bin/sol
-\tpid = 12345
-\tdomain = gui/501
-\tasid = 100012
-\tlast exit code = 0
-\trun interval = 0
-\tactive transactions = 0
-\tdefault environment = {
-\t\tPATH => /usr/bin:/bin
-\t}
-\tenvironment = {
-\t\tHOME => /Users/jer
-\t}
-\tdomain = gui/501
-\tminimum runtime = 10
-\texit timeout = 5
-\tendpoints = {
-\t}
-\tevent triggers = {
-\t}
-\tpid local dispatch queue = {
-\t\tjob state = running
-\t}
-}
-"""
         run_mock = MagicMock(
-            return_value=MagicMock(returncode=0, stdout=launchctl_stdout)
+            return_value=MagicMock(returncode=0, stdout=LAUNCHCTL_RUNNING_WITH_PID)
         )
         monkeypatch.setattr(service.subprocess, "run", run_mock)
         assert service.service_is_running() is True
@@ -358,40 +459,270 @@ class TestServiceHelpers:
         monkeypatch.setattr(service, "service_is_installed", lambda: True)
         monkeypatch.setattr(service, "_platform", lambda: "darwin")
         monkeypatch.setattr(service.os, "getuid", lambda: 501)
-        launchctl_stdout = """gui/501/org.solpbc.solstone = {
-\tactive count = 0
-\tpath = /Users/jer/Library/LaunchAgents/org.solpbc.solstone.plist
-\ttype = LaunchAgent
-\tstate = not running
-\tprogram = /Users/jer/.local/bin/sol
-\tdomain = gui/501
-\tasid = 100012
-\trun interval = 0
-\tactive transactions = 0
-\tdefault environment = {
-\t\tPATH => /usr/bin:/bin
-\t}
-\tenvironment = {
-\t\tHOME => /Users/jer
-\t}
-\tdomain = gui/501
-\tminimum runtime = 10
-\texit timeout = 5
-\tendpoints = {
-\t}
-\tevent triggers = {
-\t}
-\tpid local dispatch queue = {
-\t\tjob state = exited
-\t}
-\tlast exit code = 0
-}
-"""
         run_mock = MagicMock(
-            return_value=MagicMock(returncode=0, stdout=launchctl_stdout)
+            return_value=MagicMock(returncode=0, stdout=LAUNCHCTL_LOADED_NO_PID)
         )
         monkeypatch.setattr(service.subprocess, "run", run_mock)
         assert service.service_is_running() is False
+
+
+class TestSupervisorConflictInspection:
+    def test_non_darwin_guard_does_not_probe(self, monkeypatch):
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(
+            service.subprocess,
+            "run",
+            lambda *args, **kwargs: pytest.fail("launchctl should not be called"),
+        )
+        monkeypatch.setattr(
+            service.psutil,
+            "process_iter",
+            lambda: pytest.fail("processes should not be enumerated"),
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.plist_state == "absent"
+        assert evidence.label_state == "unloaded"
+        assert evidence.app_state == "absent"
+        assert not evidence.is_conflict
+        assert "not applicable" in evidence.detail
+
+    def test_launchctl_with_pid_is_loaded(self, monkeypatch, tmp_path):
+        _patch_supervisor_conflict_inspection(
+            monkeypatch,
+            tmp_path,
+            launchctl_returncode=0,
+            launchctl_stdout=LAUNCHCTL_RUNNING_WITH_PID,
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.label_state == "loaded"
+        assert evidence.label_pid == 12345
+
+    def test_launchctl_without_pid_is_loaded(self, monkeypatch, tmp_path):
+        _patch_supervisor_conflict_inspection(
+            monkeypatch,
+            tmp_path,
+            launchctl_returncode=0,
+            launchctl_stdout=LAUNCHCTL_LOADED_NO_PID,
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.label_state == "loaded"
+        assert evidence.label_pid is None
+
+    def test_launchctl_recognized_not_loaded_marker_is_unloaded(
+        self, monkeypatch, tmp_path
+    ):
+        _patch_supervisor_conflict_inspection(
+            monkeypatch,
+            tmp_path,
+            launchctl_returncode=113,
+            launchctl_stderr="Bootstrap lookup failed: service not found",
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.label_state == "unloaded"
+
+    def test_launchctl_opaque_nonzero_is_unknown(self, monkeypatch, tmp_path):
+        _patch_supervisor_conflict_inspection(
+            monkeypatch,
+            tmp_path,
+            launchctl_returncode=5,
+            launchctl_stderr="launchctl returned an opaque error",
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.label_state == "unknown"
+
+    def test_launchctl_timeout_is_unknown(self, monkeypatch, tmp_path):
+        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+
+        def timeout(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+        monkeypatch.setattr(service.subprocess, "run", timeout)
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.label_state == "unknown"
+
+    def test_launchctl_oserror_is_unknown(self, monkeypatch, tmp_path):
+        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            service.subprocess,
+            "run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("launchctl failed")),
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.label_state == "unknown"
+
+    def test_process_iter_failure_is_app_unknown(self, monkeypatch, tmp_path):
+        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            service.psutil,
+            "process_iter",
+            lambda: (_ for _ in ()).throw(service.psutil.Error("boom")),
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.app_state == "unknown"
+
+    def test_process_uid_filter_runs_before_exe(self, monkeypatch, tmp_path):
+        other_user_proc = _FakeProcess(
+            uid=0,
+            exe_exc=service.psutil.AccessDenied(pid=1),
+        )
+        _patch_supervisor_conflict_inspection(
+            monkeypatch,
+            tmp_path,
+            processes=[other_user_proc],
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.app_state == "absent"
+        assert other_user_proc.exe_called is False
+
+    def test_current_uid_access_denied_exe_taints_app_unknown(
+        self, monkeypatch, tmp_path
+    ):
+        proc = _FakeProcess(
+            uid=501,
+            exe_exc=service.psutil.AccessDenied(pid=2),
+        )
+        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path, processes=[proc])
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.app_state == "unknown"
+
+    def test_process_races_do_not_taint_app_state(self, monkeypatch, tmp_path):
+        procs = [
+            _FakeProcess(uid_exc=service.psutil.NoSuchProcess(pid=1)),
+            _FakeProcess(uid_exc=service.psutil.ZombieProcess(pid=2)),
+        ]
+        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path, processes=procs)
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.app_state == "absent"
+
+    def test_app_running_matches_executable_suffix(self, monkeypatch, tmp_path):
+        executable = (
+            "/private/var/folders/xx/AppTranslocation/ABC/d/"
+            "journal.app/Contents/MacOS/journal"
+        )
+        proc = _FakeProcess(
+            pid=2468,
+            uid=501,
+            exe=executable,
+        )
+        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path, processes=[proc])
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.app_state == "running"
+        assert evidence.app_pid == 2468
+        assert evidence.app_executable == executable
+        assert executable in evidence.detail
+
+    def test_supervisor_process_title_does_not_match_app(self, monkeypatch, tmp_path):
+        proc = _FakeProcess(
+            uid=501,
+            name="journal:supervisor",
+            exe="/home/x/.venv/bin/python3.12",
+        )
+        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path, processes=[proc])
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert proc.name() == "journal:supervisor"
+        assert evidence.app_state == "absent"
+
+    def test_matching_app_under_other_uid_does_not_match(self, monkeypatch, tmp_path):
+        proc = _FakeProcess(
+            uid=0,
+            exe="/Applications/journal.app/Contents/MacOS/journal",
+        )
+        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path, processes=[proc])
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.app_state == "absent"
+
+    def test_plist_parse_failure_is_malformed(self, monkeypatch, tmp_path):
+        plist_path = _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        plist_path.write_text("not a plist", encoding="utf-8")
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.plist_state == "malformed"
+
+    def test_plist_missing_argv_is_malformed(self, monkeypatch, tmp_path):
+        plist_path = _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        plist_path.write_bytes(plistlib.dumps({"Label": service.SERVICE_LABEL}))
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.plist_state == "malformed"
+
+    def test_plist_wrong_label_is_still_present(self, monkeypatch, tmp_path):
+        plist_path = _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        plist_path.write_bytes(
+            plistlib.dumps(
+                {"Label": "wrong.label", "ProgramArguments": ["/tmp/missing", "start"]}
+            )
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.plist_state == "present"
+
+    def test_plist_missing_label_is_still_present(self, monkeypatch, tmp_path):
+        plist_path = _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        plist_path.write_bytes(
+            plistlib.dumps({"ProgramArguments": ["/tmp/missing", "start"]})
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.plist_state == "present"
+
+    def test_plist_missing_executable_is_still_present(self, monkeypatch, tmp_path):
+        plist_path = _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        plist_path.write_bytes(
+            plistlib.dumps(
+                {
+                    "Label": service.SERVICE_LABEL,
+                    "ProgramArguments": ["/tmp/definitely-missing", "start"],
+                }
+            )
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.plist_state == "present"
+
+    def test_stat_permission_error_is_plist_unknown(self, monkeypatch, tmp_path):
+        _patch_supervisor_conflict_inspection(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            service.os,
+            "stat",
+            lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+        )
+
+        evidence = service.inspect_supervisor_conflict()
+
+        assert evidence.plist_state == "unknown"
 
 
 class TestStatus:

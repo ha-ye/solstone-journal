@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import plistlib
+import re
 import shlex
 import subprocess
 import sys
@@ -31,6 +32,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from xml.parsers.expat import ExpatError
+
+import psutil
 
 from solstone.think.install_guard import (
     parse_wrapper,
@@ -49,6 +52,8 @@ _LAUNCHD_UNLOAD_POLL_INTERVAL_S = 0.1
 _LAUNCHD_UNLOAD_TIMEOUT_S = 30.0
 _LAUNCHD_BOOTSTRAP_MAX_ATTEMPTS = 5
 _LAUNCHD_BOOTSTRAP_RETRY_WAIT_S = 1.0
+_SUPERVISOR_CONFLICT_LAUNCHCTL_TIMEOUT_S = 2.0
+_JOURNAL_APP_EXECUTABLE_SUFFIX = "/journal.app/Contents/MacOS/journal"
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +75,41 @@ class ServiceTargetIdentity:
     resolved_target: str
     matches_current_install: bool
     detail: str
+
+
+@dataclass(frozen=True)
+class SupervisorConflictEvidence:
+    """Read-only macOS topology evidence for competing journal supervisors."""
+
+    plist_path: str
+    plist_state: str
+    label_state: str
+    label_pid: int | None
+    app_state: str
+    app_pid: int | None
+    app_executable: str | None
+    detail: str
+
+    @property
+    def plist_installed(self) -> bool:
+        return self.plist_state in {"present", "malformed"}
+
+    @property
+    def unknown_axes(self) -> tuple[str, ...]:
+        axes: list[str] = []
+        if self.plist_state == "unknown":
+            axes.append("plist")
+        if self.label_state == "unknown":
+            axes.append("label")
+        if self.app_state == "unknown":
+            axes.append("app")
+        return tuple(axes)
+
+    @property
+    def is_conflict(self) -> bool:
+        return self.app_state == "running" and (
+            self.plist_installed or self.label_state == "loaded"
+        )
 
 
 def _ready_timeout_message() -> str:
@@ -446,6 +486,135 @@ def check_service_target_identity() -> ServiceTargetIdentity:
         str(resolved),
         matches,
         detail,
+    )
+
+
+def _supervisor_conflict_detail(
+    plist_path: Path,
+    plist_state: str,
+    label_state: str,
+    label_pid: int | None,
+    app_state: str,
+    app_pid: int | None,
+    app_executable: str | None,
+) -> str:
+    label_pid_text = str(label_pid) if label_pid is not None else "none"
+    app_pid_text = str(app_pid) if app_pid is not None else "none"
+    app_executable_text = app_executable if app_executable is not None else "none"
+    return (
+        f"plist_path={plist_path} plist_state={plist_state}; "
+        f"launchd_label={label_state} pid={label_pid_text}; "
+        f"journal_app={app_state} pid={app_pid_text} exe={app_executable_text}"
+    )
+
+
+def _inspect_supervisor_conflict_plist(path: Path) -> str:
+    try:
+        os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return "absent"
+    except OSError:
+        return "unknown"
+    return "present" if _launchd_program_arguments(path) else "malformed"
+
+
+def _launchctl_print_pid(stdout: str) -> int | None:
+    match = re.search(r"^\s*pid = (\d+)\s*$", stdout, re.MULTILINE)
+    return int(match.group(1)) if match else None
+
+
+def _inspect_supervisor_conflict_label(uid: int) -> tuple[str, int | None]:
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"gui/{uid}/{SERVICE_LABEL}"],
+            capture_output=True,
+            text=True,
+            timeout=_SUPERVISOR_CONFLICT_LAUNCHCTL_TIMEOUT_S,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return "unknown", None
+    if result.returncode == 0:
+        return "loaded", _launchctl_print_pid(result.stdout or "")
+    output = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+    if any(marker in output for marker in _not_loaded_markers()):
+        return "unloaded", None
+    return "unknown", None
+
+
+def _inspect_supervisor_conflict_app(uid: int) -> tuple[str, int | None, str | None]:
+    found_unknown = False
+    try:
+        # Do not pass attrs: psutil prefetches them by calling exe() for every process.
+        processes = psutil.process_iter()
+        for proc in processes:
+            try:
+                uids = proc.uids()
+            except psutil.Error:
+                # UID was not readable, so we never confirmed this process is ours.
+                continue
+
+            if uids.real != uid:
+                continue
+
+            # Filter by UID before exe(); other users' processes commonly deny exe().
+            try:
+                exe = proc.exe()
+            except psutil.NoSuchProcess:
+                continue
+            except psutil.AccessDenied:
+                found_unknown = True
+                continue
+            except psutil.Error:
+                found_unknown = True
+                continue
+            if exe.endswith(_JOURNAL_APP_EXECUTABLE_SUFFIX):
+                return "running", proc.pid, exe
+    except psutil.Error:
+        return "unknown", None, None
+    return ("unknown" if found_unknown else "absent"), None, None
+
+
+def inspect_supervisor_conflict() -> SupervisorConflictEvidence:
+    """Inspect whether journal.app and the legacy LaunchAgent both supervise.
+
+    Read-only. On non-macOS platforms this returns a clean non-conflict result
+    without invoking launchctl or enumerating processes.
+    """
+    if sys.platform != "darwin":
+        return SupervisorConflictEvidence(
+            str(_plist_path()),
+            "absent",
+            "unloaded",
+            None,
+            "absent",
+            None,
+            None,
+            "macOS supervisor topology is not applicable on this platform",
+        )
+
+    uid = os.getuid()
+    plist_path = _plist_path()
+    plist_state = _inspect_supervisor_conflict_plist(plist_path)
+    label_state, label_pid = _inspect_supervisor_conflict_label(uid)
+    app_state, app_pid, app_executable = _inspect_supervisor_conflict_app(uid)
+    return SupervisorConflictEvidence(
+        str(plist_path),
+        plist_state,
+        label_state,
+        label_pid,
+        app_state,
+        app_pid,
+        app_executable,
+        _supervisor_conflict_detail(
+            plist_path,
+            plist_state,
+            label_state,
+            label_pid,
+            app_state,
+            app_pid,
+            app_executable,
+        ),
     )
 
 

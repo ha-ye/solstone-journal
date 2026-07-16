@@ -15,7 +15,7 @@ operational playbook in the sol pbc org repo,
 ```bash
 make build               # build the image
 make smoke               # ~30s — verifies systemd --user works end-to-end
-make install             # ~3-5min — uv tool host install && journal setup
+make install             # ~3-5min — uv tool host install, then journal setup
 make observer-ingest     # ~3-5min — install + setup + observer ingest round-trip
 make legacy-upgrade      # ~3-5min — install over a seeded legacy non-symlink wrapper
 ```
@@ -24,7 +24,7 @@ make legacy-upgrade      # ~3-5min — install over a seeded legacy non-symlink 
 `--user` accepts, enables, starts, and reports it active. Use it as a
 fast pre-flight before chasing solstone-specific failures.
 
-`install` runs the actual journal install path (`uv tool install solstone-journal && journal setup -y --skip-models --skip-skills`) and
+`install` runs the actual journal install path (`uv tool install solstone-journal`, then `journal setup -y --skip-models --skip-skills`) and
 verifies the resulting `solstone.service` reaches `active` plus `journal
 service status` returns 0. `--skip-models / --skip-skills` are passed by default because
 faster-whisper / Parakeet / Claude-skill installation is orthogonal to

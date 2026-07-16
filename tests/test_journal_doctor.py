@@ -6,12 +6,13 @@ from __future__ import annotations
 import json
 import os
 import plistlib
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from solstone.think import install_guard
+from solstone.think import install_guard, service
 
 
 @pytest.fixture
@@ -93,6 +94,56 @@ def tree_snapshot(root: Path) -> list[tuple[str, str, str]]:
         elif path.is_dir():
             snapshot.append((rel, "dir", ""))
     return snapshot
+
+
+class _FakeUids:
+    def __init__(self, real: int):
+        self.real = real
+
+
+class _FakeProcess:
+    def __init__(self, *, pid: int = 99, uid: int = 501, exe: str = "/tmp/other"):
+        self.pid = pid
+        self._uid = uid
+        self._exe = exe
+
+    def uids(self) -> _FakeUids:
+        return _FakeUids(self._uid)
+
+    def exe(self) -> str:
+        return self._exe
+
+
+def force_darwin_supervisor_reader(
+    doctor,
+    monkeypatch,
+    *,
+    launchctl: subprocess.CompletedProcess,
+    processes: list[_FakeProcess] | None = None,
+) -> None:
+    monkeypatch.setattr(doctor, "platform_tag", lambda: "darwin")
+    monkeypatch.setattr(service.sys, "platform", "darwin")
+    monkeypatch.setattr(service.os, "getuid", lambda: 501)
+    monkeypatch.setattr(service.subprocess, "run", lambda *args, **kwargs: launchctl)
+    monkeypatch.setattr(
+        service.psutil,
+        "process_iter",
+        lambda: [] if processes is None else processes,
+    )
+
+
+def write_legacy_plist(home_root: Path, argv: list[str]) -> Path:
+    plist_path = home_root / "Library" / "LaunchAgents" / "org.solpbc.solstone.plist"
+    plist_path.parent.mkdir(parents=True)
+    plist_path.write_bytes(
+        plistlib.dumps(
+            {
+                "Label": "org.solpbc.solstone",
+                "ProgramArguments": argv,
+            }
+        )
+    )
+    return plist_path
 
 
 def install_router_skill_links(doctor, journal: Path) -> None:
@@ -389,6 +440,348 @@ def test_service_identity_match_ok(doctor, monkeypatch):
     assert result.detail == "service target matches current install"
 
 
+SUPERVISOR_CONFLICT_GRID = [
+    ("present", "loaded", "running", "fail", ()),
+    ("present", "loaded", "absent", "ok", ()),
+    ("present", "loaded", "unknown", "warn", ("app",)),
+    ("present", "unloaded", "running", "fail", ()),
+    ("present", "unloaded", "absent", "ok", ()),
+    ("present", "unloaded", "unknown", "warn", ("app",)),
+    ("present", "unknown", "running", "fail", ()),
+    ("present", "unknown", "absent", "warn", ("label",)),
+    ("present", "unknown", "unknown", "warn", ("label", "app")),
+    ("malformed", "loaded", "running", "fail", ()),
+    ("malformed", "loaded", "absent", "ok", ()),
+    ("malformed", "loaded", "unknown", "warn", ("app",)),
+    ("malformed", "unloaded", "running", "fail", ()),
+    ("malformed", "unloaded", "absent", "ok", ()),
+    ("malformed", "unloaded", "unknown", "warn", ("app",)),
+    ("malformed", "unknown", "running", "fail", ()),
+    ("malformed", "unknown", "absent", "warn", ("label",)),
+    ("malformed", "unknown", "unknown", "warn", ("label", "app")),
+    ("absent", "loaded", "running", "fail", ()),
+    ("absent", "loaded", "absent", "ok", ()),
+    ("absent", "loaded", "unknown", "warn", ("app",)),
+    ("absent", "unloaded", "running", "ok", ()),
+    ("absent", "unloaded", "absent", "ok", ()),
+    ("absent", "unloaded", "unknown", "warn", ("app",)),
+    ("absent", "unknown", "running", "warn", ("label",)),
+    ("absent", "unknown", "absent", "warn", ("label",)),
+    ("absent", "unknown", "unknown", "warn", ("label", "app")),
+    ("unknown", "loaded", "running", "fail", ()),
+    ("unknown", "loaded", "absent", "warn", ("plist",)),
+    ("unknown", "loaded", "unknown", "warn", ("plist", "app")),
+    ("unknown", "unloaded", "running", "warn", ("plist",)),
+    ("unknown", "unloaded", "absent", "warn", ("plist",)),
+    ("unknown", "unloaded", "unknown", "warn", ("plist", "app")),
+    ("unknown", "unknown", "running", "warn", ("plist", "label")),
+    ("unknown", "unknown", "absent", "warn", ("plist", "label")),
+    ("unknown", "unknown", "unknown", "warn", ("plist", "label", "app")),
+]
+
+
+@pytest.mark.parametrize(
+    ("plist_state", "label_state", "app_state", "expected_status", "unknown_axes"),
+    SUPERVISOR_CONFLICT_GRID,
+)
+def test_supervisor_conflict_grid(
+    doctor,
+    monkeypatch,
+    plist_state,
+    label_state,
+    app_state,
+    expected_status,
+    unknown_axes,
+):
+    plist_path = "/tmp/Library/LaunchAgents/org.solpbc.solstone.plist"
+    label_pid = 12345 if label_state == "loaded" else None
+    app_pid = 2468 if app_state == "running" else None
+    app_executable = (
+        "/private/var/folders/xx/AppTranslocation/ABC/d/"
+        "journal.app/Contents/MacOS/journal"
+        if app_pid is not None
+        else None
+    )
+    evidence = service.SupervisorConflictEvidence(
+        plist_path=plist_path,
+        plist_state=plist_state,
+        label_state=label_state,
+        label_pid=label_pid,
+        app_state=app_state,
+        app_pid=app_pid,
+        app_executable=app_executable,
+        detail=(
+            f"plist_path={plist_path} plist_state={plist_state}; "
+            f"launchd_label={label_state} pid={label_pid or 'none'}; "
+            f"journal_app={app_state} pid={app_pid or 'none'} "
+            f"exe={app_executable or 'none'}"
+        ),
+    )
+    monkeypatch.setattr(doctor, "inspect_supervisor_conflict", lambda: evidence)
+
+    result = doctor.supervisor_conflict_check(args(doctor))
+
+    assert result.status == expected_status
+    if expected_status == "fail":
+        assert result.fix == "journal service uninstall"
+        assert "macOS supervisor conflict" in result.detail
+    elif expected_status == "warn":
+        assert result.fix is None
+        for axis in unknown_axes:
+            assert axis in result.detail
+    else:
+        assert result.fix is None
+        assert "no macOS supervisor conflict" in result.detail
+
+
+def test_supervisor_conflict_grid_counts():
+    counts = {
+        status: sum(
+            1
+            for *_states, row_status, _axes in SUPERVISOR_CONFLICT_GRID
+            if row_status == status
+        )
+        for status in {"fail", "ok", "warn"}
+    }
+
+    assert counts == {"fail": 8, "ok": 7, "warn": 21}
+
+
+def test_conflict_report_suppresses_orthogonal_upgrade_fix(
+    doctor, monkeypatch, home_root
+):
+    plist_path = write_legacy_plist(home_root, ["/tmp/legacy-journal", "start"])
+    app_executable = (
+        "/private/var/folders/xx/AppTranslocation/ABC/d/"
+        "journal.app/Contents/MacOS/journal"
+    )
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=0,
+            stdout="\tpid = 12345\n",
+            stderr="",
+        ),
+        processes=[_FakeProcess(pid=4242, exe=app_executable)],
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_installed_packaging_versions",
+        lambda: {
+            "solstone": "2.0.0",
+            "solstone-journal": "1.0.0",
+            "solstone-journal-cuda": None,
+            "solstone-journal-host": None,
+        },
+    )
+    before = tree_snapshot(home_root)
+
+    results = doctor.run_checks(
+        args(doctor),
+        checks=[
+            (doctor.SUPERVISOR_CONFLICT_CHECK, doctor.supervisor_conflict_check),
+            (
+                doctor.JOURNAL_PACKAGE_VERSION_CHECK,
+                doctor.journal_package_version_check,
+            ),
+        ],
+    )
+
+    assert tree_snapshot(home_root) == before
+    by_name = {result.name: result for result in results}
+    assert by_name["supervisor_conflict"].status == "fail"
+    assert by_name["supervisor_conflict"].fix == "journal service uninstall"
+    assert str(plist_path) in by_name["supervisor_conflict"].detail
+    assert "plist_state=present" in by_name["supervisor_conflict"].detail
+    assert "launchd_label=loaded pid=12345" in by_name["supervisor_conflict"].detail
+    assert (
+        f"journal_app=running pid=4242 exe={app_executable}"
+        in by_name["supervisor_conflict"].detail
+    )
+    drift = by_name["journal_package_version"]
+    assert drift.status == "fail"
+    assert "journal package version mismatch" in drift.detail
+    assert "solstone 2.0.0" in drift.detail
+    assert drift.fix == doctor._SUPERVISOR_CONFLICT_FIX_POINTER
+    fixes = {result.fix for result in results if result.fix}
+    assert fixes == {
+        "journal service uninstall",
+        doctor._SUPERVISOR_CONFLICT_FIX_POINTER,
+    }
+    fix_text = "\n".join(fixes)
+    assert "pip install --upgrade" not in fix_text
+    assert "journal setup" not in fix_text
+    assert "journal service install" not in fix_text
+    assert "journal service start" not in fix_text
+    assert "journal service restart" not in fix_text
+
+
+def test_conflict_full_journal_report_suppresses_every_other_fix(
+    doctor, monkeypatch, tmp_path, home_root
+):
+    from solstone.think import pipeline_health
+
+    journal = tmp_path / "journal"
+    journal.mkdir()
+    write_legacy_plist(home_root, ["/tmp/missing-journal", "start"])
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=0,
+            stdout="\tpid = 12345\n",
+            stderr="",
+        ),
+        processes=[
+            _FakeProcess(
+                pid=4242,
+                exe="/Applications/journal.app/Contents/MacOS/journal",
+            )
+        ],
+    )
+    monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "test"))
+    monkeypatch.setattr(doctor, "_host_module_present", lambda _module: True)
+    monkeypatch.setattr(doctor, "service_is_installed", lambda: True)
+    monkeypatch.setattr(
+        doctor,
+        "check_service_target_identity",
+        lambda: SimpleNamespace(
+            installed=True,
+            target="/tmp/current/journal",
+            matches_current_install=True,
+            detail="service target matches current install",
+        ),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "fetch_supervisor_status",
+        lambda: {"crashed": [], "tasks": []},
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_installed_packaging_versions",
+        lambda: {
+            "solstone": "2.0.0",
+            "solstone-journal": "1.0.0",
+            "solstone-journal-cuda": None,
+            "solstone-journal-host": None,
+        },
+    )
+    monkeypatch.setattr(
+        doctor,
+        "check_journal_sync",
+        lambda: SimpleNamespace(is_conflict=False),
+    )
+    monkeypatch.setattr(doctor, "format_doctor_report", lambda _result: "synced")
+    monkeypatch.setattr(
+        pipeline_health,
+        "read_backlog_view",
+        lambda: SimpleNamespace(
+            days=[],
+            errors=[],
+            pending_days=0,
+            stuck_days=0,
+            oldest_pending_day=None,
+        ),
+    )
+    monkeypatch.setattr("solstone.apps.observer.utils.list_observers", lambda: [])
+
+    results = doctor.run_checks(args(doctor), checks=doctor.JOURNAL_CHECKS)
+
+    by_name = {result.name: result for result in results}
+    assert by_name["supervisor_conflict"].status == "fail"
+    for result in results:
+        if result.name == "supervisor_conflict":
+            continue
+        assert result.fix in {None, doctor._SUPERVISOR_CONFLICT_FIX_POINTER}
+    suppressed = [
+        result.name
+        for result in results
+        if result.name != "supervisor_conflict"
+        and result.fix == doctor._SUPERVISOR_CONFLICT_FIX_POINTER
+    ]
+    assert suppressed, "no fix was suppressed; the test proves nothing"
+
+    fix_text = "\n".join(result.fix or "" for result in results)
+    for token in doctor._UNSAFE_SERVICE_ACTIONS:
+        assert token not in fix_text
+    assert "rm " not in fix_text
+    assert "pip install --upgrade" not in fix_text
+
+
+def test_unknown_topology_suppresses_only_service_lifecycle_fixes(
+    doctor, monkeypatch, home_root
+):
+    write_legacy_plist(home_root, ["/tmp/missing-journal", "start"])
+    force_darwin_supervisor_reader(
+        doctor,
+        monkeypatch,
+        launchctl=subprocess.CompletedProcess(
+            args=["launchctl"],
+            returncode=5,
+            stdout="",
+            stderr="opaque launchctl failure",
+        ),
+    )
+    monkeypatch.setattr(
+        service.psutil,
+        "process_iter",
+        lambda: (_ for _ in ()).throw(service.psutil.Error("boom")),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_installed_packaging_versions",
+        lambda: {
+            "solstone": "2.0.0",
+            "solstone-journal": "1.0.0",
+            "solstone-journal-cuda": None,
+            "solstone-journal-host": None,
+        },
+    )
+    before = tree_snapshot(home_root)
+
+    results = doctor.run_checks(
+        args(doctor),
+        checks=[
+            (doctor.SUPERVISOR_CONFLICT_CHECK, doctor.supervisor_conflict_check),
+            (doctor.LAUNCHD_STALE_PLIST_CHECK, doctor.launchd_stale_plist_check),
+            (
+                doctor.JOURNAL_PACKAGE_VERSION_CHECK,
+                doctor.journal_package_version_check,
+            ),
+        ],
+    )
+
+    assert tree_snapshot(home_root) == before
+    by_name = {result.name: result for result in results}
+    assert by_name["supervisor_conflict"].status == "warn"
+    assert "unknown axis(es): label, app" in by_name["supervisor_conflict"].detail
+    stale = by_name["launchd_stale_plist"]
+    assert stale.status == "fail"
+    assert "plist points to missing executable" in stale.detail
+    assert stale.fix == doctor._SUPERVISOR_TOPOLOGY_WARN_POINTER
+    drift = by_name["journal_package_version"]
+    assert drift.status == "fail"
+    assert "journal package version mismatch" in drift.detail
+    assert "pip install --upgrade solstone-journal" in (drift.fix or "")
+
+    fix_text = "\n".join(result.fix or "" for result in results)
+    assert "journal service uninstall" not in fix_text
+    for token in doctor._UNSAFE_SERVICE_ACTIONS:
+        assert token not in fix_text
+
+
+def test_unsafe_service_action_match_does_not_match_uninstall(doctor):
+    assert not doctor._fix_mentions_unsafe_service_action("journal service uninstall")
+    assert doctor._fix_mentions_unsafe_service_action("journal service install")
+    assert doctor._fix_mentions_unsafe_service_action("journal service start")
+    assert doctor._fix_mentions_unsafe_service_action("journal service restart")
+    assert doctor._fix_mentions_unsafe_service_action("journal setup")
+
+
 def test_role_skip_without_local_journal(doctor, monkeypatch, tmp_path, home_root):
     journal = tmp_path / "missing-journal"
     monkeypatch.setattr(doctor, "get_journal_info", lambda: (str(journal), "env"))
@@ -544,6 +937,12 @@ class TestLaunchdStalePlist:
         )
         result = doctor.launchd_stale_plist_check(args(doctor))
         assert result.status == "fail"
+        assert result.fix == (
+            "run journal service uninstall, then run journal service install "
+            "separately to reinstall a headless background service"
+        )
+        assert "journal setup" not in (result.fix or "")
+        assert "&&" not in (result.fix or "")
 
     def test_ok_when_target_exists(self, doctor, monkeypatch, home_root, tmp_path):
         monkeypatch.setattr(doctor, "platform_tag", lambda: "darwin")

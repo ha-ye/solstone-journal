@@ -273,10 +273,16 @@ instead of false failures. Its battery is:
 
 - `disk_space` — advisory.
 - `host_dependencies`, `config_dir_readable`, `journal_dir_writable`,
-  `service_identity`, `service_running`, `journal_sync`,
+  `supervisor_conflict`, `service_identity`, `service_running`, `journal_sync`,
   `stale_alias_symlink` — blockers.
   Stale `journal` aliases warn, never block, and `journal setup` repairs them.
-- `launchd_stale_plist` — advisory on macOS; skipped on Linux.
+- `supervisor_conflict` — macOS only; fails when journal.app and the legacy
+  LaunchAgent are both supervising one journal. The proven-conflict action is
+  `journal service uninstall`; other diagnoses remain visible with their actions
+  withheld until the topology is resolved.
+- `launchd_stale_plist` — advisory on macOS; skipped on Linux. It advises
+  removing the legacy service first and reinstalling the headless service only
+  as a separate step.
 - `feature:pdf-import`, `feature:pdf-export`, `feature:whisper` — advisories with the exact extra-install
   command when missing.
 

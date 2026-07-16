@@ -5,7 +5,7 @@
 # Usage:
 #   ./run-test.sh                          # default: smoke (verify systemd --user only)
 #   ./run-test.sh smoke                    # tiny user unit, no solstone install
-#   ./run-test.sh install [extra-args]     # full: uv tool host install && journal setup
+#   ./run-test.sh install [extra-args]     # full: uv tool host install, then journal setup
 #   ./run-test.sh observer-ingest          # install + setup + real observer ingest round-trip
 #   ./run-test.sh legacy-upgrade           # install, but seed a legacy non-symlink
 #                                          #   wrapper first; assert setup self-heals it

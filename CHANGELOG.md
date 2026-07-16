@@ -22,6 +22,7 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 - the settings page's data included whether cloud thinking keys were set. it no longer does; thinking is the only place that holds provider configuration.
 - pointing thinking at your own compatible endpoint is more dependable: requests no longer carry local-only fields some endpoints rejected, and an endpoint that can't be reached now says so quickly instead of timing out.
 - the bundled local model now downloads at full speed on first setup; some installs saw it crawl at a fraction of their connection's speed.
+- `journal doctor` now detects when the macOS app and the legacy background service both target one journal, and points to the single service removal step before other repair actions.
 
 ## [0.8.7] - 2026-07-15
 
