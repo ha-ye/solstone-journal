@@ -201,7 +201,7 @@
     }, { minSpanDays: 70, minActiveDays: 14 });
     assert('gate accepts enough data', ok.ok === true);
 
-    let mounted = mount(multiYearData(), { today: '20260102', monthLinks: true });
+    let mounted = mount(multiYearData(), { today: '20251230', monthLinks: true });
     let root = mounted.root;
     await frame();
     const blocks = Array.from(root.querySelectorAll('.daygrid-year-block'));
@@ -221,11 +221,18 @@
 
     const target = root.querySelector(`[data-daygrid-date="${root.__dayGridScrollTarget}"]`);
     const scroller = root.querySelector('.daygrid-scroller');
+    const targetRect = target.getBoundingClientRect();
+    const scrollerRect = scroller.getBoundingClientRect();
+    assert(
+      'scroll anchor offset parent is scroller',
+      target.offsetParent === scroller,
+      `offset parent ${target.offsetParent?.className || 'null'}`
+    );
     assert(
       'scroll anchor target visible',
-      target.offsetLeft >= scroller.scrollLeft &&
-        target.offsetLeft + target.offsetWidth <= scroller.scrollLeft + scroller.clientWidth,
-      `target ${target.offsetLeft}-${target.offsetLeft + target.offsetWidth}, visible ${scroller.scrollLeft}-${scroller.scrollLeft + scroller.clientWidth}`
+      targetRect.left >= scrollerRect.left - 0.5 &&
+        targetRect.right <= scrollerRect.right + 0.5,
+      `target ${targetRect.left}-${targetRect.right}, visible ${scrollerRect.left}-${scrollerRect.right}`
     );
 
     const dec31 = root.querySelector('[data-daygrid-date="20241231"]');
@@ -246,7 +253,7 @@
     equal('ctrl t does not move focus', document.activeElement.dataset.daygridDate, '20251231');
     equal('ctrl t is not prevented', modifiedT.defaultPrevented, false);
     keydown(document.activeElement, 't');
-    equal('t focuses today', document.activeElement.dataset.daygridDate, '20260102');
+    equal('t focuses today', document.activeElement.dataset.daygridDate, '20251230');
     mounted = mount(multiYearData(), { today: '20270101' });
     root = mounted.root;
     const beforeT = root.querySelector('[data-daygrid-date="20250107"]');
@@ -305,7 +312,30 @@
     observed = tapObserved(mounted.host, secondCell);
     assert('different cell mid-peek re-peeks', observed?.defaultPrevented === true);
     equal('different cell peek text', root.querySelector('.daygrid-peek').textContent.includes('2026-01-02'), true);
-    observed = clickObserved(mounted.host, root.querySelector('.daygrid-peek-open'), 1);
+    const openLink = root.querySelector('.daygrid-peek-open');
+    openLink.scrollIntoView({ block: 'center', inline: 'nearest' });
+    const openRect = openLink.getBoundingClientRect();
+    const openHit = document.elementFromPoint(
+      openRect.left + openRect.width / 2,
+      openRect.top + openRect.height / 2
+    );
+    assert(
+      'peek open hit-tests to link',
+      openHit === openLink || openLink.contains(openHit),
+      `hit ${openHit?.tagName || 'null'}`
+    );
+    const peekLabel = root.querySelector('.daygrid-peek > span');
+    const labelRect = peekLabel.getBoundingClientRect();
+    const labelHit = document.elementFromPoint(
+      labelRect.left + Math.min(8, labelRect.width / 2),
+      labelRect.top + labelRect.height / 2
+    );
+    assert(
+      'peek text is not interactive',
+      !labelHit?.closest?.('a[href], button, [role="button"]'),
+      `hit ${labelHit?.tagName || 'null'}`
+    );
+    observed = clickObserved(mounted.host, openLink, 1);
     assert('peek open navigates', observed?.defaultPrevented === false);
     tapObserved(mounted.host, cell);
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
