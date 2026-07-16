@@ -219,6 +219,28 @@
     assert('month labels are bare months', labels.every((label) => /^[A-Z][a-z]{2}$/.test(label.textContent)));
     equal('month href keeps YYYYMM', labels[0].getAttribute('href'), '/app/timeline/202601');
 
+    // Consecutive months share the week column that straddles them, so placing a
+    // label across its own first..last day makes neighbours overlap and grid wraps
+    // the row in two. Ranges must be disjoint, and every label on one row.
+    for (const block of blocks) {
+      const year = block.querySelector('.daygrid-year-label').textContent;
+      const monthLabels = Array.from(block.querySelectorAll('.daygrid-months a'));
+      equal(`twelve month labels ${year}`, monthLabels.length, 12);
+      const tops = new Set(monthLabels.map((label) => Math.round(label.getBoundingClientRect().top)));
+      equal(`month labels share one row ${year}`, tops.size, 1);
+      const columns = monthLabels.map((label) => {
+        const start = Number(label.style.gridColumnStart);
+        const span = Number(/span (\d+)/.exec(label.style.gridColumnEnd)?.[1] || 1);
+        return { start, end: start + span - 1 };
+      });
+      const disjoint = columns.every((range, index) => index === 0 || range.start > columns[index - 1].end);
+      assert(
+        `month column ranges disjoint ${year}`,
+        disjoint,
+        columns.map((range) => `${range.start}-${range.end}`).join(' ')
+      );
+    }
+
     const target = root.querySelector(`[data-daygrid-date="${root.__dayGridScrollTarget}"]`);
     const scroller = root.querySelector('.daygrid-scroller');
     const targetRect = target.getBoundingClientRect();

@@ -89,13 +89,18 @@
   white-space: nowrap;
 }
 
+/* grid-row pins every label to the one label row. Month column ranges are disjoint
+   by construction; this keeps a future placement bug from silently wrapping the row
+   onto a second line instead of rendering visibly wrong. */
 .daygrid-months span {
+  grid-row: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .daygrid-months a {
+  grid-row: 1;
   min-width: 0;
   overflow: hidden;
   color: inherit;

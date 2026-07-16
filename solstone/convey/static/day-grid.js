@@ -160,15 +160,6 @@
     return `${String(appPath || '').replace(/\/+$/, '')}/${value}`;
   }
 
-  function spanWeeks(gridStart, start, end) {
-    const startSunday = sundayOf(start);
-    const endSunday = sundayOf(end);
-    if (!startSunday || !endSunday) return { start: 1, length: 1 };
-    const startIndex = Math.floor((daysInSpan(gridStart, startSunday) - 1) / 7) + 1;
-    const endIndex = Math.floor((daysInSpan(gridStart, endSunday) - 1) / 7) + 1;
-    return { start: startIndex, length: Math.max(1, endIndex - startIndex + 1) };
-  }
-
   function yearDay(year, suffix) {
     return `${String(year).padStart(4, '0')}${suffix}`;
   }
@@ -178,24 +169,49 @@
     return sunday ? addDays(sunday, 6) : null;
   }
 
+  // A week column belongs to exactly one month: the month of its Saturday. Placing
+  // labels by the month's own first/last day instead lets consecutive months claim
+  // the same straddling column, and grid resolves that overlap by wrapping the
+  // label row onto a second line.
+  function monthColumnRanges(block) {
+    const ranges = new Map();
+    const december = `${String(block.year).padStart(4, '0')}12`;
+    let cursor = block.gridStart;
+    let index = 1;
+    while (cursor && cursor <= block.gridEnd) {
+      const saturday = addDays(cursor, 6);
+      if (!saturday) break;
+      // the block's trailing column can end in January of the next year — keep it
+      // with December so the last week of the year still carries a label
+      const key = saturday.slice(0, 4) === String(block.year).padStart(4, '0')
+        ? saturday.slice(0, 6)
+        : december;
+      const range = ranges.get(key);
+      if (range) range.end = index;
+      else ranges.set(key, { start: index, end: index });
+      cursor = addDays(cursor, 7);
+      index += 1;
+    }
+    return ranges;
+  }
+
   function renderMonthLabels(block, config) {
     const row = document.createElement('div');
     row.className = 'daygrid-months';
     if (!config.monthLinks) row.setAttribute('aria-hidden', 'true');
 
+    const ranges = monthColumnRanges(block);
     let month = `${String(block.year).padStart(4, '0')}01`;
     const lastMonth = `${String(block.year).padStart(4, '0')}12`;
     while (month <= lastMonth) {
-      const monthStart = `${month}01`;
-      const monthEnd = lastOfMonth(monthStart);
-      if (monthEnd) {
-        const weeks = spanWeeks(block.gridStart, monthStart, monthEnd);
+      const range = ranges.get(month);
+      if (range) {
         const label = config.monthLinks
           ? document.createElement('a')
           : document.createElement('span');
         label.textContent = monthLabel(month);
-        label.style.gridColumnStart = String(weeks.start);
-        label.style.gridColumnEnd = `span ${weeks.length}`;
+        label.style.gridColumnStart = String(range.start);
+        label.style.gridColumnEnd = `span ${range.end - range.start + 1}`;
         if (config.monthLinks) label.href = joinPath(config.appPath, month);
         row.appendChild(label);
       }
