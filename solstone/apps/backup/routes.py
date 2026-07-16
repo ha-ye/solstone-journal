@@ -62,12 +62,9 @@ from solstone.think.backup.state import (
 from solstone.think.backup.teardown import teardown_backup
 from solstone.think.offload_restore import (
     build_offload_status,
-)
-from solstone.think.offload_restore import (
-    restore_all as restore_offload_all,
-)
-from solstone.think.offload_restore import (
-    restore_day as restore_offload_day,
+    measure_offload_status,
+    restore_all,
+    restore_day,
 )
 from solstone.think.services.spb_handoff import (
     build_spb_handoff_url,
@@ -120,7 +117,7 @@ class OpOutcome:
 _REGISTRY_LOCK = threading.Lock()
 _REGISTRY: dict[str, OperationEntry] = {}
 _MEASUREMENT_LOCK = threading.Lock()
-_MEASUREMENT_CACHE: tuple[float, dict[str, Any]] | None = None
+_MEASUREMENT_CACHE: tuple[float, Any] | None = None
 
 
 def _clear_registry() -> None:
@@ -134,7 +131,7 @@ def _clear_measurement_cache() -> None:
         _MEASUREMENT_CACHE = None
 
 
-def _offload_status_snapshot() -> dict[str, Any]:
+def _cached_offload_measurement() -> Any:
     global _MEASUREMENT_CACHE
     now = time.monotonic()
     with _MEASUREMENT_LOCK:
@@ -142,10 +139,17 @@ def _offload_status_snapshot() -> dict[str, Any]:
             _MEASUREMENT_CACHE is not None
             and _MEASUREMENT_CACHE[0] + MEASUREMENT_CACHE_TTL_SECONDS >= now
         ):
-            return {**_MEASUREMENT_CACHE[1], "operation": _current_operation()}
-        snapshot = build_offload_status()
-        _MEASUREMENT_CACHE = (now, snapshot)
-        return {**snapshot, "operation": _current_operation()}
+            return _MEASUREMENT_CACHE[1]
+        measurement = measure_offload_status()
+        _MEASUREMENT_CACHE = (now, measurement)
+        return measurement
+
+
+def _offload_status_snapshot() -> dict[str, Any]:
+    return {
+        **build_offload_status(_cached_offload_measurement()),
+        "operation": _current_operation(),
+    }
 
 
 def _sweep_operations_locked(now: float) -> None:
@@ -566,14 +570,14 @@ def offload_restore() -> tuple[dict[str, Any], int] | tuple[Response, int]:
     if payload.get("all") is True:
         if "day" in payload:
             return error_response(INVALID_REQUEST_VALUE)
-        thunk = restore_offload_all
+        thunk = restore_all
     else:
         day = _valid_restore_day(payload.get("day"))
         if day is None:
             return error_response(INVALID_DAY)
 
         def thunk() -> Any:
-            return restore_offload_day(day)
+            return restore_day(day)
 
     return _start_long_op(
         "offload_restore",

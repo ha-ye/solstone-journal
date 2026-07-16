@@ -42,12 +42,8 @@ from solstone.think.backup.teardown import teardown_backup
 from solstone.think.offload import OffloadResult, run_offload
 from solstone.think.offload_restore import (
     build_offload_status,
-)
-from solstone.think.offload_restore import (
-    restore_all as restore_offload_all,
-)
-from solstone.think.offload_restore import (
-    restore_day as restore_offload_day,
+    restore_all,
+    restore_day,
 )
 from solstone.think.utils import init_cli_runtime
 
@@ -412,7 +408,7 @@ def offload_restore(
     if not all_ and day is None:
         _die("Provide a day or --all.")
     try:
-        result = restore_offload_all() if all_ else restore_offload_day(str(day))
+        result = restore_all() if all_ else restore_day(str(day))
     except ValueError:
         _die("Invalid day.")
     if json_output:

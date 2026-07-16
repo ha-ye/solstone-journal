@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,6 +33,8 @@ from solstone.think.offload_ledger import (
     summarize_journal,
 )
 from solstone.think.offload_measurement import (
+    RawMediaUsage,
+    SuggestedOffloadDefaults,
     device_free_bytes,
     device_total_bytes,
     measure_raw_media_usage,
@@ -58,6 +60,7 @@ OFFLOAD_RESTORE_REASONS = frozenset(
         "repo_missing",
         "restic_unavailable",
         "rclone_unavailable",
+        "segment_missing",
         "timeout",
         "verification_failed",
     }
@@ -93,6 +96,14 @@ class OffloadRestoreResult:
     details: tuple[OffloadRestoreSegmentResult, ...]
 
 
+@dataclass(frozen=True)
+class OffloadStatusMeasurement:
+    usage: RawMediaUsage
+    free_bytes: int
+    total_bytes: int
+    suggested_defaults: SuggestedOffloadDefaults
+
+
 def restore_day(day: str) -> OffloadRestoreResult:
     _validate_day(day)
     summary = summarize_day(day)
@@ -120,16 +131,26 @@ def restore_all() -> OffloadRestoreResult:
     return _record_result(_restore("all", None, segments))
 
 
-def build_offload_status() -> dict[str, Any]:
-    config = get_backup_config()
+def measure_offload_status() -> OffloadStatusMeasurement:
     usage = measure_raw_media_usage()
     total_bytes = device_total_bytes()
-    free_bytes = device_free_bytes()
-    defaults = suggest_offload_defaults(total_bytes)
+    return OffloadStatusMeasurement(
+        usage=usage,
+        free_bytes=device_free_bytes(),
+        total_bytes=total_bytes,
+        suggested_defaults=suggest_offload_defaults(total_bytes),
+    )
+
+
+def build_offload_status(
+    measurement: OffloadStatusMeasurement | None = None,
+) -> dict[str, Any]:
+    measurement = measure_offload_status() if measurement is None else measurement
+    config = get_backup_config()
     ledger = summarize_journal()
     raw_by_day = {
         day.day: {"raw_media_bytes": day.bytes, "raw_media_files": day.files}
-        for day in usage.per_day
+        for day in measurement.usage.per_day
     }
     offloaded_by_day = {
         day.day: {
@@ -150,16 +171,16 @@ def build_offload_status() -> dict[str, Any]:
         "last_verification": config["last_verification"],
         "last_restore": config["last_restore"],
         "device": {
-            "free_bytes": free_bytes,
-            "total_bytes": total_bytes,
+            "free_bytes": measurement.free_bytes,
+            "total_bytes": measurement.total_bytes,
         },
         "suggested_defaults": {
-            "budget_bytes": defaults.budget_bytes,
-            "floor_bytes": defaults.floor_bytes,
+            "budget_bytes": measurement.suggested_defaults.budget_bytes,
+            "floor_bytes": measurement.suggested_defaults.floor_bytes,
         },
         "raw_media": {
-            "total_bytes": usage.total_bytes,
-            "total_files": usage.total_files,
+            "total_bytes": measurement.usage.total_bytes,
+            "total_files": measurement.usage.total_files,
         },
         "backup_only": {
             "total_bytes": ledger.offloaded_bytes,
@@ -192,10 +213,6 @@ def build_offload_status() -> dict[str, Any]:
             for day in days
         ],
     }
-
-
-def result_payload(result: OffloadRestoreResult) -> dict[str, Any]:
-    return asdict(result)
 
 
 def _validate_day(day: str) -> None:
@@ -344,7 +361,7 @@ def _restore_segment(
         segment=summary.segment,
     )
     if not segment_dir.is_dir():
-        return _segment_error(summary, "failed")
+        return _segment_error(summary, "segment_missing")
 
     include_args: list[str] = []
     for file in summary.files:
@@ -369,6 +386,7 @@ def _restore_segment(
         timeout=OFFLOAD_RESTORE_TIMEOUT_SECONDS,
     )
     if result.returncode != 0:
+        _rollback_attempted_files(segment_dir, summary.files)
         return _segment_error(summary, reason_for_returncode(result.returncode))
 
     reason = _verification_reason(segment_dir, summary.files)
@@ -556,10 +574,11 @@ __all__ = [
     "OFFLOAD_RESTORE_STATUSES",
     "OFFLOAD_RESTORE_TIMEOUT_SECONDS",
     "RESTORE_RESERVE_BYTES",
+    "OffloadStatusMeasurement",
     "OffloadRestoreResult",
     "OffloadRestoreSegmentResult",
     "build_offload_status",
+    "measure_offload_status",
     "restore_all",
     "restore_day",
-    "result_payload",
 ]
