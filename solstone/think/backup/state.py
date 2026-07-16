@@ -39,6 +39,11 @@ BACKUP_DEFAULTS: dict[str, Any] = {
         "weekly": 4,
         "monthly": 12,
     },
+    "offload": {
+        "enabled": False,
+        "budget_bytes": None,
+        "floor_bytes": None,
+    },
     "schedule": {
         "every": "daily",
         "enabled": False,
@@ -54,8 +59,23 @@ BACKUP_DEFAULTS: dict[str, Any] = {
         "status": None,
         "error_reason": None,
     },
+    # Offload records use "reason" instead of "error_reason" because skipped
+    # and stalled are expected outcomes, not errors.
+    "last_offload": {
+        "time": None,
+        "status": None,
+        "reason": None,
+    },
+    "last_verification": {
+        "time": None,
+        "status": None,
+        "reason": None,
+    },
 }
+OFFLOAD_KEYS = ("enabled", "budget_bytes", "floor_bytes")
+OFFLOAD_STATUSES = ("ok", "skipped", "stalled", "error")
 RETENTION_KEYS = ("hourly", "daily", "weekly", "monthly")
+VERIFICATION_STATUSES = ("ok", "skipped", "error")
 
 
 @dataclass(frozen=True)
@@ -200,6 +220,33 @@ def set_retention(retention: dict[str, int]) -> None:
         write_journal_config(config)
 
 
+def set_offload(offload: dict[str, Any]) -> None:
+    if not isinstance(offload, dict):
+        raise ValueError("backup offload must be a JSON object")
+    if set(offload) != set(OFFLOAD_KEYS):
+        raise ValueError(
+            "backup offload must include enabled, budget_bytes, floor_bytes"
+        )
+    if not isinstance(offload["enabled"], bool):
+        raise ValueError("backup offload enabled must be a boolean")
+    for key in ("budget_bytes", "floor_bytes"):
+        value = offload[key]
+        if value is not None and (type(value) is not int or value <= 0):
+            raise ValueError(
+                "backup offload byte values must be positive integers or null"
+            )
+
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["offload"] = {
+            "enabled": offload["enabled"],
+            "budget_bytes": offload["budget_bytes"],
+            "floor_bytes": offload["floor_bytes"],
+        }
+        write_journal_config(config)
+
+
 def set_recovery_key(recovery_key: str) -> None:
     with hold_config_lock():
         config = read_journal_config()
@@ -251,6 +298,56 @@ def record_prune_result(
         write_journal_config(config)
 
 
+def record_offload_result(
+    *,
+    status: str,
+    time: int | None,
+    reason: str | None = None,
+) -> None:
+    """Record the last media-offload run.
+
+    Convention: reason is None on ok. This layer only enforces the closed
+    status vocabulary; callers own richer run-state validation.
+    """
+    if status not in OFFLOAD_STATUSES:
+        raise ValueError("backup offload status must be ok, skipped, stalled, or error")
+
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["last_offload"] = {
+            "time": time,
+            "status": status,
+            "reason": reason,
+        }
+        write_journal_config(config)
+
+
+def record_verification_result(
+    *,
+    status: str,
+    time: int | None,
+    reason: str | None = None,
+) -> None:
+    """Record the last media-offload verification run.
+
+    Convention: reason is None on ok. This layer only enforces the closed
+    status vocabulary; callers own richer run-state validation.
+    """
+    if status not in VERIFICATION_STATUSES:
+        raise ValueError("backup verification status must be ok, skipped, or error")
+
+    with hold_config_lock():
+        config = read_journal_config()
+        backup = _writable_backup_section(config)
+        backup["last_verification"] = {
+            "time": time,
+            "status": status,
+            "reason": reason,
+        }
+        write_journal_config(config)
+
+
 def status_view() -> dict[str, Any]:
     config = get_backup_config()
     destination = config["destination"]
@@ -275,9 +372,12 @@ def status_view() -> dict[str, Any]:
         "recovery_key_set": config["recovery_key"] is not None,
         "recovery_key_confirmed": bool(config["confirmed_recovery_key"]),
         "retention": config["retention"],
+        "offload": config["offload"],
         "schedule": config["schedule"],
         "last_backup": config["last_backup"],
         "last_prune": config["last_prune"],
+        "last_offload": config["last_offload"],
+        "last_verification": config["last_verification"],
         "hosted": hosted,
     }
 
@@ -285,16 +385,22 @@ def status_view() -> dict[str, Any]:
 __all__ = [
     "BACKUP_DEFAULTS",
     "BackupKeys",
+    "OFFLOAD_KEYS",
+    "OFFLOAD_STATUSES",
+    "VERIFICATION_STATUSES",
     "clear_backup_config",
     "generate_and_store_keys",
     "get_backup_config",
     "get_destination",
     "get_keys",
     "record_backup_result",
+    "record_offload_result",
     "record_prune_result",
+    "record_verification_result",
     "set_destination",
     "set_enabled",
     "set_mode",
+    "set_offload",
     "set_recovery_key",
     "set_recovery_key_confirmed",
     "set_retention",
