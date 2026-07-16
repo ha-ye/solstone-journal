@@ -824,7 +824,11 @@ def test_run_verification_does_not_modify_backup_prune_or_offload_state(
     config["backup"]["last_offload"] = {
         "time": 3,
         "status": "stalled",
-        "reason": "no_progress",
+        "reason": "backup_not_ready",
+        "last_ok_time": 2,
+        "files_offloaded": 0,
+        "bytes_offloaded": 0,
+        "ran_out_of_media": False,
     }
     _write_config(tmp_path, config)
     ledger_path = tmp_path / "health" / "offload" / "20260101.jsonl"
@@ -1091,7 +1095,7 @@ def test_archive_backup_uses_explicit_targets_and_tag_matches_prune_keep_tag(
         calls.append((args, kwargs))
         if args == ["unlock"]:
             return _restic_result(0, args=args)
-        if args and args[0] == "backup":
+        if "backup" in args:
             return _restic_result(
                 0,
                 parsed_json={
@@ -1118,10 +1122,12 @@ def test_archive_backup_uses_explicit_targets_and_tag_matches_prune_keep_tag(
         error_reason=None,
     )
     assert calls[0][0] == ["unlock"]
-    archive_call = next(call for call in calls if call[0][0] == "backup")
+    archive_call = next(call for call in calls if "backup" in call[0])
     archive_args = archive_call[0]
     assert archive_call == (
         [
+            "--retry-lock",
+            engine.ARCHIVE_RETRY_LOCK,
             "backup",
             str(targets[0]),
             str(targets[1]),
@@ -1205,6 +1211,8 @@ def test_archive_backup_failures_do_not_record_or_persist(
     )
     assert calls[0][0] == ["unlock"]
     assert calls[1][0] == [
+        "--retry-lock",
+        engine.ARCHIVE_RETRY_LOCK,
         "backup",
         "/archive/a.mov",
         "--tag",
@@ -1710,7 +1718,11 @@ def test_operated_archive_backup_and_check_use_append_only_scope(
         "-o",
         "rclone.args=serve restic --stdio --append-only --config /dev/null",
     ]
-    assert archive_call[0][4] == "backup"
+    assert archive_call[0][4:7] == [
+        "--retry-lock",
+        engine.ARCHIVE_RETRY_LOCK,
+        "backup",
+    ]
     ls_call = next(call for call in calls if "ls" in call[0])
     assert ls_call[0][:4] == [
         "-o",

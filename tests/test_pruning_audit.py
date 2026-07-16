@@ -94,6 +94,14 @@ def test_write_prune_audit_reports_global_record_failure(journal, monkeypatch):
 
 
 def test_write_prune_audit_rejects_unknown_kind(journal):
+    outcome = write_prune_audit(
+        journal,
+        kind="raw_media_offload",
+        run_record={"kind": "raw_media_offload"},
+        per_day_messages={},
+    )
+    assert outcome.global_record_written is True
+
     with pytest.raises(ValueError, match="kind must be"):
         write_prune_audit(
             journal,

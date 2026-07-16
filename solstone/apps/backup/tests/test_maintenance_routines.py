@@ -11,6 +11,7 @@ from solstone.think.maintenance import (
     discover_routines,
     expected_schedule_entry,
 )
+from solstone.think.offload import OffloadResult
 
 
 def test_backup_routines_are_discovered_with_expected_schedule_entries() -> None:
@@ -19,12 +20,15 @@ def test_backup_routines_are_discovered_with_expected_schedule_entries() -> None
     assert "backup:run" in routines
     assert "backup:prune" in routines
     assert "backup:verify" in routines
+    assert "backup:offload" in routines
     assert routines["backup:run"].every == "hourly"
     assert routines["backup:run"].max_runtime == "49h"
     assert routines["backup:prune"].every == "daily"
     assert routines["backup:prune"].max_runtime == "3h"
     assert routines["backup:verify"].every == "weekly"
     assert routines["backup:verify"].max_runtime == "90m"
+    assert routines["backup:offload"].every == "daily"
+    assert routines["backup:offload"].max_runtime == "7h"
     assert expected_schedule_entry("backup:run", routines["backup:run"]) == {
         "cmd": ["journal", "maintenance", "run", "backup:run"],
         "every": "hourly",
@@ -42,6 +46,12 @@ def test_backup_routines_are_discovered_with_expected_schedule_entries() -> None
         "every": "weekly",
         "enabled": True,
         "max_runtime": "90m",
+    }
+    assert expected_schedule_entry("backup:offload", routines["backup:offload"]) == {
+        "cmd": ["journal", "maintenance", "run", "backup:offload"],
+        "every": "daily",
+        "enabled": True,
+        "max_runtime": "7h",
     }
 
 
@@ -70,26 +80,70 @@ def test_backup_routine_wrappers_require_solstone_parse_empty_args_and_return_ze
             checked_subset="7/52",
         )
     )
+    run_offload = Mock(
+        return_value=OffloadResult(
+            status="ok",
+            reason=None,
+            files_offloaded=2,
+            bytes_offloaded=50,
+            ran_out_of_media=False,
+        )
+    )
     monkeypatch.setattr(maintenance, "require_solstone", require_solstone)
     monkeypatch.setattr(maintenance, "run_backup", run_backup)
     monkeypatch.setattr(maintenance, "run_prune", run_prune)
     monkeypatch.setattr(maintenance, "run_verification", run_verification)
+    monkeypatch.setattr(maintenance, "run_offload", run_offload)
 
     backup_code = maintenance.run_backup_routine([])
     prune_code = maintenance.run_prune_routine([])
     verification_code = maintenance.run_verification_routine([])
+    offload_code = maintenance.run_offload_routine([])
 
     assert backup_code == 0
     assert prune_code == 0
     assert verification_code == 0
-    assert require_solstone.call_count == 3
+    assert offload_code == 0
+    assert require_solstone.call_count == 4
     run_backup.assert_called_once_with()
     run_prune.assert_called_once_with()
     run_verification.assert_called_once_with()
+    run_offload.assert_called_once_with(dry_run=False)
     output = capsys.readouterr().out
     assert "backup: ok snapshot_id=snap-1" in output
     assert "backup prune: error reason=locked" in output
     assert "backup verify: ok subset=7/52" in output
+    assert (
+        "backup offload: ok files_offloaded=2 bytes_offloaded=50 ran_out_of_media=False"
+    ) in output
+
+
+def test_offload_routine_wrapper_parses_dry_run_and_prints_stalls(
+    monkeypatch,
+    capsys,
+) -> None:
+    require_solstone = Mock()
+    run_offload = Mock(
+        return_value=OffloadResult(
+            status="stalled",
+            reason="locked",
+            files_offloaded=0,
+            bytes_offloaded=0,
+            ran_out_of_media=False,
+            dry_run=True,
+        )
+    )
+    monkeypatch.setattr(maintenance, "require_solstone", require_solstone)
+    monkeypatch.setattr(maintenance, "run_offload", run_offload)
+
+    code = maintenance.run_offload_routine(["--dry-run"])
+
+    assert code == 0
+    require_solstone.assert_called_once_with()
+    run_offload.assert_called_once_with(dry_run=True)
+    assert (
+        "backup offload: stalled reason=locked dry_run=true" in capsys.readouterr().out
+    )
 
 
 def test_verification_routine_wrapper_prints_skipped_and_error(

@@ -151,7 +151,15 @@ def test_offload_state_records_and_status_view(
     _write_config(tmp_path, {"backup": {}})
 
     config = state.get_backup_config()
-    assert config["last_offload"] == {"time": None, "status": None, "reason": None}
+    assert config["last_offload"] == {
+        "time": None,
+        "status": None,
+        "reason": None,
+        "last_ok_time": None,
+        "files_offloaded": 0,
+        "bytes_offloaded": 0,
+        "ran_out_of_media": False,
+    }
     assert config["last_verification"] == {
         "time": None,
         "status": None,
@@ -160,14 +168,33 @@ def test_offload_state_records_and_status_view(
         "checked_subset": None,
     }
 
-    state.record_offload_result(status="stalled", time=123, reason="no_progress")
+    state.record_offload_result(
+        status="ok",
+        time=100,
+        reason=None,
+        files_offloaded=2,
+        bytes_offloaded=50,
+        ran_out_of_media=False,
+    )
+    state.record_offload_result(
+        status="stalled",
+        time=123,
+        reason="backup_not_ready",
+        files_offloaded=1,
+        bytes_offloaded=25,
+        ran_out_of_media=False,
+    )
     state.record_verification_result(status="skipped", time=None, reason="disabled")
 
     backup = _read_config(tmp_path)["backup"]
     assert backup["last_offload"] == {
         "time": 123,
         "status": "stalled",
-        "reason": "no_progress",
+        "reason": "backup_not_ready",
+        "last_ok_time": 100,
+        "files_offloaded": 1,
+        "bytes_offloaded": 25,
+        "ran_out_of_media": False,
     }
     assert backup["last_verification"] == {
         "time": None,
@@ -177,7 +204,13 @@ def test_offload_state_records_and_status_view(
         "checked_subset": None,
     }
     with pytest.raises(ValueError):
-        state.record_offload_result(status="degraded", time=1)
+        state.record_offload_result(
+            status="degraded",
+            time=1,
+            files_offloaded=0,
+            bytes_offloaded=0,
+            ran_out_of_media=False,
+        )
     with pytest.raises(ValueError):
         state.record_verification_result(status="stalled", time=1)
 
