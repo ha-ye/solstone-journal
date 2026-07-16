@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import Mock
@@ -20,6 +21,7 @@ from solstone.think.backup.hosted import (
     save_hosted_binding,
 )
 from solstone.think.backup.runner import ResticResult
+from solstone.think.utils import parse_duration_seconds
 
 
 def _config_path(journal: Path) -> Path:
@@ -74,6 +76,27 @@ def _restic_result(
         stderr=text,
         json=parsed_json,
         argv=("restic", *(args or [])),
+    )
+
+
+def _utc_ts(
+    year: int,
+    month: int,
+    day: int,
+    hour: int = 12,
+) -> float:
+    return datetime(year, month, day, hour, tzinfo=timezone.utc).timestamp()
+
+
+def test_verification_bucket_wraps_iso_week_53() -> None:
+    assert engine._verification_bucket_for_iso_week(1) == 1
+    assert engine._verification_bucket_for_iso_week(52) == 52
+    assert engine._verification_bucket_for_iso_week(53) == 1
+
+
+def test_verification_max_runtime_exceeds_subprocess_timeout() -> None:
+    assert parse_duration_seconds(engine.VERIFY_MAX_RUNTIME) > (
+        engine.VERIFY_TIMEOUT_SECONDS
     )
 
 
@@ -609,6 +632,444 @@ def test_run_prune_restic_unavailable_records_last_prune(
         time=4000,
         error_reason="restic_unavailable",
     )
+
+
+def test_run_verification_uses_distinct_utc_week_buckets_in_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _valid_backup_config())
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    all_calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        all_calls.append((args, kwargs))
+        return _restic_result(0, args=args)
+
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+
+    monkeypatch.setattr(engine.time, "time", lambda: _utc_ts(2026, 1, 5))
+    first = engine.run_verification()
+    first_call = next(call for call in calls if call[0][0] == "check")
+    first_args = first_call[0]
+    first_subset = first_args[first_args.index("--read-data-subset") + 1]
+    calls.clear()
+
+    monkeypatch.setattr(engine.time, "time", lambda: _utc_ts(2026, 1, 12))
+    second = engine.run_verification()
+    second_call = next(call for call in calls if call[0][0] == "check")
+    second_args = second_call[0]
+    second_subset = second_args[second_args.index("--read-data-subset") + 1]
+
+    assert first.status == "ok"
+    assert second.status == "ok"
+    assert first_subset != second_subset
+    assert "--no-lock" not in first_args
+    assert "--retry-lock" not in first_args
+    assert not any("unlock" in args for args, _kwargs in all_calls)
+    assert second_call[1]["timeout"] == engine.VERIFY_TIMEOUT_SECONDS
+
+
+def test_run_verification_week_53_records_valid_subset(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _valid_backup_config())
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    now = int(_utc_ts(2026, 12, 31))
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        return _restic_result(0, args=args)
+
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine.time, "time", lambda: now)
+
+    result = engine.run_verification()
+
+    check_call = next(call for call in calls if call[0][0] == "check")
+    args = check_call[0]
+    subset = args[args.index("--read-data-subset") + 1]
+    bucket, total = subset.split("/", 1)
+    assert result == engine.VerificationResult(
+        status="ok",
+        reason=None,
+        checked_subset="1/52",
+    )
+    assert subset == "1/52"
+    assert total == "52"
+    assert 1 <= int(bucket) <= 52
+    assert bucket != "0"
+    assert _read_config(tmp_path)["backup"]["last_verification"] == {
+        "time": now,
+        "status": "ok",
+        "reason": None,
+        "last_ok_time": now,
+        "checked_subset": "1/52",
+    }
+
+
+@pytest.mark.parametrize(
+    ("returncode", "expected_reason"),
+    [
+        (1, "integrity_failed"),
+        (3, "failed"),
+        (10, "repo_missing"),
+        (11, "locked"),
+        (12, "auth_failed"),
+        (124, "timeout"),
+        (77, "failed"),
+    ],
+)
+def test_run_verification_failure_paths_record_sanitized_reasons(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    returncode: int,
+    expected_reason: str,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _valid_backup_config())
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        return _restic_result(returncode, args=args, text="raw-secret-output")
+
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine.time, "time", lambda: 7000)
+
+    result = engine.run_verification()
+
+    assert result == engine.VerificationResult(
+        status="error",
+        reason=expected_reason,
+        checked_subset=None,
+    )
+    assert _read_config(tmp_path)["backup"]["last_verification"] == {
+        "time": 7000,
+        "status": "error",
+        "reason": expected_reason,
+        "last_ok_time": None,
+        "checked_subset": None,
+    }
+    assert "raw-secret-output" != result.reason
+
+
+def test_run_verification_skip_leaves_config_bytes_identical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config = _valid_backup_config()
+    config["backup"]["enabled"] = False
+    config["backup"]["last_verification"] = {
+        "time": 100,
+        "status": "ok",
+        "reason": None,
+        "last_ok_time": 100,
+        "checked_subset": "7/52",
+    }
+    _write_config(tmp_path, config)
+    before = _config_path(tmp_path).read_bytes()
+    ensure_restic = Mock()
+    run_restic = Mock()
+    record_verification_result = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", ensure_restic)
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(
+        engine,
+        "record_verification_result",
+        record_verification_result,
+    )
+
+    result = engine.run_verification()
+
+    assert result == engine.VerificationResult(
+        status="skipped",
+        reason=None,
+        checked_subset=None,
+    )
+    assert _config_path(tmp_path).read_bytes() == before
+    ensure_restic.assert_not_called()
+    run_restic.assert_not_called()
+    record_verification_result.assert_not_called()
+
+
+def test_run_verification_does_not_modify_backup_prune_or_offload_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config = _valid_backup_config()
+    config["backup"]["last_backup"] = {
+        "time": 1,
+        "snapshot_id": "snap-1",
+        "status": "ok",
+        "error_reason": None,
+    }
+    config["backup"]["last_prune"] = {
+        "time": 2,
+        "status": "ok",
+        "error_reason": None,
+    }
+    config["backup"]["offload"] = {
+        "enabled": True,
+        "budget_bytes": 100,
+        "floor_bytes": 50,
+    }
+    config["backup"]["last_offload"] = {
+        "time": 3,
+        "status": "stalled",
+        "reason": "no_progress",
+    }
+    _write_config(tmp_path, config)
+    ledger_path = tmp_path / "health" / "offload" / "20260101.jsonl"
+    ledger_path.parent.mkdir(parents=True)
+    ledger_bytes = b'{"event_kind":"offload"}\n'
+    ledger_path.write_bytes(ledger_bytes)
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        return _restic_result(0, args=args)
+
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine.time, "time", lambda: 8000)
+
+    result = engine.run_verification()
+
+    backup = _read_config(tmp_path)["backup"]
+    assert result.status == "ok"
+    assert backup["last_backup"] == config["backup"]["last_backup"]
+    assert backup["last_prune"] == config["backup"]["last_prune"]
+    assert backup["offload"] == config["backup"]["offload"]
+    assert backup["last_offload"] == config["backup"]["last_offload"]
+    assert ledger_path.read_bytes() == ledger_bytes
+
+
+def test_operated_verification_uses_backup_scope_and_append_only_adapter(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    captured_scopes: list[str] = []
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def fake_fetch(
+        _binding: HostedBinding,
+        *,
+        scope: str,
+    ) -> HostedCredentials:
+        captured_scopes.append(scope)
+        return HostedCredentials(
+            access_key_id="AKID",
+            secret_access_key="SAK",
+            session_token="SESS",
+            endpoint="https://acct.r2.cloudflarestorage.com",
+            expires_at="2026-07-13T12:00:00Z",
+        )
+
+    def fake_run_restic(args: list[str], **kwargs: Any) -> ResticResult:
+        calls.append((args, kwargs))
+        return _restic_result(0, args=args)
+
+    monkeypatch.setattr(engine, "fetch_hosted_credentials", fake_fetch)
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "ensure_rclone", Mock(return_value=Path("/rclone")))
+    monkeypatch.setattr(engine, "run_restic", fake_run_restic)
+    monkeypatch.setattr(engine.time, "time", lambda: 9000)
+
+    result = engine.run_verification()
+
+    assert result.status == "ok"
+    assert captured_scopes == ["operated"]
+    check_call = next(call for call in calls if "check" in call[0])
+    assert check_call[0][:4] == [
+        "-o",
+        "rclone.program=/rclone",
+        "-o",
+        "rclone.args=serve restic --stdio --append-only --config /dev/null",
+    ]
+    assert check_call[0][4:6] == ["check", "--read-data-subset"]
+    assert check_call[0][6].endswith("/52")
+    assert sum(1 for args, _kwargs in calls if "unlock" in args) == 0
+
+
+def test_run_verification_restic_unavailable_records_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _valid_backup_config())
+    run_restic = Mock()
+    monkeypatch.setattr(
+        engine,
+        "ensure_restic",
+        Mock(side_effect=RuntimeError("download failed")),
+    )
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(engine.time, "time", lambda: 9100)
+
+    result = engine.run_verification()
+
+    assert result == engine.VerificationResult(
+        status="error",
+        reason="restic_unavailable",
+        checked_subset=None,
+    )
+    run_restic.assert_not_called()
+    assert _read_config(tmp_path)["backup"]["last_verification"]["reason"] == (
+        "restic_unavailable"
+    )
+
+
+def test_run_verification_malformed_backend_records_failed_without_restic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    config = _valid_backup_config()
+    del config["backup"]["destination"]["credentials"]["secret_access_key"]
+    _write_config(tmp_path, config)
+    run_restic = Mock()
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(engine.time, "time", lambda: 9200)
+
+    result = engine.run_verification()
+
+    assert result == engine.VerificationResult(
+        status="error",
+        reason="failed",
+        checked_subset=None,
+    )
+    run_restic.assert_not_called()
+    assert _read_config(tmp_path)["backup"]["last_verification"]["time"] == 9200
+
+
+def test_operated_verification_records_hosted_credential_error_without_restic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    ensure_restic = Mock(return_value=Path("/restic"))
+    run_restic = Mock()
+    monkeypatch.setattr(
+        engine,
+        "fetch_hosted_credentials",
+        Mock(side_effect=HostedCredsUnavailable("broker_unreachable")),
+    )
+    monkeypatch.setattr(engine, "ensure_restic", ensure_restic)
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(engine.time, "time", lambda: 9300)
+
+    result = engine.run_verification()
+
+    assert result.reason == "broker_unreachable"
+    ensure_restic.assert_not_called()
+    run_restic.assert_not_called()
+    assert _read_config(tmp_path)["backup"]["last_verification"]["time"] == 9300
+
+
+def test_operated_verification_rclone_unavailable_records_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(
+        tmp_path,
+        {
+            "backup": {
+                "enabled": True,
+                "mode": "operated",
+                "daily_key": "dk",
+                "recovery_key": "R" * 64,
+            }
+        },
+    )
+    save_hosted_binding(
+        HostedBinding(
+            broker_endpoint="https://broker.example",
+            account_id="acct",
+            instance_id="inst",
+            bucket="bkt",
+            prefix="users/acct/inst",
+            broker_token="BTOKEN",
+        )
+    )
+    run_restic = Mock()
+    monkeypatch.setattr(
+        engine,
+        "fetch_hosted_credentials",
+        Mock(
+            return_value=HostedCredentials(
+                access_key_id="AKID",
+                secret_access_key="SAK",
+                session_token="SESS",
+                endpoint="https://acct.r2.cloudflarestorage.com",
+                expires_at="2026-07-13T12:00:00Z",
+            )
+        ),
+    )
+    monkeypatch.setattr(engine, "ensure_restic", Mock(return_value=Path("/restic")))
+    monkeypatch.setattr(
+        engine,
+        "ensure_rclone",
+        Mock(side_effect=RuntimeError("download failed")),
+    )
+    monkeypatch.setattr(engine, "run_restic", run_restic)
+    monkeypatch.setattr(engine.time, "time", lambda: 9400)
+
+    result = engine.run_verification()
+
+    assert result.reason == "rclone_unavailable"
+    run_restic.assert_not_called()
+    assert _read_config(tmp_path)["backup"]["last_verification"]["time"] == 9400
 
 
 def test_archive_backup_uses_explicit_targets_and_tag_matches_prune_keep_tag(
@@ -1331,12 +1792,14 @@ def test_backup_and_prune_failures_do_not_persist_or_log_secrets(
 
     backup_result = engine.run_backup()
     prune_result = engine.run_prune()
+    verification_result = engine.run_verification()
 
     config = _read_config(tmp_path)
     serialized_results = json.dumps(
         {
             "last_backup": config["backup"]["last_backup"],
             "last_prune": config["backup"]["last_prune"],
+            "last_verification": config["backup"]["last_verification"],
         }
     )
     for secret in (daily_key, access_key_id, secret_access_key):
@@ -1344,6 +1807,7 @@ def test_backup_and_prune_failures_do_not_persist_or_log_secrets(
         assert secret not in caplog.text
     assert backup_result.error_reason == "auth_failed"
     assert prune_result.error_reason == "auth_failed"
+    assert verification_result.reason == "auth_failed"
 
 
 def test_operated_backup_fetches_creds_and_builds_repo(

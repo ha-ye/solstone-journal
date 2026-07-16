@@ -70,6 +70,8 @@ BACKUP_DEFAULTS: dict[str, Any] = {
         "time": None,
         "status": None,
         "reason": None,
+        "last_ok_time": None,
+        "checked_subset": None,
     },
 }
 OFFLOAD_KEYS = ("enabled", "budget_bytes", "floor_bytes")
@@ -328,8 +330,9 @@ def record_verification_result(
     status: str,
     time: int | None,
     reason: str | None = None,
+    checked_subset: str | None = None,
 ) -> None:
-    """Record the last media-offload verification run.
+    """Record the last backup repository read-back verification run.
 
     Convention: reason is None on ok. This layer only enforces the closed
     status vocabulary; callers own richer run-state validation.
@@ -340,10 +343,20 @@ def record_verification_result(
     with hold_config_lock():
         config = read_journal_config()
         backup = _writable_backup_section(config)
+        prior = backup.get("last_verification")
+        prior_last_ok_time = (
+            prior.get("last_ok_time") if isinstance(prior, dict) else None
+        )
+        # last_ok_time is a historical high-water mark; checked_subset describes
+        # the latest attempt and must not overclaim after a failure.
+        last_ok_time = time if status == "ok" else prior_last_ok_time
+        latest_checked_subset = checked_subset if status == "ok" else None
         backup["last_verification"] = {
             "time": time,
             "status": status,
             "reason": reason,
+            "last_ok_time": last_ok_time,
+            "checked_subset": latest_checked_subset,
         }
         write_journal_config(config)
 

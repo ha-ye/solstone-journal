@@ -10,8 +10,10 @@ import argparse
 from solstone.think.backup.engine import (
     BACKUP_MAX_RUNTIME,
     PRUNE_MAX_RUNTIME,
+    VERIFY_MAX_RUNTIME,
     run_backup,
     run_prune,
+    run_verification,
 )
 from solstone.think.maintenance import MaintenanceRoutine
 from solstone.think.utils import require_solstone
@@ -47,6 +49,21 @@ def run_prune_routine(args: list[str]) -> int:
     return 0
 
 
+def run_verification_routine(args: list[str]) -> int:
+    require_solstone()
+    parser = argparse.ArgumentParser(prog="journal maintenance run backup:verify")
+    parser.parse_args(args)
+
+    result = run_verification()
+    if result.status == "ok":
+        print(f"backup verify: ok subset={result.checked_subset}")
+    elif result.status == "skipped":
+        print("backup verify: skipped")
+    else:
+        print(f"backup verify: error reason={result.reason}")
+    return 0
+
+
 ROUTINES = [
     MaintenanceRoutine(
         name="run",
@@ -61,5 +78,12 @@ ROUTINES = [
         every="daily",
         run=run_prune_routine,
         max_runtime=PRUNE_MAX_RUNTIME,
+    ),
+    MaintenanceRoutine(
+        name="verify",
+        description="verify encrypted backup read-back.",
+        every="weekly",
+        run=run_verification_routine,
+        max_runtime=VERIFY_MAX_RUNTIME,
     ),
 ]

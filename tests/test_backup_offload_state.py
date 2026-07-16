@@ -156,6 +156,8 @@ def test_offload_state_records_and_status_view(
         "time": None,
         "status": None,
         "reason": None,
+        "last_ok_time": None,
+        "checked_subset": None,
     }
 
     state.record_offload_result(status="stalled", time=123, reason="no_progress")
@@ -171,6 +173,8 @@ def test_offload_state_records_and_status_view(
         "time": None,
         "status": "skipped",
         "reason": "disabled",
+        "last_ok_time": None,
+        "checked_subset": None,
     }
     with pytest.raises(ValueError):
         state.record_offload_result(status="degraded", time=1)
@@ -185,3 +189,39 @@ def test_offload_state_records_and_status_view(
     }
     assert view["last_offload"] == backup["last_offload"]
     assert view["last_verification"] == backup["last_verification"]
+
+
+def test_verification_record_preserves_last_ok_and_clears_failed_subset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, {"backup": {}})
+
+    state.record_verification_result(
+        status="ok",
+        time=100,
+        reason=None,
+        checked_subset="7/52",
+    )
+    assert _read_config(tmp_path)["backup"]["last_verification"] == {
+        "time": 100,
+        "status": "ok",
+        "reason": None,
+        "last_ok_time": 100,
+        "checked_subset": "7/52",
+    }
+
+    state.record_verification_result(
+        status="error",
+        time=200,
+        reason="locked",
+        checked_subset="8/52",
+    )
+
+    assert _read_config(tmp_path)["backup"]["last_verification"] == {
+        "time": 200,
+        "status": "error",
+        "reason": "locked",
+        "last_ok_time": 100,
+        "checked_subset": None,
+    }

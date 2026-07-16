@@ -10,6 +10,7 @@ import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 from solstone.think.backup.destination import (
@@ -43,6 +44,7 @@ from solstone.think.backup.state import (
     get_keys,
     record_backup_result,
     record_prune_result,
+    record_verification_result,
 )
 from solstone.think.callosum import callosum_send
 from solstone.think.utils import get_journal
@@ -84,6 +86,14 @@ PRUNE_TIMEOUT_SECONDS = 2 * 60 * 60
 BACKUP_MAX_RUNTIME = "49h"
 PRUNE_MAX_RUNTIME = "3h"
 BACKUP_RUN_CMD = ["journal", "maintenance", "run", "backup:run"]
+VERIFY_RUN_CMD = ["journal", "maintenance", "run", "backup:verify"]
+# restic check takes an exclusive lock, so long verification runs block the
+# hourly backup; 1h bounds collateral to roughly one backup cycle and matches
+# the 49h / 52 ~= 56m scale anchor for a fractional repository read-back.
+VERIFY_TIMEOUT_SECONDS = 60 * 60
+# Keep scheduler max_runtime above the subprocess timeout so run_restic can
+# synthesize 124 -> timeout and record it before the scheduler kills the routine.
+VERIFY_MAX_RUNTIME = "90m"
 
 
 @dataclass(frozen=True)
@@ -97,6 +107,13 @@ class BackupResult:
 class PruneResult:
     status: str
     error_reason: str | None
+
+
+@dataclass(frozen=True)
+class VerificationResult:
+    status: str
+    reason: str | None
+    checked_subset: str | None
 
 
 @dataclass(frozen=True)
@@ -380,6 +397,35 @@ def _archive_file_verdicts(
     return tuple(verdicts)
 
 
+def _verification_bucket_for_iso_week(week: int) -> int:
+    return ((week - 1) % 52) + 1
+
+
+def _verification_subset() -> str:
+    week = datetime.fromtimestamp(time.time(), timezone.utc).isocalendar().week
+    bucket = _verification_bucket_for_iso_week(week)
+    return f"{bucket}/52"
+
+
+def _verification_reason_for_returncode(returncode: int) -> str:
+    if returncode == 1:
+        return "integrity_failed"
+    if returncode == 3:
+        # restic check has no exit-3 semantic; avoid backup-specific "incomplete".
+        return "failed"
+    return reason_for_returncode(returncode)
+
+
+def _record_verification_error(*, reason: str) -> VerificationResult:
+    record_verification_result(
+        status="error",
+        time=int(time.time()),
+        reason=reason,
+        checked_subset=None,
+    )
+    return VerificationResult(status="error", reason=reason, checked_subset=None)
+
+
 def run_backup() -> BackupResult:
     try:
         runtime = _resolve_runtime(scope="backup")
@@ -453,6 +499,76 @@ def run_backup() -> BackupResult:
     )
     partial_snapshot_id = snapshot_id if result.returncode == 3 else None
     return _record_backup_error(reason=reason, snapshot_id=partial_snapshot_id)
+
+
+def run_verification() -> VerificationResult:
+    try:
+        runtime = _resolve_runtime(scope="backup")
+    except HostedCredsUnavailable as exc:
+        logger.warning(
+            "backup verify completed returncode=%s reason_code=%s",
+            None,
+            exc.reason_code,
+        )
+        return _record_verification_error(reason=exc.reason_code)
+    except _ResticUnavailable:
+        logger.warning(
+            "backup verify completed returncode=%s reason_code=%s",
+            None,
+            "restic_unavailable",
+        )
+        return _record_verification_error(reason="restic_unavailable")
+    except _RcloneUnavailable:
+        logger.warning(
+            "backup verify completed returncode=%s reason_code=%s",
+            None,
+            "rclone_unavailable",
+        )
+        return _record_verification_error(reason="rclone_unavailable")
+
+    if runtime is None:
+        return VerificationResult(status="skipped", reason=None, checked_subset=None)
+
+    checked_subset = _verification_subset()
+    with _runtime_backend(runtime, scope="backup", operation="verify") as backend:
+        if backend is None:
+            return _record_verification_error(reason="failed")
+        result = run_restic(
+            _session_args(
+                backend,
+                ["check", "--read-data-subset", checked_subset],
+            ),
+            repository=backend.destination.repository,
+            password=runtime.keys.daily_key,
+            restic_path=runtime.restic_path,
+            backend_env=backend.backend_env,
+            timeout=VERIFY_TIMEOUT_SECONDS,
+        )
+
+    if result.returncode == 0:
+        record_verification_result(
+            status="ok",
+            time=int(time.time()),
+            reason=None,
+            checked_subset=checked_subset,
+        )
+        logger.info(
+            "backup verify completed returncode=%s reason_code=ok",
+            result.returncode,
+        )
+        return VerificationResult(
+            status="ok",
+            reason=None,
+            checked_subset=checked_subset,
+        )
+
+    reason = _verification_reason_for_returncode(result.returncode)
+    logger.warning(
+        "backup verify completed returncode=%s reason_code=%s",
+        result.returncode,
+        reason,
+    )
+    return _record_verification_error(reason=reason)
 
 
 def run_archive_backup(paths: Sequence[Path]) -> BackupResult:
@@ -645,24 +761,34 @@ def request_backup_now() -> bool:
     return callosum_send("supervisor", "request", cmd=BACKUP_RUN_CMD)
 
 
+def request_verification_now() -> bool:
+    return callosum_send("supervisor", "request", cmd=VERIFY_RUN_CMD)
+
+
 __all__ = [
     "ARCHIVE_BACKUP_TIMEOUT_SECONDS",
     "ARCHIVE_LS_TIMEOUT_SECONDS",
     "ARCHIVE_TAG",
-    "BACKUP_MAX_RUNTIME",
-    "BACKUP_TIMEOUT_SECONDS",
-    "INITIAL_BACKUP_TIMEOUT_SECONDS",
     "ArchiveCheckResult",
     "ArchiveFileVerdict",
+    "BACKUP_MAX_RUNTIME",
+    "BACKUP_TIMEOUT_SECONDS",
     "BackupResult",
+    "INITIAL_BACKUP_TIMEOUT_SECONDS",
     "PRUNE_MAX_REPACK_SIZE",
     "PRUNE_MAX_RUNTIME",
     "PRUNE_TIMEOUT_SECONDS",
     "PruneResult",
     "UNLOCK_TIMEOUT_SECONDS",
+    "VERIFY_MAX_RUNTIME",
+    "VERIFY_RUN_CMD",
+    "VERIFY_TIMEOUT_SECONDS",
+    "VerificationResult",
     "check_archive_snapshot_files",
     "request_backup_now",
+    "request_verification_now",
     "run_archive_backup",
     "run_backup",
     "run_prune",
+    "run_verification",
 ]
