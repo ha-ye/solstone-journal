@@ -37,6 +37,19 @@ class _FakeClock:
         return self.value
 
 
+class _ScriptedClock:
+    def __init__(self, ticks):
+        self._ticks = iter(ticks)
+
+    def monotonic(self) -> float:
+        try:
+            return next(self._ticks)
+        except StopIteration:
+            raise AssertionError(
+                "download_to_file read more monotonic ticks than the script provides"
+            ) from None
+
+
 @pytest.mark.timeout(5)
 def test_download_to_file_returns_false_on_read_timeout(tmp_path, caplog):
     from solstone.think.importers.plaud import download_to_file
@@ -58,8 +71,7 @@ def test_download_to_file_calls_progress_cb_throttled(tmp_path, monkeypatch):
     session = Mock()
     session.get.return_value = _Response(chunks=[b"x"] * 12)
     progress_cb = Mock()
-    ticks = iter(range(13))
-    monkeypatch.setattr(plaud.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(plaud, "time", _ScriptedClock(range(13)))
 
     dest_path = tmp_path / "recording.opus"
 

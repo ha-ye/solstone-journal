@@ -414,7 +414,9 @@ def test_framed_tls_failure_is_single_line_error(
     async def fail_tls(_transport):
         raise TlsError("bad test handshake")
 
-    monkeypatch.setattr(join_cli.asyncio, "open_connection", fake_open_connection)
+    monkeypatch.setattr(
+        join_cli, "asyncio", _AsyncioShim(join_cli.asyncio, fake_open_connection)
+    )
     monkeypatch.setattr(join_cli, "_open_pairing_session", fail_tls)
 
     with pytest.raises(ValueError) as exc_info:
@@ -438,7 +440,9 @@ def test_framed_handshake_then_drop_is_single_line_error(
     async def fake_open_pairing_session(_transport):
         return _FakeSession(StreamResetError("closed after handshake"))
 
-    monkeypatch.setattr(join_cli.asyncio, "open_connection", fake_open_connection)
+    monkeypatch.setattr(
+        join_cli, "asyncio", _AsyncioShim(join_cli.asyncio, fake_open_connection)
+    )
     monkeypatch.setattr(join_cli, "_open_pairing_session", fake_open_pairing_session)
 
     with pytest.raises(ValueError) as exc_info:
@@ -459,7 +463,9 @@ def test_framed_connect_timeout_is_single_line_error(
     async def hang_open_connection(_host: str, _port: int):
         await link_client.asyncio.sleep(3600)
 
-    monkeypatch.setattr(join_cli.asyncio, "open_connection", hang_open_connection)
+    monkeypatch.setattr(
+        join_cli, "asyncio", _AsyncioShim(join_cli.asyncio, hang_open_connection)
+    )
     monkeypatch.setattr(join_cli, "_CONNECT_TIMEOUT_SECONDS", 0.001)
 
     with pytest.raises(ValueError) as exc_info:

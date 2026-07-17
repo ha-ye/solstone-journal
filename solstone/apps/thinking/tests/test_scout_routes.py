@@ -29,6 +29,11 @@ class _InlineThread:
         return None
 
 
+class _InlineThreading:
+    def Thread(self, *args, **kwargs) -> _InlineThread:
+        return _InlineThread(*args, **kwargs)
+
+
 class _RecordingThreading:
     def __init__(self) -> None:
         self.threads: list[threading.Thread] = []
@@ -137,7 +142,7 @@ def test_enable_success_remaps_terminal_phase_and_reads_enabled_state(
         return operations.HandoffResult("enabled", None, False)
 
     monkeypatch.setattr(scout_handoff, "run_scout_handoff", runner)
-    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(operations, "threading", _InlineThreading())
 
     response = thinking_client.post("/app/thinking/api/scout/enable")
 
@@ -318,7 +323,7 @@ def test_terminal_phase_remap(
             raw_phase == "error",
         ),
     )
-    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(operations, "threading", _InlineThreading())
 
     response = thinking_client.post("/app/thinking/api/scout/enable")
 
