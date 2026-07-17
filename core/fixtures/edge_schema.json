@@ -1,0 +1,156 @@
+{
+  "fixture": "solstone-edge-schema",
+  "fixture_version": 1,
+  "generated_by": "make core-fixtures",
+  "schema_version": 1,
+  "sentinel": {
+    "mtime": 1,
+    "path": "edges:__schema__"
+  },
+  "tables": {
+    "edge_files": {
+      "columns": [
+        {
+          "name": "path",
+          "notnull": 0,
+          "pk": 1,
+          "type": "TEXT"
+        },
+        {
+          "name": "mtime",
+          "notnull": 0,
+          "pk": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "path"
+          ],
+          "name": "sqlite_autoindex_edge_files_1",
+          "origin": "pk",
+          "unique": 1
+        }
+      ]
+    },
+    "edges": {
+      "columns": [
+        {
+          "name": "src",
+          "notnull": 1,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "dst",
+          "notnull": 1,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "kind",
+          "notnull": 1,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "directed",
+          "notnull": 1,
+          "pk": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "src_name",
+          "notnull": 0,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "dst_name",
+          "notnull": 0,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "day",
+          "notnull": 0,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "facet",
+          "notnull": 0,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "source",
+          "notnull": 1,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "path",
+          "notnull": 1,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "anchor",
+          "notnull": 0,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "label",
+          "notnull": 0,
+          "pk": 0,
+          "type": "TEXT"
+        },
+        {
+          "name": "ts",
+          "notnull": 0,
+          "pk": 0,
+          "type": "INTEGER"
+        },
+        {
+          "name": "weight",
+          "notnull": 1,
+          "pk": 0,
+          "type": "INTEGER"
+        }
+      ],
+      "indexes": [
+        {
+          "columns": [
+            "path"
+          ],
+          "name": "edges_path",
+          "origin": "c",
+          "unique": 0
+        },
+        {
+          "columns": [
+            "dst",
+            "kind",
+            "day"
+          ],
+          "name": "idx_edges_dst",
+          "origin": "c",
+          "unique": 0
+        },
+        {
+          "columns": [
+            "src",
+            "kind",
+            "day"
+          ],
+          "name": "idx_edges_src",
+          "origin": "c",
+          "unique": 0
+        }
+      ]
+    }
+  }
+}

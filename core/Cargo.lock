@@ -404,6 +404,7 @@ name = "solstone-core-indexer-store"
 version = "0.8.9"
 dependencies = [
  "rusqlite",
+ "serde_json",
  "solstone-core-indexer",
 ]
 
