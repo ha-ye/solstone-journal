@@ -700,6 +700,10 @@
     equal('presence legend has no ramp heat', presenceLegendSwatches.map((swatch) => swatch.style.getPropertyValue('--daygrid-heat')).join(','), ',');
     assert('presence legend drops pending key', !legendHost.querySelector('.daygrid-legend-pending'));
     equal('presence legend drops less more labels', /less|more/.test(legendHost.textContent), false);
+    // two bare swatches say nothing about which square is the one that happened —
+    // a heat ramp implies its own order, a presence key must name both states
+    assert('presence legend names the present state', legendHost.textContent.includes(unit.one));
+    assert('presence legend names the empty state', legendHost.textContent.includes(unit.none));
 
     mounted = mount({
       coverage: { start: '20260304', end: '20260306' },

@@ -257,7 +257,14 @@
       empty.className = 'daygrid-legend-swatch daygrid-legend-swatch--empty';
       const present = document.createElement('span');
       present.className = 'daygrid-legend-swatch daygrid-legend-swatch--presence';
-      scale.append(empty, present);
+      // Each swatch is named from the declared nouns. A heat ramp carries its own
+      // order (less → more), so bare swatches still read; two presence swatches do
+      // not — without words, nothing says which square is the one that happened.
+      const emptyLabel = document.createElement('span');
+      emptyLabel.textContent = unit?.none || 'none';
+      const presentLabel = document.createElement('span');
+      presentLabel.textContent = unit?.one || 'yes';
+      scale.append(empty, emptyLabel, present, presentLabel);
       root.append(scale);
       host.appendChild(root);
       return root;
@@ -294,6 +301,10 @@
     return root;
   }
 
+  // A worklist grid has two zeros that mean opposite things — nothing happened, or
+  // everything happened and is done — so the done one is spoken with the adopter's
+  // own activity noun ("26 segments, all named"), never a bare count. The vocabulary
+  // stays in the adopter's copy; the component only picks which noun applies.
   function cellLabel(day, count, unit, pending, today, activityCount, activityUnit) {
     const nav = dateNav();
     const normalized = nav.coerceCount(count);
