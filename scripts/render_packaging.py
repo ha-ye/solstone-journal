@@ -19,6 +19,15 @@ CUDA_PYPROJECT = ROOT / "packages" / "solstone-journal-cuda" / "pyproject.toml"
 TOMBSTONE_PIN = "solstone-journal-host==0.7.0"
 HOST_PIN_RE = re.compile(r'(?P<quote>")solstone\[journal-host\]==[^"]+(?P=quote)')
 VERSION_RE = re.compile(r'(?m)^version = "[^"]+"')
+CARGO_WORKSPACE_VERSION_RE = re.compile(
+    r'(?ms)(?P<prefix>^\[workspace\.package\]\n(?:(?!^\[).)*?^version = )"[^"]+"'
+)
+CARGO_PACKAGE_BLOCK_RE = re.compile(
+    r"(?ms)^\[\[package\]\]\n(?:(?!^\[\[package\]\]).)*"
+)
+CARGO_LOCK_NAME_RE = re.compile(r'(?m)^name = "([^"]+)"$')
+CARGO_LOCK_SOURCE_RE = re.compile(r"(?m)^source = ")
+CARGO_LOCK_VERSION_RE = re.compile(r'(?m)^version = "[^"]+"$')
 
 LOGGER = logging.getLogger(__name__)
 
@@ -62,6 +71,131 @@ def _rewrite_leaf(text: str, version: str) -> str:
     return text
 
 
+def _rewrite_cargo_workspace_manifest(text: str, version: str) -> str:
+    def replacement(match: re.Match[str]) -> str:
+        return f'{match.group("prefix")}"{version}"'
+
+    text, version_count = CARGO_WORKSPACE_VERSION_RE.subn(replacement, text)
+    if version_count != 1:
+        raise PackagingRenderError(
+            f"core Cargo.toml must contain exactly one [workspace.package].version line; found {version_count}"
+        )
+    return text
+
+
+def _cargo_member_package_paths(root: Path) -> dict[str, Path]:
+    workspace_path = root / "core" / "Cargo.toml"
+    workspace_data = tomllib.loads(workspace_path.read_text(encoding="utf-8"))
+    try:
+        members = workspace_data["workspace"]["members"]
+    except KeyError as exc:
+        raise PackagingRenderError(
+            "core Cargo.toml is missing workspace.members"
+        ) from exc
+    if not isinstance(members, list) or not members:
+        raise PackagingRenderError(
+            "core Cargo.toml workspace.members must be a non-empty list"
+        )
+
+    member_paths: dict[str, Path] = {}
+    for member in members:
+        if not isinstance(member, str) or not member:
+            raise PackagingRenderError(
+                "core Cargo.toml workspace.members must be strings"
+            )
+        if any(char in member for char in "*?["):
+            raise PackagingRenderError(
+                f"core Cargo.toml workspace member must be explicit, not a glob: {member}"
+            )
+        member_path = Path(member)
+        if member_path.is_absolute():
+            raise PackagingRenderError(
+                f"core Cargo.toml workspace member must be relative: {member}"
+            )
+
+        member_manifest = root / "core" / member_path / "Cargo.toml"
+        member_data = tomllib.loads(member_manifest.read_text(encoding="utf-8"))
+        try:
+            name = member_data["package"]["name"]
+        except KeyError as exc:
+            raise PackagingRenderError(
+                f"workspace member {member} is missing [package].name"
+            ) from exc
+        if not isinstance(name, str) or not name:
+            raise PackagingRenderError(
+                f"workspace member {member} [package].name must be a non-empty string"
+            )
+        if name in member_paths:
+            raise PackagingRenderError(
+                "core Cargo.toml workspace member package names must be unique"
+            )
+        member_paths[name] = member_path
+
+    return member_paths
+
+
+def _rewrite_cargo_lock(text: str, version: str, member_names: tuple[str, ...]) -> str:
+    member_set = set(member_names)
+    seen: set[str] = set()
+    rewritten: list[str] = []
+    last = 0
+
+    for match in CARGO_PACKAGE_BLOCK_RE.finditer(text):
+        block = match.group(0)
+        name_matches = CARGO_LOCK_NAME_RE.findall(block)
+        if len(name_matches) != 1:
+            raise PackagingRenderError(
+                f"Cargo.lock package block must contain exactly one name line; found {len(name_matches)}"
+            )
+        name = name_matches[0]
+        if name not in member_set:
+            continue
+        if name in seen:
+            raise PackagingRenderError(
+                f"Cargo.lock contains duplicate block for workspace member {name}"
+            )
+        if CARGO_LOCK_SOURCE_RE.search(block):
+            raise PackagingRenderError(
+                f"Cargo.lock workspace member block must be source-less: {name}"
+            )
+
+        block, version_count = CARGO_LOCK_VERSION_RE.subn(
+            f'version = "{version}"', block
+        )
+        if version_count != 1:
+            raise PackagingRenderError(
+                f"Cargo.lock workspace member {name} must contain exactly one version line; found {version_count}"
+            )
+
+        seen.add(name)
+        rewritten.append(text[last : match.start()])
+        rewritten.append(block)
+        last = match.end()
+
+    missing = sorted(member_set - seen)
+    if missing:
+        raise PackagingRenderError(
+            "Cargo.lock is missing workspace member block(s): " + ", ".join(missing)
+        )
+
+    rewritten.append(text[last:])
+    return "".join(rewritten)
+
+
+def _render_cargo(root: Path, version: str) -> dict[Path, str]:
+    cargo_manifest = root / "core" / "Cargo.toml"
+    cargo_lock = root / "core" / "Cargo.lock"
+    member_paths = _cargo_member_package_paths(root)
+    return {
+        cargo_manifest: _rewrite_cargo_workspace_manifest(
+            cargo_manifest.read_text(encoding="utf-8"), version
+        ),
+        cargo_lock: _rewrite_cargo_lock(
+            cargo_lock.read_text(encoding="utf-8"), version, tuple(member_paths)
+        ),
+    }
+
+
 def _write_if_changed(path: Path, content: str) -> None:
     old_content = path.read_text(encoding="utf-8") if path.exists() else None
     if old_content == content:
@@ -96,10 +230,12 @@ def render(root: Path = ROOT) -> dict[Path, str]:
     root = Path(root)
     root_text = (root / "pyproject.toml").read_text(encoding="utf-8")
     version = _read_version(root_text)
-    return {
+    expected = {
         path: _rewrite_leaf(path.read_text(encoding="utf-8"), version)
         for path in _leaf_paths(root)
     }
+    expected.update(_render_cargo(root, version))
+    return expected
 
 
 def check(root: Path = ROOT) -> int:
