@@ -10,6 +10,10 @@ ENCODER_ID: str = "wespeaker-resnet34-256"
 OWNER_THRESHOLD: float = 0.43
 ACOUSTIC_HIGH: float = 0.36
 ACOUSTIC_MEDIUM: float = 0.22
+# Solo-cluster trim currently shares the owner threshold value because it asks
+# the same encoder question against a provisional cluster centroid. Keep it
+# independently tunable from owner identity decisions.
+SOLO_CLUSTER_MIN_COSINE: float = 0.43
 
 # Hybrid-cluster and voiceprint-refinement acoustic constants.
 VP_DECAY_LAMBDA: float = math.log(2) / 120

@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 
 from solstone.apps.speakers.candidate_tracker import (
+    SOLO_CLUSTER_LABEL,
     CandidateTracker,
 )
 from solstone.apps.speakers.encoder_config import (
@@ -19,6 +20,8 @@ from solstone.apps.speakers.encoder_config import (
     CONFIRM_MIN_SEGMENTS,
     ENCODER_ID,
     MERGE_THRESHOLD,
+    SOLO_CLUSTER_MIN_COSINE,
+    SPEAKER_EVIDENCE_VERSION,
     SPLIT_THRESHOLD,
     STABILITY_THRESHOLD,
 )
@@ -55,6 +58,10 @@ def _write_labeled_segment(
     stream: str = STREAM,
     source: str = "mic_audio",
     duration_s: float = 5.0,
+    speaker_evidence: str | None = None,
+    speaker_evidence_multi_fraction: float = 0.0,
+    write_speaker_labels: bool = True,
+    include_durations: bool = True,
 ) -> Path:
     flat_dir, chronicle_dir = env._segment_dirs(day, segment_key, stream=stream)
     embeddings: list[np.ndarray] = []
@@ -70,30 +77,38 @@ def _write_labeled_segment(
             labels.append(cluster_label)
             sid += 1
 
-    lines = [json.dumps({"raw": f"{source}.flac", "model": "test"})]
-    for sid, cluster_label in zip(statement_ids, labels):
-        lines.append(
-            json.dumps(
-                {
-                    "start": "09:00:00",
-                    "text": f"sentence {sid}",
-                    "speaker": int(cluster_label),
-                }
-            )
+    header = {"raw": f"{source}.flac", "model": "test"}
+    if speaker_evidence is not None:
+        header.update(
+            {
+                "speaker_evidence": speaker_evidence,
+                "speaker_evidence_multi_fraction": speaker_evidence_multi_fraction,
+                "speaker_evidence_version": SPEAKER_EVIDENCE_VERSION,
+            }
         )
+    lines = [json.dumps(header)]
+    for sid, cluster_label in zip(statement_ids, labels):
+        row = {
+            "start": "09:00:00",
+            "text": f"sentence {sid}",
+        }
+        if write_speaker_labels:
+            row["speaker"] = int(cluster_label)
+        lines.append(json.dumps(row))
 
     for seg_dir in (flat_dir, chronicle_dir):
         (seg_dir / f"{source}.jsonl").write_text(
             "\n".join(lines) + "\n",
             encoding="utf-8",
         )
-        np.savez_compressed(
-            seg_dir / f"{source}.npz",
-            embeddings=np.stack(embeddings).astype(np.float32),
-            statement_ids=np.array(statement_ids, dtype=np.int32),
-            durations_s=np.array(durations, dtype=np.float32),
-            encoder=np.array(ENCODER_ID),
-        )
+        npz_payload = {
+            "embeddings": np.stack(embeddings).astype(np.float32),
+            "statement_ids": np.array(statement_ids, dtype=np.int32),
+            "encoder": np.array(ENCODER_ID),
+        }
+        if include_durations:
+            npz_payload["durations_s"] = np.array(durations, dtype=np.float32)
+        np.savez_compressed(seg_dir / f"{source}.npz", **npz_payload)
         (seg_dir / f"{source}.flac").write_bytes(b"")
     return chronicle_dir
 
@@ -112,9 +127,247 @@ def test_tracker_constants_locked():
     assert MERGE_THRESHOLD == 0.72
     assert SPLIT_THRESHOLD == 0.55
     assert STABILITY_THRESHOLD == 0.25
+    assert SOLO_CLUSTER_MIN_COSINE == 0.43
     assert CONFIRM_MIN_SEGMENTS == 2
     assert CONFIRM_MIN_INTERVALS == 5
     assert CONFIRM_MIN_DURATION_S == 25.0
+
+
+def test_solo_segment_admits_with_trimmed_count_zero(speakers_env, tmp_path):
+    env = speakers_env()
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([base] * 3)},
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    candidate = _only_candidate(tracker)
+    assert candidate.n_intervals == 3
+    assert candidate.total_duration_s == 15.0
+    assert candidate.source_segments == [
+        {
+            "day": "20260101",
+            "segment_key": "090000_300",
+            "stream": STREAM,
+            "source": "mic_audio",
+            "cluster_label": SOLO_CLUSTER_LABEL,
+            "trimmed_count": 0,
+        }
+    ]
+
+
+def test_solo_trim_drops_skewed_contamination_and_counts_survivors(
+    speakers_env, tmp_path
+):
+    env = speakers_env()
+    voice_a = _unit([0.0, 1.0])
+    voice_b = _unit([0.0, 0.0, 1.0])
+    mixed = np.stack([voice_a] * 27 + [voice_b] * 3)
+    centroid = mixed.mean(axis=0)
+    centroid = centroid / np.linalg.norm(centroid)
+    assert float(np.dot(voice_b, centroid)) < SOLO_CLUSTER_MIN_COSINE
+    assert float(np.dot(voice_a, centroid)) > SOLO_CLUSTER_MIN_COSINE
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: mixed},
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    candidate = _only_candidate(tracker)
+    assert candidate.n_intervals == 27
+    assert candidate.total_duration_s == 135.0
+    assert candidate.source_segments[0]["trimmed_count"] == 3
+
+
+def test_solo_without_durations_fails_confirmation_closed(speakers_env, tmp_path):
+    env = speakers_env()
+    store = tmp_path / "speaker_candidates.json"
+    base = _unit([0.0, 1.0])
+    for day, stream in (("20260101", "mic"), ("20260102", "sys")):
+        seg_dir = _write_labeled_segment(
+            env,
+            day,
+            "090000_300",
+            {1: np.stack([base] * 18)},
+            stream=stream,
+            speaker_evidence="single",
+            write_speaker_labels=False,
+            include_durations=False,
+        )
+        tracker = CandidateTracker(store)
+        tracker.process_segment(day, "090000_300", stream, "mic_audio", seg_dir)
+
+    candidate = _only_candidate(CandidateTracker(store))
+    assert candidate.n_segments == 2
+    assert candidate.n_intervals == 36
+    assert candidate.total_duration_s == 0.0
+    assert candidate.ready_for_confirmation() is False
+
+
+def test_solo_process_segment_idempotent_for_same_source_segment(
+    speakers_env, tmp_path
+):
+    env = speakers_env()
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([base] * 3)},
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+    source_keys = tracker._existing_source_keys()
+    assert source_keys == {
+        ("20260101", "090000_300", STREAM, "mic_audio", SOLO_CLUSTER_LABEL)
+    }
+
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    candidate = _only_candidate(tracker)
+    assert tracker._existing_source_keys() == source_keys
+    assert candidate.n_segments == 1
+    assert candidate.n_intervals == 3
+    assert candidate.total_duration_s == 15.0
+    assert len(candidate.source_segments) == 1
+
+
+def test_solo_then_diarizer_sequence_keeps_ingesting_without_warning(
+    speakers_env, tmp_path, caplog
+):
+    import logging
+
+    env = speakers_env()
+    store = tmp_path / "speaker_candidates.json"
+    solo = _unit([0.0, 1.0])
+    diarized = _unit([0.0, 0.0, 1.0])
+    solo_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([solo] * 3)},
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+    diarizer_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "091000_300",
+        {1: np.stack([diarized] * 3)},
+    )
+    tracker = CandidateTracker(store)
+
+    with caplog.at_level(logging.WARNING):
+        for segment_key, seg_dir in (
+            ("090000_300", solo_dir),
+            ("091000_300", diarizer_dir),
+        ):
+            try:
+                tracker.process_segment(
+                    "20260101", segment_key, STREAM, "mic_audio", seg_dir
+                )
+            except Exception:
+                logging.warning("Speaker candidate tracking failed", exc_info=True)
+
+    assert [
+        record for record in caplog.records if record.levelno >= logging.WARNING
+    ] == []
+    assert len(tracker._candidates) == 2
+    assert any(
+        source_segment["cluster_label"] == SOLO_CLUSTER_LABEL
+        for candidate in tracker._candidates.values()
+        for source_segment in candidate.source_segments
+    )
+
+
+def test_solo_evidence_multi_not_admitted(speakers_env, tmp_path):
+    env = speakers_env()
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([base] * 3)},
+        speaker_evidence="multi",
+        speaker_evidence_multi_fraction=0.2,
+        write_speaker_labels=False,
+    )
+
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    assert tracker._candidates == {}
+
+
+def test_solo_evidence_none_not_admitted(speakers_env, tmp_path):
+    env = speakers_env()
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([base] * 3)},
+        speaker_evidence="none",
+        write_speaker_labels=False,
+    )
+
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    assert tracker._candidates == {}
+
+
+def test_solo_evidence_absent_not_admitted(speakers_env, tmp_path):
+    env = speakers_env()
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([base] * 3)},
+        write_speaker_labels=False,
+    )
+
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    assert tracker._candidates == {}
+
+
+def test_solo_evidence_unreadable_not_admitted(speakers_env, tmp_path):
+    env = speakers_env()
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([base] * 3)},
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+    jsonl_path = seg_dir / "mic_audio.jsonl"
+    jsonl_path.unlink()
+    jsonl_path.mkdir()
+
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    assert tracker._candidates == {}
 
 
 def test_pool_persist_reload_round_trip(speakers_env, tmp_path):

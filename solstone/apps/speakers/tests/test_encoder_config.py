@@ -16,6 +16,7 @@ from solstone.observe.transcribe.main import PYANNOTE_OVERLAP_MODEL_SHA256
 def test_locked_constants():
     assert encoder_config.ENCODER_ID == "wespeaker-resnet34-256"
     assert encoder_config.OWNER_THRESHOLD == 0.43
+    assert encoder_config.SOLO_CLUSTER_MIN_COSINE == 0.43
     assert encoder_config.ACOUSTIC_HIGH == 0.36
     assert encoder_config.ACOUSTIC_MEDIUM == 0.22
     assert encoder_config.VP_DECAY_LAMBDA == math.log(2) / 120
@@ -68,6 +69,13 @@ def test_candidate_tracker_constants_are_not_assigned_in_tracker_module():
     targets = _module_assignment_targets(Path(candidate_tracker.__file__))
 
     assert moved_constants.isdisjoint(targets)
+
+
+def test_solo_cluster_min_cosine_is_independently_assigned():
+    targets = _module_assignment_targets(Path(encoder_config.__file__))
+
+    assert "OWNER_THRESHOLD" in targets
+    assert "SOLO_CLUSTER_MIN_COSINE" in targets
 
 
 def test_attribution_imports_acoustic_constants():

@@ -13,6 +13,7 @@ from typing import Any
 
 import numpy as np
 
+from solstone.apps.speakers._overlap import _read_segment_speaker_evidence
 from solstone.apps.speakers.attribution import (
     _load_integer_speaker_labels,
     segment_path,
@@ -22,6 +23,7 @@ from solstone.apps.speakers.encoder_config import (
     CONFIRM_MIN_INTERVALS,
     CONFIRM_MIN_SEGMENTS,
     MERGE_THRESHOLD,
+    SOLO_CLUSTER_MIN_COSINE,
     SPLIT_THRESHOLD,
     STABILITY_THRESHOLD,
 )
@@ -32,6 +34,9 @@ from solstone.think.journal_io import (
     read_json,
 )
 from solstone.think.utils import get_journal
+
+# Synthetic cluster label for producer-proven solo speaker segments.
+SOLO_CLUSTER_LABEL: int = -1
 
 
 @dataclass
@@ -223,7 +228,9 @@ class CandidateTracker:
         load_embeddings_file, normalize_embedding = _routes_helpers()
         integer_labels = _load_integer_speaker_labels(seg_dir, source)
         if not integer_labels:
-            return
+            evidence = _read_segment_speaker_evidence(seg_dir / f"{source}.jsonl")
+            if evidence.speaker_evidence != "single":
+                return
 
         emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
         if emb_data is None:
@@ -234,8 +241,11 @@ class CandidateTracker:
         changed = False
 
         cluster_sids: dict[int, list[int]] = defaultdict(list)
-        for sid, label in integer_labels.items():
-            cluster_sids[int(label)].append(int(sid))
+        if integer_labels:
+            for sid, label in integer_labels.items():
+                cluster_sids[int(label)].append(int(sid))
+        else:
+            cluster_sids[SOLO_CLUSTER_LABEL] = sorted(int(sid) for sid in statement_ids)
 
         for cluster_label, sentence_ids in sorted(cluster_sids.items()):
             source_segment = {
@@ -249,8 +259,7 @@ class CandidateTracker:
             if source_key in existing_source_keys:
                 continue
 
-            cluster_embeddings: list[np.ndarray] = []
-            duration_s = 0.0
+            cluster_rows: list[tuple[np.ndarray, float]] = []
             for sid in sentence_ids:
                 idx = sid_to_idx.get(sid)
                 if idx is None:
@@ -258,23 +267,45 @@ class CandidateTracker:
                 normalized = normalize_embedding(embeddings[idx])
                 if normalized is None:
                     continue
-                cluster_embeddings.append(normalized)
-                if durations_s is not None and idx < len(durations_s):
-                    duration_s += float(durations_s[idx])
+                duration_s = (
+                    float(durations_s[idx])
+                    if durations_s is not None and idx < len(durations_s)
+                    else 0.0
+                )
+                cluster_rows.append((normalized, duration_s))
 
-            if not cluster_embeddings:
+            if not cluster_rows:
                 continue
 
-            stacked = np.stack(cluster_embeddings)
+            stacked = np.stack([embedding for embedding, _ in cluster_rows])
             centroid = normalize_embedding(np.mean(stacked, axis=0))
             if centroid is None:
                 continue
+
+            trimmed_count = 0
+            if cluster_label == SOLO_CLUSTER_LABEL:
+                similarities = stacked @ centroid
+                survivors = [
+                    row
+                    for row, similarity in zip(cluster_rows, similarities)
+                    if float(similarity) >= SOLO_CLUSTER_MIN_COSINE
+                ]
+                trimmed_count = len(cluster_rows) - len(survivors)
+                if not survivors:
+                    continue
+                cluster_rows = survivors
+                stacked = np.stack([embedding for embedding, _ in cluster_rows])
+                centroid = normalize_embedding(np.mean(stacked, axis=0))
+                if centroid is None:
+                    continue
+                source_segment["trimmed_count"] = trimmed_count
 
             spread = float(np.mean(1.0 - stacked @ centroid))
             if spread >= STABILITY_THRESHOLD:
                 continue
 
-            n_intervals = len(cluster_embeddings)
+            n_intervals = len(cluster_rows)
+            duration_s = sum(duration for _, duration in cluster_rows)
             best_id, best_score = self._best_match(centroid)
             if best_id is not None and best_score >= MERGE_THRESHOLD:
                 self._merge_candidate(
