@@ -436,6 +436,34 @@ def test_setup_jsonl_skipped_step_emits_completed_with_outcome_skipped(
     assert install_models["reason"] == "--skip-models"
 
 
+def test_setup_jsonl_skip_wrapper_emits_reason_and_resolved_arg(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc, events, _out = run_setup_jsonl(
+        tmp_path,
+        monkeypatch,
+        capsys,
+        ["--skip-models", "--skip-skills", "--skip-service", "--skip-wrapper"],
+    )
+
+    assert rc == 0
+    started = events[0]
+    wrapper = [
+        event
+        for event in events
+        if event["event"] == "step.completed" and event["step"] == "wrapper"
+    ][0]
+    assert started["event"] == "setup.started"
+    assert started["args_resolved"]["skip_wrapper"] == {
+        "value": True,
+        "source": "cli",
+    }
+    assert wrapper["outcome"] == "skipped"
+    assert wrapper["reason"] == "--skip-wrapper"
+
+
 def test_setup_jsonl_subprocess_failure_emits_step_failed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
