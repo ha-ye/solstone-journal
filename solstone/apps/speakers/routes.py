@@ -72,6 +72,7 @@ from solstone.apps.speakers.status import get_speakers_status
 from solstone.apps.speakers.suggest import format_suggestions, suggest_opportunities
 from solstone.apps.speakers.wipe import wipe_speaker_artifacts
 from solstone.apps.utils import log_app_action
+from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.day_grid import build_day_grid_payload
 from solstone.convey.reasons import (
     ENTITY_BLOCKED,
@@ -910,24 +911,10 @@ def _speaker_grid_counts() -> tuple[dict[str, int], dict[str, int]]:
     return days, activity
 
 
-def _build_date_nav_index() -> dict[str, Any]:
-    day_counts = _speaker_segment_counts()
-    months: dict[str, int] = {}
-
-    for day, count in day_counts.items():
-        if count <= 0:
-            continue
-        month = day[:6]
-        months[month] = months.get(month, 0) + count
-
-    coverage = _coverage_from_counts(day_counts)
-    return {"coverage": coverage, "months": months}
-
-
 @speakers_bp.route("/api/index")
 def api_index() -> Any:
     """Return read-only whole-journal date navigation coverage."""
-    return jsonify(_build_date_nav_index())
+    return jsonify(build_date_nav_index(_speaker_segment_counts()))
 
 
 @speakers_bp.route("/api/grid")

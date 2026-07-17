@@ -12,6 +12,7 @@ from flask import Blueprint, abort, current_app, jsonify, redirect, request, url
 
 from solstone.apps.chat.config import DEFAULT_THINKING_SURFACES, load_chat_config
 from solstone.convey.chat_stream import read_chat_events
+from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.reasons import INVALID_DAY, INVALID_MONTH
 from solstone.convey.sol_initiated.copy import (
     KIND_OWNER_CHAT_OPEN,
@@ -105,27 +106,8 @@ def _chat_day_count(day: str) -> int:
 
 @chat_bp.route("/api/index")
 def api_index() -> Any:
-    months: dict[str, int] = {}
-    first_day: str | None = None
-    last_day: str | None = None
-
-    for day_name in day_dirs().keys():
-        count = _chat_day_count(day_name)
-        if count <= 0:
-            continue
-        month = day_name[:6]
-        months[month] = months.get(month, 0) + count
-        if first_day is None or day_name < first_day:
-            first_day = day_name
-        if last_day is None or day_name > last_day:
-            last_day = day_name
-
-    coverage = (
-        {"start": first_day, "end": last_day}
-        if first_day is not None and last_day is not None
-        else None
-    )
-    return jsonify({"coverage": coverage, "months": months})
+    day_counts = {day: _chat_day_count(day) for day in day_dirs()}
+    return jsonify(build_date_nav_index(day_counts))
 
 
 @chat_bp.route("/api/stats/<month>")

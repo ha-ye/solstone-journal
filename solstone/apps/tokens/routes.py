@@ -13,6 +13,7 @@ from typing import Any, Dict
 from flask import Blueprint, current_app, jsonify, redirect, request, url_for
 
 from solstone.convey import state
+from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.reasons import INVALID_DAY, INVALID_MONTH, INVALID_REQUEST_VALUE
 from solstone.convey.utils import DATE_RE, error_response, respond_collection
 from solstone.think.models import calc_token_cost, get_model_provider, iter_token_log
@@ -402,34 +403,14 @@ def _token_cost_stats(month: str | None = None) -> dict[str, float]:
     return stats
 
 
-def _build_date_nav_index() -> dict[str, Any]:
-    day_costs = _token_cost_stats()
-    months: dict[str, float] = {}
-    first_day: str | None = None
-    last_day: str | None = None
-
-    for day, cost in day_costs.items():
-        if cost <= 0:
-            continue
-        month = day[:6]
-        months[month] = round(months.get(month, 0.0) + cost, 2)
-        if first_day is None or day < first_day:
-            first_day = day
-        if last_day is None or day > last_day:
-            last_day = day
-
-    coverage = (
-        {"start": first_day, "end": last_day}
-        if first_day is not None and last_day is not None
-        else None
-    )
-    return {"coverage": coverage, "months": months}
-
-
 @tokens_bp.route("/api/index")
 def api_index() -> Any:
     """Return read-only whole-journal date navigation coverage."""
-    return jsonify(_build_date_nav_index())
+    payload = build_date_nav_index(_token_cost_stats())
+    payload["months"] = {
+        month: round(total, 2) for month, total in payload["months"].items()
+    }
+    return jsonify(payload)
 
 
 @tokens_bp.route("/api/stats/<month>")

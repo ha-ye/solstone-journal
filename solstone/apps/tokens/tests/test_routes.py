@@ -175,6 +175,23 @@ def test_api_index_reports_nonzero_coverage_and_months(tokens_env, monkeypatch):
     assert body["months"]["202604"] == pytest.approx(0.3)
 
 
+def test_api_index_month_total_keeps_two_decimal_contract(tokens_env, monkeypatch):
+    env = tokens_env(
+        {
+            "20260304": [_entry("gpt-5", 1000)],
+            "20260305": [_entry("gpt-5", 2000)],
+        }
+    )
+    _patch_token_cost(monkeypatch)
+
+    response = env.client.get("/app/tokens/api/index")
+
+    assert response.status_code == 200
+    # Exact equality, not approx: the shared helper sums raw to
+    # 0.30000000000000004. The call-site round is what holds the 2dp contract.
+    assert response.get_json()["months"]["202603"] == 0.3
+
+
 def test_api_index_month_totals_match_api_stats(tokens_env, monkeypatch):
     env = tokens_env(
         {

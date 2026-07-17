@@ -22,6 +22,7 @@ from markdown import Markdown
 
 from solstone.apps.reflections import copy as reflections_copy
 from solstone.apps.reflections.dates import next_reflection_sunday
+from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.day_grid import build_day_grid_payload
 from solstone.convey.reasons import FILE_NOT_FOUND, INVALID_MONTH
 from solstone.convey.utils import DATE_RE, error_response, format_date
@@ -203,24 +204,7 @@ def api_state() -> Any:
 
 @reflections_bp.route("/api/index")
 def api_index() -> Any:
-    months: dict[str, int] = {}
-    first_day: str | None = None
-    last_day: str | None = None
-
-    for day in _list_reflection_days():
-        month = day[:6]
-        months[month] = months.get(month, 0) + 1
-        if first_day is None or day < first_day:
-            first_day = day
-        if last_day is None or day > last_day:
-            last_day = day
-
-    coverage = (
-        {"start": first_day, "end": last_day}
-        if first_day is not None and last_day is not None
-        else None
-    )
-    return jsonify({"coverage": coverage, "months": months})
+    return jsonify(build_date_nav_index({day: 1 for day in _list_reflection_days()}))
 
 
 @reflections_bp.route("/api/grid")

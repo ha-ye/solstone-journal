@@ -111,6 +111,21 @@ def test_api_index_empty_journal(activities_env):
     assert response.get_json() == {"coverage": None, "months": {}}
 
 
+def test_api_index_skips_invalid_activity_month(activities_env):
+    journal, facet, _day, _day_path = activities_env(None)
+    stray_file = journal / "facets" / facet / "activities" / "20269901.jsonl"
+    stray_file.write_text(
+        '{"id": "stray", "activity": "coding", "title": "Stray"}\n',
+        encoding="utf-8",
+    )
+    client = create_app(journal=str(journal)).test_client()
+
+    response = client.get("/app/activities/api/index")
+
+    assert response.status_code == 200
+    assert "202699" not in response.get_json()["months"]
+
+
 def test_api_index_is_read_only(activities_env):
     journal, _facet, _day, _day_path = activities_env(
         [{"id": "a1", "activity": "coding", "title": "Coding"}]

@@ -36,6 +36,7 @@ from flask import (
 )
 
 from solstone.convey import state
+from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.reasons import INVALID_DAY, INVALID_REQUEST_VALUE
 from solstone.convey.utils import error_response
 from solstone.think.importers.health_schema import (
@@ -4469,27 +4470,9 @@ def api_window():
 
 @body_bp.get("/api/index")
 def api_index() -> Any:
-    day_counts = _read_health_dedupe_stats(_journal_root())["by_day"]
-    months: dict[str, int] = {}
-    first_day: str | None = None
-    last_day: str | None = None
-
-    for day, count in day_counts.items():
-        if count <= 0:
-            continue
-        month = day[:6]
-        months[month] = months.get(month, 0) + count
-        if first_day is None or day < first_day:
-            first_day = day
-        if last_day is None or day > last_day:
-            last_day = day
-
-    coverage = (
-        {"start": first_day, "end": last_day}
-        if first_day is not None and last_day is not None
-        else None
+    return jsonify(
+        build_date_nav_index(_read_health_dedupe_stats(_journal_root())["by_day"])
     )
-    return jsonify({"coverage": coverage, "months": months})
 
 
 @body_bp.get("/api/stats/<month>")

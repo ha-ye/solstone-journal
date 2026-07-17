@@ -14,6 +14,7 @@ from typing import Any
 from flask import Blueprint, current_app, jsonify, redirect, url_for
 
 from solstone.convey import state
+from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.day_grid import build_day_grid_payload
 from solstone.convey.reasons import (
     INVALID_DAY,
@@ -474,20 +475,6 @@ def _day_segment_counts(month: str | None = None) -> dict[str, int]:
     return out
 
 
-def _build_date_nav_index() -> dict[str, Any]:
-    day_counts = _day_segment_counts()
-    if not day_counts:
-        return {"coverage": None, "months": {}}
-
-    months: dict[str, int] = {}
-    for day, count in sorted(day_counts.items()):
-        month = day[:6]
-        months[month] = months.get(month, 0) + count
-
-    days = sorted(day_counts)
-    return {"coverage": {"start": days[0], "end": days[-1]}, "months": months}
-
-
 @timeline_bp.route("/api/stats/<ym>")
 def timeline_stats(ym: str) -> Any:
     if not _MONTH_RE.fullmatch(ym):
@@ -526,7 +513,7 @@ def timeline_grid() -> Any:
 
 @timeline_bp.route("/api/index")
 def timeline_index() -> Any:
-    return jsonify(_build_date_nav_index())
+    return jsonify(build_date_nav_index(_day_segment_counts()))
 
 
 @timeline_bp.route("/api/month/<ym>")

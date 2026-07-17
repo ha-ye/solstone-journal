@@ -33,6 +33,7 @@ from flask import (
 import solstone.think.deferred_deletes as deferred_deletes
 from solstone.apps.utils import log_app_action
 from solstone.convey import emit
+from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     FILE_READ_FAILED,
@@ -284,27 +285,11 @@ def api_index() -> Any:
     Reuses ``_day_range_count`` for each day, so month totals match the sum of
     ``/api/stats/{month}`` for the same month.
     """
-    months: dict[str, int] = {}
-    first_day: str | None = None
-    last_day: str | None = None
-
-    for day_name, path in day_dirs().items():
-        count = _day_range_count(day_name, Path(path))
-        if count <= 0:
-            continue
-        month = day_name[:6]
-        months[month] = months.get(month, 0) + count
-        if first_day is None or day_name < first_day:
-            first_day = day_name
-        if last_day is None or day_name > last_day:
-            last_day = day_name
-
-    coverage = (
-        {"start": first_day, "end": last_day}
-        if first_day is not None and last_day is not None
-        else None
-    )
-    return jsonify({"coverage": coverage, "months": months})
+    day_counts = {
+        day_name: _day_range_count(day_name, Path(path))
+        for day_name, path in day_dirs().items()
+    }
+    return jsonify(build_date_nav_index(day_counts))
 
 
 @transcripts_bp.route("/<day>")

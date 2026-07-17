@@ -24,6 +24,7 @@ from flask import (
 )
 
 from solstone.convey import state
+from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.reasons import (
     FILE_NOT_FOUND,
     FILE_READ_FAILED,
@@ -691,35 +692,14 @@ def _talent_use_counts(month: str | None = None) -> dict[str, dict[str, int]]:
     return stats
 
 
-def _build_date_nav_index() -> dict[str, Any]:
-    day_counts = _talent_use_counts()
-    months: dict[str, int] = {}
-    first_day: str | None = None
-    last_day: str | None = None
-
-    for day, facet_counts in day_counts.items():
-        count = sum(facet_counts.values())
-        if count <= 0:
-            continue
-        month = day[:6]
-        months[month] = months.get(month, 0) + count
-        if first_day is None or day < first_day:
-            first_day = day
-        if last_day is None or day > last_day:
-            last_day = day
-
-    coverage = (
-        {"start": first_day, "end": last_day}
-        if first_day is not None and last_day is not None
-        else None
-    )
-    return {"coverage": coverage, "months": months}
-
-
 @sol_bp.route("/api/index")
 def api_index() -> Any:
     """Return read-only whole-journal date navigation coverage."""
-    return jsonify(_build_date_nav_index())
+    day_counts = {
+        day: sum(facet_counts.values())
+        for day, facet_counts in _talent_use_counts().items()
+    }
+    return jsonify(build_date_nav_index(day_counts))
 
 
 @sol_bp.route("/api/stats/<month>")

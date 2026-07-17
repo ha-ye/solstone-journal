@@ -11,6 +11,7 @@ from typing import Any
 from flask import Blueprint, current_app, jsonify, redirect, request, url_for
 
 from solstone.convey import state
+from solstone.convey.date_nav import build_date_nav_index
 from solstone.convey.reasons import (
     ACTIVITIES_BUSY,
     ACTIVITY_ALREADY_EXISTS,
@@ -107,38 +108,18 @@ def _activity_months() -> set[str]:
     return months
 
 
-def _build_date_nav_index() -> dict[str, Any]:
-    months: dict[str, int] = {}
-    first_day: str | None = None
-    last_day: str | None = None
-
+@activities_bp.route("/api/index")
+def api_index() -> Any:
+    """Return read-only whole-journal date navigation coverage."""
+    day_counts: dict[str, int] = {}
     for month in sorted(_activity_months()):
         try:
             month_counts = _month_activity_counts(month)
         except ValueError:
             continue
         for day, facet_counts in month_counts.items():
-            count = sum(facet_counts.values())
-            if count <= 0:
-                continue
-            months[month] = months.get(month, 0) + count
-            if first_day is None or day < first_day:
-                first_day = day
-            if last_day is None or day > last_day:
-                last_day = day
-
-    coverage = (
-        {"start": first_day, "end": last_day}
-        if first_day is not None and last_day is not None
-        else None
-    )
-    return {"coverage": coverage, "months": months}
-
-
-@activities_bp.route("/api/index")
-def api_index() -> Any:
-    """Return read-only whole-journal date navigation coverage."""
-    return jsonify(_build_date_nav_index())
+            day_counts[day] = sum(facet_counts.values())
+    return jsonify(build_date_nav_index(day_counts))
 
 
 @activities_bp.route("/api/stats/<month>")
