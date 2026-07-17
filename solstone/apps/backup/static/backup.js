@@ -737,10 +737,9 @@
       }
 
       const button = clone.querySelector('[data-offload-day-restore]');
-      const size = formatBytes(day.backup_only_bytes || 0);
       if (button) {
         button.setAttribute('data-offload-day-value', day.day || '');
-        button.title = (offloadCopy.restore_expectation || '').replace('{size}', size);
+        button.title = offloadRestoreExpectation(day.backup_only_bytes);
         button.setAttribute(
           'aria-label',
           [offloadCopy.actions && offloadCopy.actions.restore_day, displayDay]

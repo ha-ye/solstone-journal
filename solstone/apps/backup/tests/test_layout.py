@@ -364,9 +364,15 @@ def test_offload_js_source_contracts() -> None:
     timestamp_display = js[
         js.index("function timestampDisplay(value)") : js.index("function formatDay")
     ]
-    assert timestamp_display.index(
-        "typeof value !== 'number'"
-    ) < timestamp_display.index("typeof relativeTime === 'function'")
+    relative_time_guard = "typeof relativeTime === 'function'"
+    for guard in (
+        "typeof value !== 'number'",
+        "!Number.isFinite(value)",
+        "value <= 0",
+    ):
+        assert timestamp_display.index(guard) < timestamp_display.index(
+            relative_time_guard
+        )
     assert timestamp_display.index("elapsed >= 0") < timestamp_display.index(
         "relativeTime(elapsed)"
     )
