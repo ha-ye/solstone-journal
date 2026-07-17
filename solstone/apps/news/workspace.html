@@ -386,7 +386,7 @@
     if (!card || !host || !legend) return;
     const unit = newsGridUnit(copy);
     const data = await fetchNewsGrid();
-    if (!data || !window.DayGrid || !copy.grid_lede) {
+    if (!data || !window.DayGrid) {
       hideNewsGrid(card, host, legend, unit);
       return;
     }
@@ -474,8 +474,6 @@
             <li>
               <a class="news-index-link" href="${escapeHtml(item.url)}">
                 <span class="news-index-facet">${escapeHtml(item.facet)}</span>
-                <span class="news-index-day">${escapeHtml(item.label)}</span>
-                <span class="news-index-token">${escapeHtml(item.day)}</span>
               </a>
             </li>
           `).join('')}
