@@ -870,7 +870,7 @@ def test_process_audio_diarizes_parakeet_cpp_when_overlap_meets_threshold(tmp_pa
         patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
             "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=_overlap_result(0.5, logprobs, MULTI_STATS),
+            return_value=_overlap_result(0.5, logprobs, CLEAN_SINGLE_STATS),
         ),
         patch(
             "solstone.observe.transcribe.diarize.diarize_auto_k",

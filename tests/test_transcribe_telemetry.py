@@ -28,14 +28,14 @@ from solstone.think.providers.parakeet_server import ParakeetServerNotReady
 # A string that exists nowhere but in the (mocked) transcript. If it shows up in a
 # serialized event, transcript content leaked into telemetry.
 TRANSCRIPT_SENTINEL = "zzq-secret-utterance-do-not-leak"
-CLEAN_SINGLE_STATS = (SpeakerWindowStats(589, 1, 0),)
+NO_SPEECH_STATS = (SpeakerWindowStats(0, 0, 0),)
 
 
 def _overlap_result() -> OverlapInferenceResult:
     return OverlapInferenceResult(
         0.0,
         np.zeros((589, 7), dtype=np.float32),
-        CLEAN_SINGLE_STATS,
+        NO_SPEECH_STATS,
     )
 
 
@@ -173,8 +173,8 @@ def test_success_event_carries_stage_timings_and_envelope(
     assert kwargs["outcome"] == "transcribed"
     timings = kwargs["timings"]
     # Stages that ran inside process_audio. decode/vad/reduce are measured in
-    # _process_one, which this test calls past; diarization is skipped because
-    # the mocked overlap is below threshold.
+    # _process_one, which this test calls past; no speech-bearing evidence
+    # resolves the speaker decision to none, so diarization is skipped.
     assert {"asr_ms", "embed_ms", "overlap_ms", "write_ms"} <= set(timings)
     assert "diarize_ms" not in timings
     assert all(isinstance(v, int) and v >= 0 for v in timings.values())
