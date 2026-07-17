@@ -6,11 +6,11 @@ any behavior moves.
 
 ## Workspace Scope
 
-The Rust workspace lives at `core/`. Wave 0 contains a thin `solstone-core` bin
-and the `solstone-core-cli` adapter library. No behavior from `solstone/` has
-moved yet.
+The Rust workspace lives at `core/`. It contains a thin `solstone-core` bin,
+the `solstone-core-cli` adapter library, and subsystem crates such as
+`solstone-core-journal` as Python behavior is ported.
 
-Rust crates use edition 2024, `rust-version = "1.85"`, and
+Rust crates use edition 2024, `rust-version = "1.87"`, and
 `license = "AGPL-3.0-only"` inherited from `core/Cargo.toml`. Every `.rs` file
 starts with the two-line `//` SPDX header used by `AGENTS.md`.
 
@@ -114,3 +114,58 @@ deprecated-parameter handling, or compatibility re-exports.
 lockstep with the root `pyproject.toml` version. The current lockstep assumes
 `X.Y.Z`. A Python pre-release such as `0.9.0rc1` is not a valid Cargo version;
 before tagging one, add and test an explicit translation rule.
+
+## Journal Resolution Decisions
+
+The first behavior port is `get_journal_info()` / `get_journal()` from
+`solstone/think/utils.py`, backed by `solstone/think/user_config.py`.
+
+1. **MSRV is 1.87 for safe home fallback.** Rust 1.85 still deprecates
+   `std::env::home_dir()` under `-D warnings`; Rust 1.87 undeprecates it. The
+   journal resolver uses the hybrid shape: literal `HOME` when present, and
+   `std::env::home_dir()` only when `HOME` is absent. This avoids a hand-rolled
+   unsafe `getpwuid_r` implementation.
+2. **No unsafe passwd FFI.** Keeping the old 1.85 floor would require libc
+   fallback code with buffer sizing and retry behavior for a home-directory
+   lookup. That defect surface is not justified for this port.
+3. **Home normalization follows `str(Path.home() / "journal")`, not just
+   `os.path.expanduser("~")`.** The port reproduces the observed layers needed
+   by `user_config.default_journal()`: present-but-empty `HOME` becomes `/`,
+   trailing slashes are stripped with an or-root fallback, repeated separators
+   and `.` components are collapsed lexically, exactly two leading slashes are
+   preserved, `..` is not collapsed, and `.` joined with `journal` renders as
+   `journal`. This is not a general pathlib port.
+4. **Config stripping is Python stripping.** Rust `str::trim()` is not equivalent
+   to Python `str.strip()` because Python also strips U+001C..U+001F. Journal
+   config values use a small Python-compatible strip helper. Environment values
+   are never stripped.
+5. **TOML parsing uses `toml_edit` 0.22 parse-only.** The latest TOML crates
+   track TOML 1.1 behavior such as accepting `\e`, which Python `tomllib`
+   rejects. `toml_edit = 0.22.27` with only the `parse` feature matches the
+   `tomllib` cases this port needs and keeps the lock cost smaller than the
+   `toml` facade.
+6. **Unit vector tests do not mutate process env.** The shared JSON vectors
+   carry raw `HOME` / `SOLSTONE_JOURNAL` inputs, config bytes, checkout-root
+   state, and observed Python outcomes. Rust unit tests replay those cases by
+   passing values directly to library functions. Subprocess binary tests may use
+   `Command::env` and `env_remove`.
+7. **The binary wires no source-checkout root.** A native binary in a venv has no
+   meaningful Python checkout root, so `solstone-core journal-path` deliberately
+   resolves only CLI override, env, config, and default. The library still keeps
+   the four Python resolver sources: `env`, `config`, `source`, and `default`.
+8. **The binary label vocabulary is a superset.** `journal-path --journal PATH`
+   is a binary-surface override with no Python equivalent in `get_journal_info()`.
+   It short-circuits the library resolver and prints label `cli`; the library
+   `Source` enum does not add a fifth variant.
+9. **Non-UTF-8 env paths stay as paths.** The Rust API accepts `OsStr` /
+   `PathBuf` and has Rust-only Unix tests for non-UTF-8 env paths. The shared
+   JSON vector file is UTF-8 and does not encode arbitrary env bytes.
+10. **Create errors are structural and shape-equivalent.** Directory creation
+    errors carry source label, path, and `io::Error` fields. Their display shape
+    mirrors Python's `could not create journal directory ({source}): {path}: ...`,
+    but the OS-error text is not byte-equivalent to Python's `OSError`. Nothing
+    consumes that message programmatically.
+11. **No improvements to path meaning.** The port does no tilde expansion,
+    canonicalization, resolving, absolutization, caching, new env vars, or
+    config-gated dual path. `~/journal` from config remains a literal relative
+    path.
