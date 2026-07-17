@@ -73,11 +73,13 @@ pub fn reset_index(journal: &Path) -> Result<(), StoreError> {
 }
 
 fn ensure_schema(conn: &mut Connection) -> Result<(), StoreError> {
-    // Native indexer only ever targets a fresh or --reset DB, so the sentinel is
-    // always absent on open and the end state is unconditional "create tables +
-    // indexes + write sentinel". Python's _ensure_edges_schema has an in-place
-    // version-mismatch drop/rebuild branch; porting it here would be dead code -
-    // native relies on --reset for any future edge schema change.
+    // Native indexer only ever targets a fresh or --reset DB for schema changes.
+    // On a fresh DB the sentinel is absent and this unconditional "create tables +
+    // indexes + write sentinel" reaches the same end state as Python's
+    // _ensure_edges_schema, whose in-place version-mismatch drop/rebuild branch
+    // would be dead code here. Re-opening an existing DB is a harmless no-op: all
+    // DDL is IF NOT EXISTS and the sentinel REPLACE rewrites an invariant value.
+    // Native relies on --reset for any future edge schema change.
     let tx = conn.transaction()?;
     tx.execute(CREATE_FILES, [])?;
     tx.execute(CREATE_CHUNKS, [])?;
