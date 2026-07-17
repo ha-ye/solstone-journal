@@ -137,7 +137,7 @@
               },
               "speaker_evidence_version": {
                 "const": "windowed-slots-v1",
-                "description": "Version of the windowed slot evidence decision contract. This records engagement, not clustering outcome: a multi value with no integer speaker labels means diarization engaged and clustering produced nothing or failed.",
+                "description": "Version of the speaker-evidence decision contract, pinned to windowed-slots-v1 so readers can gate interpretation.",
                 "type": "string"
               },
               "topics": {
