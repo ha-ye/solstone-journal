@@ -63,6 +63,9 @@ def test_read_segment_overlap_fraction_legacy_absent_and_corrupt_return_zero(tmp
     missing = tmp_path / "missing.jsonl"
     corrupt = tmp_path / "corrupt.jsonl"
     corrupt.write_text("{not-json}\n", encoding="utf-8")
+    absent = tmp_path / "absent.jsonl"
+    absent.write_text(json.dumps({"raw": "audio.flac"}) + "\n", encoding="utf-8")
 
     assert _read_segment_overlap_fraction(missing) == 0.0
     assert _read_segment_overlap_fraction(corrupt) == 0.0
+    assert _read_segment_overlap_fraction(absent) == 0.0

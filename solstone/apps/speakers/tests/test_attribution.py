@@ -966,6 +966,40 @@ def test_accumulate_voiceprints_admits_clean_segment(speakers_env):
     assert saved == {"bob_smith": 1}
 
 
+def test_accumulate_voiceprints_boundary_overlap_admits(speakers_env):
+    from solstone.apps.speakers.attribution import accumulate_voiceprints
+
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Bob Smith")
+
+    other_emb = _normalized([0.1, 0.99])
+    seg_dir = _write_controlled_segment(
+        env, "20240101", "090000_300", np.vstack([other_emb])
+    )
+    _rewrite_segment_header(
+        seg_dir,
+        "mic_audio",
+        overlap_fraction=0.10,
+        overlap_detector=OVERLAP_DETECTOR_ID,
+    )
+
+    labels = [
+        {
+            "sentence_id": 1,
+            "speaker": "bob_smith",
+            "confidence": "high",
+            "method": "structural_single_speaker",
+        }
+    ]
+
+    saved = accumulate_voiceprints(
+        "20240101", STREAM, "090000_300", labels, "mic_audio"
+    )
+
+    assert saved == {"bob_smith": 1}
+
+
 def test_accumulate_voiceprints_missing_overlap_field_admits(speakers_env):
     from solstone.apps.speakers.attribution import accumulate_voiceprints
 

@@ -415,7 +415,7 @@ def _load_manual_tag_rows(principal_id: str) -> list[dict[str, Any]]:
             jsonl_path,
             _read_segment_overlap_fraction(jsonl_path),
         )
-        if overlap >= NOISY_FLYWHEEL_OVERLAP_MAX:
+        if overlap > NOISY_FLYWHEEL_OVERLAP_MAX:
             logger.info(
                 "owner manual bootstrap skip: overlap=%.3f at %s/%s/%s",
                 overlap,

@@ -324,6 +324,14 @@ def test_load_owner_embedding_inventory_counts_without_materializing(
         {1: _owner_embeddings(6, np.random.default_rng(2))},
         stream="sys",
     )
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "092000_300",
+        {1: _owner_embeddings(5, np.random.default_rng(3))},
+        stream="boundary",
+        overlap_fraction=0.10,
+    )
 
     reference_segments = 0
     reference_embeddings = 0
@@ -775,6 +783,14 @@ def test_detect_owner_candidate_skips_noisy_source_segments(speakers_env):
         stream="mic",
         overlap_fraction=0.0,
     )
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "092000_300",
+        {1: _owner_embeddings(40, rng)},
+        stream="mic",
+        overlap_fraction=0.10,
+    )
     _write_candidate_pool(
         env.journal,
         [
@@ -783,9 +799,10 @@ def test_detect_owner_candidate_skips_noisy_source_segments(speakers_env):
                 [
                     _source_segment("20240101", "090000_300", stream="mic"),
                     _source_segment("20240101", "091000_300", stream="mic"),
+                    _source_segment("20240101", "092000_300", stream="mic"),
                 ],
-                n_intervals=80,
-                total_duration_s=400.0,
+                n_intervals=120,
+                total_duration_s=600.0,
             )
         ],
     )
@@ -793,7 +810,7 @@ def test_detect_owner_candidate_skips_noisy_source_segments(speakers_env):
     result = detect_owner_candidate()
 
     assert result["status"] == "candidate"
-    assert result["cluster_size"] == 40
+    assert result["cluster_size"] == 80
     assert result["recommendation"] == "single_stream"
 
 
@@ -1185,7 +1202,9 @@ def test_bootstrap_owner_from_manual_tags_diffuse_cluster(speakers_env):
     assert result["low_quality_reason"] == LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE
 
 
-def test_manual_tag_overlap_guard_excludes_rows(speakers_env):
+def test_manual_tag_overlap_boundary_excludes_above_accepts_equal_absent(
+    speakers_env,
+):
     from solstone.apps.speakers.owner import (
         LOW_QUALITY_REASON_TOO_FEW_STMTS,
         bootstrap_owner_from_manual_tags,
@@ -1214,10 +1233,36 @@ def test_manual_tag_overlap_guard_excludes_rows(speakers_env):
         durations_s=np.full(5, 2.0, dtype=np.float32),
         overlap_fraction=0.20,
     )
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "110000_300",
+        embeddings,
+        durations_s=np.full(5, 2.0, dtype=np.float32),
+        overlap_fraction=0.10,
+    )
+    absent_overlap_dir = _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "120000_300",
+        embeddings,
+        durations_s=np.full(5, 2.0, dtype=np.float32),
+        overlap_fraction=0.0,
+    )
+    jsonl_path = absent_overlap_dir / "audio.jsonl"
+    lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    header.pop("overlap_fraction")
+    header.pop("overlap_detector")
+    lines[0] = json.dumps(header)
+    jsonl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    assert count_manual_tag_embeddings("self_person") == 5
+    assert count_manual_tag_embeddings("self_person") == 15
     result = bootstrap_owner_from_manual_tags()
     assert result["low_quality_reason"] == LOW_QUALITY_REASON_TOO_FEW_STMTS
+    assert result["observed_value"] == 15
 
 
 def test_owner_centroid_schema_parity_between_confirm_and_manual_build(speakers_env):
