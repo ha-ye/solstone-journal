@@ -147,6 +147,7 @@ def test_parse_setting_names(speakers_env):
     env = speakers_env()
     env.set_identity(preferred="Jer", name="Jeremie Miller", aliases=["Jeremy"])
     assert _parse_setting_names("Jer and Jack at coffee") == ["Jack"]
+    assert _parse_setting_names("Jeremie and Jack at coffee") == ["Jack"]
     assert _parse_setting_names("JEREMIE MILLER and Jack at coffee") == ["Jack"]
     assert _parse_setting_names("Jeremy and Jack at coffee") == ["Jack"]
     assert _parse_setting_names("Miller and Jack at coffee") == ["Jack"]

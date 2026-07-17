@@ -1632,6 +1632,17 @@ def test_api_owner_status_none(speakers_env):
 
     data = response.get_json()
     assert response.status_code == 200
+    assert set(data) == {
+        "status",
+        "manual_tags_count",
+        "segments_available",
+        "segments_with_embeddings",
+        "embeddings_available",
+        "streams_represented",
+        "can_build_from_tags",
+        "next_step",
+        "guidance",
+    }
     assert data["status"] == "none"
     assert data["manual_tags_count"] == 0
     assert data["segments_available"] == 0

@@ -46,6 +46,8 @@ SPK_GRID_UNIT_NONE = "quiet day"
 SPK_GRID_ACTIVITY_ONE = "segment, all named"
 SPK_GRID_ACTIVITY_OTHER = "segments, all named"
 
+# API payload prose for owner-status/readiness responses; keep un-prefixed so
+# speaker_copy_payload() does not scoop it into template copy.
 OWNER_CANDIDATE_CONFIRM_GUIDANCE = (
     "A candidate owner voice exists. It was heard on a single device or stream; "
     "confirm it in the speakers app or with the confirm verb when you ask."
