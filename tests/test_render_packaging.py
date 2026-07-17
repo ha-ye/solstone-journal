@@ -158,6 +158,26 @@ def test_render_raises_when_cargo_lock_member_block_has_no_version(
         render_packaging.render(root)
 
 
+def test_render_raises_when_cargo_lock_member_block_has_source(
+    tmp_path: Path,
+) -> None:
+    root = _fixture_root(tmp_path)
+    _write_cargo_lock(
+        root,
+        _cargo_lock_text(
+            cli_block="""
+            [[package]]
+            name = "solstone-core-cli"
+            version = "0.0.1"
+            source = "registry+https://github.com/rust-lang/crates.io-index"
+            """,
+        ),
+    )
+
+    with pytest.raises(render_packaging.PackagingRenderError, match="source-less"):
+        render_packaging.render(root)
+
+
 def test_render_raises_when_cargo_lock_has_duplicate_member_block(
     tmp_path: Path,
 ) -> None:
