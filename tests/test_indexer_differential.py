@@ -12,9 +12,25 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests import verify_indexer_differential as harness
 
+try:
+    from tests._indexer_differential_fixtures import (
+        FULLTEXT_QUERY_CASES,
+        FULLTEXT_TOP10_JACCARD_MIN,
+        METADATA_FILTER_CASES,
+    )
+except ModuleNotFoundError:
+    from _indexer_differential_fixtures import (
+        FULLTEXT_QUERY_CASES,
+        FULLTEXT_TOP10_JACCARD_MIN,
+        METADATA_FILTER_CASES,
+    )
+
 FIXTURE_JOURNAL = Path("tests/fixtures/journal").resolve()
+FUNCTIONAL_PATHS = tuple(f"docs/p{i:02}.md" for i in range(10))
 
 
 def _quote_command(*parts: str | Path) -> str:
@@ -128,6 +144,198 @@ def _create_index_db(path: Path, *, content: str = "same token") -> None:
                 (content, "source.md", "20260101", "test", "test", "", 0, ""),
             )
             conn.commit()
+
+
+def _functional_schema(conn: sqlite3.Connection) -> None:
+    conn.execute("CREATE TABLE files(path TEXT PRIMARY KEY, mtime INTEGER)")
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE chunks USING fts5(
+            content,
+            path UNINDEXED,
+            day UNINDEXED,
+            facet UNINDEXED,
+            agent UNINDEXED,
+            stream UNINDEXED,
+            idx UNINDEXED,
+            time_bucket UNINDEXED
+        )
+        """
+    )
+    conn.execute("CREATE TABLE edge_files(path TEXT PRIMARY KEY, mtime INTEGER)")
+    conn.execute(
+        """
+        CREATE TABLE edges(
+            src TEXT NOT NULL,
+            dst TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            directed INTEGER NOT NULL,
+            src_name TEXT,
+            dst_name TEXT,
+            day TEXT,
+            facet TEXT,
+            source TEXT NOT NULL,
+            path TEXT NOT NULL,
+            anchor TEXT,
+            label TEXT,
+            ts INTEGER,
+            weight INTEGER NOT NULL
+        )
+        """
+    )
+
+
+def _functional_content(path: str, *, jwt: bool = True, suffix: str = "") -> str:
+    phrase = " JWT token" if jwt else ""
+    return f"authentication module FastAPI{phrase} common {path} {suffix}".strip()
+
+
+def _functional_rows(
+    paths: tuple[str, ...] = FUNCTIONAL_PATHS,
+    *,
+    idx_offset: int = 0,
+    suffix: str = "",
+    stream: str | None = "default",
+) -> list[dict[str, object]]:
+    return [
+        {
+            "content": _functional_content(path, suffix=suffix),
+            "path": path,
+            "day": "20240102",
+            "facet": "work",
+            "agent": "news",
+            "stream": stream,
+            "idx": idx + idx_offset,
+            "time_bucket": "morning",
+        }
+        for idx, path in enumerate(paths)
+    ]
+
+
+def _functional_edges() -> list[dict[str, object]]:
+    return [
+        {
+            "src": "alice",
+            "dst": "bob",
+            "kind": "works-with",
+            "directed": 0,
+            "src_name": "Alice",
+            "dst_name": "Bob",
+            "day": "20240102",
+            "facet": "work",
+            "source": "test",
+            "path": "edges.json",
+            "anchor": "a1",
+            "label": "Alice works with Bob",
+            "ts": 1,
+            "weight": 4,
+        },
+        {
+            "src": "alice",
+            "dst": "project",
+            "kind": "committed-to",
+            "directed": 1,
+            "src_name": "Alice",
+            "dst_name": "Project",
+            "day": "20240102",
+            "facet": "work",
+            "source": "test",
+            "path": "edges.json",
+            "anchor": "a2",
+            "label": "Alice committed to Project",
+            "ts": 2,
+            "weight": 5,
+        },
+    ]
+
+
+def _write_functional_db(
+    path: Path,
+    *,
+    rows: list[dict[str, object]] | None = None,
+    edges: list[dict[str, object]] | None = None,
+    file_paths: tuple[str, ...] = FUNCTIONAL_PATHS,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        _functional_schema(conn)
+        for file_path in file_paths:
+            conn.execute(
+                "INSERT INTO files(path, mtime) VALUES (?, ?)",
+                (file_path, 10),
+            )
+        conn.executemany(
+            "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    row["content"],
+                    row["path"],
+                    row["day"],
+                    row["facet"],
+                    row["agent"],
+                    row["stream"],
+                    row["idx"],
+                    row["time_bucket"],
+                )
+                for row in (rows if rows is not None else _functional_rows())
+            ],
+        )
+        conn.execute(
+            "INSERT INTO edge_files(path, mtime) VALUES (?, ?)",
+            ("edges.json", 10),
+        )
+        conn.executemany(
+            """
+            INSERT INTO edges(
+                src, dst, kind, directed, src_name, dst_name, day, facet,
+                source, path, anchor, label, ts, weight
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (
+                    edge["src"],
+                    edge["dst"],
+                    edge["kind"],
+                    edge["directed"],
+                    edge["src_name"],
+                    edge["dst_name"],
+                    edge["day"],
+                    edge["facet"],
+                    edge["source"],
+                    edge["path"],
+                    edge["anchor"],
+                    edge["label"],
+                    edge["ts"],
+                    edge["weight"],
+                )
+                for edge in (edges if edges is not None else _functional_edges())
+            ],
+        )
+        conn.commit()
+
+
+def _compare_functional_paths(tmp_path: Path, left: Path, right: Path) -> dict:
+    return harness.compare_functional(left, right, tmp_path / "functional")
+
+
+def _fixture_index(tmp_path: Path) -> Path:
+    journal = tmp_path / "indexed-journal"
+    harness.copytree_tracked(FIXTURE_JOURNAL, journal)
+    journal_bin = Path(sys.executable).with_name("journal")
+    env = os.environ.copy()
+    env["SOLSTONE_JOURNAL"] = str(journal)
+    env["SOL_SKIP_SUPERVISOR_CHECK"] = "1"
+    env["SOLSTONE_DISABLE_CONVEY_SIDE_RUNTIMES"] = "1"
+    subprocess.run(
+        [str(journal_bin), "indexer", "--rescan-full"],
+        cwd=harness.ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return journal
 
 
 def test_stderr_classifier_only_allows_traceback_continuations() -> None:
@@ -442,6 +650,241 @@ def test_fixture_corpus_reports_equal_with_visible_edge_skips(tmp_path: Path) ->
         "edges": 30,
     }
     assert skip_counts == [1, 1]
+
+
+def test_functional_byte_different_but_equivalent(tmp_path: Path) -> None:
+    left = tmp_path / "left.sqlite"
+    right = tmp_path / "right.sqlite"
+    _write_functional_db(left, rows=_functional_rows())
+    _write_functional_db(
+        right,
+        rows=_functional_rows(idx_offset=100, suffix="right"),
+    )
+
+    assert left.read_bytes() != right.read_bytes()
+    comparison = _compare_functional_paths(tmp_path, left, right)
+
+    assert comparison["classification"] == "functionally-equal"
+    assert comparison["functional"]["failed_components"] == []
+
+
+def test_functional_missing_coverage_tuple_reports_missing(tmp_path: Path) -> None:
+    left = tmp_path / "left.sqlite"
+    right = tmp_path / "right.sqlite"
+    rows = [row for row in _functional_rows() if row["path"] != "docs/p09.md"]
+    _write_functional_db(left)
+    _write_functional_db(right, rows=rows)
+
+    comparison = _compare_functional_paths(tmp_path, left, right)
+    coverage = comparison["functional"]["chunk_coverage"]
+
+    assert comparison["classification"] == "unexpected-differs"
+    assert "chunk_coverage" in comparison["functional"]["failed_components"]
+    assert {
+        "path": "docs/p09.md",
+        "day": "20240102",
+        "facet": "work",
+        "agent": "news",
+        "stream": "default",
+        "time_bucket": "morning",
+    } in coverage["missing"]
+
+
+def test_functional_fulltext_overlap_failure_names_query(tmp_path: Path) -> None:
+    paths = tuple(f"docs/p{i:02}.md" for i in range(11))
+    left_rows = _functional_rows(paths)
+    right_rows = _functional_rows(paths)
+    for row in left_rows:
+        if row["path"] == "docs/p10.md":
+            row["content"] = _functional_content(str(row["path"]), jwt=False)
+    for row in right_rows:
+        if row["path"] == "docs/p09.md":
+            row["content"] = _functional_content(str(row["path"]), jwt=False)
+
+    left = tmp_path / "left.sqlite"
+    right = tmp_path / "right.sqlite"
+    _write_functional_db(left, rows=left_rows, file_paths=paths)
+    _write_functional_db(right, rows=right_rows, file_paths=paths)
+
+    comparison = _compare_functional_paths(tmp_path, left, right)
+    cases = comparison["functional"]["fulltext"]["cases"]
+    quoted = next(case for case in cases if case["name"] == "quoted_jwt_token")
+
+    assert comparison["classification"] == "unexpected-differs"
+    assert "fulltext" in comparison["functional"]["failed_components"]
+    assert quoted["passed"] is False
+    assert quoted["jaccard"] < FULLTEXT_TOP10_JACCARD_MIN
+    assert quoted["top3_subset_ok"] == {
+        "left_top3_in_right_top10": True,
+        "right_top3_in_left_top10": True,
+        "both": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "edge_variant",
+    ("dropped", "relabeled", "new_kind"),
+)
+def test_functional_edge_differences_are_unexpected(
+    tmp_path: Path,
+    edge_variant: str,
+) -> None:
+    left_edges = _functional_edges()
+    right_edges = _functional_edges()
+    if edge_variant == "dropped":
+        right_edges = right_edges[1:]
+    elif edge_variant == "relabeled":
+        right_edges[0] = {**right_edges[0], "kind": "knows"}
+    elif edge_variant == "new_kind":
+        right_edges.append({**right_edges[0], "kind": "new-kind", "dst": "carol"})
+
+    left = tmp_path / "left.sqlite"
+    right = tmp_path / "right.sqlite"
+    _write_functional_db(left, edges=left_edges)
+    _write_functional_db(right, edges=right_edges)
+
+    comparison = _compare_functional_paths(tmp_path, left, right)
+
+    assert comparison["classification"] == "unexpected-differs"
+    assert "edges" in comparison["functional"]["failed_components"]
+
+
+def test_functional_metadata_filter_path_set_difference(tmp_path: Path) -> None:
+    left = tmp_path / "left.sqlite"
+    right = tmp_path / "right.sqlite"
+    right_rows = _functional_rows()
+    for row in right_rows:
+        if row["path"] == "docs/p09.md":
+            row["agent"] = "other"
+    _write_functional_db(left)
+    _write_functional_db(right, rows=right_rows)
+
+    comparison = _compare_functional_paths(tmp_path, left, right)
+    filters = comparison["functional"]["metadata_filters"]
+    work_news = next(
+        case for case in filters["cases"] if case["name"] == "work_news_all"
+    )
+
+    assert comparison["classification"] == "unexpected-differs"
+    assert "metadata_filters" in comparison["functional"]["failed_components"]
+    assert "docs/p09.md" in work_news["only_left"]
+
+
+def test_functional_null_empty_coverage_representation_is_equal(
+    tmp_path: Path,
+) -> None:
+    left = tmp_path / "left.sqlite"
+    right = tmp_path / "right.sqlite"
+    _write_functional_db(left, rows=_functional_rows(stream=None))
+    _write_functional_db(right, rows=_functional_rows(stream=""))
+
+    comparison = _compare_functional_paths(tmp_path, left, right)
+
+    assert comparison["classification"] == "functionally-equal"
+    assert comparison["functional"]["failed_components"] == []
+
+
+def test_functional_real_facet_difference_is_unexpected(tmp_path: Path) -> None:
+    left = tmp_path / "left.sqlite"
+    right = tmp_path / "right.sqlite"
+    right_rows = _functional_rows()
+    for row in right_rows:
+        if row["path"] == "docs/p09.md":
+            row["facet"] = "personal"
+    _write_functional_db(left)
+    _write_functional_db(right, rows=right_rows)
+
+    comparison = _compare_functional_paths(tmp_path, left, right)
+
+    assert comparison["classification"] == "unexpected-differs"
+
+
+def test_functional_fixture_cases_are_non_empty_on_reference_index(
+    tmp_path: Path,
+) -> None:
+    journal = _fixture_index(tmp_path)
+    from solstone.think.indexer.journal import search_journal
+
+    for case in (*FULLTEXT_QUERY_CASES, *METADATA_FILTER_CASES):
+        with harness._temporary_solstone_journal(journal):
+            total, _ = search_journal(
+                case["query"],
+                limit=0,
+                **case["filters"],
+            )
+            _, results = search_journal(
+                case["query"],
+                limit=total,
+                **case["filters"],
+            )
+        paths = {result["metadata"]["path"] for result in results}
+        assert total > 0, case["name"]
+        assert paths, case["name"]
+        assert total == case["reference_total"], case["name"]
+        assert len(paths) == case["reference_distinct_paths"], case["name"]
+
+
+def test_fixture_corpus_reports_functionally_equal(tmp_path: Path) -> None:
+    journal_bin = Path(sys.executable).with_name("journal")
+    command = _quote_command(journal_bin, "indexer", "--rescan-full")
+
+    report = harness.run_differential(
+        journal=FIXTURE_JOURNAL,
+        command_a=command,
+        command_b=command,
+        work_root=tmp_path / "work",
+        mode="functional",
+    )
+    functional = report["functional"]
+
+    assert report["mode"] == "functional"
+    assert report["classification"] == "functionally-equal"
+    assert functional["failed_components"] == []
+    assert functional["files"]["equal"] is True
+    assert functional["chunk_coverage"]["equal"] is True
+    assert functional["metadata_filters"]["passed"] is True
+    assert functional["fulltext"]["passed"] is True
+    assert functional["edges"]["passed"] is True
+
+
+def test_full_copy_mode_handles_non_git_journal_and_preserves_source_sqlite(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "non-git-journal"
+    harness.copytree_tracked(FIXTURE_JOURNAL, source)
+    source_sqlite = source / "imports" / "health-dedupe.sqlite"
+    source_sqlite.parent.mkdir(parents=True, exist_ok=True)
+    source_sqlite.write_bytes(b"source sqlite content")
+
+    copies = harness._prepare_working_copies(
+        source,
+        tmp_path / "prep-work",
+        copy_mode="full",
+    )
+
+    assert not (copies["left"] / harness.DB_REL).exists()
+    assert not (copies["right"] / harness.DB_REL).exists()
+    assert harness._mtime_mismatches(copies["left"], copies["right"]) == []
+    assert (copies["left"] / "imports" / "health-dedupe.sqlite").read_bytes() == (
+        b"source sqlite content"
+    )
+
+    report = harness.run_differential(
+        journal=source,
+        command_a=_command(tmp_path, "same"),
+        command_b=_command(tmp_path, "same"),
+        work_root=tmp_path / "run-work",
+        copy_mode="full",
+    )
+
+    corpus = report["provenance"]["corpus"]
+    assert report["classification"] == "equal"
+    assert corpus["copy_route"] == "copytree-full"
+    assert corpus["copy_mode"] == "full"
+    assert corpus["copy_exclusions"] == list(harness.INDEX_DB_EXCLUSION_RELS)
+    assert (
+        tmp_path / "run-work" / "left" / "journal" / "imports" / "health-dedupe.sqlite"
+    ).read_bytes() == b"source sqlite content"
 
 
 def test_harness_does_not_use_network_or_write_outside_workdir(
