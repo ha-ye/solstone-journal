@@ -744,6 +744,69 @@ def test_build_from_tags_low_quality_json_and_busy(
     assert busy.stderr == f"{SPEAKER_VOICEPRINT_BUSY.message}\n"
 
 
+def test_rebuild_owner_cli_posts_to_http_and_formats_json(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[bool] = []
+    payload = {
+        "status": "rebuilt",
+        "principal_id": "jer",
+        "cluster_size": 30,
+        "override_applied": True,
+        "next_step": "none",
+        "guidance": "",
+    }
+
+    def fake_rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
+        calls.append(override)
+        return dict(payload)
+
+    monkeypatch.setattr(
+        speakers_routes,
+        "rebuild_owner_centroid",
+        fake_rebuild_owner_centroid,
+    )
+
+    text = runner.invoke(app, ["rebuild-owner", "--override"])
+    json_result = runner.invoke(app, ["rebuild-owner", "--override", "--json"])
+
+    assert text.exit_code == 0
+    assert text.stderr == ""
+    assert text.stdout == (
+        "Owner centroid rebuilt (principal: jer, cluster_size: 30)\n"
+        "Override applied: true\n"
+    )
+    _assert_json_stdout(json_result, payload)
+    assert calls == [True, True]
+
+
+def test_rebuild_owner_cli_honest_refusal_next_step_guidance(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    refusal = {
+        "status": "rejected_regression",
+        "reason": "centroid_agreement_too_low",
+        "next_step": "review_or_override",
+        "guidance": "Review the manual owner tags.",
+    }
+    monkeypatch.setattr(
+        speakers_routes,
+        "rebuild_owner_centroid",
+        lambda *, override=False: refusal,
+    )
+
+    result = runner.invoke(app, ["rebuild-owner"])
+
+    assert result.exit_code == 0
+    assert result.stderr == ""
+    assert result.stdout == (
+        "Owner centroid rebuild did not write.\n"
+        "Reason: centroid_agreement_too_low\n"
+        "Next step: review_or_override\n"
+        "Guidance: Review the manual owner tags.\n"
+    )
+
+
 def test_tag_owner_success_retry_safe_actionable_errors_and_busy(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:

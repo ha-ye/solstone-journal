@@ -38,11 +38,11 @@ Guidance: `solstone/apps/health/talent/health/SKILL.md`
 
 ## speakers — `sol call speakers`
 
-Triggers: `speaker`, `voice`, `who was talking`, `identify speaker`, `voiceprint`, `tag-owner`, `build-from-tags`, `owner-ready`
+Triggers: `speaker`, `voice`, `who was talking`, `identify speaker`, `voiceprint`, `tag-owner`, `build-from-tags`, `rebuild-owner`, `owner-ready`
 
 Read: `discover`, `resolve-names`, `status`
 
-Write: `backfill`, `backfill-last-seen`, `bootstrap`, `link-import`, `merge-names`, `seed-from-imports`
+Write: `backfill`, `backfill-last-seen`, `bootstrap`, `link-import`, `merge-names`, `rebuild-owner`, `seed-from-imports`
 
 Other: `attribute-segment`, `build-from-tags`, `confirm-owner`, `day-segments`, `detect`, `identify`, `owner-ready`, `reject-owner`, `sentences`, `suggest`, `tag-owner`, `wipe`
 

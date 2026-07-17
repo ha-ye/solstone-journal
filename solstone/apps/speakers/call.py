@@ -8,8 +8,8 @@ Every verb reaches the journal only over HTTP via the Convey client; this
 module imports no journal/domain function and performs no filesystem I/O.
 
 Commands with ``--commit`` preview by default and persist only when passed.
-Other write verbs, including ``tag-owner`` and ``build-from-tags``, persist
-immediately.
+Other write verbs, including ``tag-owner``, ``build-from-tags``, and
+``rebuild-owner``, persist immediately.
 For ``attribute-segment``, ``--save`` / ``--accumulate`` only take effect
 when ``--commit`` is also passed.
 
@@ -29,6 +29,7 @@ Commands:
     sol call speakers suggest [--limit N] [--json]
     sol call speakers detect
     sol call speakers build-from-tags [--json]
+    sol call speakers rebuild-owner [--override] [--json]
     sol call speakers tag-owner <day> <stream> <segment> <source> <sentence-id> [--json]
     sol call speakers sentences <day> <stream> <segment> <source> [--json]
     sol call speakers day-segments <day> [--limit N] [--json]
@@ -675,6 +676,11 @@ def build_from_tags_cmd(
         return
 
     if result.get("status") == "confirmed":
+        if result.get("next_step") == "rebuild_owner":
+            typer.echo("Owner centroid already confirmed.")
+            typer.echo(f"Next step: {result.get('next_step')}")
+            typer.echo(f"Guidance: {result.get('guidance')}")
+            return
         typer.echo(
             "Owner centroid confirmed from manual tags "
             f"(principal: {result['principal_id']}, cluster_size: {result['cluster_size']})"
@@ -688,6 +694,63 @@ def build_from_tags_cmd(
         typer.echo(f"Threshold: {result.get('threshold_value')}")
         typer.echo(f"Manual tags: {result.get('manual_tags_count')}")
         typer.echo(f"Can build from tags: {result.get('can_build_from_tags')}")
+        typer.echo(f"Next step: {result.get('next_step')}")
+        typer.echo(f"Guidance: {result.get('guidance')}")
+        return
+
+    typer.echo(json.dumps(result, indent=2, default=str))
+
+
+@app.command("rebuild-owner")
+@convey_cli
+def rebuild_owner_cmd(
+    override: bool = typer.Option(
+        False,
+        "--override",
+        help="Bypass only incumbent-regression refusals; absolute evidence floors still apply.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Rebuild the owner voice centroid from current manual owner tags."""
+    result = _request(
+        "POST",
+        "/app/speakers/api/owner/rebuild",
+        json_body={"override": override},
+    )
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+
+    status = result.get("status")
+    if status == "rebuilt":
+        typer.echo(
+            "Owner centroid rebuilt "
+            f"(principal: {result['principal_id']}, cluster_size: {result['cluster_size']})"
+        )
+        if result.get("override_applied"):
+            typer.echo("Override applied: true")
+        if result.get("next_step") != "none":
+            typer.echo(f"Next step: {result.get('next_step')}")
+            typer.echo(f"Guidance: {result.get('guidance')}")
+        return
+
+    if status == "unchanged":
+        typer.echo("Owner centroid unchanged; evidence already matches.")
+        if result.get("next_step") != "none":
+            typer.echo(f"Next step: {result.get('next_step')}")
+            typer.echo(f"Guidance: {result.get('guidance')}")
+        return
+
+    if status in {"low_quality", "refused", "rejected_regression"}:
+        typer.echo("Owner centroid rebuild did not write.")
+        if result.get("reason"):
+            typer.echo(f"Reason: {result.get('reason')}")
+        elif result.get("low_quality_reason"):
+            typer.echo(f"Reason: {result.get('low_quality_reason')}")
+        if "observed_value" in result:
+            typer.echo(f"Observed: {result.get('observed_value')}")
+        if "threshold_value" in result:
+            typer.echo(f"Threshold: {result.get('threshold_value')}")
         typer.echo(f"Next step: {result.get('next_step')}")
         typer.echo(f"Guidance: {result.get('guidance')}")
         return

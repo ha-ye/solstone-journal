@@ -119,8 +119,12 @@ def _owner_section() -> dict[str, Any]:
         result["centroid_metadata"] = {
             "cluster_size": centroid.cluster_size,
             "streams": centroid.streams,
+            "created_at": centroid.created_at,
             "last_refreshed_at": centroid.last_refreshed_at,
+            "threshold": centroid.threshold,
             "intra_cosine_p25": centroid.intra_cosine_p25,
+            "evidence_hash": centroid.evidence_hash,
+            "evidence_intra_cosine_p25": centroid.evidence_intra_cosine_p25,
         }
     return result
 

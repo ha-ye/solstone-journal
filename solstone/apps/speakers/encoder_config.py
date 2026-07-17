@@ -27,6 +27,11 @@ OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S: float = 1.5
 OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25: float = 0.30
 # Smallest manual-tag set that meaningfully constrains the contamination centroid; below this the no-op default holds.
 OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS: int = 5
+# Owner centroid rebuild guards governed by the owner-rebuild spec.
+OWNER_REBUILD_MIN_CENTROID_AGREEMENT: float = 0.80
+OWNER_REBUILD_MIN_CLUSTER_SIZE_RATIO: float = 0.80
+OWNER_REBUILD_MAX_COHESION_DROP: float = 0.05
+OWNER_REBUILD_SUPERSEDED_SCAN_DAYS: int = 30
 
 NOISY_FLYWHEEL_OVERLAP_MAX: float = 0.10
 SLOT_ACTIVE_MIN_SHARE: float = 0.10

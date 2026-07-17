@@ -69,6 +69,7 @@ from solstone.apps.speakers.owner import (
     owner_detection_ready,
     owner_rejection_cooldown_payload,
     principal_identity_or_none,
+    rebuild_owner_centroid,
     reject_owner_candidate,
 )
 from solstone.apps.speakers.status import get_speakers_status
@@ -1692,11 +1693,17 @@ def api_owner_status() -> Any:
         metadata = {
             "cluster_size": centroid.cluster_size if centroid is not None else 0,
             "streams": centroid.streams if centroid is not None else [],
+            "created_at": centroid.created_at if centroid is not None else None,
             "last_refreshed_at": (
                 centroid.last_refreshed_at if centroid is not None else ""
             ),
+            "threshold": centroid.threshold if centroid is not None else None,
             "intra_cosine_p25": (
                 centroid.intra_cosine_p25 if centroid is not None else None
+            ),
+            "evidence_hash": centroid.evidence_hash if centroid is not None else None,
+            "evidence_intra_cosine_p25": (
+                centroid.evidence_intra_cosine_p25 if centroid is not None else None
             ),
         }
         return jsonify(
@@ -1811,6 +1818,31 @@ def api_owner_build_from_tags() -> Any:
             params={
                 "principal_id": result["principal_id"],
                 "cluster_size": result.get("cluster_size"),
+            },
+        )
+    return jsonify(result)
+
+
+@speakers_bp.route("/api/owner/rebuild", methods=["POST"])
+def api_owner_rebuild() -> Any:
+    """Rebuild the confirmed owner centroid from current manual-tag evidence."""
+    body = request.get_json(silent=True) or {}
+    override = bool(body.get("override") is True) if isinstance(body, dict) else False
+    try:
+        result = rebuild_owner_centroid(override=override)
+    except LockTimeout as exc:
+        return _voiceprint_busy_response(exc)
+    if result.get("error_kind") == "voiceprint_busy":
+        return error_response(SPEAKER_VOICEPRINT_BUSY, detail=result["error"])
+    if result.get("status") == "rebuilt":
+        log_app_action(
+            app="speakers",
+            facet=None,
+            action="owner_voiceprint_rebuild",
+            params={
+                "principal_id": result["principal_id"],
+                "cluster_size": result.get("cluster_size"),
+                "override": bool(result.get("override_applied")),
             },
         )
     return jsonify(result)

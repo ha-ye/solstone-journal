@@ -4,6 +4,7 @@ description: >
   Manage speaker voiceprints in observed media. Detect owner voice, bootstrap
   voiceprints, attribute segments, merge names. TRIGGER: speaker, voice, who
   was talking, identify speaker, voiceprint, tag-owner, build-from-tags,
+  rebuild-owner,
   owner-ready, sol call speakers
   detect/confirm-owner/identify/merge-names/bootstrap/backfill.
 ---
@@ -12,7 +13,7 @@ description: >
 
 Manage speaker voiceprints and owner identification in observed media. Invoke via Bash: `sol call speakers <command> [args...]`.
 
-**Writer polarity**: `bootstrap`, `resolve-names`, `attribute-segment`, `backfill`, `backfill-last-seen`, `seed-from-imports`, and `wipe` preview by default. Pass `--commit` to persist. Without `--commit` they print a report and return — no data is modified. All other write verbs persist immediately: `tag-owner`, `build-from-tags`, `confirm-owner`, `reject-owner`, `identify`, `merge-names`, and `link-import`. `detect` also mutates persisted owner-candidate state, including failure paths.
+**Writer polarity**: `bootstrap`, `resolve-names`, `attribute-segment`, `backfill`, `backfill-last-seen`, `seed-from-imports`, and `wipe` preview by default. Pass `--commit` to persist. Without `--commit` they print a report and return — no data is modified. All other write verbs persist immediately: `tag-owner`, `build-from-tags`, `rebuild-owner`, `confirm-owner`, `reject-owner`, `identify`, `merge-names`, and `link-import`. `detect` also mutates persisted owner-candidate state, including failure paths.
 
 Common pattern:
 
@@ -194,6 +195,23 @@ Example:
 
 ```bash
 sol call speakers build-from-tags --json
+```
+
+## rebuild-owner
+
+```bash
+sol call speakers rebuild-owner [--override] [--json]
+```
+
+Refresh an existing owner centroid from current manual owner tags. `rebuild-owner` persists immediately on success, refuses when the manual evidence fails absolute quality gates, and returns guidance for no-op or refusal cases.
+
+- `--override`: bypasses only incumbent-regression refusals after reviewing the evidence; it does not bypass minimum evidence quality or missing owner identity.
+- `--json`: emit full result as JSON.
+
+Example:
+
+```bash
+sol call speakers rebuild-owner --json
 ```
 
 ## identify

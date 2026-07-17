@@ -655,6 +655,119 @@ def test_api_owner_build_from_tags(speakers_env):
         assert int(np.asarray(centroid["cluster_size"]).item()) == seeded_count
 
 
+def test_api_owner_rebuild_route_success_and_refusals(speakers_env):
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.apps.speakers.tests.test_owner import (
+        _seed_rebuild_evidence,
+        _write_rebuild_owner_centroid,
+    )
+
+    env = speakers_env()
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        refused = client.post("/app/speakers/api/owner/rebuild", json={})
+
+    assert refused.status_code == 200
+    assert refused.get_json()["status"] == "refused"
+    assert refused.get_json()["reason"] == "no_principal"
+
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+
+    with app.test_client() as client:
+        rebuilt = client.post("/app/speakers/api/owner/rebuild", json={})
+
+    data = rebuilt.get_json()
+    assert rebuilt.status_code == 200
+    assert data["status"] == "rebuilt"
+    assert data["next_step"] in {"none", "backfill_attribution"}
+    assert "guidance" in data
+
+
+def test_rebuild_override_forces_write_past_regression_guard(speakers_env, monkeypatch):
+    from solstone.apps.speakers import routes as speakers_routes
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.apps.speakers.tests.test_owner import (
+        _seed_rebuild_evidence,
+        _write_rebuild_owner_centroid,
+    )
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(
+        env,
+        centroid=np.array([0.0, 1.0] + [0.0] * 254, dtype=np.float32),
+    )
+    _seed_rebuild_evidence(env)
+    actions = []
+    monkeypatch.setattr(
+        speakers_routes, "log_app_action", lambda **kwargs: actions.append(kwargs)
+    )
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        resp = client.post("/app/speakers/api/owner/rebuild", json={"override": True})
+
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data["status"] == "rebuilt"
+    assert data["override_applied"] is True
+    assert actions[0]["params"]["override"] is True
+
+
+def test_build_from_tags_existing_centroid_stays_confirmed_and_returns_rebuild_guidance(
+    speakers_env,
+):
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.apps.speakers.tests.test_owner import _write_rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        resp = client.post("/app/speakers/api/owner/build-from-tags")
+
+    data = resp.get_json()
+    assert resp.status_code == 200
+    assert data["status"] == "confirmed"
+    assert data["next_step"] == "rebuild_owner"
+    assert "rebuild-owner" in data["guidance"]
+
+
+def test_owner_tag_after_confirmation_does_not_trigger_rebuild_and_order_is_unchanged(
+    speakers_env, monkeypatch
+):
+    from solstone.apps.speakers import routes as speakers_routes
+
+    speakers_env()
+    calls = []
+
+    def fail_rebuild(*args, **kwargs):
+        raise AssertionError("owner tag hook triggered rebuild")
+
+    def capture_bootstrap():
+        calls.append("bootstrap")
+        return {"status": "confirmed", "principal_id": "self_person"}
+
+    monkeypatch.setattr(speakers_routes, "rebuild_owner_centroid", fail_rebuild)
+    monkeypatch.setattr(
+        speakers_routes,
+        "bootstrap_owner_from_manual_tags",
+        capture_bootstrap,
+    )
+
+    speakers_routes._maybe_bootstrap_owner_from_attestation(
+        "self_person",
+        "self_person",
+    )
+
+    assert calls == ["bootstrap"]
+
+
 def test_api_owner_bootstrap_full_loop_from_stubbed_labels(speakers_env):
     from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
     from solstone.apps.speakers.routes import speakers_bp
@@ -2460,18 +2573,41 @@ def test_api_owner_status_confirmed_has_centroid_metadata(speakers_env):
 
     assert resp.status_code == 200
     metadata = resp.get_json()["centroid_metadata"]
-    assert set(metadata) == {
-        "cluster_size",
-        "streams",
-        "last_refreshed_at",
-        "intra_cosine_p25",
-    }
-    assert metadata == {
-        "cluster_size": 2,
-        "streams": ["mic", "sys"],
-        "last_refreshed_at": "2026-03-15T12:00:00Z",
-        "intra_cosine_p25": 1.0,
-    }
+    assert metadata["cluster_size"] == 2
+    assert metadata["streams"] == ["mic", "sys"]
+    assert metadata["created_at"] is None
+    assert metadata["last_refreshed_at"] == "2026-03-15T12:00:00Z"
+    assert np.isclose(metadata["threshold"], OWNER_THRESHOLD)
+    assert metadata["intra_cosine_p25"] == 1.0
+    assert metadata["evidence_hash"] is None
+    assert metadata["evidence_intra_cosine_p25"] is None
+
+
+def test_owner_rebuild_route_response_matches_status_metadata(speakers_env):
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.apps.speakers.tests.test_owner import (
+        _seed_rebuild_evidence,
+        _write_rebuild_owner_centroid,
+    )
+    from solstone.think.awareness import update_state
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+    update_state("voiceprint", {"status": "confirmed", "cluster_size": 30})
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        rebuild = client.post("/app/speakers/api/owner/rebuild", json={}).get_json()
+        status = client.get("/app/speakers/api/owner/status").get_json()
+
+    metadata = status["centroid_metadata"]
+    assert rebuild["status"] == "rebuilt"
+    assert metadata["created_at"] == rebuild["created_at"]
+    assert metadata["last_refreshed_at"] == rebuild["last_refreshed_at"]
+    assert np.isclose(metadata["threshold"], rebuild["threshold"])
+    assert metadata["evidence_hash"] == rebuild["evidence_hash"]
 
 
 def test_index_serves_spa_shell(speakers_env):
@@ -2503,6 +2639,25 @@ def test_overview_renders_four_section_markers():
     assert 'data-section="known-voices"' in template
     assert 'data-section="new-voices"' in template
     assert 'data-section="today"' in template
+
+
+def test_owner_panel_renders_built_from_created_at_and_refreshed_from_last_refreshed_at():
+    template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
+
+    assert "meta.created_at ? relativeTime(meta.created_at)" in template
+    assert "COPY.SPK_OVERVIEW_OWNER_BUILT_PREFIX" in template
+    assert "COPY.SPK_OVERVIEW_OWNER_REFRESHED_PREFIX" in template
+    assert "relativeTime(meta.last_refreshed_at)" in template
+
+
+def test_owner_panel_renders_built_unknown_when_created_at_absent():
+    template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
+
+    assert "COPY.SPK_OVERVIEW_OWNER_BUILT_UNKNOWN" in template
+    assert "unknown" not in template.replace(
+        "COPY.SPK_OVERVIEW_OWNER_BUILT_UNKNOWN",
+        "",
+    )
 
 
 def test_speakers_state_endpoint_shape(speakers_env):

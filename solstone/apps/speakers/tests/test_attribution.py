@@ -259,6 +259,17 @@ def test_attribute_no_owner_centroid(speakers_env):
     assert result.get("error") == "no_owner_centroid"
 
 
+def test_attribute_segment_with_no_owner_centroid_flow_unchanged(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    env.create_segment("20240101", "090000_300", ["mic_audio"])
+
+    result = attribute_segment("20240101", STREAM, "090000_300")
+
+    assert result == {"error": "no_owner_centroid", "labels": [], "unmatched": []}
+
+
 def test_attribute_no_embeddings(speakers_env):
     from solstone.apps.speakers.attribution import attribute_segment
 
@@ -281,7 +292,7 @@ def test_layer1_owner_classification(speakers_env):
     _setup_owner(env)
 
     # Sentence 1: close to owner centroid [1,0,...], sentence 2: far from it
-    owner_emb = _normalized([0.95, 0.05])
+    owner_emb = _normalized([0.6, 0.8])
     other_emb = _normalized([0.1, 0.99])
     embeddings = np.vstack([owner_emb, other_emb])
 
@@ -297,6 +308,45 @@ def test_layer1_owner_classification(speakers_env):
     assert labels[0]["confidence"] == "high"
     # Second sentence: unmatched (no speakers.json, no voiceprints)
     assert labels[1]["speaker"] is None
+
+
+def test_attribute_segment_metadata_uses_same_loaded_centroid_timestamp(
+    speakers_env, monkeypatch
+):
+    from solstone.apps.speakers import attribution
+    from solstone.apps.speakers.attribution import attribute_segment
+    from solstone.apps.speakers.owner import OwnerCentroid
+
+    env = speakers_env()
+    env.create_entity("Self Person", is_principal=True)
+    owner_emb = _normalized([0.95, 0.05])
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        owner_emb.reshape(1, -1),
+    )
+    loaded: list[str] = []
+
+    def fake_load_owner_centroid() -> OwnerCentroid:
+        timestamp = "loaded-once" if not loaded else "torn-second-load"
+        loaded.append(timestamp)
+        return OwnerCentroid(
+            centroid=_normalized([1.0, 0.0]).astype(np.float32),
+            threshold=0.43,
+            cluster_size=30,
+            last_refreshed_at=timestamp,
+            intra_cosine_p25=None,
+            streams=[],
+        )
+
+    monkeypatch.setattr(attribution, "load_owner_centroid", fake_load_owner_centroid)
+
+    result = attribute_segment("20240101", STREAM, "090000_300")
+
+    assert loaded == ["loaded-once"]
+    assert result["labels"][0]["method"] == "owner_centroid"
+    assert result["metadata"]["owner_centroid_last_refreshed_at"] == "loaded-once"
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +505,42 @@ def test_layer3_acoustic_matching(speakers_env):
     assert (
         result["metadata"]["owner_centroid_last_refreshed_at"] == "2026-03-15T12:00:00Z"
     )
+
+
+def test_rebuild_resnapshots_current_owner_threshold_without_changing_read_paths(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import attribute_segment
+    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+    from solstone.apps.speakers.owner import load_owner_centroid, rebuild_owner_centroid
+    from solstone.apps.speakers.tests.test_owner import (
+        _seed_rebuild_evidence,
+        _write_rebuild_owner_centroid,
+    )
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(
+        env,
+        threshold=0.99,
+        evidence_hash=None,
+    )
+    _seed_rebuild_evidence(env)
+    owner_emb = _normalized([0.6, 0.8])
+    _write_controlled_segment(
+        env,
+        "20240102",
+        "100000_300",
+        owner_emb.reshape(1, -1),
+    )
+
+    before = attribute_segment("20240102", STREAM, "100000_300")
+    rebuild = rebuild_owner_centroid()
+    after = attribute_segment("20240102", STREAM, "100000_300")
+
+    assert np.isclose(load_owner_centroid().threshold, OWNER_THRESHOLD)
+    assert before["labels"][0]["speaker"] is None
+    assert rebuild["status"] == "rebuilt"
+    assert after["labels"][0]["method"] == "owner_centroid"
 
 
 def test_layer3_hybrid_engages_and_assigns_clusters_one_to_one(speakers_env):

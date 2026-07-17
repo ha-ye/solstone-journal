@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -264,6 +266,7 @@ def _save_manual_owner_tags(
     method: str = "user_assigned",
     durations_s: np.ndarray | None = None,
     overlap_fraction: float = 0.0,
+    stream: str = "test",
 ) -> Path:
     from solstone.apps.speakers.routes import _save_voiceprint
 
@@ -271,24 +274,33 @@ def _save_manual_owner_tags(
     segment_dir = _write_segment(
         env.journal,
         day,
-        "test",
+        stream,
         segment_key,
         source,
         normalized_embeddings,
         durations_s=durations_s,
     )
-    env.create_speaker_labels(
-        day,
-        segment_key,
-        [
+    labels_dir = segment_dir / "talents"
+    labels_dir.mkdir(parents=True, exist_ok=True)
+    labels = [
+        {
+            "sentence_id": idx,
+            "speaker": principal_id,
+            "confidence": "high",
+            "method": method,
+        }
+        for idx in range(1, len(normalized_embeddings) + 1)
+    ]
+    (labels_dir / "speaker_labels.json").write_text(
+        json.dumps(
             {
-                "sentence_id": idx,
-                "speaker": principal_id,
-                "confidence": "high",
-                "method": method,
+                "labels": labels,
+                "owner_centroid_last_refreshed_at": None,
+                "voiceprint_versions": {},
             }
-            for idx in range(1, len(normalized_embeddings) + 1)
-        ],
+        )
+        + "\n",
+        encoding="utf-8",
     )
     _rewrite_segment_header(
         segment_dir,
@@ -304,9 +316,82 @@ def _save_manual_owner_tags(
             segment_key,
             source,
             idx,
-            stream="test",
+            stream=stream,
         )
     return segment_dir
+
+
+def _write_rebuild_owner_centroid(
+    env,
+    *,
+    centroid: np.ndarray | None = None,
+    cluster_size: int = 30,
+    threshold: float | None = None,
+    last_refreshed_at: str = "2026-03-15T12:00:00Z",
+    created_at: str | None = "2026-03-14T12:00:00Z",
+    evidence_hash: str | None = "previous-hash",
+    evidence_intra_cosine_p25: float | None = 1.0,
+) -> Path:
+    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+
+    principal_dir = env.create_entity("Self Person", is_principal=True)
+    centroid_array = (
+        _normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32))
+        if centroid is None
+        else _normalized(np.asarray(centroid, dtype=np.float32))
+    )
+    arrays: dict[str, np.ndarray] = {
+        "centroid": centroid_array.astype(np.float32),
+        "cluster_size": np.array(cluster_size, dtype=np.int32),
+        "threshold": np.array(
+            OWNER_THRESHOLD if threshold is None else threshold,
+            dtype=np.float32,
+        ),
+        "last_refreshed_at": np.array(last_refreshed_at),
+    }
+    if created_at is not None:
+        arrays["created_at"] = np.array(created_at)
+    if evidence_hash is not None:
+        arrays["evidence_hash"] = np.array(evidence_hash)
+    if evidence_intra_cosine_p25 is not None:
+        arrays["evidence_intra_cosine_p25"] = np.array(
+            evidence_intra_cosine_p25, dtype=np.float32
+        )
+    path = principal_dir / "owner_centroid.npz"
+    np.savez_compressed(path, **arrays)
+    return path
+
+
+def _seed_rebuild_evidence(
+    env,
+    *,
+    count: int = 30,
+    principal_id: str = "self_person",
+    method: str = "user_assigned",
+    vector: np.ndarray | None = None,
+    day: str = "20240101",
+    segment_key: str = "090000_300",
+    stream: str = "test",
+    source: str = "audio",
+    duration_s: float = 2.0,
+) -> None:
+    base = (
+        _normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32))
+        if vector is None
+        else _normalized(np.asarray(vector, dtype=np.float32))
+    )
+    embeddings = np.repeat(base.reshape(1, -1), count, axis=0)
+    _save_manual_owner_tags(
+        env,
+        principal_id,
+        day,
+        segment_key,
+        embeddings,
+        source=source,
+        method=method,
+        durations_s=np.full(count, duration_s, dtype=np.float32),
+        stream=stream,
+    )
 
 
 def test_load_owner_embedding_inventory_counts_without_materializing(
@@ -1480,6 +1565,770 @@ def test_bootstrap_owner_from_manual_tags_is_idempotent(speakers_env):
     assert dict(get_current()["voiceprint"]) == state_before
 
 
+def test_confirm_owner_candidate_keeps_four_key_schema(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+    from solstone.apps.speakers.owner import confirm_owner_candidate
+
+    env = speakers_env()
+    principal_dir = env.create_entity("Self Person", is_principal=True)
+    candidate_path = _candidate_path(env.journal)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    centroid = _normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32))
+    np.savez_compressed(
+        candidate_path,
+        centroid=centroid,
+        cluster_size=np.array(40, dtype=np.int32),
+        threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
+        version=np.array("2026-03-19T12:00:00"),
+    )
+
+    result = confirm_owner_candidate()
+
+    assert result["status"] == "confirmed"
+    with np.load(principal_dir / "owner_centroid.npz", allow_pickle=False) as data:
+        assert set(data.files) == {
+            "centroid",
+            "cluster_size",
+            "threshold",
+            "last_refreshed_at",
+        }
+
+
+def test_confirm_owner_candidate_pre_first_centroid_flow_unchanged(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+    from solstone.apps.speakers.owner import confirm_owner_candidate
+
+    env = speakers_env()
+    principal_dir = env.create_entity("Self Person", is_principal=True)
+    candidate_path = _candidate_path(env.journal)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        candidate_path,
+        centroid=_normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32)),
+        cluster_size=np.array(88, dtype=np.int32),
+        threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
+        version=np.array("2026-03-19T12:00:00"),
+    )
+
+    result = confirm_owner_candidate()
+
+    assert result == {
+        "status": "confirmed",
+        "principal_id": "self_person",
+        "cluster_size": 88,
+    }
+    assert not candidate_path.exists()
+    assert (principal_dir / "owner_centroid.npz").exists()
+    assert get_current()["voiceprint"]["status"] == "confirmed"
+
+
+def test_bootstrap_owner_from_manual_tags_keeps_four_key_schema(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
+    from solstone.apps.speakers.owner import bootstrap_owner_from_manual_tags
+
+    env = speakers_env()
+    principal_dir = env.create_entity("Self Person", is_principal=True)
+    _seed_rebuild_evidence(env, count=OWNER_BOOTSTRAP_MIN_STMTS)
+
+    result = bootstrap_owner_from_manual_tags()
+
+    assert result["status"] == "confirmed"
+    with np.load(principal_dir / "owner_centroid.npz", allow_pickle=False) as data:
+        assert set(data.files) == {
+            "centroid",
+            "cluster_size",
+            "threshold",
+            "last_refreshed_at",
+        }
+
+
+def test_rebuild_npz_key_set_includes_only_rebuild_metadata(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+    from solstone.apps.speakers.owner import (
+        OWNER_REBUILD_EXPECTED_KEYS,
+        rebuild_owner_centroid,
+    )
+
+    env = speakers_env()
+    owner_path = _write_rebuild_owner_centroid(env, evidence_hash=None, created_at=None)
+    _seed_rebuild_evidence(env)
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["created_at"] == "2026-03-15T12:00:00Z"
+    with np.load(owner_path, allow_pickle=False) as data:
+        assert set(data.files) == set(OWNER_REBUILD_EXPECTED_KEYS)
+        assert np.isclose(float(np.asarray(data["threshold"]).item()), OWNER_THRESHOLD)
+
+
+def test_load_owner_centroid_old_file_missing_rebuild_keys(speakers_env):
+    from solstone.apps.speakers.owner import load_owner_centroid
+
+    env = speakers_env()
+    _write_confirmed_owner_centroid(env)
+
+    centroid = load_owner_centroid()
+
+    assert centroid is not None
+    assert centroid.created_at is None
+    assert centroid.evidence_hash is None
+    assert centroid.evidence_intra_cosine_p25 is None
+
+
+def test_rebuild_uses_load_manual_tag_rows_label_authority(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+    env.create_speaker_corrections(
+        "20240101",
+        "090000_300",
+        [
+            {
+                "sentence_id": 1,
+                "original_speaker": "self_person",
+                "corrected_speaker": "someone_else",
+                "timestamp": 0,
+            }
+        ],
+    )
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["evidence_counts"]["used"] == 30
+
+
+def test_rebuild_excludes_overlap_gated_rows_exactly_like_manual_loader(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "090000_300",
+        np.repeat(
+            _normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32)).reshape(1, -1),
+            30,
+            axis=0,
+        ),
+        durations_s=np.full(30, 2.0, dtype=np.float32),
+        overlap_fraction=0.2,
+    )
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "low_quality"
+    assert result["low_quality_reason"] == "too_few_stmts"
+    assert result["evidence_counts"]["used"] == 0
+
+
+def test_rebuild_counts_user_confirmed_but_excludes_from_evidence(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env, method="user_confirmed")
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "low_quality"
+    assert result["low_quality_reason"] == "too_few_stmts"
+    assert result["evidence_counts"] == {
+        "eligible": 30,
+        "used": 0,
+        "user_assigned": 0,
+        "user_corrected": 0,
+        "user_confirmed_excluded": 30,
+    }
+
+
+def test_existing_manual_tag_consumers_keep_default_method_set(speakers_env):
+    from solstone.apps.speakers.owner import count_manual_tag_embeddings
+
+    env = speakers_env()
+    env.create_entity("Self Person", is_principal=True)
+    _seed_rebuild_evidence(env, method="user_confirmed")
+
+    assert count_manual_tag_embeddings("self_person") == 30
+
+
+def test_rebuild_rejects_centroid_agreement_too_low(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    incumbent = np.array([0.0, 1.0] + [0.0] * 254, dtype=np.float32)
+    _write_rebuild_owner_centroid(env, centroid=incumbent, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rejected_regression"
+    assert result["reason"] == "centroid_agreement_too_low"
+
+
+def test_rebuild_override_forces_write_past_regression_guard(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    incumbent = np.array([0.0, 1.0] + [0.0] * 254, dtype=np.float32)
+    owner_path = _write_rebuild_owner_centroid(env, centroid=incumbent)
+    _seed_rebuild_evidence(env)
+
+    result = rebuild_owner_centroid(override=True)
+
+    assert result["status"] == "rebuilt"
+    assert result["override_applied"] is True
+    with np.load(owner_path, allow_pickle=False) as data:
+        centroid = data["centroid"]
+    assert centroid[0] > 0.99
+
+
+def test_rebuild_override_does_not_bypass_absolute_quality_floor(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env, count=1)
+
+    result = rebuild_owner_centroid(override=True)
+
+    assert result["status"] == "low_quality"
+    assert result["low_quality_reason"] == "too_few_stmts"
+
+
+def test_first_rebuild_skips_population_specific_guards_for_confirm_incumbent(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, cluster_size=3000, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["incumbent_guard"]["cluster_size_compared"] is False
+    assert result["incumbent_guard"]["cohesion_compared"] is False
+    assert result["incumbent_guard"]["reason"] == "incumbent_not_rebuild_sourced"
+
+
+def test_first_rebuild_response_marks_incumbent_cohesion_unknown(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+
+    first = rebuild_owner_centroid()
+    second = rebuild_owner_centroid()
+
+    assert first["status"] == "rebuilt"
+    assert first["incumbent_cohesion"] == "unknown"
+    assert second["status"] == "unchanged"
+    assert isinstance(second["incumbent_cohesion"], float)
+
+
+def test_rebuild_to_rebuild_applies_cluster_size_and_cohesion_guards(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, cluster_size=60, evidence_intra_cosine_p25=1.0)
+    _seed_rebuild_evidence(env, count=30)
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rejected_regression"
+    assert result["reason"] == "cluster_size_regression"
+    assert result["incumbent_guard"]["cluster_size_compared"] is True
+    assert result["incumbent_guard"]["cohesion_compared"] is True
+
+
+def test_rebuild_regression_ignores_load_time_voiceprint_summary_cohesion(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_intra_cosine_p25=0.30)
+    _seed_rebuild_evidence(env)
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+
+
+def test_rebuild_missing_incumbent_evidence_cohesion_is_none_not_zero(speakers_env):
+    from solstone.apps.speakers.owner import load_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(
+        env,
+        evidence_hash=None,
+        evidence_intra_cosine_p25=None,
+    )
+
+    centroid = load_owner_centroid()
+
+    assert centroid is not None
+    assert centroid.evidence_intra_cosine_p25 is None
+
+
+def test_rebuild_regression_refusal_preserves_owner_centroid_bytes_mtime_and_confirmed_awareness(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    owner_path = _write_rebuild_owner_centroid(
+        env,
+        centroid=np.array([0.0, 1.0] + [0.0] * 254, dtype=np.float32),
+    )
+    update_state("voiceprint", {"status": "confirmed", "cluster_size": 30})
+    _seed_rebuild_evidence(env)
+    os.utime(owner_path, (1_700_000_000, 1_700_000_000))
+    before = owner_path.read_bytes()
+    before_mtime = owner_path.stat().st_mtime_ns
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rejected_regression"
+    assert owner_path.read_bytes() == before
+    assert owner_path.stat().st_mtime_ns == before_mtime
+    assert get_current()["voiceprint"]["status"] == "confirmed"
+
+
+def test_rebuild_low_quality_refusal_preserves_owner_centroid_bytes_mtime_and_confirmed_awareness(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    owner_path = _write_rebuild_owner_centroid(env, evidence_hash=None)
+    update_state("voiceprint", {"status": "confirmed", "cluster_size": 30})
+    _seed_rebuild_evidence(env, count=1)
+    os.utime(owner_path, (1_700_000_000, 1_700_000_000))
+    before = owner_path.read_bytes()
+    before_mtime = owner_path.stat().st_mtime_ns
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "low_quality"
+    assert owner_path.read_bytes() == before
+    assert owner_path.stat().st_mtime_ns == before_mtime
+    assert get_current()["voiceprint"]["status"] == "confirmed"
+
+
+def test_rebuild_low_quality_does_not_update_awareness(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    update_state("voiceprint", {"status": "confirmed", "cluster_size": 30})
+    _seed_rebuild_evidence(env, count=1)
+    state_before = dict(get_current()["voiceprint"])
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "low_quality"
+    assert dict(get_current()["voiceprint"]) == state_before
+
+
+def test_detect_owner_candidate_low_quality_still_updates_awareness(speakers_env):
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [_source_segment("20240101", "090000_300", stream="mic")],
+                n_intervals=1,
+            )
+        ],
+    )
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "low_quality"
+    assert get_current()["voiceprint"]["status"] == "low_quality"
+
+
+def test_bootstrap_owner_from_manual_tags_low_quality_still_updates_awareness(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import bootstrap_owner_from_manual_tags
+
+    env = speakers_env()
+    env.create_entity("Self Person", is_principal=True)
+    _seed_rebuild_evidence(env, count=1)
+
+    result = bootstrap_owner_from_manual_tags()
+
+    assert result["status"] == "low_quality"
+    assert get_current()["voiceprint"]["status"] == "low_quality"
+
+
+def test_rebuild_no_principal_returns_clean_refusal(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    speakers_env()
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "refused"
+    assert result["reason"] == "no_principal"
+    assert result["next_step"]
+    assert result["guidance"]
+
+
+def test_rebuild_confirm_sourced_without_manual_tags_refuses_too_few_stmts_preserves_incumbent(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    owner_path = _write_rebuild_owner_centroid(env, evidence_hash=None)
+    before = owner_path.read_bytes()
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "low_quality"
+    assert result["low_quality_reason"] == "too_few_stmts"
+    assert owner_path.read_bytes() == before
+
+
+def test_rebuild_same_five_tuple_evidence_hash_noops_without_deleting_npz(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    owner_path = _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+    first = rebuild_owner_centroid()
+    before = owner_path.read_bytes()
+
+    second = rebuild_owner_centroid()
+
+    assert first["status"] == "rebuilt"
+    assert second["status"] == "unchanged"
+    assert owner_path.exists()
+    assert owner_path.read_bytes() == before
+
+
+def test_retag_same_sentence_does_not_change_rebuild_evidence_hash(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+    first = rebuild_owner_centroid()
+    labels_path = (
+        env.journal
+        / "chronicle"
+        / "20240101"
+        / "test"
+        / "090000_300"
+        / "talents"
+        / "speaker_labels.json"
+    )
+    labels_data = json.loads(labels_path.read_text(encoding="utf-8"))
+    for label in labels_data["labels"]:
+        label["method"] = "user_corrected"
+    labels_path.write_text(json.dumps(labels_data) + "\n", encoding="utf-8")
+
+    second = rebuild_owner_centroid()
+
+    assert first["status"] == "rebuilt"
+    assert second["status"] == "unchanged"
+    assert second["reason"] == "evidence_hash_match"
+
+
+def test_rebuild_five_tuple_hash_changes_when_evidence_row_set_changes(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+    first = rebuild_owner_centroid()
+    _seed_rebuild_evidence(
+        env,
+        count=1,
+        day="20240102",
+        segment_key="100000_300",
+    )
+
+    second = rebuild_owner_centroid()
+
+    assert first["status"] == "rebuilt"
+    assert second["status"] == "rebuilt"
+    assert second["evidence_hash"] != first["evidence_hash"]
+
+
+def test_concurrent_rebuild_same_evidence_second_reports_unchanged(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+    barrier = threading.Barrier(2)
+    results: list[dict] = []
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            results.append(rebuild_owner_centroid())
+        except BaseException as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker), threading.Thread(target=worker)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert not errors
+    assert sorted(result["status"] for result in results) == ["rebuilt", "unchanged"]
+
+
+def test_rebuild_update_npz_transform_never_returns_empty_dict(
+    speakers_env, monkeypatch
+):
+    from solstone.apps.speakers import owner as owner_module
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    owner_path = _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+    rebuild_owner_centroid()
+    transform_results = []
+    real_update_npz = owner_module.update_npz
+
+    def capture_update_npz(path, transform, *, expected_keys):
+        current = owner_module.load_npz(path) or {}
+        result = transform(current)
+        transform_results.append(result)
+        return real_update_npz(
+            path, lambda _current: result, expected_keys=expected_keys
+        )
+
+    monkeypatch.setattr(owner_module, "update_npz", capture_update_npz)
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "unchanged"
+    assert transform_results == [None]
+    assert owner_path.exists()
+
+
+def test_first_rebuild_seeds_created_at_from_existing_last_refreshed_at_under_lock(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(
+        env,
+        evidence_hash=None,
+        created_at=None,
+        last_refreshed_at="2026-01-01T00:00:00Z",
+    )
+    _seed_rebuild_evidence(env)
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["created_at"] == "2026-01-01T00:00:00Z"
+
+
+def test_rebuild_preserves_created_at_on_later_rebuilds(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, created_at="2026-01-01T00:00:00Z")
+    _seed_rebuild_evidence(env)
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["created_at"] == "2026-01-01T00:00:00Z"
+
+
+def test_rebuild_response_reports_streams_represented_from_evidence_rows(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env, count=15, stream="mic", segment_key="090000_300")
+    _seed_rebuild_evidence(env, count=15, stream="sys", segment_key="091000_300")
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["streams_represented"] == 2
+
+
+def test_rebuild_superseded_scan_uses_30_day_window(speakers_env, monkeypatch):
+    from solstone.apps.speakers import owner as owner_module
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env, day="20240131", segment_key="090000_300")
+    for index in range(31):
+        day = f"202401{index + 1:02d}"
+        seg_dir = env.create_segment(day, "120000_300", ["audio"])
+        talents = seg_dir / "talents"
+        talents.mkdir(parents=True, exist_ok=True)
+        (talents / "speaker_labels.json").write_text(
+            json.dumps({"labels": [], "owner_centroid_last_refreshed_at": "old"})
+            + "\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(owner_module, "_iso_now", lambda: "new-refresh")
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["superseded_labels_window_days"] == 30
+    assert result["superseded_labels_window_count"] == 30
+
+
+def test_rebuild_counts_superseded_unstamped_and_errors_separately(
+    speakers_env, monkeypatch
+):
+    from solstone.apps.speakers import owner as owner_module
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env, day="20240104", segment_key="090000_300")
+    stamps = {
+        "20240101": {"owner_centroid_last_refreshed_at": "old"},
+        "20240102": {"owner_centroid_last_refreshed_at": None},
+        "20240103": {"owner_centroid_last_refreshed_at": "new-refresh"},
+    }
+    for day, metadata in stamps.items():
+        seg_dir = env.create_segment(day, "120000_300", ["audio"])
+        talents = seg_dir / "talents"
+        talents.mkdir(parents=True, exist_ok=True)
+        payload = {"labels": [], **metadata}
+        (talents / "speaker_labels.json").write_text(
+            json.dumps(payload) + "\n",
+            encoding="utf-8",
+        )
+    bad_dir = env.create_segment("20240105", "120000_300", ["audio"])
+    (bad_dir / "talents").mkdir(parents=True, exist_ok=True)
+    (bad_dir / "talents" / "speaker_labels.json").write_text("{", encoding="utf-8")
+    monkeypatch.setattr(owner_module, "_iso_now", lambda: "new-refresh")
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["superseded_labels_window_count"] == 1
+    assert result["unstamped_labels_window_count"] == 2
+    assert result["superseded_labels_window_error_count"] == 1
+
+
+def test_check_owner_contamination_uses_rebuilt_owner_centroid(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+    from solstone.apps.speakers.routes import _check_owner_contamination
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(
+        env,
+        centroid=np.array([0.0, 1.0] + [0.0] * 254, dtype=np.float32),
+        evidence_hash=None,
+    )
+    _seed_rebuild_evidence(env)
+
+    result = rebuild_owner_centroid(override=True)
+
+    assert result["status"] == "rebuilt"
+    assert _check_owner_contamination(
+        _normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32))
+    )
+
+
+def test_accumulate_voiceprints_uses_rebuilt_owner_centroid_for_subtraction(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import accumulate_voiceprints
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+    rebuild_owner_centroid()
+    env.create_entity("Alice Test")
+    owner_embedding = _normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32))
+    _write_segment(
+        env.journal,
+        "20240102",
+        "test",
+        "100000_300",
+        "audio",
+        owner_embedding.reshape(1, -1),
+        durations_s=np.array([2.0], dtype=np.float32),
+    )
+    env.create_speaker_labels(
+        "20240102",
+        "100000_300",
+        [{"sentence_id": 1, "speaker": "alice_test", "confidence": "high"}],
+    )
+
+    saved = accumulate_voiceprints(
+        "20240102",
+        "test",
+        "100000_300",
+        [{"sentence_id": 1, "speaker": "alice_test", "confidence": "high"}],
+        "audio",
+    )
+
+    assert saved == {}
+
+
+def test_provisional_owner_guard_stays_disabled_after_rebuild(speakers_env):
+    from solstone.apps.speakers.owner import (
+        load_owner_provisional_centroid,
+        rebuild_owner_centroid,
+    )
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    _seed_rebuild_evidence(env)
+
+    rebuild_owner_centroid()
+
+    assert load_owner_provisional_centroid("self_person") is None
+
+
+def test_reject_owner_candidate_cooldown_flow_unchanged(speakers_env):
+    from solstone.apps.speakers.owner import (
+        owner_detection_ready,
+        reject_owner_candidate,
+    )
+
+    env = speakers_env()
+    candidate_path = _candidate_path(env.journal)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_bytes(b"test")
+
+    result = reject_owner_candidate()
+    ready = owner_detection_ready()
+
+    assert result["status"] == "rejected"
+    assert not candidate_path.exists()
+    assert ready["ready"] is False
+    assert ready["reason"] == "cooldown"
+
+
 def test_load_owner_centroid_no_principal(speakers_env):
     from solstone.apps.speakers.owner import load_owner_centroid
 
@@ -2045,8 +2894,12 @@ def test_api_owner_status_confirmed(speakers_env):
         "centroid_metadata": {
             "cluster_size": 0,
             "streams": [],
+            "created_at": None,
             "last_refreshed_at": "",
+            "threshold": None,
             "intra_cosine_p25": None,
+            "evidence_hash": None,
+            "evidence_intra_cosine_p25": None,
         },
     }
 
