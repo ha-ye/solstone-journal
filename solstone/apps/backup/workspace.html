@@ -246,18 +246,23 @@
         <section class="backup-offload-tiering">
           <h3 data-copy="offload.labels.days"></h3>
           <div class="backup-offload-days" data-offload-days>
-            <article class="backup-offload-day" hidden>
-              <div>
-                <strong data-offload-day-value></strong>
-                <p class="backup-note">
-                  <span data-copy="offload.labels.raw_media"></span>
-                  <span data-offload-day-raw-bytes></span>
-                  <span data-copy="offload.backup_only_label"></span>
-                  <span data-offload-day-backup-only-bytes></span>
-                </p>
-              </div>
-              <button type="button" data-action="offload-restore-day" data-offload-day-restore data-offload-day-value data-copy="offload.actions.restore_day"></button>
-            </article>
+            <template data-offload-day-template>
+              <article class="backup-offload-day">
+                <div data-offload-day-detail>
+                  <strong data-offload-day-value></strong>
+                  <p class="backup-note">
+                    <span data-copy="offload.labels.raw_media"></span>
+                    <span aria-hidden="true">: </span>
+                    <span data-offload-day-raw-bytes></span>
+                    <span aria-hidden="true"> · </span>
+                    <span data-copy="offload.backup_only_label"></span>
+                    <span aria-hidden="true">: </span>
+                    <span data-offload-day-backup-only-bytes></span>
+                  </p>
+                </div>
+                <button type="button" data-action="offload-restore-day" data-offload-day-restore data-offload-day-value data-copy="offload.actions.restore_day"></button>
+              </article>
+            </template>
           </div>
         </section>
 

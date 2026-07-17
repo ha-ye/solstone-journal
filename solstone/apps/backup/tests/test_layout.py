@@ -153,6 +153,7 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         "data-offload-last-verify",
         "data-offload-last-restore",
         "data-offload-days",
+        "data-offload-day-template",
         "data-offload-day-value",
         "data-offload-day-raw-bytes",
         "data-offload-day-backup-only-bytes",
@@ -204,7 +205,39 @@ def test_offload_js_source_contracts() -> None:
     assert "delete next.operation;" in js
     assert "applyPayload(await postJson('/app/backup/offload" not in js
     assert "kind === 'offload_restore'" in js
+    assert "applyCopy(clone, copy);" in js
+
+    offload_error = js[
+        js.index("function offloadActionError(err)") : js.index(
+            "function maybeOpenPortal"
+        )
+    ]
+    assert "operationLabels[reason]" in offload_error
+    assert "offloadCopy.action_error" in offload_error
+    assert "destinationLabels" not in offload_error
+    assert "error_intro" not in offload_error
+    offload_catch = js[
+        js.index("if (action && action.startsWith('offload-'))") : js.index(
+            "} else {\n          showError('[data-operation-error]'"
+        )
+    ]
+    assert "offloadActionError(err)" in offload_catch
+    assert "showError" not in offload_catch
 
     budget_gb = 37
     floor_gb = 23
     assert budget_gb != floor_gb
+
+
+def test_offload_js_validates_payload_shape_before_ready_state() -> None:
+    js = _backup_js()
+
+    assert "function validOffloadPayload(payload)" in js
+    assert "payload.offload &&" in js
+    assert "typeof payload.offload === 'object'" in js
+    assert "!Array.isArray(payload.offload)" in js
+    assert "Array.isArray(payload.days)" in js
+    assert "malformed backup offload status payload" in js
+    guard_call = "if (!validOffloadPayload(payload))"
+    assert guard_call in js
+    assert js.index(guard_call) < js.index("offloadState = { status: 'ready'")

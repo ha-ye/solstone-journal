@@ -170,14 +170,14 @@ OFFLOAD_RESTORE_EXPECTATION = (
 )
 OFFLOAD_DISABLE_NOTE = "offloading stops. recordings already in your backup stay there — protected and restorable."
 OFFLOAD_UNAVAILABLE_LEAD = "can't read offload status right now."
+OFFLOAD_ACTION_ERROR = (
+    "media offload couldn't finish. check backup setup, then try again."
+)
 OFFLOAD_ENABLE_HINT = (
     "choose how much older media can leave this device after backup verification."
 )
 OFFLOAD_NOT_READY = (
     "turn on encrypted backup and confirm your recovery key before using media offload."
-)
-OFFLOAD_STEADY_HINT = (
-    "older media can move out of local storage after backup verification."
 )
 OFFLOAD_LABELS = {
     "budget_gb": "raw media budget",
@@ -189,9 +189,6 @@ OFFLOAD_LABELS = {
     "last_verify": "last verification",
     "last_restore": "last restore",
     "days": "days with media in backup",
-    "day": "day",
-    "files": "files",
-    "segments": "segments",
     "gb_suffix": "GB",
 }
 OFFLOAD_ACTIONS = {
@@ -311,9 +308,9 @@ def backup_copy_payload() -> dict[str, Any]:
             "restore_expectation": OFFLOAD_RESTORE_EXPECTATION,
             "disable_note": OFFLOAD_DISABLE_NOTE,
             "unavailable_lead": OFFLOAD_UNAVAILABLE_LEAD,
+            "action_error": OFFLOAD_ACTION_ERROR,
             "enable_hint": OFFLOAD_ENABLE_HINT,
             "not_ready": OFFLOAD_NOT_READY,
-            "steady_hint": OFFLOAD_STEADY_HINT,
             "labels": dict(OFFLOAD_LABELS),
             "actions": dict(OFFLOAD_ACTIONS),
             "messages": dict(OFFLOAD_MESSAGES),

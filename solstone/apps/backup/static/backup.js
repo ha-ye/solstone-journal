@@ -109,9 +109,9 @@
       "restore_expectation": "restoring {size} from your backup — a large restore can take a while.",
       "disable_note": "offloading stops. recordings already in your backup stay there — protected and restorable.",
       "unavailable_lead": "can't read offload status right now.",
+      "action_error": "media offload couldn't finish. check backup setup, then try again.",
       "enable_hint": "choose how much older media can leave this device after backup verification.",
       "not_ready": "turn on encrypted backup and confirm your recovery key before using media offload.",
-      "steady_hint": "older media can move out of local storage after backup verification.",
       "labels": {
         "budget_gb": "raw media budget",
         "floor_gb": "device free-space floor",
@@ -122,9 +122,6 @@
         "last_verify": "last verification",
         "last_restore": "last restore",
         "days": "days with media in backup",
-        "day": "day",
-        "files": "files",
-        "segments": "segments",
         "gb_suffix": "GB"
       },
       "actions": {
@@ -322,10 +319,15 @@
   const hostedCopy = copy.hosted || {};
   const offloadCopy = copy.offload || {};
   const offloadLabels = offloadCopy.labels || {};
-  const offloadActions = offloadCopy.actions || {};
   const offloadMessages = offloadCopy.messages || {};
   const offloadStallLabels = offloadCopy.stall_reason_labels || {};
   const offloadRestoreLabels = offloadCopy.restore_reason_labels || {};
+  const offloadRouteErrorReasons = new Set([
+    'invalid_config_value',
+    'backup_not_confirmed',
+    'invalid_operation_for_state',
+    'backup_busy',
+  ]);
   const terminalPhases = new Set(['done', 'error', 'needs_subscription', 'degraded', 'refused']);
 
   function panel(name) {
@@ -357,6 +359,14 @@
 
   function reasonLabel(reason) {
     return operationLabels[reason] || destinationLabels[reason] || copy.error_intro || '';
+  }
+
+  function offloadActionError(err) {
+    const reason = err && err.reason_code;
+    if (offloadRouteErrorReasons.has(reason) && operationLabels[reason]) {
+      return operationLabels[reason];
+    }
+    return offloadCopy.action_error || '';
   }
 
   function maybeOpenPortal(payload) {
@@ -459,6 +469,7 @@
   function renderOffloadDays(days) {
     const target = root.querySelector('[data-offload-days]');
     if (!target) return;
+    const template = root.querySelector('[data-offload-day-template]');
     target.replaceChildren();
     if (!Array.isArray(days) || days.length === 0) {
       const empty = document.createElement('p');
@@ -468,42 +479,32 @@
       return;
     }
     for (const day of days) {
-      const row = document.createElement('article');
-      row.className = 'backup-offload-day';
-
-      const details = document.createElement('div');
-      const heading = document.createElement('strong');
-      heading.setAttribute('data-offload-day-value', '');
-      heading.textContent = formatDay(day.day);
-      const metrics = document.createElement('p');
-      metrics.className = 'backup-note';
-      const raw = document.createElement('span');
-      raw.setAttribute('data-offload-day-raw-bytes', '');
-      raw.textContent = `${offloadLabels.raw_media || ''}: ${formatBytes(day.raw_media_bytes || 0)}`;
-      const backupOnly = document.createElement('span');
-      backupOnly.setAttribute('data-offload-day-backup-only-bytes', '');
-      backupOnly.textContent = `${offloadCopy.backup_only_label || ''}: ${formatBytes(day.backup_only_bytes || 0)}`;
-      metrics.append(raw, document.createTextNode(' · '), backupOnly);
-      details.append(heading, metrics);
+      const clone = template.content.cloneNode(true);
+      applyCopy(clone, copy);
+      const row = clone.querySelector('.backup-offload-day');
+      const details = clone.querySelector('[data-offload-day-detail]');
+      const heading = clone.querySelector('strong[data-offload-day-value]');
+      if (heading) heading.textContent = formatDay(day.day);
+      const raw = clone.querySelector('[data-offload-day-raw-bytes]');
+      if (raw) raw.textContent = formatBytes(day.raw_media_bytes || 0);
+      const backupOnly = clone.querySelector('[data-offload-day-backup-only-bytes]');
+      if (backupOnly) backupOnly.textContent = formatBytes(day.backup_only_bytes || 0);
 
       if (day.degraded) {
         const degraded = document.createElement('p');
         degraded.className = 'backup-warning';
         degraded.textContent = offloadMessages.degraded || '';
-        details.append(degraded);
+        if (details) details.append(degraded);
       }
 
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.setAttribute('data-action', 'offload-restore-day');
-      button.setAttribute('data-offload-day-restore', '');
-      button.setAttribute('data-offload-day-value', day.day || '');
+      const button = clone.querySelector('[data-offload-day-restore]');
       const size = formatBytes(day.backup_only_bytes || 0);
-      button.textContent = offloadActions.restore_day || '';
-      button.title = (offloadCopy.restore_expectation || '').replace('{size}', size);
-      button.disabled = !day.backup_only_segments;
-      row.append(details, button);
-      target.append(row);
+      if (button) {
+        button.setAttribute('data-offload-day-value', day.day || '');
+        button.title = (offloadCopy.restore_expectation || '').replace('{size}', size);
+        button.disabled = !day.backup_only_segments;
+      }
+      if (row) target.append(row);
     }
   }
 
@@ -634,11 +635,34 @@
   }
 
   function applyOffloadPayload(payload) {
+    if (!validOffloadPayload(payload)) {
+      const error = new Error('malformed backup offload status payload');
+      if (window.logError) {
+        window.logError(error, { context: 'backup offload status payload' });
+      } else if (window.console && window.console.error) {
+        window.console.error(error);
+      }
+      renderOffloadUnavailable();
+      return false;
+    }
     const next = Object.assign({}, payload || {});
     delete next.success;
     delete next.operation;
     offloadState = { status: 'ready', payload: next };
     renderOffload();
+    return true;
+  }
+
+  function validOffloadPayload(payload) {
+    return Boolean(
+      payload &&
+        typeof payload === 'object' &&
+        !Array.isArray(payload) &&
+        payload.offload &&
+        typeof payload.offload === 'object' &&
+        !Array.isArray(payload.offload) &&
+        Array.isArray(payload.days),
+    );
   }
 
   async function refreshOffloadStatus() {
@@ -828,26 +852,30 @@
           maybeOpenPortal(payload);
         }
         if (action === 'offload-enable') {
-          applyOffloadPayload(await postJson('/app/backup/offload/enable'));
-          showMessage('[data-offload-config-status]', offloadMessages.saved || '');
+          if (applyOffloadPayload(await postJson('/app/backup/offload/enable'))) {
+            showMessage('[data-offload-config-status]', offloadMessages.saved || '');
+          }
         }
         if (action === 'offload-save') {
-          applyOffloadPayload(await postJson('/app/backup/offload/config', offloadConfigBody()));
-          showMessage('[data-offload-config-status]', offloadMessages.saved || '');
+          if (applyOffloadPayload(await postJson('/app/backup/offload/config', offloadConfigBody()))) {
+            showMessage('[data-offload-config-status]', offloadMessages.saved || '');
+          }
         }
         if (action === 'offload-disable') {
-          applyOffloadPayload(await postJson('/app/backup/offload/disable'));
-          showMessage('[data-offload-config-status]', offloadMessages.saved || '');
+          if (applyOffloadPayload(await postJson('/app/backup/offload/disable'))) {
+            showMessage('[data-offload-config-status]', offloadMessages.saved || '');
+          }
         }
         if (action === 'offload-restore-day') {
           const day = button.getAttribute('data-offload-day-value');
           await startOperation('/app/backup/offload/restore', { day });
         }
       } catch (err) {
-        showError(
-          action && action.startsWith('offload-') ? '[data-offload-config-status]' : '[data-operation-error]',
-          err,
-        );
+        if (action && action.startsWith('offload-')) {
+          showMessage('[data-offload-config-status]', offloadActionError(err));
+        } else {
+          showError('[data-operation-error]', err);
+        }
       }
     });
   }
