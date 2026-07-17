@@ -866,7 +866,7 @@ async function renderAllHistory() {
     timeline.innerHTML = renderErrorState();
     return;
   }
-  window.DayGrid.legend(legendHost, { unit });
+  window.DayGrid.legend(legendHost, { unit, data: gridData });
 }
 
 async function renderMonth(index) {

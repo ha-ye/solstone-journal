@@ -342,6 +342,15 @@
     assert('legend swatches have width outside grid', swatches.every((swatch) => parseFloat(getComputedStyle(swatch).width) > 0));
     assert('legend swatches have height outside grid', swatches.every((swatch) => parseFloat(getComputedStyle(swatch).height) > 0));
 
+    // the pending key is drawn only when the grid actually holds pending days —
+    // a key for a state the surface cannot be in is scaffolding
+    window.DayGrid.legend(legendHost, { unit, data: multiYearData() });
+    assert('legend keeps pending key when pending days exist', !!legendHost.querySelector('.daygrid-legend-pending'));
+    window.DayGrid.legend(legendHost, { unit, data: { ...multiYearData(), pending: {} } });
+    assert('legend drops pending key with no pending days', !legendHost.querySelector('.daygrid-legend-pending'));
+    equal('legend keeps its heat scale without pending', legendHost.querySelectorAll('.daygrid-legend-swatch').length, 5);
+    window.DayGrid.legend(legendHost, { unit });
+
     setPointer(true);
     mounted = mount({
       coverage: { start: '20260101', end: '20260108' },

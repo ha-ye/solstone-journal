@@ -235,7 +235,10 @@
     return row;
   }
 
-  function legend(host, { unit } = {}) {
+  // `data` is optional but wanted: the pending key is only drawn when the grid
+  // actually holds pending days. A key for a state the surface cannot be in is
+  // scaffolding — search has no rollups at all, so it must never advertise one.
+  function legend(host, { unit, data } = {}) {
     if (!host) throw new Error('DayGrid.legend requires a host element');
     dateNav();
     host.replaceChildren();
@@ -262,11 +265,17 @@
     more.textContent = 'more';
     scale.appendChild(more);
 
-    const pending = document.createElement('div');
-    pending.className = 'daygrid-legend-pending';
-    pending.innerHTML = '<span class="daygrid-legend-pending-mark" aria-hidden="true"></span><span>pending rollup</span>';
-
-    root.append(scale, pending);
+    const hasPending = data
+      ? Object.values(data.pending || {}).some((value) => dateNav().coerceCount(value) > 0)
+      : true;
+    if (hasPending) {
+      const pending = document.createElement('div');
+      pending.className = 'daygrid-legend-pending';
+      pending.innerHTML = '<span class="daygrid-legend-pending-mark" aria-hidden="true"></span><span>pending rollup</span>';
+      root.append(scale, pending);
+    } else {
+      root.append(scale);
+    }
     host.appendChild(root);
     return root;
   }
