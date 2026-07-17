@@ -190,9 +190,7 @@ def _corpus_provenance(journal: Path) -> dict[str, Any]:
     repo_commit = _git_rev_for_path(FIXTURE_JOURNAL)
     corpus["copy_route"] = "git-archive-head"
     corpus["identity"] = (
-        {"kind": "git-archive-head", "repo_commit": repo_commit}
-        if repo_commit is not None
-        else None
+        {"repo_commit": repo_commit} if repo_commit is not None else None
     )
     return corpus
 

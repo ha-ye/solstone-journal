@@ -361,7 +361,6 @@ def test_fixture_corpus_reports_equal_with_visible_edge_skips(tmp_path: Path) ->
     assert report["classification"] == "equal"
     assert report["normalization"]["rules_fired"] == []
     assert corpus["copy_route"] == "git-archive-head"
-    assert corpus["identity"]["kind"] == "git-archive-head"
     assert corpus["identity"]["repo_commit"]
     assert table_counts == {
         "files": 176,
