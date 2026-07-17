@@ -278,11 +278,27 @@ def summarize_pipeline_day(day: str) -> dict:
         "exhausted_segments": {"count": 0, "segments": []},
     }
 
+    def _apply_segment_census(segments: list[dict]) -> SegmentCompletion:
+        completion = classify_segment_completion(
+            segments,
+            read_segment_progress(day),
+        )
+        # Exhausted segments are sensed-terminal and leave not_sensed blockers;
+        # this census is the remaining signal that their raw media is held.
+        summary["exhausted_segments"] = {
+            "count": len(completion.exhausted),
+            "segments": list(completion.exhausted),
+        }
+        return completion
+
     try:
         health_dir = day_path(day, create=False) / "health"
         if not health_dir.is_dir():
             today = _now().strftime("%Y%m%d")
-            if day < today and cluster_segments(day):
+            segments = cluster_segments(day)
+            if segments:
+                _apply_segment_census(segments)
+            if day < today and segments:
                 summary["status"] = "unknown"
                 summary["anomalies"].append(
                     {"kind": "segments_not_thought", "error": "no_health_dir"}
@@ -402,16 +418,7 @@ def summarize_pipeline_day(day: str) -> dict:
     # Days with a health directory surface segment gaps here; degenerate
     # zero-health days are still counted by stats and withheld by the daily gate.
     try:
-        completion = classify_segment_completion(
-            cluster_segments(day),
-            read_segment_progress(day),
-        )
-        # Exhausted segments are sensed-terminal and leave not_sensed blockers;
-        # this census is the remaining signal that their raw media is held.
-        summary["exhausted_segments"] = {
-            "count": len(completion.exhausted),
-            "segments": list(completion.exhausted),
-        }
+        completion = _apply_segment_census(cluster_segments(day))
         if completion.not_thought > 0:
             # The kind now means segments sensed-but-not-thought, not zero runs.
             summary["anomalies"].append(

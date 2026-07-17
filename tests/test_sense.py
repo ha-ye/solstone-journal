@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from solstone.observe import describe as describe_module
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED, WATCHDOG_TIMEOUT
 from solstone.observe.processing_record import (
     FAILED_ATTEMPT_BOUND,
@@ -25,9 +26,11 @@ from solstone.observe.processing_record import (
     MAX_FIRST_ROW_BYTES,
     REASON_ANALYSIS_FAILED,
     REASON_CORRUPT_INPUT,
+    REASON_OK,
     STATE_ANALYZED,
     STATE_EMPTY,
     STATE_FAILED,
+    build_processing_record,
     read_processing_record_header,
 )
 from solstone.observe.sense import FileSensor, HandlerProcess, QueuedItem
@@ -39,6 +42,7 @@ from solstone.think.processing import (
     TimeWindowSettings,
 )
 from solstone.think.providers import fanout_policy
+from solstone.think.retention import RetentionConfig, RetentionPolicy, purge
 from solstone.think.runner import DailyLogWriter as ProcessLogWriter
 from solstone.think.runner import _format_log_line
 
@@ -925,6 +929,89 @@ def test_process_day_retries_failed_describe_until_attempt_bound(tmp_path, monke
     assert (
         read_processing_record_header(output_path)["attempts"] == FAILED_ATTEMPT_BOUND
     )
+
+
+def test_failed_describe_heals_on_daily_pass_and_processed_prune_releases_raw(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    media_path = make_segment_file(tmp_path)
+    output_path = _write_processing_output(
+        media_path,
+        _processing_record(state=STATE_FAILED),
+    )
+    (media_path.parent / "stream.json").write_text(
+        '{"stream":"default"}\n',
+        encoding="utf-8",
+    )
+    sensor = FileSensor(tmp_path)
+    sensor.register("*.webm", "describe", ["journal", "describe", "{file}"])
+    dispatched = []
+    observed_previous_attempts = []
+    observed_incremental_paths = []
+
+    class HealingProcessor:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        async def process_with_vision(self, **kwargs) -> None:
+            observed_previous_attempts.append(kwargs["previous_attempts"])
+            observed_incremental_paths.append(kwargs["incremental_source_path"])
+            header = {
+                "raw": self.path.name,
+                "_solstone_processing": build_processing_record(
+                    state=STATE_ANALYZED,
+                    reason_code=REASON_OK,
+                    handler=HANDLER_DESCRIBE,
+                    input_size=self.path.stat().st_size,
+                ),
+            }
+            output_path.write_text(
+                json.dumps(header)
+                + "\n"
+                + json.dumps({"frame_id": 1, "timestamp": 0.0, "content": {}})
+                + "\n",
+                encoding="utf-8",
+            )
+
+    def fake_run(queued_item, *_args):
+        dispatched.append(queued_item.file_path)
+        with patch.object(
+            sys,
+            "argv",
+            ["journal", str(queued_item.file_path)],
+        ):
+            import asyncio
+
+            asyncio.run(describe_module.async_main())
+
+    monkeypatch.setattr(describe_module, "VideoProcessor", HealingProcessor)
+    monkeypatch.setattr(describe_module, "require_solstone", lambda: None)
+    monkeypatch.setattr(
+        describe_module, "_preflight_provider_readiness", lambda *a, **k: None
+    )
+    monkeypatch.setattr(describe_module, "callosum_send", lambda *a, **k: None)
+    monkeypatch.setattr(sensor, "_run_handler", fake_run)
+
+    sensor.process_day("20250101", max_jobs=1)
+
+    record = read_processing_record_header(output_path)
+    assert dispatched == [media_path]
+    assert observed_previous_attempts == [0]
+    assert observed_incremental_paths == [output_path]
+    assert record["state"] == STATE_ANALYZED
+    assert record["reason_code"] == REASON_OK
+    assert "attempts" not in record
+
+    result = purge(
+        config=RetentionConfig(default=RetentionPolicy(mode="processed")),
+        dry_run=False,
+    )
+
+    assert result.files_deleted == 1
+    assert result.segments_blocked_failed == 0
+    assert result.segments_skipped_incomplete == 0
+    assert not media_path.exists()
 
 
 def test_process_day_elevates_describe_only_in_batch_mode(tmp_path, monkeypatch):

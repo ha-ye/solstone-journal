@@ -14,6 +14,12 @@ from pathlib import Path
 
 import pytest
 
+from solstone.observe.processing_record import (
+    FAILED_ATTEMPT_BOUND,
+    REASON_ANALYSIS_FAILED,
+    STATE_FAILED,
+    build_processing_record,
+)
 from solstone.think import catchup_state
 from solstone.think.cogitate_policy import DETERMINISTIC_FAILURE_REASON_CODES
 from solstone.think.pipeline_health import (
@@ -1210,6 +1216,38 @@ def test_missing_health_dir_with_captured_segments_is_unknown(pipeline_journal):
     assert {"kind": "segments_not_thought", "error": "no_health_dir"} in summary[
         "anomalies"
     ]
+
+
+def test_missing_health_dir_with_exhausted_segment_reports_census(pipeline_journal):
+    day = "20200102"
+    segment = "120000_300"
+    segment_dir = _seed_screen_segment(pipeline_journal, day, segment)
+    record = build_processing_record(
+        state=STATE_FAILED,
+        reason_code=REASON_ANALYSIS_FAILED,
+        handler="describe",
+        input_size=(segment_dir / "screen.webm").stat().st_size,
+        attempts=FAILED_ATTEMPT_BOUND,
+    )
+    (segment_dir / "screen.jsonl").write_text(
+        json.dumps(
+            {
+                "raw": "screen.webm",
+                "type": "screencast",
+                "_solstone_processing": record,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    summary = summarize_pipeline_day(day)
+
+    assert summary["status"] == "unknown"
+    assert {"kind": "segments_not_thought", "error": "no_health_dir"} in summary[
+        "anomalies"
+    ]
+    assert summary["exhausted_segments"] == {"count": 1, "segments": [segment]}
 
 
 def test_healthy_day_with_all_modes(pipeline_journal):
