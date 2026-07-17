@@ -1,0 +1,24 @@
+[licenses]
+# Protects Rust crates from unreviewed license drift while allowing approved licenses.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "AGPL-3.0-only",
+]
+
+[bans]
+# Protects against third-party wildcard requirements while allowing unpublished internal path crates, and bans Python runtime bindings.
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [{ name = "pyo3" }, { name = "pyo3-ffi" }, { name = "cpython" }]
+
+[sources]
+# Protects Rust dependencies from unapproved registries.
+unknown-registry = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
