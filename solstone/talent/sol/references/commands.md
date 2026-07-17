@@ -38,7 +38,7 @@ Guidance: `solstone/apps/health/talent/health/SKILL.md`
 
 ## speakers — `sol call speakers`
 
-Triggers: `speaker`, `voice`, `who was talking`, `identify speaker`, `voiceprint`
+Triggers: `speaker`, `voice`, `who was talking`, `identify speaker`, `voiceprint`, `tag-owner`, `build-from-tags`, `owner-ready`
 
 Read: `discover`, `resolve-names`, `status`
 
