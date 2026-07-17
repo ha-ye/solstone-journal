@@ -267,6 +267,7 @@ dev = [
     "pytest-timeout",
     "pytest-xdist",
     "ruff",
+    "schemathesis",
     "setuptools",
     # Test-only: encrypted PDF fixture construction in tests/pdf_worker_fixtures.py.
     "pypdf>=4.0.0",

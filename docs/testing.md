@@ -30,6 +30,58 @@ The `tests/fixtures/journal/` directory contains a complete mock journal structu
 - `make ci` before committing (formats, lints, tests)
 - Always run `journal restart-convey` after editing `solstone/convey/` or `solstone/apps/` to reload code
 
+## OpenAPI Verification Lanes
+
+There are two API referees with different jobs:
+
+- `tests/test_openapi_schemathesis.py` fuzzes a small allowlist from the committed
+  native-client contract at `docs/openapi/convey-clients.json` against the Flask WSGI
+  app. It runs with the normal unit suite because it uses an isolated tmp journal and
+  does not open HTTP sockets.
+- `make verify-api` checks SPA/API response baselines against a running sandbox.
+  That lane verifies rendered baseline behavior, not the native-client OpenAPI
+  contract.
+
+Run the Schemathesis lane directly with:
+
+```bash
+make test-only TEST=tests/test_openapi_schemathesis.py
+```
+
+The operator live lane is:
+
+```bash
+make verify-schemathesis
+```
+
+`verify-schemathesis` starts a disposable sandbox, sets
+`SOLSTONE_SCHEMATHESIS_LIVE=1`, and resolves the base URL through
+`solstone.think.convey_client.resolve_base_url()`. Set
+`SOLSTONE_SCHEMATHESIS_BASE_URL` to override the target. The live lane may grow to
+include mutating routes because it targets disposable instances; do not run it as part
+of ordinary unit CI.
+
+The WSGI lane uses Schemathesis' default checks, but pins input generation to positive
+cases only. That means checks such as status-code conformance, content-type
+conformance, response headers, response schema, server-error rejection, and ignored-auth
+behavior still run, while `negative_data_rejection` has no generated negative inputs in
+this lane. The positive-only setting keeps the floor assertions meaningful: every
+generated floor case must return 2xx.
+
+Known findings are reported by this lane and triaged separately; the lane must not
+auto-fix them or widen the contract to pass. A contract-vs-implementation mismatch is
+triaged by asking which side is wrong. Current recorded findings:
+
+- `GET /app/network/api/status` materializes link CA key material on a read path:
+  `ca_dir().exists()` first creates `journal/link/ca`, then `_ca_fingerprint()` calls
+  `load_or_generate_ca()` and writes `private.pem` plus `cert.pem`.
+- `GET /app/home/api/pulse` can write the awareness `thinking_readiness` cache. This is
+  weaker than the link CA finding because it routes through the awareness owner and is
+  not an L3 read-verb violation.
+- `GET /app/network/api/status` reaches `_detect_lan_ip()`, which opens a UDP socket to
+  `8.8.8.8:80` to read the kernel-selected source address. The WSGI test harness reaches
+  that syscall.
+
 ## Worktree Development
 
 Run the full stack (supervisor + callosum + sense + cortex + convey) against test fixture data:

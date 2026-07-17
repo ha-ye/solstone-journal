@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit openapi check-openapi contract check-contract journal-resolution-vectors check-journal-resolution-vectors dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit openapi check-openapi contract check-contract journal-resolution-vectors check-journal-resolution-vectors dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -263,6 +263,18 @@ verify-api: .installed
 	RESULT=0; \
 	SOLSTONE_JOURNAL="$$SANDBOX_JOURNAL" $(VENV_BIN)/journal indexer --rescan-full > /dev/null; \
 	SOLSTONE_JOURNAL="$$SANDBOX_JOURNAL" $(VENV_BIN)/python tests/verify_api.py verify --base-url "http://localhost:$$CONVEY_PORT" || RESULT=$$?; \
+	$(MAKE) sandbox-stop; \
+	exit $$RESULT
+
+verify-schemathesis: .installed ## Run Schemathesis against a disposable live sandbox; may include mutating routes
+	@echo "Verifying OpenAPI contract with Schemathesis (disposable live sandbox)..."
+	@$(MAKE) sandbox
+	@SANDBOX_JOURNAL=$$(cat .sandbox.journal); \
+	RESULT=0; \
+	SOLSTONE_JOURNAL="$$SANDBOX_JOURNAL" \
+	SOLSTONE_SCHEMATHESIS_JOURNAL="$$SANDBOX_JOURNAL" \
+	SOLSTONE_SCHEMATHESIS_LIVE=1 \
+	$(VENV_BIN)/pytest tests/test_openapi_schemathesis.py -q || RESULT=$$?; \
 	$(MAKE) sandbox-stop; \
 	exit $$RESULT
 
