@@ -889,6 +889,7 @@ def _expand_owner_candidate(
     import numpy as np
 
     from solstone.apps.speakers.attribution import _load_integer_speaker_labels
+    from solstone.apps.speakers.candidate_tracker import SOLO_CLUSTER_LABEL
 
     load_embeddings_file, normalize_embedding = _routes_helpers()
 
@@ -946,18 +947,25 @@ def _expand_owner_candidate(
             continue
         embeddings, statement_ids, durations_data = emb_data
 
-        labels_key = (seg_dir, source)
-        integer_labels = labels_cache.setdefault(
-            labels_key,
-            _load_integer_speaker_labels(seg_dir, source),
-        )
-        if not integer_labels:
-            skip("missing_integer_labels")
-            continue
-
         statement_index = {
             int(statement_id): idx for idx, statement_id in enumerate(statement_ids)
         }
+        if cluster_label == SOLO_CLUSTER_LABEL:
+            sentence_ids = sorted(int(statement_id) for statement_id in statement_ids)
+        else:
+            labels_key = (seg_dir, source)
+            integer_labels = labels_cache.setdefault(
+                labels_key,
+                _load_integer_speaker_labels(seg_dir, source),
+            )
+            if not integer_labels:
+                skip("missing_integer_labels")
+                continue
+            sentence_ids = [
+                sid
+                for sid, label in sorted(integer_labels.items())
+                if int(label) == cluster_label
+            ]
         fallback_durations = (
             {}
             if durations_data is not None
@@ -967,11 +975,9 @@ def _expand_owner_candidate(
             )
         )
 
-        for sentence_id, speaker_label in sorted(integer_labels.items()):
+        for sentence_id in sentence_ids:
             if len(embedding_rows) >= max_embeddings:
                 break
-            if int(speaker_label) != cluster_label:
-                continue
             matched_index = statement_index.get(int(sentence_id))
             if matched_index is None:
                 skip("sentence_id_absent")

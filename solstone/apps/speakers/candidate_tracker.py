@@ -353,7 +353,7 @@ class CandidateTracker:
     def retroactive_confirm(self, centroid: np.ndarray, entity_id: str) -> int:
         from solstone.apps.speakers.attribution import accumulate_voiceprints
 
-        _, normalize_embedding = _routes_helpers()
+        load_embeddings_file, normalize_embedding = _routes_helpers()
         normalized_centroid = normalize_embedding(centroid)
         if normalized_centroid is None:
             return 0
@@ -374,7 +374,19 @@ class CandidateTracker:
             seg_dir = segment_path(day, segment_key, stream, create=False)
             if not seg_dir.exists():
                 continue
-            integer_labels = _load_integer_speaker_labels(seg_dir, source)
+            if cluster_label == SOLO_CLUSTER_LABEL:
+                emb_data = load_embeddings_file(seg_dir / f"{source}.npz")
+                if emb_data is None:
+                    continue
+                _embeddings, statement_ids, _durations_s = emb_data
+                sentence_ids = sorted(int(sid) for sid in statement_ids)
+            else:
+                integer_labels = _load_integer_speaker_labels(seg_dir, source)
+                sentence_ids = [
+                    sid
+                    for sid, label in sorted(integer_labels.items())
+                    if int(label) == cluster_label
+                ]
             synthetic_labels = [
                 {
                     "sentence_id": sid,
@@ -382,8 +394,7 @@ class CandidateTracker:
                     "confidence": "high",
                     "method": "acoustic_cluster",
                 }
-                for sid, label in sorted(integer_labels.items())
-                if int(label) == cluster_label
+                for sid in sentence_ids
             ]
             if not synthetic_labels:
                 continue

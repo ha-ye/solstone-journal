@@ -11,7 +11,11 @@ from pathlib import Path
 import numpy as np
 from flask import Flask
 
-from solstone.apps.speakers.encoder_config import ENCODER_ID, OVERLAP_DETECTOR_ID
+from solstone.apps.speakers.encoder_config import (
+    ENCODER_ID,
+    OVERLAP_DETECTOR_ID,
+    SPEAKER_EVIDENCE_VERSION,
+)
 from solstone.think.awareness import get_current, update_state
 
 
@@ -132,6 +136,10 @@ def _write_labeled_segment(
     source: str = "mic_audio",
     duration_s: float = 5.0,
     overlap_fraction: float = 0.0,
+    speaker_evidence: str | None = None,
+    speaker_evidence_multi_fraction: float = 0.0,
+    write_speaker_labels: bool = True,
+    include_durations: bool = True,
 ) -> Path:
     flat_dir, chronicle_dir = env._segment_dirs(day, segment_key, stream=stream)
     embeddings: list[np.ndarray] = []
@@ -147,39 +155,43 @@ def _write_labeled_segment(
             labels.append(cluster_label)
             sentence_id += 1
 
-    lines = [
-        json.dumps(
+    header = {
+        "raw": f"{source}.flac",
+        "model": "test",
+        "overlap_fraction": overlap_fraction,
+        "overlap_detector": OVERLAP_DETECTOR_ID,
+    }
+    if speaker_evidence is not None:
+        header.update(
             {
-                "raw": f"{source}.flac",
-                "model": "test",
-                "overlap_fraction": overlap_fraction,
-                "overlap_detector": OVERLAP_DETECTOR_ID,
+                "speaker_evidence": speaker_evidence,
+                "speaker_evidence_multi_fraction": speaker_evidence_multi_fraction,
+                "speaker_evidence_version": SPEAKER_EVIDENCE_VERSION,
             }
         )
-    ]
+    lines = [json.dumps(header)]
     for sid, cluster_label in zip(statement_ids, labels):
-        lines.append(
-            json.dumps(
-                {
-                    "start": "09:00:00",
-                    "text": f"sentence {sid}",
-                    "speaker": int(cluster_label),
-                }
-            )
-        )
+        row = {
+            "start": "09:00:00",
+            "text": f"sentence {sid}",
+        }
+        if write_speaker_labels:
+            row["speaker"] = int(cluster_label)
+        lines.append(json.dumps(row))
 
     for seg_dir in (flat_dir, chronicle_dir):
         (seg_dir / f"{source}.jsonl").write_text(
             "\n".join(lines) + "\n",
             encoding="utf-8",
         )
-        np.savez_compressed(
-            seg_dir / f"{source}.npz",
-            embeddings=np.stack(embeddings).astype(np.float32),
-            statement_ids=np.array(statement_ids, dtype=np.int32),
-            durations_s=np.array(durations, dtype=np.float32),
-            encoder=np.array(ENCODER_ID),
-        )
+        npz_payload = {
+            "embeddings": np.stack(embeddings).astype(np.float32),
+            "statement_ids": np.array(statement_ids, dtype=np.int32),
+            "encoder": np.array(ENCODER_ID),
+        }
+        if include_durations:
+            npz_payload["durations_s"] = np.array(durations, dtype=np.float32)
+        np.savez_compressed(seg_dir / f"{source}.npz", **npz_payload)
         (seg_dir / f"{source}.flac").write_bytes(b"")
     return chronicle_dir
 
@@ -458,6 +470,124 @@ def test_detect_owner_candidate_pool_ready(speakers_env):
     assert len(sample_segments) == len(result["samples"])
     assert _candidate_path(env.journal).exists()
     assert get_current()["voiceprint"]["status"] == "candidate"
+
+
+def test_detect_owner_candidate_e2e_from_solo_candidate_tracker(speakers_env):
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+    from solstone.apps.speakers.owner import detect_owner_candidate
+
+    env = speakers_env()
+    base = _owner_embeddings(18, np.random.default_rng(42))
+    for stream, segment_key in (("mic", "090000_300"), ("sys", "091000_300")):
+        seg_dir = _write_labeled_segment(
+            env,
+            "20240101",
+            segment_key,
+            {1: base},
+            stream=stream,
+            speaker_evidence="single",
+            write_speaker_labels=False,
+        )
+        CandidateTracker().process_segment(
+            "20240101",
+            segment_key,
+            stream,
+            "mic_audio",
+            seg_dir,
+        )
+
+    tracker = CandidateTracker()
+    candidates = tracker.load_all_candidates()
+    assert len(candidates) == 1
+    assert candidates[0].n_intervals == 36
+    assert not _candidate_path(env.journal).exists()
+    assert get_current().get("voiceprint", {}).get("status") != "candidate"
+
+    result = detect_owner_candidate()
+
+    assert result["status"] == "candidate"
+    assert result["cluster_size"] == 36
+    assert result["streams_represented"] == 2
+    assert result["recommendation"] == "ready"
+    assert _candidate_path(env.journal).exists()
+
+
+def test_expand_owner_candidate_solo_uses_npz_statement_ids(speakers_env, tmp_path):
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+    from solstone.apps.speakers.owner import _expand_owner_candidate
+
+    env = speakers_env()
+    embeddings = _owner_embeddings(3, np.random.default_rng(1))
+    seg_dir = _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: embeddings},
+        stream="mic",
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+    statement_ids = np.array([10, 20, 30], dtype=np.int32)
+    np.savez_compressed(
+        seg_dir / "mic_audio.npz",
+        embeddings=embeddings.astype(np.float32),
+        statement_ids=statement_ids,
+        durations_s=np.full(3, 5.0, dtype=np.float32),
+        encoder=np.array(ENCODER_ID),
+    )
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20240101", "090000_300", "mic", "mic_audio", seg_dir)
+
+    expansion = _expand_owner_candidate(tracker.load_all_candidates()[0])
+
+    assert [record["sentence_id"] for record in expansion.provenance] == [10, 20, 30]
+    assert "missing_integer_labels" not in expansion.skipped
+
+
+def test_expand_owner_candidate_mixes_solo_and_diarizer_sources(speakers_env, tmp_path):
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+    from solstone.apps.speakers.owner import _expand_owner_candidate
+
+    env = speakers_env()
+    base = _owner_embeddings(3, np.random.default_rng(1))
+    solo_dir = _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: base},
+        stream="mic",
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+    diarizer_dir = _write_labeled_segment(
+        env,
+        "20240101",
+        "091000_300",
+        {1: base},
+        stream="mic",
+    )
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20240101", "090000_300", "mic", "mic_audio", solo_dir)
+    tracker.process_segment("20240101", "091000_300", "mic", "mic_audio", diarizer_dir)
+
+    candidates = tracker.load_all_candidates()
+    assert len(candidates) == 1
+    expansion = _expand_owner_candidate(candidates[0])
+    provenance_keys = {
+        (
+            record["day"],
+            record["stream"],
+            record["segment_key"],
+            record["source"],
+        )
+        for record in expansion.provenance
+    }
+
+    assert provenance_keys == {
+        ("20240101", "mic", "090000_300", "mic_audio"),
+        ("20240101", "mic", "091000_300", "mic_audio"),
+    }
+    assert all("cluster_label" not in record for record in expansion.provenance)
 
 
 def test_owner_candidate_samples_use_registered_audio_extension(speakers_env):

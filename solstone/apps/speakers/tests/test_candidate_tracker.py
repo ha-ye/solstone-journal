@@ -638,6 +638,31 @@ def test_retroactive_confirm_noops_below_merge_threshold(speakers_env, tmp_path)
     assert candidate.confirmed_entity is None
 
 
+def test_retroactive_confirm_solo_backfills_from_statement_ids(speakers_env, tmp_path):
+    env = speakers_env()
+    _setup_owner(env)
+    alice_dir = env.create_entity("Alice Test")
+    base = _unit([0.0, 1.0])
+    seg_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([base] * 3)},
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+    tracker = CandidateTracker(tmp_path / "speaker_candidates.json")
+    tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+
+    saved = tracker.retroactive_confirm(base, "alice_test")
+
+    assert saved == 3
+    assert _voiceprint_count(alice_dir) == 3
+    candidate = _only_candidate(tracker)
+    assert candidate.status == "confirmed"
+    assert candidate.confirmed_entity == "alice_test"
+
+
 def test_process_segment_idempotent_for_same_source_segment(speakers_env, tmp_path):
     env = speakers_env()
     base = _unit([0.0, 1.0])
