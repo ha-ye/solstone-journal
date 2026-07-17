@@ -45,11 +45,14 @@ except ModuleNotFoundError:
     )
 
 ROOT = Path(__file__).resolve().parent.parent
+FIXTURE_JOURNAL = (ROOT / "tests" / "fixtures" / "journal").resolve()
 DB_REL = Path("indexer") / "journal.sqlite"
 COMMAND_SIDES = ("left", "right")
 EDGE_SKIP_RULE = "edge_extraction_skip"
 EDGE_SKIP_PREFIX = "ERROR:solstone.think.indexer.edges:Skipping edge extraction for "
 LOG_RECORD_RE = re.compile(r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL):[^:]+:")
+TRACEBACK_HEADER = "Traceback (most recent call last):"
+TRACEBACK_TERMINAL_RE = re.compile(r"^[A-Za-z_][\w.]*: .*$")
 EXCLUDED_SHADOW_TABLES = [
     "chunks_config",
     "chunks_content",
@@ -82,10 +85,6 @@ def _render_report(report: dict[str, Any]) -> str:
 
 def _command_ids() -> dict[str, str]:
     return {"left": "a", "right": "b"}
-
-
-def _template_for_side(args: argparse.Namespace, side: str) -> str:
-    return args.a if side == "left" else args.b
 
 
 def _prepare_working_copies(journal: Path, work_root: Path) -> dict[str, Path]:
@@ -167,6 +166,37 @@ def _run_command(
     }
 
 
+def _git_rev_for_path(path: Path) -> str | None:
+    result = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _corpus_provenance(journal: Path) -> dict[str, Any]:
+    resolved = journal.resolve()
+    corpus: dict[str, Any] = {"source_path": str(journal)}
+    try:
+        resolved.relative_to(FIXTURE_JOURNAL)
+    except ValueError:
+        corpus["copy_route"] = "git-ls-files-live"
+        corpus["identity"] = None
+        return corpus
+
+    repo_commit = _git_rev_for_path(FIXTURE_JOURNAL)
+    corpus["copy_route"] = "git-archive-head"
+    corpus["identity"] = (
+        {"kind": "git-archive-head", "repo_commit": repo_commit}
+        if repo_commit is not None
+        else None
+    )
+    return corpus
+
+
 def classify_stderr(stderr: str) -> dict[str, Any]:
     rule = {"name": EDGE_SKIP_RULE, "count": 0, "examples": []}
     unclassified: list[str] = []
@@ -183,9 +213,22 @@ def classify_stderr(stderr: str) -> dict[str, Any]:
             else:
                 unclassified.append(line)
             continue
-        if not current_allowed:
-            unclassified.append(line)
+        continuation = _traceback_continuation(line)
+        if current_allowed and continuation is not None:
+            if continuation == "terminal":
+                current_allowed = False
+            continue
+        current_allowed = False
+        unclassified.append(line)
     return {"rules": [rule], "unclassified": unclassified}
+
+
+def _traceback_continuation(line: str) -> str | None:
+    if line == TRACEBACK_HEADER or line.startswith((" ", "\t")):
+        return "body"
+    if TRACEBACK_TERMINAL_RE.match(line):
+        return "terminal"
+    return None
 
 
 def _database_check(journal: Path) -> dict[str, Any]:
@@ -270,7 +313,7 @@ def canonicalize_pair(
     left_db: Path,
     right_db: Path,
     scratch_root: Path,
-) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     raw = {
         "left": _canonicalize_database(left_db, scratch_root / "left.sqlite"),
         "right": _canonicalize_database(right_db, scratch_root / "right.sqlite"),
@@ -278,7 +321,7 @@ def canonicalize_pair(
     normalized = deepcopy(raw)
     rules_fired = _apply_normalization(normalized)
     comparison = _compare_canonical(raw, normalized, rules_fired)
-    return raw, normalized, comparison
+    return normalized, comparison
 
 
 def _apply_normalization(canonical: dict[str, Any]) -> list[dict[str, Any]]:
@@ -466,7 +509,7 @@ def run_differential(
         report["failure"] = failure
         return report
 
-    raw, normalized, comparison = canonicalize_pair(
+    normalized, comparison = canonicalize_pair(
         Path(commands[0]["checks"]["database"]["db_path"]),
         Path(commands[1]["checks"]["database"]["db_path"]),
         work_root / "canonical",
@@ -502,10 +545,7 @@ def _base_report(
                 "repo_commit": get_rev(),
                 "version": None,
             },
-            "corpus": {
-                "source_path": str(journal),
-                "identity": "git-archive:HEAD",
-            },
+            "corpus": _corpus_provenance(journal),
             "command_templates": [
                 {"id": command_ids["left"], "argv_template": shlex.split(command_a)},
                 {"id": command_ids["right"], "argv_template": shlex.split(command_b)},

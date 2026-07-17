@@ -130,6 +130,24 @@ def _create_index_db(path: Path, *, content: str = "same token") -> None:
             conn.commit()
 
 
+def test_stderr_classifier_only_allows_traceback_continuations() -> None:
+    stderr = "\n".join(
+        [
+            f"{harness.EDGE_SKIP_PREFIX}20240102/default/234567_300/screen.jsonl",
+            "Traceback (most recent call last):",
+            '  File "/tmp/example.py", line 1, in <module>',
+            "    raise ValueError('bad')",
+            "ValueError: Invalid segment key: 234567_300",
+            "unexpected diagnostic",
+        ]
+    )
+
+    classified = harness.classify_stderr(stderr)
+
+    assert classified["rules"][0]["count"] == 1
+    assert classified["unclassified"] == ["unexpected diagnostic"]
+
+
 def test_runner_prepares_tracked_clean_copies_with_equal_mtimes(tmp_path: Path) -> None:
     copies = harness._prepare_working_copies(FIXTURE_JOURNAL, tmp_path / "work")
 
@@ -236,7 +254,7 @@ def test_wal_representation_invariance_canonicalizes_equal(tmp_path: Path) -> No
         conn.commit()
 
         assert left.read_bytes() != right.read_bytes()
-        _raw, _normalized, comparison = harness.canonicalize_pair(
+        _normalized, comparison = harness.canonicalize_pair(
             left, right, tmp_path / "scratch"
         )
     finally:
@@ -255,7 +273,7 @@ def test_shadow_table_only_change_still_equal(tmp_path: Path) -> None:
         conn.commit()
 
     assert left.read_bytes() != right.read_bytes()
-    _raw, _normalized, comparison = harness.canonicalize_pair(
+    _normalized, comparison = harness.canonicalize_pair(
         left, right, tmp_path / "scratch"
     )
 
@@ -338,9 +356,13 @@ def test_fixture_corpus_reports_equal_with_visible_edge_skips(tmp_path: Path) ->
         command_report["stderr_classification"]["rules"][0]["count"]
         for command_report in report["commands"]
     ]
+    corpus = report["provenance"]["corpus"]
 
     assert report["classification"] == "equal"
     assert report["normalization"]["rules_fired"] == []
+    assert corpus["copy_route"] == "git-archive-head"
+    assert corpus["identity"]["kind"] == "git-archive-head"
+    assert corpus["identity"]["repo_commit"]
     assert table_counts == {
         "files": 176,
         "chunks": 590,
@@ -391,5 +413,7 @@ def test_harness_does_not_use_network_or_write_outside_workdir(
     after_inventory = _tree_inventory(private_corpus)
 
     assert report["classification"] == "equal"
+    assert report["provenance"]["corpus"]["copy_route"] == "git-ls-files-live"
+    assert report["provenance"]["corpus"]["identity"] is None
     assert connect_calls == []
     assert before_inventory == after_inventory

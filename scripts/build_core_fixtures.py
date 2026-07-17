@@ -27,7 +27,6 @@ ROOT = Path(__file__).resolve().parent.parent
 FIXTURE_DIR = ROOT / "core" / "fixtures"
 CALLOSUM_ARTIFACT_PATH = FIXTURE_DIR / "callosum_registry.json"
 COGITATE_ARTIFACT_PATH = FIXTURE_DIR / "cogitate_contract.json"
-ARTIFACT_PATHS = [CALLOSUM_ARTIFACT_PATH, COGITATE_ARTIFACT_PATH]
 
 
 def build_callosum_registry_fixture() -> dict[str, Any]:
