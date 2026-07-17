@@ -582,6 +582,220 @@ def test_non_interactive_happy_path(
     assert len(calls) == 6
 
 
+def test_step_wrapper_skip_flag_does_not_discover_or_provision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    monkeypatch.setattr(
+        install_guard,
+        "alias_paths",
+        lambda: pytest.fail("alias_paths should not run"),
+    )
+    monkeypatch.setattr(
+        install_guard,
+        "provision_wrappers",
+        lambda _root, _journal: pytest.fail("provision_wrappers should not run"),
+    )
+    journal = tmp_path / "journal"
+    argv = ["--yes", "--journal", str(journal), "--skip-wrapper"]
+    ctx = setup.resolve_context(setup.build_parser().parse_args(argv), argv)
+
+    result = setup.step_wrapper(ctx, 6)
+
+    assert result.status == "skipped"
+    assert result.paths == []
+    assert result.reason == "--skip-wrapper"
+
+
+def test_step_wrapper_default_provisions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    repo = patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    calls: list[tuple[Path, str]] = []
+
+    def fake_provision_wrappers(root: Path, journal_path: str) -> None:
+        calls.append((root, journal_path))
+
+    monkeypatch.setattr(install_guard, "provision_wrappers", fake_provision_wrappers)
+    journal = tmp_path / "journal"
+    argv = ["--yes", "--journal", str(journal)]
+    ctx = setup.resolve_context(setup.build_parser().parse_args(argv), argv)
+
+    result = setup.step_wrapper(ctx, 6)
+
+    assert result.status == "ok"
+    assert result.reason is None
+    assert calls == [(repo, str(journal))]
+    assert result.paths == [
+        str(path.resolve()) for path in install_guard.alias_paths().values()
+    ]
+
+
+def test_skip_wrapper_and_skip_service_are_independent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+
+    skip_wrapper_argv = [
+        "--yes",
+        "--journal",
+        str(tmp_path / "skip-wrapper-journal"),
+        "--skip-wrapper",
+    ]
+    skip_wrapper_ctx = setup.resolve_context(
+        setup.build_parser().parse_args(skip_wrapper_argv),
+        skip_wrapper_argv,
+    )
+    assert skip_wrapper_ctx.skip_wrapper is True
+    assert skip_wrapper_ctx.skip_service is False
+
+    rc = setup.main(skip_wrapper_argv)
+
+    assert rc == 0
+    skip_wrapper_manifest = read_manifest(tmp_path / "skip-wrapper-journal")
+    assert step_by_name(skip_wrapper_manifest, "wrapper")["status"] == "skipped"
+    assert step_by_name(skip_wrapper_manifest, "wrapper")["reason"] == "--skip-wrapper"
+    assert step_by_name(skip_wrapper_manifest, "service")["status"] == "ok"
+    assert expected_service_install_command() in calls
+
+    calls.clear()
+    skip_service_argv = [
+        "--yes",
+        "--journal",
+        str(tmp_path / "skip-service-journal"),
+        "--skip-service",
+    ]
+    skip_service_ctx = setup.resolve_context(
+        setup.build_parser().parse_args(skip_service_argv),
+        skip_service_argv,
+    )
+    assert skip_service_ctx.skip_service is True
+    assert skip_service_ctx.skip_wrapper is False
+
+    rc = setup.main(skip_service_argv)
+
+    assert rc == 0
+    skip_service_manifest = read_manifest(tmp_path / "skip-service-journal")
+    assert step_by_name(skip_service_manifest, "wrapper")["status"] == "ok"
+    assert step_by_name(skip_service_manifest, "service")["status"] == "skipped"
+    assert expected_service_install_command() not in calls
+    for binary, alias in install_guard.alias_paths().items():
+        assert_setup_wrapper(
+            alias,
+            binary,
+            tmp_path / "skip-service-journal",
+            bin_dir=Path(sys.executable).parent,
+        )
+
+
+def test_skip_wrapper_args_resolved_provenance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    home = patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    (home / ".claude").mkdir()
+    patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+    default_journal = tmp_path / "default-wrapper-journal"
+    skipped_journal = tmp_path / "skipped-wrapper-journal"
+
+    default_rc = setup.main(["--yes", "--journal", str(default_journal)])
+    skipped_rc = setup.main(
+        ["--yes", "--journal", str(skipped_journal), "--skip-wrapper"]
+    )
+
+    assert default_rc == 0
+    assert skipped_rc == 0
+    assert read_manifest(default_journal)["args_resolved"]["skip_wrapper"] == {
+        "value": False,
+        "source": "default",
+    }
+    assert read_manifest(skipped_journal)["args_resolved"]["skip_wrapper"] == {
+        "value": True,
+        "source": "cli",
+    }
+
+
+def test_skip_wrapper_preserves_foreign_aliases_until_default_run_repairs_them(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    bin_dir = patch_runtime_bin(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    backup_dir = tmp_path / "legacy-backups"
+    backup_dir.mkdir()
+    monkeypatch.setattr(install_guard, "_legacy_backup_dir", lambda: backup_dir)
+    patch_subprocess(monkeypatch)
+    journal = tmp_path / "journal"
+    aliases = install_guard.alias_paths()
+    original_bytes: dict[str, bytes] = {}
+    original_modes: dict[str, int] = {}
+    for binary, alias in aliases.items():
+        alias.parent.mkdir(parents=True, exist_ok=True)
+        original_bytes[binary] = (
+            f'#!/bin/sh\nexec /opt/signed-journal/{binary} "$@"\n'
+        ).encode("utf-8")
+        alias.write_bytes(original_bytes[binary])
+        alias.chmod(0o744 if binary == "sol" else 0o755)
+        original_modes[binary] = alias.stat().st_mode & 0o777
+
+    rc = setup.main(
+        [
+            "--yes",
+            "--journal",
+            str(journal),
+            "--skip-wrapper",
+            "--skip-service",
+            "--skip-models",
+            "--skip-skills",
+        ]
+    )
+
+    assert rc == 0
+    for binary, alias in aliases.items():
+        assert alias.read_bytes() == original_bytes[binary]
+        assert alias.stat().st_mode & 0o777 == original_modes[binary]
+        assert not list(backup_dir.glob(f"{binary}.old-symlink-*"))
+    skip_manifest = read_manifest(journal)
+    assert step_by_name(skip_manifest, "wrapper")["status"] == "skipped"
+    assert step_by_name(skip_manifest, "wrapper")["reason"] == "--skip-wrapper"
+
+    rc = setup.main(
+        [
+            "--yes",
+            "--journal",
+            str(journal),
+            "--skip-service",
+            "--skip-models",
+            "--skip-skills",
+        ]
+    )
+
+    assert rc == 0
+    for binary, alias in aliases.items():
+        assert alias.read_bytes() != original_bytes[binary]
+        assert_setup_wrapper(alias, binary, journal, bin_dir)
+        assert list(backup_dir.glob(f"{binary}.old-symlink-*"))
+    repair_manifest = read_manifest(journal)
+    assert step_by_name(repair_manifest, "wrapper")["status"] == "ok"
+
+
 def test_brain_capable_sets_lane_and_triggers_bootstrap(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1002,6 +1216,17 @@ def test_dry_run_side_effect_free(
     assert not (home / ".config" / "solstone" / "config.toml").exists()
     assert not (journal / "health" / "setup-state.json").exists()
     assert "setup dry-run:" in capsys.readouterr().out
+
+    skip_wrapper_journal = tmp_path / "skip-wrapper-journal"
+    rc = setup.main(
+        ["--dry-run", "--journal", str(skip_wrapper_journal), "--skip-wrapper"]
+    )
+
+    assert rc == 0
+    assert calls == []
+    assert not (home / ".config" / "solstone" / "config.toml").exists()
+    assert not (skip_wrapper_journal / "health" / "setup-state.json").exists()
+    assert "skipped: --skip-wrapper" in capsys.readouterr().out
 
 
 def test_step_journal_materializes_journal_config(
@@ -1567,6 +1792,19 @@ def test_step_timeout_seconds_passes_through_to_help_and_explain(
     assert "step_timeout_seconds: 1800" in capsys.readouterr().out
 
 
+def test_skip_wrapper_passes_through_to_help_and_parser(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as raised:
+        setup.main(["--help"])
+    assert raised.value.code == 0
+    assert "--skip-wrapper" in capsys.readouterr().out
+
+    parser = setup.build_parser()
+    assert parser.parse_args([]).skip_wrapper is False
+    assert parser.parse_args(["--skip-wrapper"]).skip_wrapper is True
+
+
 def test_empty_journal_arg_rejected_at_parse_time(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1627,6 +1865,7 @@ def test_clean_uninstall_rejects_jsonl_with_specific_message(
         ["--skip-brain"],
         ["--skip-skills"],
         ["--skip-service"],
+        ["--skip-wrapper"],
         ["--accept-existing-journal"],
         ["--force"],
     ],
@@ -2406,6 +2645,32 @@ def test_resumption_skips_completed_steps(
     manifest = read_manifest(journal)
     assert_step_names_and_statuses(manifest, ["skipped"] * 8)
     assert {step["reason"] for step in manifest["steps"]} == {"prior_run_ok"}
+
+
+def test_skip_wrapper_keeps_prior_run_ok_reason_when_wrapper_already_done(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_home(monkeypatch, tmp_path)
+    patch_source_checkout(monkeypatch, tmp_path)
+    monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
+    journal = tmp_path / "journal"
+    write_clean_prior_manifest(journal)
+    monkeypatch.setattr(
+        install_guard,
+        "provision_wrappers",
+        lambda _root, _journal: pytest.fail("provision_wrappers should not run"),
+    )
+    calls = patch_subprocess(monkeypatch)
+    patch_service_health(monkeypatch)
+
+    rc = setup.main(["--yes", "--journal", str(journal), "--skip-wrapper"])
+
+    assert rc == 0
+    assert calls == []
+    wrapper = step_by_name(read_manifest(journal), "wrapper")
+    assert wrapper["status"] == "skipped"
+    assert wrapper["reason"] == "prior_run_ok"
 
 
 def test_resumption_runs_step_when_artifact_missing(

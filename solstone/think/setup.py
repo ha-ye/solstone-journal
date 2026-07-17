@@ -82,6 +82,7 @@ class SetupContext:
     skip_brain: bool
     skip_skills: bool
     skip_service: bool
+    skip_wrapper: bool
     accept_existing_journal: bool
     force: bool
     stdin_is_tty: bool
@@ -244,6 +245,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="skip service installation, start, and health check",
     )
     parser.add_argument(
+        "--skip-wrapper",
+        action="store_true",
+        help="skip provisioning the managed sol/journal wrappers",
+    )
+    parser.add_argument(
         "--accept-existing-journal",
         action="store_true",
         help="allow setup to use a non-empty existing journal directory",
@@ -351,6 +357,10 @@ def resolve_context(
             "value": bool(args.skip_service),
             "source": "cli" if args.skip_service else "default",
         },
+        "skip_wrapper": {
+            "value": bool(args.skip_wrapper),
+            "source": "cli" if args.skip_wrapper else "default",
+        },
         "accept_existing_journal": {
             "value": bool(args.accept_existing_journal),
             "source": "cli" if args.accept_existing_journal else "default",
@@ -384,6 +394,7 @@ def resolve_context(
         skip_brain=skip_brain,
         skip_skills=bool(args.skip_skills),
         skip_service=bool(args.skip_service),
+        skip_wrapper=bool(args.skip_wrapper),
         accept_existing_journal=bool(args.accept_existing_journal),
         force=bool(args.force),
         stdin_is_tty=sys.stdin.isatty(),
@@ -1300,9 +1311,15 @@ def step_skills_journal(ctx: SetupContext, step_index: int) -> StepResult:
 # OWNS alias repair (the mutation) via install_guard.provision_wrappers; doctor
 # only reports stale aliases.
 def step_wrapper(ctx: SetupContext, step_index: int) -> StepResult:
+    started_at = utc_now()
+    if ctx.skip_wrapper:
+        print_step_skipped(ctx, step_index, "wrapper", "--skip-wrapper")
+        return step_result(
+            "wrapper", "skipped", [], started_at, reason="--skip-wrapper"
+        )
+
     from solstone.think import install_guard
 
-    started_at = utc_now()
     aliases = install_guard.alias_paths()
     wrapper_paths = list(aliases.values())
     print_step_header(ctx, step_index, "wrapper")
@@ -1800,7 +1817,10 @@ def _print_skills_journal_plan(ctx: SetupContext) -> None:
 
 
 def _print_wrapper_plan(ctx: SetupContext) -> None:
-    narrate(ctx, "  would provision managed sol and journal wrappers in-process")
+    if ctx.skip_wrapper:
+        narrate(ctx, "  skipped: --skip-wrapper")
+    else:
+        narrate(ctx, "  would provision managed sol and journal wrappers in-process")
 
 
 def _print_service_plan(ctx: SetupContext) -> None:
@@ -2212,6 +2232,8 @@ def main(argv: list[str] | None = None) -> int:
             incompatible.append("--skip-skills")
         if args.skip_service:
             incompatible.append("--skip-service")
+        if args.skip_wrapper:
+            incompatible.append("--skip-wrapper")
         if args.accept_existing_journal:
             incompatible.append("--accept-existing-journal")
         if args.force:
