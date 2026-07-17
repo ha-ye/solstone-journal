@@ -91,7 +91,7 @@ def test_observation_day_grid_surface_and_state_hooks(html):
     assert card < observations_mount
     assert 'id="detail-observations-heading"' in html
     assert (
-        "document.getElementById('detail-observations-heading').textContent = ENT_COPY.ENT_GRID_UNIT_OTHER || '';"
+        "document.getElementById('detail-observations-heading').textContent = ENT_COPY.ENT_OBS_HEADING || '';"
         in show
     )
 

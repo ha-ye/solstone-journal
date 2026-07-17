@@ -2060,8 +2060,6 @@ let currentDetailEntity = null;
 let detailObservationOpenToken = 0;
 let detailObservationState = {
   token: 0,
-  facet: '',
-  entityId: '',
   entity: null,
   observations: [],
   observationsReady: false,
@@ -2285,12 +2283,10 @@ function resetObservationGridContext() {
   hideObservationDayGrid();
 }
 
-function beginDetailObservationOpen(facet, entityId) {
+function beginDetailObservationOpen() {
   detailObservationOpenToken += 1;
   detailObservationState = {
     token: detailObservationOpenToken,
-    facet,
-    entityId,
     entity: null,
     observations: [],
     observationsReady: false,
@@ -3164,7 +3160,7 @@ function showDetailView(entityId) {
 }
 
 function showFacetDetailView(entityId) {
-  const openToken = beginDetailObservationOpen(currentFacet, entityId);
+  const openToken = beginDetailObservationOpen();
   // Show loading state
   currentDetailEntity = null;
   document.getElementById('detail-name').textContent = 'loading...';
@@ -3174,7 +3170,7 @@ function showFacetDetailView(entityId) {
   document.getElementById('detail-indicators').innerHTML = '';
   document.getElementById('detail-description-container').innerHTML = '<span class="entity-desc-display empty">loading...</span>';
   document.getElementById('detail-connections').innerHTML = '<span class="observations-empty">loading...</span>';
-  document.getElementById('detail-observations-heading').textContent = ENT_COPY.ENT_GRID_UNIT_OTHER || '';
+  document.getElementById('detail-observations-heading').textContent = ENT_COPY.ENT_OBS_HEADING || '';
   document.getElementById('detail-observations').innerHTML = '<span class="observations-empty">loading...</span>';
   loadObservationDayGrid(currentFacet, entityId, openToken);
 
