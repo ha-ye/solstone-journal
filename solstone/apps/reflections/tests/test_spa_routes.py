@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from solstone.apps.reflections import copy as reflections_copy
 from solstone.convey import create_app
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -126,7 +127,9 @@ def test_reflections_state_payload_shape(reflections_env, monkeypatch):
         "Your first reflection arrives on Sunday, March 15."
     )
     assert data["copy"]["populated_next_footer"] == "next reflection: Sunday, March 15"
-    assert data["copy"]["grid_lede"] == "1 reflection since March 2026."
+    assert data["copy"]["grid_lede"] == reflections_copy.GRID_LEDE_ONE.format(
+        count=1, month="March 2026"
+    )
 
 
 def test_reflections_index_payload_shape(reflections_env):
@@ -169,6 +172,38 @@ def test_reflections_grid_payload_normalizes_weeks_and_uses_owner_today(
         "days": {"20260308": 1, "20260405": 1},
         "pending": {},
     }
+
+
+def test_reflections_state_lede_count_matches_grid_days(reflections_env, monkeypatch):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 4, 10, 12, 0, tzinfo=tz)
+
+    _seed_reflection(reflections_env.journal, "20260308")
+    _seed_reflection(reflections_env.journal, "20260310")
+    _seed_reflection(reflections_env.journal, "20260322")
+    monkeypatch.setattr(
+        "solstone.apps.reflections.routes.get_owner_timezone",
+        lambda: ZoneInfo("UTC"),
+    )
+    monkeypatch.setattr("solstone.apps.reflections.routes.datetime", FrozenDateTime)
+
+    state_response = reflections_env.client.get("/app/reflections/api/state")
+    grid_response = reflections_env.client.get("/app/reflections/api/grid")
+    state_data = state_response.get_json()
+    grid_data = grid_response.get_json()
+
+    assert state_response.status_code == 200
+    assert grid_response.status_code == 200
+    expected_count = len(grid_data["days"])
+    coverage_start = grid_data["coverage"]["start"]
+    month = datetime.strptime(coverage_start, "%Y%m%d").strftime("%B %Y")
+    assert expected_count > 1
+    assert expected_count < len(state_data["weeks"])
+    assert state_data["copy"]["grid_lede"] == reflections_copy.GRID_LEDE_OTHER.format(
+        count=expected_count, month=month
+    )
 
 
 def test_reflections_grid_empty_journal_returns_empty_maps(reflections_env):
