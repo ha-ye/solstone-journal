@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 _MEDIA_OPEN = re.compile(r"@media\s*\(\s*max-width\s*:\s*(\d+)px\s*\)\s*\{")
@@ -26,6 +27,10 @@ def _backup_css() -> str:
 
 def _backup_js() -> str:
     return Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
+
+
+def _backup_workspace_html() -> str:
+    return Path("solstone/apps/backup/workspace.html").read_text(encoding="utf-8")
 
 
 def _media_spans(css: str) -> list[tuple[int, int, int, str]]:
@@ -88,6 +93,38 @@ def _rendered_backup_html(backup_env) -> str:
     response = backup_env().client.get("/app/backup/workspace")
     assert response.status_code == 200
     return response.get_data(as_text=True)
+
+
+class _OffloadDaysTemplateParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self._offload_days_depth = 0
+        self.saw_offload_days = False
+        self.saw_day_template = False
+        self.template_inside_offload_days = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_map = dict(attrs)
+        starts_offload_days = tag == "div" and "data-offload-days" in attr_map
+        in_offload_days = self._offload_days_depth > 0 or starts_offload_days
+
+        if tag == "div" and in_offload_days:
+            self._offload_days_depth += 1
+        if starts_offload_days:
+            self.saw_offload_days = True
+
+        if tag == "template" and "data-offload-day-template" in attr_map:
+            self.saw_day_template = True
+            if in_offload_days:
+                self.template_inside_offload_days = True
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "div" and self._offload_days_depth > 0:
+            self._offload_days_depth -= 1
 
 
 def test_narrow_rules_bound_to_rendered_surface(backup_env) -> None:
@@ -198,6 +235,19 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         assert forbidden not in normalized
 
 
+def test_offload_day_template_survives_days_container_rerender() -> None:
+    """The day template must survive replaceChildren().
+
+    It cannot live inside the cleared container.
+    """
+    parser = _OffloadDaysTemplateParser()
+    parser.feed(_backup_workspace_html())
+
+    assert parser.saw_offload_days
+    assert parser.saw_day_template
+    assert not parser.template_inside_offload_days
+
+
 def test_offload_js_source_contracts() -> None:
     js = _backup_js()
 
@@ -236,6 +286,18 @@ def test_offload_js_source_contracts() -> None:
     budget_gb = 37
     floor_gb = 23
     assert budget_gb != floor_gb
+
+
+def test_offload_days_render_clears_offload_days_container() -> None:
+    js = _backup_js()
+
+    render_offload_days = js[
+        js.index("function renderOffloadDays(days)") : js.index(
+            "function renderOffload()"
+        )
+    ]
+    assert "root.querySelector('[data-offload-days]')" in render_offload_days
+    assert "target.replaceChildren();" in render_offload_days
 
 
 def test_offload_js_validates_payload_shape_before_ready_state() -> None:
