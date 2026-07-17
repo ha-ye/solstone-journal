@@ -46,11 +46,16 @@ def apostrophe_search_client(tmp_path, monkeypatch):
         "# Yesterday\n\nReviewed yesterday's meeting notes.\n"
     )
 
+    # The control day carries text IDENTICAL to yesterday's, so the only thing that
+    # can keep it out of a "yesterday's meeting" result is the temporal narrowing the
+    # query itself carries. With different text, FTS excludes it on its own and a test
+    # asserting "control is absent" proves nothing about dates — it stays green even
+    # when explicit day bounds kill the extracted-temporal branch outright.
     control_day = (datetime.now() - timedelta(days=2)).strftime("%Y%m%d")
     control_dir = journal / "chronicle" / control_day / "talents"
     control_dir.mkdir(parents=True, exist_ok=True)
     (control_dir / "flow.md").write_text(
-        "# Control\n\nReviewed control meeting notes.\n"
+        "# Control\n\nReviewed yesterday's meeting notes.\n"
     )
 
     scan_journal(str(journal), full=True)
