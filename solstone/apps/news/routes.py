@@ -15,7 +15,9 @@ from markdown import Markdown
 
 from solstone.apps.news import copy as news_copy
 from solstone.apps.news.dates import format_news_list_date, next_newsletter_when
-from solstone.convey.reasons import FILE_NOT_FOUND
+from solstone.convey.date_nav import build_date_nav_index
+from solstone.convey.day_grid import build_day_grid_payload
+from solstone.convey.reasons import FILE_NOT_FOUND, INVALID_DAY, INVALID_MONTH
 from solstone.convey.utils import DATE_RE, error_response
 from solstone.think.features import require_extra
 from solstone.think.utils import get_journal, get_owner_timezone
@@ -73,10 +75,57 @@ def _list_newsletters() -> list[dict[str, str]]:
                 continue
             rows.append({"facet": facet_dir.name, "day": day})
 
-    rows.sort(key=lambda r: (r["day"], r["facet"]), reverse=True)
-    # Adjust facet ordering to ascending within each day.
-    rows.sort(key=lambda r: r["day"], reverse=True)
+    rows.sort(key=lambda r: (-int(r["day"]), r["facet"]))
     return rows
+
+
+def _format_month_name(day: str) -> str:
+    return datetime.strptime(day, "%Y%m%d").strftime("%B %Y")
+
+
+def _newsletter_counts_by_day(rows: list[dict[str, str]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for row in rows:
+        day = row["day"]
+        counts[day] = counts.get(day, 0) + 1
+    return counts
+
+
+def _newsletter_list_item(row: dict[str, str]) -> dict[str, str]:
+    return {
+        "facet": row["facet"],
+        "day": row["day"],
+        "label": format_news_list_date(row["day"]),
+        "url": url_for("app:news.detail", facet=row["facet"], day=row["day"]),
+    }
+
+
+def _day_copy(day: str) -> dict[str, str]:
+    date_label = format_news_list_date(day)
+    return {
+        "title": news_copy.NEWS_DAY_TITLE.format(date_label=date_label),
+        "subtitle": news_copy.NEWS_DAY_SUBTITLE,
+        "empty_title": news_copy.NEWS_DAY_EMPTY_TITLE.format(date_label=date_label),
+        "empty_body": news_copy.NEWS_DAY_EMPTY_BODY,
+    }
+
+
+def _empty_detail_payload(facet: str, day: str) -> dict[str, Any]:
+    date_label = format_news_list_date(day)
+    return {
+        "empty": True,
+        "facet": facet,
+        "day": day,
+        "date_label": date_label,
+        "day_url": url_for("app:news.day_view", day=day),
+        "copy": {
+            "empty_title": news_copy.NEWS_DETAIL_EMPTY_TITLE.format(facet=facet),
+            "empty_body": news_copy.NEWS_DETAIL_EMPTY_BODY.format(
+                facet=facet, date_label=date_label
+            ),
+            "day_link": news_copy.NEWS_DETAIL_EMPTY_DAY_LINK,
+        },
+    }
 
 
 def _load_newsletter(facet: str, day: str) -> tuple[Path, str, frontmatter.Post]:
@@ -129,26 +178,31 @@ def index() -> Any:
 @news_bp.route("/api/state")
 def api_state() -> Any:
     rows = _list_newsletters()
+    total_count = len(rows)
     when = next_newsletter_when(_today())
 
-    newsletters = [
-        {
-            "facet": row["facet"],
-            "day": row["day"],
-            "label": format_news_list_date(row["day"]),
-            "url": url_for("app:news.detail", facet=row["facet"], day=row["day"]),
-        }
-        for row in rows
-    ]
+    newsletters = [_newsletter_list_item(row) for row in rows[:60]]
 
     empty_next = news_copy.NEWS_EMPTY_TOMORROW_WITH_DATE.format(tomorrow=when)
     populated_next_footer = news_copy.NEWS_POPULATED_NEXT_FOOTER.format(when=when)
     if not _journal_has_any_observer_input():
         empty_next = news_copy.NEWS_EMPTY_NO_DATE
+    if rows:
+        template = (
+            news_copy.NEWS_GRID_LEDE_ONE
+            if total_count == 1
+            else news_copy.NEWS_GRID_LEDE_OTHER
+        )
+        grid_lede = template.format(
+            count=total_count, month=_format_month_name(rows[-1]["day"])
+        )
+    else:
+        grid_lede = None
 
     return jsonify(
         {
             "newsletters": newsletters,
+            "total_count": total_count,
             "copy": {
                 "kicker": news_copy.NEWS_KICKER,
                 "index_h1": news_copy.NEWS_INDEX_H1,
@@ -161,9 +215,66 @@ def api_state() -> Any:
                 "populated_framing": news_copy.NEWS_POPULATED_FRAMING,
                 "populated_sample_link": news_copy.NEWS_POPULATED_SAMPLE_LINK,
                 "populated_next_footer": populated_next_footer,
+                "grid_title": news_copy.NEWS_GRID_TITLE,
+                "grid_lede": grid_lede,
+                "grid_unit_one": news_copy.NEWS_GRID_UNIT_ONE,
+                "grid_unit_other": news_copy.NEWS_GRID_UNIT_OTHER,
+                "grid_unit_none": news_copy.NEWS_GRID_UNIT_NONE,
             },
         }
     )
+
+
+@news_bp.route("/api/index")
+def api_index() -> Any:
+    return jsonify(build_date_nav_index(_newsletter_counts_by_day(_list_newsletters())))
+
+
+@news_bp.route("/api/grid")
+def api_grid() -> Any:
+    rows = _list_newsletters()
+    counts = _newsletter_counts_by_day(rows)
+    coverage = (
+        {"start": min(counts), "end": _today().strftime("%Y%m%d")} if counts else None
+    )
+    return jsonify(
+        build_day_grid_payload(
+            counts,
+            max(counts, default=None),
+            coverage=coverage,
+        )
+    )
+
+
+@news_bp.route("/api/stats/<month>")
+def api_stats(month: str) -> Any:
+    if len(month) != 6 or not month.isdigit():
+        return error_response(
+            INVALID_MONTH,
+            detail="Invalid month format, expected YYYYMM",
+        )
+
+    counts = _newsletter_counts_by_day(_list_newsletters())
+    return jsonify(
+        {day: count for day, count in counts.items() if day.startswith(month)}
+    )
+
+
+@news_bp.route("/api/day/<day>")
+def api_day(day: str) -> Any:
+    if not DATE_RE.fullmatch(day):
+        return error_response(INVALID_DAY, status=404, detail="Day not found")
+
+    rows = [row for row in _list_newsletters() if row["day"] == day]
+    payload: dict[str, Any] = {
+        "day": day,
+        "date_label": format_news_list_date(day),
+        "newsletters": [_newsletter_list_item(row) for row in rows],
+        "copy": _day_copy(day),
+    }
+    if not rows:
+        payload["empty"] = True
+    return jsonify(payload)
 
 
 @news_bp.route("/sample")
@@ -194,6 +305,14 @@ def sample_raw() -> Any:
     )
 
 
+@news_bp.route("/<day>")
+def day_view(day: str) -> Any:
+    if not DATE_RE.fullmatch(day):
+        return error_response(INVALID_DAY, status=404, detail="Day not found")
+
+    return current_app.send_static_file("shell.html")
+
+
 @news_bp.route("/<facet>/<day>")
 def detail(facet: str, day: str) -> Any:
     return current_app.send_static_file("shell.html")
@@ -207,7 +326,7 @@ def api_detail(facet: str, day: str) -> Any:
     try:
         _path, _raw_markdown, post = _load_newsletter(facet, day)
     except FileNotFoundError:
-        return error_response(FILE_NOT_FOUND, detail="Newsletter not found")
+        return jsonify(_empty_detail_payload(facet, day))
 
     return jsonify(
         {

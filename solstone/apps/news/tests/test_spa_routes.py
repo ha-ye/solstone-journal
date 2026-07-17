@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import ast
 import json
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
 
+from solstone.apps.news import routes as news_routes
 from solstone.convey import create_app
 
 APP_ROOT = Path(__file__).resolve().parents[1]
@@ -45,6 +47,15 @@ def _seed_news(journal: Path) -> None:
     target = journal / "facets" / "verona" / "news" / "20260526.md"
     target.parent.mkdir(parents=True)
     target.write_text("# verona\n\nbody\n", encoding="utf-8")
+
+
+def _seed_news_for(
+    journal: Path, facet: str, day: str, body: str | None = None
+) -> None:
+    (journal / "chronicle" / day).mkdir(parents=True, exist_ok=True)
+    target = journal / "facets" / facet / "news" / f"{day}.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(body or f"# {facet} {day}\n\nbody\n", encoding="utf-8")
 
 
 def _render_template_call_functions() -> list[str]:
@@ -106,7 +117,8 @@ def test_news_state_payload_shape(news_env):
     data = response.get_json()
 
     assert response.status_code == 200
-    assert set(data) == {"copy", "newsletters"}
+    assert set(data) == {"copy", "newsletters", "total_count"}
+    assert data["total_count"] == 1
     assert data["newsletters"] == [
         {
             "facet": "verona",
@@ -119,7 +131,202 @@ def test_news_state_payload_shape(news_env):
         "Your first newsletters arrive tomorrow morning."
     )
     assert data["copy"]["populated_next_footer"] == "next newsletters: tomorrow morning"
+    assert data["copy"]["grid_lede"] == "1 newsletter since May 2026."
 
 
 def test_news_routes_render_template_only_in_pdf_helper():
     assert _render_template_call_functions() == ["_render_newsletter_pdf"]
+
+
+def test_news_state_orders_day_desc_then_facet_asc(news_env):
+    _seed_news_for(news_env.journal, "zeta", "20260526")
+    _seed_news_for(news_env.journal, "alpha", "20260526")
+    _seed_news_for(news_env.journal, "beta", "20260525")
+
+    response = news_env.client.get("/app/news/api/state")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert [(item["facet"], item["day"]) for item in data["newsletters"]] == [
+        ("alpha", "20260526"),
+        ("zeta", "20260526"),
+        ("beta", "20260525"),
+    ]
+
+
+def test_news_state_bounds_to_newest_sixty_with_full_total(news_env):
+    start = date(2026, 1, 1)
+    days: list[str] = []
+    for offset in range(65):
+        day = (start + timedelta(days=offset)).strftime("%Y%m%d")
+        days.append(day)
+        _seed_news_for(news_env.journal, "verona", day)
+
+    response = news_env.client.get("/app/news/api/state")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data["total_count"] == 65
+    assert len(data["newsletters"]) == 60
+    assert [item["day"] for item in data["newsletters"]] == list(reversed(days[5:]))
+    assert data["copy"]["grid_lede"] == "65 newsletters since January 2026."
+
+
+def test_news_grid_payload_counts_coverage_and_watermark(news_env, monkeypatch):
+    _seed_news_for(news_env.journal, "alpha", "20260105")
+    _seed_news_for(news_env.journal, "zeta", "20260105")
+    _seed_news_for(news_env.journal, "beta", "20260201")
+    monkeypatch.setattr(news_routes, "_today", lambda: date(2026, 7, 17))
+    calls: list[tuple[dict[str, int], str | None, dict[str, object]]] = []
+    real_builder = news_routes.build_day_grid_payload
+
+    def spy(counts, watermark, **kwargs):
+        calls.append((dict(counts), watermark, dict(kwargs)))
+        return real_builder(counts, watermark, **kwargs)
+
+    monkeypatch.setattr(news_routes, "build_day_grid_payload", spy)
+
+    response = news_env.client.get("/app/news/api/grid")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert calls == [
+        (
+            {"20260201": 1, "20260105": 2},
+            "20260201",
+            {"coverage": {"start": "20260105", "end": "20260717"}},
+        )
+    ]
+    assert data == {
+        "coverage": {"start": "20260105", "end": "20260717"},
+        "days": {"20260105": 2, "20260201": 1},
+        "pending": {},
+    }
+
+
+def test_news_grid_empty_journal(news_env):
+    response = news_env.client.get("/app/news/api/grid")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"coverage": None, "days": {}, "pending": {}}
+
+
+def test_news_index_uses_date_nav_index(news_env, monkeypatch):
+    _seed_news_for(news_env.journal, "alpha", "20260526")
+    _seed_news_for(news_env.journal, "zeta", "20260526")
+    _seed_news_for(news_env.journal, "beta", "20260601")
+    calls: list[dict[str, int]] = []
+
+    def spy(counts):
+        calls.append(dict(counts))
+        return {"coverage": {"start": "20260526", "end": "20260601"}, "months": {}}
+
+    monkeypatch.setattr(news_routes, "build_date_nav_index", spy)
+
+    response = news_env.client.get("/app/news/api/index")
+
+    assert response.status_code == 200
+    assert calls == [{"20260601": 1, "20260526": 2}]
+    assert response.get_json() == {
+        "coverage": {"start": "20260526", "end": "20260601"},
+        "months": {},
+    }
+
+
+def test_news_index_empty_journal(news_env):
+    response = news_env.client.get("/app/news/api/index")
+
+    assert response.status_code == 200
+    assert response.get_json() == {"coverage": None, "months": {}}
+
+
+def test_news_stats_month_counts_and_index_cross_check(news_env):
+    _seed_news_for(news_env.journal, "alpha", "20260526")
+    _seed_news_for(news_env.journal, "zeta", "20260526")
+    _seed_news_for(news_env.journal, "beta", "20260601")
+
+    may_response = news_env.client.get("/app/news/api/stats/202605")
+    empty_response = news_env.client.get("/app/news/api/stats/202604")
+    invalid_response = news_env.client.get("/app/news/api/stats/2026aa")
+    index = news_env.client.get("/app/news/api/index").get_json()
+
+    assert may_response.status_code == 200
+    assert may_response.get_json() == {"20260526": 2}
+    assert empty_response.status_code == 200
+    assert empty_response.get_json() == {}
+    assert invalid_response.status_code == 400
+    invalid = invalid_response.get_json()
+    assert invalid["reason_code"] == "invalid_month"
+    assert invalid["detail"] == "Invalid month format, expected YYYYMM"
+    for month, total in index["months"].items():
+        stats = news_env.client.get(f"/app/news/api/stats/{month}").get_json()
+        assert sum(stats.values()) == total
+
+
+def test_news_day_page_and_api(news_env):
+    _seed_news_for(news_env.journal, "zeta", "20260526")
+    _seed_news_for(news_env.journal, "alpha", "20260526")
+
+    page_response = news_env.client.get("/app/news/20260526")
+    garbage_response = news_env.client.get("/app/news/garbage")
+    api_response = news_env.client.get("/app/news/api/day/20260526")
+    empty_response = news_env.client.get("/app/news/api/day/20260527")
+    invalid_response = news_env.client.get("/app/news/api/day/garbage")
+
+    assert page_response.status_code == 200
+    assert b'data-solstone-shell="spa"' in page_response.data
+    assert garbage_response.status_code == 404
+    assert garbage_response.get_json()["reason_code"] == "invalid_day"
+    assert api_response.status_code == 200
+    data = api_response.get_json()
+    assert data["day"] == "20260526"
+    assert data["date_label"] == "Tue May 26, 2026"
+    assert [
+        (item["facet"], item["label"], item["url"]) for item in data["newsletters"]
+    ] == [
+        ("alpha", "Tue May 26, 2026", "/app/news/alpha/20260526"),
+        ("zeta", "Tue May 26, 2026", "/app/news/zeta/20260526"),
+    ]
+    assert empty_response.status_code == 200
+    empty = empty_response.get_json()
+    assert empty["empty"] is True
+    assert "reason_code" not in empty
+    assert invalid_response.status_code == 404
+    assert invalid_response.get_json()["reason_code"] == "invalid_day"
+
+
+def test_news_detail_empty_and_malformed_paths(news_env):
+    _seed_news_for(news_env.journal, "alpha", "20260526")
+
+    existing_response = news_env.client.get("/app/news/api/alpha/20260526")
+    missing_response = news_env.client.get("/app/news/api/zeta/20260526")
+    malformed_response = news_env.client.get("/app/news/api/alpha/notaday")
+
+    assert existing_response.status_code == 200
+    existing = existing_response.get_json()
+    assert "empty" not in existing
+    assert existing["raw_url"] == "/app/news/alpha/20260526/raw"
+    assert existing["pdf_url"] == "/app/news/alpha/20260526/pdf"
+    assert existing["debug_link_url"] == "/app/sol/20260526/talents/facet_newsletter"
+    assert missing_response.status_code == 200
+    missing = missing_response.get_json()
+    assert missing["empty"] is True
+    assert missing["day_url"] == "/app/news/20260526"
+    assert "reason_code" not in missing
+    assert malformed_response.status_code == 404
+    assert malformed_response.get_json()["reason_code"] == "file_not_found"
+
+
+def test_news_workspace_day_axis_source_hooks(news_env):
+    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+
+    assert "data-date-nav" in source
+    assert "data-date-nav-heading" in source
+    assert "mode: 'day'" in source
+    assert "/app/news/api/day/" in source
+    assert "if (payload.empty)" in source
+    assert "context.mode !== 'detail'" in source
+    assert "context.mode !== 'sample'" not in source
+    assert "minSpanDays: 70, minActiveDays: 14" in source
+    assert "fetch('/app/news/api/grid'" in source
+    assert "hideNewsGrid(card, host, legend, unit);" in source

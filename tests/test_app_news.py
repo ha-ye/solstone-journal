@@ -145,7 +145,7 @@ def test_news_detail_api_returns_file(journal_copy):
     assert data["markdown"].startswith("# 2026-05-26 personal")
 
 
-def test_news_detail_missing_page_shell_and_api_404(journal_copy):
+def test_news_detail_missing_page_shell_and_api_empty_state(journal_copy):
     _clear_news(journal_copy)
     client = _make_client(journal_copy)
 
@@ -154,8 +154,10 @@ def test_news_detail_missing_page_shell_and_api_404(journal_copy):
 
     assert page_response.status_code == 200
     assert b'data-solstone-shell="spa"' in page_response.data
-    assert api_response.status_code == 404
-    assert api_response.get_json()["reason_code"] == "file_not_found"
+    assert api_response.status_code == 200
+    data = api_response.get_json()
+    assert data["empty"] is True
+    assert "reason_code" not in data
 
 
 def test_news_sample_api_returns_inlined_content(journal_copy):

@@ -30,9 +30,23 @@ NEWS_POPULATED_FRAMING = (
 )
 NEWS_POPULATED_SAMPLE_LINK = "see a sample"
 NEWS_POPULATED_NEXT_FOOTER = "next newsletters: {when}"
+NEWS_GRID_TITLE = "newsletter days"
+NEWS_GRID_LEDE_ONE = "1 newsletter since {month}."
+NEWS_GRID_LEDE_OTHER = "{count} newsletters since {month}."
+NEWS_GRID_UNIT_ONE = "newsletter"
+NEWS_GRID_UNIT_OTHER = "newsletters"
+NEWS_GRID_UNIT_NONE = "no newsletters"
 
 NEWS_DETAIL_SUBTITLE = "sol's notes for {facet} on this day."
 NEWS_DETAIL_DEBUG_LINK = "see how this was generated →"
+NEWS_DETAIL_EMPTY_TITLE = "no {facet} newsletter"
+NEWS_DETAIL_EMPTY_BODY = "There is no {facet} newsletter for {date_label}."
+NEWS_DETAIL_EMPTY_DAY_LINK = "see all newsletters for this day →"
+
+NEWS_DAY_TITLE = "newsletters for {date_label}"
+NEWS_DAY_SUBTITLE = "facet summaries for this day."
+NEWS_DAY_EMPTY_TITLE = "no newsletters for {date_label}"
+NEWS_DAY_EMPTY_BODY = "No newsletters were written for this day."
 
 NEWS_SAMPLE_BANNER = "This is a sample newsletter — not from your journal."
 NEWS_SAMPLE_H1 = "sample newsletter"

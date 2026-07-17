@@ -1,7 +1,13 @@
 {
   "icon": "📰",
   "label": "newsletters",
-  "date_nav": false,
+  "date_nav": {
+    "unit": {
+      "one": "newsletter",
+      "other": "newsletters",
+      "none": "no newsletters"
+    }
+  },
   "facets": {
     "disabled": true
   }

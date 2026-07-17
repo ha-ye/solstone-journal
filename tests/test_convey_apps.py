@@ -145,6 +145,7 @@ def test_shell_payload_emits_normalized_date_nav(monkeypatch):
         "activities",
         "body",
         "chat",
+        "news",
         "reflections",
         "sol",
         "speakers",
@@ -152,7 +153,6 @@ def test_shell_payload_emits_normalized_date_nav(monkeypatch):
         "tokens",
         "transcripts",
     ]
-    assert apps["news"]["date_nav"] is None
     for name, app in apps.items():
         assert "allow_future_dates" not in app
         if app["date_nav"]:

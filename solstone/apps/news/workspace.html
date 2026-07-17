@@ -155,6 +155,45 @@
   color: #6b7280;
 }
 
+.news-grid-card {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+
+.news-grid-card[hidden] {
+  display: none;
+}
+
+.news-grid-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 1rem;
+}
+
+.news-grid-lede {
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--ink-soft-paper);
+  line-height: 1.5;
+}
+
+.news-grid-host {
+  margin-top: var(--space-3);
+}
+
+.news-grid-legend {
+  margin-top: var(--space-2);
+  color: var(--ink-faint-paper);
+}
+
+.news-empty-title {
+  margin: 0 0 var(--space-2);
+  color: var(--ink);
+  font-size: 1.1rem;
+}
+
 .news-debug-link {
   margin: 1.5rem 0 0;
   font-size: 0.9rem;
@@ -189,6 +228,8 @@
 </style>
 
 <div class="news-shell" id="newsApp">
+  <div data-date-nav></div>
+  <h2 class="news-title" data-date-nav-heading></h2>
   <div id="newsContent"></div>
 </div>
 
@@ -219,6 +260,13 @@
     if (first === 'sample') {
       return {mode: 'sample', url: '/app/news/api/sample'};
     }
+    if (/^\d{8}$/.test(first) && !parts[4]) {
+      return {
+        mode: 'day',
+        day: first,
+        url: `/app/news/api/day/${encodeURIComponent(first)}`
+      };
+    }
     if (parts[3] && parts[4]) {
       const facet = decodePart(parts[3]);
       const day = decodePart(parts[4]);
@@ -228,6 +276,12 @@
       };
     }
     return {mode: 'index', url: '/app/news/api/state'};
+  }
+
+  function suppressDateNavForDetail(context) {
+    if (context.mode !== 'detail') return;
+    document.querySelector('[data-date-nav]')?.remove();
+    document.querySelector('[data-date-nav-heading]')?.remove();
   }
 
   function renderLoading() {
@@ -291,6 +345,71 @@
     }
   }
 
+  function newsGridUnit(copy) {
+    return {
+      one: copy.grid_unit_one,
+      other: copy.grid_unit_other,
+      none: copy.grid_unit_none,
+    };
+  }
+
+  function hideNewsGrid(card, host, legend, unit) {
+    card.hidden = true;
+    if (window.DayGrid) {
+      window.DayGrid.mount(host, {
+        data: null,
+        mode: 'navigate',
+        appPath: '/app/news',
+        unit,
+        granularity: 'day',
+      });
+    } else {
+      host.replaceChildren();
+    }
+    legend.replaceChildren();
+  }
+
+  async function fetchNewsGrid() {
+    try {
+      const response = await fetch('/app/news/api/grid', {cache: 'no-store'});
+      if (!response.ok) return null;
+      return response.json();
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  async function renderNewsGrid(copy) {
+    const card = document.getElementById('newsGridCard');
+    const host = document.getElementById('newsGridHost');
+    const legend = document.getElementById('newsGridLegend');
+    if (!card || !host || !legend) return;
+    const unit = newsGridUnit(copy);
+    const data = await fetchNewsGrid();
+    if (!data || !window.DayGrid || !copy.grid_lede) {
+      hideNewsGrid(card, host, legend, unit);
+      return;
+    }
+
+    // Newsletters need both a long enough span and enough active days to make
+    // the overview useful; keep this calibration explicit for this adopter.
+    const gate = window.DayGrid.gate(data, {minSpanDays: 70, minActiveDays: 14});
+    if (!gate.ok) {
+      hideNewsGrid(card, host, legend, unit);
+      return;
+    }
+
+    card.hidden = false;
+    window.DayGrid.mount(host, {
+      data,
+      mode: 'navigate',
+      appPath: '/app/news',
+      unit,
+      granularity: 'day',
+    });
+    window.DayGrid.legend(legend, {unit, data});
+  }
+
   function renderIndex(payload) {
     const copy = payload.copy || {};
     const newsletters = payload.newsletters || [];
@@ -328,11 +447,71 @@
           <p class="news-subtitle">${escapeHtml(copy.subtitle)}</p>
         </div>
       </header>
+      <section class="news-grid-card" id="newsGridCard" hidden>
+        <h3 class="news-grid-title">${escapeHtml(copy.grid_title)}</h3>
+        <p class="news-grid-lede">${escapeHtml(copy.grid_lede)}</p>
+        <div class="news-grid-host" id="newsGridHost"></div>
+        <div class="news-grid-legend" id="newsGridLegend"></div>
+      </section>
       <section class="news-index">${listHtml}</section>
+    `;
+    renderNewsGrid(copy);
+  }
+
+  function renderDay(payload) {
+    const copy = payload.copy || {};
+    const newsletters = payload.newsletters || [];
+    const bodyHtml = payload.empty
+      ? `
+        <div class="news-empty-state">
+          <h3 class="news-empty-title">${escapeHtml(copy.empty_title)}</h3>
+          <p class="news-empty-body">${escapeHtml(copy.empty_body)}</p>
+        </div>
+      `
+      : `
+        <ul class="news-index-list">
+          ${newsletters.map((item) => `
+            <li>
+              <a class="news-index-link" href="${escapeHtml(item.url)}">
+                <span class="news-index-facet">${escapeHtml(item.facet)}</span>
+                <span class="news-index-day">${escapeHtml(item.label)}</span>
+                <span class="news-index-token">${escapeHtml(item.day)}</span>
+              </a>
+            </li>
+          `).join('')}
+        </ul>
+      `;
+    content.innerHTML = `
+      <header class="news-header">
+        <div>
+          <h2 class="news-title">${escapeHtml(copy.title)}</h2>
+          <p class="news-subtitle">${escapeHtml(copy.subtitle)}</p>
+        </div>
+      </header>
+      <section class="news-index">${bodyHtml}</section>
+    `;
+  }
+
+  function renderDetailEmpty(payload) {
+    const copy = payload.copy || {};
+    content.innerHTML = `
+      <header class="news-header">
+        <div>
+          <h2 class="news-title">${escapeHtml(copy.empty_title)}</h2>
+          <p class="news-subtitle">${escapeHtml(copy.empty_body)}</p>
+        </div>
+      </header>
+      <section class="news-index">
+        <p class="news-empty-sample"><a href="${escapeHtml(payload.day_url)}">${escapeHtml(copy.day_link)}</a></p>
+      </section>
     `;
   }
 
   function renderDetail(payload) {
+    if (payload.empty) {
+      renderDetailEmpty(payload);
+      return;
+    }
     content.innerHTML = `
       <header class="news-header">
         <div>
@@ -373,13 +552,18 @@
     attachCopyButton(payload.raw_url);
   }
 
+  const initialContext = viewContext();
+  suppressDateNavForDetail(initialContext);
+
   async function load() {
-    const context = viewContext();
+    const context = initialContext;
     renderLoading();
     try {
       const payload = await window.apiJson(context.url);
       if (context.mode === 'sample') {
         renderSample(payload);
+      } else if (context.mode === 'day') {
+        renderDay(payload);
       } else if (context.mode === 'detail') {
         renderDetail(payload);
       } else {
