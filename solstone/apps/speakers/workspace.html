@@ -2539,6 +2539,20 @@
   display: none;
 }
 
+.spk-day-grid-copy {
+  margin: 6px 0 0;
+  color: var(--ink-soft-paper);
+  font-size: var(--text-sm);
+}
+
+.spk-day-grid-host {
+  min-width: 0;
+}
+
+.spk-day-grid-legend {
+  margin-top: var(--space-2);
+}
+
 .spk-overview-header {
   display: flex;
   align-items: center;
@@ -2710,6 +2724,17 @@
 
 <div id="speakersOverviewView" hidden>
 <div class="spk-overview" data-spk-overview>
+  <section class="spk-overview-section spk-day-grid-card" id="spkDayGridCard" hidden>
+    <div class="spk-overview-header">
+      <div>
+        <h2 class="spk-overview-title" data-copy="SPK_GRID_TITLE"></h2>
+        <p class="spk-day-grid-copy" id="spkDayGridCopy"></p>
+      </div>
+    </div>
+    <div class="spk-day-grid-host" id="spkDayGridHost"></div>
+    <div class="spk-day-grid-legend" id="spkDayGridLegend"></div>
+  </section>
+
   <section class="spk-overview-section" data-section="your-voice">
     <div class="spk-overview-header">
       <h2 class="spk-overview-title" data-copy="SPK_OVERVIEW_YOUR_VOICE_HEADER"></h2>
@@ -2749,7 +2774,12 @@
   const discoverySection = document.getElementById('spkNewVoicesSection');
   const discoveryContainer = document.getElementById('spkDiscoveryClusters');
   const todayLink = document.getElementById('spkTodayReview');
+  const dayGridCard = document.getElementById('spkDayGridCard');
+  const dayGridCopy = document.getElementById('spkDayGridCopy');
+  const dayGridHost = document.getElementById('spkDayGridHost');
+  const dayGridLegend = document.getElementById('spkDayGridLegend');
   const escapeHtml = (value) => window.AppServices.escapeHtml(value);
+  let mountedDayGridKey = null;
 
   function applyOverviewState(payload) {
     COPY = payload.speaker_copy || {};
@@ -2758,8 +2788,24 @@
     document.querySelectorAll('[data-copy]').forEach((node) => {
       node.textContent = COPY[node.dataset.copy] || '';
     });
+    dayGridCopy.textContent = COPY.SPK_GRID_BODY || '';
     todayLink.textContent = COPY.SPK_OVERVIEW_TODAY_LINK_LABEL || '';
     todayLink.href = `/app/speakers/${TODAY}`;
+  }
+
+  function dayGridUnit() {
+    return {
+      one: COPY.SPK_GRID_UNIT_ONE,
+      other: COPY.SPK_GRID_UNIT_OTHER,
+      none: COPY.SPK_GRID_UNIT_NONE,
+    };
+  }
+
+  function dayGridActivityUnit() {
+    return {
+      one: COPY.SPK_GRID_ACTIVITY_ONE,
+      other: COPY.SPK_GRID_ACTIVITY_OTHER,
+    };
   }
 
   function relativeTime(value) {
@@ -2945,8 +2991,71 @@
       });
   }
 
+  function hideDayGrid() {
+    dayGridCard.hidden = true;
+    mountedDayGridKey = null;
+    if (window.DayGrid) {
+      window.DayGrid.mount(dayGridHost, {
+        data: null,
+        mode: 'navigate',
+        appPath: '/app/speakers',
+        unit: dayGridUnit(),
+      });
+    } else {
+      dayGridHost.replaceChildren();
+    }
+    dayGridLegend.replaceChildren();
+  }
+
+  function renderDayGrid(data) {
+    if (!data || !window.DayGrid) {
+      hideDayGrid();
+      return;
+    }
+
+    const key = JSON.stringify(data);
+    if (key === mountedDayGridKey) return;
+
+    // Gate on activity, not the worklist. A caught-up journal has quiet real
+    // days but still has enough speaker activity to make the grid useful.
+    const gate = window.DayGrid.gate({
+      coverage: data.coverage,
+      days: data.activity || {},
+      pending: {},
+    }, { minSpanDays: 70, minActiveDays: 14 });
+    if (!gate.ok) {
+      hideDayGrid();
+      return;
+    }
+
+    dayGridCard.hidden = false;
+    window.DayGrid.mount(dayGridHost, {
+      data,
+      mode: 'navigate',
+      appPath: '/app/speakers',
+      unit: dayGridUnit(),
+      activityUnit: dayGridActivityUnit(),
+    });
+    window.DayGrid.legend(dayGridLegend, {
+      unit: dayGridUnit(),
+      data,
+    });
+    mountedDayGridKey = key;
+  }
+
+  async function loadDayGrid() {
+    try {
+      const response = await fetch('/app/speakers/api/grid', {cache: 'no-store'});
+      if (!response.ok) throw new Error('speaker grid failed');
+      renderDayGrid(await response.json());
+    } catch (_error) {
+      hideDayGrid();
+    }
+  }
+
   function init() {
     setupSort();
+    loadDayGrid();
     loadOwner();
     loadKnown();
     loadDiscovery();

@@ -72,6 +72,7 @@ from solstone.apps.speakers.status import get_speakers_status
 from solstone.apps.speakers.suggest import format_suggestions, suggest_opportunities
 from solstone.apps.speakers.wipe import wipe_speaker_artifacts
 from solstone.apps.utils import log_app_action
+from solstone.convey.day_grid import build_day_grid_payload
 from solstone.convey.reasons import (
     ENTITY_BLOCKED,
     ENTITY_NOT_FOUND,
@@ -364,6 +365,15 @@ def _load_speaker_labels(segment_dir: Path) -> dict | None:
         return None
 
 
+def _audio_embedding_sources(segment_path: Path) -> list[str]:
+    """Return audio embedding source stems from a segment directory."""
+    return sorted(
+        path.stem
+        for path in segment_path.glob("*.npz")
+        if path.stem.endswith("_audio") or path.stem == "audio"
+    )
+
+
 def _speaker_sentence_needs_review(
     label: dict | None, labels_data: dict | None
 ) -> bool:
@@ -371,6 +381,15 @@ def _speaker_sentence_needs_review(
     if label:
         return label.get("confidence") == "medium" or not label.get("speaker")
     return True if labels_data else False
+
+
+def _segment_has_speaker_review(labels_data: dict | None) -> bool:
+    if not labels_data:
+        return False
+    return any(
+        _speaker_sentence_needs_review(label, labels_data)
+        for label in labels_data.get("labels", [])
+    )
 
 
 def _load_speaker_corrections(segment_dir: Path) -> list[dict]:
@@ -671,16 +690,7 @@ def _scan_segment_embeddings(day: str) -> list[dict]:
 
         start_time, end_time = parsed
 
-        # Find embedding files at segment root (new format: <stem>.npz)
-        npz_files = list(s_path.glob("*.npz"))
-        if not npz_files:
-            continue
-
-        # Filter to audio sources (exclude other npz files if any)
-        # Accept both "<source>_audio" pattern and plain "audio"
-        sources = [
-            f.stem for f in npz_files if f.stem.endswith("_audio") or f.stem == "audio"
-        ]
+        sources = _audio_embedding_sources(s_path)
         if not sources:
             continue
 
@@ -697,7 +707,7 @@ def _scan_segment_embeddings(day: str) -> list[dict]:
                 "start": f"{start_time.hour:02d}:{start_time.minute:02d}",
                 "end": f"{end_time.hour:02d}:{end_time.minute:02d}",
                 "duration": duration,
-                "sources": sorted(sources),
+                "sources": sources,
                 "speakers": speakers,
                 "speaker_count": len(speakers),
             }
@@ -857,27 +867,60 @@ def _speaker_segment_counts(month: str | None = None) -> dict[str, int]:
     return stats
 
 
+def _coverage_from_counts(counts: dict[str, int]) -> dict[str, str] | None:
+    first_day: str | None = None
+    last_day: str | None = None
+    for day, count in counts.items():
+        if count <= 0:
+            continue
+        if first_day is None or day < first_day:
+            first_day = day
+        if last_day is None or day > last_day:
+            last_day = day
+    if first_day is None or last_day is None:
+        return None
+    return {"start": first_day, "end": last_day}
+
+
+def _speaker_grid_counts() -> tuple[dict[str, int], dict[str, int]]:
+    days: dict[str, int] = {}
+    activity: dict[str, int] = {}
+
+    for day_name in day_dirs().keys():
+        activity_count = 0
+        needs_review_count = 0
+
+        for _stream, segment_key, segment_dir in iter_segments(day_name):
+            parsed = segment_parse(segment_key)
+            if parsed[0] is None:
+                continue
+            if not _audio_embedding_sources(segment_dir):
+                continue
+
+            activity_count += 1
+            labels_data = _load_speaker_labels(segment_dir)
+            if _segment_has_speaker_review(labels_data):
+                needs_review_count += 1
+
+        if activity_count > 0:
+            activity[day_name] = activity_count
+        if needs_review_count > 0:
+            days[day_name] = needs_review_count
+
+    return days, activity
+
+
 def _build_date_nav_index() -> dict[str, Any]:
     day_counts = _speaker_segment_counts()
     months: dict[str, int] = {}
-    first_day: str | None = None
-    last_day: str | None = None
 
     for day, count in day_counts.items():
         if count <= 0:
             continue
         month = day[:6]
         months[month] = months.get(month, 0) + count
-        if first_day is None or day < first_day:
-            first_day = day
-        if last_day is None or day > last_day:
-            last_day = day
 
-    coverage = (
-        {"start": first_day, "end": last_day}
-        if first_day is not None and last_day is not None
-        else None
-    )
+    coverage = _coverage_from_counts(day_counts)
     return {"coverage": coverage, "months": months}
 
 
@@ -885,6 +928,20 @@ def _build_date_nav_index() -> dict[str, Any]:
 def api_index() -> Any:
     """Return read-only whole-journal date navigation coverage."""
     return jsonify(_build_date_nav_index())
+
+
+@speakers_bp.route("/api/grid")
+def api_grid() -> Any:
+    """Return day-grid data for speaker review progress."""
+    days, activity = _speaker_grid_counts()
+    return jsonify(
+        build_day_grid_payload(
+            days,
+            max(days, default=None),
+            coverage=_coverage_from_counts(activity),
+            activity=activity,
+        )
+    )
 
 
 @speakers_bp.route("/api/stats/<month>")
@@ -949,7 +1006,7 @@ def api_segments(day: str) -> Any:
             seg["attribution_needs_review"] = sum(
                 1
                 for label in labels
-                if label.get("confidence") == "medium" or not label.get("speaker")
+                if _speaker_sentence_needs_review(label, labels_data)
             )
             seg["attribution_null"] = sum(
                 1 for label in labels if not label.get("speaker")

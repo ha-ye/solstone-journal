@@ -130,8 +130,8 @@
   // The peek and the cell's accessible name are prose, not an instrument reading:
   // they get the shared human ladder (Today / Yesterday / Last Saturday /
   // Saturday, July 11), never a hand-rolled ISO string a screen reader spells out.
-  // The ladder is anchored to the mount's own `today`, so the day the peek calls
-  // "Today" is always the day wearing the today ring.
+  // The ladder is anchored to the mount's own `today`; week mode keeps that prose
+  // anchor separate from the Sunday cell that wears the today ring.
   function displayDay(day, today) {
     const now = today ? dateFromDay(today) : null;
     return now ? dateNav().headingLabel(day, now) : dateNav().headingLabel(day);
@@ -238,10 +238,11 @@
   // `data` is optional but wanted: the pending key is only drawn when the grid
   // actually holds pending days. A key for a state the surface cannot be in is
   // scaffolding — search has no rollups at all, so it must never advertise one.
-  function legend(host, { unit, data } = {}) {
+  function legend(host, { unit, data, encode } = {}) {
     if (!host) throw new Error('DayGrid.legend requires a host element');
     dateNav();
     host.replaceChildren();
+    const mode = encode === 'presence' ? 'presence' : 'heat';
 
     const root = document.createElement('div');
     root.className = 'daygrid-legend';
@@ -249,6 +250,19 @@
     const scale = document.createElement('div');
     scale.className = 'daygrid-legend-scale';
     scale.setAttribute('aria-hidden', 'true');
+    if (mode === 'presence') {
+      root.classList.add('daygrid-legend--presence');
+      scale.classList.add('daygrid-legend-scale--presence');
+      const empty = document.createElement('span');
+      empty.className = 'daygrid-legend-swatch daygrid-legend-swatch--empty';
+      const present = document.createElement('span');
+      present.className = 'daygrid-legend-swatch daygrid-legend-swatch--presence';
+      scale.append(empty, present);
+      root.append(scale);
+      host.appendChild(root);
+      return root;
+    }
+
     const less = document.createElement('span');
     less.textContent = 'less';
     scale.appendChild(less);
@@ -280,13 +294,18 @@
     return root;
   }
 
-  function cellLabel(day, count, unit, pending, today) {
-    const label = dateNav().countLabel(count, unit);
+  function cellLabel(day, count, unit, pending, today, activityCount, activityUnit) {
+    const nav = dateNav();
+    const normalized = nav.coerceCount(count);
+    const activity = nav.coerceCount(activityCount);
+    const label = normalized === 0 && activity > 0 && activityUnit
+      ? nav.countLabel(activity, activityUnit)
+      : nav.countLabel(normalized, unit);
     const suffix = pending ? ', rollup pending' : '';
     return `${displayDay(day, today)}: ${label}${suffix}`;
   }
 
-  function buildCells(data, config, today) {
+  function buildCells(data, config) {
     const start = data.coverage.start;
     const end = data.coverage.end;
     const startYear = Number(start.slice(0, 4));
@@ -321,7 +340,7 @@
         const count = nav.coerceCount(rawCount);
         const date = dateFromDay(cursor);
         if (!date) return null;
-        const weekday = date.getDay();
+        const weekday = config.granularity === 'week' ? 0 : date.getDay();
         let cell;
         if (!inCoverage) {
           cell = document.createElement('span');
@@ -337,14 +356,26 @@
           } else {
             cell.href = joinPath(config.appPath, cursor);
           }
-          if (cursor === today) cell.classList.add('daygrid-cell--today');
+          if (cursor === config.todayCell) cell.classList.add('daygrid-cell--today');
           if (isRolled) {
-            cell.classList.add('daygrid-cell--data');
-            cell.style.setProperty('--daygrid-heat', String(nav.heatIntensity(count, maxCount)));
+            if (config.encode === 'presence') {
+              cell.classList.add('daygrid-cell--presence');
+            } else {
+              cell.classList.add('daygrid-cell--data');
+              cell.style.setProperty('--daygrid-heat', String(nav.heatIntensity(count, maxCount)));
+            }
           } else {
             cell.classList.add('daygrid-cell--pending');
           }
-          const label = cellLabel(cursor, count, config.unit, isPending && !isRolled, today);
+          const label = cellLabel(
+            cursor,
+            count,
+            config.unit,
+            isPending && !isRolled,
+            config.today,
+            data.activity?.[cursor],
+            config.activityUnit
+          );
           cell.setAttribute('aria-label', label);
           cell.title = label;
           cell.tabIndex = -1;
@@ -359,8 +390,16 @@
             cell.setAttribute('aria-disabled', 'true');
           }
           cell.textContent = String(Number(cursor.slice(6, 8)));
-          if (cursor === today) cell.classList.add('daygrid-cell--today');
-          const label = cellLabel(cursor, 0, config.unit, false, today);
+          if (cursor === config.todayCell) cell.classList.add('daygrid-cell--today');
+          const label = cellLabel(
+            cursor,
+            0,
+            config.unit,
+            false,
+            config.today,
+            data.activity?.[cursor],
+            config.activityUnit
+          );
           cell.setAttribute('aria-label', label);
           cell.title = label;
           cell.tabIndex = -1;
@@ -371,7 +410,7 @@
           block.rowItemsByWeekday[weekday].push(item);
           focusable.push(item);
         }
-        cursor = addDays(cursor, 1);
+        cursor = addDays(cursor, config.granularity === 'week' ? 7 : 1);
         if (!cursor) break;
       }
       blocks.push(block);
@@ -387,12 +426,18 @@
     const config = {
       data: options?.data || null,
       unit: options?.unit || {},
+      activityUnit: options?.activityUnit || null,
       mode: options?.mode || 'navigate',
       appPath: options?.appPath || '',
       monthLinks: Boolean(options?.monthLinks),
       onRange: typeof options?.onRange === 'function' ? options.onRange : null,
       today: validDay(options?.today) ? options.today : todayString(),
+      granularity: options?.granularity === 'week' ? 'week' : 'day',
+      encode: options?.encode === 'presence' ? 'presence' : 'heat',
     };
+    config.todayCell = config.granularity === 'week'
+      ? sundayOf(config.today) || config.today
+      : config.today;
     if (!['navigate', 'select'].includes(config.mode)) {
       throw new Error('DayGrid.mount supports mode "navigate" or "select"');
     }
@@ -403,14 +448,20 @@
     return config;
   }
 
-  function renderGutter(block) {
+  function renderGutter(block, granularity) {
     const gutter = document.createElement('div');
     gutter.className = 'daygrid-gutter';
+    if (granularity === 'week') gutter.classList.add('daygrid-gutter--week');
     gutter.setAttribute('aria-hidden', 'true');
 
     const year = document.createElement('span');
     year.className = 'daygrid-year-label';
     year.textContent = String(block.year);
+
+    if (granularity === 'week') {
+      gutter.append(year);
+      return gutter;
+    }
 
     const weekdays = document.createElement('div');
     weekdays.className = 'daygrid-weekdays';
@@ -436,10 +487,11 @@
 
     const track = document.createElement('div');
     track.className = 'daygrid-track';
+    if (config.granularity === 'week') track.classList.add('daygrid-track--week');
     for (const item of block.cells) track.appendChild(item.element);
     grid.appendChild(track);
 
-    row.append(renderGutter(block), grid);
+    row.append(renderGutter(block, config.granularity), grid);
     return row;
   }
 
@@ -461,12 +513,13 @@
 
     const abort = new AbortController();
     const signal = abort.signal;
-    const built = buildCells(data, config, config.today);
+    const built = buildCells(data, config);
     if (!built) return null;
-    const targetDay = scrollTargetDay(data, config.today);
+    const targetDay = scrollTargetDay(data, config.todayCell);
 
     const root = document.createElement('div');
     root.className = 'daygrid';
+    if (config.granularity === 'week') root.classList.add('daygrid--week');
     root.__dayGridScrollTarget = targetDay || '';
 
     const scroller = document.createElement('div');
@@ -624,7 +677,15 @@
       const isRolled = own(data.days, day);
       const isPending = own(data.pending, day);
       const count = isRolled ? data.days[day] : data.pending?.[day] || 0;
-      const label = cellLabel(day, count, config.unit, isPending && !isRolled, config.today);
+      const label = cellLabel(
+        day,
+        count,
+        config.unit,
+        isPending && !isRolled,
+        config.today,
+        data.activity?.[day],
+        config.activityUnit
+      );
       const text = document.createElement('span');
       text.textContent = label;
       peek.replaceChildren(text);
@@ -682,7 +743,7 @@
         !event.metaKey &&
         !event.altKey
       ) {
-        const todayItem = byDay.get(config.today);
+        const todayItem = byDay.get(config.todayCell);
         if (todayItem) {
           event.preventDefault();
           applyTabStop(todayItem, true);

@@ -36,6 +36,13 @@ SPK_OVERVIEW_NEW_VOICES_HEADER = "new voices"
 SPK_OVERVIEW_TODAY_LINK_LABEL = "today's review →"
 SPK_FILTER_BY_PREFIX = "filtering by:"
 SPK_FILTER_NO_SEGMENTS_TODAY = "no segments attributed to this speaker today"
+SPK_GRID_TITLE = "voices to name"
+SPK_GRID_BODY = "days with segments still needing names"
+SPK_GRID_UNIT_ONE = "segment to name"
+SPK_GRID_UNIT_OTHER = "segments to name"
+SPK_GRID_UNIT_NONE = "quiet day"
+SPK_GRID_ACTIVITY_ONE = "segment, all named"
+SPK_GRID_ACTIVITY_OTHER = "segments, all named"
 
 
 def speaker_copy_payload() -> dict[str, Any]:

@@ -22,6 +22,7 @@ from markdown import Markdown
 
 from solstone.apps.reflections import copy as reflections_copy
 from solstone.apps.reflections.dates import next_reflection_sunday
+from solstone.convey.day_grid import build_day_grid_payload
 from solstone.convey.reasons import FILE_NOT_FOUND, INVALID_MONTH
 from solstone.convey.utils import DATE_RE, error_response, format_date
 from solstone.think.features import require_extra
@@ -74,6 +75,19 @@ def _list_reflection_days() -> list[str]:
         if path.is_file() and DATE_RE.fullmatch(path.stem)
     ]
     return sorted(days, reverse=True)
+
+
+def _reflection_week_days() -> list[str]:
+    days: set[str] = set()
+    for day in _list_reflection_days():
+        canonical_day = _canonical_week_day(day)
+        if canonical_day is not None:
+            days.add(canonical_day)
+    return sorted(days, reverse=True)
+
+
+def _format_month_name(day: str) -> str:
+    return datetime.strptime(day, "%Y%m%d").strftime("%B %Y")
 
 
 def _load_reflection(day: str) -> tuple[Path, str, frontmatter.Post]:
@@ -134,6 +148,7 @@ def api_state() -> Any:
     tz = get_owner_timezone()
     today: date = datetime.now(tz).date()
     journal = Path(get_journal())
+    week_days = _reflection_week_days()
     next_sunday = next_reflection_sunday(journal, today, tz)
     if next_sunday is None:
         empty_next = reflections_copy.EMPTY_NEXT_NO_DATE
@@ -143,6 +158,17 @@ def api_state() -> Any:
         populated_next_footer = reflections_copy.POPULATED_NEXT_FOOTER.format(
             sunday=next_sunday
         )
+    if week_days:
+        count = len(week_days)
+        month = _format_month_name(week_days[-1])
+        template = (
+            reflections_copy.GRID_LEDE_ONE
+            if count == 1
+            else reflections_copy.GRID_LEDE_OTHER
+        )
+        grid_lede = template.format(count=count, month=month)
+    else:
+        grid_lede = None
 
     weeks = [
         {
@@ -165,6 +191,11 @@ def api_state() -> Any:
                 "populated_framing": reflections_copy.POPULATED_FRAMING,
                 "populated_sample_link": reflections_copy.POPULATED_SAMPLE_LINK,
                 "populated_next_footer": populated_next_footer,
+                "grid_title": reflections_copy.GRID_TITLE,
+                "grid_lede": grid_lede,
+                "grid_unit_one": reflections_copy.GRID_UNIT_ONE,
+                "grid_unit_other": reflections_copy.GRID_UNIT_OTHER,
+                "grid_unit_none": reflections_copy.GRID_UNIT_NONE,
             },
         }
     )
@@ -190,6 +221,22 @@ def api_index() -> Any:
         else None
     )
     return jsonify({"coverage": coverage, "months": months})
+
+
+@reflections_bp.route("/api/grid")
+def api_grid() -> Any:
+    tz = get_owner_timezone()
+    today = datetime.now(tz).strftime("%Y%m%d")
+    week_days = _reflection_week_days()
+    counts = {day: 1 for day in week_days}
+    coverage = {"start": week_days[-1], "end": today} if week_days else None
+    return jsonify(
+        build_day_grid_payload(
+            counts,
+            max(counts, default=None),
+            coverage=coverage,
+        )
+    )
 
 
 @reflections_bp.route("/<day>")

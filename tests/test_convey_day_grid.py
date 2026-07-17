@@ -89,6 +89,39 @@ def test_day_grid_payload_uses_explicit_coverage_override():
     assert payload["pending"] == {}
 
 
+def test_day_grid_payload_omits_activity_by_default():
+    payload = build_day_grid_payload({"20400610": 4}, "20400610")
+
+    assert set(payload) == {"coverage", "days", "pending"}
+
+
+def test_day_grid_payload_includes_activity_when_supplied():
+    payload = build_day_grid_payload(
+        {"20400610": 4},
+        "20400610",
+        coverage={"start": "20400601", "end": "20400630"},
+        activity={"20400610": "8"},
+    )
+
+    assert payload == {
+        "coverage": {"start": "20400601", "end": "20400630"},
+        "days": {"20400610": 4},
+        "pending": {},
+        "activity": {"20400610": 8},
+    }
+
+
+def test_day_grid_payload_activity_does_not_expand_inferred_coverage():
+    payload = build_day_grid_payload(
+        {"20400610": 4},
+        "20400610",
+        activity={"20400601": 2, "20400630": 3},
+    )
+
+    assert payload["coverage"] == {"start": "20400610", "end": "20400610"}
+    assert payload["activity"] == {"20400601": 2, "20400630": 3}
+
+
 def test_day_grid_payload_empty_counts_accepts_empty_corpus_coverage_override():
     payload = build_day_grid_payload(
         {},
@@ -113,3 +146,19 @@ def test_day_grid_css_uses_neutral_pending_marker():
     )
 
     assert "--warn" not in css_path.read_text(encoding="utf-8")
+
+
+def test_day_grid_css_pins_presence_tone():
+    css_path = (
+        Path(__file__).resolve().parents[1]
+        / "solstone"
+        / "convey"
+        / "static"
+        / "day-grid.css"
+    )
+    css = css_path.read_text(encoding="utf-8")
+
+    assert ".daygrid-cell--presence" in css
+    assert ".daygrid-legend-swatch--presence" in css
+    assert "color-mix(in srgb, var(--orange) 58%, var(--hairline))" in css
+    assert "color-mix(in srgb, var(--orange) 72%, var(--orange-wash))" in css

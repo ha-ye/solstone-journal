@@ -651,6 +651,97 @@
     keydown(mar20, ' ');
     equal('select space commits from', selected.ranges[0]?.from, '20260304');
     equal('select space commits to', selected.ranges[0]?.to, '20260320');
+
+    mounted = mount({
+      coverage: { start: '20251228', end: '20260110' },
+      days: { 20251228: 1, 20260104: 1 },
+      pending: {}
+    }, { today: '20260107', granularity: 'week', encode: 'presence' });
+    root = mounted.root;
+    equal('week new year straddling sunday unique', root.querySelectorAll('[data-daygrid-date="20251228"]').length, 1);
+
+    mounted = mount({
+      coverage: { start: '20261101', end: '20261115' },
+      days: { 20261101: 1, 20261108: 1, 20261115: 1 },
+      pending: {}
+    }, { today: '20261103', granularity: 'week' });
+    root = mounted.root;
+    const weekDstDays = Array.from(root.querySelectorAll('[data-daygrid-date]'))
+      .map((node) => node.dataset.daygridDate)
+      .filter((day) => day >= '20261101' && day <= '20261115');
+    equal('week DST fallback +7 keeps three sundays; vacuous outside DST-observing time zones', weekDstDays.length, 3);
+    assert(
+      'week DST fallback +7 stays sunday',
+      weekDstDays.every((day) => new Date(Number(day.slice(0, 4)), Number(day.slice(4, 6)) - 1, Number(day.slice(6, 8))).getDay() === 0)
+    );
+
+    mounted = mount({
+      coverage: { start: '20260301', end: '20260331' },
+      days: { 20260308: 3 },
+      pending: {}
+    }, { today: '20260304', encode: 'presence' });
+    root = mounted.root;
+    const presence = root.querySelector('[data-daygrid-date="20260308"]');
+    assert('presence class present', presence.classList.contains('daygrid-cell--presence'));
+    equal('presence has no heat value', presence.style.getPropertyValue('--daygrid-heat'), '');
+    const toneProbe = document.createElement('span');
+    toneProbe.style.borderColor = 'color-mix(in srgb, var(--orange) 58%, var(--hairline))';
+    toneProbe.style.background = 'color-mix(in srgb, var(--orange) 72%, var(--orange-wash))';
+    root.appendChild(toneProbe);
+    const presenceStyle = getComputedStyle(presence);
+    const toneStyle = getComputedStyle(toneProbe);
+    equal('presence fixed border tone', presenceStyle.borderTopColor, toneStyle.borderTopColor);
+    equal('presence fixed background tone', presenceStyle.backgroundColor, toneStyle.backgroundColor);
+
+    window.DayGrid.legend(legendHost, { unit, data: multiYearData(), encode: 'presence' });
+    const presenceLegendSwatches = Array.from(legendHost.querySelectorAll('.daygrid-legend-swatch'));
+    equal('presence legend swatch count', presenceLegendSwatches.length, 2);
+    assert('presence legend has presence swatch', presenceLegendSwatches[1].classList.contains('daygrid-legend-swatch--presence'));
+    equal('presence legend has no ramp heat', presenceLegendSwatches.map((swatch) => swatch.style.getPropertyValue('--daygrid-heat')).join(','), ',');
+    assert('presence legend drops pending key', !legendHost.querySelector('.daygrid-legend-pending'));
+    equal('presence legend drops less more labels', /less|more/.test(legendHost.textContent), false);
+
+    mounted = mount({
+      coverage: { start: '20260304', end: '20260306' },
+      days: {},
+      pending: {},
+      activity: { 20260304: 12 }
+    }, {
+      today: '20260305',
+      unit: { one: 'segment to name', other: 'segments to name', none: 'quiet day' },
+      activityUnit: { one: 'segment, all named', other: 'segments, all named' }
+    });
+    root = mounted.root;
+    equal('activity zero speaks all named', root.querySelector('[data-daygrid-date="20260304"]').getAttribute('aria-label'), 'Yesterday: 12 segments, all named');
+    equal('activity zero-zero speaks unit none', root.querySelector('[data-daygrid-date="20260305"]').getAttribute('aria-label'), 'Today: quiet day');
+    mounted = mount({
+      coverage: { start: '20260304', end: '20260306' },
+      days: {},
+      pending: {}
+    }, {
+      today: '20260305',
+      unit: { one: 'segment to name', other: 'segments to name', none: 'quiet day' }
+    });
+    equal('without activity zero remains unit none', mounted.root.querySelector('[data-daygrid-date="20260304"]').getAttribute('aria-label'), 'Yesterday: quiet day');
+
+    const speakerActivity = spanDays('20250101', 300);
+    const speakerGate = window.DayGrid.gate({
+      coverage: { start: '20250101', end: '20251027' },
+      days: speakerActivity,
+      pending: {}
+    }, { minSpanDays: 70, minActiveDays: 14 });
+    assert('speakers synthetic activity gate accepts caught-up journal', speakerGate.ok === true);
+    mounted = mount({
+      coverage: { start: '20250101', end: '20251027' },
+      days: { 20250115: 1, 20250601: 1 },
+      pending: {},
+      activity: speakerActivity
+    }, {
+      today: '20251001',
+      unit: { one: 'segment to name', other: 'segments to name', none: 'quiet day' },
+      activityUnit: { one: 'segment, all named', other: 'segments, all named' }
+    });
+    equal('speakers caught-up grid has only worklist data cells', mounted.root.querySelectorAll('.daygrid-cell--data').length, 2);
     resetPointer();
 
     if (failures > 0) {

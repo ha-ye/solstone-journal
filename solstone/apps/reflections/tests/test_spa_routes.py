@@ -7,6 +7,7 @@ import ast
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -92,6 +93,7 @@ def test_reflections_api_routes_resolve(reflections_env):
     expected = {
         "/app/reflections/api/state": "app:reflections.api_state",
         "/app/reflections/api/index": "app:reflections.api_index",
+        "/app/reflections/api/grid": "app:reflections.api_grid",
         "/app/reflections/api/sample": "app:reflections.api_sample",
         "/app/reflections/api/20260308": "app:reflections.api_week",
         "/app/reflections/api/stats/202603": "app:reflections.api_stats",
@@ -124,6 +126,7 @@ def test_reflections_state_payload_shape(reflections_env, monkeypatch):
         "Your first reflection arrives on Sunday, March 15."
     )
     assert data["copy"]["populated_next_footer"] == "next reflection: Sunday, March 15"
+    assert data["copy"]["grid_lede"] == "1 reflection since March 2026."
 
 
 def test_reflections_index_payload_shape(reflections_env):
@@ -137,6 +140,45 @@ def test_reflections_index_payload_shape(reflections_env):
     assert data == {
         "coverage": {"start": "20260308", "end": "20260405"},
         "months": {"202603": 1, "202604": 1},
+    }
+
+
+def test_reflections_grid_payload_normalizes_weeks_and_uses_owner_today(
+    reflections_env, monkeypatch
+):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 4, 10, 12, 0, tzinfo=tz)
+
+    _seed_reflection(reflections_env.journal, "20260308")
+    _seed_reflection(reflections_env.journal, "20260310")
+    _seed_reflection(reflections_env.journal, "20260405")
+    monkeypatch.setattr(
+        "solstone.apps.reflections.routes.get_owner_timezone",
+        lambda: ZoneInfo("UTC"),
+    )
+    monkeypatch.setattr("solstone.apps.reflections.routes.datetime", FrozenDateTime)
+
+    response = reflections_env.client.get("/app/reflections/api/grid")
+    data = response.get_json()
+
+    assert response.status_code == 200
+    assert data == {
+        "coverage": {"start": "20260308", "end": "20260410"},
+        "days": {"20260308": 1, "20260405": 1},
+        "pending": {},
+    }
+
+
+def test_reflections_grid_empty_journal_returns_empty_maps(reflections_env):
+    response = reflections_env.client.get("/app/reflections/api/grid")
+
+    assert response.status_code == 200
+    assert response.get_json() == {
+        "coverage": None,
+        "days": {},
+        "pending": {},
     }
 
 

@@ -54,6 +54,10 @@
   line-height: 1;
 }
 
+.daygrid-gutter--week {
+  grid-template-rows: 18px;
+}
+
 .daygrid-year-label {
   align-self: end;
   font-weight: var(--weight-medium);
@@ -123,6 +127,10 @@
   gap: var(--daygrid-gap);
 }
 
+.daygrid-track--week {
+  grid-template-rows: var(--daygrid-cell);
+}
+
 .daygrid-cell {
   display: grid;
   place-items: center;
@@ -152,6 +160,11 @@ button.daygrid-cell {
     var(--orange) calc(var(--daygrid-heat, 0) * 100%),
     var(--orange-wash)
   );
+}
+
+.daygrid-cell--presence {
+  border-color: color-mix(in srgb, var(--orange) 58%, var(--hairline));
+  background: color-mix(in srgb, var(--orange) 72%, var(--orange-wash));
 }
 
 .daygrid-cell--pending {
@@ -240,6 +253,11 @@ button.daygrid-cell {
 
 .daygrid-legend-swatch--empty {
   background: var(--paper);
+}
+
+.daygrid-legend-swatch--presence {
+  border-color: color-mix(in srgb, var(--orange) 58%, var(--hairline));
+  background: color-mix(in srgb, var(--orange) 72%, var(--orange-wash));
 }
 
 .daygrid-legend-pending-mark {

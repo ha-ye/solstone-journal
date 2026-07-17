@@ -12,6 +12,7 @@ def build_day_grid_payload(
     watermark: str | None,
     *,
     coverage: Mapping[str, str] | None = None,
+    activity: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     days: dict[str, int] = {}
     pending: dict[str, int] = {}
@@ -30,4 +31,13 @@ def build_day_grid_payload(
         grid_coverage = (
             {"start": all_days[0], "end": all_days[-1]} if all_days else None
         )
-    return {"coverage": grid_coverage, "days": days, "pending": pending}
+    payload: dict[str, Any] = {
+        "coverage": grid_coverage,
+        "days": days,
+        "pending": pending,
+    }
+    if activity is not None:
+        payload["activity"] = {
+            day: int(raw_count) for day, raw_count in sorted(activity.items())
+        }
+    return payload

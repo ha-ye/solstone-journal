@@ -74,6 +74,35 @@
   box-shadow: 0 20px 40px rgba(15, 23, 42, 0.04);
 }
 
+.reflection-grid-card {
+  margin-bottom: 1.5rem;
+  padding: 1rem 0;
+}
+
+.reflection-grid-card[hidden] {
+  display: none;
+}
+
+.reflection-grid-title {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.reflection-grid-lede {
+  margin: 0.25rem 0 1rem;
+  color: var(--ink-soft-paper);
+  font-size: var(--text-sm);
+}
+
+.reflection-grid-host {
+  min-width: 0;
+}
+
+.reflection-grid-legend {
+  margin-top: var(--space-2);
+}
+
 .reflection-body h1,
 .reflection-body h2,
 .reflection-body h3 {
@@ -266,6 +295,72 @@
     }
   }
 
+  function reflectionGridUnit(copy) {
+    return {
+      one: copy.grid_unit_one,
+      other: copy.grid_unit_other,
+      none: copy.grid_unit_none,
+    };
+  }
+
+  function hideReflectionGrid(card, host, legend, unit) {
+    card.hidden = true;
+    if (window.DayGrid) {
+      window.DayGrid.mount(host, {
+        data: null,
+        mode: 'navigate',
+        appPath: '/app/reflections',
+        unit,
+        granularity: 'week',
+      });
+    } else {
+      host.replaceChildren();
+    }
+    legend.replaceChildren();
+  }
+
+  async function fetchReflectionGrid() {
+    try {
+      const response = await fetch('/app/reflections/api/grid', {cache: 'no-store'});
+      if (!response.ok) return null;
+      return response.json();
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  async function renderReflectionGrid(copy) {
+    const card = document.getElementById('reflectionGridCard');
+    const host = document.getElementById('reflectionGridHost');
+    const legend = document.getElementById('reflectionGridLegend');
+    if (!card || !host || !legend) return;
+    const unit = reflectionGridUnit(copy);
+    const data = await fetchReflectionGrid();
+    if (!data || !window.DayGrid) {
+      hideReflectionGrid(card, host, legend, unit);
+      return;
+    }
+
+    // Four active days means four reflection weeks; fourteen active days would
+    // treat a healthy weekly surface as empty.
+    const gate = window.DayGrid.gate(data, {minSpanDays: 70, minActiveDays: 4});
+    if (!gate.ok) {
+      hideReflectionGrid(card, host, legend, unit);
+      return;
+    }
+
+    card.hidden = false;
+    window.DayGrid.mount(host, {
+      data,
+      mode: 'navigate',
+      appPath: '/app/reflections',
+      unit,
+      granularity: 'week',
+      encode: 'presence',
+    });
+    window.DayGrid.legend(legend, {unit, data, encode: 'presence'});
+  }
+
   function renderIndex(payload) {
     const copy = payload.copy || {};
     const weeks = payload.weeks || [];
@@ -295,15 +390,22 @@
         </div>
       `;
     content.innerHTML = `
-      <header class="reflection-header">
-        <div>
-          <p class="reflection-kicker">weekly reflection</p>
-          <h2 class="reflection-title">reflections</h2>
-          <p class="reflection-subtitle">${escapeHtml(copy.subtitle)}</p>
-        </div>
-      </header>
-      <section class="reflection-index">${listHtml}</section>
-    `;
+	      <header class="reflection-header">
+	        <div>
+	          <p class="reflection-kicker">weekly reflection</p>
+	          <h2 class="reflection-title">reflections</h2>
+	          <p class="reflection-subtitle">${escapeHtml(copy.subtitle)}</p>
+	        </div>
+	      </header>
+	      <section class="reflection-grid-card" id="reflectionGridCard" hidden>
+	        <h3 class="reflection-grid-title">${escapeHtml(copy.grid_title)}</h3>
+	        <p class="reflection-grid-lede">${escapeHtml(copy.grid_lede)}</p>
+	        <div class="reflection-grid-host" id="reflectionGridHost"></div>
+	        <div class="reflection-grid-legend" id="reflectionGridLegend"></div>
+	      </section>
+	      <section class="reflection-index">${listHtml}</section>
+	    `;
+    renderReflectionGrid(copy);
   }
 
   function renderDetail(payload, requestedDay) {

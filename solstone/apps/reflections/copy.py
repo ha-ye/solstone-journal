@@ -24,6 +24,12 @@ POPULATED_FRAMING = (
 )
 POPULATED_SAMPLE_LINK = "see a sample"
 POPULATED_NEXT_FOOTER = "next reflection: {sunday}"
+GRID_TITLE = "reflections"
+GRID_LEDE_ONE = "1 reflection since {month}."
+GRID_LEDE_OTHER = "{count} reflections since {month}."
+GRID_UNIT_ONE = "reflection"
+GRID_UNIT_OTHER = "reflections"
+GRID_UNIT_NONE = "no reflection"
 
 SAMPLE_BANNER = "This is a sample reflection — not from your journal."
 

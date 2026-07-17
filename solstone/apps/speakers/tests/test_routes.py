@@ -2243,6 +2243,86 @@ def test_api_segments_speaker_filter_unknown_entity_returns_empty_200(speakers_e
     assert resp.get_json() == {"segments": [], "total": 0}
 
 
+def test_speaker_grid_counts_segments_and_api_segments_counts_sentences(
+    speakers_env,
+):
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+    env.create_segment("20240101", "090000_300", ["mic_audio"], num_sentences=3)
+    env.create_speaker_labels(
+        "20240101",
+        "090000_300",
+        [
+            {"sentence_id": 1, "speaker": "alice_test", "confidence": "medium"},
+            {"sentence_id": 2, "speaker": None, "confidence": "high"},
+            {"sentence_id": 3, "speaker": "alice_test", "confidence": "high"},
+        ],
+    )
+    env.create_segment("20240102", "090000_300", ["mic_audio"], num_sentences=1)
+    env.create_speaker_labels(
+        "20240102",
+        "090000_300",
+        [{"sentence_id": 1, "speaker": "alice_test", "confidence": "high"}],
+    )
+    env.create_segment("20240104", "090000_300", ["mic_audio"], num_sentences=1)
+    env.create_speaker_labels(
+        "20240104",
+        "090000_300",
+        [{"sentence_id": 1, "speaker": "alice_test", "confidence": "high"}],
+    )
+    env.create_segment("20240104", "100000_300", ["mic_audio"], num_sentences=1)
+    env.create_speaker_labels(
+        "20240104",
+        "100000_300",
+        [{"sentence_id": 1, "speaker": "bob_test", "confidence": "medium"}],
+    )
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        segments_resp = client.get("/app/speakers/api/segments/20240101")
+        grid_resp = client.get("/app/speakers/api/grid")
+
+    assert segments_resp.status_code == 200
+    segment = segments_resp.get_json()["segments"][0]
+    assert segment["attribution_needs_review"] == 2
+
+    assert grid_resp.status_code == 200
+    grid = grid_resp.get_json()
+    assert grid["coverage"] == {"start": "20240101", "end": "20240104"}
+    assert grid["pending"] == {}
+    assert grid["activity"]["20240101"] == 1
+    assert grid["days"]["20240101"] == 1
+    assert grid["activity"]["20240102"] == 1
+    assert "20240102" not in grid["days"]
+    assert grid["activity"]["20240104"] == 2
+    assert grid["days"]["20240104"] == 1
+    assert "20240103" not in grid["activity"]
+    assert "20240103" not in grid["days"]
+    assert all(grid["days"][day] <= grid["activity"][day] for day in grid["days"])
+
+
+def test_speaker_grid_empty_journal_returns_empty_maps(speakers_env):
+    from solstone.apps.speakers.routes import speakers_bp
+
+    speakers_env()
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        resp = client.get("/app/speakers/api/grid")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {
+        "coverage": None,
+        "days": {},
+        "pending": {},
+        "activity": {},
+    }
+
+
 def test_api_speakers_known_returns_section_shape(speakers_env):
     from solstone.apps.speakers.copy import SPK_OVERVIEW_KNOWN_VOICES_SORTS
     from solstone.apps.speakers.routes import speakers_bp
