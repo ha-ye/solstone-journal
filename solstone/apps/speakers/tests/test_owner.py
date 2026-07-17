@@ -6,9 +6,12 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
 import os
-import threading
+import traceback
 from pathlib import Path
+from queue import Empty
+from typing import Any
 
 import numpy as np
 from flask import Flask
@@ -19,6 +22,34 @@ from solstone.apps.speakers.encoder_config import (
     SPEAKER_EVIDENCE_VERSION,
 )
 from solstone.think.awareness import get_current, update_state
+
+
+def _drain_queue(queue: Any) -> list[Any]:
+    found = []
+    while True:
+        try:
+            found.append(queue.get_nowait())
+        except Empty:
+            return found
+
+
+def _rebuild_owner_worker(
+    journal_path: str,
+    barrier: Any,
+    results: Any,
+    errors: Any,
+) -> None:
+    os.environ["SOLSTONE_JOURNAL"] = journal_path
+    try:
+        barrier.wait(timeout=5)
+
+        from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+        result = rebuild_owner_centroid()
+        results.put(result.get("status"))
+    except BaseException:
+        errors.put(traceback.format_exc())
+        raise
 
 
 def _normalized(vector: np.ndarray) -> np.ndarray:
@@ -2071,30 +2102,40 @@ def test_rebuild_five_tuple_hash_changes_when_evidence_row_set_changes(speakers_
 
 
 def test_concurrent_rebuild_same_evidence_second_reports_unchanged(speakers_env):
-    from solstone.apps.speakers.owner import rebuild_owner_centroid
-
     env = speakers_env()
-    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    owner_path = _write_rebuild_owner_centroid(env, evidence_hash=None)
     _seed_rebuild_evidence(env)
-    barrier = threading.Barrier(2)
-    results: list[dict] = []
-    errors: list[BaseException] = []
+    ctx = multiprocessing.get_context("spawn")
+    barrier = ctx.Barrier(2)
+    results = ctx.Queue()
+    errors = ctx.Queue()
+    processes = [
+        ctx.Process(
+            target=_rebuild_owner_worker,
+            args=(str(env.journal), barrier, results, errors),
+        )
+        for _ in range(2)
+    ]
 
-    def worker() -> None:
-        try:
-            barrier.wait(timeout=5)
-            results.append(rebuild_owner_centroid())
-        except BaseException as exc:
-            errors.append(exc)
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=2)
 
-    threads = [threading.Thread(target=worker), threading.Thread(target=worker)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=10)
-
-    assert not errors
-    assert sorted(result["status"] for result in results) == ["rebuilt", "unchanged"]
+    error_text = "\n".join(_drain_queue(errors))
+    statuses = _drain_queue(results)
+    assert all(not process.is_alive() for process in processes), error_text
+    assert all(process.exitcode == 0 for process in processes), error_text
+    assert error_text == ""
+    assert sorted(statuses) == ["rebuilt", "unchanged"]
+    with np.load(owner_path, allow_pickle=False) as data:
+        assert data["centroid"].shape == (256,)
+        assert int(np.asarray(data["cluster_size"]).item()) == 30
+        assert str(data["evidence_hash"].item())
 
 
 def test_rebuild_update_npz_transform_never_returns_empty_dict(
