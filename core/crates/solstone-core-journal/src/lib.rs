@@ -126,11 +126,11 @@ pub fn discover_home(
     passwd_home: Option<&Path>,
 ) -> Result<PathBuf, HomeError> {
     match home_env {
-        Some(value) => Ok(normalize_home(value)),
-        None => passwd_home
-            .map(Path::as_os_str)
-            .map(normalize_home)
-            .ok_or(HomeError::Unavailable),
+        Some(value) => normalize_home(value),
+        None => match passwd_home {
+            Some(path) => normalize_home(path.as_os_str()),
+            None => Err(HomeError::Unavailable),
+        },
     }
 }
 
@@ -182,21 +182,29 @@ fn is_python_whitespace(ch: char) -> bool {
 }
 
 #[cfg(unix)]
-fn normalize_home(value: &OsStr) -> PathBuf {
+fn normalize_home(value: &OsStr) -> Result<PathBuf, HomeError> {
     let stripped = strip_trailing_slashes_or_root(value.as_bytes());
-    PathBuf::from(OsString::from_vec(normalize_path_bytes(&stripped)))
+    if stripped.first() == Some(&b'~') {
+        return Err(HomeError::Unavailable);
+    }
+    Ok(PathBuf::from(OsString::from_vec(normalize_path_bytes(
+        &stripped,
+    ))))
 }
 
 #[cfg(not(unix))]
-fn normalize_home(value: &OsStr) -> PathBuf {
+fn normalize_home(value: &OsStr) -> Result<PathBuf, HomeError> {
     let string = value.to_string_lossy();
     let stripped = string.trim_end_matches('/');
     let normalized = if stripped.is_empty() {
         "/".to_string()
     } else {
+        if stripped.starts_with('~') {
+            return Err(HomeError::Unavailable);
+        }
         normalize_path_string(stripped)
     };
-    PathBuf::from(normalized)
+    Ok(PathBuf::from(normalized))
 }
 
 #[cfg(unix)]
@@ -359,6 +367,28 @@ mod tests {
             let home = discover_home(Some(OsStr::new(input)), None).expect("home should resolve");
             assert_eq!(home, PathBuf::from(expected), "{input:?}");
         }
+    }
+
+    #[test]
+    fn discover_home_rejects_tilde_leading_expanded_home() {
+        for input in ["~", "~/", "~/x", "~~"] {
+            assert_eq!(
+                discover_home(Some(OsStr::new(input)), None),
+                Err(HomeError::Unavailable)
+            );
+        }
+        assert_eq!(
+            discover_home(None, Some(Path::new("~/passwd"))),
+            Err(HomeError::Unavailable)
+        );
+        assert_eq!(
+            discover_home(Some(OsStr::new("x~")), None).expect("x~ is not tilde-leading"),
+            PathBuf::from("x~")
+        );
+        assert_eq!(
+            discover_home(Some(OsStr::new("./~")), None).expect("./~ passes the pathlib guard"),
+            PathBuf::from("~")
+        );
     }
 
     #[test]
