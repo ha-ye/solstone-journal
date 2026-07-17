@@ -533,6 +533,27 @@ mod tests {
             .expect("vector string field should exist")
     }
 
+    fn mapping_state<'a>(mapping: &'a Value, id: &str, field: &str, allowed: &[&str]) -> &'a str {
+        let state = mapping_string(mapping, "state");
+        if !allowed.contains(&state) {
+            panic!("unknown {field} state for {id}: {state}");
+        }
+        state
+    }
+
+    fn outcome_type<'a>(outcome: &'a Value, id: &str) -> &'a str {
+        match outcome.get("type").and_then(Value::as_str) {
+            Some("ok") => "ok",
+            Some("error") => "error",
+            Some(other) => panic!("unknown outcome type for {id}: {other}"),
+            None => panic!("vector outcome type should exist for {id}"),
+        }
+    }
+
+    fn assert_error_class(outcome: &Value, id: &str, expected: &str) {
+        assert_eq!(mapping_string(outcome, "python_class"), expected, "{id}");
+    }
+
     #[test]
     fn vectors_match_rust_resolver() {
         let text = fs::read_to_string(
@@ -542,25 +563,76 @@ mod tests {
         .expect("read journal path vectors");
         let vectors: Value = serde_json::from_str(&text).expect("parse vectors");
         let root = unique_temp("vectors");
+        let cases = vectors["cases"].as_array().expect("cases should be array");
+        assert!(!cases.is_empty(), "journal path vectors must not be empty");
+        let mut asserted_cases = 0;
 
-        for case in vectors["cases"].as_array().expect("cases should be array") {
+        for case in cases {
             let id = case["id"].as_str().expect("case id");
-            let home_value = mapping_string(&case["home"], "value");
-            let home_string = expand_token(home_value, &root);
-            let home = discover_home(Some(OsStr::new(&home_string)), None)
-                .unwrap_or_else(|_| panic!("home should resolve for {id}"));
-
-            let env_journal_string = if mapping_string(&case["solstone_journal"], "state") == "set"
-            {
-                Some(expand_token(
+            let outcome = &case["outcome"];
+            let expected_outcome_type = outcome_type(outcome, id);
+            let env_journal_string = match mapping_state(
+                &case["solstone_journal"],
+                id,
+                "solstone_journal",
+                &["set", "absent"],
+            ) {
+                "set" => Some(expand_token(
                     mapping_string(&case["solstone_journal"], "value"),
                     &root,
-                ))
-            } else {
-                None
+                )),
+                "absent" => None,
+                _ => unreachable!("solstone_journal state was validated"),
+            };
+            if env_journal_string
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+            {
+                assert_eq!(expected_outcome_type, "ok", "{id}");
+                let resolved = resolve_journal_path(
+                    env_journal_string.as_deref().map(OsStr::new),
+                    None,
+                    None,
+                    Path::new("unused"),
+                );
+                assert_eq!(
+                    resolved.source.to_string(),
+                    outcome["source"].as_str().expect("expected source"),
+                    "{id}",
+                );
+                assert_eq!(
+                    resolved.path,
+                    PathBuf::from(expand_token(
+                        outcome["path"].as_str().expect("expected path"),
+                        &root,
+                    )),
+                    "{id}",
+                );
+                asserted_cases += 1;
+                continue;
+            }
+
+            let home = match mapping_state(&case["home"], id, "home", &["set", "absent"]) {
+                "set" => {
+                    let home_value = mapping_string(&case["home"], "value");
+                    let home_string = expand_token(home_value, &root);
+                    discover_home(Some(OsStr::new(&home_string)), None)
+                }
+                "absent" => discover_home(None, None),
+                _ => unreachable!("home state was validated"),
+            };
+            let home = match home {
+                Ok(home) => home,
+                Err(HomeError::Unavailable) => {
+                    assert_eq!(expected_outcome_type, "error", "{id}");
+                    assert_error_class(outcome, id, "RuntimeError");
+                    asserted_cases += 1;
+                    continue;
+                }
             };
 
-            let config_state = mapping_string(&case["config"], "state");
+            let config_state =
+                mapping_state(&case["config"], id, "config", &["absent", "text", "hex"]);
             let config_journal = match config_state {
                 "absent" => Ok(None),
                 "text" => {
@@ -574,28 +646,39 @@ mod tests {
                     }))
                 }
                 "hex" => Err(ConfigError::Decode),
-                other => panic!("unknown config state for {id}: {other}"),
+                _ => unreachable!("config state was validated"),
             };
 
-            let outcome = &case["outcome"];
-            if outcome["type"].as_str() == Some("error") {
-                assert_eq!(config_journal, Err(ConfigError::Decode), "{id}");
+            if matches!(&config_journal, Err(ConfigError::Decode)) {
+                assert_eq!(expected_outcome_type, "error", "{id}");
+                assert_error_class(outcome, id, "UnicodeDecodeError");
+                asserted_cases += 1;
                 continue;
             }
+            if expected_outcome_type == "error" {
+                panic!("expected error outcome was not produced for {id}");
+            }
 
-            let checkout_path = PathBuf::from(expand_token(
-                mapping_string(&case["checkout_root"], "path"),
-                &root,
-            ));
-            let checkout_root = (mapping_string(&case["checkout_root"], "state") == "present")
-                .then_some(checkout_path.as_path());
+            let checkout_state = mapping_state(
+                &case["checkout_root"],
+                id,
+                "checkout_root",
+                &["present", "absent"],
+            );
+            let checkout_root = if checkout_state == "present" {
+                Some(PathBuf::from(expand_token(
+                    mapping_string(&case["checkout_root"], "path"),
+                    &root,
+                )))
+            } else {
+                None
+            };
             let resolved = resolve_journal_path(
                 env_journal_string.as_deref().map(OsStr::new),
                 config_journal
-                    .as_ref()
-                    .expect("config should not error")
+                    .expect("config should not error after decode handling")
                     .as_deref(),
-                checkout_root,
+                checkout_root.as_deref(),
                 &home,
             );
 
@@ -612,6 +695,8 @@ mod tests {
                 )),
                 "{id}",
             );
+            asserted_cases += 1;
         }
+        assert_eq!(asserted_cases, cases.len());
     }
 }

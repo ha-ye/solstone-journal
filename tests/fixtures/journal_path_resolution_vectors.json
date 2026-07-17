@@ -260,6 +260,50 @@
     },
     {
       "checkout_root": {
+        "path": "$TMP/checkout/home-tilde-child",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_home_tilde_child_errors",
+      "home": {
+        "state": "set",
+        "value": "~/x"
+      },
+      "id": "default_home_tilde_child_errors",
+      "outcome": {
+        "python_class": "RuntimeError",
+        "type": "error"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/home-tilde",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_home_tilde_errors",
+      "home": {
+        "state": "set",
+        "value": "~"
+      },
+      "id": "default_home_tilde_errors",
+      "outcome": {
+        "python_class": "RuntimeError",
+        "type": "error"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
         "path": "$TMP/checkout/home-trailing",
         "state": "absent"
       },
@@ -421,6 +465,30 @@
       "solstone_journal": {
         "state": "set",
         "value": "$TMP/env/path"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/env-tilde-home",
+        "state": "present"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/env_path_wins_over_tilde_home",
+      "home": {
+        "state": "set",
+        "value": "~"
+      },
+      "id": "env_path_wins_over_tilde_home",
+      "outcome": {
+        "path": "$TMP/env/tilde-home",
+        "source": "env",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "set",
+        "value": "$TMP/env/tilde-home"
       }
     },
     {

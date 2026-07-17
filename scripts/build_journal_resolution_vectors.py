@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from solstone.think import user_config
 from solstone.think import utils as think_utils
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +44,16 @@ CASES: tuple[CaseSpec, ...] = (
             "value": f'journal = "{TMP_TOKEN}/config/env-spaces"\n',
         },
         checkout_root={"state": "present", "path": f"{TMP_TOKEN}/checkout/env-spaces"},
+    ),
+    CaseSpec(
+        id="env_path_wins_over_tilde_home",
+        solstone_journal={"state": "set", "value": f"{TMP_TOKEN}/env/tilde-home"},
+        home={"state": "set", "value": "~"},
+        config={"state": "absent"},
+        checkout_root={
+            "state": "present",
+            "path": f"{TMP_TOKEN}/checkout/env-tilde-home",
+        },
     ),
     CaseSpec(
         id="env_path_wins_over_config_and_source",
@@ -141,6 +152,23 @@ CASES: tuple[CaseSpec, ...] = (
         home={"state": "set", "value": ""},
         config={"state": "absent"},
         checkout_root={"state": "absent", "path": f"{TMP_TOKEN}/checkout/home-empty"},
+    ),
+    CaseSpec(
+        id="default_home_tilde_errors",
+        solstone_journal={"state": "absent"},
+        home={"state": "set", "value": "~"},
+        config={"state": "absent"},
+        checkout_root={"state": "absent", "path": f"{TMP_TOKEN}/checkout/home-tilde"},
+    ),
+    CaseSpec(
+        id="default_home_tilde_child_errors",
+        solstone_journal={"state": "absent"},
+        home={"state": "set", "value": "~/x"},
+        config={"state": "absent"},
+        checkout_root={
+            "state": "absent",
+            "path": f"{TMP_TOKEN}/checkout/home-tilde-child",
+        },
     ),
     CaseSpec(
         id="default_home_trailing_slash",
@@ -265,12 +293,10 @@ def _isolated_case_env(
         os.environ.update(old_env)
 
 
-def _write_config(home: dict[str, str], config: dict[str, str]) -> None:
+def _write_config(config: dict[str, str]) -> None:
     if config["state"] == "absent":
         return
-    if home["state"] != "set":
-        raise RuntimeError("config vectors require HOME to be set")
-    cfg = Path(home["value"]) / ".config" / "solstone" / "config.toml"
+    cfg = user_config.config_path()
     cfg.parent.mkdir(parents=True, exist_ok=True)
     if config["state"] == "text":
         cfg.write_text(config["value"], encoding="utf-8")
@@ -302,7 +328,6 @@ def _render_case(spec: CaseSpec, tmp_root: Path) -> dict[str, Any]:
     cwd = tmp_root / "cwd" / spec.id
     cwd.mkdir(parents=True)
 
-    _write_config(home, config)
     _write_checkout_root(checkout_root)
 
     with _isolated_case_env(
@@ -311,6 +336,7 @@ def _render_case(spec: CaseSpec, tmp_root: Path) -> dict[str, Any]:
         home=home,
         project_root=checkout_root["path"],
     ):
+        _write_config(config)
         try:
             path, source = think_utils.get_journal_info()
         except Exception as exc:
