@@ -29,6 +29,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from solstone.apps.backup.copy import OFFLOAD_STALL_REASON_LABELS, OFFLOAD_STALLED_LEAD
+from solstone.think.backup.state import merge_backup_config
 from solstone.think.data_state import DataState, derive_modality_state
 from solstone.think.media import AUDIO_EXTENSIONS as RAW_AUDIO_EXTENSIONS
 from solstone.think.media import MEDIA_EXTENSIONS as RAW_MEDIA_EXTENSIONS
@@ -454,6 +456,26 @@ def check_storage_health(
                     "threshold": raw_media_gb_threshold,
                 }
             )
+
+    backup = merge_backup_config(config)
+    offload = backup["offload"]
+    last_offload = backup["last_offload"]
+    if offload.get("enabled") is True and last_offload.get("status") == "stalled":
+        reason = last_offload.get("reason")
+        reason_label = (
+            OFFLOAD_STALL_REASON_LABELS.get(reason) if isinstance(reason, str) else None
+        )
+        warnings.append(
+            {
+                "level": "warning",
+                "type": "offload_stalled",
+                "message": " ".join(
+                    part for part in (OFFLOAD_STALLED_LEAD, reason_label) if part
+                ),
+                "current": None,
+                "threshold": None,
+            }
+        )
 
     return warnings
 

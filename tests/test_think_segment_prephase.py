@@ -474,6 +474,92 @@ def test_daily_journal_stats_postphase_timeout_records_disposition(
     assert daily_called
 
 
+def test_daily_postphase_emits_mixed_storage_warnings(journal_copy, monkeypatch):
+    mod = importlib.import_module("solstone.think.thinking")
+    callosum = importlib.import_module("solstone.think.callosum")
+    retention = importlib.import_module("solstone.think.retention")
+    sent = []
+    warnings = [
+        {
+            "level": "warning",
+            "type": "disk_percent",
+            "message": "disk warning",
+            "current": 95.0,
+            "threshold": 80,
+        },
+        {
+            "level": "warning",
+            "type": "offload_stalled",
+            "message": "offload warning",
+            "current": None,
+            "threshold": None,
+        },
+    ]
+
+    def fake_daily(day, verbose, **kwargs):
+        return (5, 0, [], set())
+
+    def fake_send(tract, event, **fields):
+        sent.append((tract, event, fields))
+        return True
+
+    _patch_main_runtime(monkeypatch)
+    monkeypatch.setattr(
+        mod, "run_bounded_phase", lambda cmd, day, timeout=None: (True, False)
+    )
+    monkeypatch.setattr(mod, "run_command", lambda cmd, day: True)
+    monkeypatch.setattr(mod, "run_queued_command", lambda cmd, day, timeout=600: True)
+    monkeypatch.setattr(mod, "run_daily_prompts", fake_daily)
+    monkeypatch.setattr(retention, "compute_storage_summary", lambda: object())
+    monkeypatch.setattr(
+        retention,
+        "check_storage_health",
+        lambda summary, journal_path: warnings,
+    )
+    monkeypatch.setattr(callosum, "callosum_send", fake_send)
+    monkeypatch.setattr("sys.argv", ["sol think", "--day", "20240101"])
+
+    mod.main()
+
+    storage = [item for item in sent if item[:2] == ("storage", "warning")]
+    notification = [item for item in sent if item[:2] == ("notification", "show")]
+    assert storage == [
+        (
+            "storage",
+            "warning",
+            {
+                "level": "warning",
+                "type": "disk_percent",
+                "message": "disk warning",
+                "current": 95.0,
+                "threshold": 80,
+            },
+        ),
+        (
+            "storage",
+            "warning",
+            {
+                "level": "warning",
+                "type": "offload_stalled",
+                "message": "offload warning",
+                "current": None,
+                "threshold": None,
+            },
+        ),
+    ]
+    assert notification == [
+        (
+            "notification",
+            "show",
+            {
+                "title": "Storage Warning",
+                "message": "disk warning",
+                "action": "/app/settings#storage",
+            },
+        )
+    ]
+
+
 def test_daily_segment_prephase_failure_has_no_timeout_reason(
     journal_copy, monkeypatch
 ):

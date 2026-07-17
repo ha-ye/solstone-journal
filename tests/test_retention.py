@@ -13,6 +13,10 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from solstone.apps.backup.copy import (
+    OFFLOAD_STALL_REASON_LABELS,
+    OFFLOAD_STALLED_LEAD,
+)
 from solstone.observe.processing_record import (
     FAILED_ATTEMPT_BOUND,
     STATE_EMPTY,
@@ -1166,6 +1170,86 @@ class TestCheckStorageHealth:
         warnings = check_storage_health(summary, tmp_path, config=config)
         assert len(warnings) == 1
         assert warnings[0]["type"] == "raw_media_gb"
+
+    @pytest.mark.parametrize(
+        ("backup", "expected_message"),
+        [
+            ({}, None),
+            (
+                {
+                    "offload": {"enabled": False},
+                    "last_offload": {
+                        "status": "stalled",
+                        "reason": "backup_failing",
+                    },
+                },
+                None,
+            ),
+            (
+                {
+                    "offload": {"enabled": True},
+                    "last_offload": {"status": "ok", "reason": None},
+                },
+                None,
+            ),
+            (
+                {
+                    "offload": {"enabled": True},
+                    "last_offload": {
+                        "status": "stalled",
+                        "reason": "backup_failing",
+                    },
+                },
+                f"{OFFLOAD_STALLED_LEAD} {OFFLOAD_STALL_REASON_LABELS['backup_failing']}",
+            ),
+            (
+                {
+                    "offload": {"enabled": True},
+                    "last_offload": {"status": "stalled", "reason": None},
+                },
+                OFFLOAD_STALLED_LEAD,
+            ),
+            (
+                {
+                    "offload": {"enabled": True},
+                    "last_offload": {
+                        "status": "stalled",
+                        "reason": "unknown_reason",
+                    },
+                },
+                OFFLOAD_STALLED_LEAD,
+            ),
+        ],
+    )
+    def test_offload_stalled_warning_from_backup_config(
+        self,
+        tmp_path,
+        backup,
+        expected_message,
+    ):
+        config = {
+            "retention": {
+                "storage_warning_disk_percent": None,
+                "storage_warning_raw_media_gb": None,
+            },
+            "backup": backup,
+        }
+        summary = self._make_summary()
+
+        warnings = check_storage_health(summary, tmp_path, config=config)
+
+        if expected_message is None:
+            assert warnings == []
+            return
+        assert warnings == [
+            {
+                "level": "warning",
+                "type": "offload_stalled",
+                "message": expected_message,
+                "current": None,
+                "threshold": None,
+            }
+        ]
 
     def test_missing_retention_section_uses_defaults(self, tmp_path, monkeypatch):
         """Missing retention section falls back to defaults (80% disk, null raw media)."""

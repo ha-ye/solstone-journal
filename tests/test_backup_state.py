@@ -60,6 +60,35 @@ def test_partial_backup_section_gets_per_field_defaults(
     assert config["last_backup"] == state.BACKUP_DEFAULTS["last_backup"]
 
 
+def test_merge_backup_config_applies_defaults_to_raw_config() -> None:
+    config = state.merge_backup_config(
+        {
+            "backup": {
+                "offload": {"enabled": True},
+                "last_offload": {
+                    "status": "stalled",
+                    "reason": "backup_failing",
+                },
+            }
+        }
+    )
+
+    assert config["offload"] == {
+        "enabled": True,
+        "budget_bytes": None,
+        "floor_bytes": None,
+    }
+    assert config["last_offload"] == {
+        "time": None,
+        "status": "stalled",
+        "reason": "backup_failing",
+        "last_ok_time": None,
+        "files_offloaded": 0,
+        "bytes_offloaded": 0,
+        "ran_out_of_media": False,
+    }
+
+
 def test_generate_and_store_keys_get_or_create(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

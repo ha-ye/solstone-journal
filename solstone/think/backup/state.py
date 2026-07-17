@@ -137,9 +137,13 @@ def _build_backup_keys(daily_key: Any, recovery_key: Any) -> BackupKeys | None:
     )
 
 
+def merge_backup_config(config: dict[str, Any]) -> dict[str, Any]:
+    return _merge_defaults(BACKUP_DEFAULTS, config.get("backup", {}))
+
+
 def get_backup_config() -> dict[str, Any]:
     config = read_journal_config()
-    return _merge_defaults(BACKUP_DEFAULTS, config.get("backup", {}))
+    return merge_backup_config(config)
 
 
 def get_destination() -> Destination | None:
@@ -489,6 +493,7 @@ __all__ = [
     "get_backup_config",
     "get_destination",
     "get_keys",
+    "merge_backup_config",
     "record_backup_result",
     "record_offload_result",
     "record_prune_result",
