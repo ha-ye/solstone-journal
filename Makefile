@@ -266,12 +266,12 @@ verify-api: .installed
 	$(MAKE) sandbox-stop; \
 	exit $$RESULT
 
-verify-schemathesis: .installed ## Run Schemathesis against a disposable live sandbox; may include mutating routes
+# tests/conftest.py overwrites SOLSTONE_JOURNAL; pass sandbox via a private env var.
+verify-schemathesis: .installed ## Run Schemathesis read allowlist against disposable live sandbox
 	@echo "Verifying OpenAPI contract with Schemathesis (disposable live sandbox)..."
 	@$(MAKE) sandbox
 	@SANDBOX_JOURNAL=$$(cat .sandbox.journal); \
 	RESULT=0; \
-	SOLSTONE_JOURNAL="$$SANDBOX_JOURNAL" \
 	SOLSTONE_SCHEMATHESIS_JOURNAL="$$SANDBOX_JOURNAL" \
 	SOLSTONE_SCHEMATHESIS_LIVE=1 \
 	$(VENV_BIN)/pytest tests/test_openapi_schemathesis.py -q || RESULT=$$?; \

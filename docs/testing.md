@@ -37,7 +37,7 @@ There are two API referees with different jobs:
 - `tests/test_openapi_schemathesis.py` fuzzes a small allowlist from the committed
   native-client contract at `docs/openapi/convey-clients.json` against the Flask WSGI
   app. It runs with the normal unit suite because it uses an isolated tmp journal and
-  does not open HTTP sockets.
+  does not use HTTP transport sockets.
 - `make verify-api` checks SPA/API response baselines against a running sandbox.
   That lane verifies rendered baseline behavior, not the native-client OpenAPI
   contract.
