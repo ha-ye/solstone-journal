@@ -160,7 +160,7 @@ sol call speakers day-segments 20260304 --limit 10
 sol call speakers sentences <day> <stream> <segment> <source> [--json]
 ```
 
-List sentence ids for one segment/source. Use `sentences` before tagging: `*` rows have embeddings and are taggable; `-` rows do not and are not taggable.
+List sentence ids for one segment/source. Use `sentences` before tagging: `*` marks rows with embeddings; `-` rows have none and can never be tagged. An embedding is required but not sufficient: `tag-owner` also needs `speaker_labels.json` for the segment and a sentence with no current speaker. "No speaker labels found" means that segment has not been attributed yet; pick another segment. "Pick a sentence without a speaker." means that row is already attributed; pick a different `*` row.
 
 Example:
 
@@ -347,8 +347,8 @@ When automatic detection cannot produce a usable candidate, or when the owner wa
 Run the loop like this:
 
 1. Check state with `speakers owner-ready` or `speakers status owner`. Run `speakers detect` to actually run detection and get guidance.
-2. Walk review material with `speakers day-segments <day> [--limit N]`, then `speakers sentences <day> <stream> <segment> <source>`.
-3. Tag only `*`-marked rows with `speakers tag-owner <day> <stream> <segment> <source> <sentence-id>`. `-` rows have no embedding and are not taggable.
+2. Get the day range from `speakers status` (the embeddings section carries `date_range`), then walk days in that range with `speakers day-segments <day> [--limit N]`; for a returned segment/source, run `speakers sentences <day> <stream> <segment> <source>`.
+3. Tag only eligible `*`-marked rows with `speakers tag-owner <day> <stream> <segment> <source> <sentence-id>`. `*` means an embedding exists, not that the row is free; the segment must already have `speaker_labels.json` and the sentence must have no speaker. If `tag-owner` says "No speaker labels found," pick another segment. If it says "Pick a sentence without a speaker." then pick a different `*` row.
 4. Repeat until there are around 30 validated owner tags. This usually means around 30 `tag-owner` calls, each sourced by walking `day-segments` and `sentences`.
 5. Run `speakers build-from-tags`. Thirty tags makes the build attemptable, not guaranteed; if it returns `low_quality`, follow its guidance on what's short.
 6. After a candidate is ready, confirm or reject with the owner.
