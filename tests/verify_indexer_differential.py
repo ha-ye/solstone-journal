@@ -50,6 +50,11 @@ DB_REL = Path("indexer") / "journal.sqlite"
 COMMAND_SIDES = ("left", "right")
 EDGE_SKIP_RULE = "edge_extraction_skip"
 EDGE_SKIP_PREFIX = "ERROR:solstone.think.indexer.edges:Skipping edge extraction for "
+MARKDOWN_SANITIZE_RULE = "markdown_sanitize_drop"
+MARKDOWN_SANITIZE_RE = re.compile(
+    r"^WARNING:solstone\.think\.markdown:"
+    r"Dropped \d+ line\(s\) exceeding \d+ chars during markdown sanitization$"
+)
 LOG_RECORD_RE = re.compile(r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL):[^:]+:")
 TRACEBACK_HEADER = "Traceback (most recent call last):"
 TRACEBACK_TERMINAL_RE = re.compile(r"^[A-Za-z_][\w.]*: .*$")
@@ -195,20 +200,29 @@ def _corpus_provenance(journal: Path) -> dict[str, Any]:
     return corpus
 
 
+def _record_rule_hit(rule: dict[str, Any], line: str) -> None:
+    rule["count"] += 1
+    if len(rule["examples"]) < 3:
+        rule["examples"].append(line)
+
+
 def classify_stderr(stderr: str) -> dict[str, Any]:
-    rule = {"name": EDGE_SKIP_RULE, "count": 0, "examples": []}
+    edge_rule = {"name": EDGE_SKIP_RULE, "count": 0, "examples": []}
+    markdown_rule = {"name": MARKDOWN_SANITIZE_RULE, "count": 0, "examples": []}
     unclassified: list[str] = []
     current_allowed = False
     for line in stderr.splitlines():
         if not line.strip():
             continue
         if LOG_RECORD_RE.match(line):
-            current_allowed = line.startswith(EDGE_SKIP_PREFIX)
-            if current_allowed:
-                rule["count"] += 1
-                if len(rule["examples"]) < 3:
-                    rule["examples"].append(line)
+            if line.startswith(EDGE_SKIP_PREFIX):
+                current_allowed = True
+                _record_rule_hit(edge_rule, line)
+            elif MARKDOWN_SANITIZE_RE.match(line):
+                current_allowed = False
+                _record_rule_hit(markdown_rule, line)
             else:
+                current_allowed = False
                 unclassified.append(line)
             continue
         continuation = _traceback_continuation(line)
@@ -218,7 +232,7 @@ def classify_stderr(stderr: str) -> dict[str, Any]:
             continue
         current_allowed = False
         unclassified.append(line)
-    return {"rules": [rule], "unclassified": unclassified}
+    return {"rules": [edge_rule, markdown_rule], "unclassified": unclassified}
 
 
 def _traceback_continuation(line: str) -> str | None:

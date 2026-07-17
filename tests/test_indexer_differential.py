@@ -148,6 +148,79 @@ def test_stderr_classifier_only_allows_traceback_continuations() -> None:
     assert classified["unclassified"] == ["unexpected diagnostic"]
 
 
+def test_stderr_classifier_allows_markdown_sanitize_warning() -> None:
+    stderr = "\n".join(
+        [
+            "WARNING:solstone.think.markdown:Dropped 1 line(s) exceeding 2048 chars during markdown sanitization",
+            "WARNING:solstone.think.markdown:Dropped 5 line(s) exceeding 2048 chars during markdown sanitization",
+        ]
+    )
+    classified = harness.classify_stderr(stderr)
+    markdown_rule = next(
+        rule
+        for rule in classified["rules"]
+        if rule["name"] == harness.MARKDOWN_SANITIZE_RULE
+    )
+    assert markdown_rule["count"] == 2
+    assert markdown_rule["examples"] == stderr.splitlines()
+    assert classified["unclassified"] == []
+
+
+def test_stderr_classifier_rejects_markdown_near_misses() -> None:
+    stderr = "\n".join(
+        [
+            "ERROR:solstone.think.markdown:Dropped 1 line(s) exceeding 2048 chars during markdown sanitization",
+            "WARNING:solstone.think.other:Dropped 1 line(s) exceeding 2048 chars during markdown sanitization",
+            "WARNING:solstone.think.markdown:Some unrelated warning",
+            "WARNING:some.other.module:generic warning",
+        ]
+    )
+    classified = harness.classify_stderr(stderr)
+    markdown_rule = next(
+        rule
+        for rule in classified["rules"]
+        if rule["name"] == harness.MARKDOWN_SANITIZE_RULE
+    )
+    assert markdown_rule["count"] == 0
+    assert classified["unclassified"] == stderr.splitlines()
+
+
+def test_stderr_classifier_mixed_run_fails_closed() -> None:
+    mixed = "\n".join(
+        [
+            "WARNING:solstone.think.markdown:Dropped 1 line(s) exceeding 2048 chars during markdown sanitization",
+            "unexpected diagnostic",
+        ]
+    )
+    classified = harness.classify_stderr(mixed)
+    markdown_rule = next(
+        rule
+        for rule in classified["rules"]
+        if rule["name"] == harness.MARKDOWN_SANITIZE_RULE
+    )
+    assert markdown_rule["count"] == 1
+    assert classified["unclassified"] == ["unexpected diagnostic"]
+
+    command = {
+        "id": "left",
+        "exit_code": 0,
+        "stderr_classification": classified,
+        "checks": {
+            "exit": {"status": "ok"},
+            "database": {"status": "ok"},
+            "stderr": {
+                "status": "unclassified" if classified["unclassified"] else "ok"
+            },
+        },
+    }
+    failure = harness._failure_for_commands([command])
+    assert failure == {
+        "class": "stderr_unclassified",
+        "command_id": "left",
+        "count": 1,
+    }
+
+
 def test_runner_prepares_tracked_clean_copies_with_equal_mtimes(tmp_path: Path) -> None:
     copies = harness._prepare_working_copies(FIXTURE_JOURNAL, tmp_path / "work")
 
