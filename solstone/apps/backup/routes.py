@@ -265,6 +265,18 @@ def _json_body() -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _coerce_retention_value(value: Any) -> int:
+    if type(value) is int:
+        return value
+    if isinstance(value, str) and value.isascii() and value.isdigit():
+        return int(value)
+    raise ValueError("backup retention value must be an integer representation")
+
+
+def _retention_from_payload(payload: dict[str, Any]) -> dict[str, int]:
+    return {key: _coerce_retention_value(payload[key]) for key in RETENTION_KEYS}
+
+
 def _valid_restore_day(value: Any) -> str | None:
     if not isinstance(value, str) or DATE_RE.fullmatch(value) is None:
         return None
@@ -717,7 +729,7 @@ def retention() -> tuple[Any, int]:
     if payload is None:
         return error_response(INVALID_CONFIG_VALUE, detail="missing request body")
     try:
-        set_retention({key: payload[key] for key in RETENTION_KEYS})
+        set_retention(_retention_from_payload(payload))
     except (KeyError, TypeError, ValueError):
         return error_response(INVALID_CONFIG_VALUE)
     return success_response(_status_snapshot())

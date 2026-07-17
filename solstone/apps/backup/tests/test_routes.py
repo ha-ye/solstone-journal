@@ -253,6 +253,48 @@ def test_retention_validation_errors_return_invalid_config_value(backup_env) -> 
     assert response.get_json()["reason_code"] == "invalid_config_value"
 
 
+def test_retention_accepts_numeric_strings_and_persists_ints(backup_env) -> None:
+    env = backup_env()
+
+    response = env.client.post(
+        "/app/backup/retention",
+        json={"hourly": "36", "daily": "9", "weekly": "5", "monthly": "18"},
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["retention"] == {
+        "hourly": 36,
+        "daily": 9,
+        "weekly": 5,
+        "monthly": 18,
+    }
+    stored = json.loads(_config_path(env).read_text(encoding="utf-8"))
+    assert stored["backup"]["retention"] == {
+        "hourly": 36,
+        "daily": 9,
+        "weekly": 5,
+        "monthly": 18,
+    }
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [True, 1.0, None, [], {}, "1_000", "1.0", " 36", "+36", "", "-1", "٣٦"],
+)
+def test_retention_rejects_non_numeric_string_representations(
+    backup_env,
+    bad_value,
+) -> None:
+    env = backup_env()
+    payload = {"hourly": 36, "daily": 9, "weekly": 5, "monthly": 18}
+    payload["hourly"] = bad_value
+
+    response = env.client.post("/app/backup/retention", json=payload)
+
+    assert response.status_code == 400
+    assert response.get_json()["reason_code"] == "invalid_config_value"
+
+
 def _offload_status_payload(enabled: bool = False) -> dict:
     return {
         "offload": {
