@@ -45,13 +45,13 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         tmp_path / "core" / "Cargo.toml",
         """
         [workspace]
-        members = ["crates/solstone-core", "crates/solstone-core-cli"]
+        members = ["crates/solstone-core", "crates/solstone-core-cli", "crates/solstone-core-journal"]
         resolver = "3"
 
         [workspace.package]
         version = "0.0.1"
         edition = "2024"
-        rust-version = "1.85"
+        rust-version = "1.87"
         license = "AGPL-3.0-only"
 
         [workspace.dependencies]
@@ -80,6 +80,17 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         license.workspace = true
         """,
     )
+    _write(
+        tmp_path / "core" / "crates" / "solstone-core-journal" / "Cargo.toml",
+        """
+        [package]
+        name = "solstone-core-journal"
+        version.workspace = true
+        edition.workspace = true
+        rust-version.workspace = true
+        license.workspace = true
+        """,
+    )
     _write_cargo_lock(tmp_path, _cargo_lock_text())
     return tmp_path
 
@@ -88,11 +99,21 @@ def _write_cargo_lock(root: Path, text: str) -> None:
     _write(root / "core" / "Cargo.lock", text)
 
 
-def _cargo_lock_text(*, cli_block: str | None = None) -> str:
+def _cargo_lock_text(
+    *,
+    cli_block: str | None = None,
+    journal_block: str | None = None,
+) -> str:
     if cli_block is None:
         cli_block = """
         [[package]]
         name = "solstone-core-cli"
+        version = "0.0.1"
+        """
+    if journal_block is None:
+        journal_block = """
+        [[package]]
+        name = "solstone-core-journal"
         version = "0.0.1"
         """
     core_block = dedent(
@@ -106,10 +127,15 @@ def _cargo_lock_text(*, cli_block: str | None = None) -> str:
         version = "0.0.1"
         dependencies = [
          "solstone-core-cli",
+         "solstone-core-journal",
         ]
         """
     ).lstrip()
-    return f"{core_block}\n{dedent(cli_block).strip()}\n"
+    return (
+        f"{core_block}\n"
+        f"{dedent(cli_block).strip()}\n\n"
+        f"{dedent(journal_block).strip()}\n"
+    )
 
 
 def test_render_updates_python_leaves_and_cargo_lockstep(tmp_path: Path) -> None:
@@ -124,6 +150,10 @@ def test_render_updates_python_leaves_and_cargo_lockstep(tmp_path: Path) -> None
     )
     assert (
         'name = "solstone-core-cli"\nversion = "2.3.4"'
+        in rendered[root / "core" / "Cargo.lock"]
+    )
+    assert (
+        'name = "solstone-core-journal"\nversion = "2.3.4"'
         in rendered[root / "core" / "Cargo.lock"]
     )
     for package_name in ("solstone-journal", "solstone-journal-cuda"):
