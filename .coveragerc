@@ -1,9 +1,10 @@
 [run]
 source =
-    solstone/observe
-    solstone/think
+    solstone/apps
     solstone/convey
-    muse
+    solstone/observe
+    solstone/talent
+    solstone/think
 omit =
     .venv/*
     */tests/*
