@@ -415,7 +415,7 @@ solstone/
 
 | Group | Commands |
 |-------|----------|
-| Think (processing) | `import`, `think`, `planner`, `indexer`, `supervisor`, `schedule`, `maintenance`, `top`, `health`, `callosum`, `notify`, `heartbeat` |
+| Think (processing) | `import`, `think`, `planner`, `indexer`, `supervisor`, `schedule`, `maintenance`, `top`, `health`, `notify`, `heartbeat` |
 | Service | `service` (+ aliases `up`, `down`, `start`), `navigate`, `identity`, `settings`, `install-provider` |
 | Observe (capture) | `transcribe`, `describe`, `sense`, `transfer`, `observer` |
 | Talent (AI agents) | `agents`, `cortex`, `talent`, `call`, `engage`, `providers` |

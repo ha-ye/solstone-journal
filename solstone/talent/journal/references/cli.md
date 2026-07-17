@@ -291,7 +291,6 @@ Cogitate talents have access to all `sol` commands. The following infrastructure
 - `journal config`
 - `journal cortex`
 - `journal providers check`
-- `sol callosum`
 - `journal observer` / `sol observe-*`
 - `journal sense`
 - `journal transcribe` / `journal describe`
