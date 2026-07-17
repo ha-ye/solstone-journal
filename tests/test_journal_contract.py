@@ -107,6 +107,20 @@ def test_contract_validator_accepts_audio_sound_tags_header() -> None:
     assert journal.validate_contract_file("audio.jsonl", audio, audio_schema) == []
 
 
+def test_contract_validator_accepts_audio_speaker_evidence_header() -> None:
+    bundle = journal.build_bundle()
+    audio_schema = bundle["schemas"]["audio-jsonl"]["schema"]
+    header = {
+        "raw": "audio.flac",
+        "speaker_evidence": "multi",
+        "speaker_evidence_multi_fraction": 0.125,
+        "speaker_evidence_version": "windowed-slots-v1",
+    }
+    audio = json.dumps(header).encode("utf-8") + b'\n{"start":"00:00:00","text":"hi"}\n'
+
+    assert journal.validate_contract_file("audio.jsonl", audio, audio_schema) == []
+
+
 def test_contract_validator_still_rejects_non_raw_floor_violations() -> None:
     bundle = journal.build_bundle()
     screen_schema = bundle["schemas"]["screen-jsonl"]["schema"]

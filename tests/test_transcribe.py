@@ -24,11 +24,29 @@ from solstone.observe.transcribe import (
     build_statements_from_acoustic,
 )
 from solstone.observe.transcribe.main import EMBEDDER_NAME, _statements_to_jsonl
+from solstone.observe.transcribe.overlap import (
+    OverlapInferenceResult,
+    SpeakerEvidenceDecision,
+    SpeakerWindowStats,
+)
 from solstone.observe.utils import SAMPLE_RATE, AudioDecodeError, load_audio
 from solstone.observe.vad import VadResult
 from solstone.think.journal_io.errors import MalformedDataError
 from solstone.think.journal_io.npz import load_npz
 from solstone.think.media import AUDIO_EXTENSIONS
+
+CLEAN_SINGLE_STATS = (SpeakerWindowStats(589, 1, 0),)
+MULTI_STATS = (SpeakerWindowStats(589, 2, 300),)
+
+
+def _overlap_result(
+    overlap_fraction: float,
+    avg_log_probs: np.ndarray | None = None,
+    window_stats: tuple[SpeakerWindowStats, ...] = CLEAN_SINGLE_STATS,
+) -> OverlapInferenceResult:
+    if avg_log_probs is None:
+        avg_log_probs = np.zeros((589, 7), dtype=np.float32)
+    return OverlapInferenceResult(overlap_fraction, avg_log_probs, window_stats)
 
 
 class TestBuildStatementsFromAcoustic:
@@ -531,7 +549,7 @@ def test_process_audio_failed_embeddings_write_emits_failed_event(tmp_path):
         ),
         patch(
             "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
+            return_value=_overlap_result(0.0),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
         patch(
@@ -600,7 +618,7 @@ def test_process_audio_embeddings_write_round_trips_without_lock(tmp_path):
         ),
         patch(
             "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
+            return_value=_overlap_result(0.0),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):
@@ -672,7 +690,7 @@ def test_process_audio_records_analyzed_processing(tmp_path):
         ),
         patch(
             "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
+            return_value=_overlap_result(0.0),
         ),
         patch(
             "solstone.observe.processing_record.now_iso_utc",
@@ -791,7 +809,7 @@ def test_process_audio_diarizer_failure_is_fail_soft(tmp_path):
         patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
             "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=(0.5, np.zeros((589, 7), dtype=np.float32)),
+            return_value=_overlap_result(0.5, window_stats=MULTI_STATS),
         ),
         patch(
             "solstone.observe.transcribe.diarize.diarize_auto_k",
@@ -852,7 +870,7 @@ def test_process_audio_diarizes_parakeet_cpp_when_overlap_meets_threshold(tmp_pa
         patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
             "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=(0.5, logprobs),
+            return_value=_overlap_result(0.5, logprobs, MULTI_STATS),
         ),
         patch(
             "solstone.observe.transcribe.diarize.diarize_auto_k",
@@ -956,6 +974,22 @@ class TestJSONLFormat:
         # raw is the producer's invariant (relaxed from the shared floor), so the
         # transcriber must keep emitting it.
         assert metadata["raw"] == "audio.flac"
+
+    def test_statements_to_jsonl_writes_speaker_evidence_decision_fields(self):
+        lines = _statements_to_jsonl(
+            [{"start": 1.0, "end": 2.0, "text": "Hello"}],
+            "audio.flac",
+            datetime(2026, 5, 22, 9, 0, 0),
+            {"model": "unit", "device": "cpu", "compute_type": "int8"},
+            speaker_evidence=SpeakerEvidenceDecision("none", 0.0, 0.25),
+        )
+
+        metadata = json.loads(lines[0])
+
+        assert metadata["speaker_evidence"] == "none"
+        assert metadata["speaker_evidence_multi_fraction"] == 0.0
+        assert metadata["speaker_evidence_version"] == "windowed-slots-v1"
+        assert "speaker_evidence_mean_window_overlap_share" not in metadata
 
     def test_metadata_first_line(self):
         """First line should be metadata with 'raw' field."""

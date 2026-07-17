@@ -17,6 +17,14 @@ from solstone.apps.speakers.attribution import (
     _load_integer_speaker_labels,
     segment_path,
 )
+from solstone.apps.speakers.encoder_config import (
+    CONFIRM_MIN_DURATION_S,
+    CONFIRM_MIN_INTERVALS,
+    CONFIRM_MIN_SEGMENTS,
+    MERGE_THRESHOLD,
+    SPLIT_THRESHOLD,
+    STABILITY_THRESHOLD,
+)
 from solstone.think.journal_io import (
     MalformedPolicy,
     atomic_replace,
@@ -24,13 +32,6 @@ from solstone.think.journal_io import (
     read_json,
 )
 from solstone.think.utils import get_journal
-
-MERGE_THRESHOLD = 0.72
-SPLIT_THRESHOLD = 0.55
-STABILITY_THRESHOLD = 0.25
-CONFIRM_MIN_SEGMENTS = 2
-CONFIRM_MIN_INTERVALS = 5
-CONFIRM_MIN_DURATION_S = 25.0
 
 
 @dataclass

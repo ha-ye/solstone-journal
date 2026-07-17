@@ -22,6 +22,20 @@
         "imported": {"type": "object", "additionalProperties": true},
         "facet": {"type": "string"},
         "id": {"type": "string"},
+        "speaker_evidence": {
+          "type": "string",
+          "enum": ["single", "multi", "none"],
+          "description": "Windowed slot evidence decision for local diarization engagement. This records engagement, not clustering outcome: a multi value with no integer speaker labels means diarization engaged and clustering produced nothing or failed."
+        },
+        "speaker_evidence_multi_fraction": {
+          "type": "number",
+          "description": "Fraction of speech-bearing pyannote windows with multi-speaker slot evidence. This records engagement evidence, not clustering outcome."
+        },
+        "speaker_evidence_version": {
+          "type": "string",
+          "const": "windowed-slots-v1",
+          "description": "Version of the windowed slot evidence decision contract. This records engagement, not clustering outcome: a multi value with no integer speaker labels means diarization engaged and clustering produced nothing or failed."
+        },
         "sound_tags": {
           "type": "object",
           "additionalProperties": true,

@@ -122,6 +122,24 @@
                 ],
                 "type": "object"
               },
+              "speaker_evidence": {
+                "description": "Windowed slot evidence decision for local diarization engagement. This records engagement, not clustering outcome: a multi value with no integer speaker labels means diarization engaged and clustering produced nothing or failed.",
+                "enum": [
+                  "single",
+                  "multi",
+                  "none"
+                ],
+                "type": "string"
+              },
+              "speaker_evidence_multi_fraction": {
+                "description": "Fraction of speech-bearing pyannote windows with multi-speaker slot evidence. This records engagement evidence, not clustering outcome.",
+                "type": "number"
+              },
+              "speaker_evidence_version": {
+                "const": "windowed-slots-v1",
+                "description": "Version of the windowed slot evidence decision contract. This records engagement, not clustering outcome: a multi value with no integer speaker labels means diarization engaged and clustering produced nothing or failed.",
+                "type": "string"
+              },
               "topics": {
                 "type": "array"
               },

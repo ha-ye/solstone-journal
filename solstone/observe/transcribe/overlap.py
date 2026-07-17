@@ -8,8 +8,14 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple, Sequence
 
+from solstone.apps.speakers.encoder_config import (
+    DIARIZE_MIN_OVERLAP,
+    SLOT_ACTIVE_MIN_SHARE,
+    SPEAKER_EVIDENCE_MULTI_MIN,
+    SPEAKER_EVIDENCE_SINGLE_MAX,
+)
 from solstone.observe.utils import SAMPLE_RATE
 
 if TYPE_CHECKING:
@@ -27,6 +33,97 @@ OVERLAP_CLASSES = (4, 5, 6)
 _DIARIZE_STRIDE_S = 2
 
 _overlap_session: ort.InferenceSession | None = None
+
+
+class SpeakerWindowStats(NamedTuple):
+    speech_frames: int
+    active_slot_count: int
+    overlap_frames: int
+
+
+class SpeakerEvidenceDecision(NamedTuple):
+    speaker_evidence: str
+    multi_window_fraction: float
+    mean_window_overlap_share: float
+
+
+class OverlapInferenceResult(NamedTuple):
+    overlap_fraction: float
+    avg_log_probs: np.ndarray
+    window_stats: tuple[SpeakerWindowStats, ...]
+
+
+def _speaker_window_stats(log_probs: np.ndarray) -> SpeakerWindowStats:
+    """Derive raw speaker-evidence counts from one truncated pyannote window."""
+    import numpy as np
+
+    argmax = log_probs.argmax(axis=-1)
+    counts = np.bincount(argmax, minlength=7)
+    speech_frames = int(counts[1:].sum())
+    if speech_frames == 0:
+        return SpeakerWindowStats(
+            speech_frames=0,
+            active_slot_count=0,
+            overlap_frames=0,
+        )
+
+    active_slot_count = int(
+        (counts[1:4] / speech_frames >= SLOT_ACTIVE_MIN_SHARE).sum()
+    )
+    return SpeakerWindowStats(
+        speech_frames=speech_frames,
+        active_slot_count=active_slot_count,
+        overlap_frames=int(counts[list(OVERLAP_CLASSES)].sum()),
+    )
+
+
+def decide_speaker_evidence(
+    overlap_fraction: float, window_stats: Sequence[SpeakerWindowStats]
+) -> SpeakerEvidenceDecision:
+    """Decide whether local diarization should engage for this segment.
+
+    ``window overlap share`` is overlap-class frames divided by speech frames
+    within a single window, from that window's raw argmax. It is explicitly not
+    the segment-level ``overlap_fraction``, which argmaxes averaged log-probs
+    across overlapping windows.
+
+    ``mean_window_overlap_share`` is averaged over speech-bearing windows only.
+    ``DIARIZE_MIN_OVERLAP`` governs branch 3's overlap term. Branches 2 and 3
+    are deliberately not mutually simplified: the constants are separate
+    re-calibration controls, and the gap between them is the ambiguous band.
+    """
+    speech_windows = [row for row in window_stats if row.speech_frames > 0]
+    if not speech_windows:
+        return SpeakerEvidenceDecision(
+            speaker_evidence="none",
+            multi_window_fraction=0.0,
+            mean_window_overlap_share=0.0,
+        )
+
+    multi_window_count = sum(1 for row in speech_windows if row.active_slot_count > 1)
+    multi_window_fraction = multi_window_count / len(speech_windows)
+    mean_window_overlap_share = sum(
+        row.overlap_frames / row.speech_frames for row in speech_windows
+    ) / len(speech_windows)
+
+    if (
+        multi_window_fraction >= SPEAKER_EVIDENCE_MULTI_MIN
+        or overlap_fraction >= DIARIZE_MIN_OVERLAP
+    ):
+        speaker_evidence = "multi"
+    elif (
+        multi_window_fraction < SPEAKER_EVIDENCE_SINGLE_MAX
+        and mean_window_overlap_share < DIARIZE_MIN_OVERLAP
+    ):
+        speaker_evidence = "single"
+    else:
+        speaker_evidence = "multi"
+
+    return SpeakerEvidenceDecision(
+        speaker_evidence=speaker_evidence,
+        multi_window_fraction=multi_window_fraction,
+        mean_window_overlap_share=mean_window_overlap_share,
+    )
 
 
 def _get_overlap_session() -> ort.InferenceSession:
@@ -123,7 +220,7 @@ def compute_overlap_fraction(
 
 def compute_overlap_and_logprobs(
     audio: np.ndarray, sample_rate: int = SAMPLE_RATE
-) -> tuple[float, np.ndarray]:
+) -> OverlapInferenceResult:
     """Compute overlap fraction and return the pyannote log-probs for reuse.
 
     Uses a 2-second stride (vs. the 5-second stride in compute_overlap_fraction)
@@ -162,6 +259,7 @@ def compute_overlap_and_logprobs(
     num_frames = int(np.ceil(len(audio_padded) / samples_per_frame))
     accum = np.zeros((num_frames, 7), dtype=np.float64)
     counts = np.zeros((num_frames,), dtype=np.int32)
+    window_stats: list[SpeakerWindowStats] = []
 
     for start_sample in starts:
         chunk = audio_padded[start_sample : start_sample + window_samples][
@@ -173,6 +271,7 @@ def compute_overlap_and_logprobs(
         if frame_end > num_frames:
             frame_end = num_frames
             log_probs = log_probs[: frame_end - frame_start]
+        window_stats.append(_speaker_window_stats(log_probs))
         accum[frame_start:frame_end] += log_probs.astype(np.float64)
         counts[frame_start:frame_end] += 1
 
@@ -182,10 +281,14 @@ def compute_overlap_and_logprobs(
     argmax = avg_log_probs.argmax(axis=-1)
     speech_count = int((argmax >= 1).sum())
     if speech_count == 0:
-        return 0.0, avg_log_probs
+        return OverlapInferenceResult(0.0, avg_log_probs, tuple(window_stats))
 
     overlap_count = int(np.isin(argmax, OVERLAP_CLASSES).sum())
-    return float(overlap_count / speech_count), avg_log_probs
+    return OverlapInferenceResult(
+        float(overlap_count / speech_count),
+        avg_log_probs,
+        tuple(window_stats),
+    )
 
 
 def compute_overlap_fraction_for_wav(path: Path) -> float:

@@ -17,6 +17,10 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from solstone.observe.transcribe.overlap import (
+    OverlapInferenceResult,
+    SpeakerWindowStats,
+)
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
 from solstone.think.providers.parakeet_server import ParakeetServerNotReady
@@ -24,6 +28,15 @@ from solstone.think.providers.parakeet_server import ParakeetServerNotReady
 # A string that exists nowhere but in the (mocked) transcript. If it shows up in a
 # serialized event, transcript content leaked into telemetry.
 TRANSCRIPT_SENTINEL = "zzq-secret-utterance-do-not-leak"
+CLEAN_SINGLE_STATS = (SpeakerWindowStats(589, 1, 0),)
+
+
+def _overlap_result() -> OverlapInferenceResult:
+    return OverlapInferenceResult(
+        0.0,
+        np.zeros((589, 7), dtype=np.float32),
+        CLEAN_SINGLE_STATS,
+    )
 
 
 @pytest.fixture
@@ -91,7 +104,7 @@ def _run_success(
         patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
             "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
+            return_value=_overlap_result(),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):

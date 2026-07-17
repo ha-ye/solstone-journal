@@ -18,6 +18,10 @@ from solstone.observe.processing_record import (
     SCHEMA,
     STATE_EMPTY,
 )
+from solstone.observe.transcribe.overlap import (
+    OverlapInferenceResult,
+    SpeakerWindowStats,
+)
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
 from solstone.think.data_state import (
@@ -35,6 +39,16 @@ SOUND_TAGS = {
     "windows": 1,
     "tags": {"Music": 0.201, "Silence": 0.5},
 }
+CLEAN_SINGLE_STATS = (SpeakerWindowStats(589, 1, 0),)
+
+
+def _overlap_result() -> OverlapInferenceResult:
+    return OverlapInferenceResult(
+        0.0,
+        np.zeros((589, 7), dtype=np.float32),
+        CLEAN_SINGLE_STATS,
+    )
+
 
 SILENCE_SOUND_TAGS = {
     "engine": "ced.cpp v0.1.0",
@@ -137,7 +151,7 @@ def test_process_audio_speech_writes_sound_tags_and_keeps_audio(
         patch("solstone.observe.transcribe.main._embed_statements", return_value=None),
         patch(
             "solstone.observe.transcribe.overlap.compute_overlap_and_logprobs",
-            return_value=(0.0, np.zeros((589, 7), dtype=np.float32)),
+            return_value=_overlap_result(),
         ),
         patch("solstone.observe.transcribe.main.callosum_send") as mock_send,
     ):

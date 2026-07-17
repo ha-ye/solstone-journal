@@ -63,6 +63,7 @@ from solstone.apps.settings.install_copy import (
 from solstone.apps.speakers.encoder_config import (
     OVERLAP_DETECTOR_ID,
     OVERLAP_DETECTOR_SHA256,
+    SPEAKER_EVIDENCE_VERSION,
 )
 from solstone.observe.exit_codes import EXIT_PROVIDER_BLOCKED
 from solstone.observe.model_assets import resolve_wespeaker_model
@@ -121,6 +122,7 @@ if TYPE_CHECKING:
     import numpy as np
     import onnxruntime as ort
 
+    from solstone.observe.transcribe.overlap import SpeakerEvidenceDecision
     from solstone.observe.vad import AudioReduction, VadResult
 
 # Re-export defaults for backwards compatibility
@@ -673,6 +675,7 @@ def _statements_to_jsonl(
     *,
     overlap_fraction: float | None = None,
     overlap_detector: str | None = None,
+    speaker_evidence: SpeakerEvidenceDecision | None = None,
     processing_record: dict | None = None,
     sound_tags: dict | None = None,
 ) -> list[str]:
@@ -691,6 +694,7 @@ def _statements_to_jsonl(
         backend: Optional STT backend name (e.g., "parakeet")
         overlap_fraction: Optional fraction of speech containing overlapping speakers
         overlap_detector: Optional overlap detector identifier
+        speaker_evidence: Optional local diarization engagement decision
         processing_record: Optional _solstone_processing record
         sound_tags: Optional ambient sound-tag metadata
 
@@ -724,6 +728,12 @@ def _statements_to_jsonl(
     if overlap_fraction is not None and overlap_detector is not None:
         metadata["overlap_fraction"] = round(float(overlap_fraction), 4)
         metadata["overlap_detector"] = overlap_detector
+    if speaker_evidence is not None:
+        metadata["speaker_evidence"] = speaker_evidence.speaker_evidence
+        metadata["speaker_evidence_multi_fraction"] = round(
+            float(speaker_evidence.multi_window_fraction), 4
+        )
+        metadata["speaker_evidence_version"] = SPEAKER_EVIDENCE_VERSION
 
     # Add segment metadata (from SEGMENT_META env var)
     if segment_meta:
@@ -978,12 +988,19 @@ def process_audio(
         # Use reduced audio buffer if available for consistent timestamps
         with timings.time("embed"):
             embeddings_data = _embed_statements(stt_buffer, statements, SAMPLE_RATE)
-        from solstone.observe.transcribe.overlap import compute_overlap_and_logprobs
+        from solstone.observe.transcribe.overlap import (
+            compute_overlap_and_logprobs,
+            decide_speaker_evidence,
+        )
 
         with timings.time("overlap"):
-            overlap_fraction_value, pyannote_logprobs = compute_overlap_and_logprobs(
-                audio_buffer
+            overlap_result = compute_overlap_and_logprobs(audio_buffer)
+            speaker_evidence = decide_speaker_evidence(
+                overlap_result.overlap_fraction,
+                overlap_result.window_stats,
             )
+            overlap_fraction_value = overlap_result.overlap_fraction
+            pyannote_logprobs = overlap_result.avg_log_probs
 
         # Restore original timestamps if audio was reduced.
         if reduction:
@@ -996,15 +1013,15 @@ def process_audio(
             )
 
         # Local speaker diarization for backends that produce no speaker labels.
-        # Skip when overlap is near zero — the recording is effectively solo
-        # speech and diarization adds no value.  Otherwise reuse the pyannote
-        # log-probs computed above so the diarizer skips its own pyannote pass.
-        _DIARIZE_MIN_OVERLAP = 0.05
-        if overlap_fraction_value < _DIARIZE_MIN_OVERLAP:
+        # Reuse the pyannote log-probs computed above so the diarizer skips its
+        # own pyannote pass when the speaker-evidence gate engages it.
+        if speaker_evidence.speaker_evidence != "multi":
             logging.info(
-                "  Skipping diarization: overlap=%.2f (threshold %.2f)",
+                "  Skipping diarization: speaker_evidence=%s overlap=%.2f "
+                "multi_window_fraction=%.2f",
+                speaker_evidence.speaker_evidence,
                 overlap_fraction_value,
-                _DIARIZE_MIN_OVERLAP,
+                speaker_evidence.multi_window_fraction,
             )
         else:
             try:
@@ -1053,6 +1070,7 @@ def process_audio(
             resolved_backend,
             overlap_fraction=overlap_fraction_value,
             overlap_detector=OVERLAP_DETECTOR_ID,
+            speaker_evidence=speaker_evidence,
             processing_record=processing_record,
             sound_tags=sound_tags,
         )

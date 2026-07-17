@@ -11,15 +11,17 @@ from pathlib import Path
 import numpy as np
 
 from solstone.apps.speakers.candidate_tracker import (
+    CandidateTracker,
+)
+from solstone.apps.speakers.encoder_config import (
     CONFIRM_MIN_DURATION_S,
     CONFIRM_MIN_INTERVALS,
     CONFIRM_MIN_SEGMENTS,
+    ENCODER_ID,
     MERGE_THRESHOLD,
     SPLIT_THRESHOLD,
     STABILITY_THRESHOLD,
-    CandidateTracker,
 )
-from solstone.apps.speakers.encoder_config import ENCODER_ID
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
 from solstone.think.entities import save_voiceprints_batch
 

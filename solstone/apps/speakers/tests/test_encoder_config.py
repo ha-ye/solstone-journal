@@ -2,9 +2,11 @@
 # Copyright (c) 2026 sol pbc
 """Test the constant-import contract for encoder_config."""
 
+import ast
 import math
+from pathlib import Path
 
-from solstone.apps.speakers import attribution, encoder_config, owner
+from solstone.apps.speakers import attribution, candidate_tracker, encoder_config, owner
 from solstone.observe.transcribe.main import (
     OVERLAP_DETECTOR_ID as MAIN_OVERLAP_DETECTOR_ID,
 )
@@ -26,8 +28,46 @@ def test_locked_constants():
     assert encoder_config.OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25 == 0.30
     assert encoder_config.OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS == 5
     assert encoder_config.NOISY_FLYWHEEL_OVERLAP_MAX == 0.10
+    assert encoder_config.SLOT_ACTIVE_MIN_SHARE == 0.10
+    assert encoder_config.SPEAKER_EVIDENCE_MULTI_MIN == 0.05
+    assert encoder_config.SPEAKER_EVIDENCE_SINGLE_MAX == 0.05
+    assert encoder_config.DIARIZE_MIN_OVERLAP == 0.05
+    assert encoder_config.SPEAKER_EVIDENCE_VERSION == "windowed-slots-v1"
     assert encoder_config.OVERLAP_DETECTOR_ID == MAIN_OVERLAP_DETECTOR_ID
     assert encoder_config.OVERLAP_DETECTOR_SHA256 == PYANNOTE_OVERLAP_MODEL_SHA256
+    assert encoder_config.MERGE_THRESHOLD == 0.72
+    assert encoder_config.SPLIT_THRESHOLD == 0.55
+    assert encoder_config.STABILITY_THRESHOLD == 0.25
+    assert encoder_config.CONFIRM_MIN_SEGMENTS == 2
+    assert encoder_config.CONFIRM_MIN_INTERVALS == 5
+    assert encoder_config.CONFIRM_MIN_DURATION_S == 25.0
+
+
+def _module_assignment_targets(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    targets: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    targets.add(target.id)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            targets.add(node.target.id)
+    return targets
+
+
+def test_candidate_tracker_constants_are_not_assigned_in_tracker_module():
+    moved_constants = {
+        "MERGE_THRESHOLD",
+        "SPLIT_THRESHOLD",
+        "STABILITY_THRESHOLD",
+        "CONFIRM_MIN_SEGMENTS",
+        "CONFIRM_MIN_INTERVALS",
+        "CONFIRM_MIN_DURATION_S",
+    }
+    targets = _module_assignment_targets(Path(candidate_tracker.__file__))
+
+    assert moved_constants.isdisjoint(targets)
 
 
 def test_attribution_imports_acoustic_constants():
