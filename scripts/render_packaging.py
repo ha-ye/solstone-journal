@@ -9,15 +9,23 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import sys
 import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from solstone.think.probe import solstone_core_marker_pins  # noqa: E402
+
 ROOT_PYPROJECT = ROOT / "pyproject.toml"
 CPU_PYPROJECT = ROOT / "packages" / "solstone-journal" / "pyproject.toml"
 CUDA_PYPROJECT = ROOT / "packages" / "solstone-journal-cuda" / "pyproject.toml"
 TOMBSTONE_PIN = "solstone-journal-host==0.7.0"
 HOST_PIN_RE = re.compile(r'(?P<quote>")solstone\[journal-host\]==[^"]+(?P=quote)')
+CORE_PIN_RE = re.compile(
+    r'(?P<quote>")solstone-core==[^";]+; (?P<marker>[^"]+)(?P=quote)'
+)
 VERSION_RE = re.compile(r'(?m)^version = "[^"]+"')
 CARGO_WORKSPACE_VERSION_RE = re.compile(
     r'(?ms)(?P<prefix>^\[workspace\.package\]\n(?:(?!^\[).)*?^version = )"[^"]+"'
@@ -56,6 +64,10 @@ def _leaf_paths(root: Path) -> tuple[Path, Path]:
     )
 
 
+def _core_leaf_path(root: Path) -> Path:
+    return root / "packages" / "solstone-core" / "pyproject.toml"
+
+
 def _rewrite_leaf(text: str, version: str) -> str:
     text, version_count = VERSION_RE.subn(f'version = "{version}"', text)
     if version_count != 1:
@@ -69,6 +81,43 @@ def _rewrite_leaf(text: str, version: str) -> str:
             f"leaf pyproject must contain exactly one solstone[journal-host]== pin; found {pin_count}"
         )
     return text
+
+
+def _rewrite_core_leaf(text: str, version: str) -> str:
+    text, version_count = VERSION_RE.subn(f'version = "{version}"', text)
+    if version_count != 1:
+        raise PackagingRenderError(
+            f"core leaf pyproject must contain exactly one [project].version line; found {version_count}"
+        )
+    if "solstone[journal-host]==" in text:
+        raise PackagingRenderError(
+            "core leaf pyproject must not contain a solstone[journal-host]== pin"
+        )
+    return text
+
+
+def _rewrite_root_core_pins(text: str, version: str) -> str:
+    expected = set(solstone_core_marker_pins(version))
+    seen_markers: list[str] = []
+
+    def replacement(match: re.Match[str]) -> str:
+        marker = match.group("marker")
+        seen_markers.append(marker)
+        return f"{match.group('quote')}solstone-core=={version}; {marker}{match.group('quote')}"
+
+    rewritten, pin_count = CORE_PIN_RE.subn(replacement, text)
+    if pin_count != len(expected):
+        raise PackagingRenderError(
+            "root pyproject must contain exactly "
+            f"{len(expected)} marker-gated solstone-core== pins; found {pin_count}"
+        )
+    actual = {f"solstone-core=={version}; {marker}" for marker in seen_markers}
+    if actual != expected:
+        raise PackagingRenderError(
+            "root pyproject solstone-core marker pins must be exactly "
+            + ", ".join(sorted(expected))
+        )
+    return rewritten
 
 
 def _rewrite_cargo_workspace_manifest(text: str, version: str) -> str:
@@ -231,9 +280,17 @@ def render(root: Path = ROOT) -> dict[Path, str]:
     root_text = (root / "pyproject.toml").read_text(encoding="utf-8")
     version = _read_version(root_text)
     expected = {
-        path: _rewrite_leaf(path.read_text(encoding="utf-8"), version)
-        for path in _leaf_paths(root)
+        root / "pyproject.toml": _rewrite_root_core_pins(root_text, version),
+        _core_leaf_path(root): _rewrite_core_leaf(
+            _core_leaf_path(root).read_text(encoding="utf-8"), version
+        ),
     }
+    expected.update(
+        {
+            path: _rewrite_leaf(path.read_text(encoding="utf-8"), version)
+            for path in _leaf_paths(root)
+        }
+    )
     expected.update(_render_cargo(root, version))
     return expected
 

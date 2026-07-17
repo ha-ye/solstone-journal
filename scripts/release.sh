@@ -4,10 +4,14 @@
 #
 # Multi-wheel solstone release.
 #
-# Builds and uploads the seven lockstep artifacts to PyPI:
+# Builds and uploads the ten lockstep artifacts to PyPI:
 #   - solstone-${VERSION}.tar.gz                                (root sdist)
 #   - solstone-${VERSION}-py3-none-any.whl                      (root any wheel)
 #   - solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl        (Apple Silicon macOS 14+)
+#   - solstone_core-${VERSION}.tar.gz                           (core helper sdist)
+#   - solstone_core-${VERSION}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+#   - solstone_core-${VERSION}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+#   - solstone_core-${VERSION}-py3-none-macosx_14_0_arm64.whl
 #   - solstone_journal-${VERSION}.tar.gz                        (journal CPU sdist)
 #   - solstone_journal-${VERSION}-py3-none-any.whl              (journal CPU wheel)
 #   - solstone_journal_cuda-${VERSION}.tar.gz                   (journal CUDA sdist)
@@ -93,6 +97,21 @@ if [[ "$PUBLISH" == "yes" ]]; then
 fi
 PRO5E_HOST="${PRO5E_HOST:-pro5e.local}"
 NOTARY_PROFILE="${NOTARY_KEYCHAIN_PROFILE:-sol-pbc-notary}"
+CORE_X86_64_MATURIN_ARGS="--compatibility manylinux2014 --target x86_64-unknown-linux-musl"
+CORE_AARCH64_MATURIN_ARGS="--compatibility manylinux2014 --target aarch64-unknown-linux-musl"
+CORE_AARCH64_LINKER="rust-lld"
+
+require_rust_target() {
+    local target="$1"
+    if ! command -v rustup >/dev/null 2>&1; then
+        echo "rustup is required to build solstone-core ${target}; install rustup and retry" >&2
+        exit 1
+    fi
+    if ! rustup target list --installed 2>/dev/null | grep -qx "$target"; then
+        echo "Rust target ${target} is required; run rustup target add ${target}" >&2
+        exit 1
+    fi
+}
 
 # Capture the git ref we're publishing from. pro5e checks out the same ref
 # so the macOS wheel's source matches the local sdist. Reject ANY tracked or
@@ -110,7 +129,12 @@ fi
 echo "==> [1/5] building local lockstep artifacts"
 python3 scripts/render_packaging.py --check
 rm -rf build/ dist/ *.egg-info/
-uv build --all-packages
+require_rust_target x86_64-unknown-linux-musl
+require_rust_target aarch64-unknown-linux-musl
+MATURIN_PEP517_ARGS="$CORE_X86_64_MATURIN_ARGS" uv build --all-packages
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="$CORE_AARCH64_LINKER" \
+    MATURIN_PEP517_ARGS="$CORE_AARCH64_MATURIN_ARGS" \
+    uv build --package solstone-core --wheel
 python3 scripts/check_wheel_contents.py dist/
 
 # Pre-flight the CHANGELOG block now — before the expensive pro5e leg and the
@@ -128,6 +152,9 @@ echo "models gate: solstone-journal-models ${MODELS_VERSION} -> ${MODELS_DECISIO
 LOCAL_LOCKSTEP_ARTIFACTS=(
     "dist/solstone-${VERSION}.tar.gz"
     "dist/solstone-${VERSION}-py3-none-any.whl"
+    "dist/solstone_core-${VERSION}.tar.gz"
+    "dist/solstone_core-${VERSION}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    "dist/solstone_core-${VERSION}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
     "dist/solstone_journal-${VERSION}.tar.gz"
     "dist/solstone_journal-${VERSION}-py3-none-any.whl"
     "dist/solstone_journal_cuda-${VERSION}.tar.gz"
@@ -151,6 +178,9 @@ if [[ "$PUBLISH" == "no" ]]; then
     echo "build/check complete (--no-publish); skipped pro5e, upload, git tag, git push, and GitHub release"
     echo "  root sdist: dist/solstone-${VERSION}.tar.gz"
     echo "  root any:   dist/solstone-${VERSION}-py3-none-any.whl"
+    echo "  core sdist: dist/solstone_core-${VERSION}.tar.gz"
+    echo "  core x86:   dist/solstone_core-${VERSION}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+    echo "  core arm64: dist/solstone_core-${VERSION}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
     echo "  journal sdist: dist/solstone_journal-${VERSION}.tar.gz"
     echo "  journal any:   dist/solstone_journal-${VERSION}-py3-none-any.whl"
     echo "  cuda sdist:    dist/solstone_journal_cuda-${VERSION}.tar.gz"
@@ -159,6 +189,7 @@ if [[ "$PUBLISH" == "no" ]]; then
     echo "  models any:    dist/solstone_journal_models-${MODELS_VERSION}-py3-none-any.whl"
     echo "  models gate:   ${MODELS_DECISION}"
     echo "  macos:         pro5e/publish-time-only dist/solstone-${VERSION}-py3-none-macosx_14_0_arm64.whl"
+    echo "  core macos:    pro5e/publish-time-only dist/solstone_core-${VERSION}-py3-none-macosx_14_0_arm64.whl"
     exit 0
 fi
 
@@ -184,6 +215,7 @@ ssh "$PRO5E_HOST" "tmux-run hopper ~/projects/solstone 'set -e; \
 echo "==> [3/5] rsyncing macOS wheel back"
 rsync -av --include='*macosx_14_0_arm64.whl' --exclude='*' \
     "$PRO5E_HOST:projects/solstone/dist/" ./dist/
+python3 scripts/check_wheel_contents.py dist/
 
 echo
 echo "release artifacts:"
@@ -192,12 +224,14 @@ ls -la dist/
 ARTIFACTS=(
     "dist/solstone-${VERSION}.tar.gz"
     dist/solstone-${VERSION}-*.whl
+    "dist/solstone_core-${VERSION}.tar.gz"
+    dist/solstone_core-${VERSION}-*.whl
     "dist/solstone_journal-${VERSION}.tar.gz"
     "dist/solstone_journal-${VERSION}-py3-none-any.whl"
     "dist/solstone_journal_cuda-${VERSION}.tar.gz"
     "dist/solstone_journal_cuda-${VERSION}-py3-none-any.whl"
 )
-GH_RELEASE_ARTIFACT_HINT="dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl dist/solstone_journal-${VERSION}.tar.gz dist/solstone_journal-${VERSION}-*.whl dist/solstone_journal_cuda-${VERSION}.tar.gz dist/solstone_journal_cuda-${VERSION}-*.whl"
+GH_RELEASE_ARTIFACT_HINT="dist/solstone-${VERSION}.tar.gz dist/solstone-${VERSION}-*.whl dist/solstone_core-${VERSION}.tar.gz dist/solstone_core-${VERSION}-*.whl dist/solstone_journal-${VERSION}.tar.gz dist/solstone_journal-${VERSION}-*.whl dist/solstone_journal_cuda-${VERSION}.tar.gz dist/solstone_journal_cuda-${VERSION}-*.whl"
 if [[ "$MODELS_DECISION" == "publish" ]]; then
     ARTIFACTS+=(
         "dist/solstone_journal_models-${MODELS_VERSION}.tar.gz"
@@ -217,6 +251,8 @@ echo
 echo "published solstone ${VERSION} to ${TARGET}:"
 echo "  root sdist: dist/solstone-${VERSION}.tar.gz"
 echo "  root any:   dist/solstone-${VERSION}-py3-none-any.whl"
+echo "  core sdist: dist/solstone_core-${VERSION}.tar.gz"
+echo "  core wheels: dist/solstone_core-${VERSION}-*.whl"
 echo "  journal sdist: dist/solstone_journal-${VERSION}.tar.gz"
 echo "  journal any:   dist/solstone_journal-${VERSION}-py3-none-any.whl"
 echo "  cuda sdist:    dist/solstone_journal_cuda-${VERSION}.tar.gz"

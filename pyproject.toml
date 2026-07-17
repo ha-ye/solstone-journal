@@ -94,6 +94,9 @@ pdf = [
 # user-facing extra — always pulled in by a leaf package.
 journal-host = [
     "solstone-journal-models==1.0.0",
+    "solstone-core==0.8.9; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "solstone-core==0.8.9; sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "solstone-core==0.8.9; sys_platform == 'darwin' and platform_machine == 'arm64'",
     "python-dotenv",
     "pyhpke==0.6.4",
     "Flask[async]",
@@ -211,12 +214,13 @@ include = ["solstone*"]
 override-dependencies = ["solstone-journal-host==0.7.0; python_version < '3.12'"]
 
 [tool.uv.workspace]
-members = ["packages/solstone-journal", "packages/solstone-journal-cuda", "packages/solstone-journal-models"]
+members = ["packages/solstone-journal", "packages/solstone-journal-cuda", "packages/solstone-journal-models", "packages/solstone-core"]
 
 [tool.uv.sources]
 solstone-journal = {workspace = true}
 solstone-journal-cuda = {workspace = true}
 solstone-journal-models = {workspace = true}
+solstone-core = {workspace = true}
 
 # Development tools configuration
 [tool.ruff]

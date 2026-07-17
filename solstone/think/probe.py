@@ -10,6 +10,7 @@ checks can run before `.venv` or `uv` exist.
 from __future__ import annotations
 
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -35,6 +36,7 @@ LOCAL_BIN_SOL_FIX = (
 Severity = Literal["blocker", "advisory"]
 Status = Literal["ok", "fail", "warn", "skip"]
 Platform = Literal["linux", "darwin"]
+CorePlatform = tuple[Platform, str]
 
 
 @dataclass(frozen=True)
@@ -69,12 +71,61 @@ LOCAL_BIN_SOL_REACHABLE_CHECK = Check(
 )
 DISK_SPACE_CHECK = Check("disk_space", "advisory", ("linux", "darwin"))
 CONFIG_DIR_READABLE_CHECK = Check("config_dir_readable", "blocker", ("linux", "darwin"))
+SOLSTONE_CORE_RUST_TOOLCHAIN_CHECK = Check(
+    "solstone_core_rust_toolchain", "blocker", ("linux", "darwin")
+)
+
+SOLSTONE_CORE_COVERED_PLATFORMS: tuple[CorePlatform, ...] = (
+    ("linux", "x86_64"),
+    ("linux", "aarch64"),
+    ("darwin", "arm64"),
+)
+SOLSTONE_CORE_PLATFORM_MARKERS: tuple[str, ...] = (
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
+    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+)
+SOLSTONE_CORE_PLATFORM_TAGS: dict[CorePlatform, str] = {
+    ("linux", "x86_64"): "manylinux_2_17_x86_64.manylinux2014_x86_64",
+    ("linux", "aarch64"): "manylinux_2_17_aarch64.manylinux2014_aarch64",
+    ("darwin", "arm64"): "macosx_14_0_arm64",
+}
 
 
 def platform_tag() -> Platform:
     if sys.platform == "darwin":
         return "darwin"
     return "linux"
+
+
+def normalize_solstone_core_machine(system: str, machine: str) -> str:
+    system_name = "darwin" if system == "darwin" else "linux"
+    machine_name = machine.lower()
+    if system_name == "linux" and machine_name == "arm64":
+        return "aarch64"
+    if system_name == "darwin" and machine_name == "aarch64":
+        return "arm64"
+    return machine_name
+
+
+def current_solstone_core_platform() -> CorePlatform:
+    system = platform_tag()
+    return (system, normalize_solstone_core_machine(system, platform.machine()))
+
+
+def is_solstone_core_covered_platform(system: str, machine: str) -> bool:
+    platform_tuple = (
+        "darwin" if system == "darwin" else "linux",
+        normalize_solstone_core_machine(system, machine),
+    )
+    return platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
+
+
+def solstone_core_marker_pins(version: str) -> tuple[str, ...]:
+    return tuple(
+        f"solstone-core=={version}; {marker}"
+        for marker in SOLSTONE_CORE_PLATFORM_MARKERS
+    )
 
 
 def make_result(
@@ -300,6 +351,53 @@ def uv_installed_check(args: object) -> CheckResult:
         check,
         "ok",
         f"uv {version_text(version)} >= {version_text(MIN_UV)}",
+    )
+
+
+def solstone_core_rust_toolchain_check(args: object) -> CheckResult:
+    del args
+    check = SOLSTONE_CORE_RUST_TOOLCHAIN_CHECK
+    if not _is_source_checkout():
+        return make_result(
+            check,
+            "skip",
+            "packaged install already carries solstone-core wheel metadata",
+        )
+
+    system, machine = current_solstone_core_platform()
+    if not is_solstone_core_covered_platform(system, machine):
+        return make_result(
+            check,
+            "skip",
+            f"solstone-core is not required on {system}/{machine}",
+            platform=system,
+        )
+
+    fix = "install Rust with cargo and rustc, then retry `make install`"
+    cargo_output = run_probe(
+        check,
+        ["cargo", "--version"],
+        timeout=5,
+        fix=fix,
+    )
+    if isinstance(cargo_output, CheckResult):
+        return cargo_output
+
+    rustc_output = run_probe(
+        check,
+        ["rustc", "--version"],
+        timeout=5,
+        fix=fix,
+    )
+    if isinstance(rustc_output, CheckResult):
+        return rustc_output
+
+    return make_result(
+        check,
+        "ok",
+        f"Rust toolchain available for solstone-core on {system}/{machine}: "
+        f"{cargo_output.stdout.strip()}; {rustc_output.stdout.strip()}",
+        platform=system,
     )
 
 

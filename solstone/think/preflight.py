@@ -22,6 +22,7 @@ from solstone.think.probe import (
     DISK_SPACE_CHECK,
     LOCAL_BIN_SOL_REACHABLE_CHECK,
     PYTHON_VERSION_CHECK,
+    SOLSTONE_CORE_RUST_TOOLCHAIN_CHECK,
     UV_INSTALLED_CHECK,
     VENV_CONSISTENT_CHECK,
     Check,
@@ -32,6 +33,7 @@ from solstone.think.probe import (
     make_result,
     platform_tag,
     python_version_check,
+    solstone_core_rust_toolchain_check,
     uv_installed_check,
     venv_consistent_check,
 )
@@ -46,6 +48,7 @@ class Args:
 CHECKS: list[tuple[Check, Callable[[Args], CheckResult]]] = [
     (PYTHON_VERSION_CHECK, python_version_check),
     (UV_INSTALLED_CHECK, uv_installed_check),
+    (SOLSTONE_CORE_RUST_TOOLCHAIN_CHECK, solstone_core_rust_toolchain_check),
     (VENV_CONSISTENT_CHECK, venv_consistent_check),
     (LOCAL_BIN_SOL_REACHABLE_CHECK, local_bin_sol_reachable_check),
     (DISK_SPACE_CHECK, disk_space_check),

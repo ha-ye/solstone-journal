@@ -332,6 +332,17 @@ wheel-macos: parakeet-helper
 	@echo "==> building macosx_14_0_arm64 platform wheel"
 	rm -rf build/ *.egg-info/
 	$(UV) build --wheel -C--build-option=--plat-name=macosx_14_0_arm64
+	@echo "==> building macosx_14_0_arm64 solstone-core wheel"
+	MACOSX_DEPLOYMENT_TARGET=14.0 MATURIN_PEP517_ARGS="--target aarch64-apple-darwin" $(UV) build --package solstone-core --wheel
+	@echo "==> signing and notarizing solstone-core"
+	@CORE_MAC_WHEEL=$$(ls dist/solstone_core-*-macosx_14_0_arm64.whl); \
+	CORE_TMP=$$(mktemp -d); \
+	trap 'rm -rf "$$CORE_TMP"' EXIT; \
+	python3 -m zipfile -e "$$CORE_MAC_WHEEL" "$$CORE_TMP"; \
+	CORE_BINARY=$$(find "$$CORE_TMP" -path '*/.data/scripts/solstone-core' -type f -print -quit); \
+	test -n "$$CORE_BINARY" || { echo "missing solstone-core binary in $$CORE_MAC_WHEEL" >&2; exit 1; }; \
+	./scripts/sign-and-notarize-helper.sh "$$CORE_BINARY"; \
+	python3 scripts/repack_wheel_record.py "$$CORE_TMP" "$$CORE_MAC_WHEEL"
 else
 wheel-macos:
 	@echo "wheel-macos: only supported on Darwin/arm64 (got $(shell uname -s)/$(shell uname -m))" >&2

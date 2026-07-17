@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import subprocess
+import sys
 from pathlib import Path
 from textwrap import dedent
 
@@ -15,6 +18,25 @@ assert SPEC is not None
 render_packaging = importlib.util.module_from_spec(SPEC)
 assert SPEC.loader is not None
 SPEC.loader.exec_module(render_packaging)
+
+
+def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("VIRTUAL_ENV", None)
+
+    result = subprocess.run(
+        [sys.executable, "-S", "-E", str(SCRIPT), "--check"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "packaging metadata is up to date" in result.stdout
 
 
 def _write(path: Path, text: str) -> None:
@@ -29,6 +51,16 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         [project]
         name = "solstone"
         version = "{root_version}"
+
+        [project.optional-dependencies]
+        journal-host = [
+            "solstone-journal-models==1.0.0",
+            "solstone-core==0.0.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
+            "solstone-core==0.0.1; sys_platform == 'linux' and platform_machine == 'aarch64'",
+            "solstone-core==0.0.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+        ]
+        journal = ["solstone-journal-host==0.7.0"]
+        journal-cuda = ["solstone-journal-host==0.7.0"]
         """,
     )
     for package_name in ("solstone-journal", "solstone-journal-cuda"):
@@ -41,6 +73,24 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
             dependencies = ["solstone[journal-host]==0.0.1"]
             """,
         )
+    _write(
+        tmp_path / "packages" / "solstone-core" / "pyproject.toml",
+        """
+        [build-system]
+        requires = ["maturin>=1.14,<2"]
+        build-backend = "maturin"
+
+        [project]
+        name = "solstone-core"
+        version = "0.0.1"
+
+        [tool.maturin]
+        bindings = "bin"
+        manifest-path = "../../core/crates/solstone-core/Cargo.toml"
+        profile = "release"
+        strip = true
+        """,
+    )
     _write(
         tmp_path / "core" / "Cargo.toml",
         """
@@ -160,6 +210,38 @@ def test_render_updates_python_leaves_and_cargo_lockstep(tmp_path: Path) -> None
         leaf = rendered[root / "packages" / package_name / "pyproject.toml"]
         assert 'version = "2.3.4"' in leaf
         assert '"solstone[journal-host]==2.3.4"' in leaf
+    core_leaf = rendered[root / "packages" / "solstone-core" / "pyproject.toml"]
+    assert 'version = "2.3.4"' in core_leaf
+    assert "solstone[journal-host]==" not in core_leaf
+    root_pyproject = rendered[root / "pyproject.toml"]
+    assert (
+        "\"solstone-core==2.3.4; sys_platform == 'linux' and platform_machine == 'x86_64'\""
+        in root_pyproject
+    )
+    assert (
+        "\"solstone-core==2.3.4; sys_platform == 'linux' and platform_machine == 'aarch64'\""
+        in root_pyproject
+    )
+    assert (
+        "\"solstone-core==2.3.4; sys_platform == 'darwin' and platform_machine == 'arm64'\""
+        in root_pyproject
+    )
+
+
+def test_check_reports_synthetic_packaging_drift(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = _fixture_root(tmp_path, root_version="2.3.4")
+
+    rc = render_packaging.check(root)
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "packaging metadata is stale" in out
+    assert "drifted: pyproject.toml" in out
+    assert "drifted: packages/solstone-core/pyproject.toml" in out
+    assert "drifted: core/Cargo.lock" in out
 
 
 def test_render_raises_when_cargo_lock_is_missing_member_block(tmp_path: Path) -> None:

@@ -35,7 +35,7 @@ from solstone.observe.transcribe.resource import (
     resolve_stt_backend_choice,
     stt_local_floor_bytes,
 )
-from solstone.think import maintenance, scheduler
+from solstone.think import core_handshake, maintenance, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
 from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
 from solstone.think.callosum import CallosumConnection, CallosumServer, callosum_send
@@ -3583,6 +3583,15 @@ def main() -> None:
     log_path = journal_path / "health" / "supervisor.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
     _configure_supervisor_logging(log_path, log_level)
+
+    core_result = core_handshake.check_solstone_core_handshake()
+    if core_result.status == "skip":
+        print(core_result.message)
+        logging.info(core_result.message)
+    elif core_result.status == "fail":
+        print(core_result.message, file=sys.stderr)
+        logging.error(core_result.message)
+        sys.exit(core_handshake.EX_CONFIG)
 
     if args.verbose or args.debug:
         console_handler = logging.StreamHandler()

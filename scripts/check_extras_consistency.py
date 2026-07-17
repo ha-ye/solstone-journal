@@ -18,8 +18,9 @@ The invariants are:
   3. Root `[journal]` and `[journal-cuda]` are tombstones pinned exactly to
      `solstone-journal-host==0.7.0`.
   4. `[journal-host]` stays in root, folds in the `[pdf]` building block, pins
-     `solstone-journal-models==<models leaf version>`, and pins the tested
-     LiteLLM runtime used by OpenHands.
+     `solstone-journal-models==<models leaf version>`, marker-gated
+     `solstone-core==<root version>` for the covered binary platforms, and
+     pins the tested LiteLLM runtime used by OpenHands.
   5. The CPU leaf depends on `solstone[journal-host]==<root version>`, pulls
      CPU `onnxruntime`, and does not pull `onnxruntime-gpu`.
   6. The CUDA leaf depends on `solstone[journal-host]==<root version>`, pulls
@@ -30,8 +31,8 @@ The invariants are:
   9. Root scripts stay exactly the thin access scripts.
  10. Each leaf has metadata-only setuptools config, a workspace source for
      `solstone`, the expected package name, and the root version.
- 11. uv workspace members/sources are exactly the two journal leaves plus models;
-     `solstone-journal-host` is absent.
+ 11. uv workspace members/sources are exactly the two journal leaves plus
+     models plus core; `solstone-journal-host` is absent.
  12. `[tool.uv].override-dependencies` contains the tombstone pin.
  13. The Makefile no longer uses root journal extra spellings.
 """
@@ -41,6 +42,7 @@ import tomllib
 from pathlib import Path
 
 from solstone.think.features import FEATURES
+from solstone.think.probe import solstone_core_marker_pins
 
 # The thin access partition. Adding anything here must keep the `sol` access
 # commands import-clean (scripts/check_access_imports_clean.py) — keep this in
@@ -92,11 +94,13 @@ WORKSPACE_MEMBERS = [
     "packages/solstone-journal",
     "packages/solstone-journal-cuda",
     "packages/solstone-journal-models",
+    "packages/solstone-core",
 ]
 WORKSPACE_SOURCES = {
     "solstone-journal",
     "solstone-journal-cuda",
     "solstone-journal-models",
+    "solstone-core",
 }
 
 
@@ -131,6 +135,23 @@ def _check_models_pin(extras: dict, member_version: str | None) -> list[str]:
         return [
             "[journal-host] models pin must be "
             f"solstone-journal-models=={member_version}; found {pins[0]}"
+        ]
+    return []
+
+
+def _check_core_pins(extras: dict, root_version: str | None) -> list[str]:
+    host = extras.get("journal-host", [])
+    pins = sorted(dep for dep in host if dep.startswith("solstone-core=="))
+    expected = sorted(solstone_core_marker_pins(root_version or ""))
+    if len(pins) != len(expected):
+        return [
+            "[journal-host] must contain exactly "
+            f"{len(expected)} marker-gated solstone-core== pins; found {len(pins)}"
+        ]
+    if root_version is not None and pins != expected:
+        return [
+            "[journal-host] solstone-core marker pins must be exactly "
+            f"{expected}; found {pins}"
         ]
     return []
 
@@ -191,12 +212,51 @@ def _leaf_dependencies(
     return deps
 
 
+def _check_core_leaf(
+    *,
+    data: dict,
+    root_version: str | None,
+    errors: list[str],
+) -> None:
+    project = data.get("project", {})
+    build_system = data.get("build-system", {})
+    tool = data.get("tool", {})
+    maturin = tool.get("maturin", {})
+
+    if project.get("name") != "solstone-core":
+        errors.append("core leaf [project].name must be 'solstone-core'")
+    if project.get("version") != root_version:
+        errors.append(
+            f"core leaf [project].version must match root version {root_version}; "
+            f"found {project.get('version')!r}"
+        )
+    if project.get("scripts", {}) != {}:
+        errors.append("core leaf must not define [project.scripts]")
+    if build_system.get("build-backend") != "maturin":
+        errors.append("core leaf [build-system].build-backend must be 'maturin'")
+    requires = build_system.get("requires", [])
+    if not any(str(req).startswith("maturin") for req in requires):
+        errors.append("core leaf [build-system].requires must include maturin")
+    if maturin.get("bindings") != "bin":
+        errors.append("core leaf [tool.maturin].bindings must be 'bin'")
+    if maturin.get("manifest-path") != "../../core/crates/solstone-core/Cargo.toml":
+        errors.append(
+            "core leaf [tool.maturin].manifest-path must be "
+            "'../../core/crates/solstone-core/Cargo.toml'"
+        )
+    if maturin.get("profile") != "release":
+        errors.append("core leaf [tool.maturin].profile must be 'release'")
+    if maturin.get("strip") is not True:
+        errors.append("core leaf [tool.maturin].strip must be true")
+
+
 def main(root: Path | None = None) -> int:
     root = Path(root) if root is not None else Path(__file__).resolve().parent.parent
     pyproject = root / "pyproject.toml"
     cpu_pyproject = root / "packages" / "solstone-journal" / "pyproject.toml"
     cuda_pyproject = root / "packages" / "solstone-journal-cuda" / "pyproject.toml"
     models_pyproject = root / "packages" / "solstone-journal-models" / "pyproject.toml"
+    core_pyproject = root / "packages" / "solstone-core" / "pyproject.toml"
     makefile = root / "Makefile"
     errors: list[str] = []
 
@@ -204,6 +264,7 @@ def main(root: Path | None = None) -> int:
     cpu_data = _read_toml(cpu_pyproject, root, errors)
     cuda_data = _read_toml(cuda_pyproject, root, errors)
     models_data = _read_toml(models_pyproject, root, errors)
+    core_data = _read_toml(core_pyproject, root, errors)
 
     project = data.get("project", {})
     root_version = project.get("version")
@@ -276,6 +337,7 @@ def main(root: Path | None = None) -> int:
         if "solstone[pdf]" not in host:
             errors.append("[journal-host] must fold in solstone[pdf]")
         errors.extend(_check_models_pin(extras, models_version))
+        errors.extend(_check_core_pins(extras, root_version))
         litellm_requirements = [
             dep
             for dep in host
@@ -307,6 +369,7 @@ def main(root: Path | None = None) -> int:
         root_version=root_version,
         errors=errors,
     )
+    _check_core_leaf(data=core_data, root_version=root_version, errors=errors)
 
     # 5. CPU leaf runtime split.
     missing_cpu_runtime = sorted(CPU_ONNXRUNTIME_DEPS - set(cpu_deps))

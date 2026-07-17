@@ -59,6 +59,10 @@ def fake_probe_dispatcher(probe, repo: Path):
     def run_probe(_check, cmd, **_kwargs):
         if list(cmd) == ["uv", "--version"]:
             return probe.ProbeOutput("uv 0.7.12\n", "", 0)
+        if list(cmd) == ["cargo", "--version"]:
+            return probe.ProbeOutput("cargo 1.87.0\n", "", 0)
+        if list(cmd) == ["rustc", "--version"]:
+            return probe.ProbeOutput("rustc 1.87.0\n", "", 0)
         if len(cmd) >= 3 and cmd[1:] == ["-c", "import sys; print(sys.prefix)"]:
             return probe.ProbeOutput(f"{repo / '.venv'}\n", "", 0)
         raise AssertionError(f"unexpected probe command: {cmd}")
@@ -117,6 +121,81 @@ def test_uv_installed_ok(preflight, probe, monkeypatch):
     result = preflight.uv_installed_check(args(preflight))
 
     assert result.status == "ok"
+
+
+def test_solstone_core_rust_toolchain_ok(preflight, probe, monkeypatch):
+    monkeypatch.setattr(probe, "_is_source_checkout", lambda: True)
+    monkeypatch.setattr(
+        probe,
+        "current_solstone_core_platform",
+        lambda: ("linux", "x86_64"),
+    )
+
+    def run_probe(_check, cmd, **_kwargs):
+        if list(cmd) == ["cargo", "--version"]:
+            return probe.ProbeOutput("cargo 1.87.0\n", "", 0)
+        if list(cmd) == ["rustc", "--version"]:
+            return probe.ProbeOutput("rustc 1.87.0\n", "", 0)
+        raise AssertionError(f"unexpected probe command: {cmd}")
+
+    monkeypatch.setattr(probe, "run_probe", run_probe)
+
+    result = preflight.solstone_core_rust_toolchain_check(args(preflight))
+
+    assert result.status == "ok"
+    assert "cargo 1.87.0" in result.detail
+    assert "rustc 1.87.0" in result.detail
+
+
+def test_solstone_core_rust_toolchain_skips_packaged_install(
+    preflight, probe, monkeypatch
+):
+    monkeypatch.setattr(probe, "_is_source_checkout", lambda: False)
+
+    result = preflight.solstone_core_rust_toolchain_check(args(preflight))
+
+    assert result.status == "skip"
+    assert "packaged install" in result.detail
+
+
+def test_solstone_core_rust_toolchain_skips_uncovered_platform(
+    preflight, probe, monkeypatch
+):
+    monkeypatch.setattr(probe, "_is_source_checkout", lambda: True)
+    monkeypatch.setattr(
+        probe,
+        "current_solstone_core_platform",
+        lambda: ("linux", "riscv64"),
+    )
+
+    result = preflight.solstone_core_rust_toolchain_check(args(preflight))
+
+    assert result.status == "skip"
+    assert "linux/riscv64" in result.detail
+
+
+def test_solstone_core_rust_toolchain_failure_names_rust_toolchain(
+    preflight, probe, monkeypatch
+):
+    def raise_missing(*_args, **_kwargs):
+        raise FileNotFoundError
+
+    monkeypatch.setattr(probe, "_is_source_checkout", lambda: True)
+    monkeypatch.setattr(
+        probe,
+        "current_solstone_core_platform",
+        lambda: ("linux", "x86_64"),
+    )
+    monkeypatch.setattr(probe.subprocess, "run", raise_missing)
+
+    result = preflight.solstone_core_rust_toolchain_check(args(preflight))
+
+    assert result.status == "fail"
+    assert "cargo" in result.detail
+    assert result.fix is not None
+    assert "Rust" in result.fix
+    assert "cargo" in result.fix
+    assert "rustc" in result.fix
 
 
 def test_venv_consistent_ok(preflight, probe, monkeypatch, tmp_path):

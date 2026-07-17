@@ -121,6 +121,53 @@ def test_startup_check_live_foreign_exits_1_prints_message_no_pid(
     assert not (tmp_path / "health" / "supervisor.pid").exists()
 
 
+def test_core_handshake_skew_exits_before_pending_tasks(tmp_path, monkeypatch, capsys):
+    _set_identity(monkeypatch)
+    venv_bin = tmp_path / "venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    python = venv_bin / "python"
+    python.write_text("", encoding="utf-8")
+    helper = venv_bin / "solstone-core"
+    helper.write_text("#!/bin/sh\necho solstone-core 9.9.9\n", encoding="utf-8")
+    helper.chmod(0o755)
+
+    mod = _load_supervisor(tmp_path, monkeypatch)
+    monkeypatch.setattr(mod.core_handshake.sys, "executable", str(python))
+    monkeypatch.setattr(mod.core_handshake, "is_source_checkout", lambda: False)
+    monkeypatch.setattr(
+        mod.core_handshake,
+        "distribution_version",
+        lambda _name: "1.2.3",
+    )
+    monkeypatch.setattr(
+        mod.core_handshake,
+        "current_solstone_core_platform",
+        lambda: ("linux", "x86_64"),
+    )
+
+    pending_tasks_ran = False
+
+    def fail_if_pending_tasks_run(*_args, **_kwargs):
+        nonlocal pending_tasks_ran
+        pending_tasks_ran = True
+        return (0, 0)
+
+    monkeypatch.setattr(mod, "run_pending_tasks", fail_if_pending_tasks_run)
+
+    with pytest.raises(SystemExit) as exc:
+        mod.main()
+
+    assert exc.value.code == mod.core_handshake.EX_CONFIG
+    assert pending_tasks_ran is False
+    assert not (tmp_path / "health" / "supervisor.pid").exists()
+    captured = capsys.readouterr()
+    assert "1.2.3" in captured.err
+    assert "9.9.9" in captured.err
+    log_text = (tmp_path / "health" / "supervisor.log").read_text(encoding="utf-8")
+    assert "1.2.3" in log_text
+    assert "9.9.9" in log_text
+
+
 def test_mid_run_foreign_heartbeat_sets_shutdown_emits_event_returns(
     tmp_path, monkeypatch
 ):
