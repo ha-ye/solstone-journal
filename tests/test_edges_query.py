@@ -30,21 +30,15 @@ from solstone.think.indexer.journal import (
     get_journal_index,
     scan_journal,
 )
-from tests._sqlite_assertions import edges_content_hash, table_content_hash
+from tests._sqlite_assertions import (
+    CHUNK_COLUMNS,
+    EDGE_FILE_COLUMNS,
+    FILE_COLUMNS,
+    edges_content_hash,
+    table_content_hash,
+)
 
 EDGE_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "edges_journal"
-CHUNK_COLUMNS = [
-    "content",
-    "path",
-    "day",
-    "facet",
-    "agent",
-    "stream",
-    "idx",
-    "time_bucket",
-]
-FILE_COLUMNS = ["path", "mtime"]
-EDGE_FILE_COLUMNS = ["path", "mtime"]
 NEW_KINDS = frozenset(
     {
         "works-with",

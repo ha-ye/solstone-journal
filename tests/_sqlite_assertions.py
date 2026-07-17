@@ -8,8 +8,21 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from collections.abc import Sequence
 from typing import Any
 
+CHUNK_COLUMNS = [
+    "content",
+    "path",
+    "day",
+    "facet",
+    "agent",
+    "stream",
+    "idx",
+    "time_bucket",
+]
+FILE_COLUMNS = ["path", "mtime"]
+EDGE_FILE_COLUMNS = ["path", "mtime"]
 EDGE_COLUMNS = [
     "src",
     "dst",
@@ -28,6 +41,15 @@ EDGE_COLUMNS = [
 ]
 
 
+def rows_content_hash(rows: Sequence[Sequence[Any]]) -> str:
+    payload = json.dumps(
+        rows,
+        ensure_ascii=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def table_content_hash(
     conn: sqlite3.Connection,
     table: str,
@@ -36,15 +58,12 @@ def table_content_hash(
     """Hash explicit-column table contents without relying on rowid order."""
     column_sql = ", ".join(columns)
     rows: list[list[Any]] = [
-        list(row) for row in conn.execute(f"SELECT {column_sql} FROM {table}")
+        list(row)
+        for row in conn.execute(
+            f"SELECT {column_sql} FROM {table} ORDER BY {column_sql}"
+        )
     ]
-    rows.sort(key=lambda row: json.dumps(row, ensure_ascii=True, separators=(",", ":")))
-    payload = json.dumps(
-        rows,
-        ensure_ascii=True,
-        separators=(",", ":"),
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return rows_content_hash(rows)
 
 
 def edges_content_hash(conn: sqlite3.Connection) -> str:

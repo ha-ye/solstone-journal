@@ -30,36 +30,15 @@ from solstone.think.indexer.edges import (
     rebuild_edges,
 )
 from solstone.think.indexer.journal import get_journal_index, index_file, scan_journal
-from tests._sqlite_assertions import edges_content_hash, table_content_hash
+from tests._sqlite_assertions import (
+    CHUNK_COLUMNS,
+    EDGE_COLUMNS,
+    FILE_COLUMNS,
+    edges_content_hash,
+    table_content_hash,
+)
 
 EDGE_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "edges_journal"
-EDGE_COLUMNS = [
-    "src",
-    "dst",
-    "kind",
-    "directed",
-    "src_name",
-    "dst_name",
-    "day",
-    "facet",
-    "source",
-    "path",
-    "anchor",
-    "label",
-    "ts",
-    "weight",
-]
-CHUNK_COLUMNS = [
-    "content",
-    "path",
-    "day",
-    "facet",
-    "agent",
-    "stream",
-    "idx",
-    "time_bucket",
-]
-FILE_COLUMNS = ["path", "mtime"]
 
 
 @pytest.fixture
