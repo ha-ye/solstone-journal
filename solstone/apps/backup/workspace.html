@@ -179,6 +179,91 @@
         <p class="backup-status-message" data-retention-status></p>
         <button type="submit" data-copy="action_labels.save_retention"></button>
       </form>
+
+      <section class="backup-offload" data-offload-section data-offload-state="loading">
+        <header class="backup-offload-header">
+          <h2 data-copy="offload.title"></h2>
+          <p class="backup-note" data-copy="offload.enable_hint"></p>
+        </header>
+
+        <p class="backup-status-message" data-offload-unavailable data-copy="offload.unavailable_lead" hidden></p>
+        <div class="backup-offload-readiness" data-offload-readiness>
+          <p class="backup-note" data-copy="offload.not_ready"></p>
+        </div>
+
+        <form data-offload-enable-form class="backup-offload-controls">
+          <p class="backup-warning" data-copy="offload.stakes"></p>
+          <div class="backup-offload-grid">
+            <label>
+              <span data-copy="offload.labels.budget_gb"></span>
+              <input data-offload-budget-input name="budget_gb" type="number" min="0.1" step="0.1">
+            </label>
+            <label>
+              <span data-copy="offload.labels.floor_gb"></span>
+              <input data-offload-floor-input name="floor_gb" type="number" min="0.1" step="0.1">
+            </label>
+          </div>
+          <p class="backup-status-message" data-offload-config-status></p>
+          <div class="backup-panel-actions">
+            <button type="button" class="primary" data-action="offload-enable" data-copy="offload.actions.enable"></button>
+            <button type="button" data-action="offload-save" data-copy="offload.actions.save"></button>
+          </div>
+        </form>
+
+        <div class="backup-offload-summary" data-offload-summary>
+          <section>
+            <h3 data-copy="offload.labels.raw_media"></h3>
+            <p data-offload-raw-bytes data-copy="management.status_labels.not_available"></p>
+          </section>
+          <section>
+            <h3 data-copy="offload.backup_only_label"></h3>
+            <p data-offload-backup-only-bytes data-copy="management.status_labels.not_available"></p>
+          </section>
+          <section>
+            <h3 data-copy="offload.labels.device_free"></h3>
+            <p data-offload-device-free data-copy="management.status_labels.not_available"></p>
+          </section>
+          <section>
+            <h3 data-copy="offload.labels.device_total"></h3>
+            <p data-offload-device-total data-copy="management.status_labels.not_available"></p>
+          </section>
+          <section>
+            <h3 data-copy="offload.labels.last_offload"></h3>
+            <p data-offload-last-run data-copy="management.status_labels.not_yet"></p>
+          </section>
+          <section>
+            <h3 data-copy="offload.labels.last_verify"></h3>
+            <p data-offload-last-verify data-copy="management.status_labels.not_yet"></p>
+          </section>
+          <section>
+            <h3 data-copy="offload.labels.last_restore"></h3>
+            <p data-offload-last-restore data-copy="management.status_labels.not_yet"></p>
+          </section>
+        </div>
+
+        <p class="backup-warning" data-offload-stall-reason hidden></p>
+
+        <section class="backup-offload-tiering">
+          <h3 data-copy="offload.labels.days"></h3>
+          <div class="backup-offload-days" data-offload-days>
+            <article class="backup-offload-day" hidden>
+              <div>
+                <strong data-offload-day-value></strong>
+                <p class="backup-note">
+                  <span data-copy="offload.labels.raw_media"></span>
+                  <span data-offload-day-raw-bytes></span>
+                  <span data-copy="offload.backup_only_label"></span>
+                  <span data-offload-day-backup-only-bytes></span>
+                </p>
+              </div>
+              <button type="button" data-action="offload-restore-day" data-offload-day-restore data-offload-day-value data-copy="offload.actions.restore_day"></button>
+            </article>
+          </div>
+        </section>
+
+        <p class="backup-note" data-copy="offload.disable_note"></p>
+        <button type="button" data-action="offload-disable" data-offload-disable data-copy="offload.actions.disable"></button>
+      </section>
     </article>
 
     <article class="backup-panel" data-backup-panel="restore" hidden>

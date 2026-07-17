@@ -101,6 +101,72 @@
     "restore": {
       "expectation": "a large restore can take a while. you can leave this page open while it runs."
     },
+    "offload": {
+      "title": "media offload",
+      "stakes": "after offload, your backup holds the only copy of your older recordings. if you lose your recovery key, no one can recover them — not even sol pbc.",
+      "stalled_lead": "offload is paused: your backup isn't working. nothing has been deleted.",
+      "backup_only_label": "in your backup",
+      "restore_expectation": "restoring {size} from your backup — a large restore can take a while.",
+      "disable_note": "offloading stops. recordings already in your backup stay there — protected and restorable.",
+      "unavailable_lead": "can't read offload status right now.",
+      "enable_hint": "choose how much older media can leave this device after backup verification.",
+      "not_ready": "turn on encrypted backup and confirm your recovery key before using media offload.",
+      "steady_hint": "older media can move out of local storage after backup verification.",
+      "labels": {
+        "budget_gb": "raw media budget",
+        "floor_gb": "device free-space floor",
+        "raw_media": "on this device",
+        "device_free": "device free",
+        "device_total": "device total",
+        "last_offload": "last offload",
+        "last_verify": "last verification",
+        "last_restore": "last restore",
+        "days": "days with media in backup",
+        "day": "day",
+        "files": "files",
+        "segments": "segments",
+        "gb_suffix": "GB"
+      },
+      "actions": {
+        "enable": "turn on media offload",
+        "save": "save limits",
+        "disable": "turn off media offload",
+        "restore_day": "restore this day"
+      },
+      "messages": {
+        "saved": "saved",
+        "empty_days": "no offloaded media yet.",
+        "degraded": "some offload ledger entries could not be read."
+      },
+      "stall_reason_labels": {
+        "backup_not_ready": "encrypted backup needs to finish setup before media offload can run.",
+        "backup_failing": "encrypted backup needs a healthy recent copy before media offload can run.",
+        "verification_missing": "backup verification needs to run before media offload can start.",
+        "verification_overdue": "backup verification is overdue. media offload will wait for a fresh verification.",
+        "verification_failed": "backup verification failed. media offload will wait for a healthy verification.",
+        "locked": "media offload is waiting for backup maintenance to finish.",
+        "archive_failed": "media offload could not add older media to encrypted backup.",
+        "confirm_failed": "media offload could not verify the backed-up media.",
+        "confirm_tool_failed": "media offload could not run the verification tool.",
+        "unexpected_error": "media offload stopped unexpectedly. try again after backup maintenance runs."
+      },
+      "restore_reason_labels": {
+        "auth_failed": "encrypted backup rejected the recovery key or credentials.",
+        "backup_not_ready": "encrypted backup is not ready to restore media.",
+        "failed": "media restore could not finish.",
+        "insufficient_free_space": "this device needs more free space before restoring media.",
+        "ledger_degraded": "media restore is paused because the offload ledger needs repair.",
+        "locked": "media restore is waiting for backup maintenance to finish.",
+        "missing_file_after_restore": "media restore finished, but a file was still missing.",
+        "nothing_to_restore": "nothing to restore for that day.",
+        "repo_missing": "encrypted backup could not find the repository.",
+        "restic_unavailable": "the backup tool is not available yet.",
+        "rclone_unavailable": "the storage access tool is not available yet.",
+        "segment_missing": "that day is no longer available locally.",
+        "timeout": "media restore took too long. try again later.",
+        "verification_failed": "restored media did not match the backup checksum."
+      }
+    },
     "phase_labels": {
       "setting_up": "setting up your backup…",
       "restoring": "restoring your journal…",
@@ -156,7 +222,9 @@
     "error_intro": "start with the recovery key. if it still fails, check the destination details."
   };
   const copy = BACKUP_COPY;
+  const BYTES_PER_GB = 1000000000;
   let state = {};
+  let offloadState = { status: 'loading', payload: null };
   let currentRecoveryDisplay = '';
   let pollTimer = null;
 
@@ -252,7 +320,13 @@
   const statusLabels =
     (copy.management && copy.management.status_labels) || {};
   const hostedCopy = copy.hosted || {};
-  const terminalPhases = new Set(['done', 'error', 'needs_subscription', 'degraded']);
+  const offloadCopy = copy.offload || {};
+  const offloadLabels = offloadCopy.labels || {};
+  const offloadActions = offloadCopy.actions || {};
+  const offloadMessages = offloadCopy.messages || {};
+  const offloadStallLabels = offloadCopy.stall_reason_labels || {};
+  const offloadRestoreLabels = offloadCopy.restore_reason_labels || {};
+  const terminalPhases = new Set(['done', 'error', 'needs_subscription', 'degraded', 'refused']);
 
   function panel(name) {
     return root.querySelector(`[data-backup-panel="${name}"]`);
@@ -314,6 +388,187 @@
     }
   }
 
+  function formatDay(value) {
+    if (typeof value !== 'string' || value.length !== 8) return value || '';
+    return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+  }
+
+  function formatGbInput(bytes) {
+    if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes <= 0) {
+      return '';
+    }
+    const value = bytes / BYTES_PER_GB;
+    if (Number.isInteger(value)) return String(value);
+    return String(Math.round(value * 10) / 10);
+  }
+
+  function formatBytes(bytes) {
+    if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
+      return statusLabels.not_available || '';
+    }
+    const suffix = offloadLabels.gb_suffix || '';
+    const value = bytes / BYTES_PER_GB;
+    const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
+    return `${rounded.toLocaleString()}${suffix ? ' ' + suffix : ''}`;
+  }
+
+  function gbToBytes(value) {
+    const parsed = Number.parseFloat(value);
+    if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+    return Math.round(parsed * BYTES_PER_GB);
+  }
+
+  function offloadReady() {
+    return state.enabled === true && state.recovery_key_confirmed === true;
+  }
+
+  function reasonFromOffloadMap(labels, path, reason) {
+    if (!reason) return '';
+    const label = labels[reason];
+    if (!label) logMissingCopy(`${path}.${reason}`);
+    return label || '';
+  }
+
+  function offloadStallReasonLabel(reason) {
+    return reasonFromOffloadMap(offloadStallLabels, 'offload.stall_reason_labels', reason);
+  }
+
+  function offloadRestoreReasonLabel(reason) {
+    return reasonFromOffloadMap(offloadRestoreLabels, 'offload.restore_reason_labels', reason);
+  }
+
+  function formatOffloadResult(result, lookup) {
+    if (!result || !result.status) return statusLabels.not_yet || '';
+    const parts = [formatTime(result.time)];
+    if (result.status !== 'ok') {
+      const reason = lookup(result.reason);
+      if (reason) parts.push(reason);
+    }
+    return parts.filter(Boolean).join(' · ');
+  }
+
+  function offloadConfigBody() {
+    const budgetField = root.querySelector('[data-offload-budget-input]') || {};
+    const floorField = root.querySelector('[data-offload-floor-input]') || {};
+    return {
+      budget_bytes: gbToBytes(budgetField.value),
+      floor_bytes: gbToBytes(floorField.value),
+    };
+  }
+
+  function renderOffloadDays(days) {
+    const target = root.querySelector('[data-offload-days]');
+    if (!target) return;
+    target.replaceChildren();
+    if (!Array.isArray(days) || days.length === 0) {
+      const empty = document.createElement('p');
+      empty.className = 'backup-note';
+      empty.textContent = offloadMessages.empty_days || '';
+      target.append(empty);
+      return;
+    }
+    for (const day of days) {
+      const row = document.createElement('article');
+      row.className = 'backup-offload-day';
+
+      const details = document.createElement('div');
+      const heading = document.createElement('strong');
+      heading.setAttribute('data-offload-day-value', '');
+      heading.textContent = formatDay(day.day);
+      const metrics = document.createElement('p');
+      metrics.className = 'backup-note';
+      const raw = document.createElement('span');
+      raw.setAttribute('data-offload-day-raw-bytes', '');
+      raw.textContent = `${offloadLabels.raw_media || ''}: ${formatBytes(day.raw_media_bytes || 0)}`;
+      const backupOnly = document.createElement('span');
+      backupOnly.setAttribute('data-offload-day-backup-only-bytes', '');
+      backupOnly.textContent = `${offloadCopy.backup_only_label || ''}: ${formatBytes(day.backup_only_bytes || 0)}`;
+      metrics.append(raw, document.createTextNode(' · '), backupOnly);
+      details.append(heading, metrics);
+
+      if (day.degraded) {
+        const degraded = document.createElement('p');
+        degraded.className = 'backup-warning';
+        degraded.textContent = offloadMessages.degraded || '';
+        details.append(degraded);
+      }
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('data-action', 'offload-restore-day');
+      button.setAttribute('data-offload-day-restore', '');
+      button.setAttribute('data-offload-day-value', day.day || '');
+      const size = formatBytes(day.backup_only_bytes || 0);
+      button.textContent = offloadActions.restore_day || '';
+      button.title = (offloadCopy.restore_expectation || '').replace('{size}', size);
+      button.disabled = !day.backup_only_segments;
+      row.append(details, button);
+      target.append(row);
+    }
+  }
+
+  function renderOffload() {
+    const section = root.querySelector('[data-offload-section]');
+    if (!section) return;
+    section.setAttribute('data-offload-state', offloadState.status);
+
+    const ready = offloadReady();
+    const unavailable = offloadState.status === 'unavailable';
+    const payload = offloadState.payload || {};
+    const offload = payload.offload || {};
+    const enabled = ready && offload.enabled === true;
+    const unavailableElement = root.querySelector('[data-offload-unavailable]');
+    if (unavailableElement) unavailableElement.hidden = !unavailable;
+
+    const readiness = root.querySelector('[data-offload-readiness]');
+    if (readiness) readiness.hidden = ready || unavailable;
+    const form = root.querySelector('[data-offload-enable-form]');
+    const summary = root.querySelector('[data-offload-summary]');
+    const tiering = root.querySelector('.backup-offload-tiering');
+    if (form) form.hidden = unavailable;
+    if (summary) summary.hidden = unavailable || offloadState.status === 'loading';
+    if (tiering) tiering.hidden = !ready || unavailable || offloadState.status === 'loading';
+
+    const budget = offload.budget_bytes || (payload.suggested_defaults && payload.suggested_defaults.budget_bytes);
+    const floor = offload.floor_bytes || (payload.suggested_defaults && payload.suggested_defaults.floor_bytes);
+    const budgetField = root.querySelector('[data-offload-budget-input]');
+    const floorField = root.querySelector('[data-offload-floor-input]');
+    if (budgetField && offloadState.status === 'ready') budgetField.value = formatGbInput(budget);
+    if (floorField && offloadState.status === 'ready') floorField.value = formatGbInput(floor);
+    for (const field of [budgetField, floorField]) {
+      if (field) field.disabled = !ready || unavailable;
+    }
+
+    const enableButton = root.querySelector('[data-action="offload-enable"]');
+    if (enableButton) enableButton.disabled = !ready || enabled || unavailable;
+    const saveButton = root.querySelector('[data-action="offload-save"]');
+    if (saveButton) saveButton.disabled = !ready || unavailable;
+    const disableButton = root.querySelector('[data-offload-disable]');
+    if (disableButton) disableButton.disabled = !enabled || unavailable;
+
+    setText('[data-offload-raw-bytes]', formatBytes(payload.raw_media && payload.raw_media.total_bytes));
+    setText('[data-offload-backup-only-bytes]', formatBytes(payload.backup_only && payload.backup_only.total_bytes));
+    setText('[data-offload-device-free]', formatBytes(payload.device && payload.device.free_bytes));
+    setText('[data-offload-device-total]', formatBytes(payload.device && payload.device.total_bytes));
+    setText('[data-offload-last-run]', formatOffloadResult(payload.last_offload, offloadStallReasonLabel));
+    setText('[data-offload-last-verify]', formatOffloadResult(payload.last_verification, () => ''));
+    setText('[data-offload-last-restore]', formatOffloadResult(payload.last_restore, offloadRestoreReasonLabel));
+
+    const stalled = payload.last_offload && payload.last_offload.status === 'stalled';
+    const stallElement = root.querySelector('[data-offload-stall-reason]');
+    if (stallElement) {
+      stallElement.hidden = !stalled;
+      if (stalled) {
+        stallElement.textContent = [
+          offloadCopy.stalled_lead || '',
+          offloadStallReasonLabel(payload.last_offload.reason),
+        ].filter(Boolean).join(' ');
+      }
+    }
+
+    renderOffloadDays(unavailable || offloadState.status === 'loading' ? [] : payload.days);
+  }
+
   function renderOperation() {
     const operation = state.operation;
     const banner = root.querySelector('[data-operation-banner]');
@@ -341,6 +596,7 @@
     }
     renderOperation();
     renderHostedLocation();
+    renderOffload();
   }
 
   function applyPayload(payload) {
@@ -375,6 +631,27 @@
     );
     applyPayload(payload);
     return payload;
+  }
+
+  function applyOffloadPayload(payload) {
+    const next = Object.assign({}, payload || {});
+    delete next.success;
+    delete next.operation;
+    offloadState = { status: 'ready', payload: next };
+    renderOffload();
+  }
+
+  async function refreshOffloadStatus() {
+    const payload = await readJson(
+      await fetch('/app/backup/offload/status', { headers: { Accept: 'application/json' } }),
+    );
+    applyOffloadPayload(payload);
+    return payload;
+  }
+
+  function renderOffloadUnavailable() {
+    offloadState = { status: 'unavailable', payload: null };
+    renderOffload();
   }
 
   function showMessage(selector, value) {
@@ -456,6 +733,15 @@
         const payload = await refreshStatus();
         if (operationActive(payload.operation)) {
           pollUntilTerminal();
+        } else if (payload.operation && payload.operation.kind === 'offload_restore') {
+          try {
+            await refreshOffloadStatus();
+          } catch (err) {
+            if (window.logError) {
+              window.logError(err, { context: 'backup offload status after restore failed' });
+            }
+            renderOffloadUnavailable();
+          }
         } else if (
           payload.operation &&
           (payload.operation.kind === 'enable_hosted' || payload.operation.kind === 'restore_hosted') &&
@@ -541,8 +827,27 @@
           const payload = await startOperation('/app/backup/restore-hosted', { recovery_key: entered });
           maybeOpenPortal(payload);
         }
+        if (action === 'offload-enable') {
+          applyOffloadPayload(await postJson('/app/backup/offload/enable'));
+          showMessage('[data-offload-config-status]', offloadMessages.saved || '');
+        }
+        if (action === 'offload-save') {
+          applyOffloadPayload(await postJson('/app/backup/offload/config', offloadConfigBody()));
+          showMessage('[data-offload-config-status]', offloadMessages.saved || '');
+        }
+        if (action === 'offload-disable') {
+          applyOffloadPayload(await postJson('/app/backup/offload/disable'));
+          showMessage('[data-offload-config-status]', offloadMessages.saved || '');
+        }
+        if (action === 'offload-restore-day') {
+          const day = button.getAttribute('data-offload-day-value');
+          await startOperation('/app/backup/offload/restore', { day });
+        }
       } catch (err) {
-        showError('[data-operation-error]', err);
+        showError(
+          action && action.startsWith('offload-') ? '[data-offload-config-status]' : '[data-operation-error]',
+          err,
+        );
       }
     });
   }
@@ -675,6 +980,14 @@
         window.logError(err, { context: 'backup initial status failed' });
       }
       renderStatus();
+    }
+    try {
+      await refreshOffloadStatus();
+    } catch (err) {
+      if (window.logError) {
+        window.logError(err, { context: 'backup offload initial status failed' });
+      }
+      renderOffloadUnavailable();
     }
     showPanel(initialPanel());
   }

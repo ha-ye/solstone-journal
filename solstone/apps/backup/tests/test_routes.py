@@ -370,6 +370,8 @@ def test_offload_config_preserves_enabled_and_rejects_bad_values(
     monkeypatch,
 ) -> None:
     env = backup_env()
+    budget_bytes = 37_000_000_000
+    floor_bytes = 23_000_000_000
     _write_config(
         env,
         {
@@ -390,22 +392,28 @@ def test_offload_config_preserves_enabled_and_rejects_bad_values(
 
     response = env.client.post(
         "/app/backup/offload/config",
-        json={"budget_bytes": 100, "floor_bytes": 50},
+        json={"budget_bytes": budget_bytes, "floor_bytes": floor_bytes},
     )
     invalid = env.client.post(
         "/app/backup/offload/config",
         json={"budget_bytes": 0, "floor_bytes": 50},
     )
+    float_payload = env.client.post(
+        "/app/backup/offload/config",
+        json={"budget_bytes": 37.0 * 1_000_000_000, "floor_bytes": floor_bytes},
+    )
 
     assert response.status_code == 200
     assert invalid.status_code == 400
     assert invalid.get_json()["reason_code"] == "invalid_config_value"
+    assert float_payload.status_code == 400
+    assert float_payload.get_json()["reason_code"] == "invalid_config_value"
     assert json.loads(_config_path(env).read_text(encoding="utf-8"))["backup"][
         "offload"
     ] == {
         "enabled": True,
-        "budget_bytes": 100,
-        "floor_bytes": 50,
+        "budget_bytes": budget_bytes,
+        "floor_bytes": floor_bytes,
     }
 
 
@@ -779,7 +787,10 @@ def test_restore_route_reports_degraded_as_terminal_phase(
     assert response.status_code == 202
     assert final["reason_code"] == "integrity_failed"
     assert "degraded" in backup_routes.TERMINAL_PHASES
-    assert "new Set(['done', 'error', 'needs_subscription', 'degraded'])" in js_text
+    assert (
+        "new Set(['done', 'error', 'needs_subscription', 'degraded', 'refused'])"
+        in js_text
+    )
 
 
 def test_single_slot_concurrent_operation_returns_backup_busy(

@@ -159,6 +159,80 @@ STATUS_LABELS = {
 RESTORE_EXPECTATION = (
     "a large restore can take a while. you can leave this page open while it runs."
 )
+OFFLOAD_TITLE = "media offload"
+OFFLOAD_STAKES = "after offload, your backup holds the only copy of your older recordings. if you lose your recovery key, no one can recover them — not even sol pbc."
+OFFLOAD_STALLED_LEAD = (
+    "offload is paused: your backup isn't working. nothing has been deleted."
+)
+OFFLOAD_BACKUP_ONLY_LABEL = "in your backup"
+OFFLOAD_RESTORE_EXPECTATION = (
+    "restoring {size} from your backup — a large restore can take a while."
+)
+OFFLOAD_DISABLE_NOTE = "offloading stops. recordings already in your backup stay there — protected and restorable."
+OFFLOAD_UNAVAILABLE_LEAD = "can't read offload status right now."
+OFFLOAD_ENABLE_HINT = (
+    "choose how much older media can leave this device after backup verification."
+)
+OFFLOAD_NOT_READY = (
+    "turn on encrypted backup and confirm your recovery key before using media offload."
+)
+OFFLOAD_STEADY_HINT = (
+    "older media can move out of local storage after backup verification."
+)
+OFFLOAD_LABELS = {
+    "budget_gb": "raw media budget",
+    "floor_gb": "device free-space floor",
+    "raw_media": "on this device",
+    "device_free": "device free",
+    "device_total": "device total",
+    "last_offload": "last offload",
+    "last_verify": "last verification",
+    "last_restore": "last restore",
+    "days": "days with media in backup",
+    "day": "day",
+    "files": "files",
+    "segments": "segments",
+    "gb_suffix": "GB",
+}
+OFFLOAD_ACTIONS = {
+    "enable": "turn on media offload",
+    "save": "save limits",
+    "disable": "turn off media offload",
+    "restore_day": "restore this day",
+}
+OFFLOAD_MESSAGES = {
+    "saved": "saved",
+    "empty_days": "no offloaded media yet.",
+    "degraded": "some offload ledger entries could not be read.",
+}
+OFFLOAD_STALL_REASON_LABELS = {
+    "backup_not_ready": "encrypted backup needs to finish setup before media offload can run.",
+    "backup_failing": "encrypted backup needs a healthy recent copy before media offload can run.",
+    "verification_missing": "backup verification needs to run before media offload can start.",
+    "verification_overdue": "backup verification is overdue. media offload will wait for a fresh verification.",
+    "verification_failed": "backup verification failed. media offload will wait for a healthy verification.",
+    "locked": "media offload is waiting for backup maintenance to finish.",
+    "archive_failed": "media offload could not add older media to encrypted backup.",
+    "confirm_failed": "media offload could not verify the backed-up media.",
+    "confirm_tool_failed": "media offload could not run the verification tool.",
+    "unexpected_error": "media offload stopped unexpectedly. try again after backup maintenance runs.",
+}
+OFFLOAD_RESTORE_REASON_LABELS = {
+    "auth_failed": "encrypted backup rejected the recovery key or credentials.",
+    "backup_not_ready": "encrypted backup is not ready to restore media.",
+    "failed": "media restore could not finish.",
+    "insufficient_free_space": "this device needs more free space before restoring media.",
+    "ledger_degraded": "media restore is paused because the offload ledger needs repair.",
+    "locked": "media restore is waiting for backup maintenance to finish.",
+    "missing_file_after_restore": "media restore finished, but a file was still missing.",
+    "nothing_to_restore": "nothing to restore for that day.",
+    "repo_missing": "encrypted backup could not find the repository.",
+    "restic_unavailable": "the backup tool is not available yet.",
+    "rclone_unavailable": "the storage access tool is not available yet.",
+    "segment_missing": "that day is no longer available locally.",
+    "timeout": "media restore took too long. try again later.",
+    "verification_failed": "restored media did not match the backup checksum.",
+}
 ERROR_INTRO = (
     "start with the recovery key. if it still fails, check the destination details."
 )
@@ -228,6 +302,23 @@ def backup_copy_payload() -> dict[str, Any]:
         },
         "restore": {
             "expectation": RESTORE_EXPECTATION,
+        },
+        "offload": {
+            "title": OFFLOAD_TITLE,
+            "stakes": OFFLOAD_STAKES,
+            "stalled_lead": OFFLOAD_STALLED_LEAD,
+            "backup_only_label": OFFLOAD_BACKUP_ONLY_LABEL,
+            "restore_expectation": OFFLOAD_RESTORE_EXPECTATION,
+            "disable_note": OFFLOAD_DISABLE_NOTE,
+            "unavailable_lead": OFFLOAD_UNAVAILABLE_LEAD,
+            "enable_hint": OFFLOAD_ENABLE_HINT,
+            "not_ready": OFFLOAD_NOT_READY,
+            "steady_hint": OFFLOAD_STEADY_HINT,
+            "labels": dict(OFFLOAD_LABELS),
+            "actions": dict(OFFLOAD_ACTIONS),
+            "messages": dict(OFFLOAD_MESSAGES),
+            "stall_reason_labels": dict(OFFLOAD_STALL_REASON_LABELS),
+            "restore_reason_labels": dict(OFFLOAD_RESTORE_REASON_LABELS),
         },
         "phase_labels": dict(PHASE_LABELS),
         "operation_reason_labels": dict(OPERATION_REASON_LABELS),

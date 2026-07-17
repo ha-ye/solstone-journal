@@ -24,6 +24,10 @@ def _backup_css() -> str:
     return Path("solstone/apps/backup/static/backup.css").read_text(encoding="utf-8")
 
 
+def _backup_js() -> str:
+    return Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
+
+
 def _media_spans(css: str) -> list[tuple[int, int, int, str]]:
     spans: list[tuple[int, int, int, str]] = []
     for match in _MEDIA_OPEN.finditer(css):
@@ -133,6 +137,29 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         "data-retention-form",
         "data-restore-form",
         "data-restore-status",
+        "data-offload-section",
+        "data-offload-state",
+        "data-offload-readiness",
+        "data-offload-enable-form",
+        "data-offload-budget-input",
+        "data-offload-floor-input",
+        "data-offload-config-status",
+        "data-offload-summary",
+        "data-offload-device-free",
+        "data-offload-device-total",
+        "data-offload-raw-bytes",
+        "data-offload-backup-only-bytes",
+        "data-offload-last-run",
+        "data-offload-last-verify",
+        "data-offload-last-restore",
+        "data-offload-days",
+        "data-offload-day-value",
+        "data-offload-day-raw-bytes",
+        "data-offload-day-backup-only-bytes",
+        "data-offload-day-restore",
+        "data-offload-disable",
+        "data-offload-unavailable",
+        "data-offload-stall-reason",
     ):
         assert marker in html
     for hook in (
@@ -143,6 +170,9 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         'data-copy-href="hosted.manage_url"',
         'data-copy-aria-label="management.status_labels.destination"',
         "data-retention-grid",
+        'data-copy="offload.title"',
+        'data-copy="offload.stakes"',
+        'data-copy="offload.disable_note"',
     ):
         assert hook in html
 
@@ -156,3 +186,25 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         "font-size:0",
     ):
         assert forbidden not in normalized
+
+
+def test_offload_js_source_contracts() -> None:
+    js = _backup_js()
+
+    assert "const BYTES_PER_GB = 1000000000;" in js
+    assert "return Math.round(parsed * BYTES_PER_GB);" in js
+    assert "budget_bytes: gbToBytes(budgetField.value)" in js
+    assert "floor_bytes: gbToBytes(floorField.value)" in js
+    assert "budget_bytes: budgetField.value" not in js
+    assert "floor_bytes: floorField.value" not in js
+    assert "await startOperation('/app/backup/offload/restore', { day });" in js
+    assert re.findall(r"postJson\('(/app/backup/offload/disable)'", js) == [
+        "/app/backup/offload/disable"
+    ]
+    assert "delete next.operation;" in js
+    assert "applyPayload(await postJson('/app/backup/offload" not in js
+    assert "kind === 'offload_restore'" in js
+
+    budget_gb = 37
+    floor_gb = 23
+    assert budget_gb != floor_gb

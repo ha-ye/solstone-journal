@@ -10,6 +10,14 @@ import re
 from pathlib import Path
 
 from solstone.apps.backup.copy import backup_copy_payload, backup_copy_values
+from solstone.think.offload import OFFLOAD_STALL_REASONS
+from solstone.think.offload_restore import OFFLOAD_RESTORE_REASONS
+
+_VERB_SUBJECT = re.compile(
+    r"\b(?:sol|solstone|the system)\s+"
+    r"(?:observes|watches|sees|captures|records|monitors|tracks|collects)\b",
+    re.IGNORECASE,
+)
 
 
 def _backup_js_text() -> str:
@@ -27,6 +35,7 @@ def _backup_copy_literal() -> dict:
 
 def test_backup_copy_verbatim_strings() -> None:
     payload = backup_copy_payload()
+    offload = payload["offload"]
 
     assert payload["service_name"] == "encrypted backup"
     assert payload["intro"]["title"] == "encrypted backup"
@@ -89,6 +98,47 @@ def test_backup_copy_verbatim_strings() -> None:
         payload["destination"]["field_labels"]["b2_application_key"]
         == "application key"
     )
+    assert (
+        offload["stakes"]
+        == "after offload, your backup holds the only copy of your older recordings. if you lose your recovery key, no one can recover them — not even sol pbc."
+    )
+    assert (
+        offload["stalled_lead"]
+        == "offload is paused: your backup isn't working. nothing has been deleted."
+    )
+    assert offload["backup_only_label"] == "in your backup"
+    assert (
+        offload["restore_expectation"]
+        == "restoring {size} from your backup — a large restore can take a while."
+    )
+    assert "{size}" in offload["restore_expectation"]
+    assert (
+        offload["disable_note"]
+        == "offloading stops. recordings already in your backup stay there — protected and restorable."
+    )
+    assert offload["unavailable_lead"] == "can't read offload status right now."
+
+
+def test_backup_copy_has_no_surveillance_verb_subjects() -> None:
+    assert _VERB_SUBJECT.search("sol records your day")
+    assert _VERB_SUBJECT.search("your older recordings") is None
+
+    offenders = [value for value in backup_copy_values() if _VERB_SUBJECT.search(value)]
+    assert offenders == []
+
+
+def test_offload_reason_copy_covers_closed_vocabularies() -> None:
+    offload = backup_copy_payload()["offload"]
+    stall = offload["stall_reason_labels"]
+    restore = offload["restore_reason_labels"]
+
+    assert set(stall) == set(OFFLOAD_STALL_REASONS)
+    assert set(restore) == set(OFFLOAD_RESTORE_REASONS)
+    for reason in OFFLOAD_STALL_REASONS:
+        assert stall[reason]
+    for reason in OFFLOAD_RESTORE_REASONS:
+        assert restore[reason]
+    assert stall["locked"] != offload["stalled_lead"]
 
 
 def test_operated_lane_copy_neutralizes_hosting_terms() -> None:
@@ -156,6 +206,7 @@ def test_all_copy_constants_referenced_by_render_surface() -> None:
             "hosted",
             "management",
             "restore",
+            "offload",
             "phase_labels",
             "operation_reason_labels",
             "action_labels",
