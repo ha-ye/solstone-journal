@@ -202,6 +202,10 @@ include-package-data = true
 
 [tool.setuptools.packages.find]
 include = ["solstone*"]
+exclude = ["*.tests", "*.tests.*"]
+
+[tool.setuptools.cmdclass]
+build_py = "build_hooks.BuildPyWithoutTests"
 
 [tool.uv]
 # The [journal]/[journal-cuda] tombstones pin solstone-journal-host==0.7.0, a

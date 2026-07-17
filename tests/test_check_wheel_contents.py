@@ -117,6 +117,25 @@ def test_core_wheel_validator_rejects_record_drift(tmp_path: Path) -> None:
     assert any("RECORD hash mismatch" in error for error in errors)
 
 
+def test_base_wheel_validator_rejects_tests_path_segment(tmp_path: Path) -> None:
+    clean = _write_minimal_wheel(tmp_path, "solstone")
+
+    clean_errors = checker.check_base_wheel(clean, checker.MAX_BASE_WHEEL_BYTES)
+    assert not [
+        error for error in clean_errors if "base wheel ships test path" in error
+    ]
+
+    dirty = _write_minimal_wheel(tmp_path, "solstone_dirty")
+    test_member = "solstone/apps/search/tests/test_routes.py"
+    with zipfile.ZipFile(dirty, "a") as wheel:
+        _write_member(wheel, test_member, b"")
+
+    dirty_errors = checker.check_base_wheel(dirty, checker.MAX_BASE_WHEEL_BYTES)
+    assert any(
+        f"base wheel ships test path {test_member}" in error for error in dirty_errors
+    )
+
+
 def _add_tar_member(archive: tarfile.TarFile, name: str) -> None:
     content = b"x"
     info = tarfile.TarInfo(name)

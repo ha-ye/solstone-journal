@@ -5,6 +5,7 @@
 # installed wheel silently omitted them while source-tree CI stayed green); graft
 # removes that failure mode at the root.
 graft solstone
+include build_hooks.py
 
 # Exclude only compiled/editor cruft.
 global-exclude *.py[cod]

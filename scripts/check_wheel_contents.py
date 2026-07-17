@@ -106,6 +106,10 @@ def check_base_wheel(path: Path, max_bytes: int) -> list[str]:
     onnx_members = _onnx_members(path)
     if onnx_members:
         errors.append(f"{path.name}: base wheel contains ONNX members: {onnx_members}")
+    with zipfile.ZipFile(path) as wheel:
+        for member in wheel.namelist():
+            if "tests" in member.split("/"):
+                errors.append(f"{path.name}: base wheel ships test path {member}")
     return errors
 
 
