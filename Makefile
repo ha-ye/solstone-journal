@@ -484,6 +484,9 @@ install-checks: .installed
 	@echo "=== Checking journal format contract ==="
 	@$(MAKE) check-contract
 	@echo ""
+	@echo "=== Checking core fixtures ==="
+	@$(MAKE) check-core-fixtures
+	@echo ""
 	@echo "=== Checking packaging render ==="
 	@python3 scripts/render_packaging.py --check
 	@echo ""
@@ -633,6 +636,12 @@ contract:
 check-contract: .installed
 	$(VENV_BIN)/python -m solstone.think.contract_cli check
 	$(VENV_BIN)/python -m solstone.think.contract_cli build --check
+
+core-fixtures:
+	$(VENV_BIN)/python scripts/build_core_fixtures.py
+
+check-core-fixtures: .installed
+	$(VENV_BIN)/python scripts/build_core_fixtures.py --check
 
 # Re-run the live four-backend integrated-façade cogitate smoke. Spawns an
 # external runner script against this venv so the real openhands-sdk Agent path
