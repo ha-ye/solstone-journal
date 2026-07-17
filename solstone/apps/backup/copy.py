@@ -48,6 +48,7 @@ DESTRUCTIVE_CAPTION = (
 )
 TEARDOWN_GATE_LEAD = "{days} days of recordings ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever."
 TEARDOWN_GATE_UNAVAILABLE_LEAD = "can't verify what exists only in this backup right now. deleting the backup may destroy recordings that exist nowhere else."
+TEARDOWN_GATE_ZERO_LEAD = "no offloaded recordings exist only in this backup right now."
 TEARDOWN_CONFIRM_PHRASE = "delete"
 TEARDOWN_CONFIRM_PROMPT = "type delete to confirm"
 TEARDOWN_RESTORE_FIRST_ACTION = "restore everything first"
@@ -154,6 +155,7 @@ STATUS_LABELS = {
     "snapshot_history": "snapshot history",
     "not_available": "not yet available",
     "not_yet": "not yet",
+    "ago": "{duration} ago",
     "enabled": "on",
     "disabled": "off",
     "destination": "where your backup lives",
@@ -184,16 +186,21 @@ OFFLOAD_ENABLE_HINT = (
 OFFLOAD_NOT_READY = (
     "turn on encrypted backup and confirm your recovery key before using media offload."
 )
+OFFLOAD_INVALID_LIMITS = "enter a positive number for each limit, then save again."
 OFFLOAD_LABELS = {
     "budget_gb": "raw media budget",
     "floor_gb": "device free-space floor",
+    "budget_short": "budget",
+    "floor_short": "floor",
     "raw_media": "on this device",
     "device_free": "device free",
     "device_total": "device total",
     "last_offload": "last offload",
     "last_verify": "last verification",
     "last_restore": "last restore",
-    "days": "days with media in backup",
+    "days": "offloaded days",
+    "mb_suffix": "MB",
+    "under_1mb": "under 1 MB",
     "gb_suffix": "GB",
 }
 OFFLOAD_ACTIONS = {
@@ -205,6 +212,7 @@ OFFLOAD_ACTIONS = {
 OFFLOAD_MESSAGES = {
     "saved": "saved",
     "empty_days": "no offloaded media yet.",
+    "show_all_days": "show all {count} days",
     "degraded": "some offload ledger entries could not be read.",
 }
 OFFLOAD_STALL_REASON_LABELS = {
@@ -300,6 +308,7 @@ def backup_copy_payload() -> dict[str, Any]:
             "destructive_caption": DESTRUCTIVE_CAPTION,
             "teardown_gate_lead": TEARDOWN_GATE_LEAD,
             "teardown_gate_unavailable_lead": TEARDOWN_GATE_UNAVAILABLE_LEAD,
+            "teardown_gate_zero_lead": TEARDOWN_GATE_ZERO_LEAD,
             "teardown_confirm_phrase": TEARDOWN_CONFIRM_PHRASE,
             "teardown_confirm_prompt": TEARDOWN_CONFIRM_PROMPT,
             "teardown_restore_first_action": TEARDOWN_RESTORE_FIRST_ACTION,
@@ -319,6 +328,7 @@ def backup_copy_payload() -> dict[str, Any]:
             "disable_note": OFFLOAD_DISABLE_NOTE,
             "unavailable_lead": OFFLOAD_UNAVAILABLE_LEAD,
             "action_error": OFFLOAD_ACTION_ERROR,
+            "invalid_limits": OFFLOAD_INVALID_LIMITS,
             "enable_hint": OFFLOAD_ENABLE_HINT,
             "not_ready": OFFLOAD_NOT_READY,
             "labels": dict(OFFLOAD_LABELS),

@@ -79,6 +79,7 @@
       "destructive_caption": "this deletes all your backup data. no new backups will be created.",
       "teardown_gate_lead": "{days} days of recordings ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever.",
       "teardown_gate_unavailable_lead": "can't verify what exists only in this backup right now. deleting the backup may destroy recordings that exist nowhere else.",
+      "teardown_gate_zero_lead": "no offloaded recordings exist only in this backup right now.",
       "teardown_confirm_phrase": "delete",
       "teardown_confirm_prompt": "type delete to confirm",
       "teardown_restore_first_action": "restore everything first",
@@ -90,6 +91,7 @@
         "snapshot_history": "snapshot history",
         "not_available": "not yet available",
         "not_yet": "not yet",
+        "ago": "{duration} ago",
         "enabled": "on",
         "disabled": "off",
         "destination": "where your backup lives",
@@ -115,18 +117,23 @@
       "disable_note": "offloading stops. recordings already in your backup stay there — protected and restorable.",
       "unavailable_lead": "can't read offload status right now.",
       "action_error": "media offload couldn't finish. check backup setup, then try again.",
+      "invalid_limits": "enter a positive number for each limit, then save again.",
       "enable_hint": "choose how much older media can leave this device after backup verification.",
       "not_ready": "turn on encrypted backup and confirm your recovery key before using media offload.",
       "labels": {
         "budget_gb": "raw media budget",
         "floor_gb": "device free-space floor",
+        "budget_short": "budget",
+        "floor_short": "floor",
         "raw_media": "on this device",
         "device_free": "device free",
         "device_total": "device total",
         "last_offload": "last offload",
         "last_verify": "last verification",
         "last_restore": "last restore",
-        "days": "days with media in backup",
+        "days": "offloaded days",
+        "mb_suffix": "MB",
+        "under_1mb": "under 1 MB",
         "gb_suffix": "GB"
       },
       "actions": {
@@ -138,6 +145,7 @@
       "messages": {
         "saved": "saved",
         "empty_days": "no offloaded media yet.",
+        "show_all_days": "show all {count} days",
         "degraded": "some offload ledger entries could not be read."
       },
       "stall_reason_labels": {
@@ -225,9 +233,12 @@
   };
   const copy = BACKUP_COPY;
   const BYTES_PER_GB = 1000000000;
+  const BYTES_PER_MB = 1000000;
+  const MAX_OFFLOAD_DAY_ROWS = 21;
   let state = {};
   let offloadState = { status: 'loading', payload: null };
   let currentRecoveryDisplay = '';
+  let offloadDaysExpanded = false;
   let pollTimer = null;
 
   const root = document.querySelector('[data-backup-root]');
@@ -350,6 +361,23 @@
     if (element) element.textContent = value || '';
   }
 
+  function setElementHidden(selector, hidden) {
+    const element = root.querySelector(selector);
+    if (element) element.hidden = hidden;
+  }
+
+  function setTextWithTitle(selector, display) {
+    const element = root.querySelector(selector);
+    if (!element) return;
+    element.textContent = (display && display.text) || '';
+    const title = display && display.title;
+    if (title) {
+      element.title = title;
+    } else {
+      element.removeAttribute('title');
+    }
+  }
+
   function operationActive(operation) {
     return operation && !terminalPhases.has(operation.phase);
   }
@@ -368,6 +396,9 @@
 
   function offloadActionError(err) {
     const reason = err && err.reason_code;
+    if (reason === 'invalid_config_value') {
+      return offloadCopy.invalid_limits || '';
+    }
     if (offloadRouteErrorReasons.has(reason) && operationLabels[reason]) {
       return operationLabels[reason];
     }
@@ -403,9 +434,38 @@
     }
   }
 
+  function timestampDisplay(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+      return { text: statusLabels.not_yet || '', title: '' };
+    }
+    const title = formatTime(value);
+    const elapsed = Date.now() - value * 1000;
+    if (
+      title &&
+      Number.isFinite(elapsed) &&
+      elapsed >= 0 &&
+      typeof relativeTime === 'function'
+    ) {
+      return {
+        text: (statusLabels.ago || '').replace('{duration}', relativeTime(elapsed)),
+        title,
+      };
+    }
+    return { text: title, title };
+  }
+
   function formatDay(value) {
     if (typeof value !== 'string' || value.length !== 8) return value || '';
     return `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6, 8)}`;
+  }
+
+  function formatDisplayDay(value) {
+    if (typeof value !== 'string' || value.length !== 8) return value || '';
+    if (typeof formatDateShort === 'function') {
+      const formatted = formatDateShort(value);
+      if (formatted && formatted !== value) return formatted;
+    }
+    return formatDay(value);
   }
 
   function formatGbInput(bytes) {
@@ -413,16 +473,26 @@
       return '';
     }
     const value = bytes / BYTES_PER_GB;
-    if (Number.isInteger(value)) return String(value);
-    return String(Math.round(value * 10) / 10);
+    const rounded = Math.round(value * 100) / 100;
+    if (rounded <= 0) return '0.01';
+    return String(rounded);
   }
 
   function formatBytes(bytes) {
     if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) {
       return statusLabels.not_available || '';
     }
-    const suffix = offloadLabels.gb_suffix || '';
-    const value = bytes / BYTES_PER_GB;
+    if (bytes === 0) {
+      const suffix = offloadLabels.gb_suffix || '';
+      return `0${suffix ? ' ' + suffix : ''}`;
+    }
+    if (bytes < BYTES_PER_MB) {
+      return offloadLabels.under_1mb || '';
+    }
+    const isGb = bytes >= BYTES_PER_GB;
+    const suffix = isGb ? offloadLabels.gb_suffix || '' : offloadLabels.mb_suffix || '';
+    const divisor = isGb ? BYTES_PER_GB : BYTES_PER_MB;
+    const value = bytes / divisor;
     const rounded = value >= 10 ? Math.round(value) : Math.round(value * 10) / 10;
     return `${rounded.toLocaleString()}${suffix ? ' ' + suffix : ''}`;
   }
@@ -452,14 +522,25 @@
     return reasonFromOffloadMap(offloadRestoreLabels, 'offload.restore_reason_labels', reason);
   }
 
-  function formatOffloadResult(result, lookup) {
-    if (!result || !result.status) return statusLabels.not_yet || '';
-    const parts = [formatTime(result.time)];
+  function formatWorkingProofDisplay(result) {
+    if (!result || !result.last_ok_time) return { text: statusLabels.not_yet || '', title: '' };
+    return timestampDisplay(result.last_ok_time);
+  }
+
+  function formatRestoreResultDisplay(result) {
+    if (!result || !result.status) return { text: statusLabels.not_yet || '', title: '' };
+    const display = timestampDisplay(result.time);
+    const parts = [display.text];
     if (result.status !== 'ok') {
-      const reason = lookup(result.reason);
+      const reason = offloadRestoreReasonLabel(result.reason);
       if (reason) parts.push(reason);
     }
-    return parts.filter(Boolean).join(' · ');
+    return { text: parts.filter(Boolean).join(' · '), title: display.title };
+  }
+
+  function offloadRestoreExpectation(bytes) {
+    if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return '';
+    return (offloadCopy.restore_expectation || '').replace('{size}', formatBytes(bytes));
   }
 
   function teardownConfirmPhrase() {
@@ -481,6 +562,30 @@
     if (button) button.disabled = !teardownConfirmSatisfied();
   }
 
+  function offloadDayHasBackupOnly(day) {
+    return Boolean(
+      day &&
+        (day.backup_only_bytes > 0 ||
+          day.backup_only_segments > 0 ||
+          day.degraded === true),
+    );
+  }
+
+  function hasBackupOnly(payload) {
+    const backupOnly = payload && payload.backup_only;
+    if (backupOnly && typeof backupOnly === 'object' && !Array.isArray(backupOnly)) {
+      if (
+        backupOnly.total_bytes > 0 ||
+        backupOnly.total_segments > 0 ||
+        backupOnly.total_days > 0 ||
+        backupOnly.degraded === true
+      ) {
+        return true;
+      }
+    }
+    return Array.isArray(payload && payload.days) && payload.days.some(offloadDayHasBackupOnly);
+  }
+
   function backupOnlyTotalsForTeardown() {
     if (offloadState.status !== 'ready') return null;
     const payload = offloadState.payload || {};
@@ -491,24 +596,33 @@
     const bytes = backupOnly.total_bytes;
     if (typeof days !== 'number' || !Number.isFinite(days) || days < 0) return null;
     if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return null;
-    return { days, size: formatBytes(bytes) };
+    return { days, size: formatBytes(bytes), bytes };
   }
 
   function renderTeardownGate(totals) {
     const stakes = root.querySelector('[data-teardown-stakes]');
     if (!stakes) return;
+    const restoreFirst = root.querySelector('[data-action="teardown-restore-first"]');
     if (totals === null) {
       stakes.textContent = managementCopy.teardown_gate_unavailable_lead || '';
+      if (restoreFirst) restoreFirst.disabled = false;
+      return;
+    }
+    if (totals.days === 0 && totals.bytes === 0) {
+      stakes.textContent = managementCopy.teardown_gate_zero_lead || '';
+      if (restoreFirst) restoreFirst.disabled = true;
       return;
     }
     stakes.textContent = (managementCopy.teardown_gate_lead || '')
       .replace('{days}', totals.days.toLocaleString())
       .replace('{size}', totals.size);
+    if (restoreFirst) restoreFirst.disabled = false;
   }
 
   function showTeardownGate() {
     const gate = root.querySelector('[data-teardown-gate]');
     if (gate) gate.hidden = false;
+    setElementHidden('[data-action="teardown-open"]', true);
     updateTeardownConfirmState();
   }
 
@@ -521,6 +635,7 @@
   function resetTeardownGate() {
     const gate = root.querySelector('[data-teardown-gate]');
     if (gate) gate.hidden = true;
+    setElementHidden('[data-action="teardown-open"]', false);
     disarmTeardownConfirm();
     showMessage('[data-teardown-status]', '');
   }
@@ -552,27 +667,65 @@
     };
   }
 
+  function offloadLimitState() {
+    const budgetField = root.querySelector('[data-offload-budget-input]') || {};
+    const floorField = root.querySelector('[data-offload-floor-input]') || {};
+    const budgetBytes = gbToBytes(budgetField.value);
+    const floorBytes = gbToBytes(floorField.value);
+    const budgetPositive = budgetBytes > 0;
+    const floorPositive = floorBytes > 0;
+    return {
+      bothPositive: budgetPositive && floorPositive,
+      exactlyOnePositive: budgetPositive !== floorPositive,
+    };
+  }
+
+  function offloadDaysDegraded(days, payload) {
+    return Boolean(
+      (payload && payload.backup_only && payload.backup_only.degraded === true) ||
+        (Array.isArray(days) && days.some((day) => day && day.degraded === true)),
+    );
+  }
+
   function renderOffloadDays(days) {
     const target = root.querySelector('[data-offload-days]');
     if (!target) return;
     const template = root.querySelector('[data-offload-day-template]');
     target.replaceChildren();
-    if (!Array.isArray(days) || days.length === 0) {
+    const payload = offloadState.payload || {};
+    const filtered = Array.isArray(days)
+      ? days
+          .filter(offloadDayHasBackupOnly)
+          .slice()
+          .sort((left, right) => String(right.day || '').localeCompare(String(left.day || '')))
+      : [];
+    if (filtered.length === 0) {
+      if (offloadDaysDegraded(days, payload)) {
+        const degraded = document.createElement('p');
+        degraded.className = 'backup-warning';
+        degraded.textContent = offloadMessages.degraded || '';
+        target.append(degraded);
+        return;
+      }
       const empty = document.createElement('p');
       empty.className = 'backup-note';
       empty.textContent = offloadMessages.empty_days || '';
       target.append(empty);
       return;
     }
-    for (const day of days) {
+    const visible = offloadDaysExpanded ? filtered : filtered.slice(0, MAX_OFFLOAD_DAY_ROWS);
+    for (const day of visible) {
       const clone = template.content.cloneNode(true);
       applyCopy(clone, copy);
       const row = clone.querySelector('.backup-offload-day');
       const details = clone.querySelector('[data-offload-day-detail]');
       const heading = clone.querySelector('strong[data-offload-day-value]');
-      if (heading) heading.textContent = formatDay(day.day);
+      const displayDay = formatDisplayDay(day.day);
+      if (heading) heading.textContent = displayDay;
       const raw = clone.querySelector('[data-offload-day-raw-bytes]');
       if (raw) raw.textContent = formatBytes(day.raw_media_bytes || 0);
+      const rawRow = clone.querySelector('[data-offload-day-raw-row]');
+      if (rawRow) rawRow.hidden = !(day.raw_media_bytes > 0);
       const backupOnly = clone.querySelector('[data-offload-day-backup-only-bytes]');
       if (backupOnly) backupOnly.textContent = formatBytes(day.backup_only_bytes || 0);
 
@@ -588,9 +741,26 @@
       if (button) {
         button.setAttribute('data-offload-day-value', day.day || '');
         button.title = (offloadCopy.restore_expectation || '').replace('{size}', size);
+        button.setAttribute(
+          'aria-label',
+          [offloadCopy.actions && offloadCopy.actions.restore_day, displayDay]
+            .filter(Boolean)
+            .join(': '),
+        );
         button.disabled = !day.backup_only_segments;
       }
       if (row) target.append(row);
+    }
+    const remaining = filtered.length - visible.length;
+    if (remaining > 0) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('data-action', 'offload-show-all-days');
+      button.textContent = (offloadMessages.show_all_days || '').replace(
+        '{count}',
+        filtered.length.toLocaleString(),
+      );
+      target.append(button);
     }
   }
 
@@ -600,21 +770,28 @@
     section.setAttribute('data-offload-state', offloadState.status);
 
     const ready = offloadReady();
+    const loading = offloadState.status === 'loading';
     const unavailable = offloadState.status === 'unavailable';
     const payload = offloadState.payload || {};
     const offload = payload.offload || {};
     const enabled = ready && offload.enabled === true;
+    const hasBackupOnlyMedia = hasBackupOnly(payload);
+    const showControls = ready && !unavailable && !loading;
+    const showUsage = ready && !unavailable && !loading;
+    const showProof = ready && !unavailable && !loading && (enabled || hasBackupOnlyMedia);
     const unavailableElement = root.querySelector('[data-offload-unavailable]');
     if (unavailableElement) unavailableElement.hidden = !unavailable;
 
     const readiness = root.querySelector('[data-offload-readiness]');
-    if (readiness) readiness.hidden = ready || unavailable;
+    if (readiness) readiness.hidden = ready || unavailable || loading;
     const form = root.querySelector('[data-offload-enable-form]');
     const summary = root.querySelector('[data-offload-summary]');
+    const proof = root.querySelector('[data-offload-proof]');
     const tiering = root.querySelector('.backup-offload-tiering');
-    if (form) form.hidden = unavailable;
-    if (summary) summary.hidden = unavailable || offloadState.status === 'loading';
-    if (tiering) tiering.hidden = !ready || unavailable || offloadState.status === 'loading';
+    if (form) form.hidden = !showControls;
+    if (summary) summary.hidden = !showUsage;
+    if (proof) proof.hidden = !showProof;
+    if (tiering) tiering.hidden = !showProof;
 
     const budget = offload.budget_bytes || (payload.suggested_defaults && payload.suggested_defaults.budget_bytes);
     const floor = offload.floor_bytes || (payload.suggested_defaults && payload.suggested_defaults.floor_bytes);
@@ -623,29 +800,55 @@
     if (budgetField && offloadState.status === 'ready') budgetField.value = formatGbInput(budget);
     if (floorField && offloadState.status === 'ready') floorField.value = formatGbInput(floor);
     for (const field of [budgetField, floorField]) {
-      if (field) field.disabled = !ready || unavailable;
+      if (field) field.disabled = !showControls;
     }
 
+    const stakes = root.querySelector('[data-offload-stakes]');
+    if (stakes) {
+      stakes.hidden = !showControls;
+      stakes.classList.toggle('backup-offload-stakes--warning', showControls && !enabled);
+      stakes.classList.toggle('backup-offload-stakes--note', showControls && enabled);
+    }
+    setElementHidden('[data-offload-on-chip]', !enabled);
     const enableButton = root.querySelector('[data-action="offload-enable"]');
-    if (enableButton) enableButton.disabled = !ready || enabled || unavailable;
+    if (enableButton) {
+      enableButton.hidden = !showControls || enabled;
+      enableButton.disabled = !showControls || enabled;
+    }
     const saveButton = root.querySelector('[data-action="offload-save"]');
-    if (saveButton) saveButton.disabled = !ready || unavailable;
+    if (saveButton) {
+      saveButton.hidden = !showControls || !enabled;
+      saveButton.disabled = !showControls || !enabled;
+    }
     const disableButton = root.querySelector('[data-offload-disable]');
-    if (disableButton) disableButton.disabled = !enabled || unavailable;
+    if (disableButton) {
+      disableButton.hidden = !enabled;
+      disableButton.disabled = !enabled;
+    }
+    setElementHidden('[data-offload-disable-note]', !enabled);
 
     setText('[data-offload-raw-bytes]', formatBytes(payload.raw_media && payload.raw_media.total_bytes));
     setText('[data-offload-backup-only-bytes]', formatBytes(payload.backup_only && payload.backup_only.total_bytes));
     setText('[data-offload-device-free]', formatBytes(payload.device && payload.device.free_bytes));
     setText('[data-offload-device-total]', formatBytes(payload.device && payload.device.total_bytes));
-    setText('[data-offload-last-run]', formatOffloadResult(payload.last_offload, offloadStallReasonLabel));
-    setText('[data-offload-last-verify]', formatOffloadResult(payload.last_verification, () => ''));
-    setText('[data-offload-last-restore]', formatOffloadResult(payload.last_restore, offloadRestoreReasonLabel));
+    const budgetValid = typeof budget === 'number' && Number.isFinite(budget) && budget > 0;
+    const floorValid = typeof floor === 'number' && Number.isFinite(floor) && floor > 0;
+    setElementHidden('[data-offload-budget-row]', !budgetValid);
+    setElementHidden('[data-offload-floor-row]', !floorValid);
+    setText('[data-offload-budget]', budgetValid ? formatBytes(budget) : '');
+    setText('[data-offload-floor]', floorValid ? formatBytes(floor) : '');
+    setTextWithTitle(
+      '[data-offload-last-run]',
+      formatWorkingProofDisplay(payload.last_offload),
+    );
+    setTextWithTitle('[data-offload-last-verify]', formatWorkingProofDisplay(payload.last_verification));
+    setTextWithTitle('[data-offload-last-restore]', formatRestoreResultDisplay(payload.last_restore));
 
     const stalled = payload.last_offload && payload.last_offload.status === 'stalled';
     const stallElement = root.querySelector('[data-offload-stall-reason]');
     if (stallElement) {
-      stallElement.hidden = !stalled;
-      if (stalled) {
+      stallElement.hidden = !(ready && !unavailable && stalled);
+      if (!stallElement.hidden) {
         stallElement.textContent = [
           offloadCopy.stalled_lead || '',
           offloadStallReasonLabel(payload.last_offload.reason),
@@ -653,7 +856,7 @@
       }
     }
 
-    renderOffloadDays(unavailable || offloadState.status === 'loading' ? [] : payload.days);
+    renderOffloadDays(showProof ? payload.days : []);
   }
 
   function renderOperation() {
@@ -674,8 +877,8 @@
       'data-state',
       operationActive(state.operation) ? state.operation.phase : managedMode() ? 'done' : 'empty',
     );
-    setText('[data-last-backup]', formatTime(state.last_backup && state.last_backup.time));
-    setText('[data-last-prune]', formatTime(state.last_prune && state.last_prune.time));
+    setTextWithTitle('[data-last-backup]', timestampDisplay(state.last_backup && state.last_backup.time));
+    setTextWithTitle('[data-last-prune]', timestampDisplay(state.last_prune && state.last_prune.time));
     const retention = state.retention || {};
     for (const input of root.querySelectorAll('[data-retention-field]')) {
       const key = input.getAttribute('data-retention-field');
@@ -846,6 +1049,7 @@
         } else if (payload.operation && payload.operation.kind === 'teardown') {
           resetTeardownGate();
         } else if (payload.operation && payload.operation.kind === 'offload_restore') {
+          showMessage('[data-offload-restore-status]', '');
           try {
             await refreshOffloadStatus();
           } catch (err) {
@@ -943,6 +1147,11 @@
           }
         }
         if (action === 'teardown-restore-first') {
+          const totalBytes =
+            offloadState.payload &&
+            offloadState.payload.backup_only &&
+            offloadState.payload.backup_only.total_bytes;
+          showMessage('[data-offload-restore-status]', offloadRestoreExpectation(totalBytes));
           await startOperation('/app/backup/offload/restore', { all: true });
           resetTeardownGate();
         }
@@ -954,6 +1163,16 @@
           maybeOpenPortal(payload);
         }
         if (action === 'offload-enable') {
+          const limits = offloadLimitState();
+          if (limits.exactlyOnePositive) {
+            showMessage('[data-offload-config-status]', offloadCopy.invalid_limits || '');
+            return;
+          }
+          if (limits.bothPositive) {
+            if (!applyOffloadPayload(await postJson('/app/backup/offload/config', offloadConfigBody()))) {
+              return;
+            }
+          }
           if (applyOffloadPayload(await postJson('/app/backup/offload/enable'))) {
             showMessage('[data-offload-config-status]', offloadMessages.saved || '');
           }
@@ -970,9 +1189,24 @@
         }
         if (action === 'offload-restore-day') {
           const day = button.getAttribute('data-offload-day-value');
+          const entry =
+            offloadState.payload &&
+            Array.isArray(offloadState.payload.days) &&
+            offloadState.payload.days.find((candidate) => candidate && candidate.day === day);
+          showMessage(
+            '[data-offload-restore-status]',
+            offloadRestoreExpectation(entry && entry.backup_only_bytes),
+          );
           await startOperation('/app/backup/offload/restore', { day });
         }
+        if (action === 'offload-show-all-days') {
+          offloadDaysExpanded = true;
+          renderOffloadDays((offloadState.payload && offloadState.payload.days) || []);
+        }
       } catch (err) {
+        if (action === 'offload-restore-day' || action === 'teardown-restore-first') {
+          showMessage('[data-offload-restore-status]', '');
+        }
         if (action && action.startsWith('teardown-')) {
           showError('[data-teardown-status]', err);
         } else if (action && action.startsWith('offload-')) {

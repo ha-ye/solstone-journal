@@ -86,10 +86,15 @@ def test_backup_copy_verbatim_strings() -> None:
         payload["management"]["teardown_gate_unavailable_lead"]
         == "can't verify what exists only in this backup right now. deleting the backup may destroy recordings that exist nowhere else."
     )
+    assert (
+        payload["management"]["teardown_gate_zero_lead"]
+        == "no offloaded recordings exist only in this backup right now."
+    )
     assert payload["management"]["teardown_confirm_phrase"] == TEARDOWN_CONFIRM_PHRASE
     assert payload["management"]["teardown_confirm_prompt"] == TEARDOWN_CONFIRM_PROMPT
     assert static["management"]["teardown_confirm_phrase"] == TEARDOWN_CONFIRM_PHRASE
     assert static["management"]["teardown_confirm_prompt"] == TEARDOWN_CONFIRM_PROMPT
+    assert payload["management"]["status_labels"]["ago"] == "{duration} ago"
     assert (
         payload["management"]["teardown_restore_first_action"]
         == "restore everything first"
@@ -141,6 +146,16 @@ def test_backup_copy_verbatim_strings() -> None:
         == "offloading stops. recordings already in your backup stay there — protected and restorable."
     )
     assert offload["unavailable_lead"] == "can't read offload status right now."
+    assert (
+        offload["invalid_limits"]
+        == "enter a positive number for each limit, then save again."
+    )
+    assert offload["labels"]["mb_suffix"] == "MB"
+    assert offload["labels"]["under_1mb"] == "under 1 MB"
+    assert offload["labels"]["budget_short"] == "budget"
+    assert offload["labels"]["floor_short"] == "floor"
+    assert offload["labels"]["days"] == "offloaded days"
+    assert offload["messages"]["show_all_days"] == "show all {count} days"
 
 
 def test_backup_copy_has_no_surveillance_verb_subjects() -> None:

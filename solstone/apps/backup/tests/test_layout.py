@@ -182,10 +182,15 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         "data-offload-floor-input",
         "data-offload-config-status",
         "data-offload-summary",
+        "data-offload-proof",
         "data-offload-device-free",
         "data-offload-device-total",
         "data-offload-raw-bytes",
         "data-offload-backup-only-bytes",
+        "data-offload-budget",
+        "data-offload-floor",
+        "data-offload-on-chip",
+        "data-offload-stakes",
         "data-offload-last-run",
         "data-offload-last-verify",
         "data-offload-last-restore",
@@ -193,9 +198,12 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         "data-offload-day-template",
         "data-offload-day-value",
         "data-offload-day-raw-bytes",
+        "data-offload-day-raw-row",
         "data-offload-day-backup-only-bytes",
         "data-offload-day-restore",
+        "data-offload-restore-status",
         "data-offload-disable",
+        "data-offload-disable-note",
         "data-offload-unavailable",
         "data-offload-stall-reason",
         "data-teardown-gate",
@@ -214,6 +222,9 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         "data-retention-grid",
         'data-copy="offload.title"',
         'data-copy="offload.stakes"',
+        'data-copy="offload.labels.gb_suffix"',
+        'data-copy="offload.labels.budget_short"',
+        'data-copy="offload.labels.floor_short"',
         'data-copy="offload.disable_note"',
         'data-copy="management.teardown_confirm_prompt"',
         'data-copy="management.teardown_restore_first_action"',
@@ -222,6 +233,16 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         'data-action="teardown-restore-first"',
     ):
         assert hook in html
+    assert 'class="backup-warning backup-offload-stakes"' not in html
+    assert 'class="backup-offload-stakes"' in html
+    assert html.count('class="backup-offload-summary"') == 2
+    assert html.index("data-offload-summary") < html.index("data-offload-proof")
+    assert (
+        html.index('class="backup-offload-tiering"')
+        < html.index("data-offload-restore-status")
+        < html.index("data-offload-disable-note")
+    )
+    assert 'min="0.01" step="any"' in html
 
     css = _backup_css()
     narrow_css = "\n".join(_narrow_media_blocks(css))
@@ -233,6 +254,41 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         "font-size:0",
     ):
         assert forbidden not in normalized
+
+
+def test_backup_css_hidden_and_disabled_controls() -> None:
+    css = _backup_css()
+
+    for selector in (
+        ".backup-offload-summary[hidden]",
+        ".backup-offload-grid[hidden]",
+        ".backup-offload-days[hidden]",
+        ".backup-offload-day[hidden]",
+        ".backup-panel-actions[hidden]",
+        ".backup-offload-chip[hidden]",
+        ".backup-offload-stakes[hidden]",
+        ".backup-offload-tiering[hidden]",
+        ".backup-offload-controls[hidden]",
+        ".backup-teardown-gate[hidden]",
+    ):
+        assert selector in css
+    assert ".backup-panel button:disabled" in css
+    assert "cursor: not-allowed" in css
+    assert "opacity: 0.45" in css
+    assert ".backup-panel button.primary:hover:not(:disabled)" in css
+    assert ".backup-panel button.danger:hover:not(:disabled)" in css
+    assert ".backup-panel button.primary:hover {" not in css
+    assert ".backup-panel button.danger:hover {" not in css
+    assert ".backup-offload-stakes--warning" in css
+    assert ".backup-offload-stakes--note" in css
+    assert "background: #fbf1d6;" in css
+    assert "color: #7c4a0c;" in css
+    assert "background: #e7f1e9;" in css
+    assert "color: #166534;" in css
+    assert "background: #fbeaea;" in css
+    assert "border-left: 3px solid #9b1c1c;" in css
+    assert "max-width: 12rem;" in css
+    assert "!important" not in css
 
 
 def test_offload_day_template_survives_days_container_rerender() -> None:
@@ -252,6 +308,7 @@ def test_offload_js_source_contracts() -> None:
     js = _backup_js()
 
     assert "const BYTES_PER_GB = 1000000000;" in js
+    assert "const BYTES_PER_MB = 1000000;" in js
     assert "return Math.round(parsed * BYTES_PER_GB);" in js
     assert "budget_bytes: gbToBytes(budgetField.value)" in js
     assert "floor_bytes: gbToBytes(floorField.value)" in js
@@ -264,13 +321,34 @@ def test_offload_js_source_contracts() -> None:
     assert "delete next.operation;" in js
     assert "applyPayload(await postJson('/app/backup/offload" not in js
     assert "kind === 'offload_restore'" in js
+    assert "showMessage('[data-offload-restore-status]', '');" in js
     assert "applyCopy(clone, copy);" in js
+    assert "offloadLabels.mb_suffix" in js
+    assert "offloadLabels.under_1mb" in js
+    assert "return '0.01';" in js
+    assert "Number.isInteger(rounded)" not in js
+
+    format_bytes = js[
+        js.index("function formatBytes(bytes)") : js.index("function gbToBytes")
+    ]
+    zero_branch = "bytes === 0"
+    sub_mb_branch = "bytes < BYTES_PER_MB"
+    gb_mb_split = "const isGb = bytes >= BYTES_PER_GB;"
+    assert zero_branch in format_bytes
+    assert sub_mb_branch in format_bytes
+    assert gb_mb_split in format_bytes
+    assert format_bytes.index(zero_branch) < format_bytes.index(sub_mb_branch)
+    assert format_bytes.index(sub_mb_branch) < format_bytes.index(gb_mb_split)
+    assert "offloadLabels.under_1mb" in format_bytes
+    assert "offloadLabels.mb_suffix" in format_bytes
 
     offload_error = js[
         js.index("function offloadActionError(err)") : js.index(
             "function maybeOpenPortal"
         )
     ]
+    assert "reason === 'invalid_config_value'" in offload_error
+    assert "offloadCopy.invalid_limits" in offload_error
     assert "operationLabels[reason]" in offload_error
     assert "offloadCopy.action_error" in offload_error
     assert "destinationLabels" not in offload_error
@@ -282,6 +360,90 @@ def test_offload_js_source_contracts() -> None:
     ]
     assert "offloadActionError(err)" in offload_catch
     assert "showError" not in offload_catch
+
+    timestamp_display = js[
+        js.index("function timestampDisplay(value)") : js.index("function formatDay")
+    ]
+    assert timestamp_display.index(
+        "typeof value !== 'number'"
+    ) < timestamp_display.index("typeof relativeTime === 'function'")
+    assert timestamp_display.index("elapsed >= 0") < timestamp_display.index(
+        "relativeTime(elapsed)"
+    )
+
+    working_proof = js[
+        js.index("function formatWorkingProofDisplay(result)") : js.index(
+            "function formatRestoreResultDisplay(result)"
+        )
+    ]
+    assert "result.last_ok_time" in working_proof
+    assert "|| result.time" not in working_proof
+    assert "result.time" not in working_proof
+    assert "parts.push" not in working_proof
+    assert "reason" not in working_proof
+
+    restore_result = js[
+        js.index("function formatRestoreResultDisplay(result)") : js.index(
+            "function offloadRestoreExpectation(bytes)"
+        )
+    ]
+    assert "timestampDisplay(result.time)" in restore_result
+    assert "offloadRestoreReasonLabel(result.reason)" in restore_result
+    assert "parts.push(reason)" in restore_result
+
+    restore_expectation = js[
+        js.index("function offloadRestoreExpectation(bytes)") : js.index(
+            "function teardownConfirmPhrase"
+        )
+    ]
+    assert "offloadCopy.restore_expectation" in restore_expectation
+    assert "formatBytes(bytes)" in restore_expectation
+
+    enable_action = js[
+        js.index("if (action === 'offload-enable')") : js.index(
+            "if (action === 'offload-save')"
+        )
+    ]
+    assert "limits.exactlyOnePositive" in enable_action
+    assert "offloadCopy.invalid_limits" in enable_action
+    config_post = "postJson('/app/backup/offload/config', offloadConfigBody())"
+    enable_post = "postJson('/app/backup/offload/enable')"
+    assert enable_action.index(config_post) < enable_action.index(enable_post)
+
+    save_action = js[
+        js.index("if (action === 'offload-save')") : js.index(
+            "if (action === 'offload-disable')"
+        )
+    ]
+    assert "offloadLimitState" not in save_action
+    assert config_post in save_action
+
+    catch_clear = (
+        "if (action === 'offload-restore-day' || action === 'teardown-restore-first')"
+    )
+    assert js.index(catch_clear) < js.index(
+        "if (action && action.startsWith('teardown-'))"
+    )
+
+    teardown_restore_first = js[
+        js.index("if (action === 'teardown-restore-first')") : js.index(
+            "if (action === 'cancel-restore')"
+        )
+    ]
+    assert "offloadRestoreExpectation(totalBytes)" in teardown_restore_first
+    assert "labelForPhase('restoring')" not in teardown_restore_first
+
+    offload_restore_day = js[
+        js.index("if (action === 'offload-restore-day')") : js.index(
+            "if (action === 'offload-show-all-days')"
+        )
+    ]
+    assert "candidate.day === day" in offload_restore_day
+    assert (
+        "offloadRestoreExpectation(entry && entry.backup_only_bytes)"
+        in offload_restore_day
+    )
+    assert "labelForPhase('restoring')" not in offload_restore_day
 
     budget_gb = 37
     floor_gb = 23
@@ -298,6 +460,27 @@ def test_offload_days_render_clears_offload_days_container() -> None:
     ]
     assert "root.querySelector('[data-offload-days]')" in render_offload_days
     assert "target.replaceChildren();" in render_offload_days
+    assert ".filter(offloadDayHasBackupOnly)" in render_offload_days
+    assert render_offload_days.index(
+        ".filter(offloadDayHasBackupOnly)"
+    ) < render_offload_days.index(".sort((left, right)")
+    assert render_offload_days.index(".sort((left, right)") < render_offload_days.index(
+        "filtered.slice(0, MAX_OFFLOAD_DAY_ROWS)"
+    )
+    assert "offloadMessages.show_all_days" in render_offload_days
+    assert "formatDisplayDay(day.day)" in render_offload_days
+    assert "if (offloadDaysDegraded(days, payload)) return;" not in render_offload_days
+    assert "degraded.className = 'backup-warning';" in render_offload_days
+
+    day_predicate = js[
+        js.index("function offloadDayHasBackupOnly(day)") : js.index(
+            "function hasBackupOnly"
+        )
+    ]
+    assert "day.backup_only_bytes > 0" in day_predicate
+    assert "day.backup_only_segments > 0" in day_predicate
+    assert "day.degraded === true" in day_predicate
+    assert "backup_only_files" not in day_predicate
 
 
 def test_offload_js_validates_payload_shape_before_ready_state() -> None:
@@ -334,7 +517,7 @@ def test_teardown_js_source_contracts() -> None:
     assert "typeof bytes !== 'number'" in js
     assert "!Number.isFinite(days)" in js
     assert "!Number.isFinite(bytes)" in js
-    assert "return { days, size: formatBytes(bytes) };" in js
+    assert "return { days, size: formatBytes(bytes), bytes };" in js
     assert "if (totals.days > 0)" not in js
     assert re.findall(r"startOperation\('(/app/backup/teardown)'", js) == [
         "/app/backup/teardown"
@@ -360,7 +543,24 @@ def test_teardown_js_source_contracts() -> None:
     ]
     assert "if (totals === null)" in render_gate
     assert "managementCopy.teardown_gate_unavailable_lead" in render_gate
+    assert "managementCopy.teardown_gate_zero_lead" in render_gate
     assert "managementCopy.teardown_gate_lead" in render_gate
+    assert "restoreFirst.disabled = true" in render_gate
+    assert "restoreFirst.disabled = false" in render_gate
+
+    show_gate = js[
+        js.index("function showTeardownGate") : js.index(
+            "function disarmTeardownConfirm"
+        )
+    ]
+    assert "setElementHidden('[data-action=\"teardown-open\"]', true);" in show_gate
+
+    reset_gate = js[
+        js.index("function resetTeardownGate") : js.index(
+            "// /app/backup/teardown remains unguarded"
+        )
+    ]
+    assert "setElementHidden('[data-action=\"teardown-open\"]', false);" in reset_gate
 
     open_gate = js[
         js.index("async function openTeardownGate()") : js.index(
