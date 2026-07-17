@@ -486,6 +486,7 @@
     const payload = offloadState.payload || {};
     const backupOnly = payload.backup_only;
     if (!backupOnly || typeof backupOnly !== 'object' || Array.isArray(backupOnly)) return null;
+    if (backupOnly.degraded !== false) return null;
     const days = backupOnly.total_days;
     const bytes = backupOnly.total_bytes;
     if (typeof days !== 'number' || !Number.isFinite(days) || days < 0) return null;
@@ -511,13 +512,17 @@
     updateTeardownConfirmState();
   }
 
+  function disarmTeardownConfirm() {
+    const input = root.querySelector('[data-teardown-input]');
+    if (input) input.value = '';
+    updateTeardownConfirmState();
+  }
+
   function resetTeardownGate() {
     const gate = root.querySelector('[data-teardown-gate]');
-    const input = root.querySelector('[data-teardown-input]');
     if (gate) gate.hidden = true;
-    if (input) input.value = '';
+    disarmTeardownConfirm();
     showMessage('[data-teardown-status]', '');
-    updateTeardownConfirmState();
   }
 
   // /app/backup/teardown remains unguarded server-side exactly as shipped today;
@@ -931,6 +936,7 @@
         if (action === 'teardown-cancel') resetTeardownGate();
         if (action === 'teardown-confirm') {
           if (!teardownConfirmSatisfied()) return;
+          disarmTeardownConfirm();
           const payload = await startOperation('/app/backup/teardown');
           if (payload.operation && payload.operation.kind === 'teardown' && !operationActive(payload.operation)) {
             resetTeardownGate();

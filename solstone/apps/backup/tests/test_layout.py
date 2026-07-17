@@ -260,6 +260,12 @@ def test_teardown_js_source_contracts() -> None:
     assert "const backupOnly = payload.backup_only;" in js
     assert "typeof backupOnly !== 'object'" in js
     assert "Array.isArray(backupOnly)" in js
+    backup_only_totals = js[
+        js.index("function backupOnlyTotalsForTeardown()") : js.index(
+            "function renderTeardownGate"
+        )
+    ]
+    assert "backupOnly.degraded !== false" in backup_only_totals
     assert "const days = backupOnly.total_days;" in js
     assert "const bytes = backupOnly.total_bytes;" in js
     assert "typeof days !== 'number'" in js
@@ -311,7 +317,12 @@ def test_teardown_js_source_contracts() -> None:
         )
     ]
     guard = "if (!teardownConfirmSatisfied()) return;"
+    disarm = "disarmTeardownConfirm();"
     target = "await startOperation('/app/backup/teardown');"
     assert guard in confirm_action
+    assert disarm in confirm_action
     assert target in confirm_action
-    assert js.index(guard) < js.index(target)
+    guard_position = js.index(guard)
+    disarm_position = js.index(disarm, guard_position)
+    target_position = js.index(target)
+    assert guard_position < disarm_position < target_position
