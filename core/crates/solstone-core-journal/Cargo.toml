@@ -1,5 +1,5 @@
 [package]
-name = "solstone-core"
+name = "solstone-core-journal"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,5 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
-solstone-core-cli.workspace = true
-solstone-core-journal.workspace = true
+toml_edit.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
