@@ -202,6 +202,163 @@ class FakeBatch:
             yield request
 
 
+class MergeBatch:
+    instances = []
+    outcomes: dict[tuple, dict] = {}
+
+    def __init__(self, max_concurrent=5, client=None):
+        self.max_concurrent = max_concurrent
+        self.pending_tasks = set()
+        self.queue = []
+        self.history = []
+        MergeBatch.instances.append(self)
+
+    def create(self, **kwargs):
+        return SimpleNamespace(
+            **kwargs,
+            response=None,
+            error=None,
+            duration=0.01,
+            model_used="gemini-test",
+            provider=None,
+            reason_code=None,
+            reset_at_ms=None,
+        )
+
+    def add(self, request):
+        self.queue.append(request)
+
+    def update(self, request, **kwargs):
+        for key, value in kwargs.items():
+            setattr(request, key, value)
+        request.error = None
+        request.reason_code = None
+        self.add(request)
+
+    async def drain_batch(self):
+        pending = self.queue
+        self.queue = []
+        for request in pending:
+            key = (
+                request.request_type.value,
+                request.frame_id,
+                getattr(request, "extraction_category", None),
+            )
+            self.history.append(key)
+            outcome = MergeBatch.outcomes.get(key, {})
+            if outcome.get("fail"):
+                request.error = outcome.get("error", "boom")
+                request.reason_code = outcome.get("reason_code")
+                request.retry_count = 4
+            else:
+                request.error = None
+                request.reason_code = None
+                request.response = outcome.get("response")
+                if request.response is None:
+                    if request.request_type == describe_module.RequestType.DESCRIBE:
+                        request.response = json.dumps(
+                            {
+                                "primary": "code",
+                                "secondary": "none",
+                                "overlap": True,
+                            }
+                        )
+                    else:
+                        request.response = f"{request.extraction_category} text"
+            yield request
+
+
+def _install_merge_fakes(monkeypatch, outcomes: dict[tuple, dict] | None = None):
+    from solstone.think import batch as batch_module
+    from solstone.think import models
+
+    MergeBatch.instances = []
+    MergeBatch.outcomes = outcomes or {}
+    monkeypatch.delenv("OBSERVER_NAME", raising=False)
+    monkeypatch.delenv("SEGMENT_META", raising=False)
+    monkeypatch.setattr(batch_module, "Batch", MergeBatch)
+    monkeypatch.setattr(
+        models,
+        "resolve_provider",
+        lambda _interface: ("google", "gemini-test"),
+    )
+    monkeypatch.setattr(
+        processing_record_module, "now_iso_utc", lambda: "2026-06-30T12:00:00Z"
+    )
+    monkeypatch.setattr(describe_module, "callosum_send", lambda *a, **k: None)
+
+
+def _fingerprinted_processor(
+    video_path: Path,
+    frames: list[dict],
+    monkeypatch,
+    *,
+    first_hash: int | None = 0x1111,
+    last_hash: int | None = 0x2222,
+) -> object:
+    processor = _processor(video_path, frames, monkeypatch)
+    processor.first_hash = first_hash
+    processor.last_hash = last_hash
+    processor.qualified_count = len(frames)
+    return processor
+
+
+def _processing_record(
+    video_path: Path,
+    *,
+    attempts: int | None = 1,
+    input_size: int | None = None,
+) -> dict:
+    record = {
+        "schema": "solstone.processing.v1",
+        "state": "failed",
+        "reason_code": "analysis_failed",
+        "handler": "describe",
+        "attempted_at": "2026-06-30T12:00:00Z",
+        "input_size": video_path.stat().st_size if input_size is None else input_size,
+    }
+    if attempts is not None:
+        record["attempts"] = attempts
+    return record
+
+
+def _existing_header(
+    video_path: Path,
+    *,
+    first_hash: int | None = 0x1111,
+    last_hash: int | None = 0x2222,
+    qualified_count: int = 1,
+    attempts: int | None = 1,
+    input_size: int | None = None,
+    observer: str | None = None,
+) -> dict:
+    header = {
+        "raw": video_path.name,
+        "first_hash": (None if first_hash is None else f"{first_hash:016x}"),
+        "last_hash": None if last_hash is None else f"{last_hash:016x}",
+        "qualified_count": qualified_count,
+        "_solstone_processing": _processing_record(
+            video_path,
+            attempts=attempts,
+            input_size=input_size,
+        ),
+    }
+    if observer is not None:
+        header["observer"] = observer
+    return header
+
+
+def _write_existing_output(
+    output_path: Path,
+    header: dict,
+    row_lines: list[str],
+) -> None:
+    output_path.write_text(
+        json.dumps(header) + "\n" + "".join(row_lines),
+        encoding="utf-8",
+    )
+
+
 @pytest.mark.asyncio
 async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
     tmp_path, monkeypatch
@@ -286,6 +443,358 @@ async def test_success_with_mixed_results_promotes_byte_identical_jsonl(
     assert output_path.read_text() == expected
     assert output_path.name in [path.name for path in output_path.parent.iterdir()]
     _assert_no_describe_temp(output_path.parent)
+
+
+@pytest.mark.asyncio
+async def test_incremental_merge_reuses_clean_rows_and_requests_only_gaps(
+    tmp_path, monkeypatch
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    frames = [
+        _frame(1, 0.0, frame_bytes),
+        _frame(2, 1.25, frame_bytes),
+        _frame(3, 2.5, frame_bytes),
+    ]
+    processor = _fingerprinted_processor(video_path, frames, monkeypatch)
+    request_type = describe_module.RequestType.DESCRIBE.value
+    category_type = describe_module.RequestType.CATEGORY.value
+    clean_line = (
+        '{"frame_id":1,"timestamp":0.0,"requests":[{"type":"describe",'
+        '"model":"old","duration":0.01}],"analysis":{"primary":"code",'
+        '"secondary":"none","overlap":true},"enhanced":false}\n'
+    )
+    phase1_gap = (
+        json.dumps(
+            {
+                "frame_id": 2,
+                "timestamp": 1.25,
+                "requests": [{"type": request_type, "model": "old", "duration": 0.01}],
+                "error": "boom",
+                "enhanced": False,
+            }
+        )
+        + "\n"
+    )
+    phase3_gap = (
+        json.dumps(
+            {
+                "frame_id": 3,
+                "timestamp": 2.5,
+                "requests": [
+                    {"type": request_type, "model": "old", "duration": 0.01},
+                    {
+                        "type": category_type,
+                        "model": "old",
+                        "duration": 0.01,
+                        "category": "code",
+                    },
+                    {
+                        "type": category_type,
+                        "model": "old",
+                        "duration": 0.01,
+                        "category": "browsing",
+                        "retries": 4,
+                    },
+                ],
+                "analysis": {
+                    "primary": "code",
+                    "secondary": "browsing",
+                    "overlap": False,
+                },
+                "enhanced": True,
+                "content": {"code": "old code"},
+                "error": "old browsing failure",
+            }
+        )
+        + "\n"
+    )
+    _write_existing_output(
+        output_path,
+        _existing_header(video_path, qualified_count=3),
+        [phase3_gap, clean_line, phase1_gap],
+    )
+    _install_merge_fakes(monkeypatch)
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+        previous_attempts=1,
+        incremental_source_path=output_path,
+    )
+
+    history = MergeBatch.instances[0].history
+    assert (request_type, 1, None) not in history
+    assert (category_type, 1, "code") not in history
+    assert history == [
+        (request_type, 2, None),
+        (category_type, 3, "browsing"),
+    ]
+
+    lines = output_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    rows = [json.loads(line) for line in lines]
+    assert rows[0]["_solstone_processing"]["state"] == "analyzed"
+    assert "attempts" not in rows[0]["_solstone_processing"]
+    assert [row["frame_id"] for row in rows[1:]] == [1, 2, 3]
+    assert lines[1] == clean_line
+    assert rows[2]["frame_id"] == 2
+    assert rows[2]["analysis"]["primary"] == "code"
+    assert rows[2]["enhanced"] is False
+    assert rows[3]["analysis"] == {
+        "primary": "code",
+        "secondary": "browsing",
+        "overlap": False,
+    }
+    assert rows[3]["content"] == {
+        "code": "old code",
+        "browsing": "browsing text",
+    }
+    assert "error" not in rows[3]
+
+
+@pytest.mark.asyncio
+async def test_incremental_all_gap_frames_failed_preserves_reused_rows(
+    tmp_path, monkeypatch
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    frames = [_frame(1, 0.0, frame_bytes), _frame(2, 1.25, frame_bytes)]
+    processor = _fingerprinted_processor(video_path, frames, monkeypatch)
+    request_type = describe_module.RequestType.DESCRIBE.value
+    clean_line = (
+        '{"frame_id":1,"timestamp":0.0,"requests":[],"analysis":{"primary":"code",'
+        '"secondary":"none","overlap":true},"enhanced":false}\n'
+    )
+    failed_line = (
+        json.dumps(
+            {
+                "frame_id": 2,
+                "timestamp": 1.25,
+                "requests": [{"type": request_type, "model": "old", "duration": 0.01}],
+                "error": "old failure",
+                "enhanced": False,
+            }
+        )
+        + "\n"
+    )
+    _write_existing_output(
+        output_path,
+        _existing_header(video_path, qualified_count=2),
+        [clean_line, failed_line],
+    )
+    _install_merge_fakes(
+        monkeypatch,
+        {
+            (request_type, 2, None): {
+                "fail": True,
+                "error": "still broken",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+        previous_attempts=1,
+        incremental_source_path=output_path,
+    )
+
+    lines = output_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    rows = [json.loads(line) for line in lines]
+    assert rows[0]["_solstone_processing"]["state"] == "failed"
+    assert rows[0]["_solstone_processing"]["attempts"] == 2
+    assert [row["frame_id"] for row in rows[1:]] == [1, 2]
+    assert lines[1] == clean_line
+    assert rows[2]["error"] == "still broken"
+    assert MergeBatch.instances[0].history == [(request_type, 2, None)]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "first_hash_mismatch",
+        "last_hash_mismatch",
+        "qualified_count_mismatch",
+        "input_size_mismatch",
+        "current_first_hash_none",
+        "row_parse_error",
+        "row_id_outside_fresh_winnow",
+    ],
+)
+@pytest.mark.asyncio
+async def test_incremental_gate_failure_falls_back_to_full_describe(
+    tmp_path, monkeypatch, case
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    first_hash = None if case == "current_first_hash_none" else 0x1111
+    processor = _fingerprinted_processor(
+        video_path,
+        [_frame(1, 0.0, frame_bytes)],
+        monkeypatch,
+        first_hash=first_hash,
+    )
+    request_type = describe_module.RequestType.DESCRIBE.value
+    header = _existing_header(video_path)
+    if case == "first_hash_mismatch":
+        header["first_hash"] = "0000000000009999"
+    elif case == "last_hash_mismatch":
+        header["last_hash"] = "0000000000009999"
+    elif case == "qualified_count_mismatch":
+        header["qualified_count"] = 2
+    elif case == "input_size_mismatch":
+        header["_solstone_processing"]["input_size"] = video_path.stat().st_size + 1
+
+    old_row = (
+        '{"frame_id":1,"timestamp":0.0,"requests":[],"analysis":{"primary":"code",'
+        '"secondary":"none","overlap":true},"enhanced":false,"old":true}\n'
+    )
+    if case == "row_parse_error":
+        row_lines = ["not json\n"]
+    elif case == "row_id_outside_fresh_winnow":
+        row_lines = [
+            '{"frame_id":99,"timestamp":0.0,"requests":[],"analysis":'
+            '{"primary":"code","secondary":"none","overlap":true},'
+            '"enhanced":false}\n'
+        ]
+    else:
+        row_lines = [old_row]
+    _write_existing_output(output_path, header, row_lines)
+    _install_merge_fakes(monkeypatch)
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+        previous_attempts=1,
+        incremental_source_path=output_path,
+    )
+
+    rows = _jsonl_rows(output_path)
+    assert MergeBatch.instances[0].history == [(request_type, 1, None)]
+    assert rows[1]["frame_id"] == 1
+    assert "old" not in rows[1]
+
+
+@pytest.mark.asyncio
+async def test_incremental_gate_mismatch_preserves_attempt_counter_on_fallback(
+    tmp_path, monkeypatch
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    request_type = describe_module.RequestType.DESCRIBE.value
+    _write_existing_output(
+        output_path,
+        _existing_header(video_path, first_hash=0xAAAA, attempts=None),
+        [
+            '{"frame_id":1,"timestamp":0.0,"requests":[],"analysis":'
+            '{"primary":"code","secondary":"none","overlap":true},'
+            '"enhanced":false}\n'
+        ],
+    )
+    _install_merge_fakes(
+        monkeypatch,
+        {
+            (request_type, 1, None): {
+                "fail": True,
+                "error": "still broken",
+            }
+        },
+    )
+
+    attempts = []
+    for current_hash in (0x1001, 0x1002, 0x1003):
+        processor = _fingerprinted_processor(
+            video_path,
+            [_frame(1, 0.0, frame_bytes)],
+            monkeypatch,
+            first_hash=current_hash,
+            last_hash=0x2222,
+        )
+        record = processing_record_module.read_processing_record_header(output_path)
+        with pytest.raises(RuntimeError):
+            await processor.process_with_vision(
+                max_concurrent=1,
+                output_path=output_path,
+                work_key="20250101/143022_300/screen",
+                previous_attempts=processing_record_module.record_attempts(record),
+                incremental_source_path=output_path,
+            )
+        attempts.append(
+            processing_record_module.read_processing_record_header(output_path)[
+                "attempts"
+            ]
+        )
+
+    assert attempts == [1, 2, 3]
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.asyncio
+async def test_incremental_reentry_carries_prior_observer(
+    tmp_path, monkeypatch, fallback
+):
+    video_path = _video_path(tmp_path)
+    output_path = video_path.with_suffix(".jsonl")
+    frame_bytes = _png_bytes()
+    processor = _fingerprinted_processor(
+        video_path,
+        [_frame(1, 0.0, frame_bytes)],
+        monkeypatch,
+    )
+    header = _existing_header(
+        video_path,
+        first_hash=0x9999 if fallback else 0x1111,
+        observer="desk",
+    )
+    _write_existing_output(
+        output_path,
+        header,
+        [
+            '{"frame_id":1,"timestamp":0.0,"requests":[],"analysis":'
+            '{"primary":"code","secondary":"none","overlap":true},'
+            '"enhanced":false}\n'
+        ],
+    )
+    _install_merge_fakes(monkeypatch)
+    monkeypatch.delenv("OBSERVER_NAME", raising=False)
+    monkeypatch.setattr(
+        describe_module,
+        "select_frames_for_extraction",
+        lambda *_args, **_kwargs: [],
+    )
+
+    await processor.process_with_vision(
+        max_concurrent=1,
+        output_path=output_path,
+        work_key="20250101/143022_300/screen",
+        previous_attempts=1,
+        incremental_source_path=output_path,
+    )
+
+    rows = _jsonl_rows(output_path)
+    assert rows[0]["observer"] == "desk"
 
 
 @pytest.mark.asyncio

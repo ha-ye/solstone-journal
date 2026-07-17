@@ -279,8 +279,9 @@ async def test_describe_explicit_jobs_wins_without_policy_resolution(
         output_path: Path | None = None,
         work_key: str | None = None,
         previous_attempts: int = 0,
+        incremental_source_path: Path | None = None,
     ) -> None:
-        del self, output_path, work_key, previous_attempts
+        del self, output_path, work_key, previous_attempts, incremental_source_path
         observed.append(max_concurrent)
 
     def fail_policy(_effective_procs: int) -> int:

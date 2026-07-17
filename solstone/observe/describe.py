@@ -26,6 +26,7 @@ import os
 import sys
 import tempfile
 import time
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import List, Optional
@@ -139,6 +140,55 @@ class RequestType(Enum):
 
     DESCRIBE = "describe"  # Initial categorization
     CATEGORY = "category"  # Category-specific follow-up
+
+
+@dataclass
+class ExistingDescribeRow:
+    data: dict
+    raw_line: str
+
+
+@dataclass
+class ExistingDescribeArtifact:
+    header: dict
+    record: dict
+    rows: list[ExistingDescribeRow] | None
+
+
+@dataclass
+class IncrementalMergePlan:
+    reusable_rows: dict[int, ExistingDescribeRow]
+    phase1_gap_ids: set[int]
+    phase3_gaps: dict[int, tuple[dict, tuple[str, ...]]]
+
+
+def _read_existing_describe_artifact(path: Path) -> ExistingDescribeArtifact | None:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    except (OSError, UnicodeDecodeError):
+        return None
+    if not lines:
+        return None
+    try:
+        header = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(header, dict):
+        return None
+    record = header.get("_solstone_processing")
+    if not isinstance(record, dict):
+        return None
+
+    rows: list[ExistingDescribeRow] = []
+    for raw_line in lines[1:]:
+        try:
+            row = json.loads(raw_line)
+        except json.JSONDecodeError:
+            return ExistingDescribeArtifact(header=header, record=record, rows=None)
+        if not isinstance(row, dict):
+            return ExistingDescribeArtifact(header=header, record=record, rows=None)
+        rows.append(ExistingDescribeRow(data=row, raw_line=raw_line))
+    return ExistingDescribeArtifact(header=header, record=record, rows=rows)
 
 
 def _discover_categories() -> dict[str, dict]:
@@ -612,12 +662,12 @@ class VideoProcessor:
             return None
         return f"{hash_value:016x}"
 
-    def _build_metadata_header(self) -> dict:
+    def _build_metadata_header(self, fallback_observer: str | None = None) -> dict:
         # Files are in segment directories, filename is simple (e.g., center_DP-3_screen.webm)
         metadata = {"raw": self.video_path.name}
 
         # Add observer origin if set (from sense.py for observer uploads)
-        observer = os.getenv("OBSERVER_NAME")
+        observer = os.getenv("OBSERVER_NAME") or fallback_observer
         if observer:
             metadata["observer"] = observer
 
@@ -686,6 +736,102 @@ class VideoProcessor:
             return cat_meta
         return None
 
+    def _expected_category_names(self, analysis: dict) -> tuple[str, ...]:
+        categories: list[str] = []
+        primary = analysis.get("primary", "")
+        secondary = analysis.get("secondary", "none")
+        overlap = analysis.get("overlap", True)
+
+        if self._get_category_metadata(primary):
+            categories.append(primary)
+        if (
+            not overlap
+            and secondary != "none"
+            and self._get_category_metadata(secondary)
+        ):
+            categories.append(secondary)
+        return tuple(categories)
+
+    def _build_incremental_merge_plan(
+        self,
+        artifact: ExistingDescribeArtifact | None,
+        *,
+        qualified_ids: set[int],
+        input_size: int,
+    ) -> IncrementalMergePlan | None:
+        if artifact is None or artifact.rows is None:
+            return None
+        if self.first_hash is None:
+            return None
+        if artifact.header.get("first_hash") != self._format_dhash(self.first_hash):
+            return None
+        if artifact.header.get("last_hash") != self._format_dhash(self.last_hash):
+            return None
+        if artifact.header.get("qualified_count") != self.qualified_count:
+            return None
+        if artifact.record.get("input_size") != input_size:
+            return None
+
+        reusable_rows: dict[int, ExistingDescribeRow] = {}
+        phase1_gap_ids: set[int] = set()
+        phase3_gaps: dict[int, tuple[dict, tuple[str, ...]]] = {}
+        seen_ids: set[int] = set()
+
+        for existing_row in artifact.rows:
+            row = existing_row.data
+            frame_id = row.get("frame_id")
+            if isinstance(frame_id, bool) or not isinstance(frame_id, int):
+                return None
+            if frame_id not in qualified_ids or frame_id in seen_ids:
+                return None
+            seen_ids.add(frame_id)
+
+            enhanced = row.get("enhanced")
+            if not isinstance(enhanced, bool):
+                return None
+
+            analysis = row.get("analysis")
+            if not isinstance(analysis, dict):
+                phase1_gap_ids.add(frame_id)
+                continue
+
+            has_error = "error" in row
+            if not has_error and enhanced is False:
+                reusable_rows[frame_id] = existing_row
+                continue
+
+            expected = set(self._expected_category_names(analysis))
+            if enhanced is True:
+                content = row.get("content")
+                if not isinstance(content, dict):
+                    return None
+                missing = tuple(sorted(expected - set(content)))
+                if not has_error and not missing:
+                    reusable_rows[frame_id] = existing_row
+                    continue
+                if missing:
+                    requests = row.get("requests")
+                    if not isinstance(requests, list):
+                        return None
+                    timestamp = row.get("timestamp")
+                    if isinstance(timestamp, bool) or not isinstance(
+                        timestamp, int | float
+                    ):
+                        return None
+                    phase3_gaps[frame_id] = (row, missing)
+                    continue
+
+            return None
+
+        if seen_ids != qualified_ids:
+            return None
+
+        return IncrementalMergePlan(
+            reusable_rows=reusable_rows,
+            phase1_gap_ids=phase1_gap_ids,
+            phase3_gaps=phase3_gaps,
+        )
+
     def _user_contents(self, prompt: str, image) -> list:
         """Build the vision request user-content list: instruction then image."""
         return [prompt, image]
@@ -696,6 +842,7 @@ class VideoProcessor:
         output_path: Optional[Path] = None,
         work_key: str | None = None,
         previous_attempts: int = 0,
+        incremental_source_path: Optional[Path] = None,
     ) -> None:
         """
         Process video and write vision analysis results to file.
@@ -736,6 +883,26 @@ class VideoProcessor:
         # Process video to get qualified frames (synchronous)
         qualified_frames = self.process()
         had_qualified_frames = len(qualified_frames) > 0
+        current_input_size = self.video_path.stat().st_size
+        qualified_by_id = {
+            frame_data["frame_id"]: frame_data for frame_data in qualified_frames
+        }
+        qualified_ids = set(qualified_by_id)
+        existing_artifact = (
+            _read_existing_describe_artifact(incremental_source_path)
+            if incremental_source_path is not None
+            else None
+        )
+        carry_forward_observer = None
+        if existing_artifact is not None and not os.getenv("OBSERVER_NAME"):
+            observer = existing_artifact.header.get("observer")
+            if isinstance(observer, str) and observer:
+                carry_forward_observer = observer
+        incremental_plan = self._build_incremental_merge_plan(
+            existing_artifact,
+            qualified_ids=qualified_ids,
+            input_size=current_input_size,
+        )
 
         # Create batch processor
         batch = Batch(max_concurrent=max_concurrent)
@@ -770,13 +937,15 @@ class VideoProcessor:
             )
             final_path = Path(final_file.name)
             try:
-                header = self._build_metadata_header()
+                header = self._build_metadata_header(
+                    fallback_observer=carry_forward_observer
+                )
                 attempts = previous_attempts + 1 if state == STATE_FAILED else None
                 header["_solstone_processing"] = build_processing_record(
                     state=state,
                     reason_code=reason_code,
                     handler=HANDLER_DESCRIBE,
-                    input_size=self.video_path.stat().st_size,
+                    input_size=current_input_size,
                     attempts=attempts,
                 )
                 final_file.write(json.dumps(header) + "\n")
@@ -792,17 +961,25 @@ class VideoProcessor:
 
         emitted_frame_ids: set[int] = set()
         emitted_row_has_error = False
+        incremental_emit_lines: dict[int, str] | None = (
+            {} if incremental_plan is not None else None
+        )
 
-        def _emit_row(result: dict) -> None:
+        def _emit_row(result: dict, raw_line: str | None = None) -> None:
             nonlocal emitted_row_has_error
-            result_line = json.dumps(result)
-            if output_file:
-                output_file.write(result_line + "\n")
-            emitted_frame_ids.add(result["frame_id"])
+            result_line = (
+                raw_line if raw_line is not None else json.dumps(result) + "\n"
+            )
+            frame_id = result["frame_id"]
+            if incremental_emit_lines is not None:
+                incremental_emit_lines[frame_id] = result_line
+            elif output_file:
+                output_file.write(result_line)
+            emitted_frame_ids.add(frame_id)
             if "error" in result:
                 emitted_row_has_error = True
             if logger.isEnabledFor(logging.DEBUG):
-                print(result_line, flush=True)
+                print(result_line.rstrip("\n"), flush=True)
 
         try:
             frame_provider, _ = resolve_provider("generate")
@@ -813,8 +990,19 @@ class VideoProcessor:
                 frame_provider
             )
 
+            if incremental_plan is not None:
+                for existing_row in incremental_plan.reusable_rows.values():
+                    _emit_row(existing_row.data, raw_line=existing_row.raw_line)
+
             # Create vision requests for all qualified frames
             for frame_data in qualified_frames:
+                frame_id = frame_data["frame_id"]
+                if incremental_plan is not None and (
+                    frame_id in incremental_plan.reusable_rows
+                    or frame_id in incremental_plan.phase3_gaps
+                ):
+                    continue
+
                 # Load frame image from bytes - keep it open until request completes
                 frame_img = Image.open(io.BytesIO(frame_data["frame_bytes"]))
                 frame_img = resize_for_vlm(
@@ -851,8 +1039,6 @@ class VideoProcessor:
                 )
 
                 batch.add(req)
-
-            qualified_ids = {frame_data["frame_id"] for frame_data in qualified_frames}
 
             # Clear qualified_frames now that all requests are created
             self.qualified_frames.clear()
@@ -939,10 +1125,10 @@ class VideoProcessor:
 
             all_frames_failed = total_frames > 0 and failed_frames == total_frames
 
-            # All frames failed: promote the header-only failed output as a
-            # terminal record. Existing describe/sense re-entry guards treat
-            # that JSONL as processed; reprocessing requires manual --redo.
-            if all_frames_failed:
+            # On a fresh/full run, all frames failed means there are no usable
+            # rows to preserve. On an incremental run, this means only all gap
+            # frames failed; reused clean rows must survive into the merge.
+            if all_frames_failed and incremental_plan is None:
                 error_detail = (
                     f"Error details in {output_path}"
                     if output_path
@@ -950,8 +1136,8 @@ class VideoProcessor:
                 )
                 logger.error(
                     f"All {total_frames} frame(s) failed categorization. "
-                    "Promoted header-only failed output; segment will not be "
-                    f"reprocessed until --redo. {error_detail}"
+                    "Promoted header-only failed output; the daily pass will "
+                    f"retry until the attempt bound is reached. {error_detail}"
                 )
                 _promote(STATE_FAILED, REASON_ANALYSIS_FAILED)
                 raise RuntimeError(
@@ -1130,6 +1316,68 @@ class VideoProcessor:
                     f"{', '.join(cat for cat, _ in extractions)}"
                 )
 
+            if incremental_plan is not None:
+                for frame_id, (
+                    existing_row,
+                    missing_categories,
+                ) in incremental_plan.phase3_gaps.items():
+                    frame_data = qualified_by_id[frame_id]
+                    analysis = existing_row["analysis"]
+                    result = dict(existing_row)
+                    result["requests"] = list(existing_row["requests"])
+                    result["content"] = dict(existing_row.get("content", {}))
+                    result["enhanced"] = True
+                    result["pending"] = len(missing_categories)
+                    result.pop("error", None)
+                    frame_results[frame_id] = result
+
+                    full_img = Image.open(io.BytesIO(frame_data["frame_bytes"]))
+                    full_img = resize_for_vlm(full_img)
+                    frame_images[frame_id] = full_img
+
+                    for category in missing_categories:
+                        cat_meta = self._get_category_metadata(category)
+                        if cat_meta is None:
+                            continue
+                        extraction_count += 1
+                        extract_req = batch.create(
+                            contents=[],
+                            context=cat_meta["context"],
+                            json_schema=cat_meta.get("json_schema"),
+                        )
+                        extract_req.frame_id = frame_id
+                        extract_req.timestamp = result["timestamp"]
+                        extract_req.aruco = result.get("aruco")
+                        extract_req.json_analysis = analysis
+                        extract_req.category_results = {}
+                        extract_req.requests = result["requests"]
+                        extract_req.extraction_category = category
+                        extract_req.retry_count = 0
+                        extract_req.request_type = RequestType.CATEGORY
+
+                        is_json = cat_meta.get("output") == "json"
+                        cat_provider, _ = resolve_provider("generate")
+                        if cat_provider == NO_BRAIN_PROVIDER:
+                            logger.info(
+                                "No thinking engine selected; deferring %s extraction",
+                                category,
+                            )
+                            continue
+
+                        batch.update(
+                            extract_req,
+                            contents=self._user_contents(
+                                f"Analyze this {category} screenshot.",
+                                full_img,
+                            ),
+                            system_instruction=cat_meta["prompt"] + redact_instruction,
+                            json_output=is_json,
+                            json_schema=cat_meta.get("json_schema"),
+                            max_output_tokens=cat_meta["max_output_tokens"],
+                            thinking_budget=6144 if is_json else 4096,
+                            context=cat_meta["context"],
+                        )
+
             logger.info(f"Phase 3: {extraction_count} extraction request(s) queued")
 
             # Drain extraction results
@@ -1220,6 +1468,10 @@ class VideoProcessor:
                 if frame_id in frame_images:
                     frame_images[frame_id].close()
                     del frame_images[frame_id]
+
+            if incremental_emit_lines is not None and output_file:
+                for frame_id in sorted(incremental_emit_lines):
+                    output_file.write(incremental_emit_lines[frame_id])
 
             if self.decode_failed:
                 state, reason_code = STATE_FAILED, REASON_CORRUPT_INPUT
@@ -1319,6 +1571,7 @@ async def async_main():
     # Determine output path
     output_path = None
     previous_attempts = 0
+    incremental_source_path = None
     if not args.frames_only:
         # Output JSONL in same directory, same stem (e.g., center_DP-3_screen.jsonl)
         output_path = video_path.with_suffix(".jsonl")
@@ -1330,6 +1583,7 @@ async def async_main():
                 logger.info(f"Already processed: {video_path}")
                 return
             previous_attempts = record_attempts(record)
+            incremental_source_path = output_path
 
         if output_path.exists():
             logger.warning(f"Overwriting existing analysis file: {output_path}")
@@ -1364,6 +1618,7 @@ async def async_main():
                 output_path=output_path,
                 work_key=work_key,
                 previous_attempts=previous_attempts,
+                incremental_source_path=incremental_source_path,
             )
 
             # Emit completion event
