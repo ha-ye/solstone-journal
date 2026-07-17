@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging openapi check-openapi contract check-contract dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit openapi check-openapi contract check-contract dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -24,6 +24,11 @@ VENV := .venv
 VENV_BIN := $(VENV)/bin
 VENV_PY := $(VENV_BIN)/python
 PYTHON := $(VENV_PY)
+RUST_MANIFEST := core/Cargo.toml
+IOS_TARGET := aarch64-apple-ios
+REQUIRE_CARGO := command -v cargo >/dev/null 2>&1 || { echo "cargo is required for Rust checks; install cargo and retry" >&2; exit 1; }
+REQUIRE_RUSTUP := command -v rustup >/dev/null 2>&1 || { echo "rustup is required for the iOS gate; install rustup and retry" >&2; exit 1; }
+REQUIRE_CARGO_DENY := command -v cargo-deny >/dev/null 2>&1 || { echo "cargo-deny is required for Rust dependency policy; install cargo-deny and retry" >&2; exit 1; }
 # Pick the GPU (CUDA) journal runtime only on x86_64 NVIDIA hosts. The
 # CUDA bundle resolves onnxruntime-gpu, which ships NO aarch64 wheel on PyPI, so
 # an aarch64 NVIDIA host (e.g. DGX Spark / GB10) that auto-selected `cuda` would
@@ -53,7 +58,7 @@ JOURNAL_GROUP := $(if $(filter cuda,$(JOURNAL_VARIANT)),journal-cuda,journal-cpu
 # pre-step, so neither should abort at parse time when uv is absent — they
 # report uv-absence themselves. test/ci/etc. still abort early.
 UV := $(shell command -v uv 2>/dev/null)
-UV_OPTIONAL_GOALS := preflight install render-packaging
+UV_OPTIONAL_GOALS := preflight install render-packaging check-rust-fmt check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit
 ifndef UV
 ifneq ($(filter-out $(UV_OPTIONAL_GOALS),$(MAKECMDGOALS)),)
 $(error uv is not installed. Install it: curl -LsSf https://astral.sh/uv/install.sh | sh)
@@ -138,6 +143,34 @@ preflight:
 
 render-packaging:
 	python3 scripts/render_packaging.py
+
+check-rust-fmt:
+	@$(REQUIRE_CARGO)
+	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
+
+check-rust-clippy:
+	@$(REQUIRE_CARGO)
+	cargo clippy --manifest-path $(RUST_MANIFEST) --workspace --all-targets --locked -- -D warnings
+
+check-rust-test:
+	@$(REQUIRE_CARGO)
+	cargo test --manifest-path $(RUST_MANIFEST) --workspace --locked
+
+check-rust-ios:
+	@$(REQUIRE_CARGO)
+	@$(REQUIRE_RUSTUP)
+	@rustup target list --installed 2>/dev/null | grep -qx "$(IOS_TARGET)" || { echo "Rust target $(IOS_TARGET) is required for the iOS gate; run rustup target add $(IOS_TARGET)" >&2; exit 1; }
+	cargo check --manifest-path $(RUST_MANIFEST) --workspace --exclude solstone-core --lib --target $(IOS_TARGET) --locked
+
+check-rust-deny:
+	@$(REQUIRE_CARGO)
+	@$(REQUIRE_CARGO_DENY)
+	cargo deny --manifest-path $(RUST_MANIFEST) --locked check bans licenses sources
+
+audit:
+	@$(REQUIRE_CARGO)
+	@$(REQUIRE_CARGO_DENY)
+	cargo deny --manifest-path $(RUST_MANIFEST) --locked check advisories
 
 # Setup skill symlinks
 skills:
@@ -453,6 +486,21 @@ install-checks: .installed
 	@echo ""
 	@echo "=== Checking packaging render ==="
 	@python3 scripts/render_packaging.py --check
+	@echo ""
+	@echo "=== Running rust format check ==="
+	@$(MAKE) check-rust-fmt
+	@echo ""
+	@echo "=== Running rust clippy check ==="
+	@$(MAKE) check-rust-clippy
+	@echo ""
+	@echo "=== Running rust test check ==="
+	@$(MAKE) check-rust-test
+	@echo ""
+	@echo "=== Running rust iOS check ==="
+	@$(MAKE) check-rust-ios
+	@echo ""
+	@echo "=== Running rust dependency policy check ==="
+	@$(MAKE) check-rust-deny
 	@echo ""
 	@echo "=== Checking extras consistency ==="
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py
