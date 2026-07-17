@@ -119,15 +119,40 @@ class _FakeWriter:
         return None
 
 
+class _AsyncioShim:
+    def __init__(self, real_asyncio: Any, open_connection: Any) -> None:
+        self._real_asyncio = real_asyncio
+        self.open_connection = open_connection
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real_asyncio, name)
+
+
 class _FakeSession:
-    def __init__(self, exc: Exception) -> None:
+    def __init__(
+        self,
+        exc: Exception | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
         self._exc = exc
+        self._payload = payload or {
+            "client_cert": "client-cert",
+            "ca_chain": ["ca-cert"],
+            "instance_id": "inst-1",
+            "home_label": "solstone",
+            "home_attestation": "header.payload.signature",
+            "local_endpoints": [{"host": "127.0.0.1", "port": 7657}],
+        }
         self.closed = False
+        self.requests: list[tuple[object, ...]] = []
 
     async def request(
         self, *_args: object, **_kwargs: object
     ) -> tuple[int, dict, bytes]:
-        raise self._exc
+        self.requests.append((*_args,))
+        if self._exc is not None:
+            raise self._exc
+        return 200, {}, json.dumps(self._payload).encode("utf-8")
 
     async def close(self) -> None:
         self.closed = True
@@ -239,25 +264,38 @@ def test_peer_pair_link_sends_sender_instance_id_and_writes_peer_bundle(
 
 
 def test_post_pair_framed_returns_plain_response_and_closes_transport(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Criterion 8: sync wrapper returns a PairResponse after closing the transport.
     body = _csr_body("sync-phone")
-    with pairing_harness(tmp_path, monkeypatch) as harness:
-        harness.seed_nonce("10000000000000000000000000000006", "sync-phone")
-        first = join_cli._post_pair_framed(
-            harness.pair_url("10000000000000000000000000000006"),
-            body,
-        )
-        assert harness.wait_until_idle()
+    sessions = [_FakeSession(), _FakeSession()]
 
-        harness.seed_nonce("10000000000000000000000000000007", "sync-phone")
-        second = join_cli._post_pair_framed(
-            harness.pair_url("10000000000000000000000000000007"),
-            body,
-        )
-        assert harness.wait_until_idle()
+    async def fake_open_connection(_host: str, _port: int):
+        return link_client.asyncio.StreamReader(), _FakeWriter()
+
+    async def fake_open_pairing_session(_transport):
+        return sessions.pop(0)
+
+    monkeypatch.setattr(
+        join_cli,
+        "asyncio",
+        _AsyncioShim(join_cli.asyncio, fake_open_connection),
+    )
+    monkeypatch.setattr(join_cli, "_open_pairing_session", fake_open_pairing_session)
+
+    first_session = sessions[0]
+    first = join_cli._post_pair_framed(
+        "https://127.0.0.1:7657/app/network/pair?token=one",
+        body,
+    )
+    assert first_session.closed is True
+
+    second_session = sessions[0]
+    second = join_cli._post_pair_framed(
+        "https://127.0.0.1:7657/app/network/pair?token=two",
+        body,
+    )
+    assert second_session.closed is True
 
     assert isinstance(first, join_cli.PairResponse)
     assert isinstance(second, join_cli.PairResponse)

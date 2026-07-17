@@ -6,9 +6,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import queue
 import threading
-import time
 from concurrent.futures import CancelledError
 
 import pytest
@@ -59,15 +59,6 @@ def _identity(*, endpoints: tuple[dict[str, object], ...]) -> ClientIdentity:
         home_attestation="attestation",
         local_endpoints=endpoints,
     )
-
-
-def _wait_until(predicate, *, timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    assert predicate()
 
 
 class _SlowBodyStream:
@@ -325,29 +316,35 @@ def test_connection_manager_redials_after_remote_close(monkeypatch) -> None:
         sessions.append(session)
         return session
 
+    async def wait_closed(session: _ManagedSession) -> None:
+        await session.closed
+
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
     client = _managed_client()
     try:
         client.start()
-        _wait_until(
-            lambda: len(sessions) == 1 and client.status()["health"] == "healthy"
+        assert client.request("GET", "/before-redial") == (
+            200,
+            {"x-session": "fresh"},
+            b"ok",
         )
+        assert len(sessions) == 1
+        sessions[0].requests.clear()
 
         sessions[0].close_remote("session_closed")
-        _wait_until(
-            lambda: len(sessions) >= 2 and client.status()["health"] == "healthy"
+        client._run(wait_closed(sessions[0]))
+        assert client.request("GET", "/after-redial") == (
+            200,
+            {"x-session": "fresh"},
+            b"ok",
         )
+        assert len(sessions) == 2
 
         status = client.status()
         assert status["state"] == "connected"
         assert status["reconnect_count"] == 1
         assert status["last_failure"] is not None
         assert status["last_failure"]["reason"] == "session_closed"
-        assert client.request("GET", "/after-redial") == (
-            200,
-            {"x-session": "fresh"},
-            b"ok",
-        )
     finally:
         client.close()
 
@@ -362,24 +359,33 @@ def test_connection_manager_records_liveness_failure(monkeypatch) -> None:
         sessions.append(session)
         return session
 
+    async def wait_closed(session: _ManagedSession) -> None:
+        await session.closed
+
     monkeypatch.setattr(dialer, "open_tunnel", fake_open_tunnel)
     client = _managed_client()
     try:
         client.start()
-        _wait_until(
-            lambda: len(sessions) == 1 and client.status()["health"] == "healthy"
+        assert client.request("GET", "/before-liveness-redial") == (
+            200,
+            {"x-session": "fresh"},
+            b"ok",
         )
+        assert len(sessions) == 1
+        sessions[0].requests.clear()
 
         sessions[0].close_remote("liveness_failed")
-        _wait_until(
-            lambda: (
-                len(sessions) >= 2
-                and client.status()["last_failure"] is not None
-                and client.status()["last_failure"]["reason"] == "liveness_failed"
-            )
+        client._run(wait_closed(sessions[0]))
+        assert client.request("GET", "/after-liveness-redial") == (
+            200,
+            {"x-session": "fresh"},
+            b"ok",
         )
+        assert len(sessions) == 2
 
         status = client.status()
+        assert status["last_failure"] is not None
+        assert status["last_failure"]["reason"] == "liveness_failed"
         assert status["health"] == "healthy"
         assert status["state"] == "connected"
         assert status["reconnect_count"] == 1
@@ -422,13 +428,16 @@ def test_dead_manager_status_and_requests_fail_closed(monkeypatch) -> None:
 
         async def kill_manager() -> None:
             assert client._manager_task is not None
-            client._manager_task.cancel()
+            task = client._manager_task
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
         client._run(kill_manager())
-        _wait_until(lambda: client.status()["state"] == "dead_manager")
 
         status = client.status()
         assert status["health"] == "unhealthy"
+        assert status["state"] == "dead_manager"
         assert status["manager_alive"] is False
         with pytest.raises(TunnelLifecycleError) as exc_info:
             client.request("GET", "/dead")

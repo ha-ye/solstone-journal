@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 import urllib.parse
 
 import pytest
@@ -30,6 +29,36 @@ def clear_private_link_registry():
     operations.clear_registry()
 
 
+class _RecordingThreading:
+    def __init__(self) -> None:
+        self.threads: list[threading.Thread] = []
+
+    def Thread(self, *args, **kwargs) -> threading.Thread:
+        thread = threading.Thread(*args, **kwargs)
+        self.threads.append(thread)
+        return thread
+
+    def join_all(self) -> None:
+        for thread in self.threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
+
+class _InlineThread:
+    def __init__(self, *, target, args=(), kwargs=None, daemon=None):
+        del daemon
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self) -> None:
+        self._target(*self._args, **self._kwargs)
+
+
+class _InlineThreading:
+    Thread = _InlineThread
+
+
 def _set_posture(env, posture: str) -> None:
     config_path = env.journal / "config" / "journal.json"
     config = json.loads(config_path.read_text("utf-8"))
@@ -46,28 +75,6 @@ def _status(env) -> dict:
     response = env.client.get("/app/network/api/private-link")
     assert response.status_code == 200
     return response.get_json()
-
-
-def _wait_until(predicate, timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("timed out waiting for condition")
-
-
-def _wait_for_phase(env, phase: str) -> dict:
-    payload: dict = {}
-
-    def reached() -> bool:
-        nonlocal payload
-        payload = _status(env)
-        operation = payload.get("operation")
-        return isinstance(operation, dict) and operation.get("phase") == phase
-
-    _wait_until(reached)
-    return payload
 
 
 def test_private_link_status_default_enabled_and_inconsistent(link_env):
@@ -110,16 +117,21 @@ def test_private_link_enable_busy_returns_service_busy(
         release.wait(2)
         return operations.HandoffResult("enabled", None, False)
 
+    recording_threading = _RecordingThreading()
+    monkeypatch.setattr(operations, "threading", recording_threading)
     monkeypatch.setattr(link_routes.spl_handoff, "run_spl_handoff", slow_flow)
 
-    first = env.client.post("/app/network/private-link/enable")
-    _wait_until(started.is_set)
-    second = env.client.post("/app/network/private-link/enable")
-    release.set()
+    try:
+        first = env.client.post("/app/network/private-link/enable")
+        assert started.wait(timeout=2)
+        second = env.client.post("/app/network/private-link/enable")
 
-    assert first.status_code == 202
-    assert second.status_code == 503
-    assert second.get_json()["reason_code"] == "service_busy"
+        assert first.status_code == 202
+        assert second.status_code == 503
+        assert second.get_json()["reason_code"] == "service_busy"
+    finally:
+        release.set()
+        recording_threading.join_all()
 
 
 def test_private_link_enable_already_enabled_guard(link_env):
@@ -167,9 +179,10 @@ def test_private_link_enable_success_operation_reaches_enabled(
         "run_spl_handoff",
         lambda **_kwargs: operations.HandoffResult("enabled", None, False),
     )
+    monkeypatch.setattr(operations, "threading", _InlineThreading())
 
     response = env.client.post("/app/network/private-link/enable")
-    payload = _wait_for_phase(env, "enabled")
+    payload = _status(env)
 
     assert response.status_code == 202
     assert payload["operation"]["phase"] == "enabled"
@@ -192,10 +205,11 @@ def test_private_link_enable_returns_consent_url(
         "run_spl_handoff",
         lambda **_kwargs: operations.HandoffResult("enabled", None, False),
     )
+    monkeypatch.setattr(operations, "threading", _InlineThreading())
 
     response = env.client.post("/app/network/private-link/enable")
     started = response.get_json()
-    payload = _wait_for_phase(env, "enabled")
+    payload = _status(env)
     parsed = urllib.parse.urlparse(started["operation"]["portal_url"])
 
     assert response.status_code == 202

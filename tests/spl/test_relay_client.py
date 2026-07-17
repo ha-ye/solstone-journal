@@ -8,7 +8,6 @@ import contextlib
 import json
 import logging
 import threading
-import time
 from typing import Any
 
 import pytest
@@ -233,15 +232,6 @@ class _BlockingOpener:
         self.entered.append(event)
         self.calls.append((url, dict(additional_headers or {}), max_size))
         return _BlockingPairWindowWS(event)
-
-    def wait_until_entered(self, index: int, timeout: float = 5.0) -> None:
-        deadline = time.monotonic() + timeout
-        while len(self.entered) <= index and time.monotonic() < deadline:
-            time.sleep(0.01)
-        if len(self.entered) <= index:
-            raise AssertionError("pair-window opener was not called")
-        if not self.entered[index].wait(timeout):
-            raise AssertionError("pair-window did not open")
 
 
 class _NeverOpenPairWindowWS(_FakeWS):
@@ -528,7 +518,7 @@ def test_start_pair_window_replaces_prior_and_cancels() -> None:
         timeout=30.0,
     )
     try:
-        opener.wait_until_entered(0)
+        assert first.wait_open(5.0) is True
         assert first.is_alive()
 
         second = relay_client.start_pair_window(
@@ -539,7 +529,7 @@ def test_start_pair_window_replaces_prior_and_cancels() -> None:
             timeout=30.0,
         )
         try:
-            opener.wait_until_entered(1)
+            assert second.wait_open(5.0) is True
             first.join(timeout=5)
             assert not first.is_alive()
             assert second.is_alive()

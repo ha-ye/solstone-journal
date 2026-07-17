@@ -29,6 +29,14 @@ class _Response:
         yield from self._chunks
 
 
+class _FakeClock:
+    def __init__(self, value: float = 0.0):
+        self.value = value
+
+    def monotonic(self) -> float:
+        return self.value
+
+
 @pytest.mark.timeout(5)
 def test_download_to_file_returns_false_on_read_timeout(tmp_path, caplog):
     from solstone.think.importers.plaud import download_to_file
@@ -91,18 +99,30 @@ def test_sync_inactivity_timer_trips_when_progress_stops(tmp_path, monkeypatch, 
     ]
 
     monkeypatch.setenv("PLAUD_ACCESS_TOKEN", "test-token")
-    monkeypatch.setattr(plaud, "SYNC_INACTIVITY_TIMEOUT", 1)
     monkeypatch.setattr(plaud, "list_files", lambda _session, _token: files)
     monkeypatch.setattr(
         plaud, "get_temp_url", lambda *_args: "https://example.test/file"
     )
-    monkeypatch.setattr(plaud, "download_to_file", lambda *_args, **_kwargs: False)
-    ticks = iter([0.0, 0.5, 2.0])
-    monkeypatch.setattr(plaud.time, "monotonic", lambda: next(ticks))
-
     caplog.set_level(logging.WARNING)
 
-    result = plaud.PlaudBackend().sync(tmp_path, dry_run=False)
+    def run_sync(root, *, clock_after_first_failure):
+        clock = _FakeClock()
 
-    assert any("Sync stalled" in error for error in result["errors"])
-    assert "Sync stalled" in caplog.text
+        def fail_download(*_args, **_kwargs):
+            clock.value = clock_after_first_failure
+            return False
+
+        monkeypatch.setattr(plaud, "time", clock)
+        monkeypatch.setattr(plaud, "download_to_file", fail_download)
+        return plaud.PlaudBackend().sync(root, dry_run=False)
+
+    below = run_sync(tmp_path / "below", clock_after_first_failure=3599.0)
+    assert not any("Sync stalled" in error for error in below["errors"])
+    assert "Sync stalled" not in caplog.text
+
+    caplog.clear()
+    result = run_sync(tmp_path / "over", clock_after_first_failure=3601.0)
+
+    expected = "Sync stalled after 3601s with no completed import — 1 files remaining"
+    assert expected in result["errors"]
+    assert expected in caplog.text

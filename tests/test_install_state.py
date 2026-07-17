@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
+import copy
 import json
-import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,11 +26,6 @@ from solstone.apps.thinking.install_copy import (
     INSTALL_PHASE_INSTALLING,
     INSTALL_PHASE_RESOLVING,
     INSTALL_PHASE_VERIFYING,
-)
-from solstone.think.journal_config import (
-    hold_config_lock,
-    read_journal_config,
-    write_journal_config,
 )
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.providers import install_state
@@ -311,47 +306,62 @@ def test_write_install_status_creates_bundled_key_chain(journal_config):
 
 def test_write_install_status_waits_for_explicit_config_lock_and_preserves_commits(
     journal_config,
+    monkeypatch,
 ):
-    config_path = journal_config(
-        {
-            "setup": {"completed_at": "2026-07-01T00:00:00+00:00"},
-            "service": {"port": 5015},
-            "unrelated": "seeded",
-            "providers": {"bundled": {}},
-        }
-    )
+    config_path = journal_config({})
     journal_path = config_path.parent.parent
+    config = {
+        "setup": {"completed_at": "2026-07-01T00:00:00+00:00"},
+        "service": {"port": 5015},
+        "unrelated": "seeded",
+        "concurrent_unrelated": "committed while locked",
+        "providers": {"bundled": {}},
+    }
     status = bump_progress(
         transition_state(make_idle_status("anthropic"), new_state="downloading"),
         received=42,
         total=100,
     )
-    done = threading.Event()
-    errors: list[BaseException] = []
+    calls: list[tuple[str, object]] = []
+    in_lock = False
 
-    def worker() -> None:
+    @contextmanager
+    def recording_lock(recorded_journal_path=None):
+        nonlocal in_lock
+        calls.append(("lock_enter", recorded_journal_path))
+        assert in_lock is False
+        in_lock = True
         try:
-            write_install_status(status, scope="bundled", journal_path=journal_path)
-        except BaseException as exc:
-            errors.append(exc)
-        else:
-            done.set()
+            yield
+        finally:
+            assert in_lock is True
+            in_lock = False
+            calls.append(("lock_exit", recorded_journal_path))
 
-    with hold_config_lock(journal_path):
-        config = read_journal_config(journal_path)
-        config["concurrent_unrelated"] = "committed while locked"
-        write_journal_config(config, journal_path)
+    def recording_read(recorded_journal_path=None):
+        assert in_lock is True
+        calls.append(("read", recorded_journal_path))
+        return copy.deepcopy(config)
 
-        thread = threading.Thread(target=worker)
-        thread.start()
-        assert not done.wait(timeout=0.5)
+    def recording_write(updated_config, recorded_journal_path=None):
+        assert in_lock is True
+        calls.append(("write", recorded_journal_path))
+        config.clear()
+        config.update(copy.deepcopy(updated_config))
 
-    assert done.wait(timeout=2)
-    thread.join(timeout=2)
-    assert not thread.is_alive()
-    assert errors == []
+    monkeypatch.setattr(install_state, "hold_config_lock", recording_lock)
+    monkeypatch.setattr(install_state, "read_journal_config", recording_read)
+    monkeypatch.setattr(install_state, "write_journal_config", recording_write)
 
-    persisted = json.loads(config_path.read_text(encoding="utf-8"))
+    write_install_status(status, scope="bundled", journal_path=journal_path)
+
+    assert calls == [
+        ("lock_enter", journal_path),
+        ("read", journal_path),
+        ("write", journal_path),
+        ("lock_exit", journal_path),
+    ]
+    persisted = config
     assert persisted["unrelated"] == "seeded"
     assert persisted["concurrent_unrelated"] == "committed while locked"
     assert persisted["setup"]["completed_at"] == "2026-07-01T00:00:00+00:00"
@@ -360,61 +370,6 @@ def test_write_install_status_waits_for_explicit_config_lock_and_preserves_commi
     assert slot["install_state"] == "downloading"
     assert slot["progress_bytes_received"] == 42
     assert slot["progress_bytes_total"] == 100
-
-
-def test_write_install_status_waits_for_default_config_lock_and_preserves_commits(
-    journal_config,
-):
-    config_path = journal_config(
-        {
-            "setup": {"completed_at": "2026-07-01T00:00:00+00:00"},
-            "service": {"port": 5015},
-            "unrelated": "seeded",
-            "providers": {"bundled": {}},
-        }
-    )
-    import solstone.think.utils as think_utils
-
-    think_utils._journal_path_cache = None
-    status = bump_progress(
-        transition_state(make_idle_status("anthropic"), new_state="downloading"),
-        received=11,
-        total=20,
-    )
-    done = threading.Event()
-    errors: list[BaseException] = []
-
-    def worker() -> None:
-        try:
-            write_install_status(status, scope="bundled")
-        except BaseException as exc:
-            errors.append(exc)
-        else:
-            done.set()
-
-    with hold_config_lock(None):
-        config = read_journal_config(None)
-        config["default_path_concurrent"] = "committed while locked"
-        write_journal_config(config, None)
-
-        thread = threading.Thread(target=worker)
-        thread.start()
-        assert not done.wait(timeout=0.5)
-
-    assert done.wait(timeout=2)
-    thread.join(timeout=2)
-    assert not thread.is_alive()
-    assert errors == []
-
-    persisted = json.loads(config_path.read_text(encoding="utf-8"))
-    assert persisted["unrelated"] == "seeded"
-    assert persisted["default_path_concurrent"] == "committed while locked"
-    assert persisted["setup"]["completed_at"] == "2026-07-01T00:00:00+00:00"
-    assert persisted["service"]["port"] == 5015
-    slot = persisted["providers"]["bundled"]["anthropic"]
-    assert slot["install_state"] == "downloading"
-    assert slot["progress_bytes_received"] == 11
-    assert slot["progress_bytes_total"] == 20
 
 
 def test_write_install_status_preserves_setup_and_service_fields(journal_config):

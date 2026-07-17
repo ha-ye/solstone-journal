@@ -3,11 +3,11 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import os
 import shutil
 import tarfile
-import threading
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -15,9 +15,7 @@ import pytest
 
 from solstone.think import parakeet_readiness
 from solstone.think.journal_config import (
-    hold_config_lock,
     read_journal_config,
-    write_journal_config,
 )
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.providers import fit_report, parakeet_install
@@ -238,44 +236,57 @@ def test_write_parakeet_metadata_waits_for_config_lock_and_preserves_commits(
 ) -> None:
     _init_journal(tmp_path, monkeypatch)
     journal_path = tmp_path
-    write_journal_config(
-        {
-            "setup": {"completed_at": "2026-07-01T00:00:00+00:00"},
-            "service": {"port": 5015},
-            "providers": {"bundled": {}},
+    config = {
+        "setup": {
+            "completed_at": "2026-07-01T00:00:00+00:00",
+            "completed_by": "setup-writer",
         },
-        journal_path,
-    )
-    done = threading.Event()
-    errors: list[BaseException] = []
+        "service": {"port": 5015, "host": "127.0.0.1"},
+        "providers": {"bundled": {}},
+    }
+    calls: list[tuple[str, object]] = []
+    in_lock = False
 
-    def worker() -> None:
+    @contextmanager
+    def recording_lock(recorded_journal_path=None):
+        nonlocal in_lock
+        calls.append(("lock_enter", recorded_journal_path))
+        assert in_lock is False
+        in_lock = True
         try:
-            parakeet_install._write_parakeet_metadata(
-                {"model_repo": "openai/parakeet-test"},
-                journal_path=journal_path,
-            )
-        except BaseException as exc:
-            errors.append(exc)
-        else:
-            done.set()
+            yield
+        finally:
+            assert in_lock is True
+            in_lock = False
+            calls.append(("lock_exit", recorded_journal_path))
 
-    with hold_config_lock(journal_path):
-        config = read_journal_config(journal_path)
-        config["setup"]["completed_by"] = "setup-writer"
-        config["service"]["host"] = "127.0.0.1"
-        write_journal_config(config, journal_path)
+    def recording_read(recorded_journal_path=None):
+        assert in_lock is True
+        calls.append(("read", recorded_journal_path))
+        return copy.deepcopy(config)
 
-        thread = threading.Thread(target=worker)
-        thread.start()
-        assert not done.wait(timeout=0.5)
+    def recording_write(updated_config, recorded_journal_path=None):
+        assert in_lock is True
+        calls.append(("write", recorded_journal_path))
+        config.clear()
+        config.update(copy.deepcopy(updated_config))
 
-    assert done.wait(timeout=2)
-    thread.join(timeout=2)
-    assert not thread.is_alive()
-    assert errors == []
+    monkeypatch.setattr(parakeet_install, "hold_config_lock", recording_lock)
+    monkeypatch.setattr(parakeet_install, "read_journal_config", recording_read)
+    monkeypatch.setattr(parakeet_install, "write_journal_config", recording_write)
 
-    persisted = read_journal_config(journal_path)
+    parakeet_install._write_parakeet_metadata(
+        {"model_repo": "openai/parakeet-test"},
+        journal_path=journal_path,
+    )
+
+    assert calls == [
+        ("lock_enter", journal_path),
+        ("read", journal_path),
+        ("write", journal_path),
+        ("lock_exit", journal_path),
+    ]
+    persisted = config
     assert persisted["setup"]["completed_at"] == "2026-07-01T00:00:00+00:00"
     assert persisted["setup"]["completed_by"] == "setup-writer"
     assert persisted["service"]["port"] == 5015

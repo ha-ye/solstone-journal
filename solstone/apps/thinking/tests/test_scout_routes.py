@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -28,6 +27,21 @@ class _InlineThread:
 
     def join(self, timeout=None):
         return None
+
+
+class _RecordingThreading:
+    def __init__(self) -> None:
+        self.threads: list[threading.Thread] = []
+
+    def Thread(self, *args, **kwargs) -> threading.Thread:
+        thread = threading.Thread(*args, **kwargs)
+        self.threads.append(thread)
+        return thread
+
+    def join_all(self) -> None:
+        for thread in self.threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
 
 
 def _approved_payload(key: str = "google-scout-key") -> dict[str, str]:
@@ -63,15 +77,6 @@ def thinking_client(journal_copy: Path):
     app.config["TESTING"] = True
     client = app.test_client()
     return client
-
-
-def _wait_until(predicate, timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("condition not met before timeout")
 
 
 def _scout_status(client) -> dict:
@@ -198,16 +203,21 @@ def test_service_busy_for_second_scout_operation(
         release.wait(2)
         return operations.HandoffResult("enabled", None, False)
 
+    recording_threading = _RecordingThreading()
+    monkeypatch.setattr(operations, "threading", recording_threading)
     monkeypatch.setattr(scout_handoff, "run_scout_handoff", runner)
 
-    first = thinking_client.post("/app/thinking/api/scout/enable")
-    _wait_until(started.is_set)
-    second = thinking_client.post("/app/thinking/api/scout/enable")
-    release.set()
+    try:
+        first = thinking_client.post("/app/thinking/api/scout/enable")
+        assert started.wait(timeout=2)
+        second = thinking_client.post("/app/thinking/api/scout/enable")
 
-    assert first.status_code == 202
-    assert second.status_code == 503
-    assert second.get_json()["reason_code"] == "service_busy"
+        assert first.status_code == 202
+        assert second.status_code == 503
+        assert second.get_json()["reason_code"] == "service_busy"
+    finally:
+        release.set()
+        recording_threading.join_all()
 
 
 def test_disable_when_on_returns_result_and_off_status(thinking_client) -> None:

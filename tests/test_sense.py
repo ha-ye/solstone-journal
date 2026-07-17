@@ -10,7 +10,6 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
 from concurrent.futures import Future
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -183,15 +182,6 @@ def _status_emit_calls(sensor):
         for call in sensor.callosum.emit.call_args_list
         if call.args[:2] == ("observe", "status")
     ]
-
-
-def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if predicate():
-            return
-        time.sleep(0.01)
-    raise AssertionError("condition was not met before timeout")
 
 
 # --- QueuedItem Tests ---
@@ -1500,6 +1490,12 @@ def test_memory_throttle_beacon_uses_count_until_last_waiter_finishes(
     release_second = threading.Event()
     thread_order: dict[int, int] = {}
     order_lock = threading.Lock()
+    callback_lock = threading.Lock()
+    throttled_twice = threading.Event()
+    first_waiter_finished = threading.Event()
+    all_waiters_finished = threading.Event()
+    throttle_starts = 0
+    throttle_finishes = 0
 
     def fake_available() -> int:
         ident = threading.get_ident()
@@ -1511,7 +1507,25 @@ def test_memory_throttle_beacon_uses_count_until_last_waiter_finishes(
             return 6 * 1024**3
         return 2 * 1024**3
 
+    def throttle_started(**_fields):
+        nonlocal throttle_starts
+        with callback_lock:
+            throttle_starts += 1
+            if throttle_starts == 2:
+                throttled_twice.set()
+
+    def throttle_completed(**_fields):
+        nonlocal throttle_finishes
+        with callback_lock:
+            throttle_finishes += 1
+            if throttle_finishes == 1:
+                first_waiter_finished.set()
+            if throttle_finishes == 2:
+                all_waiters_finished.set()
+
     monkeypatch.setattr(admission, "read_available_bytes", fake_available)
+    monkeypatch.setattr(sensor, "_emit_memory_throttle_started", throttle_started)
+    monkeypatch.setattr(sensor, "_emit_memory_throttle_completed", throttle_completed)
     monkeypatch.setattr(
         sensor,
         "_spawn_managed_process",
@@ -1521,7 +1535,7 @@ def test_memory_throttle_beacon_uses_count_until_last_waiter_finishes(
     try:
         for file_path in files:
             sensor._handle_file(file_path)
-        _wait_until(lambda: admission.throttle_state().count == 2)
+        assert throttled_twice.wait(timeout=2)
 
         beacon = sensor._build_health_beacon()
         assert beacon["memory_throttled"] is True
@@ -1530,13 +1544,14 @@ def test_memory_throttle_beacon_uses_count_until_last_waiter_finishes(
         assert beacon["memory_available_mib"] == 2048
 
         release_first.set()
-        _wait_until(lambda: admission.throttle_state().count == 1)
+        assert first_waiter_finished.wait(timeout=2)
 
         beacon = sensor._build_health_beacon()
         assert beacon["memory_throttled"] is True
         assert beacon["memory_throttle_count"] == 1
 
         release_second.set()
+        assert all_waiters_finished.wait(timeout=2)
         sensor.handler_pools["describe"].shutdown(wait=True)
 
         beacon = sensor._build_health_beacon()
@@ -1550,10 +1565,11 @@ def test_memory_throttle_beacon_uses_count_until_last_waiter_finishes(
         admission.reset_admission_state()
 
 
-def test_stop_returns_promptly_with_two_workers_mid_memory_wait_and_spawns_nothing(
+def test_stop_releases_blocked_memory_waiters_and_spawns_nothing(
     tmp_path,
     monkeypatch,
 ):
+    """stop() drains memory waiters without spawning handlers."""
     import solstone.observe.sense as sense_module
 
     admission.reset_admission_state()
@@ -1575,6 +1591,25 @@ def test_stop_returns_promptly_with_two_workers_mid_memory_wait_and_spawns_nothi
         make_segment_file(tmp_path, "stop2.webm", segment="143023_300"),
     ]
     spawns = []
+    callback_lock = threading.Lock()
+    throttled_twice = threading.Event()
+    throttle_starts = 0
+    throttle_finishes = 0
+
+    def throttle_started(**_fields):
+        nonlocal throttle_starts
+        with callback_lock:
+            throttle_starts += 1
+            if throttle_starts == 2:
+                throttled_twice.set()
+
+    def throttle_completed(**_fields):
+        nonlocal throttle_finishes
+        with callback_lock:
+            throttle_finishes += 1
+
+    monkeypatch.setattr(sensor, "_emit_memory_throttle_started", throttle_started)
+    monkeypatch.setattr(sensor, "_emit_memory_throttle_completed", throttle_completed)
     monkeypatch.setattr(
         sensor,
         "_spawn_managed_process",
@@ -1584,13 +1619,11 @@ def test_stop_returns_promptly_with_two_workers_mid_memory_wait_and_spawns_nothi
     try:
         for file_path in files:
             sensor._handle_file(file_path)
-        _wait_until(lambda: admission.throttle_state().count == 2)
+        assert throttled_twice.wait(timeout=2)
 
-        started = time.monotonic()
         sensor.stop()
-        elapsed = time.monotonic() - started
 
-        assert elapsed < 1.0
+        assert throttle_finishes == 2
         assert spawns == []
         assert admission.throttle_state().count == 0
     finally:

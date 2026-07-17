@@ -116,7 +116,7 @@ def integration_client(journal_copy):
 
 
 def test_voice_flow_round_trip(integration_client, monkeypatch):
-    client, _ = integration_client
+    client, _app = integration_client
     state = SimpleNamespace(
         session_payloads=[],
         connect_calls=[],
@@ -124,6 +124,12 @@ def test_voice_flow_round_trip(integration_client, monkeypatch):
         response_creates=0,
     )
     FakeAsyncOpenAI.state = state
+    futures = []
+
+    def record_voice_task(app, future):
+        futures.append(future)
+        app.voice_tasks.add(future)
+        future.add_done_callback(app.voice_tasks.discard)
 
     monkeypatch.setattr("solstone.convey.voice.AsyncOpenAI", FakeAsyncOpenAI)
     monkeypatch.setattr("solstone.think.voice.sideband.AsyncOpenAI", FakeAsyncOpenAI)
@@ -135,6 +141,7 @@ def test_voice_flow_round_trip(integration_client, monkeypatch):
         "solstone.convey.voice.brain.wait_until_ready", lambda app, timeout: True
     )
     monkeypatch.setattr("solstone.convey.voice.brain.brain_is_stale", lambda app: False)
+    monkeypatch.setattr("solstone.convey.voice.register_voice_task", record_voice_task)
 
     session_response = client.post("/api/voice/session")
     assert session_response.status_code == 200
@@ -145,10 +152,8 @@ def test_voice_flow_round_trip(integration_client, monkeypatch):
     connect_response = client.post("/api/voice/connect", json={"call_id": "call-1"})
     assert connect_response.status_code == 200
     assert connect_response.get_json() == {"status": "connected"}
-
-    deadline = time.time() + 1.0
-    while time.time() < deadline and not state.outputs:
-        time.sleep(0.01)
+    assert len(futures) == 1
+    futures[0].result(timeout=1)
 
     assert state.connect_calls == [{"call_id": "call-1", "model": "gpt-realtime"}]
     assert state.outputs
@@ -165,7 +170,7 @@ def test_voice_flow_round_trip(integration_client, monkeypatch):
 
 
 def test_voice_observer_action_round_trip(integration_client, monkeypatch):
-    client, _ = integration_client
+    client, _app = integration_client
     state = SimpleNamespace(
         session_payloads=[],
         connect_calls=[],
@@ -180,6 +185,12 @@ def test_voice_observer_action_round_trip(integration_client, monkeypatch):
         ],
     )
     FakeAsyncOpenAI.state = state
+    futures = []
+
+    def record_voice_task(app, future):
+        futures.append(future)
+        app.voice_tasks.add(future)
+        future.add_done_callback(app.voice_tasks.discard)
 
     monkeypatch.setattr("solstone.convey.voice.AsyncOpenAI", FakeAsyncOpenAI)
     monkeypatch.setattr("solstone.think.voice.sideband.AsyncOpenAI", FakeAsyncOpenAI)
@@ -191,6 +202,7 @@ def test_voice_observer_action_round_trip(integration_client, monkeypatch):
         "solstone.convey.voice.brain.wait_until_ready", lambda app, timeout: True
     )
     monkeypatch.setattr("solstone.convey.voice.brain.brain_is_stale", lambda app: False)
+    monkeypatch.setattr("solstone.convey.voice.register_voice_task", record_voice_task)
 
     session_response = client.post("/api/voice/session")
     assert session_response.status_code == 200
@@ -201,10 +213,8 @@ def test_voice_observer_action_round_trip(integration_client, monkeypatch):
     )
     assert connect_response.status_code == 200
     assert connect_response.get_json() == {"status": "connected"}
-
-    deadline = time.time() + 1.0
-    while time.time() < deadline and not state.outputs:
-        time.sleep(0.01)
+    assert len(futures) == 1
+    futures[0].result(timeout=1)
 
     assert state.connect_calls == [{"call_id": "call-obs-int", "model": "gpt-realtime"}]
     assert state.outputs
