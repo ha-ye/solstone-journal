@@ -57,6 +57,14 @@ Python `str` maps to UTF-8 `String` or `&str`. Python `bytes` maps to
 `Vec<u8>`. Filesystem paths map to `PathBuf` or `OsStr`; POSIX paths are not
 guaranteed to be UTF-8, so ports must not use `.to_str().unwrap()`.
 
+## Porting Instruments
+
+`scripts/build_core_fixtures.py` generates Rust-facing fixtures under
+`core/fixtures/`.
+
+`tests/verify_indexer_differential.py` runs the indexer differential harness and
+writes its report under the harness work directory unless `--report` is supplied.
+
 ## JSON And Hashing
 
 Canonical JSON is a per-writer contract, not a repository default. A Rust port
