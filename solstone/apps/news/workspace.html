@@ -188,12 +188,6 @@
   color: var(--ink-faint-paper);
 }
 
-.news-empty-title {
-  margin: 0 0 var(--space-2);
-  color: var(--ink);
-  font-size: 1.1rem;
-}
-
 .news-debug-link {
   margin: 1.5rem 0 0;
   font-size: 0.9rem;
@@ -464,7 +458,6 @@
     const bodyHtml = payload.empty
       ? `
         <div class="news-empty-state">
-          <h3 class="news-empty-title">${escapeHtml(copy.empty_title)}</h3>
           <p class="news-empty-body">${escapeHtml(copy.empty_body)}</p>
         </div>
       `
@@ -482,7 +475,6 @@
     content.innerHTML = `
       <header class="news-header">
         <div>
-          <h2 class="news-title">${escapeHtml(copy.title)}</h2>
           <p class="news-subtitle">${escapeHtml(copy.subtitle)}</p>
         </div>
       </header>

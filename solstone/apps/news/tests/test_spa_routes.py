@@ -78,6 +78,35 @@ def _render_template_call_functions() -> list[str]:
     return functions
 
 
+def _function_source(source: str, name: str) -> str:
+    marker = f"function {name}("
+    start = source.index(marker)
+    open_paren = source.index("(", start)
+    paren_depth = 0
+    close_paren = -1
+    for index in range(open_paren, len(source)):
+        char = source[index]
+        if char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth -= 1
+            if paren_depth == 0:
+                close_paren = index
+                break
+    assert close_paren != -1, f"function {name} has no closing parameter list"
+    brace = source.index("{", close_paren)
+    depth = 0
+    for index in range(brace, len(source)):
+        char = source[index]
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start : index + 1]
+    raise AssertionError(f"function {name} has no closing brace")
+
+
 def test_news_page_routes_serve_spa_shell(news_env):
     for path in (
         "/app/news/",
@@ -315,6 +344,25 @@ def test_news_detail_empty_and_malformed_paths(news_env):
     assert "reason_code" not in missing
     assert malformed_response.status_code == 404
     assert malformed_response.get_json()["reason_code"] == "file_not_found"
+
+
+def test_news_workspace_day_render_source_hooks():
+    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    day_slice = _function_source(source, "renderDay")
+
+    assert "renderDetailEmpty" not in day_slice
+    assert "copy.subtitle" in day_slice
+    assert "copy.empty_body" in day_slice
+    assert "copy.title" not in day_slice
+    assert "copy.empty_title" not in day_slice
+
+
+def test_news_workspace_detail_empty_source_hooks():
+    source = WORKSPACE_PATH.read_text(encoding="utf-8")
+    detail_empty_slice = _function_source(source, "renderDetailEmpty")
+
+    assert "copy.empty_title" in detail_empty_slice
+    assert "copy.empty_body" in detail_empty_slice
 
 
 def test_news_workspace_day_axis_source_hooks(news_env):
