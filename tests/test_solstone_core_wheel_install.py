@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parents[1]
     sys.platform != "linux",
     reason="local Linux wheel install test runs on Linux only",
 )
+# A cold checkout compiles the bundled SQLite amalgamation (solstone-core-indexer-store
+# depends on rusqlite with the `bundled` feature) in the release profile, which far
+# exceeds the 15s global timeout. Give the from-scratch build ample headroom.
+@pytest.mark.timeout(600)
 def test_locally_built_linux_core_wheel_installs_and_runs(
     tmp_path: Path,
 ) -> None:

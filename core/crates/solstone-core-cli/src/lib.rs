@@ -3,19 +3,28 @@
 
 use std::ffi::{OsStr, OsString};
 
-pub const USAGE: &str =
-    "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n";
+pub const USAGE: &str = "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rescan | --rescan-full | --rescan-file PATH]\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
     Version,
     JournalPath(JournalPathOptions),
+    Indexer(IndexerOptions),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JournalPathOptions {
     pub journal_override: Option<OsString>,
     pub create: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexerOptions {
+    pub journal_override: Option<OsString>,
+    pub reset: bool,
+    pub rescan: bool,
+    pub rescan_full: bool,
+    pub rescan_file: Option<OsString>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,6 +35,9 @@ pub fn evaluate_args(args: &[OsString]) -> Result<Command, UsageError> {
         [flag] if flag == OsStr::new("--version") => Ok(Command::Version),
         [command, rest @ ..] if command == OsStr::new("journal-path") => {
             parse_journal_path(rest).map(Command::JournalPath)
+        }
+        [command, rest @ ..] if command == OsStr::new("indexer") => {
+            parse_indexer(rest).map(Command::Indexer)
         }
         _ => Err(UsageError),
     }
@@ -63,6 +75,86 @@ fn parse_journal_path(args: &[OsString]) -> Result<JournalPathOptions, UsageErro
         journal_override,
         create,
     })
+}
+
+fn parse_indexer(args: &[OsString]) -> Result<IndexerOptions, UsageError> {
+    let mut journal_override = None;
+    let mut reset = false;
+    let mut rescan = false;
+    let mut rescan_full = false;
+    let mut rescan_file = None;
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index].as_os_str();
+        if arg == OsStr::new("--reset") {
+            if reset {
+                return Err(UsageError);
+            }
+            reset = true;
+            index += 1;
+            continue;
+        }
+        if arg == OsStr::new("--rescan") {
+            if rescan {
+                return Err(UsageError);
+            }
+            rescan = true;
+            index += 1;
+            continue;
+        }
+        if arg == OsStr::new("--rescan-full") {
+            if rescan_full {
+                return Err(UsageError);
+            }
+            rescan_full = true;
+            index += 1;
+            continue;
+        }
+        if arg == OsStr::new("--journal") {
+            if journal_override.is_some() {
+                return Err(UsageError);
+            }
+            let value = args.get(index + 1).ok_or(UsageError)?;
+            if is_indexer_flag(value.as_os_str()) {
+                return Err(UsageError);
+            }
+            journal_override = Some(value.clone());
+            index += 2;
+            continue;
+        }
+        if arg == OsStr::new("--rescan-file") {
+            if rescan_file.is_some() {
+                return Err(UsageError);
+            }
+            let value = args.get(index + 1).ok_or(UsageError)?;
+            if is_indexer_flag(value.as_os_str()) {
+                return Err(UsageError);
+            }
+            rescan_file = Some(value.clone());
+            index += 2;
+            continue;
+        }
+        return Err(UsageError);
+    }
+
+    if rescan_file.is_some() && (rescan || rescan_full) {
+        return Err(UsageError);
+    }
+
+    Ok(IndexerOptions {
+        journal_override,
+        reset,
+        rescan,
+        rescan_full,
+        rescan_file,
+    })
+}
+
+fn is_indexer_flag(value: &OsStr) -> bool {
+    matches!(
+        value.to_str(),
+        Some("--journal" | "--reset" | "--rescan" | "--rescan-full" | "--rescan-file")
+    )
 }
 
 pub fn version_line(version: &str) -> String {
@@ -109,6 +201,74 @@ mod tests {
                 create: false,
             }))
         );
+    }
+
+    #[test]
+    fn accepts_indexer_without_operation_flags() {
+        assert_eq!(
+            evaluate_args(&args(&["indexer"])),
+            Ok(Command::Indexer(IndexerOptions {
+                journal_override: None,
+                reset: false,
+                rescan: false,
+                rescan_full: false,
+                rescan_file: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn accepts_indexer_rescan_full_reset_and_override() {
+        assert_eq!(
+            evaluate_args(&args(&[
+                "indexer",
+                "--journal",
+                "/tmp/journal",
+                "--reset",
+                "--rescan-full",
+            ])),
+            Ok(Command::Indexer(IndexerOptions {
+                journal_override: Some(OsString::from("/tmp/journal")),
+                reset: true,
+                rescan: false,
+                rescan_full: true,
+                rescan_file: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn accepts_indexer_rescan_file() {
+        assert_eq!(
+            evaluate_args(&args(&[
+                "indexer",
+                "--rescan-file",
+                "20240101/talents/flow.md",
+            ])),
+            Ok(Command::Indexer(IndexerOptions {
+                journal_override: None,
+                reset: false,
+                rescan: false,
+                rescan_full: false,
+                rescan_file: Some(OsString::from("20240101/talents/flow.md")),
+            }))
+        );
+    }
+
+    #[test]
+    fn rejects_indexer_conflicts_missing_values_and_duplicates() {
+        for values in [
+            &["indexer", "--rescan-file"][..],
+            &["indexer", "--journal"][..],
+            &["indexer", "--rescan-file", "--rescan"][..],
+            &["indexer", "--journal", "--reset"][..],
+            &["indexer", "--reset", "--reset"][..],
+            &["indexer", "--rescan-file", "a.md", "--rescan"][..],
+            &["indexer", "--rescan-file", "a.md", "--rescan-full"][..],
+            &["indexer", "--unknown"][..],
+        ] {
+            assert_eq!(evaluate_args(&args(values)), Err(UsageError), "{values:?}");
+        }
     }
 
     #[test]
@@ -212,7 +372,7 @@ mod tests {
     fn usage_lists_supported_commands() {
         assert_eq!(
             USAGE,
-            "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n"
+            "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rescan | --rescan-full | --rescan-file PATH]\n"
         );
     }
 }

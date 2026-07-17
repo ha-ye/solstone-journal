@@ -14,6 +14,18 @@ Rust crates use edition 2024, `rust-version = "1.87"`, and
 `license = "AGPL-3.0-only"` inherited from `core/Cargo.toml`. Every `.rs` file
 starts with the two-line `//` SPDX header used by `AGENTS.md`.
 
+## Mobile Readiness
+
+Rust subsystem logic should stay eligible for the iOS canary unless a host-only
+adapter makes that impossible. The native markdown indexer keeps discovery,
+metadata, segment parsing, stream-marker reads, and markdown chunking in
+`solstone-core-indexer`, which remains covered by `check-rust-ios`.
+`solstone-core-indexer-store` is excluded because its bundled-C SQLite build
+cannot cross-compile from the Linux host. That exclusion is for the storage
+adapter, not for the indexer logic. The eventual iOS path is to link the system
+`libsqlite3` that iOS ships instead of bundling SQLite, then return the store
+crate to the iOS gate.
+
 ## Layering
 
 `solstone-core` is a process shell only: it reads `std::env::args()`, writes

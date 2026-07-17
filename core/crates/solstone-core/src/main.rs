@@ -4,13 +4,18 @@
 use std::process::ExitCode;
 use std::{env, ffi::OsStr, path::PathBuf};
 
-use solstone_core_cli::{Command, JournalPathOptions, USAGE, evaluate_args, version_line};
+use solstone_core_cli::{
+    Command, IndexerOptions, JournalPathOptions, USAGE, evaluate_args, version_line,
+};
+use solstone_core_indexer_store::db::reset_index;
+use solstone_core_indexer_store::scan::{RescanFileStatus, rescan_file, scan_journal};
 use solstone_core_journal::{
     ConfigError, HomeError, Source, discover_home, ensure_journal_dir_with_label,
     read_config_journal, resolve_journal_path,
 };
 
 const EXIT_USAGE: u8 = 64;
+const EXIT_UNAVAILABLE: u8 = 69;
 const EXIT_TEMPFAIL: u8 = 75;
 
 struct JournalPathLine {
@@ -41,6 +46,7 @@ fn main() -> ExitCode {
                 ExitCode::from(EXIT_TEMPFAIL)
             }
         },
+        Ok(Command::Indexer(options)) => run_indexer(options),
         Err(_) => {
             eprint!("{USAGE}");
             ExitCode::from(EXIT_USAGE)
@@ -63,6 +69,72 @@ fn run_journal_path(options: JournalPathOptions) -> Result<JournalPathLine, Jour
     }
 
     Ok(line)
+}
+
+fn run_indexer(options: IndexerOptions) -> ExitCode {
+    if !options.reset && !options.rescan && !options.rescan_full && options.rescan_file.is_none() {
+        print!("{USAGE}");
+        return ExitCode::SUCCESS;
+    }
+
+    let line = if let Some(path) = options.journal_override {
+        JournalPathLine {
+            label: "cli",
+            path: PathBuf::from(path),
+        }
+    } else {
+        match resolve_process_journal_path() {
+            Ok(line) => line,
+            Err(error) => {
+                eprint_journal_path_error(error);
+                return ExitCode::from(EXIT_TEMPFAIL);
+            }
+        }
+    };
+
+    if options.reset
+        && let Err(error) = reset_index(&line.path)
+    {
+        eprintln!("indexer reset failed: {error}");
+        return ExitCode::from(EXIT_TEMPFAIL);
+    }
+
+    if let Some(path) = options.rescan_file {
+        match rescan_file(&line.path, &PathBuf::from(path)) {
+            Ok(RescanFileStatus::Indexed { warnings }) => {
+                for warning in warnings {
+                    eprintln!("warning: {warning}");
+                }
+                return ExitCode::SUCCESS;
+            }
+            Ok(RescanFileStatus::Declined) => {
+                eprintln!("indexer declined unsupported file");
+                return ExitCode::from(EXIT_UNAVAILABLE);
+            }
+            Err(error) => {
+                eprintln!("indexer rescan-file failed: {error}");
+                return ExitCode::from(EXIT_TEMPFAIL);
+            }
+        }
+    }
+
+    if options.rescan || options.rescan_full {
+        let today = chrono::Local::now().format("%Y%m%d").to_string();
+        match scan_journal(&line.path, options.rescan_full, &today) {
+            Ok(report) => {
+                for warning in report.warnings {
+                    eprintln!("warning: {warning}");
+                }
+                return ExitCode::SUCCESS;
+            }
+            Err(error) => {
+                eprintln!("indexer scan failed: {error}");
+                return ExitCode::from(EXIT_TEMPFAIL);
+            }
+        }
+    }
+
+    ExitCode::SUCCESS
 }
 
 fn resolve_process_journal_path() -> Result<JournalPathLine, JournalPathError> {

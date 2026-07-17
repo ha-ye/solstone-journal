@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/solstone-core", "crates/solstone-core-cli", "crates/solstone-core-journal"]
+members = [
+    "crates/solstone-core",
+    "crates/solstone-core-cli",
+    "crates/solstone-core-indexer",
+    "crates/solstone-core-indexer-store",
+    "crates/solstone-core-journal",
+]
 resolver = "3"
 
 [workspace.package]
@@ -10,6 +16,12 @@ license = "AGPL-3.0-only"
 
 [workspace.dependencies]
 solstone-core-cli = { path = "crates/solstone-core-cli" }
+solstone-core-indexer = { path = "crates/solstone-core-indexer" }
+solstone-core-indexer-store = { path = "crates/solstone-core-indexer-store" }
 solstone-core-journal = { path = "crates/solstone-core-journal" }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+glob = "0.3.3"
+pulldown-cmark = { version = "0.13.4", default-features = false }
+rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde_json = "1.0.150"
 toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }
