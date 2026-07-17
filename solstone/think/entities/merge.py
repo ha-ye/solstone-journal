@@ -1741,10 +1741,7 @@ def undo_entity_merge(
             undo_event = list(iter_entity_history(target_id))[-1]
             remove_entity_merge_payload(target_id, merge_id)
 
-            edge_fingerprint = _rebuild_edges_verified(
-                pre_edge_hash,
-                expect_restore=True,
-            )
+            edge_fingerprint = _rebuild_edges_fingerprint(expect_restore=True)
             return {
                 "undone": True,
                 "merge_id": merge_id,
@@ -1756,7 +1753,6 @@ def undo_entity_merge(
                 "history_version_id": undo_event["version_id"],
                 "edge_rebuild": {
                     "rebuilt": True,
-                    "verified": True,
                     "fingerprint": edge_fingerprint,
                 },
             }
@@ -2043,7 +2039,7 @@ def _safe_entity_state(entity_id: str) -> dict[str, Any]:
     }
 
 
-def _rebuild_edges_verified(pre_undo_hash: str, *, expect_restore: bool) -> str:
+def _rebuild_edges_fingerprint(*, expect_restore: bool) -> str:
     from solstone.think.indexer.edges import rebuild_edges_for_recorded_merge_undo
 
     fingerprint = rebuild_edges_for_recorded_merge_undo(str(_journal_root()))

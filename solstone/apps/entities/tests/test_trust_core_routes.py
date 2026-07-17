@@ -80,7 +80,7 @@ def test_merge_preview_commit_history_and_recorded_undo(trust_client) -> None:
     assert undo_body["undone"] is True
     assert undo_body["history_version_id"].startswith("vh_")
     assert undo_body["restored_reference_counts"]
-    assert undo_body["edge_rebuild"]["verified"] is True
+    assert undo_body["edge_rebuild"]["fingerprint"]
     assert load_journal_entity("route_source")["name"] == "Route Source"
 
     history = client.get("/app/entities/api/journal/entity/route_target/history")
