@@ -4,6 +4,24 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.8.9] - 2026-07-17
+
+### Added
+
+- your journal can now keep older media in your backup instead of on disk. it's off until you turn it on: you set a media budget and a free-space floor, and when the original screen and audio files pass them, the oldest fully-processed media your backup has confirmed moves out, oldest first, with the local copy removed only after that confirmation. transcripts and everything else your journal holds stay where they are, and any offloaded day restores on demand. once media has moved, your backup holds the only copy of it: turning offload on walks through your recovery key first, offloaded media is pinned so your backup's normal rotation can't age it out, and a weekly read-back check samples the backup itself. if a backup lapses or a check fails, offload halts with nothing deleted and says so on the backup page, and turning your backup off now tells you what it holds the only copy of and offers to restore everything first.
+- timeline, search, speakers, and reflections now show your days as a calendar grid. timeline reaches back through your whole journal instead of stopping twelve months ago, search lets you drag a date range right on the grid, speakers shows which days still need names, and reflections shows which weeks have one.
+
+### Changed
+
+- analysis that stops partway now picks itself back up. your journal sizes its analysis work to what your model can actually serve, treats a busy endpoint as busy rather than unreachable, and re-runs a failed day on the next daily pass, paying only for the frames that failed and keeping the ones that already worked. before, the densest screen days could sit unanalyzed indefinitely, and a day that failed stayed failed until you re-ran it by hand. after three tries your journal stops and the day completes with the gap named in its health summary rather than holding the day open.
+
+### Fixed
+
+- a segment whose analysis had failed could still be marked finished, and the check that removes raw media once it's processed trusted that mark. the mark is now written after every stage completes, and any unresolved error holds the raw media in place. your journal keeps raw media unless you've asked for it to be removed after processing, so that setting is who this reached. it's the same mark offload reads before any media moves.
+- changing your retention settings from the backup page now saves. if you tried and got an error, this resolves it.
+- naming yourself as a speaker now works on a fresh journal. before your voice had been identified, tagging a sentence as you failed on every sentence, which left no way to seed it. when detection can't find your voice, the speakers page and the `sol` command now name the next step rather than stopping.
+- `journal doctor` now detects when the macOS app and the legacy background service both target one journal, and points to the single service removal step before other repair actions.
+
 ## [0.8.8] - 2026-07-16
 
 ### Added
@@ -22,7 +40,6 @@ Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), al
 - the settings page's data included whether cloud thinking keys were set. it no longer does; thinking is the only place that holds provider configuration.
 - pointing thinking at your own compatible endpoint is more dependable: requests no longer carry local-only fields some endpoints rejected, and an endpoint that can't be reached now says so quickly instead of timing out.
 - the bundled local model now downloads at full speed on first setup; some installs saw it crawl at a fraction of their connection's speed.
-- `journal doctor` now detects when the macOS app and the legacy background service both target one journal, and points to the single service removal step before other repair actions.
 
 ## [0.8.7] - 2026-07-15
 
