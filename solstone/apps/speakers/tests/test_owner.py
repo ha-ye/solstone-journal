@@ -1390,6 +1390,7 @@ def test_owner_detection_ready_not_ready_during_cooldown(speakers_env, monkeypat
 
 def test_owner_detection_ready_reads_persisted_candidate(speakers_env, monkeypatch):
     from solstone.apps.speakers import owner as owner_module
+    from solstone.apps.speakers.copy import OWNER_CANDIDATE_CONFIRM_GUIDANCE
     from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
     from solstone.apps.speakers.owner import owner_detection_ready
 
@@ -1426,12 +1427,17 @@ def test_owner_detection_ready_reads_persisted_candidate(speakers_env, monkeypat
     assert result["cluster_size"] == 40
     assert result["streams_represented"] == 2
     assert result["samples"] == [{"day": "20240101"}]
+    assert result["candidate_available"] is True
+    assert result["recommendation"] == "ready"
+    assert result["next_step"] == "confirm_candidate"
+    assert result["guidance"] == OWNER_CANDIDATE_CONFIRM_GUIDANCE
 
 
 def test_owner_detection_ready_preserves_single_stream_not_ready(
     speakers_env, monkeypatch
 ):
     from solstone.apps.speakers import owner as owner_module
+    from solstone.apps.speakers.copy import OWNER_CANDIDATE_CONFIRM_GUIDANCE
     from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
     from solstone.apps.speakers.owner import owner_detection_ready
 
@@ -1465,6 +1471,53 @@ def test_owner_detection_ready_preserves_single_stream_not_ready(
 
     assert result["ready"] is False
     assert result["reason"] == "single_stream"
+    assert result["candidate_available"] is True
+    assert result["cluster_size"] == 40
+    assert result["streams_represented"] == 1
+    assert result["samples"] == []
+    assert result["recommendation"] == "single_stream"
+    assert result["next_step"] == "confirm_candidate"
+    assert result["guidance"] == OWNER_CANDIDATE_CONFIRM_GUIDANCE
+
+
+def test_owner_candidate_payload_matches_status_section(speakers_env, monkeypatch):
+    from solstone.apps.speakers import owner as owner_module
+    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+    from solstone.apps.speakers.owner import owner_detection_ready
+    from solstone.apps.speakers.status import _owner_section
+
+    env = speakers_env()
+    candidate_path = _candidate_path(env.journal)
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        candidate_path,
+        centroid=_normalized(np.array([1.0] + [0.0] * 255, dtype=np.float32)),
+        cluster_size=np.array(40, dtype=np.int32),
+        threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
+        version=np.array("2026-03-19T12:00:00Z"),
+    )
+    update_state(
+        "voiceprint",
+        {
+            "status": "candidate",
+            "cluster_size": 40,
+            "streams_represented": 1,
+            "recommendation": "single_stream",
+            "samples": [],
+        },
+    )
+    monkeypatch.setattr(
+        owner_module,
+        "detect_owner_candidate",
+        lambda: (_ for _ in ()).throw(AssertionError("called detection")),
+    )
+
+    ready = owner_detection_ready()
+    status = _owner_section()
+
+    assert ready["candidate_available"] == status["candidate_available"] is True
+    assert ready["next_step"] == status["next_step"] == "confirm_candidate"
+    assert ready["guidance"] == status["guidance"]
 
 
 def test_owner_detection_ready_no_candidate_data(speakers_env, monkeypatch):
@@ -1577,19 +1630,21 @@ def test_api_owner_status_none(speakers_env):
     with app.test_client() as client:
         response = client.get("/app/speakers/api/owner/status")
 
+    data = response.get_json()
     assert response.status_code == 200
-    assert response.get_json() == {
-        "status": "none",
-        "manual_tags_count": 0,
-        "segments_available": 0,
-        "segments_with_embeddings": 0,
-        "embeddings_available": 0,
-        "streams_represented": 0,
-        "can_build_from_tags": False,
-    }
+    assert data["status"] == "none"
+    assert data["manual_tags_count"] == 0
+    assert data["segments_available"] == 0
+    assert data["segments_with_embeddings"] == 0
+    assert data["embeddings_available"] == 0
+    assert data["streams_represented"] == 0
+    assert data["can_build_from_tags"] is False
+    assert data["next_step"] == "seed_manual_tags"
+    assert data["guidance"]
 
 
 def test_api_owner_status_needs_detection(speakers_env):
+    from solstone.apps.speakers.copy import OWNER_DETECT_CANDIDATE_GUIDANCE
     from solstone.apps.speakers.routes import speakers_bp
 
     env = speakers_env()
@@ -1613,9 +1668,12 @@ def test_api_owner_status_needs_detection(speakers_env):
     assert data["manual_tags_count"] == 0
     assert data["streams_represented"] == 0
     assert data["can_build_from_tags"] is False
+    assert data["next_step"] == "detect_candidate"
+    assert data["guidance"] == OWNER_DETECT_CANDIDATE_GUIDANCE
 
 
 def test_api_owner_status_manual_tags_count(speakers_env):
+    from solstone.apps.speakers.copy import OWNER_DETECT_CANDIDATE_GUIDANCE
     from solstone.apps.speakers.routes import speakers_bp
 
     env = speakers_env()
@@ -1646,6 +1704,8 @@ def test_api_owner_status_manual_tags_count(speakers_env):
     assert data["embeddings_available"] == 7
     assert data["streams_represented"] == 1
     assert data["can_build_from_tags"] is False
+    assert data["next_step"] == "detect_candidate"
+    assert data["guidance"] == OWNER_DETECT_CANDIDATE_GUIDANCE
 
 
 def test_api_owner_status_candidate(speakers_env):
@@ -1727,8 +1787,59 @@ def test_api_owner_status_no_cluster(speakers_env):
     with app.test_client() as client:
         response = client.get("/app/speakers/api/owner/status")
 
+    data = response.get_json()
     assert response.status_code == 200
-    assert response.get_json()["status"] == "no_cluster"
+    assert data["status"] == "no_cluster"
+    assert data["next_step"] == "seed_manual_tags"
+    assert data["guidance"]
+
+
+def test_api_owner_status_fallthrough_has_guidance(speakers_env):
+    from solstone.apps.speakers.routes import speakers_bp
+
+    speakers_env()
+    update_state("voiceprint", {"status": "unexpected"})
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        response = client.get("/app/speakers/api/owner/status")
+
+    data = response.get_json()
+    assert response.status_code == 200
+    assert data["status"] == "none"
+    assert data["next_step"] == "seed_manual_tags"
+    assert data["guidance"]
+
+
+def test_api_owner_status_rejected_cooldown_wins_over_seed_guidance(speakers_env):
+    from datetime import datetime
+
+    from solstone.apps.speakers.copy import OWNER_REJECTION_COOLDOWN_GUIDANCE
+    from solstone.apps.speakers.routes import speakers_bp
+
+    speakers_env()
+    update_state(
+        "voiceprint",
+        {
+            "status": "rejected",
+            "rejected_at": datetime.now().isoformat(),
+        },
+    )
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        response = client.get("/app/speakers/api/owner/status")
+
+    data = response.get_json()
+    assert response.status_code == 200
+    assert data["status"] == "none"
+    assert data["reason"] == "cooldown"
+    assert data["days_remaining"] == 14
+    assert data["next_step"] == "wait_for_cooldown"
+    assert data["guidance"] == OWNER_REJECTION_COOLDOWN_GUIDANCE
+    assert data["next_step"] != "seed_manual_tags"
 
 
 def test_api_owner_status_confirmed(speakers_env):

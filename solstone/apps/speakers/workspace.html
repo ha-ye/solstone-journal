@@ -2766,6 +2766,7 @@
 <script>
 (() => {
   let COPY = {};
+  let OWNER_STATUS_ROUTING = {};
   let TODAY = '';
   let OWNER_MIN = 0;
   const ownerPanel = document.getElementById('spkOverviewOwner');
@@ -2783,6 +2784,7 @@
 
   function applyOverviewState(payload) {
     COPY = payload.speaker_copy || {};
+    OWNER_STATUS_ROUTING = payload.owner_status_routing_tokens || {};
     TODAY = payload.today || '';
     OWNER_MIN = payload.owner_min_statements || 0;
     document.querySelectorAll('[data-copy]').forEach((node) => {
@@ -2841,15 +2843,29 @@
   }
 
   function ownerNotReady(data) {
-    const count = Number(data.manual_tags_count || 0);
-    const streams = Number(data.streams_represented || 0);
-    const progress = Math.min(100, Math.round((count / OWNER_MIN) * 100));
-    const diagnostic = data.low_quality_reason
-      ? `<p class="spk-overview-muted">gate: ${escapeHtml(data.low_quality_reason)}; observed ${escapeHtml(String(data.observed_value ?? ''))}; threshold ${escapeHtml(String(data.threshold_value ?? ''))}</p>`
-      : `<p class="spk-overview-muted">${count} ${escapeHtml(COPY.SPK_OVERVIEW_OWNER_PROGRESS_SUFFIX)} · ${streams} ${escapeHtml(COPY.SPK_OVERVIEW_OWNER_STREAMS_LABEL)}</p>`;
+    const countValue = Number(data.manual_tags_count || 0);
+    const streamValue = Number(data.streams_represented || 0);
+    const count = Number.isFinite(countValue) ? Math.max(0, countValue) : 0;
+    const streams = Number.isFinite(streamValue) ? Math.max(0, streamValue) : 0;
+    const threshold = Number(OWNER_MIN);
+    const hasProgress = Number.isFinite(threshold) && threshold > 0;
+    const progress = hasProgress
+      ? Math.min(100, Math.max(0, Math.round((count / threshold) * 100)))
+      : null;
+    const progressHtml = hasProgress
+      ? `<div class="spk-progress" aria-hidden="true"><div class="spk-progress-fill" style="width:${progress}%"></div></div>`
+      : '';
+    let diagnostic = '';
+    if (data.low_quality_reason) {
+      diagnostic = `<p class="spk-overview-muted">gate: ${escapeHtml(data.low_quality_reason)}; observed ${escapeHtml(String(data.observed_value ?? ''))}; threshold ${escapeHtml(String(data.threshold_value ?? ''))}</p>`;
+    } else if (!hasProgress) {
+      diagnostic = `<p class="spk-overview-muted">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_PROGRESS_UNKNOWN)}</p>`;
+    } else {
+      diagnostic = `<p class="spk-overview-muted">${count} ${escapeHtml(COPY.SPK_OVERVIEW_OWNER_PROGRESS_SUFFIX)} · ${streams} ${escapeHtml(COPY.SPK_OVERVIEW_OWNER_STREAMS_LABEL)}</p>`;
+    }
     ownerPanel.innerHTML = `
       <strong>${escapeHtml(COPY.SPK_OVERVIEW_YOUR_VOICE_LEARNING)}</strong>
-      <div class="spk-progress" aria-hidden="true"><div class="spk-progress-fill" style="width:${progress}%"></div></div>
+      ${progressHtml}
       ${diagnostic}
       <div class="spk-overview-actions">
         <a class="spk-overview-btn spk-overview-btn-primary" href="/app/speakers/${TODAY}">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_HELP_LABEL)}</a>
@@ -2859,6 +2875,15 @@
     document.getElementById('spkBuildOwner')?.addEventListener('click', () => {
       fetch('/app/speakers/api/owner/build-from-tags', {method: 'POST'}).then(loadOwner);
     });
+  }
+
+  function ownerStatusError() {
+    ownerPanel.innerHTML = `
+      <strong>${escapeHtml(COPY.SPK_OVERVIEW_OWNER_STATUS_ERROR)}</strong>
+      <div class="spk-overview-actions">
+        <a class="spk-overview-btn spk-overview-btn-primary" href="/app/speakers/${TODAY}">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_HELP_LABEL)}</a>
+      </div>
+    `;
   }
 
   function ownerCandidate(data) {
@@ -2896,7 +2921,7 @@
       <p class="spk-card-line">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_SAMPLES_LABEL)}: ${escapeHtml(String(meta.cluster_size || 0))}</p>
       <p class="spk-card-line">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_STREAMS_LABEL)}: ${escapeHtml(streams.length ? streams.join(' · ') : '—')}</p>
       <p class="spk-card-line">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_COHESION_LABEL)}: ${cohesion(meta.intra_cosine_p25)}</p>
-      <p class="spk-card-line">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_REFRESHED_PREFIX)}: ${relativeTime(meta.last_refreshed_at)}</p>
+      <p class="spk-card-line">${escapeHtml(COPY.SPK_OVERVIEW_OWNER_BUILT_PREFIX)}: ${relativeTime(meta.last_refreshed_at)}</p>
     `;
   }
 
@@ -2904,11 +2929,11 @@
     fetch('/app/speakers/api/owner/status')
       .then((response) => response.json())
       .then((data) => {
-        if (data.status === 'candidate') ownerCandidate(data);
-        else if (data.status === COPY.SPK_OVERVIEW_YOUR_VOICE_CONFIRMED) ownerConfirmed(data);
+        if (data.status === OWNER_STATUS_ROUTING.candidate) ownerCandidate(data);
+        else if (data.status === OWNER_STATUS_ROUTING.confirmed) ownerConfirmed(data);
         else ownerNotReady(data);
       })
-      .catch(() => ownerNotReady({}));
+      .catch(ownerStatusError);
   }
 
   function renderKnown(data) {

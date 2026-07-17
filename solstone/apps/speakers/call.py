@@ -27,7 +27,7 @@ Commands:
     sol call speakers link-import <name> --entity-id <ID>
     sol call speakers seed-from-imports [--commit] [--json]
     sol call speakers suggest [--limit N] [--json]
-    sol call speakers detect [--json]
+    sol call speakers detect
     sol call speakers build-from-tags [--json]
     sol call speakers tag-owner <day> <stream> <segment> <source> <sentence-id> [--json]
     sol call speakers sentences <day> <stream> <segment> <source> [--json]
@@ -657,9 +657,7 @@ def suggest(
 
 @app.command("detect")
 @convey_cli
-def detect_cmd(
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
-) -> None:
+def detect_cmd() -> None:
     """Run owner voice candidate detection."""
     result = _request("POST", "/app/speakers/api/owner/detect")
     typer.echo(json.dumps(result, indent=2, default=str))
@@ -689,6 +687,7 @@ def build_from_tags_cmd(
         typer.echo(f"Observed: {result.get('observed_value')}")
         typer.echo(f"Threshold: {result.get('threshold_value')}")
         typer.echo(f"Manual tags: {result.get('manual_tags_count')}")
+        typer.echo(f"Can build from tags: {result.get('can_build_from_tags')}")
         typer.echo(f"Next step: {result.get('next_step')}")
         typer.echo(f"Guidance: {result.get('guidance')}")
         return

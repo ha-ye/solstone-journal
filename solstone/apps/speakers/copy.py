@@ -13,10 +13,12 @@ SPK_OVERVIEW_OWNER_PROGRESS_SUFFIX = "longer statements"
 SPK_OVERVIEW_OWNER_HELP_LABEL = "help sol learn faster"
 SPK_OVERVIEW_OWNER_BUILD_FROM_TAGS_LABEL = "Build from manual tags"
 SPK_OVERVIEW_YOUR_VOICE_CONFIRMED = "confirmed"
+SPK_OVERVIEW_OWNER_PROGRESS_UNKNOWN = "learning progress unavailable"
+SPK_OVERVIEW_OWNER_STATUS_ERROR = "couldn't load voice status"
 SPK_OVERVIEW_OWNER_SAMPLES_LABEL = "voice samples"
 SPK_OVERVIEW_OWNER_STREAMS_LABEL = "where heard"
 SPK_OVERVIEW_OWNER_COHESION_LABEL = "consistency"
-SPK_OVERVIEW_OWNER_REFRESHED_PREFIX = "last refreshed"
+SPK_OVERVIEW_OWNER_BUILT_PREFIX = "built"
 SPK_OVERVIEW_KNOWN_VOICES_HEADER = "known voices"
 SPK_OVERVIEW_KNOWN_VOICES_SORTS = ["recent", "most samples", "alphabetical"]
 SPK_OVERVIEW_CARD_SAMPLES_LABEL = "samples"
@@ -43,6 +45,17 @@ SPK_GRID_UNIT_OTHER = "segments to name"
 SPK_GRID_UNIT_NONE = "quiet day"
 SPK_GRID_ACTIVITY_ONE = "segment, all named"
 SPK_GRID_ACTIVITY_OTHER = "segments, all named"
+
+OWNER_CANDIDATE_CONFIRM_GUIDANCE = (
+    "A candidate owner voice exists. It was heard on a single device or stream; "
+    "confirm it in the speakers app or with the confirm verb when you ask."
+)
+OWNER_DETECT_CANDIDATE_GUIDANCE = (
+    "Analyze available voice patterns to look for an owner voice candidate."
+)
+OWNER_REJECTION_COOLDOWN_GUIDANCE = (
+    "Wait for the owner voice rejection cooldown before running detection again."
+)
 
 
 def speaker_copy_payload() -> dict[str, Any]:

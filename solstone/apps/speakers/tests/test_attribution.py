@@ -124,14 +124,55 @@ def _rewrite_segment_header(seg_dir: Path, source: str, **updates: object) -> No
 # ---------------------------------------------------------------------------
 
 
-def test_parse_setting_names():
+def test_derive_owner_name_variants():
+    from solstone.apps.speakers.attribution import _derive_owner_name_variants
+
+    assert _derive_owner_name_variants(["Jer", "Jeremie Miller", "Jeremy"]) == {
+        "jer",
+        "jeremie",
+        "jeremie miller",
+        "miller",
+        "jeremy",
+    }
+    assert _derive_owner_name_variants(["Maya Chen"]) == {
+        "maya",
+        "maya chen",
+        "chen",
+    }
+
+
+def test_parse_setting_names(speakers_env):
     from solstone.apps.speakers.attribution import _parse_setting_names
 
+    env = speakers_env()
+    env.set_identity(preferred="Jer", name="Jeremie Miller", aliases=["Jeremy"])
     assert _parse_setting_names("Jer and Jack at coffee") == ["Jack"]
+    assert _parse_setting_names("JEREMIE MILLER and Jack at coffee") == ["Jack"]
+    assert _parse_setting_names("Jeremy and Jack at coffee") == ["Jack"]
+    assert _parse_setting_names("Miller and Jack at coffee") == ["Jack"]
     assert _parse_setting_names("Meeting with Perry and Thomas") == ["Perry", "Thomas"]
     assert _parse_setting_names("Lunch with John Borthwick") == ["John Borthwick"]
     assert _parse_setting_names("") == []
     assert _parse_setting_names("Call with Ryan") == ["Ryan"]
+
+
+def test_parse_setting_names_generalizes_identity_tokens(speakers_env):
+    from solstone.apps.speakers.attribution import _parse_setting_names
+
+    env = speakers_env()
+    env.set_identity(name="Maya Chen", aliases=[])
+
+    assert _parse_setting_names("Maya and Riley at coffee") == ["Riley"]
+    assert _parse_setting_names("Chen and Riley at coffee") == ["Riley"]
+    assert _parse_setting_names("Maya Chen and Riley at coffee") == ["Riley"]
+
+
+def test_parse_setting_names_without_identity_keeps_names(speakers_env):
+    from solstone.apps.speakers.attribution import _parse_setting_names
+
+    speakers_env()
+
+    assert _parse_setting_names("Alex and Blair at coffee") == ["Alex", "Blair"]
 
 
 def test_extract_screen_participants_returns_empty_when_screen_json_absent(tmp_path):
@@ -329,6 +370,7 @@ def test_layer2_setting_field(speakers_env):
     from solstone.apps.speakers.attribution import attribute_segment
 
     env = speakers_env()
+    env.set_identity(preferred="Jer", name="Jeremie Miller", aliases=["Jeremy"])
     _setup_owner(env)
     env.create_entity("Jack Andersohn")
 

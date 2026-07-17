@@ -68,7 +68,7 @@ sol call speakers suggest --limit 5
 ## detect
 
 ```bash
-sol call speakers detect [--json]
+sol call speakers detect
 ```
 
 Run owner voice candidate detection. Returns the candidate plus sample segments.
@@ -82,7 +82,6 @@ Example:
 
 ```bash
 sol call speakers detect
-sol call speakers detect --json
 ```
 
 ## confirm-owner

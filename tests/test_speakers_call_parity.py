@@ -684,6 +684,13 @@ def test_detect_success_json_and_busy_owner_voice(
     assert busy.stderr == f"{SPEAKER_VOICEPRINT_BUSY.message}\n"
 
 
+def test_detect_help_has_no_json_option(runner: CliRunner) -> None:
+    result = runner.invoke(app, ["detect", "--help"])
+
+    assert result.exit_code == 0
+    assert "--json" not in result.stdout
+
+
 def test_build_from_tags_low_quality_json_and_busy(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -719,6 +726,7 @@ def test_build_from_tags_low_quality_json_and_busy(
         f"Observed: {float(manual_tags_count)}\n"
         f"Threshold: {float(OWNER_BOOTSTRAP_MIN_STMTS)}\n"
         f"Manual tags: {manual_tags_count}\n"
+        "Can build from tags: False\n"
         "Next step: seed_manual_tags\n"
         f"Guidance: {_owner_tag_guidance(manual_tags_count)}\n"
     )

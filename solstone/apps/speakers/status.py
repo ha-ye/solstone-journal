@@ -73,6 +73,7 @@ def _embeddings_section() -> dict[str, Any]:
 
 
 def _owner_section() -> dict[str, Any]:
+    from solstone.apps.speakers.copy import OWNER_CANDIDATE_CONFIRM_GUIDANCE
     from solstone.apps.speakers.owner import (
         load_owner_bootstrap_diagnostics,
         load_owner_centroid,
@@ -92,6 +93,9 @@ def _owner_section() -> dict[str, Any]:
         result["detected_at"] = voiceprint.get("detected_at")
         result["streams_represented"] = voiceprint.get("streams_represented")
         result["recommendation"] = voiceprint.get("recommendation")
+        result["candidate_available"] = True
+        result["next_step"] = "confirm_candidate"
+        result["guidance"] = OWNER_CANDIDATE_CONFIRM_GUIDANCE
     elif status == "low_quality":
         guidance = load_owner_manual_bootstrap_guidance(principal_id)
         result["source"] = voiceprint.get("source", "candidate_pool")

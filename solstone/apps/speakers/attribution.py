@@ -45,6 +45,7 @@ from solstone.think.entities import (
     EntityResolutionOutcome,
     ResolutionOrigin,
     ResolutionScope,
+    get_identity_names,
     record_entity_resolution,
 )
 from solstone.think.entities.journal import (
@@ -159,13 +160,26 @@ def _load_integer_speaker_labels(seg_dir: Path, source: str) -> dict[int, int]:
 # ---------------------------------------------------------------------------
 
 
+def _derive_owner_name_variants(identity_names: list[str]) -> set[str]:
+    """Return lowercase owner name variants from configured identity names."""
+    variants: set[str] = set()
+    for name in identity_names:
+        lowered = name.strip().lower()
+        if not lowered:
+            continue
+        variants.add(lowered)
+        variants.update(part for part in lowered.split() if part)
+    return variants
+
+
 def _parse_setting_names(setting: str) -> list[str]:
     """Parse participant names from an import setting field.
 
     Examples:
-        "Jer and Jack at coffee" -> ["Jack"]
-        "Meeting with Perry and Thomas" -> ["Perry", "Thomas"]
-        "Lunch with John Borthwick" -> ["John Borthwick"]
+        With identity "Avery Stone":
+        "Avery and Jordan at coffee" -> ["Jordan"]
+        "Meeting with Priya and Mateo" -> ["Priya", "Mateo"]
+        "Lunch with Jordan Lee" -> ["Jordan Lee"]
     """
     if not setting:
         return []
@@ -187,7 +201,7 @@ def _parse_setting_names(setting: str) -> list[str]:
     # Split by connectors (comma, ampersand, and/or the word "and")
     parts = re.split(r",\s*(?:and\s+)?|\s+and\s+|&\s*", text)
     # Filter owner name variants and noise
-    owner_names = {"jer", "jeremie", "jeremy", "jeremie miller"}
+    owner_names = _derive_owner_name_variants(get_identity_names())
     names: list[str] = []
     for part in parts:
         part = part.strip()

@@ -2519,12 +2519,17 @@ def test_speakers_state_endpoint_shape(speakers_env):
     assert set(payload) == {
         "today",
         "owner_min_statements",
+        "owner_status_routing_tokens",
         "speaker_copy",
         "speaker_filter_name",
     }
     assert len(payload["today"]) == 8
     assert payload["today"].isdigit()
     assert payload["owner_min_statements"] == OWNER_BOOTSTRAP_MIN_STMTS
+    assert payload["owner_status_routing_tokens"] == {
+        "candidate": "candidate",
+        "confirmed": "confirmed",
+    }
     assert payload["speaker_copy"] == speaker_copy_payload()
     assert payload["speaker_filter_name"] is None
 

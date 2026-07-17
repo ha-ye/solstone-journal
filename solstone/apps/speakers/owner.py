@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from solstone.apps.speakers._overlap import _read_segment_overlap_fraction
 from solstone.apps.speakers.audio import resolve_audio_url
+from solstone.apps.speakers.copy import OWNER_CANDIDATE_CONFIRM_GUIDANCE
 from solstone.apps.speakers.encoder_config import (
     NOISY_FLYWHEEL_OVERLAP_MAX,
     OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
@@ -48,6 +49,7 @@ logger = logging.getLogger(__name__)
 
 OWNER_CANDIDATE_SOURCE = "candidate_pool"
 OWNER_CANDIDATE_EXPANSION_MAX_EMBEDDINGS = 3000
+OWNER_REJECTION_COOLDOWN_DAYS = 14
 LOW_QUALITY_REASON_TOO_FEW_STMTS = "too_few_stmts"
 LOW_QUALITY_REASON_MEDIAN_DURATION_TOO_SHORT = "median_duration_too_short"
 LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE = "cluster_too_diffuse"
@@ -1195,40 +1197,67 @@ def detect_owner_candidate() -> dict[str, Any]:
     }
 
 
-def owner_detection_ready() -> dict[str, Any]:
-    """Check cheap owner voice candidate state without running detection."""
-    if load_owner_centroid() is not None:
-        return {"ready": False, "reason": "centroid_exists"}
-
-    voiceprint = get_current().get("voiceprint", {})
+def owner_rejection_cooldown_payload(
+    voiceprint: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return active owner rejection cooldown state, if any."""
     rejected_at = voiceprint.get("rejected_at")
     if rejected_at:
         try:
             rejection_time = datetime.fromisoformat(str(rejected_at))
             now = datetime.now(rejection_time.tzinfo)
             days_since = (now - rejection_time).days
-            if days_since < 14:
+            if days_since < OWNER_REJECTION_COOLDOWN_DAYS:
                 return {
-                    "ready": False,
                     "reason": "cooldown",
-                    "days_remaining": 14 - days_since,
+                    "days_remaining": OWNER_REJECTION_COOLDOWN_DAYS - days_since,
                 }
         except (ValueError, TypeError):
             pass
+    return None
+
+
+def _owner_candidate_ready_payload(
+    voiceprint: dict[str, Any],
+    *,
+    ready: bool,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "ready": ready,
+        "reason": reason,
+        "candidate_available": True,
+        "cluster_size": voiceprint.get("cluster_size"),
+        "streams_represented": voiceprint.get("streams_represented"),
+        "samples": voiceprint.get("samples", []),
+        "recommendation": voiceprint.get("recommendation"),
+        "next_step": "confirm_candidate",
+        "guidance": OWNER_CANDIDATE_CONFIRM_GUIDANCE,
+    }
+
+
+def owner_detection_ready() -> dict[str, Any]:
+    """Check cheap owner voice candidate state without running detection."""
+    if load_owner_centroid() is not None:
+        return {"ready": False, "reason": "centroid_exists"}
+
+    voiceprint = get_current().get("voiceprint", {})
+    cooldown = owner_rejection_cooldown_payload(voiceprint)
+    if cooldown is not None:
+        return {"ready": False, **cooldown}
 
     if _owner_candidate_path().exists() and voiceprint.get("status") == "candidate":
         if voiceprint.get("recommendation") == "ready":
-            return {
-                "ready": True,
-                "reason": "candidate_found",
-                "cluster_size": voiceprint.get("cluster_size"),
-                "streams_represented": voiceprint.get("streams_represented"),
-                "samples": voiceprint.get("samples", []),
-            }
-        return {
-            "ready": False,
-            "reason": voiceprint.get("recommendation") or "candidate_not_ready",
-        }
+            return _owner_candidate_ready_payload(
+                voiceprint,
+                ready=True,
+                reason="candidate_found",
+            )
+        return _owner_candidate_ready_payload(
+            voiceprint,
+            ready=False,
+            reason=voiceprint.get("recommendation") or "candidate_not_ready",
+        )
 
     return {"ready": False, "reason": "no_candidate"}
 

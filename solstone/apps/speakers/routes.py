@@ -42,6 +42,8 @@ from solstone.apps.speakers.bootstrap import (
     seed_from_imports,
 )
 from solstone.apps.speakers.copy import (
+    OWNER_DETECT_CANDIDATE_GUIDANCE,
+    OWNER_REJECTION_COOLDOWN_GUIDANCE,
     SPK_OVERVIEW_KNOWN_VOICES_SORTS,
     speaker_copy_payload,
 )
@@ -65,6 +67,7 @@ from solstone.apps.speakers.owner import (
     load_owner_manual_bootstrap_guidance,
     load_owner_provisional_centroid,
     owner_detection_ready,
+    owner_rejection_cooldown_payload,
     principal_identity_or_none,
     reject_owner_candidate,
 )
@@ -135,6 +138,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 SEGMENT_KEY_RE = re.compile(r"\d{6}_\d+")
 VOICEPRINT_KEYS = ("embeddings", "metadata")
+OWNER_STATUS_CANDIDATE = "candidate"
+OWNER_STATUS_CONFIRMED = "confirmed"
+OWNER_STATUS_ROUTING_TOKENS = {
+    "candidate": OWNER_STATUS_CANDIDATE,
+    "confirmed": OWNER_STATUS_CONFIRMED,
+}
 
 speakers_bp = Blueprint(
     "app:speakers",
@@ -842,6 +851,7 @@ def api_state() -> Any:
             {
                 "today": date.today().strftime("%Y%m%d"),
                 "owner_min_statements": OWNER_BOOTSTRAP_MIN_STMTS,
+                "owner_status_routing_tokens": OWNER_STATUS_ROUTING_TOKENS,
                 "speaker_copy": speaker_copy_payload(),
                 "speaker_filter_name": speaker_filter_name,
             }
@@ -1689,12 +1699,14 @@ def api_owner_status() -> Any:
                 centroid.intra_cosine_p25 if centroid is not None else None
             ),
         }
-        return jsonify({"status": "confirmed", "centroid_metadata": metadata})
+        return jsonify(
+            {"status": OWNER_STATUS_CONFIRMED, "centroid_metadata": metadata}
+        )
 
     if status == "candidate":
         return jsonify(
             {
-                "status": "candidate",
+                "status": OWNER_STATUS_CANDIDATE,
                 "cluster_size": voiceprint.get("cluster_size"),
                 "samples": voiceprint.get("samples", []),
             }
@@ -1716,24 +1728,56 @@ def api_owner_status() -> Any:
         )
 
     if status == "no_cluster":
-        return jsonify({"status": "no_cluster"})
+        guidance = load_owner_manual_bootstrap_guidance(_principal_id_or_none())
+        return jsonify(
+            {
+                "status": "no_cluster",
+                **diagnostics,
+                "next_step": guidance["next_step"],
+                "guidance": guidance["guidance"],
+            }
+        )
 
     if status in {"none", "rejected"}:
+        cooldown = owner_rejection_cooldown_payload(voiceprint)
+        if cooldown is not None:
+            return jsonify(
+                {
+                    "status": "none",
+                    **diagnostics,
+                    **cooldown,
+                    "next_step": "wait_for_cooldown",
+                    "guidance": OWNER_REJECTION_COOLDOWN_GUIDANCE,
+                }
+            )
         if diagnostics["segments_available"] > 0:
             return jsonify(
                 {
                     "status": "needs_detection",
                     **diagnostics,
+                    "next_step": "detect_candidate",
+                    "guidance": OWNER_DETECT_CANDIDATE_GUIDANCE,
                 }
             )
+        guidance = load_owner_manual_bootstrap_guidance(_principal_id_or_none())
         return jsonify(
             {
                 "status": "none",
                 **diagnostics,
+                "next_step": guidance["next_step"],
+                "guidance": guidance["guidance"],
             }
         )
 
-    return jsonify({"status": "none", **diagnostics})
+    guidance = load_owner_manual_bootstrap_guidance(_principal_id_or_none())
+    return jsonify(
+        {
+            "status": "none",
+            **diagnostics,
+            "next_step": guidance["next_step"],
+            "guidance": guidance["guidance"],
+        }
+    )
 
 
 @speakers_bp.route("/api/owner/detect", methods=["POST"])
