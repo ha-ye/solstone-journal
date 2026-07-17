@@ -1,0 +1,87 @@
+{
+  "fixture": "solstone-callosum-registry",
+  "fixture_version": 1,
+  "generated_by": "make core-fixtures",
+  "registry": {
+    "activity": [
+      "live",
+      "recorded"
+    ],
+    "chat": [
+      "owner_message",
+      "sol_message",
+      "talent_queued",
+      "talent_spawned",
+      "talent_finished",
+      "talent_errored",
+      "reflection_ready",
+      "chat_queue_depth",
+      "chat_error",
+      "sol_chat_request",
+      "sol_chat_request_superseded",
+      "owner_chat_open",
+      "owner_chat_dismissed",
+      "support_draft",
+      "result",
+      "support_submit_claim"
+    ],
+    "cortex": [
+      "request",
+      "start",
+      "thinking",
+      "tool_start",
+      "tool_end",
+      "finish",
+      "error",
+      "talent_updated",
+      "info",
+      "status"
+    ],
+    "importer": [
+      "started",
+      "status",
+      "completed",
+      "error"
+    ],
+    "logs": [
+      "exec",
+      "line",
+      "exit"
+    ],
+    "navigate": [
+      "request"
+    ],
+    "notification": [
+      "*"
+    ],
+    "observe": [
+      "status",
+      "observing",
+      "detected",
+      "described",
+      "transcribed",
+      "observed"
+    ],
+    "supervisor": [
+      "started",
+      "stopped",
+      "restarting",
+      "status",
+      "queue"
+    ],
+    "sync": [
+      "status"
+    ],
+    "think": [
+      "started",
+      "status",
+      "group_started",
+      "group_completed",
+      "talent_started",
+      "talent_completed",
+      "completed",
+      "segments_started",
+      "segments_completed"
+    ]
+  }
+}

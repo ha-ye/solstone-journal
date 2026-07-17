@@ -1,0 +1,53 @@
+{
+  "access_tiers": [
+    "normal",
+    "system-read",
+    "outbound",
+    "synthesis"
+  ],
+  "capabilities": {
+    "normal": {
+      "reads": true,
+      "sol": true,
+      "submit": false
+    },
+    "outbound": {
+      "reads": false,
+      "sol": true,
+      "submit": true
+    },
+    "synthesis": {
+      "reads": false,
+      "sol": true,
+      "submit": false
+    },
+    "system-read": {
+      "reads": true,
+      "sol": true,
+      "submit": false
+    }
+  },
+  "finalization_modes": [
+    "emit_final",
+    "FinishTool",
+    "quiet"
+  ],
+  "fixture": "solstone-cogitate-contract",
+  "fixture_version": 1,
+  "future_access_tiers": [
+    "code-agent"
+  ],
+  "generated_by": "make core-fixtures",
+  "read_tools": [
+    "read_file",
+    "list_directory",
+    "glob",
+    "grep_search"
+  ],
+  "runtime_preamble": {
+    "algorithm": "sha256",
+    "byte_length": 1745,
+    "digest": "80fb4b8b98ee800489ca92728b0a49ffd5dfdd35f1af7cc129a7831273db0568",
+    "encoding": "utf-8"
+  }
+}
