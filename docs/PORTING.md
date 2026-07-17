@@ -134,7 +134,9 @@ The first behavior port is `get_journal_info()` / `get_journal()` from
    trailing slashes are stripped with an or-root fallback, repeated separators
    and `.` components are collapsed lexically, exactly two leading slashes are
    preserved, `..` is not collapsed, and `.` joined with `journal` renders as
-   `journal`. This is not a general pathlib port.
+   `journal`. If the expanded home still starts with `~`, the port raises the
+   same home-unavailable error as Python's pathlib guard. This is not a general
+   pathlib port.
 4. **Config stripping is Python stripping.** Rust `str::trim()` is not equivalent
    to Python `str.strip()` because Python also strips U+001C..U+001F. Journal
    config values use a small Python-compatible strip helper. Environment values
