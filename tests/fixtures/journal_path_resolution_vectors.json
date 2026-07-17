@@ -1,0 +1,479 @@
+{
+  "cases": [
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/config-invalid-toml",
+        "state": "present"
+      },
+      "config": {
+        "state": "text",
+        "value": "journal = \"\n"
+      },
+      "cwd": "$TMP/cwd/config_invalid_toml_falls_to_source",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/config-invalid-toml"
+      },
+      "id": "config_invalid_toml_falls_to_source",
+      "outcome": {
+        "path": "$TMP/checkout/config-invalid-toml/journal",
+        "source": "source",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/config-invalid-utf8",
+        "state": "present"
+      },
+      "config": {
+        "state": "hex",
+        "value": "ff"
+      },
+      "cwd": "$TMP/cwd/config_invalid_utf8_errors",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/config-invalid-utf8"
+      },
+      "id": "config_invalid_utf8_errors",
+      "outcome": {
+        "python_class": "UnicodeDecodeError",
+        "type": "error"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/config-non-string",
+        "state": "present"
+      },
+      "config": {
+        "state": "text",
+        "value": "journal = 123\n"
+      },
+      "cwd": "$TMP/cwd/config_non_string_falls_to_source",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/config-non-string"
+      },
+      "id": "config_non_string_falls_to_source",
+      "outcome": {
+        "path": "$TMP/checkout/config-non-string/journal",
+        "source": "source",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/config-control",
+        "state": "absent"
+      },
+      "config": {
+        "state": "text",
+        "value": "journal = \"\\u001c$TMP/config/control\\u001f\"\n"
+      },
+      "cwd": "$TMP/cwd/config_python_control_whitespace_stripped",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/config-control"
+      },
+      "id": "config_python_control_whitespace_stripped",
+      "outcome": {
+        "path": "$TMP/config/control",
+        "source": "config",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/config-tilde",
+        "state": "absent"
+      },
+      "config": {
+        "state": "text",
+        "value": "journal = \"  ~/journal  \"\n"
+      },
+      "cwd": "$TMP/cwd/config_spaced_tilde_literal",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/config-tilde"
+      },
+      "id": "config_spaced_tilde_literal",
+      "outcome": {
+        "path": "~/journal",
+        "source": "config",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/config-spaces",
+        "state": "present"
+      },
+      "config": {
+        "state": "text",
+        "value": "journal = \"   \"\n"
+      },
+      "cwd": "$TMP/cwd/config_whitespace_only_falls_to_source",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/config-spaces"
+      },
+      "id": "config_whitespace_only_falls_to_source",
+      "outcome": {
+        "path": "$TMP/checkout/config-spaces/journal",
+        "source": "source",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/home-dot",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_home_dot_component",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/./dot"
+      },
+      "id": "default_home_dot_component",
+      "outcome": {
+        "path": "$TMP/home/dot/journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/home-double",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_home_double_leading_slash",
+      "home": {
+        "state": "set",
+        "value": "//server//share"
+      },
+      "id": "default_home_double_leading_slash",
+      "outcome": {
+        "path": "//server/share/journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/home-empty",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_home_empty",
+      "home": {
+        "state": "set",
+        "value": ""
+      },
+      "id": "default_home_empty",
+      "outcome": {
+        "path": "/journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/home-repeated",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_home_repeated_slashes",
+      "home": {
+        "state": "set",
+        "value": "$TMP//home//repeated"
+      },
+      "id": "default_home_repeated_slashes",
+      "outcome": {
+        "path": "$TMP/home/repeated/journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/home-root",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_home_root_slashes",
+      "home": {
+        "state": "set",
+        "value": "///"
+      },
+      "id": "default_home_root_slashes",
+      "outcome": {
+        "path": "/journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/home-trailing",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_home_trailing_slash",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/trailing/"
+      },
+      "id": "default_home_trailing_slash",
+      "outcome": {
+        "path": "$TMP/home/trailing/journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/default",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_normal_home",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/default"
+      },
+      "id": "default_normal_home",
+      "outcome": {
+        "path": "$TMP/home/default/journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/relative-dot",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_relative_home_dot_component",
+      "home": {
+        "state": "set",
+        "value": "./relative"
+      },
+      "id": "default_relative_home_dot_component",
+      "outcome": {
+        "path": "relative/journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/relative-repeated",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_relative_home_repeated_slashes",
+      "home": {
+        "state": "set",
+        "value": "rel//home"
+      },
+      "id": "default_relative_home_repeated_slashes",
+      "outcome": {
+        "path": "rel/home/journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/relative-single-dot",
+        "state": "absent"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/default_relative_home_single_dot",
+      "home": {
+        "state": "set",
+        "value": "."
+      },
+      "id": "default_relative_home_single_dot",
+      "outcome": {
+        "path": "journal",
+        "source": "default",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/env-empty",
+        "state": "present"
+      },
+      "config": {
+        "state": "text",
+        "value": "journal = \"$TMP/config/env-empty\"\n"
+      },
+      "cwd": "$TMP/cwd/env_empty_falls_to_config",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/env-empty"
+      },
+      "id": "env_empty_falls_to_config",
+      "outcome": {
+        "path": "$TMP/config/env-empty",
+        "source": "config",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "set",
+        "value": ""
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/env-path",
+        "state": "present"
+      },
+      "config": {
+        "state": "text",
+        "value": "journal = \"$TMP/config/env-path\"\n"
+      },
+      "cwd": "$TMP/cwd/env_path_wins_over_config_and_source",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/env-path"
+      },
+      "id": "env_path_wins_over_config_and_source",
+      "outcome": {
+        "path": "$TMP/env/path",
+        "source": "env",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "set",
+        "value": "$TMP/env/path"
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/env-spaces",
+        "state": "present"
+      },
+      "config": {
+        "state": "text",
+        "value": "journal = \"$TMP/config/env-spaces\"\n"
+      },
+      "cwd": "$TMP/cwd/env_spaces_wins_unstripped",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/env-spaces"
+      },
+      "id": "env_spaces_wins_unstripped",
+      "outcome": {
+        "path": "   ",
+        "source": "env",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "set",
+        "value": "   "
+      }
+    },
+    {
+      "checkout_root": {
+        "path": "$TMP/checkout/source",
+        "state": "present"
+      },
+      "config": {
+        "state": "absent"
+      },
+      "cwd": "$TMP/cwd/source_checkout_wins_over_default",
+      "home": {
+        "state": "set",
+        "value": "$TMP/home/source"
+      },
+      "id": "source_checkout_wins_over_default",
+      "outcome": {
+        "path": "$TMP/checkout/source/journal",
+        "source": "source",
+        "type": "ok"
+      },
+      "solstone_journal": {
+        "state": "absent"
+      }
+    }
+  ],
+  "schema_version": 1,
+  "tokens": {
+    "$TMP": "Per-run temporary root substituted by generator and consumers."
+  }
+}
