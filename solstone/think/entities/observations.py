@@ -13,6 +13,7 @@ and biographical facts that help with future interactions.
 import copy
 import json
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any, Iterator
@@ -157,6 +158,23 @@ def count_observations(facet: str, name: str) -> int:
         return 0
 
     return _count_observation_file(obs_file)
+
+
+def observation_day_counts(facet: str, name: str) -> dict[str, int]:
+    """Count valid observation source days for an entity."""
+    try:
+        observations = load_observations(facet, name)
+    except ValueError:
+        return {}
+
+    counts: dict[str, int] = {}
+    for entry in observations:
+        if not isinstance(entry, dict):
+            continue
+        day = entry.get("source_day")
+        if isinstance(day, str) and re.fullmatch(r"\d{8}", day):
+            counts[day] = counts.get(day, 0) + 1
+    return counts
 
 
 def save_observations(

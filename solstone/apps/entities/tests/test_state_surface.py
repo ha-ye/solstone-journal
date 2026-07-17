@@ -50,10 +50,14 @@ def test_facet_cards_empty_copy_uses_ent_constant(html):
 
 def test_observation_empty_and_failure_states(html):
     detail = _function_body(html, "renderDetailView")
+    observation_list = _function_body(html, "renderObservationList")
     show = _function_body(html, "showFacetDetailView")
     catch_body = show.split(".catch(error => {", 1)[1]
 
-    assert "ENT_COPY.ENT_OBS_EMPTY.replace('{name}', entity.name)" in detail
+    assert (
+        "renderObservationList(entity, detailObservationState.observations);" in detail
+    )
+    assert "ENT_COPY.ENT_OBS_EMPTY.replace('{name}', entity.name)" in observation_list
     assert "'no observations yet.'" not in html
 
     assert (
@@ -67,6 +71,61 @@ def test_observation_empty_and_failure_states(html):
     assert "headingLevel: 'h3'" in catch_body
     assert "retryBtn.onclick = () => showFacetDetailView(entityId);" in catch_body
     assert "loading..." not in catch_body
+
+
+def test_observation_day_grid_surface_and_state_hooks(html):
+    hide = _function_body(html, "hideObservationDayGrid")
+    show = _function_body(html, "showFacetDetailView")
+    render_grid = _function_body(html, "renderObservationDayGridForState")
+    apply_grid = _function_body(html, "applyObservationDayGrid")
+    load_grid = _function_body(html, "loadObservationDayGrid")
+    range_setter = _function_body(html, "setObservationGridRange")
+    range_clear = _function_body(html, "clearObservationGridRange")
+    observations = _function_body(html, "observationsForDetailState")
+    state_render = _function_body(html, "renderDetailObservationsForState")
+    detail = _function_body(html, "renderDetailView")
+
+    card = html.index('id="detail-observation-grid-card"')
+    observations_mount = html.index('id="detail-observations"')
+
+    assert card < observations_mount
+    assert 'id="detail-observations-heading"' in html
+    assert (
+        "document.getElementById('detail-observations-heading').textContent = ENT_COPY.ENT_GRID_UNIT_OTHER || '';"
+        in show
+    )
+
+    assert "loadObservationDayGrid(currentFacet, entityId, openToken);" in show
+    assert (
+        "renderObservationList(entity, detailObservationState.observations);" in detail
+    )
+    assert "if (detailObservationState.gridData)" in detail
+    assert "renderObservationDayGridForState();" in detail
+
+    assert "data: null" in hide
+    assert "mode: 'select'" in hide
+    assert "onRange: setObservationGridRange" in hide
+    assert (
+        "window.DayGrid.gate(data, { minSpanDays: 70, minActiveDays: 6 })" in apply_grid
+    )
+    assert "window.DayGrid.legend(legend, { unit, data });" in render_grid
+    assert "onRange: setObservationGridRange" in render_grid
+    assert "onSelect:" not in html
+    assert "onDay:" not in html
+
+    assert "try {" in load_grid
+    assert "fetch(" in load_grid
+    assert "catch (_error)" in load_grid
+    assert "resetObservationGridContext();" in load_grid
+    assert "detailObservationTokenCurrent(token)" in load_grid
+
+    assert "detailObservationState.mode = 'range';" in range_setter
+    assert "if (!range)" in range_setter
+    assert "clearObservationGridRange();" in range_setter
+    assert "detailObservationState.mode = 'default';" in range_clear
+    assert "day && day >= range.from && day <= range.to" in observations
+    assert "rangeClear.onclick = clearObservationGridRange;" in html
+    assert "showAllButton.onclick = showAllDetailObservations;" in state_render
 
 
 def test_entity_type_grouping_is_normalized_and_shared(html):

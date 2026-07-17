@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -54,9 +55,82 @@ def _read_raw(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def _write_raw_observation_lines(facet: str, name: str, lines: list[str]) -> Path:
+    path = observations.observations_file_path(facet, name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
 def _install_clock(monkeypatch: pytest.MonkeyPatch, *ticks: int) -> None:
     values = iter(ticks)
     monkeypatch.setattr(observations, "now_ms", lambda: next(values))
+
+
+def test_observation_day_counts_counts_only_valid_source_days(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_journal(tmp_path, monkeypatch)
+    _write_raw_observation_lines(
+        "work",
+        "Alice Example",
+        [
+            json.dumps({"content": "First", "source_day": "20260401"}),
+            json.dumps({"content": "Second", "source_day": "20260401"}),
+            json.dumps({"content": "Third", "source_day": "20260402"}),
+            json.dumps({"content": "Undated"}),
+            json.dumps({"content": "Integer day", "source_day": 1}),
+            json.dumps({"content": "Dashed day", "source_day": "2026-04-03"}),
+            json.dumps("not a dict"),
+            "{malformed",
+            "",
+        ],
+    )
+
+    assert observations.observation_day_counts("work", "Alice Example") == {
+        "20260401": 2,
+        "20260402": 1,
+    }
+
+
+def test_observation_day_counts_empty_for_missing_file_and_empty_slug(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_journal(tmp_path, monkeypatch)
+
+    assert observations.observation_day_counts("work", "Missing Entity") == {}
+    assert observations.observation_day_counts("work", "") == {}
+
+
+def test_observation_count_predicates_can_diverge(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _set_journal(tmp_path, monkeypatch)
+    facet = "work"
+    name = "Predicate Divergence"
+    d1 = "20260401"
+    d2 = "20260402"
+    _write_raw_observation_lines(
+        facet,
+        name,
+        [
+            json.dumps({"content": "First dated", "source_day": d1}),
+            json.dumps({"content": "Second dated", "source_day": d1}),
+            json.dumps({"content": "Third dated", "source_day": d2}),
+            json.dumps({"content": "Parseable undated"}),
+            "{malformed",
+        ],
+    )
+
+    assert observations.count_observations(facet, name) == 5
+    assert len(observations.load_observations(facet, name)) == 4
+    assert observations.observation_day_counts(facet, name) == {
+        d1: 2,
+        d2: 1,
+    }
 
 
 def test_record_observation_ops_consolidates_remote_control_project(

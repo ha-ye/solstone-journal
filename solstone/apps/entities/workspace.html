@@ -522,6 +522,121 @@
   font-style: italic;
 }
 
+.entity-observation-grid-card {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  margin: 0 0 1rem;
+  padding: 1rem;
+}
+
+.entity-observation-grid-card[hidden] {
+  display: none;
+}
+
+.entity-observation-grid-header {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: space-between;
+  margin-bottom: 0.85rem;
+}
+
+.entity-observation-grid-title {
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 1rem;
+  line-height: 1.2;
+  margin: 0 0 0.25rem;
+}
+
+.entity-observation-grid-lede {
+  color: var(--ink-soft-paper);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.entity-observation-grid-host {
+  min-width: 0;
+}
+
+.entity-observation-grid-legend {
+  margin-top: 0.75rem;
+}
+
+.entity-observation-range-chip {
+  align-items: center;
+  background: var(--orange-wash);
+  border: 1px solid var(--orange-ink);
+  border-radius: 999px;
+  color: var(--orange-ink);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  gap: 0.35rem;
+  padding: 0.2rem 0.5rem;
+}
+
+.entity-observation-range-chip[hidden] {
+  display: none;
+}
+
+.entity-observation-range-chip button {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--orange-ink);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  height: 1.25rem;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  width: 1.25rem;
+}
+
+.entity-observation-range-chip button:hover {
+  background: var(--paper);
+}
+
+.entity-observation-range-chip button:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.entity-observation-list-heading {
+  color: var(--ink-soft-paper);
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1.4;
+  margin: 0 0 0.75rem;
+}
+
+.entity-observation-footer {
+  margin-top: 0.75rem;
+}
+
+.entity-observation-show-all {
+  background: transparent;
+  border: 0;
+  color: var(--orange-ink);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+}
+
+.entity-observation-show-all:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 /* Detach/Re-attach section in detail view */
 .entity-detach-section {
   padding: 1.5em;
@@ -1828,7 +1943,21 @@ body.presentation-mode .entity-desc { color: #4b5563; }
     </div>
 
     <div class="entity-detail-section">
-      <h4>observations</h4>
+      <h4 id="detail-observations-heading"></h4>
+      <section class="entity-observation-grid-card" id="detail-observation-grid-card" hidden>
+        <div class="entity-observation-grid-header">
+          <div>
+            <h5 class="entity-observation-grid-title" id="detail-observation-grid-title"></h5>
+            <p class="entity-observation-grid-lede" id="detail-observation-grid-lede"></p>
+          </div>
+          <span class="entity-observation-range-chip" id="detail-observation-range-chip" hidden>
+            <span id="detail-observation-range-label"></span>
+            <button type="button" id="detail-observation-range-clear">×</button>
+          </span>
+        </div>
+        <div class="entity-observation-grid-host" id="detail-observation-grid-host"></div>
+        <div class="entity-observation-grid-legend" id="detail-observation-grid-legend"></div>
+      </section>
       <div id="detail-observations"></div>
     </div>
 
@@ -1928,6 +2057,19 @@ let entitiesData = null;
 let detectedPage = 1;
 let journalEntitiesData = null;  // For all-facet mode
 let currentDetailEntity = null;
+let detailObservationOpenToken = 0;
+let detailObservationState = {
+  token: 0,
+  facet: '',
+  entityId: '',
+  entity: null,
+  observations: [],
+  observationsReady: false,
+  mode: 'default',
+  range: null,
+  gridData: null,
+  defaultDay: null,
+};
 let pendingJournalMergeUndo = null;
 const pendingEntities = new Map(); // use_id → { name, element }
 const pendingAgentCallbacks = new Map(); // use_id → callback function
@@ -2078,6 +2220,362 @@ function getEntityDisplayDate(entity) {
     return formatDateShort(entity.last_active_day);
   }
   return null;
+}
+
+function entityGridFormat(template, values) {
+  let result = String(template || '');
+  Object.entries(values).forEach(([key, value]) => {
+    result = result.replace(new RegExp(`\\{${key}\\}`, 'g'), String(value ?? ''));
+  });
+  return result;
+}
+
+function entityObservationGridUnit() {
+  return {
+    one: ENT_COPY.ENT_GRID_UNIT_ONE,
+    other: ENT_COPY.ENT_GRID_UNIT_OTHER,
+    none: ENT_COPY.ENT_GRID_UNIT_NONE,
+  };
+}
+
+function entityObservationUnit(count) {
+  return count === 1 ? ENT_COPY.ENT_GRID_UNIT_ONE : ENT_COPY.ENT_GRID_UNIT_OTHER;
+}
+
+function entityObservationDayUnit(count) {
+  return count === 1 ? ENT_COPY.ENT_GRID_DAY_ONE : ENT_COPY.ENT_GRID_DAY_OTHER;
+}
+
+function detailObservationGridElements() {
+  return {
+    card: document.getElementById('detail-observation-grid-card'),
+    title: document.getElementById('detail-observation-grid-title'),
+    lede: document.getElementById('detail-observation-grid-lede'),
+    chip: document.getElementById('detail-observation-range-chip'),
+    rangeLabel: document.getElementById('detail-observation-range-label'),
+    rangeClear: document.getElementById('detail-observation-range-clear'),
+    host: document.getElementById('detail-observation-grid-host'),
+    legend: document.getElementById('detail-observation-grid-legend'),
+  };
+}
+
+function hideObservationDayGrid() {
+  const { card, chip, rangeLabel, host, legend } = detailObservationGridElements();
+  if (card) card.hidden = true;
+  if (chip) chip.hidden = true;
+  if (rangeLabel) rangeLabel.textContent = '';
+  if (window.DayGrid && host) {
+    window.DayGrid.mount(host, {
+      data: null,
+      mode: 'select',
+      unit: entityObservationGridUnit(),
+      onRange: setObservationGridRange,
+    });
+  } else if (host) {
+    host.replaceChildren();
+  }
+  if (legend) legend.replaceChildren();
+}
+
+function resetObservationGridContext() {
+  detailObservationState.mode = 'default';
+  detailObservationState.range = null;
+  detailObservationState.gridData = null;
+  detailObservationState.defaultDay = null;
+  hideObservationDayGrid();
+}
+
+function beginDetailObservationOpen(facet, entityId) {
+  detailObservationOpenToken += 1;
+  detailObservationState = {
+    token: detailObservationOpenToken,
+    facet,
+    entityId,
+    entity: null,
+    observations: [],
+    observationsReady: false,
+    mode: 'default',
+    range: null,
+    gridData: null,
+    defaultDay: null,
+  };
+  hideObservationDayGrid();
+  return detailObservationOpenToken;
+}
+
+function detailObservationTokenCurrent(token) {
+  return token === detailObservationOpenToken && token === detailObservationState.token;
+}
+
+function observationSourceDay(obs) {
+  const day = obs && typeof obs === 'object' ? obs.source_day : null;
+  return typeof day === 'string' && /^\d{8}$/.test(day) ? day : null;
+}
+
+function activeObservationGridDays(data) {
+  return Object.entries(data?.days || {})
+    .filter(([, value]) => Number(value) > 0)
+    .map(([day]) => day)
+    .sort();
+}
+
+function observationGridTotal(data) {
+  return Object.values(data?.days || {}).reduce((total, value) => {
+    return total + Math.max(0, Number(value) || 0);
+  }, 0);
+}
+
+function observationGridLede(data) {
+  const n = observationGridTotal(data);
+  const d = activeObservationGridDays(data).length;
+  return entityGridFormat(ENT_COPY.ENT_GRID_LEDE, {
+    n,
+    d,
+    observation_unit: entityObservationUnit(n),
+    day_unit: entityObservationDayUnit(d),
+  });
+}
+
+function formatObservationRange(range) {
+  if (!range) return '';
+  const from = formatDateShort(range.from) || range.from;
+  const to = formatDateShort(range.to) || range.to;
+  if (range.from === range.to) return from;
+  return entityGridFormat(ENT_COPY.ENT_GRID_RANGE, { from, to });
+}
+
+function sameObservationRange(left, right) {
+  if (!left && !right) return true;
+  if (!left || !right) return false;
+  return left.from === right.from && left.to === right.to;
+}
+
+function renderObservationGridControls() {
+  const { chip, rangeLabel, rangeClear } = detailObservationGridElements();
+  const rangeLabelText = detailObservationState.mode === 'range'
+    ? formatObservationRange(detailObservationState.range)
+    : '';
+  if (chip) chip.hidden = !rangeLabelText;
+  if (rangeLabel) rangeLabel.textContent = rangeLabelText;
+  if (rangeClear) {
+    rangeClear.setAttribute('aria-label', ENT_COPY.ENT_GRID_CLEAR_RANGE || '');
+    rangeClear.onclick = clearObservationGridRange;
+  }
+}
+
+function renderObservationDayGridForState() {
+  const data = detailObservationState.gridData;
+  if (!data || !window.DayGrid) {
+    resetObservationGridContext();
+    return;
+  }
+
+  const { card, title, lede, host, legend } = detailObservationGridElements();
+  if (!card || !host || !legend) return;
+  if (title) title.textContent = ENT_COPY.ENT_GRID_TITLE || '';
+  if (lede) lede.textContent = observationGridLede(data);
+
+  card.hidden = false;
+  const unit = entityObservationGridUnit();
+  window.DayGrid.mount(host, {
+    data,
+    mode: 'select',
+    unit,
+    onRange: setObservationGridRange,
+  });
+  window.DayGrid.legend(legend, { unit, data });
+  renderObservationGridControls();
+  renderDetailObservationsForState();
+}
+
+function applyObservationDayGrid(data, token) {
+  if (!detailObservationTokenCurrent(token)) return;
+  if (!data || !window.DayGrid) {
+    resetObservationGridContext();
+    return;
+  }
+
+  const gate = window.DayGrid.gate(data, { minSpanDays: 70, minActiveDays: 6 });
+  if (!gate.ok) {
+    resetObservationGridContext();
+    return;
+  }
+
+  const days = activeObservationGridDays(data);
+  if (days.length === 0) {
+    resetObservationGridContext();
+    return;
+  }
+
+  detailObservationState.gridData = data;
+  detailObservationState.defaultDay = days[days.length - 1];
+  detailObservationState.mode = 'default';
+  detailObservationState.range = null;
+
+  if (detailObservationState.observationsReady) {
+    renderObservationDayGridForState();
+  }
+}
+
+async function loadObservationDayGrid(facet, entityId, token) {
+  try {
+    const response = await fetch(
+      `api/${encodeURIComponent(facet)}/entity/${encodeURIComponent(entityId)}/grid`,
+      { cache: 'no-store' },
+    );
+    if (!response.ok) throw new Error('observation grid failed');
+    applyObservationDayGrid(await response.json(), token);
+  } catch (_error) {
+    if (!detailObservationTokenCurrent(token)) return;
+    resetObservationGridContext();
+  }
+}
+
+function setObservationGridRange(range) {
+  if (!range) {
+    clearObservationGridRange();
+    return;
+  }
+  if (!detailObservationState.gridData) return;
+  const next = range.from <= range.to
+    ? { from: range.from, to: range.to }
+    : { from: range.to, to: range.from };
+  if (detailObservationState.mode === 'range' && sameObservationRange(detailObservationState.range, next)) {
+    return;
+  }
+  detailObservationState.mode = 'range';
+  detailObservationState.range = next;
+  renderObservationGridControls();
+  renderDetailObservationsForState();
+}
+
+function clearObservationGridRange() {
+  if (detailObservationState.mode !== 'range') return;
+  detailObservationState.mode = 'default';
+  detailObservationState.range = null;
+  if (detailObservationState.gridData) {
+    renderObservationDayGridForState();
+  } else {
+    renderObservationGridControls();
+    renderDetailObservationsForState();
+  }
+}
+
+function showAllDetailObservations() {
+  detailObservationState.mode = 'all';
+  detailObservationState.range = null;
+  renderObservationGridControls();
+  renderDetailObservationsForState();
+}
+
+function observationsForDetailState() {
+  const observations = Array.isArray(detailObservationState.observations)
+    ? detailObservationState.observations
+    : [];
+  if (!detailObservationState.gridData || detailObservationState.mode === 'all') {
+    return observations;
+  }
+  if (detailObservationState.mode === 'range' && detailObservationState.range) {
+    const range = detailObservationState.range;
+    return observations.filter((obs) => {
+      const day = observationSourceDay(obs);
+      return day && day >= range.from && day <= range.to;
+    });
+  }
+  if (detailObservationState.defaultDay) {
+    return observations.filter((obs) => observationSourceDay(obs) === detailObservationState.defaultDay);
+  }
+  return observations;
+}
+
+function renderObservationItem(obs) {
+  const row = obs && typeof obs === 'object' ? obs : {};
+  const item = document.createElement('div');
+  item.className = 'observation-item';
+
+  const content = document.createElement('div');
+  content.className = 'observation-content';
+  content.textContent = row.content || '';
+
+  const meta = document.createElement('div');
+  meta.className = 'observation-meta';
+  if (row.source_day) {
+    if (/^\d{8}$/.test(row.source_day)) {
+      const dayLink = document.createElement('a');
+      dayLink.href = `/app/sol/${row.source_day}`;
+      dayLink.title = ENT_COPY.ENT_OBS_SOURCE_LINK_TITLE || '';
+      dayLink.textContent = formatDateShort(row.source_day);
+      meta.appendChild(dayLink);
+    } else {
+      meta.appendChild(document.createTextNode(formatDateShort(row.source_day) || row.source_day));
+    }
+  }
+  if (row.observed_at) {
+    if (meta.childNodes.length > 0) {
+      meta.appendChild(document.createTextNode(' · '));
+    }
+    const date = new Date(row.observed_at);
+    const timeText = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+    meta.appendChild(document.createTextNode(timeText));
+  }
+
+  item.appendChild(content);
+  item.appendChild(meta);
+  return item;
+}
+
+function renderObservationList(entity, observations, options = {}) {
+  const obsContainer = document.getElementById('detail-observations');
+  const rows = Array.isArray(observations) ? observations : [];
+  if (rows.length > 0) {
+    obsContainer.replaceChildren();
+    if (options.heading) {
+      const heading = document.createElement('div');
+      heading.className = 'entity-observation-list-heading';
+      heading.textContent = options.heading;
+      obsContainer.appendChild(heading);
+    }
+    const list = document.createElement('div');
+    list.className = 'observations-list';
+    rows.forEach((obs) => {
+      list.appendChild(renderObservationItem(obs));
+    });
+    obsContainer.appendChild(list);
+    if (options.footer) {
+      const footer = document.createElement('div');
+      footer.className = 'entity-observation-footer';
+      footer.appendChild(options.footer);
+      obsContainer.appendChild(footer);
+    }
+  } else {
+    obsContainer.innerHTML = '<span class="observations-empty"></span>';
+    obsContainer.querySelector('.observations-empty').textContent = ENT_COPY.ENT_OBS_EMPTY.replace('{name}', entity.name);
+  }
+}
+
+function renderDetailObservationsForState() {
+  const entity = detailObservationState.entity || currentDetailEntity || {};
+  const rows = observationsForDetailState();
+  const options = {};
+  if (
+    detailObservationState.gridData &&
+    detailObservationState.mode === 'default' &&
+    detailObservationState.defaultDay
+  ) {
+    options.heading = entityGridFormat(ENT_COPY.ENT_GRID_DEFAULT_DAY, {
+      day: formatDateShort(detailObservationState.defaultDay) || detailObservationState.defaultDay,
+    });
+    const showAllButton = document.createElement('button');
+    showAllButton.type = 'button';
+    showAllButton.className = 'entity-observation-show-all';
+    showAllButton.textContent = entityGridFormat(ENT_COPY.ENT_GRID_SHOW_ALL, {
+      n: detailObservationState.observations.length,
+      observation_unit: entityObservationUnit(detailObservationState.observations.length),
+    });
+    showAllButton.onclick = showAllDetailObservations;
+    options.footer = showAllButton;
+  }
+  renderObservationList(entity, rows, options);
 }
 
 const ENTITY_CONN_PAGE_SIZE = 8;
@@ -2666,6 +3164,7 @@ function showDetailView(entityId) {
 }
 
 function showFacetDetailView(entityId) {
+  const openToken = beginDetailObservationOpen(currentFacet, entityId);
   // Show loading state
   currentDetailEntity = null;
   document.getElementById('detail-name').textContent = 'loading...';
@@ -2675,12 +3174,15 @@ function showFacetDetailView(entityId) {
   document.getElementById('detail-indicators').innerHTML = '';
   document.getElementById('detail-description-container').innerHTML = '<span class="entity-desc-display empty">loading...</span>';
   document.getElementById('detail-connections').innerHTML = '<span class="observations-empty">loading...</span>';
+  document.getElementById('detail-observations-heading').textContent = ENT_COPY.ENT_GRID_UNIT_OTHER || '';
   document.getElementById('detail-observations').innerHTML = '<span class="observations-empty">loading...</span>';
+  loadObservationDayGrid(currentFacet, entityId, openToken);
 
   // Fetch entity details
   fetch(`api/${encodeURIComponent(currentFacet)}/entity/${encodeURIComponent(entityId)}`)
     .then(response => response.json())
     .then(data => {
+      if (!detailObservationTokenCurrent(openToken)) return;
       if (data.error) {
         throw new Error(data.error);
       }
@@ -2688,7 +3190,9 @@ function showFacetDetailView(entityId) {
       renderDetailView(data.entity, data.observations);
     })
     .catch(error => {
+      if (!detailObservationTokenCurrent(openToken)) return;
       console.error('Error loading entity details:', error);
+      resetObservationGridContext();
       document.getElementById('detail-name').textContent = '';
       document.getElementById('detail-allfacets-name').textContent = '';
       const container = document.getElementById('detail-description-container');
@@ -3582,47 +4086,12 @@ function renderDetailView(entity, observations) {
   renderConnectionsSection(entity.id, 'detail-connections', isPrincipal);
 
   // Observations
-  const obsContainer = document.getElementById('detail-observations');
-  if (observations && observations.length > 0) {
-    obsContainer.innerHTML = '<div class="observations-list"></div>';
-    const list = obsContainer.querySelector('.observations-list');
-    observations.forEach(obs => {
-      const item = document.createElement('div');
-      item.className = 'observation-item';
-
-      const content = document.createElement('div');
-      content.className = 'observation-content';
-      content.textContent = obs.content;
-
-      const meta = document.createElement('div');
-      meta.className = 'observation-meta';
-      if (obs.source_day) {
-        if (/^\d{8}$/.test(obs.source_day)) {
-          const dayLink = document.createElement('a');
-          dayLink.href = `/app/sol/${obs.source_day}`;
-          dayLink.title = ENT_COPY.ENT_OBS_SOURCE_LINK_TITLE || '';
-          dayLink.textContent = formatDateShort(obs.source_day);
-          meta.appendChild(dayLink);
-        } else {
-          meta.appendChild(document.createTextNode(formatDateShort(obs.source_day) || obs.source_day));
-        }
-      }
-      if (obs.observed_at) {
-        if (meta.childNodes.length > 0) {
-          meta.appendChild(document.createTextNode(' · '));
-        }
-        const date = new Date(obs.observed_at);
-        const timeText = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-        meta.appendChild(document.createTextNode(timeText));
-      }
-
-      item.appendChild(content);
-      item.appendChild(meta);
-      list.appendChild(item);
-    });
-  } else {
-    obsContainer.innerHTML = '<span class="observations-empty"></span>';
-    obsContainer.querySelector('.observations-empty').textContent = ENT_COPY.ENT_OBS_EMPTY.replace('{name}', entity.name);
+  detailObservationState.entity = entity;
+  detailObservationState.observations = Array.isArray(observations) ? observations : [];
+  detailObservationState.observationsReady = true;
+  renderObservationList(entity, detailObservationState.observations);
+  if (detailObservationState.gridData) {
+    renderObservationDayGridForState();
   }
 
   // Detach/Re-attach button or Attach section

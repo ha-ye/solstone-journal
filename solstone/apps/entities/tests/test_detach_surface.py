@@ -102,9 +102,9 @@ def test_journal_row_navigable_when_detached(html):
 
 
 def test_observation_source_day_link(html):
-    fn = _function_body(html, "renderDetailView")
-    assert "/app/sol/${obs.source_day}" in fn
-    assert r"/^\d{8}$/.test(obs.source_day)" in fn
+    fn = _function_body(html, "renderObservationItem")
+    assert "/app/sol/${row.source_day}" in fn
+    assert r"/^\d{8}$/.test(row.source_day)" in fn
     assert "ENT_COPY.ENT_OBS_SOURCE_LINK_TITLE" in fn
-    assert "dayLink.textContent = formatDateShort(obs.source_day)" in fn
+    assert "dayLink.textContent = formatDateShort(row.source_day)" in fn
     assert "metaParts" not in fn

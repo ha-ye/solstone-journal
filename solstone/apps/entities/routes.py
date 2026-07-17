@@ -23,6 +23,7 @@ import solstone.think.deferred_deletes as deferred_deletes
 from solstone.apps.entities.copy import entities_copy_payload
 from solstone.apps.utils import log_app_action
 from solstone.convey import state
+from solstone.convey.day_grid import build_day_grid_payload
 from solstone.convey.reasons import (
     AGENT_UNAVAILABLE,
     EDGE_INDEX_UNAVAILABLE,
@@ -84,6 +85,7 @@ from solstone.think.entities import (
     load_facet_relationship,
     load_observations,
     merge_entity,
+    observation_day_counts,
     record_ambiguity_choice,
     record_entity_resolution,
     resolve_entity,
@@ -1278,6 +1280,29 @@ def get_entity(facet_name: str, entity_id: str) -> Any:
         observations = load_observations(facet_name, entity_name)
 
         return jsonify({"entity": entity, "observations": observations})
+
+    except Exception as e:
+        return error_response(ENTITY_OPERATION_FAILED, detail=str(e))
+
+
+@entities_bp.route("/api/<facet_name>/entity/<entity_id>/grid")
+def api_grid(facet_name: str, entity_id: str) -> Any:
+    """Return observation day-grid data for a facet entity."""
+    try:
+        entities = load_entities(facet_name, include_detached=True)
+        entity = next((e for e in entities if e.get("id") == entity_id), None)
+
+        if entity is None:
+            if load_journal_entity(entity_id) is None:
+                return error_response(
+                    ENTITY_NOT_FOUND,
+                    detail=f"Entity '{entity_id}' not found",
+                )
+            counts: dict[str, int] = {}
+        else:
+            counts = observation_day_counts(facet_name, entity.get("name", ""))
+
+        return jsonify(build_day_grid_payload(counts, max(counts, default=None)))
 
     except Exception as e:
         return error_response(ENTITY_OPERATION_FAILED, detail=str(e))
