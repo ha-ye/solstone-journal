@@ -84,15 +84,12 @@ FUNCTIONAL_COMPONENTS = (
 )
 FULL_COPY_ROUTE = "copytree-full"
 EDGE_SKIP_RULE = "edge_extraction_skip"
-EDGE_SKIP_PREFIX = "ERROR:solstone.think.indexer.edges:Skipping edge extraction for "
+EDGE_SKIP_PREFIX = "WARNING:solstone.think.indexer.edges:Skipping edge extraction for "
 MARKDOWN_SANITIZE_RULE = "markdown_sanitize_drop"
 MARKDOWN_SANITIZE_RE = re.compile(
     r"^WARNING:solstone\.think\.markdown:"
     r"Dropped \d+ line\(s\) exceeding \d+ chars during markdown sanitization$"
 )
-LOG_RECORD_RE = re.compile(r"^(DEBUG|INFO|WARNING|ERROR|CRITICAL):[^:]+:")
-TRACEBACK_HEADER = "Traceback (most recent call last):"
-TRACEBACK_TERMINAL_RE = re.compile(r"^[A-Za-z_][\w.]*: .*$")
 EXCLUDED_SHADOW_TABLES = [
     "chunks_config",
     "chunks_content",
@@ -290,37 +287,16 @@ def classify_stderr(stderr: str) -> dict[str, Any]:
     edge_rule = {"name": EDGE_SKIP_RULE, "count": 0, "examples": []}
     markdown_rule = {"name": MARKDOWN_SANITIZE_RULE, "count": 0, "examples": []}
     unclassified: list[str] = []
-    current_allowed = False
     for line in stderr.splitlines():
         if not line.strip():
             continue
-        if LOG_RECORD_RE.match(line):
-            if line.startswith(EDGE_SKIP_PREFIX):
-                current_allowed = True
-                _record_rule_hit(edge_rule, line)
-            elif MARKDOWN_SANITIZE_RE.match(line):
-                current_allowed = False
-                _record_rule_hit(markdown_rule, line)
-            else:
-                current_allowed = False
-                unclassified.append(line)
-            continue
-        continuation = _traceback_continuation(line)
-        if current_allowed and continuation is not None:
-            if continuation == "terminal":
-                current_allowed = False
-            continue
-        current_allowed = False
-        unclassified.append(line)
+        if line.startswith(EDGE_SKIP_PREFIX):
+            _record_rule_hit(edge_rule, line)
+        elif MARKDOWN_SANITIZE_RE.match(line):
+            _record_rule_hit(markdown_rule, line)
+        else:
+            unclassified.append(line)
     return {"rules": [edge_rule, markdown_rule], "unclassified": unclassified}
-
-
-def _traceback_continuation(line: str) -> str | None:
-    if line == TRACEBACK_HEADER or line.startswith((" ", "\t")):
-        return "body"
-    if TRACEBACK_TERMINAL_RE.match(line):
-        return "terminal"
-    return None
 
 
 def _database_check(journal: Path) -> dict[str, Any]:

@@ -184,11 +184,12 @@ def main() -> None:
     if args.rebuild_edges:
         result = rebuild_edges(journal)
         logger.info(
-            "indexer edges rebuilt: files=%s rows=%s drops=%s failed=%s",
+            "indexer edges rebuilt: files=%s rows=%s drops=%s failed=%s skipped=%s",
             result.get("files", 0),
             result.get("rows", 0),
             result.get("drops", 0),
             result.get("failed", 0),
+            result.get("skipped", 0),
         )
 
     if args.rescan_file:

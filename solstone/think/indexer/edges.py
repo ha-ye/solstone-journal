@@ -27,6 +27,7 @@ from solstone.think.entities.loading import load_entities
 from solstone.think.entities.matching import find_matching_entity
 from solstone.think.formatters import discover_files, extract_path_metadata, load_jsonl
 from solstone.think.journal_io import MalformedPolicy, read_json
+from solstone.think.utils import segment_key, segment_parse
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,7 @@ class EdgeFileResult:
     rows_inserted: int = 0
     drops: int = 0
     failed: bool = False
+    invalid_segment: bool = False
 
 
 def _ensure_edges_schema(conn: sqlite3.Connection) -> None:
@@ -1167,6 +1169,13 @@ def _extract_file_edges(
     if extractor is None:
         return EdgeFileResult()
 
+    seg = segment_key(rel)
+    if seg is not None and segment_parse(seg) == (None, None):
+        logger.warning(
+            "Skipping edge extraction for %s: invalid segment key %s", rel, seg
+        )
+        return EdgeFileResult(invalid_segment=True)
+
     drop_counter = {"drops": 0}
     ctx = make_edge_context(rel, entity_cache, drop_counter)
     try:
@@ -1206,6 +1215,7 @@ def rebuild_edges(journal: str) -> dict[str, int]:
     rows_inserted = 0
     drops = 0
     failed = 0
+    skipped = 0
     processed = 0
 
     for rel, abs_path in sorted(files.items()):
@@ -1217,6 +1227,7 @@ def rebuild_edges(journal: str) -> dict[str, int]:
         rows_inserted += result.rows_inserted
         drops += result.drops
         failed += int(result.failed)
+        skipped += int(result.invalid_segment)
         replace_edge_file_mtime(conn, rel, mtime)
         processed += 1
 
@@ -1227,4 +1238,5 @@ def rebuild_edges(journal: str) -> dict[str, int]:
         "rows": rows_inserted,
         "drops": drops,
         "failed": failed,
+        "skipped": skipped,
     }

@@ -292,11 +292,12 @@ def index_file(journal: str, file_path: str, verbose: bool = False) -> bool:
         result = _extract_file_edges(conn, rel_path, str(abs_path), {})
         replace_edge_file_mtime(conn, rel_path, mtime)
         logger.info(
-            "edge file indexed: %s rows=%s drops=%s failed=%s",
+            "edge file indexed: %s rows=%s drops=%s failed=%s skipped_invalid=%s",
             rel_path,
             result.rows_inserted,
             result.drops,
             result.failed,
+            result.invalid_segment,
         )
 
     conn.commit()
@@ -775,12 +776,14 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
     edge_rows_inserted = 0
     edge_rows_removed = 0
     edge_drops = 0
+    edge_skipped_invalid = 0
 
     for rel, path, mtime in edge_to_index:
         edge_rows_removed += delete_edges_for_path(conn, rel)
         result = _extract_file_edges(conn, rel, path, edge_cache)
         edge_rows_inserted += result.rows_inserted
         edge_drops += result.drops
+        edge_skipped_invalid += int(result.invalid_segment)
         replace_edge_file_mtime(conn, rel, mtime)
 
     for rel in edge_removed:
@@ -792,12 +795,13 @@ def scan_journal(journal: str, verbose: bool = False, full: bool = False) -> boo
 
     logger.info(
         "%s edge files indexed, %s edge files removed, %s edge rows inserted, "
-        "%s edge rows removed, %s edge drops",
+        "%s edge rows removed, %s edge drops, %s edge files skipped (invalid segment)",
         len(edge_to_index),
         len(edge_removed),
         edge_rows_inserted,
         edge_rows_removed,
         edge_drops,
+        edge_skipped_invalid,
     )
 
     conn.close()

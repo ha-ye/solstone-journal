@@ -869,6 +869,24 @@ def test_malformed_new_source_fails_without_suppressing_sibling(
     conn.close()
 
 
+def test_invalid_segment_dir_skips_at_warning_not_error(edges_journal, caplog):
+    rel = "20260430/default/234567_300/screen.jsonl"
+    path = edges_journal / "chronicle" / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_jsonl(path, [{"ok": True}])
+
+    caplog.set_level(logging.WARNING, logger="solstone.think.indexer.edges")
+    conn = _conn(edges_journal)
+    result = _extract_file_edges(conn, rel, str(path), {})
+    conn.close()
+
+    assert result.invalid_segment is True
+    assert result.failed is False
+    assert result.rows_inserted == 0
+    assert f"Skipping edge extraction for {rel}" in caplog.text
+    assert not [record for record in caplog.records if record.levelno >= logging.ERROR]
+
+
 def test_index_file_supports_edge_only_file(edges_journal, monkeypatch):
     monkeypatch.setitem(
         edge_sources.EDGE_SOURCES,

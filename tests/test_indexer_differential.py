@@ -338,14 +338,11 @@ def _fixture_index(tmp_path: Path) -> Path:
     return journal
 
 
-def test_stderr_classifier_only_allows_traceback_continuations() -> None:
+def test_stderr_classifier_allows_standalone_edge_skip_warning() -> None:
     stderr = "\n".join(
         [
-            f"{harness.EDGE_SKIP_PREFIX}20240102/default/234567_300/screen.jsonl",
-            "Traceback (most recent call last):",
-            '  File "/tmp/example.py", line 1, in <module>',
-            "    raise ValueError('bad')",
-            "ValueError: Invalid segment key: 234567_300",
+            f"{harness.EDGE_SKIP_PREFIX}20240102/default/234567_300/screen.jsonl"
+            ": invalid segment key 234567_300",
             "unexpected diagnostic",
         ]
     )
