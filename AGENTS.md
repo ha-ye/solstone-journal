@@ -39,6 +39,7 @@ Read, in order, when you enter the repo for a coding task:
 | `solstone/convey/` | Web app framework — app discovery, routing, bridge | layout / framework-level UI changes | `docs/CONVEY.md` |
 | `solstone/apps/` | Convey apps — each self-contained (`call.py` Typer sub-app + `routes.py` + `templates/`) | adding a user-facing feature, a `sol call <app>` verb, a UI surface | `docs/APPS.md` (required reading before modifying `solstone/apps/`) |
 | `solstone/talent/` | AI talent configs (markdown prompts + optional `.py` post-hooks) + installed router skills (`sol`, `journal`); app fragments feed generated router references | defining or tuning a talent; updating router guidance | `solstone/talent/journal/SKILL.md`, `docs/PROMPT_TEMPLATES.md` |
+| `core/` | Rust wave-0 workspace — thin `solstone-core` bin plus library-first adapter crates | Rust scaffold, gates, or Python→Rust porting doctrine | `docs/PORTING.md` |
 | `scripts/` | Repo maintenance scripts — `check_layer_hygiene.py` | tooling that guards the codebase; wired into `make ci` | (none) |
 | `tests/` | Pytest suites + `tests/fixtures/journal/` mock journal | writing tests; debugging flakiness; `make dev` / `make sandbox` use fixtures as the journal | `docs/testing.md` |
 | `docs/` | All longform documentation | reference lookups; never your first stop | §10 below |
@@ -325,6 +326,7 @@ Bare links don't motivate clicking. Each entry below says when you actually need
 | `docs/CONVEY.md` | Framework-level web changes (as opposed to an individual app) |
 | `docs/OBSERVE.md` | Capture-side work: new modalities, transcription, sensing |
 | `docs/SOLCLI.md` | Adding a new `sol <cmd>` or `sol call <app> <verb>` |
+| `docs/PORTING.md` | Python→Rust porting doctrine, Rust workspace layering, and wave-0 lockstep/gate rules |
 | `docs/PROMPT_TEMPLATES.md` | Modifying talent prompt format or frontmatter |
 | `docs/PROVIDERS.md` | Three-lane provider architecture: active-brain resolution, local/BYO/confidential lanes, and honest no-fallback failure semantics |
 | `docs/testing.md` | Test structure, fixtures, debugging test isolation |
