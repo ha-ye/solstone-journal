@@ -131,5 +131,6 @@ fn indexer_unsupported_rescan_file_exits_declined() {
         String::from_utf8(output.stderr).expect("stderr should be utf-8"),
         "indexer declined unsupported file\n"
     );
+    assert!(!root.join("indexer/journal.sqlite").exists());
     fs::remove_dir_all(root).expect("cleanup declined root");
 }

@@ -94,7 +94,6 @@ pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanRepor
 }
 
 pub fn rescan_file(journal: &Path, input: &Path) -> Result<RescanFileStatus, StoreError> {
-    let conn = open_index(journal)?;
     let (rel, path) = resolve_rescan_target(journal, input)?;
     if !matches_markdown_pattern(&rel)? {
         return Ok(RescanFileStatus::Declined);
@@ -103,6 +102,7 @@ pub fn rescan_file(journal: &Path, input: &Path) -> Result<RescanFileStatus, Sto
         return Err(StoreError::MissingFile(path));
     }
     let mtime = file_mtime_secs(&path)?;
+    let conn = open_index(journal)?;
     conn.execute("DELETE FROM chunks WHERE path=?", [&rel])?;
     match index_markdown_file(&conn, journal, &rel, &path) {
         Ok(warnings) => {
@@ -353,6 +353,64 @@ mod tests {
             RescanFileStatus::Declined
         );
         fs::remove_dir_all(root).expect("cleanup rescan root");
+    }
+
+    #[test]
+    fn short_segment_length_resolves_stream_and_bucket() {
+        let root = temp_root("short-segment");
+        write(
+            &root,
+            "chronicle/20260717/default/143022_60/talents/audio.md",
+            "# Audio\n\nshort segment",
+        );
+        write_stream(&root, "20260717", "default", "143022_60");
+        let report = scan_journal(&root, true, "20260717").expect("scan short segment");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        let row: (String, String) = conn
+            .query_row(
+                "SELECT stream, time_bucket FROM chunks WHERE path='20260717/default/143022_60/talents/audio.md'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("short segment metadata row");
+        assert_eq!(row, ("default".to_string(), "afternoon".to_string()));
+        fs::remove_dir_all(root).expect("cleanup short segment root");
+    }
+
+    #[test]
+    fn scan_lowercases_facet_and_agent_at_insert() {
+        let root = temp_root("lowercase");
+        write(
+            &root,
+            "apps/MyApp/talents/Digest.md",
+            "# Digest\n\napp content",
+        );
+        write(
+            &root,
+            "facets/Work/news/20260101.md",
+            "# News\n\nfacet content",
+        );
+        let report = scan_journal(&root, true, "20260717").expect("scan mixed case");
+        assert_eq!(report.indexed, 2);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        let app_agent: String = conn
+            .query_row(
+                "SELECT agent FROM chunks WHERE path='apps/MyApp/talents/Digest.md'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("app agent row");
+        assert_eq!(app_agent, "myapp:digest");
+        let news_row: (String, String) = conn
+            .query_row(
+                "SELECT facet, agent FROM chunks WHERE path='facets/Work/news/20260101.md'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("news metadata row");
+        assert_eq!(news_row, ("work".to_string(), "news".to_string()));
+        fs::remove_dir_all(root).expect("cleanup lowercase root");
     }
 
     #[test]

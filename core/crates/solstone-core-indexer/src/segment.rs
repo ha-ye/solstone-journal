@@ -15,7 +15,7 @@ pub fn is_date_key(value: &str) -> bool {
 pub fn segment_key(value: &str) -> Option<String> {
     let bytes = value.as_bytes();
     let mut index = 0;
-    while index + 10 <= bytes.len() {
+    while index + 8 <= bytes.len() {
         if !has_word_boundary_before(bytes, index) || !bytes[index].is_ascii_digit() {
             index += 1;
             continue;
@@ -52,8 +52,8 @@ pub fn segment_parse(value: &str) -> Option<SegmentTimes> {
         for (index, part) in parts.iter().enumerate() {
             if is_date_key(part) {
                 for candidate in parts.iter().skip(index + 1) {
-                    if let Some(key) = segment_key(candidate) {
-                        found = Some(key);
+                    if segment_key(candidate).is_some() {
+                        found = Some((*candidate).to_string());
                         break;
                     }
                 }
@@ -124,6 +124,10 @@ mod tests {
     #[test]
     fn segment_key_matches_python_boundary_semantics() {
         assert_eq!(segment_key("143022_300"), Some("143022_300".to_string()));
+        assert_eq!(segment_key("123456_1"), Some("123456_1".to_string()));
+        assert_eq!(segment_key("123456_12"), Some("123456_12".to_string()));
+        assert_eq!(segment_key("143022_60"), Some("143022_60".to_string()));
+        assert_eq!(segment_key("123456_3000"), Some("123456_3000".to_string()));
         assert_eq!(
             segment_key("143022_300_summary.txt"),
             Some("143022_300".to_string())
@@ -159,6 +163,10 @@ mod tests {
             segment_parse("facets/work/activities/20260214/coding_093000_300/x.md"),
             None
         );
+        assert_eq!(
+            segment_parse("20240101/default/143022_300_summary.txt/talents/audio.md"),
+            None
+        );
     }
 
     #[test]
@@ -169,6 +177,10 @@ mod tests {
         );
         assert_eq!(
             time_bucket("20260304/default/140000_300/talents/audio.md"),
+            "afternoon"
+        );
+        assert_eq!(
+            time_bucket("20240101/default/143022_60/talents/audio.md"),
             "afternoon"
         );
         assert_eq!(
@@ -185,6 +197,10 @@ mod tests {
         );
         assert_eq!(
             time_bucket("facets/work/activities/20260214/coding_093000_300/x.md"),
+            ""
+        );
+        assert_eq!(
+            time_bucket("20240101/default/143022_300_summary.txt/talents/audio.md"),
             ""
         );
     }
