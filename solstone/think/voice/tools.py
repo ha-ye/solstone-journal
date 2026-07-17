@@ -12,7 +12,6 @@ from dataclasses import asdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import quote_plus
 
 from solstone.apps.entities.routes import _build_facet_relationships
 from solstone.think.activities import load_activity_records
@@ -28,8 +27,6 @@ from solstone.think.indexer.journal import search_journal
 from solstone.think.surfaces import ledger as ledger_surface
 from solstone.think.surfaces.profile import full as load_profile
 from solstone.think.utils import day_path
-from solstone.think.voice.nav_queue import get_nav_queue
-from solstone.think.voice.observer_queue import get_observer_queue
 
 logger = logging.getLogger(__name__)
 
@@ -421,7 +418,6 @@ def handle_journal_get_day(payload: dict[str, Any], app: Any) -> dict[str, Any]:
         "day": external_day,
         "segments": segments,
         "summary": _build_day_summary(summaries),
-        "_nav_target": f"today/journal/{external_day}",
     }
 
 
@@ -464,10 +460,7 @@ def handle_journal_search(payload: dict[str, Any], app: Any) -> dict[str, Any]:
         if entity_slug:
             result["entity_slug"] = entity_slug
         results.append(result)
-    output = {"results": results, "count": count}
-    if query:
-        output["_nav_target"] = f"today/search?q={quote_plus(query)}"
-    return output
+    return {"results": results, "count": count}
 
 
 def handle_entities_get(payload: dict[str, Any], app: Any) -> dict[str, Any]:
@@ -515,7 +508,6 @@ def handle_entities_get(payload: dict[str, Any], app: Any) -> dict[str, Any]:
         "profile": profile_text,
         "tags": _tag_values(profile, journal_entity),
         "recent_context": recent_context,
-        "_nav_target": f"entity/{slug}",
     }
 
 
@@ -644,7 +636,6 @@ def handle_calendar_today(payload: dict[str, Any], app: Any) -> dict[str, Any]:
         return {
             "date": _today().isoformat(),
             "events": events,
-            "_nav_target": "today",
         }
     except Exception:
         logger.exception("voice calendar lookup failed")
@@ -696,7 +687,6 @@ def handle_briefing_get(payload: dict[str, Any], app: Any) -> dict[str, Any]:
         "facet": "identity",
         "text": _briefing_text(sections),
         "highlights": _briefing_highlights(sections, needs_attention_items),
-        "_nav_target": "today",
     }
 
 
@@ -712,7 +702,6 @@ def handle_observer_start_listening(
         "status": "requested",
         "mode": mode,
         "note": "sol will start listening shortly",
-        "_observer_action": {"type": "start_observer", "mode": mode},
     }
 
 
@@ -751,17 +740,6 @@ async def dispatch_tool_call(
         result = {"error": "tool failed"}
     if not isinstance(result, dict):
         result = {"error": "tool failed"}
-    nav_target = result.pop("_nav_target", None)
-    if isinstance(nav_target, str) and nav_target.strip():
-        get_nav_queue().push(call_id, nav_target)
-    observer_action = result.pop("_observer_action", None)
-    if (
-        isinstance(observer_action, dict)
-        and observer_action
-        and isinstance(call_id, str)
-        and call_id.strip()
-    ):
-        get_observer_queue().push(call_id, observer_action)
     return json.dumps(result)
 
 

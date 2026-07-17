@@ -2,7 +2,7 @@
 
 ## 1. Summary
 
-Wave 2 ships a root-level voice API for the existing Convey server: `POST /api/voice/session`, `POST /api/voice/connect`, `POST /api/voice/refresh-brain`, `GET /api/voice/nav-hints`, and `GET /api/voice/status`, all mounted from a new `solstone/convey/voice.py` blueprint at `/api/voice/*`. The implementation reuses existing journal, ledger, entity, briefing, and anticipated-activity read surfaces, keeps all voice-owned writes inside `journal/health/voice-brain-session*`, and treats the bridge contract in the scope as canonical when it conflicts with older prose (`solstone/convey/__init__.py:126-155`, `solstone/convey/system.py:18`, `solstone/apps/home/routes.py:149-198`, `solstone/think/surfaces/ledger.py:441-529`, `solstone/think/indexer/journal.py:1865-1948`).
+Wave 2 ships a root-level voice API for the existing Convey server: `POST /api/voice/session`, `POST /api/voice/connect`, `POST /api/voice/refresh-brain`, and `GET /api/voice/status`, all mounted from a new `solstone/convey/voice.py` blueprint at `/api/voice/*`. The implementation reuses existing journal, ledger, entity, briefing, and anticipated-activity read surfaces, keeps all voice-owned writes inside `journal/health/voice-brain-session*`, and treats the bridge contract in the scope as canonical when it conflicts with older prose (`solstone/convey/__init__.py:126-155`, `solstone/convey/system.py:18`, `solstone/apps/home/routes.py:149-198`, `solstone/think/surfaces/ledger.py:441-529`, `solstone/think/indexer/journal.py:1865-1948`).
 
 ## 2. Module layout
 
@@ -13,17 +13,15 @@ New files:
 - `solstone/think/voice/brain.py` — persistent Claude CLI session manager; start, refresh, ask, readiness state, and `journal/health/voice-brain-session*` persistence.
 - `solstone/think/voice/runtime.py` — singleton daemon-thread asyncio loop, app attachment, task tracking, and shutdown helper.
 - `solstone/think/voice/sideband.py` — OpenAI Realtime sideband join loop, event filter, tool-call output emission, and task cleanup.
-- `solstone/think/voice/tools.py` — the 9 tool schemas, argument validation, handler dispatch, `_nav_target` extraction, and model-facing JSON shaping.
-- `solstone/think/voice/nav_queue.py` — thread-safe per-`call_id` nav-hint queue with TTL and capacity enforcement.
+- `solstone/think/voice/tools.py` — the 9 tool schemas, argument validation, handler dispatch, and model-facing JSON shaping.
 - `solstone/think/voice/config.py` — config readers for OpenAI key, voice model, and brain model.
 - `tests/test_voice_config.py` — config-reader defaults, env fallback, and missing-key cases.
 - `tests/test_voice_brain.py` — brain prompt content, session persistence, start/refresh/ask flow, and stale-refresh behavior with mocked Claude CLI.
 - `tests/test_voice_tools.py` — unit coverage for all 9 tool handlers, including one happy path and one failure path per tool.
-- `tests/test_voice_sideband.py` — sideband event routing, `_nav_target` stripping, tool error wrapping, and output emission.
-- `tests/test_voice_nav_queue.py` — TTL, FIFO capacity, drain semantics, and lock-protected multi-thread sanity.
+- `tests/test_voice_sideband.py` — sideband event routing, tool error wrapping, and output emission.
 - `tests/test_voice_runtime.py` — loop/thread lifecycle, idempotent startup, future registration, and explicit shutdown.
 - `tests/test_voice_routes.py` — endpoint validation and error-shape coverage with Flask test client.
-- `tests/test_voice_integration.py` — end-to-end session mint, sideband task spawn, one tool dispatch, and nav-hint polling with fake OpenAI clients.
+- `tests/test_voice_integration.py` — end-to-end session mint, sideband task spawn, and one tool dispatch with fake OpenAI clients.
 
 Existing files updated during implementation:
 
@@ -72,19 +70,10 @@ Deliberate non-change:
 
 1. `_sideband_loop(...)` filters for `event.type == "response.function_call_arguments.done"`.
 2. `think.voice.tools.dispatch_tool_call(name, arguments, call_id, app)` JSON-decodes the arguments and validates the input schema for that tool.
-3. The tool handler reads the existing surface, shapes the model-facing response, and may include `_nav_target`.
-4. `dispatch_tool_call(...)` removes `_nav_target` from the JSON sent back to OpenAI and enqueues it into `nav_queue` for the `call_id`.
-5. `_sideband_loop(...)` posts `function_call_output` with the stripped JSON string through `conn.conversation.item.create(...)`.
-6. `_sideband_loop(...)` calls `conn.response.create()` so the model can continue the turn.
-7. Any tool exception becomes `{"error": "<generic message>"}` and does not end the sideband task.
-
-### Nav-hint polling
-
-1. Native client calls `GET /api/voice/nav-hints?call_id=...`.
-2. The route validates `call_id`.
-3. `nav_queue.drain(call_id)` drops expired hints, returns remaining hints in FIFO order, and clears the queue entry.
-4. The route returns `{"hints": [...], "consumed": true}`.
-5. Unknown `call_id` returns `{"hints": [], "consumed": true}` with HTTP 200.
+3. The tool handler reads the existing surface and shapes the model-facing response.
+4. `_sideband_loop(...)` posts `function_call_output` with the JSON string through `conn.conversation.item.create(...)`.
+5. `_sideband_loop(...)` calls `conn.response.create()` so the model can continue the turn.
+6. Any tool exception becomes `{"error": "<generic message>"}` and does not end the sideband task.
 
 ### Shutdown
 
@@ -169,26 +158,6 @@ Side effects:
 - Starts the brain first if no session has been established yet.
 - Updates `app.voice_brain_*` state on success.
 
-### `GET /api/voice/nav-hints`
-
-Query params:
-
-- Required `call_id: string`, trimmed, non-empty.
-
-Success response:
-
-- HTTP 200
-- Body: `{"hints": ["entity/sarah_chen", "today"], "consumed": true}`
-
-Failure responses:
-
-- HTTP 400 `{"error": "call_id is required"}`
-
-Side effects:
-
-- Drains and clears the queue for the given `call_id`.
-- Drops expired hints before returning.
-
 ### `GET /api/voice/status`
 
 Request body:
@@ -217,20 +186,19 @@ Side effects:
 Rules that apply to every tool:
 
 - Handlers return model-facing JSON objects only.
-- If a handler emits `_nav_target`, `think.voice.tools.dispatch_tool_call(...)` strips it before sending the JSON string to OpenAI and pushes the hint into `think.voice.nav_queue`.
 - Tool exceptions become `{"error": "<generic message>"}` and are returned inline through the sideband, never as HTTP errors.
 
-| Tool | Input JSON | Output JSON | Nav rule | Reused surface | Failure shape |
-|---|---|---|---|---|---|
-| `journal.get_day` | `{"day": "YYYY-MM-DD"}` | `{"day": "YYYY-MM-DD", "segments": [{"id": "HHMMSS_LEN", "time_of_day": "HH:MM", "duration_s": 300, "summary": "<string>", "agent_type": "<stream>"}], "summary": "<string>", "_nav_target": "today/journal/YYYY-MM-DD"}` | Always emit `_nav_target` for a valid day lookup | `think.cluster.scan_day`, `think.cluster.cluster_segments`, and read-only day-path inspection for summary text. Use `scan_day()` for day existence and segment inventory, `cluster_segments()` for normalized segment rows, and synthesize `summary` from per-segment `*_summary.md` files under the day directory without calling `think.utils.segment_path()` because it creates missing directories (`solstone/think/cluster.py:413-505`, `solstone/think/utils.py:155-182`, `solstone/think/utils.py:247-260`) | `{"error": "invalid day"}` or `{"error": "day not found"}` |
-| `journal.search` | `{"query": "<string>", "facet": "<string>|null", "days": 30|null, "limit": 10|null}` | `{"results": [{"id": "<id>", "day": "YYYY-MM-DD", "source": "<agent-or-path>", "snippet": "<text>", "entity_slug": "<slug>"?}], "count": N, "_nav_target": "today/search?q=<urlencoded-query>"}` | Emit `_nav_target` only when `query.strip()` is non-empty | `think.indexer.journal.search_journal(query, limit=limit, facet=facet, day_from=..., day_to=None)` with shaping inspired by `solstone/apps/search/routes.py::_format_result` (`solstone/think/indexer/journal.py:1865-1948`, `solstone/apps/search/routes.py:89-126`, `solstone/apps/search/routes.py:127-240`) | `{"error": "query is required"}` |
-| `entities.get` | `{"entity_slug": "<slug>"}` | `{"slug": "<slug>", "name": "<name>", "type": "<type>", "profile": "<markdown>", "tags": ["<facet-or-aka>"], "recent_context": [{"date": "YYYY-MM-DD", "summary": "<string>"}], "_nav_target": "entity/<slug>"}` | Always emit `_nav_target` when found | Primary source is `think.surfaces.profile.full(slug)`. If it resolves, build `profile`, `tags`, and `recent_context` from the returned `Profile`; if facet relationship details are needed, mirror `solstone/apps/entities/routes.py::_build_facet_relationships(...)` and `think.entities.journal.load_journal_entity(slug)` (`solstone/think/surfaces/profile.py:207-245`, `solstone/apps/entities/routes.py:685-730`, `solstone/think/entities/journal.py:43-69`) | `{"error": "not found"}` |
-| `entities.recent_with` | `{"entity_slug": "<slug>", "days": 7, "facet": "<string>|null"}` | `{"slug": "<slug>", "interactions": [{"date": "YYYY-MM-DD", "activity": "<title>", "context": "<story-or-description>", "note": "<details>"}], "count": N}` | No nav hint | Resolve the entity with `think.surfaces.profile.full(slug)`, then scan `think.activities.load_activity_records(facet, day)` across the requested day window. Match `participation[].entity_id` first and fall back to casefolded name / aka matching for older rows without `entity_id` (`solstone/think/surfaces/profile.py:207-245`, `solstone/think/activities.py:877-890`, `solstone/apps/activities/call.py:133-197`) | `{"error": "not found"}` or `{"error": "invalid days"}` |
-| `commitments.list` | `{"state": "open"|"closed"|"dropped"|null, "facet": "<string>|null", "limit": 20|null}` | `{"commitments": [{"id": "<id>", "owner": "<owner>", "action": "<action>", "counterparty": "<counterparty>", "state": "<state>", "context": "<context>", "day_opened": "YYYY-MM-DD", "day_closed": "YYYY-MM-DD"?, "resolution": "<resolution>"?}]}` | No nav hint | `think.surfaces.ledger.list(state=..., facets=[facet] if facet else None, top=limit or 20)`. Convert each `LedgerItem` dataclass to a dict, drop `sources`, and derive `day_*` strings from the millisecond timestamps. `resolution` is best-effort only: set it to `"dropped"` when `item.state == "dropped"`, otherwise omit because the ledger surface does not expose the close-note resolution (`solstone/think/surfaces/ledger.py:441-487`, `solstone/think/surfaces/types.py:16-32`) | `{"error": "invalid state"}` |
-| `commitments.complete` | `{"commitment_id": "lg_...", "resolution": "done"|"sent"|"signed"|"dropped"|"deferred"}` | `{"ok": true, "commitment": {"id": "...", "owner": "...", "action": "...", "counterparty": "...", "state": "...", "context": "...", "day_opened": "YYYY-MM-DD", "day_closed": "YYYY-MM-DD"?, "resolution": "<input-resolution>"}}` | No nav hint | Validate `resolution`. Map `dropped -> as_state="dropped", note="resolution: dropped"`. Map `done|sent|signed|deferred -> as_state="closed", note="resolution: <value>"`. Call `think.surfaces.ledger.close(...)`, catch `KeyError`, and shape the returned `LedgerItem` as above (`solstone/think/surfaces/ledger.py:497-529`, `solstone/think/activities.py:1156-1207`) | `{"error": "invalid resolution"}` or `{"error": "not found"}` |
-| `calendar.today` | `{}` | `{"date": "YYYY-MM-DD", "events": [{"time": "HH:MM", "title": "<title>", "attendees": ["<name>"], "location": "<string>", "prep_notes": "<string>"}], "_nav_target": "today"}` | Always emit `_nav_target` | `think.activities.load_activity_records(facet, day)` across all enabled facets, filtered to `source == "anticipated"` using the same participation parsing pattern Home uses today (`solstone/apps/home/routes.py:305-337`, `solstone/think/activities.py:877-890`) | `{"error": "today unavailable"}` only on unexpected failures; normal empty day is `{"date": "...", "events": [], "_nav_target": "today"}` |
-| `briefing.get` | `{}` | `{"date": "YYYY-MM-DD", "facet": "identity", "text": "<spoken-English body>", "highlights": ["...", "..."], "_nav_target": "today"}` or `{"error": "no briefing today yet"}` | Emit `_nav_target` only when a fresh briefing exists | Reuse `solstone.think.briefing.load_briefing(today)` and `render_briefing_sections(...)` exactly. `None` returns the error object. `text` is a plain-text join of the loaded sections; `highlights` comes from `needs_attention` items first, then falls back to the first three bullets across the other sections | `{"error": "no briefing today yet"}` |
-| `observer.start_listening` | `{"mode": "meeting"|"voice_memo"}` | `{"status": "ack", "mode": "<mode>", "note": "wave-4 observer not yet wired"}` | No nav hint | No data dependency in Wave 2. Log the requested mode at INFO and return the stub acknowledgement. | `{"error": "invalid mode"}` |
+| Tool | Input JSON | Output JSON | Reused surface | Failure shape |
+|---|---|---|---|---|
+| `journal.get_day` | `{"day": "YYYY-MM-DD"}` | `{"day": "YYYY-MM-DD", "segments": [{"id": "HHMMSS_LEN", "time_of_day": "HH:MM", "duration_s": 300, "summary": "<string>", "agent_type": "<stream>"}], "summary": "<string>"}` | `think.cluster.scan_day`, `think.cluster.cluster_segments`, and read-only day-path inspection for summary text. Use `scan_day()` for day existence and segment inventory, `cluster_segments()` for normalized segment rows, and synthesize `summary` from per-segment `*_summary.md` files under the day directory without calling `think.utils.segment_path()` because it creates missing directories (`solstone/think/cluster.py:413-505`, `solstone/think/utils.py:155-182`, `solstone/think/utils.py:247-260`) | `{"error": "invalid day"}` or `{"error": "day not found"}` |
+| `journal.search` | `{"query": "<string>", "facet": "<string>|null", "days": 30|null, "limit": 10|null}` | `{"results": [{"id": "<id>", "day": "YYYY-MM-DD", "source": "<agent-or-path>", "snippet": "<text>", "entity_slug": "<slug>"?}], "count": N}` | `think.indexer.journal.search_journal(query, limit=limit, facet=facet, day_from=..., day_to=None)` with shaping inspired by `solstone/apps/search/routes.py::_format_result` (`solstone/think/indexer/journal.py:1865-1948`, `solstone/apps/search/routes.py:89-126`, `solstone/apps/search/routes.py:127-240`) | `{"error": "query is required"}` |
+| `entities.get` | `{"entity_slug": "<slug>"}` | `{"slug": "<slug>", "name": "<name>", "type": "<type>", "profile": "<markdown>", "tags": ["<facet-or-aka>"], "recent_context": [{"date": "YYYY-MM-DD", "summary": "<string>"}]}` | Primary source is `think.surfaces.profile.full(slug)`. If it resolves, build `profile`, `tags`, and `recent_context` from the returned `Profile`; if facet relationship details are needed, mirror `solstone/apps/entities/routes.py::_build_facet_relationships(...)` and `think.entities.journal.load_journal_entity(slug)` (`solstone/think/surfaces/profile.py:207-245`, `solstone/apps/entities/routes.py:685-730`, `solstone/think/entities/journal.py:43-69`) | `{"error": "not found"}` |
+| `entities.recent_with` | `{"entity_slug": "<slug>", "days": 7, "facet": "<string>|null"}` | `{"slug": "<slug>", "interactions": [{"date": "YYYY-MM-DD", "activity": "<title>", "context": "<story-or-description>", "note": "<details>"}], "count": N}` | Resolve the entity with `think.surfaces.profile.full(slug)`, then scan `think.activities.load_activity_records(facet, day)` across the requested day window. Match `participation[].entity_id` first and fall back to casefolded name / aka matching for older rows without `entity_id` (`solstone/think/surfaces/profile.py:207-245`, `solstone/think/activities.py:877-890`, `solstone/apps/activities/call.py:133-197`) | `{"error": "not found"}` or `{"error": "invalid days"}` |
+| `commitments.list` | `{"state": "open"|"closed"|"dropped"|null, "facet": "<string>|null", "limit": 20|null}` | `{"commitments": [{"id": "<id>", "owner": "<owner>", "action": "<action>", "counterparty": "<counterparty>", "state": "<state>", "context": "<context>", "day_opened": "YYYY-MM-DD", "day_closed": "YYYY-MM-DD"?, "resolution": "<resolution>"?}]}` | `think.surfaces.ledger.list(state=..., facets=[facet] if facet else None, top=limit or 20)`. Convert each `LedgerItem` dataclass to a dict, drop `sources`, and derive `day_*` strings from the millisecond timestamps. `resolution` is best-effort only: set it to `"dropped"` when `item.state == "dropped"`, otherwise omit because the ledger surface does not expose the close-note resolution (`solstone/think/surfaces/ledger.py:441-487`, `solstone/think/surfaces/types.py:16-32`) | `{"error": "invalid state"}` |
+| `commitments.complete` | `{"commitment_id": "lg_...", "resolution": "done"|"sent"|"signed"|"dropped"|"deferred"}` | `{"ok": true, "commitment": {"id": "...", "owner": "...", "action": "...", "counterparty": "...", "state": "...", "context": "...", "day_opened": "YYYY-MM-DD", "day_closed": "YYYY-MM-DD"?, "resolution": "<input-resolution>"}}` | Validate `resolution`. Map `dropped -> as_state="dropped", note="resolution: dropped"`. Map `done|sent|signed|deferred -> as_state="closed", note="resolution: <value>"`. Call `think.surfaces.ledger.close(...)`, catch `KeyError`, and shape the returned `LedgerItem` as above (`solstone/think/surfaces/ledger.py:497-529`, `solstone/think/activities.py:1156-1207`) | `{"error": "invalid resolution"}` or `{"error": "not found"}` |
+| `calendar.today` | `{}` | `{"date": "YYYY-MM-DD", "events": [{"time": "HH:MM", "title": "<title>", "attendees": ["<name>"], "location": "<string>", "prep_notes": "<string>"}]}` | `think.activities.load_activity_records(facet, day)` across all enabled facets, filtered to `source == "anticipated"` using the same participation parsing pattern Home uses today (`solstone/apps/home/routes.py:305-337`, `solstone/think/activities.py:877-890`) | `{"error": "today unavailable"}` only on unexpected failures; normal empty day is `{"date": "...", "events": []}` |
+| `briefing.get` | `{}` | `{"date": "YYYY-MM-DD", "facet": "identity", "text": "<spoken-English body>", "highlights": ["...", "..."]}` or `{"error": "no briefing today yet"}` | Reuse `solstone.think.briefing.load_briefing(today)` and `render_briefing_sections(...)` exactly. `None` returns the error object. `text` is a plain-text join of the loaded sections; `highlights` comes from `needs_attention` items first, then falls back to the first three bullets across the other sections | `{"error": "no briefing today yet"}` |
+| `observer.start_listening` | `{"mode": "meeting"|"voice_memo"}` | `{"status": "ack", "mode": "<mode>", "note": "wave-4 observer not yet wired"}` | No data dependency in Wave 2. Log the requested mode at INFO and return the stub acknowledgement. | `{"error": "invalid mode"}` |
 
 Implementation notes by tool:
 
@@ -396,14 +364,13 @@ All four fields are always present.
 |---|---|---|
 | Request body missing or invalid JSON for an endpoint that expects JSON | 400 | `{"error": "request body must be valid JSON"}` |
 | Request body decodes but is not a JSON object | 400 | `{"error": "request body must be a JSON object"}` |
-| Missing `call_id` on `/api/voice/connect` or `/api/voice/nav-hints` | 400 | `{"error": "call_id is required"}` |
+| Missing `call_id` on `/api/voice/connect` | 400 | `{"error": "call_id is required"}` |
 | OpenAI key not configured | 503 | `{"error": "voice unavailable — openai key not configured"}` |
 | Brain not ready after the `/api/voice/session` 10-second wait | 503 | `{"error": "voice unavailable — brain not ready"}` |
 | OpenAI session mint hard failure | 500 | `{"error": "voice session unavailable"}` |
 | Background runtime missing | 500 | `{"error": "voice runtime unavailable"}` |
 | Explicit brain refresh future raises | 500 | `{"error": "brain refresh failed"}` |
 | Tool handler exception in sideband | n/a, inline tool output | `{"error": "<message>"}` |
-| Unknown `call_id` on `/api/voice/nav-hints` | 200 | `{"hints": [], "consumed": true}` |
 
 Logging rule:
 
@@ -425,12 +392,11 @@ Per-file plan:
 |---|---|---|---|
 | `tests/test_voice_config.py` | `get_openai_api_key`, `get_voice_model`, `get_brain_model`, config defaults, env fallback | `tests/conftest.py` default fixture journal | `monkeypatch.setenv` only |
 | `tests/test_voice_brain.py` | prompt rendering, session-file load/save/touch, start/refresh/ask control flow, 6-hour stale threshold, readiness state | fixture journal or `journal_copy` for isolated `health/` state | mock Claude CLI subprocess entry points such as `asyncio.create_subprocess_exec` or a small `_run_claude(...)` seam |
-| `tests/test_voice_tools.py` | all 9 tool handlers, one happy path and one failure path each, `_nav_target` presence rules, `sources` stripping | real fixture journal via `tests/conftest.py`; `journal_copy` for close/edit cases | monkeypatch `_today()` and any narrow parser seams; do not mock journal contents |
-| `tests/test_voice_sideband.py` | event filter, argument decode errors, tool dispatch, `_nav_target` stripping, `function_call_output` emission, `conn.response.create()` cadence | no special journal beyond the fixture default | fake `conn` object and patched dispatcher |
-| `tests/test_voice_nav_queue.py` | TTL expiry, cap 8, FIFO drop, drain-clears, unknown `call_id`, basic multi-thread push/drain sanity | none | no external mocks |
+| `tests/test_voice_tools.py` | all 9 tool handlers, one happy path and one failure path each, `sources` stripping | real fixture journal via `tests/conftest.py`; `journal_copy` for close/edit cases | monkeypatch `_today()` and any narrow parser seams; do not mock journal contents |
+| `tests/test_voice_sideband.py` | event filter, argument decode errors, tool dispatch, `function_call_output` emission, `conn.response.create()` cadence | no special journal beyond the fixture default | fake `conn` object and patched dispatcher |
 | `tests/test_voice_runtime.py` | singleton startup, duplicate start no-op, future registration and pruning, explicit shutdown, atexit-registration guard | none beyond a minimal Flask app | patch thread join timing if needed |
-| `tests/test_voice_routes.py` | endpoint validation: bad JSON, missing key, missing `call_id`, status payload defaults, nav-hint drain | Flask app from `convey.create_app()` with fixture journal | patch `think.voice.config.get_openai_api_key`, `brain.wait_until_ready`, and `AsyncOpenAI` as needed |
-| `tests/test_voice_integration.py` | full flow: session mint, connect, one tool event through sideband, nav-hint fetch, active session count transition | real fixture journal plus `journal_copy` when a tool mutates ledger state | patch the `openai` module with fake `AsyncOpenAI`; this follows the existing module-patching precedent in `tests/test_validate_key.py:56-75` |
+| `tests/test_voice_routes.py` | endpoint validation: bad JSON, missing key, missing `call_id`, status payload defaults | Flask app from `convey.create_app()` with fixture journal | patch `think.voice.config.get_openai_api_key`, `brain.wait_until_ready`, and `AsyncOpenAI` as needed |
+| `tests/test_voice_integration.py` | full flow: session mint, connect, one tool event through sideband, active session count transition | real fixture journal plus `journal_copy` when a tool mutates ledger state | patch the `openai` module with fake `AsyncOpenAI`; this follows the existing module-patching precedent in `tests/test_validate_key.py:56-75` |
 
 Specific integration test shape:
 
@@ -442,9 +408,8 @@ Specific integration test shape:
 3. Seed `app.voice_brain_instruction` to avoid the first-session wait in the happy-path integration case.
 4. `POST /api/voice/session` and assert the key plus tool manifest wiring.
 5. `POST /api/voice/connect` with a fake `call_id`.
-6. Let the fake sideband drive one tool call that emits `_nav_target`.
+6. Let the fake sideband drive one tool call.
 7. Assert the OpenAI output JSON does not contain `_nav_target`.
-8. `GET /api/voice/nav-hints?call_id=...` and assert the hint is returned and then cleared.
 
 Journal-data rule:
 

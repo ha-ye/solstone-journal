@@ -8,7 +8,6 @@ from __future__ import annotations
 from solstone.convey.contract import (
     FieldSpec,
     OperationSpec,
-    ParamSpec,
     RequestSpec,
     ResponseSpec,
 )
@@ -93,73 +92,6 @@ OPERATIONS: list[OperationSpec] = [
                 503,
                 ("provider_key_missing",),
                 "Voice provider key was not configured.",
-            ),
-            _json_error(
-                403,
-                ("pl_revoked",),
-                "Access gate rejected a revoked paired-link identity.",
-            ),
-        ),
-    ),
-    OperationSpec(
-        operation_id="voice.navHints",
-        method="GET",
-        rule="/api/voice/nav-hints",
-        summary="Drain voice navigation hints",
-        description="Drain queued navigation hints for the given voice call.",
-        parameters=(
-            ParamSpec(
-                "call_id",
-                "query",
-                required=True,
-                description="Voice call identifier.",
-            ),
-        ),
-        responses=(
-            ResponseSpec(
-                status=200,
-                description="Navigation hints drained.",
-                named_fields=(
-                    FieldSpec("hints", "array", required=True),
-                    FieldSpec("consumed", "boolean", required=True),
-                ),
-                example={"hints": [], "consumed": True},
-            ),
-            _json_error(
-                400,
-                ("invalid_request_value",),
-                "Call identifier was missing.",
-            ),
-            _json_error(
-                403,
-                ("pl_revoked",),
-                "Access gate rejected a revoked paired-link identity.",
-            ),
-        ),
-    ),
-    OperationSpec(
-        operation_id="voice.observerActions",
-        method="GET",
-        rule="/api/voice/observer-actions",
-        summary="Drain voice observer actions",
-        description="Drain queued observer actions for the given voice call.",
-        parameters=(
-            ParamSpec(
-                "call_id",
-                "query",
-                required=False,
-                description="Voice call identifier.",
-            ),
-        ),
-        responses=(
-            ResponseSpec(
-                status=200,
-                description="Observer actions drained.",
-                named_fields=(
-                    FieldSpec("actions", "array", required=True),
-                    FieldSpec("consumed", "boolean", required=True),
-                ),
-                example={"actions": [], "consumed": True},
             ),
             _json_error(
                 403,

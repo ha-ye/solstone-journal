@@ -68,8 +68,6 @@ EXCLUDED_GET_OPERATION_REASONS = {
     # disabled, so injecting the valid observer handle is exactly what hangs it.
     "observer.callosumStream": "unbounded observer SSE stream with valid handle",
     "chat.session": "may recover chat, spawn agents/timers, and touch callosum",
-    "voice.navHints": "GET drains and destroys nav queue state",
-    "voice.observerActions": "GET drains and destroys observer action queue state",
     "observer.ingestManifestDay": "requires day fixture state not worth this lane",
     "observer.ingestSegments": "requires day fixture state not worth this lane",
 }

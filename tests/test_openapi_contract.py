@@ -43,8 +43,6 @@ CONTRACTED_PATHS = {
     "/api/chat/support/draft/confirm",
     "/api/push/register",
     "/api/voice/connect",
-    "/api/voice/nav-hints",
-    "/api/voice/observer-actions",
     "/api/voice/session",
     "/api/voice/status",
     "/app/home/api/pulse",
@@ -78,8 +76,6 @@ CONTRACTED_INVENTORY_TRIPLES = {
     ("GET", "/sse/events", "callosum.rootEvents"),
     ("POST", "/api/voice/session", "voice.session"),
     ("POST", "/api/voice/connect", "voice.connect"),
-    ("GET", "/api/voice/nav-hints", "voice.navHints"),
-    ("GET", "/api/voice/observer-actions", "voice.observerActions"),
     ("GET", "/api/voice/status", "voice.status"),
     ("GET", "/app/home/api/pulse", "home.pulse"),
     ("POST", "/app/import/api/meta", "import.meta"),
@@ -376,7 +372,7 @@ def test_no_r0_routes_in_artifact():
     assert "/api/config/convey" not in document["paths"]
     assert "/api/system/status" not in document["paths"]
     assert set(document["paths"]) == CONTRACTED_PATHS
-    assert len(document["paths"]) == 31
+    assert len(document["paths"]) == 29
 
 
 def test_home_pulse_named_fields_present(contract_app):

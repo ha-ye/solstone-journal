@@ -10,7 +10,6 @@ from pathlib import Path
 
 from solstone.think.indexer.journal import scan_journal
 from solstone.think.voice import tools
-from solstone.think.voice.observer_queue import get_observer_queue
 from tests.test_surfaces_ledger import (
     _commitment,
     _minimal_facet_tree,
@@ -45,7 +44,6 @@ def test_journal_get_day_happy(monkeypatch, journal_copy):
     result = tools.handle_journal_get_day({"day": "2026-03-04"}, object())
 
     assert result["day"] == "2026-03-04"
-    assert result["_nav_target"] == "today/journal/2026-03-04"
     assert result["segments"]
     assert any(
         segment["summary"] == "Morning journal summary"
@@ -65,7 +63,6 @@ def test_journal_search_happy(monkeypatch, journal_copy):
     result = tools.handle_journal_search({"query": "prototype", "limit": 3}, object())
 
     assert result["count"] >= 1
-    assert result["_nav_target"] == "today/search?q=prototype"
     assert result["results"][0]["snippet"]
 
 
@@ -79,7 +76,6 @@ def test_entities_get_happy():
     result = tools.handle_entities_get({"entity_slug": "romeo_montague"}, object())
 
     assert result["slug"] == "romeo_montague"
-    assert result["_nav_target"] == "entity/romeo_montague"
     assert result["name"]
 
 
@@ -219,7 +215,6 @@ def test_calendar_today_happy(monkeypatch, journal_copy):
     result = tools.handle_calendar_today({}, object())
 
     assert result["date"] == "2026-03-27"
-    assert result["_nav_target"] == "today"
     assert result["events"][0]["title"] == "Launch sync"
 
 
@@ -238,10 +233,9 @@ def test_briefing_get_happy(monkeypatch):
 
     result = tools.handle_briefing_get({}, object())
 
-    assert set(result) == {"date", "facet", "text", "highlights", "_nav_target"}
+    assert set(result) == {"date", "facet", "text", "highlights"}
     assert result["date"] == "2026-03-27"
     assert result["facet"] == "identity"
-    assert result["_nav_target"] == "today"
     assert result["highlights"]
     assert len(result["highlights"]) <= 3
     assert "Series A term sheet" in result["highlights"][0]
@@ -257,7 +251,6 @@ def test_observer_start_listening_happy():
         "status": "requested",
         "mode": "meeting",
         "note": "sol will start listening shortly",
-        "_observer_action": {"type": "start_observer", "mode": "meeting"},
     }
 
 
@@ -267,49 +260,30 @@ def test_observer_start_listening_failure():
     }
 
 
-def test_dispatch_tool_call_strips_nav_target(monkeypatch):
-    queue = tools.get_nav_queue()
-    queue.clear()
-    result = asyncio.run(
-        tools.dispatch_tool_call(
-            "observer.start_listening",
-            '{"mode":"meeting"}',
-            "call-123",
-            object(),
-        )
-    )
-    assert json.loads(result)["status"] == "requested"
-    assert queue.drain("call-123") == []
-
-    stripped = asyncio.run(
-        tools.dispatch_tool_call(
-            "journal.get_day",
-            '{"day":"2026-03-04"}',
-            "call-123",
-            object(),
-        )
-    )
-    payload = json.loads(stripped)
-    assert "_nav_target" not in payload
-    assert queue.drain("call-123") == ["today/journal/2026-03-04"]
-
-
-def test_dispatch_tool_call_strips_observer_action():
-    queue = get_observer_queue()
-    queue.clear()
-
-    result = asyncio.run(
+def test_dispatch_tool_call_has_no_side_channel_keys():
+    observer_result = asyncio.run(
         tools.dispatch_tool_call(
             "observer.start_listening",
             json.dumps({"mode": "meeting"}),
-            "call-obs-1",
+            "call-1",
             object(),
         )
     )
-
-    assert json.loads(result) == {
+    assert json.loads(observer_result) == {
         "status": "requested",
         "mode": "meeting",
         "note": "sol will start listening shortly",
     }
-    assert queue.drain("call-obs-1") == [{"type": "start_observer", "mode": "meeting"}]
+    day_result = asyncio.run(
+        tools.dispatch_tool_call(
+            "journal.get_day",
+            '{"day":"2026-03-04"}',
+            "call-1",
+            object(),
+        )
+    )
+    day_payload = json.loads(day_result)
+    nav_target_key = "_nav" + "_target"
+    observer_action_key = "_observer" + "_action"
+    assert nav_target_key not in day_payload
+    assert observer_action_key not in day_payload

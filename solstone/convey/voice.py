@@ -23,8 +23,6 @@ from solstone.convey.reasons import (
 from solstone.convey.utils import error_response
 from solstone.think.voice import brain
 from solstone.think.voice.config import get_openai_api_key, get_voice_model
-from solstone.think.voice.nav_queue import get_nav_queue
-from solstone.think.voice.observer_queue import get_observer_queue
 from solstone.think.voice.runtime import get_runtime_state
 from solstone.think.voice.sideband import _run_sideband, register_voice_task
 from solstone.think.voice.tools import get_tool_manifest
@@ -196,24 +194,6 @@ def refresh_voice_brain():
             "brain_age_seconds": brain.brain_age_seconds(app),
         }
     )
-
-
-@voice_bp.route("/nav-hints", methods=["GET", "POST"])
-def nav_hints():
-    call_id = request.args.get("call_id", "").strip()
-    if not call_id:
-        return error_response(INVALID_REQUEST_VALUE, detail="call_id is required")
-    hints = get_nav_queue().drain(call_id)
-    return jsonify({"hints": hints, "consumed": True})
-
-
-@voice_bp.route("/observer-actions", methods=["GET", "POST"])
-def observer_actions():
-    call_id = request.args.get("call_id", "").strip()
-    if not call_id:
-        return jsonify({"actions": [], "consumed": True})
-    actions = get_observer_queue().drain(call_id)
-    return jsonify({"actions": actions, "consumed": True})
 
 
 @voice_bp.get("/status")
