@@ -80,15 +80,27 @@ SOLSTONE_CORE_COVERED_PLATFORMS: tuple[CorePlatform, ...] = (
     ("linux", "aarch64"),
     ("darwin", "arm64"),
 )
-SOLSTONE_CORE_PLATFORM_MARKERS: tuple[str, ...] = (
-    "sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "sys_platform == 'linux' and platform_machine == 'aarch64'",
-    "sys_platform == 'darwin' and platform_machine == 'arm64'",
+
+
+def _solstone_core_platform_marker(platform_tuple: CorePlatform) -> str:
+    system, machine = platform_tuple
+    return f"sys_platform == '{system}' and platform_machine == '{machine}'"
+
+
+def _solstone_core_platform_tag(platform_tuple: CorePlatform) -> str:
+    system, machine = platform_tuple
+    if system == "darwin":
+        return f"macosx_14_0_{machine}"
+    return f"manylinux_2_17_{machine}.manylinux2014_{machine}"
+
+
+SOLSTONE_CORE_PLATFORM_MARKERS: tuple[str, ...] = tuple(
+    _solstone_core_platform_marker(platform_tuple)
+    for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
 )
 SOLSTONE_CORE_PLATFORM_TAGS: dict[CorePlatform, str] = {
-    ("linux", "x86_64"): "manylinux_2_17_x86_64.manylinux2014_x86_64",
-    ("linux", "aarch64"): "manylinux_2_17_aarch64.manylinux2014_aarch64",
-    ("darwin", "arm64"): "macosx_14_0_arm64",
+    platform_tuple: _solstone_core_platform_tag(platform_tuple)
+    for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
 }
 
 

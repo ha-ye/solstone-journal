@@ -12,6 +12,8 @@ from textwrap import dedent
 
 import pytest
 
+from solstone.think.probe import SOLSTONE_CORE_PLATFORM_MARKERS
+
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "render_packaging.py"
 SPEC = importlib.util.spec_from_file_location("render_packaging", SCRIPT)
 assert SPEC is not None
@@ -45,6 +47,10 @@ def _write(path: Path, text: str) -> None:
 
 
 def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
+    core_pins = "\n".join(
+        f'    "solstone-core==0.0.1; {marker}",'
+        for marker in SOLSTONE_CORE_PLATFORM_MARKERS
+    )
     _write(
         tmp_path / "pyproject.toml",
         f"""
@@ -55,9 +61,7 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         [project.optional-dependencies]
         journal-host = [
             "solstone-journal-models==1.0.0",
-            "solstone-core==0.0.1; sys_platform == 'linux' and platform_machine == 'x86_64'",
-            "solstone-core==0.0.1; sys_platform == 'linux' and platform_machine == 'aarch64'",
-            "solstone-core==0.0.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+        {core_pins}
         ]
         journal = ["solstone-journal-host==0.7.0"]
         journal-cuda = ["solstone-journal-host==0.7.0"]
@@ -214,18 +218,8 @@ def test_render_updates_python_leaves_and_cargo_lockstep(tmp_path: Path) -> None
     assert 'version = "2.3.4"' in core_leaf
     assert "solstone[journal-host]==" not in core_leaf
     root_pyproject = rendered[root / "pyproject.toml"]
-    assert (
-        "\"solstone-core==2.3.4; sys_platform == 'linux' and platform_machine == 'x86_64'\""
-        in root_pyproject
-    )
-    assert (
-        "\"solstone-core==2.3.4; sys_platform == 'linux' and platform_machine == 'aarch64'\""
-        in root_pyproject
-    )
-    assert (
-        "\"solstone-core==2.3.4; sys_platform == 'darwin' and platform_machine == 'arm64'\""
-        in root_pyproject
-    )
+    for marker in SOLSTONE_CORE_PLATFORM_MARKERS:
+        assert f'"solstone-core==2.3.4; {marker}"' in root_pyproject
 
 
 def test_check_reports_synthetic_packaging_drift(

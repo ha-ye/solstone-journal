@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -15,6 +16,9 @@ from solstone.think.probe import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+MARKER_PLATFORM_RE = re.compile(
+    r"sys_platform == '(?P<system>[^']+)' and platform_machine == '(?P<machine>[^']+)'"
+)
 
 
 def _core_pin_markers() -> list[str]:
@@ -27,15 +31,24 @@ def _core_pin_markers() -> list[str]:
     ]
 
 
+def _marker_platform_tuple(marker_text: str) -> tuple[str, str]:
+    match = MARKER_PLATFORM_RE.fullmatch(marker_text)
+    assert match is not None
+    return (match.group("system"), match.group("machine"))
+
+
 def test_core_pin_markers_match_probe_covered_platforms() -> None:
     marker_texts = _core_pin_markers()
     assert sorted(marker_texts) == sorted(SOLSTONE_CORE_PLATFORM_MARKERS)
     markers = [Marker(text) for text in marker_texts]
-    platform_tuples = [
-        *SOLSTONE_CORE_COVERED_PLATFORMS,
-        ("linux", "riscv64"),
-        ("darwin", "x86_64"),
-    ]
+    platform_tuples = sorted(
+        {
+            *SOLSTONE_CORE_COVERED_PLATFORMS,
+            *(_marker_platform_tuple(text) for text in marker_texts),
+            ("linux", "riscv64"),
+            ("darwin", "x86_64"),
+        }
+    )
 
     for system, machine in platform_tuples:
         marker_matches = [

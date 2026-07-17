@@ -5,12 +5,17 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import os
+import subprocess
+import sys
 import tarfile
 import zipfile
 from io import BytesIO
 from pathlib import Path
 
 import scripts.check_wheel_contents as checker
+
+SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "check_wheel_contents.py"
 
 
 def _record_hash(content: bytes) -> str:
@@ -58,6 +63,25 @@ def _write_core_wheel(
             _write_member(wheel, name, content, mode=mode)
         _write_member(wheel, "solstone_core-1.2.3.dist-info/RECORD", record)
     return wheel_path
+
+
+def test_script_runs_without_site_packages_from_outside_repo(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    env.pop("VIRTUAL_ENV", None)
+
+    result = subprocess.run(
+        [sys.executable, "-S", "-E", str(SCRIPT), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage:" in result.stdout
 
 
 def test_core_wheel_validator_accepts_static_manylinux_wheel(tmp_path: Path) -> None:
@@ -108,6 +132,53 @@ def _write_core_sdist(path: Path, *, missing: str | None = None) -> Path:
                 continue
             _add_tar_member(archive, f"solstone_core-1.2.3/{member}")
     return sdist
+
+
+def _write_minimal_wheel(path: Path, name: str) -> Path:
+    wheel_path = path / f"{name}-1.2.3-py3-none-any.whl"
+    with zipfile.ZipFile(wheel_path, "w") as wheel:
+        _write_member(
+            wheel,
+            f"{name}-1.2.3.dist-info/METADATA",
+            f"Name: {name}\nVersion: 1.2.3\n".encode(),
+        )
+    return wheel_path
+
+
+def _write_minimal_dist(path: Path) -> None:
+    _write_minimal_wheel(path, "solstone")
+    _write_minimal_wheel(path, "solstone_journal_models")
+    _write_core_sdist(path)
+
+
+def test_dist_check_requires_requested_core_platform(tmp_path: Path) -> None:
+    _write_minimal_dist(tmp_path)
+    _write_core_wheel(tmp_path)
+
+    errors = checker.check_dist(
+        tmp_path,
+        {},
+        checker.MAX_BASE_WHEEL_BYTES,
+        required_core_platforms=(("darwin", "arm64"),),
+    )
+
+    assert any("darwin/arm64" in error for error in errors)
+    assert any("macosx_14_0_arm64" in error for error in errors)
+
+
+def test_dist_check_accepts_requested_core_platform(tmp_path: Path) -> None:
+    _write_minimal_dist(tmp_path)
+    _write_core_wheel(tmp_path)
+    _write_core_wheel(tmp_path, tag="macosx_14_0_arm64")
+
+    errors = checker.check_dist(
+        tmp_path,
+        {},
+        checker.MAX_BASE_WHEEL_BYTES,
+        required_core_platforms=(("darwin", "arm64"),),
+    )
+
+    assert not [error for error in errors if "darwin/arm64" in error]
 
 
 def test_core_sdist_validator_requires_rust_workspace_sources(

@@ -215,7 +215,7 @@ ssh "$PRO5E_HOST" "tmux-run hopper ~/projects/solstone 'set -e; \
 echo "==> [3/5] rsyncing macOS wheel back"
 rsync -av --include='*macosx_14_0_arm64.whl' --exclude='*' \
     "$PRO5E_HOST:projects/solstone/dist/" ./dist/
-python3 scripts/check_wheel_contents.py dist/
+python3 scripts/check_wheel_contents.py --require-core-platform darwin/arm64 dist/
 
 echo
 echo "release artifacts:"

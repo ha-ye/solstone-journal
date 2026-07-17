@@ -15,10 +15,15 @@ import tarfile
 import zipfile
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
 from solstone.think.probe import (
     SOLSTONE_CORE_PLATFORM_TAGS,
+    CorePlatform,
     current_solstone_core_platform,
     is_solstone_core_covered_platform,
+    normalize_solstone_core_machine,
 )
 
 EXPECTED_MODEL_SHA256 = {
@@ -65,6 +70,27 @@ def _is_core_sdist(path: Path) -> bool:
 def _core_wheel_tag(path: Path) -> str:
     stem = path.name.removesuffix(".whl")
     return stem.split("-")[-1]
+
+
+def _parse_core_platform(value: str) -> CorePlatform:
+    try:
+        system, machine = value.split("/", 1)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(
+            f"expected platform as system/machine, got {value!r}"
+        ) from exc
+    platform_tuple: CorePlatform = (
+        "darwin" if system == "darwin" else "linux",
+        normalize_solstone_core_machine(system, machine),
+    )
+    if platform_tuple not in SOLSTONE_CORE_PLATFORM_TAGS:
+        supported = ", ".join(
+            f"{system}/{machine}" for system, machine in SOLSTONE_CORE_PLATFORM_TAGS
+        )
+        raise argparse.ArgumentTypeError(
+            f"unsupported solstone-core platform {value!r}; supported: {supported}"
+        )
+    return platform_tuple
 
 
 def _onnx_members(path: Path) -> list[str]:
@@ -206,7 +232,13 @@ def check_core_sdist(path: Path) -> list[str]:
     return errors
 
 
-def check_dist(dist_dir: Path, expected: dict[str, str], max_bytes: int) -> list[str]:
+def check_dist(
+    dist_dir: Path,
+    expected: dict[str, str],
+    max_bytes: int,
+    *,
+    required_core_platforms: tuple[CorePlatform, ...] = (),
+) -> list[str]:
     errors: list[str] = []
     wheels = sorted(dist_dir.glob("*.whl"))
     base_wheels = [path for path in wheels if _is_base_wheel(path)]
@@ -221,10 +253,21 @@ def check_dist(dist_dir: Path, expected: dict[str, str], max_bytes: int) -> list
     if not models_wheels:
         errors.append(f"{dist_dir}: no solstone_journal_models wheel found")
     system, machine = current_solstone_core_platform()
-    if is_solstone_core_covered_platform(system, machine) and not core_wheels:
-        errors.append(
-            f"{dist_dir}: no solstone_core wheel found for {system}/{machine}"
+    required_tags: dict[str, str] = {}
+    if is_solstone_core_covered_platform(system, machine):
+        required_tags[SOLSTONE_CORE_PLATFORM_TAGS[(system, machine)]] = (
+            f"{system}/{machine}"
         )
+    for platform_tuple in required_core_platforms:
+        required_tags[SOLSTONE_CORE_PLATFORM_TAGS[platform_tuple]] = (
+            f"{platform_tuple[0]}/{platform_tuple[1]}"
+        )
+    found_core_tags = {_core_wheel_tag(path) for path in core_wheels}
+    for tag, platform_name in sorted(required_tags.items()):
+        if tag not in found_core_tags:
+            errors.append(
+                f"{dist_dir}: no solstone_core wheel found for {platform_name} ({tag})"
+            )
     if not core_sdists:
         errors.append(f"{dist_dir}: no solstone_core sdist found")
 
@@ -242,10 +285,22 @@ def check_dist(dist_dir: Path, expected: dict[str, str], max_bytes: int) -> list
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--require-core-platform",
+        action="append",
+        default=[],
+        type=_parse_core_platform,
+        help="require a solstone-core wheel for system/machine, e.g. darwin/arm64",
+    )
     parser.add_argument("dist_dir", type=Path)
     args = parser.parse_args(argv)
 
-    errors = check_dist(args.dist_dir, EXPECTED_MODEL_SHA256, MAX_BASE_WHEEL_BYTES)
+    errors = check_dist(
+        args.dist_dir,
+        EXPECTED_MODEL_SHA256,
+        MAX_BASE_WHEEL_BYTES,
+        required_core_platforms=tuple(args.require_core_platform),
+    )
     if errors:
         print("ERROR: wheel content check failed", file=sys.stderr)
         for error in errors:

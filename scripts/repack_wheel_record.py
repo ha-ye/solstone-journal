@@ -26,6 +26,15 @@ def _relative_files(root: Path) -> list[Path]:
     return sorted(path for path in root.rglob("*") if path.is_file())
 
 
+def _original_file_attrs(wheel_path: Path) -> dict[str, tuple[int, int]]:
+    with zipfile.ZipFile(wheel_path) as wheel:
+        return {
+            info.filename: (info.external_attr, info.create_system)
+            for info in wheel.infolist()
+            if not info.is_dir()
+        }
+
+
 def _rewrite_record(root: Path) -> None:
     record_paths = list(root.glob("*.dist-info/RECORD"))
     if len(record_paths) != 1:
@@ -54,6 +63,7 @@ def repack(unpacked_dir: Path, wheel_path: Path) -> None:
     if not wheel_path.name.endswith(".whl"):
         raise SystemExit(f"wheel path must end in .whl: {wheel_path}")
 
+    original_attrs = _original_file_attrs(wheel_path)
     _rewrite_record(unpacked_dir)
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{wheel_path.name}.", suffix=".tmp", dir=str(wheel_path.parent)
@@ -65,7 +75,15 @@ def repack(unpacked_dir: Path, wheel_path: Path) -> None:
             tmp_path, "w", compression=zipfile.ZIP_DEFLATED
         ) as archive:
             for path in _relative_files(unpacked_dir):
-                archive.write(path, path.relative_to(unpacked_dir).as_posix())
+                arcname = path.relative_to(unpacked_dir).as_posix()
+                info = zipfile.ZipInfo(arcname)
+                info.compress_type = zipfile.ZIP_DEFLATED
+                if arcname in original_attrs:
+                    info.external_attr, info.create_system = original_attrs[arcname]
+                else:
+                    info.create_system = 3
+                    info.external_attr = (path.stat().st_mode & 0o777) << 16
+                archive.writestr(info, path.read_bytes())
         os.replace(tmp_path, wheel_path)
     finally:
         tmp_path.unlink(missing_ok=True)
