@@ -124,6 +124,15 @@ class FakeWriter:
         return None
 
 
+class _AsyncioShim:
+    def __init__(self, real_asyncio: Any, open_connection: Any) -> None:
+        self._real_asyncio = real_asyncio
+        self.open_connection = open_connection
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real_asyncio, name)
+
+
 class ConnectRouter:
     def __init__(
         self,
@@ -433,14 +442,21 @@ async def test_hold_pair_window_opens_with_rk_header_and_bearer() -> None:
 async def test_hold_pair_window_bridges_incoming_tunnel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def fail_open_connection(*_args: Any) -> tuple[object, FakeWriter]:
+    open_calls: list[tuple[Any, ...]] = []
+
+    async def fail_open_connection(*args: Any) -> tuple[object, FakeWriter]:
+        open_calls.append(args)
         raise OSError("local listener unavailable")
 
-    monkeypatch.setattr(relay_client.asyncio, "open_connection", fail_open_connection)
+    monkeypatch.setattr(
+        relay_client,
+        "asyncio",
+        _AsyncioShim(relay_client.asyncio, fail_open_connection),
+    )
     rk = bytes.fromhex("00112233445566778899aabbccddeeff")
     opener = _RecordingOpener(
         _BlockingFramesWS([_incoming("t1")]),
-        _FakeWS([]),
+        FakeTunnelWS(),
     )
 
     await relay_client.hold_pair_window(
@@ -459,6 +475,7 @@ async def test_hold_pair_window_bridges_incoming_tunnel(
     assert headers["Authorization"] == "Bearer tok"
     assert headers["Sec-Pair-Key"] == "00112233445566778899aabbccddeeff"
     assert max_size is None
+    assert open_calls == [("127.0.0.1", 7657)]
 
 
 def test_start_pair_window_wait_open_true_after_window_opens() -> None:
@@ -708,7 +725,11 @@ async def test_local_private_listener_failure_preserves_success_timestamp(
         raise OSError("local listener unavailable")
 
     monkeypatch.setattr(relay_client.websockets, "connect", router)
-    monkeypatch.setattr(relay_client.asyncio, "open_connection", fail_open_connection)
+    monkeypatch.setattr(
+        relay_client,
+        "asyncio",
+        _AsyncioShim(relay_client.asyncio, fail_open_connection),
+    )
     monkeypatch.setattr(relay_client, "now_ms", lambda: next(ticks))
 
     await client._handle_tunnel("local")
@@ -748,7 +769,9 @@ async def test_404_reopen_does_not_cancel_unrelated_in_flight_tunnel(
 
     monkeypatch.setattr(relay_client.websockets, "connect", router)
     monkeypatch.setattr(
-        relay_client.asyncio, "open_connection", _open_connection_success
+        relay_client,
+        "asyncio",
+        _AsyncioShim(relay_client.asyncio, _open_connection_success),
     )
     monkeypatch.setattr(relay_client, "_pipe_tunnel", fake_pipe)
 

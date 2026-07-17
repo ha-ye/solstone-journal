@@ -10,6 +10,7 @@ import shutil
 import tarfile
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -20,6 +21,24 @@ from solstone.think.journal_config import (
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.providers import fit_report, parakeet_install
 from solstone.think.providers.install_state import read_install_status
+
+
+class _SysShim:
+    def __init__(self, real_sys: Any, *, platform: str) -> None:
+        self._real_sys = real_sys
+        self.platform = platform
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real_sys, name)
+
+
+class _PlatformShim:
+    def __init__(self, real_platform: Any, *, machine: Any) -> None:
+        self._real_platform = real_platform
+        self.machine = machine
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real_platform, name)
 
 
 def _init_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,8 +126,16 @@ def test_parakeet_server_pins_cover_expected_platforms_and_backends() -> None:
 def test_non_linux_artifact_key_raises_provider_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(parakeet_readiness.sys, "platform", "darwin")
-    monkeypatch.setattr(parakeet_readiness.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(
+        parakeet_readiness,
+        "sys",
+        _SysShim(parakeet_readiness.sys, platform="darwin"),
+    )
+    monkeypatch.setattr(
+        parakeet_readiness,
+        "platform",
+        _PlatformShim(parakeet_readiness.platform, machine=lambda: "arm64"),
+    )
 
     with pytest.raises(parakeet_install.ParakeetProviderError) as exc_info:
         parakeet_install.parakeet_server_artifact_key()

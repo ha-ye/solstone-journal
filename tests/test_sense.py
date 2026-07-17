@@ -12,6 +12,7 @@ import threading
 import time
 from concurrent.futures import Future
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -51,6 +52,24 @@ def _default_thinking_engine_selected(monkeypatch):
     monkeypatch.setattr(
         "solstone.think.models.no_thinking_engine_chosen", lambda: False
     )
+
+
+class _ClockShim:
+    def __init__(
+        self,
+        real_time: Any,
+        *,
+        time: Any = None,
+        monotonic: Any = None,
+    ) -> None:
+        self._real_time = real_time
+        if time is not None:
+            self.time = time
+        if monotonic is not None:
+            self.monotonic = monotonic
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real_time, name)
 
 
 class FakeProcess:
@@ -1732,6 +1751,8 @@ def test_health_beacon_allowlist(tmp_path):
 
 
 def test_emit_status_soft_warns_once_before_handler_cap(tmp_path, monkeypatch):
+    import solstone.observe.sense as sense_module
+
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
 
     sensor = FileSensor(tmp_path)
@@ -1749,7 +1770,11 @@ def test_emit_status_soft_warns_once_before_handler_cap(tmp_path, monkeypatch):
     sensor.running_handlers["describe"].append(slow_proc)
     sensor.running_handlers["transcribe"].append(fast_proc)
     monkeypatch.setattr(sensor, "_resolve_max_runtime", lambda _handler: 100)
-    monkeypatch.setattr("solstone.observe.sense.time.time", lambda: 1000.0)
+    monkeypatch.setattr(
+        sense_module,
+        "time",
+        _ClockShim(sense_module.time, time=lambda: 1000.0),
+    )
 
     sensor._emit_status()
     sensor._emit_status()
@@ -2805,6 +2830,8 @@ def test_memory_gate_wait_does_not_consume_handler_cap(
     monkeypatch,
 ):
     """The memory gate fires once and its wait does not eat into the handler cap."""
+    import solstone.observe.sense as sense_module
+
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     sensor = FileSensor(tmp_path)
     sensor.register("*.flac", "transcribe", ["journal", "transcribe", "{file}"])
@@ -2835,7 +2862,12 @@ def test_memory_gate_wait_does_not_consume_handler_cap(
     )
     monkeypatch.setattr(sensor, "_resolve_max_runtime", lambda _handler: 30)
     monkeypatch.setattr(
-        "solstone.observe.sense.time.monotonic", lambda: monotonic_now["value"]
+        sense_module,
+        "time",
+        _ClockShim(
+            sense_module.time,
+            monotonic=lambda: monotonic_now["value"],
+        ),
     )
     monkeypatch.setattr(sensor, "_spawn_managed_process", fake_spawn)
 
