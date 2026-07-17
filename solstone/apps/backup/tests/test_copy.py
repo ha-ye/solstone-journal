@@ -9,7 +9,12 @@ import json
 import re
 from pathlib import Path
 
-from solstone.apps.backup.copy import backup_copy_payload, backup_copy_values
+from solstone.apps.backup.copy import (
+    TEARDOWN_CONFIRM_PHRASE,
+    TEARDOWN_CONFIRM_PROMPT,
+    backup_copy_payload,
+    backup_copy_values,
+)
 from solstone.think.offload import OFFLOAD_STALL_REASONS
 from solstone.think.offload_restore import OFFLOAD_RESTORE_REASONS
 
@@ -35,6 +40,7 @@ def _backup_copy_literal() -> dict:
 
 def test_backup_copy_verbatim_strings() -> None:
     payload = backup_copy_payload()
+    static = _backup_copy_literal()
     offload = payload["offload"]
 
     assert payload["service_name"] == "encrypted backup"
@@ -69,6 +75,24 @@ def test_backup_copy_verbatim_strings() -> None:
     assert (
         payload["management"]["destructive_caption"]
         == "this deletes all your backup data. no new backups will be created."
+    )
+    assert (
+        payload["management"]["teardown_gate_lead"]
+        == "{days} days of recordings ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever."
+    )
+    assert "{days}" in payload["management"]["teardown_gate_lead"]
+    assert "{size}" in payload["management"]["teardown_gate_lead"]
+    assert (
+        payload["management"]["teardown_gate_unavailable_lead"]
+        == "can't verify what exists only in this backup right now. deleting the backup may destroy recordings that exist nowhere else."
+    )
+    assert payload["management"]["teardown_confirm_phrase"] == TEARDOWN_CONFIRM_PHRASE
+    assert payload["management"]["teardown_confirm_prompt"] == TEARDOWN_CONFIRM_PROMPT
+    assert static["management"]["teardown_confirm_phrase"] == TEARDOWN_CONFIRM_PHRASE
+    assert static["management"]["teardown_confirm_prompt"] == TEARDOWN_CONFIRM_PROMPT
+    assert (
+        payload["management"]["teardown_restore_first_action"]
+        == "restore everything first"
     )
     # the byo covenant beat — "sol pbc is never in the path" (mode selector)
     assert (

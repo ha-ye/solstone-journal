@@ -46,6 +46,11 @@ DESTRUCTIVE_ACTION = "turn off & delete backup"
 DESTRUCTIVE_CAPTION = (
     "this deletes all your backup data. no new backups will be created."
 )
+TEARDOWN_GATE_LEAD = "{days} days of recordings ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever."
+TEARDOWN_GATE_UNAVAILABLE_LEAD = "can't verify what exists only in this backup right now. deleting the backup may destroy recordings that exist nowhere else."
+TEARDOWN_CONFIRM_PHRASE = "delete"
+TEARDOWN_CONFIRM_PROMPT = "type delete to confirm"
+TEARDOWN_RESTORE_FIRST_ACTION = "restore everything first"
 OBJECT_LOCK_WARNING = "don't enable Compliance-mode Object Lock on the bucket — it conflicts with backup pruning and lock cleanup. if you need immutability, use Governance mode."
 OBJECT_LOCK_SUMMARY = "bucket setup notes"
 OPTIONAL_INVARIANT = "your journal lives on your device; backup is optional."
@@ -293,6 +298,11 @@ def backup_copy_payload() -> dict[str, Any]:
         "management": {
             "destructive_action": DESTRUCTIVE_ACTION,
             "destructive_caption": DESTRUCTIVE_CAPTION,
+            "teardown_gate_lead": TEARDOWN_GATE_LEAD,
+            "teardown_gate_unavailable_lead": TEARDOWN_GATE_UNAVAILABLE_LEAD,
+            "teardown_confirm_phrase": TEARDOWN_CONFIRM_PHRASE,
+            "teardown_confirm_prompt": TEARDOWN_CONFIRM_PROMPT,
+            "teardown_restore_first_action": TEARDOWN_RESTORE_FIRST_ACTION,
             "retention_hint": RETENTION_HINT,
             "status_labels": dict(STATUS_LABELS),
             "retention_labels": dict(RETENTION_FIELD_LABELS),

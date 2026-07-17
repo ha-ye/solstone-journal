@@ -161,6 +161,10 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         "data-offload-disable",
         "data-offload-unavailable",
         "data-offload-stall-reason",
+        "data-teardown-gate",
+        "data-teardown-stakes",
+        "data-teardown-input",
+        "data-teardown-status",
     ):
         assert marker in html
     for hook in (
@@ -174,6 +178,11 @@ def test_backup_panels_and_states_render(backup_env) -> None:
         'data-copy="offload.title"',
         'data-copy="offload.stakes"',
         'data-copy="offload.disable_note"',
+        'data-copy="management.teardown_confirm_prompt"',
+        'data-copy="management.teardown_restore_first_action"',
+        'data-action="teardown-open"',
+        'data-action="teardown-confirm"',
+        'data-action="teardown-restore-first"',
     ):
         assert hook in html
 
@@ -241,3 +250,68 @@ def test_offload_js_validates_payload_shape_before_ready_state() -> None:
     guard_call = "if (!validOffloadPayload(payload))"
     assert guard_call in js
     assert js.index(guard_call) < js.index("offloadState = { status: 'ready'")
+
+
+def test_teardown_js_source_contracts() -> None:
+    js = _backup_js()
+
+    assert "function backupOnlyTotalsForTeardown()" in js
+    assert "if (offloadState.status !== 'ready') return null;" in js
+    assert "const backupOnly = payload.backup_only;" in js
+    assert "typeof backupOnly !== 'object'" in js
+    assert "Array.isArray(backupOnly)" in js
+    assert "const days = backupOnly.total_days;" in js
+    assert "const bytes = backupOnly.total_bytes;" in js
+    assert "typeof days !== 'number'" in js
+    assert "typeof bytes !== 'number'" in js
+    assert "!Number.isFinite(days)" in js
+    assert "!Number.isFinite(bytes)" in js
+    assert "return { days, size: formatBytes(bytes) };" in js
+    assert "if (totals.days > 0)" not in js
+    assert re.findall(r"startOperation\('(/app/backup/teardown)'", js) == [
+        "/app/backup/teardown"
+    ]
+    assert "await startOperation('/app/backup/offload/restore', { all: true });" in js
+    assert (
+        "button.disabled = teardownInputValue() !== teardownConfirmPhrase();" not in js
+    )
+
+    confirm_satisfied = js[
+        js.index("function teardownConfirmSatisfied()") : js.index(
+            "function updateTeardownConfirmState"
+        )
+    ]
+    assert "const phrase = teardownConfirmPhrase();" in confirm_satisfied
+    assert "phrase !== ''" in confirm_satisfied
+    assert "teardownInputValue() === phrase" in confirm_satisfied
+
+    render_gate = js[
+        js.index("function renderTeardownGate(totals)") : js.index(
+            "function showTeardownGate"
+        )
+    ]
+    assert "if (totals === null)" in render_gate
+    assert "managementCopy.teardown_gate_unavailable_lead" in render_gate
+    assert "managementCopy.teardown_gate_lead" in render_gate
+
+    open_gate = js[
+        js.index("async function openTeardownGate()") : js.index(
+            "function offloadConfigBody"
+        )
+    ]
+    assert "await refreshOffloadStatus();" in open_gate
+    assert "const totals = backupOnlyTotalsForTeardown();" in open_gate
+    assert "renderTeardownGate(null);" in open_gate
+    assert "renderTeardownGate(totals);" in open_gate
+    assert "renderOffloadUnavailable();" in open_gate
+
+    confirm_action = js[
+        js.index("if (action === 'teardown-confirm')") : js.index(
+            "if (action === 'teardown-restore-first')"
+        )
+    ]
+    guard = "if (!teardownConfirmSatisfied()) return;"
+    target = "await startOperation('/app/backup/teardown');"
+    assert guard in confirm_action
+    assert target in confirm_action
+    assert js.index(guard) < js.index(target)

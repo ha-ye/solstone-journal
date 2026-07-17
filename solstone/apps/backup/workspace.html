@@ -269,6 +269,27 @@
         <p class="backup-note" data-copy="offload.disable_note"></p>
         <button type="button" data-action="offload-disable" data-offload-disable data-copy="offload.actions.disable"></button>
       </section>
+
+      <section class="backup-teardown">
+        <h2 data-copy="management.destructive_action"></h2>
+        <p class="backup-note" data-copy="management.destructive_caption"></p>
+        <div class="backup-panel-actions">
+          <button type="button" class="danger" data-action="teardown-open" data-copy="action_labels.teardown"></button>
+        </div>
+        <div class="backup-teardown-gate" data-teardown-gate hidden>
+          <p class="backup-warning" data-teardown-stakes></p>
+          <label>
+            <span data-copy="management.teardown_confirm_prompt"></span>
+            <input data-teardown-input name="teardown_confirm" autocomplete="off" spellcheck="false">
+          </label>
+          <p class="backup-status-message" data-teardown-status></p>
+          <div class="backup-panel-actions">
+            <button type="button" data-action="teardown-restore-first" data-copy="management.teardown_restore_first_action"></button>
+            <button type="button" class="danger" data-action="teardown-confirm" data-copy="action_labels.teardown" disabled></button>
+            <button type="button" data-action="teardown-cancel" data-copy="action_labels.cancel"></button>
+          </div>
+        </div>
+      </section>
     </article>
 
     <article class="backup-panel" data-backup-panel="restore" hidden>

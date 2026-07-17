@@ -77,6 +77,11 @@
     "management": {
       "destructive_action": "turn off & delete backup",
       "destructive_caption": "this deletes all your backup data. no new backups will be created.",
+      "teardown_gate_lead": "{days} days of recordings ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever.",
+      "teardown_gate_unavailable_lead": "can't verify what exists only in this backup right now. deleting the backup may destroy recordings that exist nowhere else.",
+      "teardown_confirm_phrase": "delete",
+      "teardown_confirm_prompt": "type delete to confirm",
+      "teardown_restore_first_action": "restore everything first",
       "retention_hint": "how many recent copies to keep at each interval.",
       "status_labels": {
         "last_backup": "last backup",
@@ -314,8 +319,8 @@
   const actionLabels = copy.action_labels || {};
   const destinationLabels = (copy.destination && copy.destination.reason_labels) || {};
   const operationLabels = copy.operation_reason_labels || {};
-  const statusLabels =
-    (copy.management && copy.management.status_labels) || {};
+  const managementCopy = copy.management || {};
+  const statusLabels = managementCopy.status_labels || {};
   const hostedCopy = copy.hosted || {};
   const offloadCopy = copy.offload || {};
   const offloadLabels = offloadCopy.labels || {};
@@ -455,6 +460,82 @@
       if (reason) parts.push(reason);
     }
     return parts.filter(Boolean).join(' · ');
+  }
+
+  function teardownConfirmPhrase() {
+    return managementCopy.teardown_confirm_phrase || '';
+  }
+
+  function teardownInputValue() {
+    const input = root.querySelector('[data-teardown-input]');
+    return input && typeof input.value === 'string' ? input.value : '';
+  }
+
+  function teardownConfirmSatisfied() {
+    const phrase = teardownConfirmPhrase();
+    return phrase !== '' && teardownInputValue() === phrase;
+  }
+
+  function updateTeardownConfirmState() {
+    const button = root.querySelector('[data-action="teardown-confirm"]');
+    if (button) button.disabled = !teardownConfirmSatisfied();
+  }
+
+  function backupOnlyTotalsForTeardown() {
+    if (offloadState.status !== 'ready') return null;
+    const payload = offloadState.payload || {};
+    const backupOnly = payload.backup_only;
+    if (!backupOnly || typeof backupOnly !== 'object' || Array.isArray(backupOnly)) return null;
+    const days = backupOnly.total_days;
+    const bytes = backupOnly.total_bytes;
+    if (typeof days !== 'number' || !Number.isFinite(days) || days < 0) return null;
+    if (typeof bytes !== 'number' || !Number.isFinite(bytes) || bytes < 0) return null;
+    return { days, size: formatBytes(bytes) };
+  }
+
+  function renderTeardownGate(totals) {
+    const stakes = root.querySelector('[data-teardown-stakes]');
+    if (!stakes) return;
+    if (totals === null) {
+      stakes.textContent = managementCopy.teardown_gate_unavailable_lead || '';
+      return;
+    }
+    stakes.textContent = (managementCopy.teardown_gate_lead || '')
+      .replace('{days}', totals.days.toLocaleString())
+      .replace('{size}', totals.size);
+  }
+
+  function showTeardownGate() {
+    const gate = root.querySelector('[data-teardown-gate]');
+    if (gate) gate.hidden = false;
+    updateTeardownConfirmState();
+  }
+
+  function resetTeardownGate() {
+    const gate = root.querySelector('[data-teardown-gate]');
+    const input = root.querySelector('[data-teardown-input]');
+    if (gate) gate.hidden = true;
+    if (input) input.value = '';
+    showMessage('[data-teardown-status]', '');
+    updateTeardownConfirmState();
+  }
+
+  // /app/backup/teardown remains unguarded server-side exactly as shipped today;
+  // this owner-authenticated local app keeps the gate as a page-level honesty
+  // surface and does not change the server contract.
+  async function openTeardownGate() {
+    try {
+      await refreshOffloadStatus();
+      const totals = backupOnlyTotalsForTeardown();
+      renderTeardownGate(totals);
+    } catch (err) {
+      if (window.logError) {
+        window.logError(err, { context: 'backup teardown offload status failed' });
+      }
+      renderOffloadUnavailable();
+      renderTeardownGate(null);
+    }
+    showTeardownGate();
   }
 
   function offloadConfigBody() {
@@ -757,6 +838,8 @@
         const payload = await refreshStatus();
         if (operationActive(payload.operation)) {
           pollUntilTerminal();
+        } else if (payload.operation && payload.operation.kind === 'teardown') {
+          resetTeardownGate();
         } else if (payload.operation && payload.operation.kind === 'offload_restore') {
           try {
             await refreshOffloadStatus();
@@ -844,6 +927,19 @@
           showPanel('display');
         }
         if (action === 'rotate-key') await startOperation('/app/backup/recovery-key/rotate');
+        if (action === 'teardown-open') await openTeardownGate();
+        if (action === 'teardown-cancel') resetTeardownGate();
+        if (action === 'teardown-confirm') {
+          if (!teardownConfirmSatisfied()) return;
+          const payload = await startOperation('/app/backup/teardown');
+          if (payload.operation && payload.operation.kind === 'teardown' && !operationActive(payload.operation)) {
+            resetTeardownGate();
+          }
+        }
+        if (action === 'teardown-restore-first') {
+          await startOperation('/app/backup/offload/restore', { all: true });
+          resetTeardownGate();
+        }
         if (action === 'cancel-restore') showPanel(managedMode() ? 'management' : 'intro');
         if (action === 'restore-hosted') {
           const field = root.querySelector('[data-restore-hosted-input]') || {};
@@ -871,7 +967,9 @@
           await startOperation('/app/backup/offload/restore', { day });
         }
       } catch (err) {
-        if (action && action.startsWith('offload-')) {
+        if (action && action.startsWith('teardown-')) {
+          showError('[data-teardown-status]', err);
+        } else if (action && action.startsWith('offload-')) {
           showMessage('[data-offload-config-status]', offloadActionError(err));
         } else {
           showError('[data-operation-error]', err);
@@ -945,6 +1043,11 @@
           showError('[data-restore-status]', err);
         }
       });
+    }
+
+    const teardownInput = root.querySelector('[data-teardown-input]');
+    if (teardownInput) {
+      teardownInput.addEventListener('input', updateTeardownConfirmState);
     }
   }
 
