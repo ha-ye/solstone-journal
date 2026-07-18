@@ -334,3 +334,51 @@ def test_workspace_html_owner_copy_folds_named_transcript_literals():
     assert "Loading screen entries..." in text
     assert "loading screen entries..." in text
     assert "Current time" in text
+
+
+def test_workspace_html_timeline_rail_vertical_math_contract():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    assert text.count("const HEADER_HEIGHT = 16;") == 1
+    assert "const PADDING = HEADER_HEIGHT + 12;" in text
+    assert "const PADDING = 24" not in text
+
+    render_timeline = text.split("function renderTimeline", 1)[1].split(
+        "function buildZoomGrid", 1
+    )[0]
+    assert (
+        "selWrap.style.top = (HEADER_HEIGHT + y(range.start)) + 'px';"
+        in render_timeline
+    )
+
+    now_marker = text.split("updateNowPosition = function()", 1)[1].split(
+        "setInterval(updateNowPosition", 1
+    )[0]
+    assert "marker.style.top = (HEADER_HEIGHT + y(nowMin)) + 'px';" in now_marker
+
+    click_handler = text.split("timeline.addEventListener('click'", 1)[1].split(
+        "});", 1
+    )[0]
+    assert "const py = e.clientY - box.top - HEADER_HEIGHT;" in click_handler
+
+    header_line = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith("const HEADER_HEIGHT = ")
+    ][0]
+    header_value = (
+        header_line.split("const HEADER_HEIGHT = ", 1)[1].split(";", 1)[0].strip()
+    )
+
+    grid_css = text.split(".tr-grid {", 1)[1].split("}", 1)[0]
+    grid_top_line = [
+        line.strip()
+        for line in grid_css.splitlines()
+        if line.strip().startswith("top:")
+    ][0]
+    grid_top = grid_top_line.split("top:", 1)[1].split("px", 1)[0].strip()
+
+    assert grid_top == header_value
+    assert "zoom.clientHeight - 24" not in text
