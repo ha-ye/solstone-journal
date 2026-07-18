@@ -635,7 +635,7 @@ mod tests {
         assert_eq!(row.2, "segment");
         assert_eq!(row.3, Some("marker-stream".to_string()));
         assert_eq!(row.4, "morning");
-        assert!(row.5.contains("Marker-derived stream text"));
+        assert!(segment_aggregate_content(&conn, segment).contains("Marker-derived stream text"));
         assert_eq!(
             count(
                 &conn,
