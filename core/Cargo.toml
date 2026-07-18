@@ -21,7 +21,11 @@ solstone-core-indexer-store = { path = "crates/solstone-core-indexer-store" }
 solstone-core-journal = { path = "crates/solstone-core-journal" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 glob = "0.3.3"
+md5 = "0.8.1"
 pulldown-cmark = { version = "0.13.4", default-features = false }
+rapidfuzz = "0.5.0"
 rusqlite = { version = "0.40.1", features = ["bundled"] }
 serde_json = "1.0.150"
 toml_edit = { version = "0.22.27", default-features = false, features = ["parse"] }
+unicode-normalization = "0.1.25"
+unidecode = "0.3.0"

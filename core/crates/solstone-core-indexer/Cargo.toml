@@ -9,5 +9,9 @@ publish = false
 [dependencies]
 chrono.workspace = true
 glob.workspace = true
+md5.workspace = true
 pulldown-cmark.workspace = true
+rapidfuzz.workspace = true
 serde_json.workspace = true
+unicode-normalization.workspace = true
+unidecode.workspace = true
