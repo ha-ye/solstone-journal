@@ -3,9 +3,12 @@
 
 //! Native tiered entity name matching mirrors
 //! `solstone.think.entities.matching.find_matching_entity` for typed candidate
-//! records. Python raises `IndexError` for all-whitespace queries at
-//! `matching.py:368`; this module returns `None` because a public function over
-//! a valid `&str` must not panic.
+//! records. Python raises `IndexError` from `_first_word_key` at
+//! `matching.py:131` for whitespace-only entity names during map building, and
+//! at `matching.py:368` for all-whitespace queries in tier 5. Rust never panics
+//! for whitespace-only input: a whitespace-only entity name creates no
+//! first-word bucket, but still participates in exact/lower/id/email/fuzzy maps
+//! and can remain matchable.
 //! The typed `EntityNameCandidate` shape makes Python's malformed-input raise
 //! paths unrepresentable; any future JSON adapter must accept only string field
 //! values and string list members before constructing candidates.
@@ -826,6 +829,16 @@ mod tests {
     }
 
     #[test]
+    fn whitespace_only_entity_name_skips_first_word_but_stays_matchable() {
+        let candidates = [candidate(Some("x"), "   ", &[], &[])];
+        // Python raises IndexError for all three cases during map building, so
+        // these pin Rust's intentional non-panicking divergence, not parity.
+        assert_no_match("Bob", &candidates, 90.0);
+        assert_match("x", &candidates, 90.0, 0, Some("x"), MatchTier::Exact);
+        assert_match("   ", &candidates, 90.0, 0, Some("x"), MatchTier::Exact);
+    }
+
+    #[test]
     fn fuzzy_len_under_four_skipped() {
         let candidates = [candidate(Some("alice"), "Alice", &[], &[])];
         assert_no_match("Ali", &candidates, 50.0);
@@ -844,6 +857,72 @@ mod tests {
             1,
             Some("b"),
             MatchTier::Exact,
+        );
+    }
+
+    #[test]
+    fn duplicate_case_insensitive_last_write_wins() {
+        let candidates = [
+            candidate(Some("first"), "Alex Doe", &[], &[]),
+            candidate(Some("second"), "alex doe", &[], &[]),
+        ];
+        assert_match(
+            "ALEX DOE",
+            &candidates,
+            90.0,
+            1,
+            Some("second"),
+            MatchTier::CaseInsensitive,
+        );
+    }
+
+    #[test]
+    fn duplicate_id_map_last_write_wins() {
+        let candidates = [
+            candidate(Some("shared_slug"), "First", &[], &[]),
+            candidate(Some("shared_slug"), "Second", &[], &[]),
+        ];
+        assert_match(
+            "shared slug",
+            &candidates,
+            90.0,
+            1,
+            Some("shared_slug"),
+            MatchTier::Slug,
+        );
+    }
+
+    #[test]
+    fn duplicate_email_map_last_write_wins() {
+        let candidates = [
+            candidate(Some("first"), "First", &[], &["shared@example.com"]),
+            candidate(Some("second"), "Second", &[], &["shared@example.com"]),
+        ];
+        assert_match(
+            "SHARED@EXAMPLE.COM",
+            &candidates,
+            90.0,
+            1,
+            Some("second"),
+            MatchTier::Email,
+        );
+    }
+
+    #[test]
+    fn duplicate_fuzzy_key_last_write_wins() {
+        let candidates = [
+            candidate(Some("first"), "Alice Doe", &[], &[]),
+            candidate(Some("second"), "Alice Doe", &[], &[]),
+        ];
+        // Non-default threshold is deliberate: it isolates tier 8 from earlier
+        // tiers while preserving Python's duplicate-key last-write behavior.
+        assert_match(
+            "Alce Doe",
+            &candidates,
+            80.0,
+            1,
+            Some("second"),
+            MatchTier::Fuzzy,
         );
     }
 
