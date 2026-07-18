@@ -19,6 +19,9 @@ pub enum EdgeSourceKind {
     Observation,
     Copresence,
     EventLegacy,
+    Screen,
+    Document,
+    Speaker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +51,26 @@ pub(crate) const EDGE_SOURCE_PATTERNS: &[EdgeSourcePattern] = &[
         pattern: "facets/*/events/*.jsonl",
         root: EdgePatternRoot::Structural,
         kind: EdgeSourceKind::EventLegacy,
+    },
+    EdgeSourcePattern {
+        pattern: "*/*/*/screen.jsonl",
+        root: EdgePatternRoot::DayRooted,
+        kind: EdgeSourceKind::Screen,
+    },
+    EdgeSourcePattern {
+        pattern: "*/*/*/*_screen.jsonl",
+        root: EdgePatternRoot::DayRooted,
+        kind: EdgeSourceKind::Screen,
+    },
+    EdgeSourcePattern {
+        pattern: "*/*/*/talents/documents.json",
+        root: EdgePatternRoot::DayRooted,
+        kind: EdgeSourceKind::Document,
+    },
+    EdgeSourcePattern {
+        pattern: "*/*/*/talents/speaker_labels.json",
+        root: EdgePatternRoot::DayRooted,
+        kind: EdgeSourceKind::Speaker,
     },
 ];
 
@@ -97,6 +120,22 @@ mod tests {
         assert_eq!(
             edge_source_for_rel("facets/work/events/20260430.jsonl"),
             Ok(Some(EdgeSourceKind::EventLegacy))
+        );
+        assert_eq!(
+            edge_source_for_rel("20260430/default/090000_300/screen.jsonl"),
+            Ok(Some(EdgeSourceKind::Screen))
+        );
+        assert_eq!(
+            edge_source_for_rel("20260430/default/090000_300/left_screen.jsonl"),
+            Ok(Some(EdgeSourceKind::Screen))
+        );
+        assert_eq!(
+            edge_source_for_rel("20260430/default/090000_300/talents/documents.json"),
+            Ok(Some(EdgeSourceKind::Document))
+        );
+        assert_eq!(
+            edge_source_for_rel("20260430/default/090000_300/talents/speaker_labels.json"),
+            Ok(Some(EdgeSourceKind::Speaker))
         );
         assert_eq!(
             edge_source_for_rel("facets/work/entities/alice/extra/observations.jsonl"),

@@ -6,8 +6,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use chrono_tz::Tz;
 use serde_json::{Map, Value};
 
+use crate::edges::speaker::MentionCandidateIndex;
 use crate::edges::{EdgeContext, EdgeError};
 use crate::entity_name_matcher::{EntityNameCandidate, find_matching_entity};
 
@@ -36,6 +38,8 @@ pub struct EdgeResolver {
     journal: PathBuf,
     cache: BTreeMap<String, Vec<EntityNameCandidate>>,
     drops: EdgeDropCounter,
+    owner_timezone: Option<Tz>,
+    mention_candidates: Option<MentionCandidateIndex>,
 }
 
 impl EdgeResolver {
@@ -44,6 +48,8 @@ impl EdgeResolver {
             journal: journal.to_path_buf(),
             cache: BTreeMap::new(),
             drops: EdgeDropCounter::default(),
+            owner_timezone: None,
+            mention_candidates: None,
         }
     }
 
@@ -94,6 +100,28 @@ impl EdgeResolver {
 
     pub fn record_drop(&mut self) {
         self.drops.record_drop();
+    }
+
+    pub(super) fn owner_timezone(&mut self) -> Tz {
+        if let Some(timezone) = self.owner_timezone {
+            return timezone;
+        }
+        let timezone = super::owner_timezone_for_journal(&self.journal);
+        self.owner_timezone = Some(timezone);
+        timezone
+    }
+
+    pub(super) fn mention_candidates(&mut self) -> Result<&MentionCandidateIndex, EdgeError> {
+        if self.mention_candidates.is_none() {
+            let candidates = super::speaker::build_candidate_index(&self.journal)?;
+            self.mention_candidates = Some(candidates);
+        }
+        match self.mention_candidates.as_ref() {
+            Some(candidates) => Ok(candidates),
+            None => Err(EdgeError::Io(
+                "speaker mention candidate cache missing".to_string(),
+            )),
+        }
     }
 }
 

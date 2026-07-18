@@ -293,13 +293,13 @@ fn reconcile_edges(
 
 fn process_edge_file(
     conn: &Connection,
-    _journal: &Path,
+    journal: &Path,
     rel: &str,
     path: &Path,
     resolver: &mut EdgeResolver,
 ) -> Result<EdgeProcessResult, StoreError> {
     resolver.begin_file();
-    let extracted = extract_file_edges(rel, path, resolver);
+    let extracted = extract_file_edges(journal, rel, path, resolver);
     let drops = resolver.drops();
     match extracted {
         Ok(extracted) => {
@@ -317,6 +317,7 @@ fn process_edge_file(
                 Ok(rows_inserted) => Ok(EdgeProcessResult {
                     rows_inserted,
                     drops,
+                    warnings: extracted.warnings,
                     ..EdgeProcessResult::default()
                 }),
                 Err(error) => Ok(EdgeProcessResult {
@@ -1140,6 +1141,38 @@ mod tests {
             1
         );
         fs::remove_dir_all(root).expect("cleanup invalid segment edge root");
+    }
+
+    #[test]
+    fn rebuild_edges_reports_invalid_segments_as_skipped_and_json_errors_as_failed() {
+        let root = temp_root("edge-rebuild-counters");
+        write(
+            &root,
+            "chronicle/20260430/default/999999_300/screen.jsonl",
+            r#"{"content":{}}"#,
+        );
+        write(
+            &root,
+            "chronicle/20260430/default/090000_300/talents/documents.json",
+            "{not json",
+        );
+
+        let report = rebuild_edges(&root).expect("rebuild invalid and failed edges");
+        assert_eq!(report.files, 2);
+        assert_eq!(report.rows, 0);
+        assert_eq!(report.skipped, 1);
+        assert_eq!(report.failed, 1);
+        assert!(report.warnings.iter().any(|warning| {
+            warning.starts_with(
+                "Skipping edge extraction for 20260430/default/999999_300/screen.jsonl",
+            ) && warning.contains("invalid segment key 999999_300")
+        }));
+        assert!(report.warnings.iter().any(|warning| {
+            warning.starts_with(
+                "Skipping edge extraction for 20260430/default/090000_300/talents/documents.json",
+            ) && warning.contains("edge source JSON parse failed")
+        }));
+        fs::remove_dir_all(root).expect("cleanup edge rebuild counters root");
     }
 
     #[test]

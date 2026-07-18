@@ -5,15 +5,19 @@ mod activity;
 pub mod candidates;
 mod copresence;
 pub mod discovery;
+mod document;
 mod event;
 mod observation;
 pub mod registry;
+mod screen;
+mod speaker;
 
 use std::fmt;
 use std::fs;
 use std::path::Path;
 
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, Duration, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone};
+use chrono_tz::Tz;
 use serde_json::{Map, Value};
 
 use crate::edges::candidates::EdgeResolver;
@@ -114,6 +118,7 @@ pub struct NormalizedEdge {
 pub struct EdgeFileRows {
     pub rows: Vec<NormalizedEdge>,
     pub invalid_segment: Option<String>,
+    pub warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +132,14 @@ pub enum EdgeError {
     InvalidObservationPath(String),
     MissingObservationRelationKind,
     InvalidObservationTargetEntityId,
+    InvalidJsonPayload {
+        source: &'static str,
+        value_type: &'static str,
+    },
+    MalformedJson {
+        path: String,
+        error: String,
+    },
     InvalidEdgeKindType {
         source: &'static str,
         value_type: &'static str,
@@ -143,6 +156,9 @@ pub enum EdgeError {
         field: &'static str,
     },
     EventTimestampOutOfRange,
+    InvalidSegmentDay(String),
+    InvalidSegmentKey(String),
+    SegmentTimestampOutOfRange,
 }
 
 impl fmt::Display for EdgeError {
@@ -162,6 +178,18 @@ impl fmt::Display for EdgeError {
             }
             EdgeError::InvalidObservationTargetEntityId => formatter
                 .write_str("observation relation target_entity_id must be a non-empty string"),
+            EdgeError::InvalidJsonPayload { source, value_type } => {
+                write!(
+                    formatter,
+                    "{source} payload must be a JSON object, got {value_type}"
+                )
+            }
+            EdgeError::MalformedJson { path, error } => {
+                write!(
+                    formatter,
+                    "edge source JSON parse failed for {path}: {error}"
+                )
+            }
             EdgeError::InvalidEdgeKindType { source, value_type } => {
                 write!(
                     formatter,
@@ -186,6 +214,13 @@ impl fmt::Display for EdgeError {
             EdgeError::EventTimestampOutOfRange => {
                 formatter.write_str("event timestamp is outside i64 range")
             }
+            EdgeError::InvalidSegmentDay(day) => write!(formatter, "Invalid segment day: {day:?}"),
+            EdgeError::InvalidSegmentKey(segment) => {
+                write!(formatter, "Invalid segment key: {segment:?}")
+            }
+            EdgeError::SegmentTimestampOutOfRange => {
+                formatter.write_str("segment timestamp is outside i64 range")
+            }
         }
     }
 }
@@ -193,6 +228,7 @@ impl fmt::Display for EdgeError {
 impl std::error::Error for EdgeError {}
 
 pub fn extract_file_edges(
+    journal: &Path,
     rel: &str,
     path: &Path,
     resolver: &mut EdgeResolver,
@@ -201,6 +237,7 @@ pub fn extract_file_edges(
         return Ok(EdgeFileRows {
             rows: Vec::new(),
             invalid_segment: None,
+            warnings: Vec::new(),
         });
     };
     if let Some(segment) = segment_key(rel)
@@ -209,6 +246,7 @@ pub fn extract_file_edges(
         return Ok(EdgeFileRows {
             rows: Vec::new(),
             invalid_segment: Some(segment),
+            warnings: Vec::new(),
         });
     }
 
@@ -218,6 +256,7 @@ pub fn extract_file_edges(
         day: metadata.day,
         facet: metadata.facet,
     };
+    let mut warnings = Vec::new();
     let rows = match kind {
         EdgeSourceKind::Activity => {
             let entries = read_jsonl_objects(path)?;
@@ -235,10 +274,25 @@ pub fn extract_file_edges(
             let entries = read_jsonl_objects(path)?;
             event::extract_event_edges(&entries, &context, resolver)?
         }
+        EdgeSourceKind::Screen => {
+            let entries = read_jsonl_objects(path)?;
+            screen::extract_screen_edges(&entries, &context, resolver)?
+        }
+        EdgeSourceKind::Document => {
+            let payload = read_json_object(path, "documents")?;
+            document::extract_document_edges(&payload, &context, resolver)?
+        }
+        EdgeSourceKind::Speaker => {
+            let payload = read_json_object(path, "speaker labels")?;
+            let extracted = speaker::extract_speaker_edges(&payload, &context, journal, resolver)?;
+            warnings = extracted.warnings;
+            extracted.rows
+        }
     };
     Ok(EdgeFileRows {
         rows: normalize_edges(rows)?,
         invalid_segment: None,
+        warnings,
     })
 }
 
@@ -555,6 +609,123 @@ fn read_jsonl_objects(path: &Path) -> Result<Vec<JsonObject>, EdgeError> {
         .collect())
 }
 
+fn read_json_object(path: &Path, source: &'static str) -> Result<JsonObject, EdgeError> {
+    let text = fs::read_to_string(path).map_err(|error| {
+        EdgeError::Io(format!(
+            "edge source read failed for {}: {error}",
+            path.display()
+        ))
+    })?;
+    match serde_json::from_str::<Value>(&text) {
+        Ok(Value::Object(record)) => Ok(record),
+        Ok(value) => Err(EdgeError::InvalidJsonPayload {
+            source,
+            value_type: json_type_name(&value),
+        }),
+        Err(error) => Err(EdgeError::MalformedJson {
+            path: path.display().to_string(),
+            error: error.to_string(),
+        }),
+    }
+}
+
+pub(crate) fn owner_timezone_for_journal(journal: &Path) -> Tz {
+    let path = journal.join("config").join("journal.json");
+    let Ok(text) = fs::read_to_string(path) else {
+        return Tz::UTC;
+    };
+    let Ok(Value::Object(config)) = serde_json::from_str::<Value>(&text) else {
+        return Tz::UTC;
+    };
+    let Some(Value::Object(identity)) = config.get("identity") else {
+        return Tz::UTC;
+    };
+    let Some(Value::String(timezone)) = identity.get("timezone") else {
+        return Tz::UTC;
+    };
+    let timezone = python_strip(timezone);
+    if timezone.is_empty() {
+        return Tz::UTC;
+    }
+    timezone.parse::<Tz>().unwrap_or(Tz::UTC)
+}
+
+pub(crate) fn segment_start_ts_ms(
+    day: &str,
+    segment: &str,
+    timezone: Tz,
+) -> Result<i64, EdgeError> {
+    let Some(times) = segment_parse(segment) else {
+        return Err(EdgeError::InvalidSegmentKey(segment.to_string()));
+    };
+    if day.len() != 8 || !day.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(EdgeError::InvalidSegmentDay(day.to_string()));
+    }
+    let year = day[0..4]
+        .parse::<i32>()
+        .map_err(|_error| EdgeError::InvalidSegmentDay(day.to_string()))?;
+    let month = day[4..6]
+        .parse::<u32>()
+        .map_err(|_error| EdgeError::InvalidSegmentDay(day.to_string()))?;
+    let day_of_month = day[6..8]
+        .parse::<u32>()
+        .map_err(|_error| EdgeError::InvalidSegmentDay(day.to_string()))?;
+    let Some(date) = NaiveDate::from_ymd_opt(year, month, day_of_month) else {
+        return Err(EdgeError::InvalidSegmentDay(day.to_string()));
+    };
+    let Some(local) = date.and_hms_opt(
+        u32::from(times.hour),
+        u32::from(times.minute),
+        u32::from(times.second),
+    ) else {
+        return Err(EdgeError::InvalidSegmentKey(segment.to_string()));
+    };
+    local_timestamp_ms(timezone, local)
+}
+
+fn local_timestamp_ms(timezone: Tz, local: NaiveDateTime) -> Result<i64, EdgeError> {
+    match event::select_local_result(timezone.from_local_datetime(&local)) {
+        event::LocalSelection::EpochMillis(ts) => Ok(ts),
+        event::LocalSelection::Gap => gap_pre_transition_timestamp_ms(timezone, local),
+    }
+}
+
+fn gap_pre_transition_timestamp_ms(timezone: Tz, local: NaiveDateTime) -> Result<i64, EdgeError> {
+    for seconds in 1..=172_800 {
+        let Some(candidate) = local.checked_sub_signed(Duration::seconds(seconds)) else {
+            break;
+        };
+        let offset_seconds = match timezone.from_local_datetime(&candidate) {
+            LocalResult::Single(value) => value.offset().fix().local_minus_utc(),
+            LocalResult::Ambiguous(left, right) => {
+                let selected = if left.timestamp_millis() <= right.timestamp_millis() {
+                    left
+                } else {
+                    right
+                };
+                selected.offset().fix().local_minus_utc()
+            }
+            LocalResult::None => continue,
+        };
+        return timestamp_with_pre_gap_offset(local, offset_seconds);
+    }
+    Err(EdgeError::SegmentTimestampOutOfRange)
+}
+
+fn timestamp_with_pre_gap_offset(
+    local: NaiveDateTime,
+    offset_seconds: i32,
+) -> Result<i64, EdgeError> {
+    let offset_ms = i64::from(offset_seconds)
+        .checked_mul(1000)
+        .ok_or(EdgeError::SegmentTimestampOutOfRange)?;
+    local
+        .and_utc()
+        .timestamp_millis()
+        .checked_sub(offset_ms)
+        .ok_or(EdgeError::SegmentTimestampOutOfRange)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,6 +773,10 @@ mod tests {
             &format!("facets/work/entities/{entity_id}/entity.json"),
             json!({}),
         );
+    }
+
+    fn seed_entity_value(root: &Path, entity_id: &str, value: Value) {
+        write_json(root, &format!("entities/{entity_id}/entity.json"), value);
     }
 
     fn row(src: &str, dst: &str, kind: &str, day: Option<&str>) -> EdgeRow {
@@ -849,7 +1024,7 @@ mod tests {
         );
         let mut resolver = EdgeResolver::new(&root);
         resolver.begin_file();
-        let extracted = extract_file_edges(rel, &root.join(rel), &mut resolver)
+        let extracted = extract_file_edges(&root, rel, &root.join(rel), &mut resolver)
             .expect("extract observation edges");
         assert_eq!(resolver.drops(), 2);
         assert_eq!(extracted.rows.len(), 2);
@@ -1189,7 +1364,7 @@ mod tests {
         let mut resolver = EdgeResolver::new(&root);
         resolver.begin_file();
         let extracted =
-            extract_file_edges(rel, &root.join(rel), &mut resolver).expect("extract edges");
+            extract_file_edges(&root, rel, &root.join(rel), &mut resolver).expect("extract edges");
         assert_eq!(resolver.drops(), 0);
         assert_eq!(extracted.rows.len(), 2);
         assert_eq!(extracted.rows[0].src, "alice");
@@ -1226,7 +1401,7 @@ mod tests {
         let mut resolver = EdgeResolver::new(&root);
         resolver.begin_file();
         let extracted =
-            extract_file_edges(rel, &root.join(rel), &mut resolver).expect("extract edges");
+            extract_file_edges(&root, rel, &root.join(rel), &mut resolver).expect("extract edges");
         assert_eq!(resolver.drops(), 0);
         assert!(extracted.rows.is_empty());
         fs::remove_dir_all(root).expect("cleanup no shared root");
@@ -1251,7 +1426,7 @@ mod tests {
         let mut resolver = EdgeResolver::new(&root);
         resolver.begin_file();
         let extracted =
-            extract_file_edges(rel, &root.join(rel), &mut resolver).expect("extract edges");
+            extract_file_edges(&root, rel, &root.join(rel), &mut resolver).expect("extract edges");
         assert_eq!(resolver.drops(), 1);
         assert!(extracted.rows.is_empty());
         fs::remove_dir_all(root).expect("cleanup copresence drops root");
@@ -1263,11 +1438,346 @@ mod tests {
         let rel = "facets/999999_300/entities/20260304.jsonl";
         let mut resolver = EdgeResolver::new(&root);
         resolver.begin_file();
-        let extracted = extract_file_edges(rel, &root.join(rel), &mut resolver)
+        let extracted = extract_file_edges(&root, rel, &root.join(rel), &mut resolver)
             .expect("invalid segment is a skipped result");
         assert_eq!(extracted.invalid_segment.as_deref(), Some("999999_300"));
         assert!(extracted.rows.is_empty());
         assert_eq!(resolver.drops(), 0);
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn segment_start_uses_configured_timezone_gap_semantics_and_utc_fallback() {
+        let configured = temp_root("configured-timezone");
+        write_json(
+            &configured,
+            "config/journal.json",
+            json!({"identity":{"timezone":"America/Denver"}}),
+        );
+        let timezone = owner_timezone_for_journal(&configured);
+        assert_eq!(
+            segment_start_ts_ms("20260308", "023000_300", timezone)
+                .expect("compute denver spring gap timestamp"),
+            1_772_962_200_000
+        );
+        assert_eq!(
+            segment_start_ts_ms("20261101", "013000_300", timezone)
+                .expect("compute denver fall ambiguous timestamp"),
+            1_793_518_200_000
+        );
+
+        let fallback = temp_root("utc-timezone");
+        assert_eq!(owner_timezone_for_journal(&fallback), Tz::UTC);
+        assert_eq!(
+            segment_start_ts_ms(
+                "20260308",
+                "023000_300",
+                owner_timezone_for_journal(&fallback)
+            )
+            .expect("compute utc fallback timestamp"),
+            1_772_937_000_000
+        );
+        fs::remove_dir_all(configured).expect("cleanup configured timezone root");
+        let _ = fs::remove_dir_all(fallback);
+    }
+
+    #[test]
+    fn whole_file_json_loader_reports_file_level_failures() {
+        let root = temp_root("whole-json-failure");
+        let rel = "20260430/default/090000_300/talents/documents.json";
+        let path = root.join("chronicle").join(rel);
+        fs::create_dir_all(path.parent().expect("documents path should have parent"))
+            .expect("create documents parent");
+        fs::write(&path, "{not json").expect("write malformed json");
+
+        let mut resolver = EdgeResolver::new(&root);
+        resolver.begin_file();
+        assert!(matches!(
+            extract_file_edges(&root, rel, &path, &mut resolver),
+            Err(EdgeError::MalformedJson { .. })
+        ));
+
+        fs::write(&path, "[]").expect("write non-object json");
+        resolver.begin_file();
+        assert_eq!(
+            extract_file_edges(&root, rel, &path, &mut resolver).expect_err("reject non-object"),
+            EdgeError::InvalidJsonPayload {
+                source: "documents",
+                value_type: "array"
+            }
+        );
+        fs::remove_dir_all(root).expect("cleanup whole-json-failure root");
+    }
+
+    #[test]
+    fn screen_edges_match_messaging_and_calendar_parity_details() {
+        let root = temp_root("screen");
+        seed_entity(&root, "edge_ada", "Ada Edge");
+        seed_entity(&root, "edge_bob", "Bob Edge");
+        seed_entity(&root, "edge_cora", "Cora Edge");
+        let rel = "20260430/default/090000_300/screen.jsonl";
+        write_jsonl(
+            &root,
+            &format!("chronicle/{rel}"),
+            &[
+                json!({"content":{"messaging":{"view":"conversation","app":"Chat","thread":"Alpha","messages":[
+                    {"sender":"Ada Edge","timestamp":7,"subject":"S","text":"Hello"},
+                    {"sender":"Ada Edge","timestamp":7,"subject":"S","text":"Hello"},
+                    {"sender":"Ada Edge","timestamp":"7","subject":"S","text":"Hello"},
+                    {"sender":"Bob Edge","timestamp":8,"subject":"S","text":"Hi"}
+                ]}}}),
+                json!({"content":{"calendar":{"app":"Calendar","events":[
+                    {"title":"Planning","start":"2026-05-01T09:00:00","end":"2026-05-01T10:00:00","calendar":"Work","guests":["Ada Edge","Bob Edge"]},
+                    {"title":"Planning","start":"2026-05-01T09:00:00","end":"2026-05-01T10:00:00","calendar":"Work","guests":["Bob Edge","Cora Edge"]}
+                ]}}}),
+            ],
+        );
+
+        let mut resolver = EdgeResolver::new(&root);
+        resolver.begin_file();
+        let extracted =
+            extract_file_edges(&root, rel, &root.join("chronicle").join(rel), &mut resolver)
+                .expect("extract screen edges");
+        assert!(extracted.warnings.is_empty());
+        assert_eq!(resolver.drops(), 0);
+        assert_eq!(extracted.rows.len(), 2);
+
+        let messaging = &extracted.rows[0];
+        assert_eq!(messaging.kind, "messaged-with");
+        assert_eq!(messaging.src, "edge_ada");
+        assert_eq!(messaging.dst, "edge_bob");
+        assert_eq!(messaging.source, "messaging");
+        assert_eq!(
+            messaging.anchor.as_deref(),
+            Some("20260430/default/090000_300")
+        );
+        assert_eq!(messaging.label, EdgeValue::Text("Alpha".to_string()));
+        assert_eq!(messaging.ts, EdgeValue::Int(1_777_539_600_000));
+        assert_eq!(messaging.weight, 3);
+
+        let calendar = &extracted.rows[1];
+        assert_eq!(calendar.kind, "scheduled-with");
+        assert_eq!(calendar.src, "edge_bob");
+        assert_eq!(calendar.dst, "edge_cora");
+        assert_eq!(calendar.source, "calendar");
+        assert_eq!(calendar.day.as_deref(), Some("20260501"));
+        assert_eq!(calendar.facet.as_deref(), Some(""));
+        assert_eq!(calendar.label, EdgeValue::Text("Planning".to_string()));
+        assert_eq!(calendar.weight, 1);
+        fs::remove_dir_all(root).expect("cleanup screen root");
+    }
+
+    #[test]
+    fn document_edges_dedupe_by_resolved_id_and_keep_first_name() {
+        let root = temp_root("document");
+        seed_entity_value(
+            &root,
+            "edge_ada",
+            json!({"name":"Ada Edge","type":"Person","aka":["A. Edge"]}),
+        );
+        seed_entity(&root, "edge_byron", "Byron Edge");
+        let rel = "20260430/default/090000_300/talents/documents.json";
+        write_json(
+            &root,
+            &format!("chronicle/{rel}"),
+            json!({"parties":[
+                {"name":" A. Edge "},
+                {"name":"Ada Edge"},
+                {"name":"Byron Edge"}
+            ]}),
+        );
+
+        let mut resolver = EdgeResolver::new(&root);
+        resolver.begin_file();
+        let extracted =
+            extract_file_edges(&root, rel, &root.join("chronicle").join(rel), &mut resolver)
+                .expect("extract document edges");
+        assert_eq!(extracted.rows.len(), 1);
+        let row = &extracted.rows[0];
+        assert_eq!(row.kind, "party-of");
+        assert_eq!(row.src, "edge_ada");
+        assert_eq!(row.dst, "edge_byron");
+        assert_eq!(row.src_name, EdgeValue::Text("A. Edge".to_string()));
+        assert_eq!(row.dst_name, EdgeValue::Text("Byron Edge".to_string()));
+        assert_eq!(row.facet.as_deref(), Some(""));
+        assert_eq!(row.ts, EdgeValue::Int(1_777_539_600_000));
+        fs::remove_dir_all(root).expect("cleanup document root");
+    }
+
+    #[test]
+    fn speaker_edges_emit_spoke_with_using_verbatim_ids() {
+        let root = temp_root("speaker-spoke");
+        let rel = "20260430/default/120000_300/talents/speaker_labels.json";
+        write_json(
+            &root,
+            &format!("chronicle/{rel}"),
+            json!({"labels":[
+                {"speaker":"speaker_z","sentence_id":0},
+                {"speaker":"speaker_a","sentence_id":0},
+                {"speaker":"","sentence_id":0},
+                {"speaker":123,"sentence_id":0}
+            ]}),
+        );
+
+        let mut resolver = EdgeResolver::new(&root);
+        resolver.begin_file();
+        let extracted =
+            extract_file_edges(&root, rel, &root.join("chronicle").join(rel), &mut resolver)
+                .expect("extract speaker spoke edges");
+        assert!(extracted.warnings.is_empty());
+        assert_eq!(extracted.rows.len(), 1);
+        let row = &extracted.rows[0];
+        assert_eq!(row.kind, "spoke-with");
+        assert_eq!(row.src, "speaker_a");
+        assert_eq!(row.dst, "speaker_z");
+        assert_eq!(row.source, "speaker");
+        assert_eq!(row.directed, 0);
+        assert_eq!(row.ts, EdgeValue::Int(1_777_550_400_000));
+        fs::remove_dir_all(root).expect("cleanup speaker spoke root");
+    }
+
+    #[test]
+    fn speaker_mentions_use_physical_line_indexes_and_filter_candidates() {
+        let root = temp_root("speaker-mentions");
+        seed_entity_value(
+            &root,
+            "edge_speaker",
+            json!({"name":"Alice Speaker","aka":["Captain A"]}),
+        );
+        seed_entity_value(
+            &root,
+            "edge_target",
+            json!({"name":"Cora Target","aka":["Project Zephyr"]}),
+        );
+        seed_entity_value(
+            &root,
+            "edge_blocked",
+            json!({"name":"Blocked Target","blocked":true}),
+        );
+        let rel = "20260430/default/120000_300/talents/speaker_labels.json";
+        write_json(
+            &root,
+            &format!("chronicle/{rel}"),
+            json!({"labels":[
+                {"speaker":"edge_speaker","sentence_id":1},
+                {"speaker":"edge_speaker","sentence_id":2}
+            ]}),
+        );
+        write_jsonl(
+            &root,
+            "chronicle/20260430/default/120000_300/audio.jsonl",
+            &[
+                json!({"header":true}),
+                json!({"text":"Project Zephyr met Blocked Target and Captain A."}),
+                json!({"text":"Project Zephyr followed up."}),
+            ],
+        );
+
+        let mut resolver = EdgeResolver::new(&root);
+        resolver.begin_file();
+        let extracted =
+            extract_file_edges(&root, rel, &root.join("chronicle").join(rel), &mut resolver)
+                .expect("extract speaker mention edges");
+        assert!(extracted.warnings.is_empty());
+        assert_eq!(extracted.rows.len(), 1);
+        let row = &extracted.rows[0];
+        assert_eq!(row.kind, "mentioned");
+        assert_eq!(row.src, "edge_speaker");
+        assert_eq!(row.dst, "edge_target");
+        assert_eq!(row.directed, 1);
+        assert_eq!(row.source, "mention");
+        assert_eq!(row.label, EdgeValue::Text("Project Zephyr".to_string()));
+        assert_eq!(row.dst_name, EdgeValue::Text("Cora Target".to_string()));
+        assert_eq!(row.weight, 2);
+        fs::remove_dir_all(root).expect("cleanup speaker mentions root");
+    }
+
+    #[test]
+    fn speaker_transcript_warnings_and_npz_precedence_match_python() {
+        let root = temp_root("speaker-transcripts");
+        seed_entity_value(&root, "edge_speaker", json!({"name":"Speaker One"}));
+        seed_entity_value(&root, "edge_audio", json!({"name":"Audio Target"}));
+        seed_entity_value(&root, "edge_mic", json!({"name":"Mic Target"}));
+
+        let unresolved_rel = "20260430/default/121000_300/talents/speaker_labels.json";
+        write_json(
+            &root,
+            &format!("chronicle/{unresolved_rel}"),
+            json!({"labels":[{"speaker":"edge_speaker","sentence_id":1}]}),
+        );
+        let mut resolver = EdgeResolver::new(&root);
+        resolver.begin_file();
+        let unresolved = extract_file_edges(
+            &root,
+            unresolved_rel,
+            &root.join("chronicle").join(unresolved_rel),
+            &mut resolver,
+        )
+        .expect("extract unresolved speaker labels");
+        assert_eq!(
+            unresolved.warnings,
+            vec!["speaker edge transcript unresolved for 20260430/default/121000_300"]
+        );
+
+        let missing_rel = "20260430/default/122000_300/talents/speaker_labels.json";
+        write_json(
+            &root,
+            &format!("chronicle/{missing_rel}"),
+            json!({"labels":[{"speaker":"edge_speaker","sentence_id":1}]}),
+        );
+        let missing_npz = root
+            .join("chronicle")
+            .join("20260430/default/122000_300/audio.npz");
+        fs::write(&missing_npz, b"").expect("write missing npz marker");
+        resolver.begin_file();
+        let missing = extract_file_edges(
+            &root,
+            missing_rel,
+            &root.join("chronicle").join(missing_rel),
+            &mut resolver,
+        )
+        .expect("extract missing speaker transcript");
+        assert_eq!(
+            missing.warnings,
+            vec!["speaker edge transcript missing for 20260430/default/122000_300"]
+        );
+
+        let precedence_rel = "20260430/default/123000_300/talents/speaker_labels.json";
+        write_json(
+            &root,
+            &format!("chronicle/{precedence_rel}"),
+            json!({"labels":[{"speaker":"edge_speaker","sentence_id":1}]}),
+        );
+        write_jsonl(
+            &root,
+            "chronicle/20260430/default/123000_300/audio.jsonl",
+            &[json!({"header":true}), json!({"text":"Audio Target"})],
+        );
+        write_jsonl(
+            &root,
+            "chronicle/20260430/default/123000_300/mic_audio.jsonl",
+            &[json!({"header":true}), json!({"text":"Mic Target"})],
+        );
+        let mic_npz = root
+            .join("chronicle")
+            .join("20260430/default/123000_300/mic_audio.npz");
+        fs::write(&mic_npz, b"").expect("write mic npz marker");
+        let mut resolver = EdgeResolver::new(&root);
+        resolver.begin_file();
+        let precedence = extract_file_edges(
+            &root,
+            precedence_rel,
+            &root.join("chronicle").join(precedence_rel),
+            &mut resolver,
+        )
+        .expect("extract npz precedence speaker labels");
+        assert!(precedence.warnings.is_empty());
+        assert_eq!(precedence.rows.len(), 1);
+        assert_eq!(precedence.rows[0].dst, "edge_mic");
+        assert_eq!(
+            precedence.rows[0].label,
+            EdgeValue::Text("Mic Target".to_string())
+        );
+        fs::remove_dir_all(root).expect("cleanup speaker transcript root");
     }
 }

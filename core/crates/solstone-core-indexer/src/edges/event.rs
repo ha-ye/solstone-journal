@@ -10,7 +10,7 @@ use super::{
     parse_python_int_literal, python_str, python_strip,
 };
 
-enum LocalSelection {
+pub(super) enum LocalSelection {
     EpochMillis(i64),
     Gap,
 }
@@ -162,7 +162,9 @@ fn resolve_local_midnight(midnight: NaiveDateTime) -> i64 {
     }
 }
 
-fn select_local_result<Tz: TimeZone>(result: LocalResult<DateTime<Tz>>) -> LocalSelection {
+pub(super) fn select_local_result<Tz: TimeZone>(
+    result: LocalResult<DateTime<Tz>>,
+) -> LocalSelection {
     match result {
         LocalResult::Single(value) => LocalSelection::EpochMillis(value.timestamp_millis()),
         LocalResult::Ambiguous(left, right) => {
