@@ -4,6 +4,8 @@
 (function () {
   window.CONVEY_COPY = Object.freeze({
     RELOAD_HINT: "reload to try again.",
+    UNKNOWN_ERROR: "something went wrong and i don't have a reason for it. reload to try again.",
+    LOG_READ_FAILED: "i couldn't read that log. reload to try again.",
     ACTION_RECONNECT: "Reconnect",
     ACTION_RESTART: "Restart",
     CONSOLE_HEADING: "system messages",

@@ -20,6 +20,13 @@ def test_console_copy_matches_browser_mirror() -> None:
         assert _js_constant(text, js_name) == getattr(copy, python_name)
 
 
+def test_non_console_copy_matches_browser_mirror() -> None:
+    text = Path("solstone/convey/static/convey_copy.js").read_text(encoding="utf-8")
+
+    assert _js_constant(text, "UNKNOWN_ERROR") == copy.CONVEY_UNKNOWN_ERROR
+    assert _js_constant(text, "LOG_READ_FAILED") == copy.CONVEY_LOG_READ_FAILED
+
+
 def _js_constant(text: str, name: str) -> str:
     match = re.search(rf'{name}: "((?:[^"\\]|\\.)*)"', text)
     assert match is not None, name

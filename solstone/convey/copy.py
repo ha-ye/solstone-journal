@@ -6,6 +6,10 @@
 from __future__ import annotations
 
 CONVEY_RELOAD_HINT = "reload to try again."
+CONVEY_UNKNOWN_ERROR = (
+    "something went wrong and i don't have a reason for it. reload to try again."
+)
+CONVEY_LOG_READ_FAILED = "i couldn't read that log. reload to try again."
 CONVEY_ACTION_TRY_AGAIN = "Try again"  # generic load-failure retry button
 CONVEY_ACTION_RELOAD = "Reload"  # full-surface reload affordance
 CONVEY_ACTION_RECONNECT = "Reconnect"  # transport/socket reconnection affordance
@@ -107,6 +111,7 @@ __all__ = [
     "CONVEY_CONSOLE_TAB_INFO",
     "CONVEY_CONSOLE_TAB_WARNINGS",
     "CONVEY_CONSOLE_TRUNCATED",
+    "CONVEY_LOG_READ_FAILED",
     "CONVEY_RELOAD_HINT",
     "CONVEY_REPORT_ACTION_CANCEL",
     "CONVEY_REPORT_ACTION_CLOSE",
@@ -145,6 +150,7 @@ __all__ = [
     "CONVEY_REPORT_SUCCESS_BODY",
     "CONVEY_REPORT_SUCCESS_BODY_NO_ID",
     "CONVEY_REPORT_TITLE",
+    "CONVEY_UNKNOWN_ERROR",
     "OBSERVER_CALLOSUM_LIVE_LABEL",
     "format_convey_status",
 ]

@@ -299,7 +299,7 @@ VOICE_UNAVAILABLE = Reason(
 )
 OBSERVER_RESTART_FAILED = Reason(
     "observer_restart_failed",
-    "I couldn't restart observer processing.",
+    "i couldn't restart sol's processing.",
     503,
 )
 PUSH_REQUEST_INVALID = Reason(
