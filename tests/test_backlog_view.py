@@ -205,17 +205,17 @@ def test_stuck_rows_includes_segment_repair_stuck_day():
 def test_verdict_mixed_copy_uses_independent_arms():
     assert (
         verdict({"pending_days": 1, "stuck_days": 1})
-        == "1 day needs a hand — 1 more day is still catching up."
+        == "1 day needs a hand. 1 more day is still catching up."
     )
     assert (
         verdict({"pending_days": 1, "stuck_days": 2})
-        == "2 days need a hand — 1 more day is still catching up."
+        == "2 days need a hand. 1 more day is still catching up."
     )
     assert (
         verdict({"pending_days": 3, "stuck_days": 1})
-        == "1 day needs a hand — 3 more days are still catching up."
+        == "1 day needs a hand. 3 more days are still catching up."
     )
     assert (
         verdict({"pending_days": 3, "stuck_days": 2})
-        == "2 days need a hand — 3 more days are still catching up."
+        == "2 days need a hand. 3 more days are still catching up."
     )

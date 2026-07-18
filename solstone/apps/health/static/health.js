@@ -13,13 +13,13 @@
     "LOGS_STREAM_FILTER_LABEL": "stream"
   };
   const HEALTH_GLANCE_COPY = {
-    "HEALTH_GLANCE_CATCHING_UP": "I'm catching up on {n} task(s) in the background — last update {age} ago.",
+    "HEALTH_GLANCE_CATCHING_UP": "i'm catching up on {n} task(s) in the background. last update {age} ago.",
     "HEALTH_GLANCE_OBSERVER_SILENT": "one of your devices hasn't reached your journal recently.",
     "HEALTH_GLANCE_OK": "everything's working. sol last added to your journal {age} ago.",
     "HEALTH_GLANCE_READINESS_BLOCKED": "{summary}",
-    "HEALTH_GLANCE_READINESS_UNKNOWN": "still checking AI readiness — provider setup will be confirmed shortly.",
-    "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention — {service_names}.",
-    "HEALTH_GLANCE_SERVICES_UNREACHABLE": "I couldn't reach my own services — check that your journal is running."
+    "HEALTH_GLANCE_READINESS_UNKNOWN": "still checking AI readiness. provider setup will be confirmed shortly.",
+    "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention: {service_names}.",
+    "HEALTH_GLANCE_SERVICES_UNREACHABLE": "i couldn't reach my own services. check that your journal is running."
   };
 
   let providerReadiness = null;

@@ -574,7 +574,7 @@ const Dashboard = (function() {
 
     const stuckArm = fmt(s === 1 ? C.VERDICT_MIXED_STUCK_SINGULAR : C.VERDICT_MIXED_STUCK_PLURAL, {stuck: s});
     const pendingArm = fmt(p === 1 ? C.VERDICT_MIXED_PENDING_SINGULAR : C.VERDICT_MIXED_PENDING_PLURAL, {pending: p});
-    return stuckArm + ' — ' + pendingArm + '.';
+    return stuckArm + '. ' + pendingArm + '.';
   }
 
   function backlogDepth(day) {

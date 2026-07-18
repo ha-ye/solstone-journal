@@ -26,13 +26,13 @@ LOGS_COPY = {
     "LOGS_STREAM_FILTER_LABEL": "stream",
 }
 HEALTH_GLANCE_COPY = {
-    "HEALTH_GLANCE_CATCHING_UP": "I'm catching up on {n} task(s) in the background — last update {age} ago.",
+    "HEALTH_GLANCE_CATCHING_UP": "i'm catching up on {n} task(s) in the background. last update {age} ago.",
     "HEALTH_GLANCE_OBSERVER_SILENT": "one of your devices hasn't reached your journal recently.",
     "HEALTH_GLANCE_OK": "everything's working. sol last added to your journal {age} ago.",
     "HEALTH_GLANCE_READINESS_BLOCKED": "{summary}",
-    "HEALTH_GLANCE_READINESS_UNKNOWN": "still checking AI readiness — provider setup will be confirmed shortly.",
-    "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention — {service_names}.",
-    "HEALTH_GLANCE_SERVICES_UNREACHABLE": "I couldn't reach my own services — check that your journal is running.",
+    "HEALTH_GLANCE_READINESS_UNKNOWN": "still checking AI readiness. provider setup will be confirmed shortly.",
+    "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention: {service_names}.",
+    "HEALTH_GLANCE_SERVICES_UNREACHABLE": "i couldn't reach my own services. check that your journal is running.",
 }
 BACKLOG_COPY_SUBSET = {
     "bucket_heading": backlog_copy.BACKLOG_BUCKET_HEADING,
@@ -355,7 +355,7 @@ def test_backlog_verdict_mixed_uses_independent_arms(health_env):
 
     assert (
         state["backlog"]["verdict"]
-        == "2 days need a hand — 3 more days are still catching up."
+        == "2 days need a hand. 3 more days are still catching up."
     )
     assert "caught up" not in state["backlog"]["verdict"]
     assert "5" not in state["backlog"]["verdict"]

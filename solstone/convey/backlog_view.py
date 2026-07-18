@@ -73,7 +73,7 @@ def verdict(backlog: dict | None) -> str:
         else backlog_copy.BACKLOG_VERDICT_MIXED_PENDING_PLURAL,
         pending=p,
     )
-    return f"{stuck_arm} — {pending_arm}."
+    return f"{stuck_arm}. {pending_arm}."
 
 
 def _error_for_day(day: dict, backlog: dict) -> object | None:
