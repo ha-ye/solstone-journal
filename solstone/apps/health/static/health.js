@@ -14,8 +14,8 @@
   };
   const HEALTH_GLANCE_COPY = {
     "HEALTH_GLANCE_CATCHING_UP": "I'm catching up on {n} task(s) in the background — last update {age} ago.",
-    "HEALTH_GLANCE_OBSERVER_SILENT": "I haven't heard from your observer in {age} — it may have stopped.",
-    "HEALTH_GLANCE_OK": "everything's working — last observation {age} ago.",
+    "HEALTH_GLANCE_OBSERVER_SILENT": "one of your devices hasn't reached your journal recently.",
+    "HEALTH_GLANCE_OK": "everything's working. sol last added to your journal {age} ago.",
     "HEALTH_GLANCE_READINESS_BLOCKED": "{summary}",
     "HEALTH_GLANCE_READINESS_UNKNOWN": "still checking AI readiness — provider setup will be confirmed shortly.",
     "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention — {service_names}.",
@@ -744,7 +744,7 @@
     if (entry.reason_code && window.renderChatReason) {
       return window.renderChatReason(entry.reason_code, entry.provider || '').message;
     }
-    return entry.error || 'Unknown error';
+    return entry.error || window.CONVEY_COPY.UNKNOWN_ERROR;
   }
 
   function recentErrorDetailText(entry) {
@@ -1680,9 +1680,8 @@
 	        button.disabled = false;
 	        button.textContent = window.CONVEY_COPY?.ACTION_RESTART || 'Restart';
 	        errorEl.innerHTML = window.SurfaceState.error({
-	          heading: "I couldn't restart observer processing",
+	          heading: err.serverMessage || "i couldn't restart sol's processing.",
 	          desc: window.CONVEY_COPY?.RELOAD_HINT || 'reload to try again.',
-	          serverMessage: err.serverMessage,
 	          detail: err,
 	          headingLevel: 'h4'
 	        });
@@ -1747,7 +1746,7 @@
       let stateClass = ['connected', 'stale', 'disconnected', 'revoked'].includes(observer.state)
         ? observer.state
         : 'disconnected';
-      let labelText = observer.label || stateClass;
+      let labelText = observer.label;
       if (observer.failing) {
         stateClass = 'failing';
         labelText = 'failing';
@@ -1757,7 +1756,7 @@
 
       const nameEl = document.createElement('span');
       nameEl.className = 'registered-observer-name';
-      nameEl.textContent = observer.name || observer.prefix || 'observer';
+      nameEl.textContent = observer.name || observer.prefix || 'unnamed device';
       row.appendChild(nameEl);
 
       const labelEl = document.createElement('span');
@@ -1781,7 +1780,7 @@
         }
         const recoveryEl = document.createElement('span');
         recoveryEl.className = 'registered-observer-recovery';
-        recoveryEl.textContent = 'update or restart ' + (observer.name || 'that observer') + ' on that device';
+        recoveryEl.textContent = 'update or restart sol on ' + (observer.name || 'that device');
         row.appendChild(recoveryEl);
       }
 
@@ -2455,7 +2454,7 @@
           type: 'agent',
           id: agentId,
           name: msg.name || existing.name || 'unknown',
-          error: msg.error || 'Unknown error',
+          error: msg.error || window.CONVEY_COPY.UNKNOWN_ERROR,
           summary: msg.summary || msg.message || null,
           key: msg.key || msg.semantic_key || null,
           reason_code: msg.reason_code || null,
@@ -2522,7 +2521,7 @@
       state.imports.set(importId, {
         ...existing,
         event: 'error',
-        error: msg.error || 'Unknown error',
+        error: msg.error || window.CONVEY_COPY.UNKNOWN_ERROR,
         lastSeen: Date.now()
       });
 
@@ -2530,7 +2529,7 @@
         type: 'import',
         id: importId,
         name: msg.input_file || existing.input_file || 'unknown',
-        error: msg.error || 'Unknown error',
+        error: msg.error || window.CONVEY_COPY.UNKNOWN_ERROR,
         summary: msg.summary || msg.message || null,
         key: msg.key || msg.semantic_key || null,
         reason_code: msg.reason_code || null,
@@ -2710,7 +2709,7 @@
       .then(({ok, data}) => {
         viewport.textContent = '';
         if (!ok) {
-          const message = data.error || 'Failed to load log file';
+          const message = data.error || window.CONVEY_COPY.LOG_READ_FAILED;
           appendDeepLinkLogLine(viewport, message, 'stderr', 'ERROR: ' + message);
           return;
         }

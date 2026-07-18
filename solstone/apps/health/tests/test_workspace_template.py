@@ -27,8 +27,8 @@ LOGS_COPY = {
 }
 HEALTH_GLANCE_COPY = {
     "HEALTH_GLANCE_CATCHING_UP": "I'm catching up on {n} task(s) in the background — last update {age} ago.",
-    "HEALTH_GLANCE_OBSERVER_SILENT": "I haven't heard from your observer in {age} — it may have stopped.",
-    "HEALTH_GLANCE_OK": "everything's working — last observation {age} ago.",
+    "HEALTH_GLANCE_OBSERVER_SILENT": "one of your devices hasn't reached your journal recently.",
+    "HEALTH_GLANCE_OK": "everything's working. sol last added to your journal {age} ago.",
     "HEALTH_GLANCE_READINESS_BLOCKED": "{summary}",
     "HEALTH_GLANCE_READINESS_UNKNOWN": "still checking AI readiness — provider setup will be confirmed shortly.",
     "HEALTH_GLANCE_SERVICES_ATTENTION": "{n} service(s) need attention — {service_names}.",
@@ -127,6 +127,22 @@ def test_health_spa_shell_workspace_and_route_resolution(health_env):
     ):
         endpoint, _args = adapter.match(path, method="GET")
         assert endpoint
+
+
+def test_health_workspace_device_copy_replaces_observer_headings():
+    workspace = _workspace()
+
+    assert workspace.count("what sol is taking in") == 2
+    assert (
+        '<h2 class="surface-state-heading">sol isn\'t running on any device yet.</h2>'
+        in workspace
+    )
+    assert ">set up a device →</a>" in workspace
+    assert '<div class="card-title">your devices</div>' in workspace
+    assert ">manage observers →</a>" not in workspace
+    assert "no observations active" not in workspace
+    assert "registered observers" not in workspace
+    assert "screen observing" in workspace
 
 
 def test_health_static_js_syntax_check():

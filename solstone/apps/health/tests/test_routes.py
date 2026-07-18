@@ -355,6 +355,7 @@ class TestRestartObserverRoute:
         )
 
         assert response.status_code == 503
+        assert response.get_json()["error"] == "i couldn't restart sol's processing."
         assert response.get_json()["reason_code"] == "observer_restart_failed"
 
 
