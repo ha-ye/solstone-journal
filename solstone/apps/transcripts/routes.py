@@ -229,6 +229,9 @@ def _is_markdown_only_segment(segment_dir_path: Path, stream: str) -> bool:
         if any(path.is_file() for path in segment_dir_path.glob(pattern)):
             return False
 
+    # Import segments deliberately retain their original source file alongside the
+    # generated transcript; unlike health cards, retained raw media does not
+    # disqualify the markdown-only view. Only analyzable JSONL streams do.
     return True
 
 

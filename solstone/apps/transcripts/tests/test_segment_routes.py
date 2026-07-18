@@ -868,6 +868,13 @@ def test_image_import_segment_with_empty_transcript_reports_no_screen_state(
         encoding="utf-8",
     )
 
+    list_response = client.get(f"/app/transcripts/api/segments/{day}")
+    assert list_response.status_code == 200
+    segments = list_response.get_json()["segments"]
+    image_segment = next(seg for seg in segments if seg["stream"] == stream)
+    assert image_segment["types"] == ["markdown"]
+    assert image_segment["data_state"] == {"markdown": "analyzed"}
+
     response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
 
     assert response.status_code == 200
