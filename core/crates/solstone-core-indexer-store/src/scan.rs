@@ -630,6 +630,245 @@ mod tests {
     }
 
     #[test]
+    fn scan_indexes_chat_streams_with_segment_bucket() {
+        let root = temp_root("chat-stream");
+        write(
+            &root,
+            "chronicle/20260508/chat/120000_300/chat.jsonl",
+            r#"{"kind":"owner_message","ts":1,"text":"Need a diff"}
+{"kind":"owner_message","ts":2,"text":"   "}
+{"kind":"sol_message","ts":3,"text":"I can do that"}
+{"kind":"owner_chat_open","ts":4,"request_id":"req","surface":"convey"}
+{"kind":"mystery","ts":5,"text":"skip me"}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan chat stream");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='20260508/chat/120000_300/chat.jsonl'"
+            ),
+            3
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='20260508/chat/120000_300/chat.jsonl'"
+            ),
+            1
+        );
+        let row: (String, String, String, Option<String>, String) = conn
+            .query_row(
+                "SELECT day, facet, agent, stream, time_bucket FROM chunks WHERE path='20260508/chat/120000_300/chat.jsonl' ORDER BY idx LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .expect("chat metadata row");
+        assert_eq!(row.0, "20260508");
+        assert_eq!(row.1, "");
+        assert_eq!(row.2, "chat");
+        assert_eq!(row.3, None);
+        assert_eq!(row.4, "afternoon");
+
+        let contents: Vec<String> = conn
+            .prepare(
+                "SELECT content FROM chunks WHERE path='20260508/chat/120000_300/chat.jsonl' ORDER BY idx",
+            )
+            .expect("prepare chat contents")
+            .query_map([], |row| row.get(0))
+            .expect("query chat contents")
+            .map(|row| row.expect("chat content row"))
+            .collect();
+        assert_eq!(
+            contents,
+            vec![
+                "**Owner** Need a diff".to_string(),
+                "**Owner**".to_string(),
+                "**Sol** I can do that".to_string(),
+            ]
+        );
+        fs::remove_dir_all(root).expect("cleanup chat stream root");
+    }
+
+    #[test]
+    fn scan_indexes_browser_streams_with_marker_stream() {
+        let root = temp_root("browser-stream");
+        write_stream(&root, "20260703", "suze.browser", "000141_317");
+        write(
+            &root,
+            "chronicle/20260703/suze.browser/000141_317/browser_mail-google-com.jsonl",
+            r#"{"t":"segment_start","ts":1783046501000,"site":"mail.google.com","url":"https://mail.google.com/mail/u/0/#inbox","title":"Inbox - Gmail","adapter":"gmail","blocks":[{"type":"heading","text":"Inbox"},{"type":"row","text":"Ari Patel - Browser stream contract review"},{"type":"link","text":"Open pull request"}]}
+{"t":"delta","ts":1783046509120,"op":"add","block":{"type":"row","text":"Status toast: All changes saved"}}
+{"t":"segment_start","ts":1783046594000,"url":"https://example.com/fallback","blocks":[{"type":"text","text":"Fallback page text"}]}
+{"t":"delta","ts":1783046530100,"op":"remove","block":{"type":"row","text":"Promotions tab collapsed"}}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan browser stream");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='20260703/suze.browser/000141_317/browser_mail-google-com.jsonl'"
+            ),
+            3
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='20260703/suze.browser/000141_317/browser_mail-google-com.jsonl'"
+            ),
+            1
+        );
+        let row: (String, String, String, String, String, String) = conn
+            .query_row(
+                "SELECT day, facet, agent, stream, time_bucket, content FROM chunks WHERE path='20260703/suze.browser/000141_317/browser_mail-google-com.jsonl' ORDER BY idx LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("browser metadata row");
+        assert_eq!(row.0, "20260703");
+        assert_eq!(row.1, "");
+        assert_eq!(row.2, "browser");
+        assert_eq!(row.3, "suze.browser");
+        assert_eq!(row.4, "night");
+        assert!(row.5.contains("Inbox - Gmail"));
+        assert!(row.5.contains("Ari Patel - Browser stream contract review"));
+
+        let all_content: String = conn
+            .prepare(
+                "SELECT content FROM chunks WHERE path='20260703/suze.browser/000141_317/browser_mail-google-com.jsonl' ORDER BY idx",
+            )
+            .expect("prepare browser contents")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query browser contents")
+            .map(|row| row.expect("browser content row"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all_content.contains("https://example.com/fallback"));
+        assert!(all_content.contains("Fallback page text"));
+        assert!(all_content.contains("Status toast: All changes saved"));
+        assert!(!all_content.contains("Promotions tab collapsed"));
+        fs::remove_dir_all(root).expect("cleanup browser stream root");
+    }
+
+    #[test]
+    fn scan_indexes_day_accumulator_records_with_file_stem_agent() {
+        let root = temp_root("day-accumulator");
+        write(
+            &root,
+            "chronicle/20260304/talents/pulse.jsonl",
+            r#"{"ts":10,"summary":"Clear morning","needs_you":[{"text":"Review proposal"}]}
+{"title":"Second pulse","detail":"afternoon check"}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan day accumulator");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='20260304/talents/pulse.jsonl'"
+            ),
+            2
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='20260304/talents/pulse.jsonl'"
+            ),
+            1
+        );
+        let row: (String, String, String, Option<String>, String, String) = conn
+            .query_row(
+                "SELECT day, facet, agent, stream, time_bucket, content FROM chunks WHERE path='20260304/talents/pulse.jsonl' ORDER BY idx LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("day accumulator row");
+        assert_eq!(row.0, "20260304");
+        assert_eq!(row.1, "");
+        assert_eq!(row.2, "pulse");
+        assert_eq!(row.3, None);
+        assert_eq!(row.4, "");
+        assert!(row.5.contains(r#""summary":"Clear morning""#));
+        assert!(row.5.contains(r#""needs_you""#));
+
+        let second: String = conn
+            .query_row(
+                "SELECT content FROM chunks WHERE path='20260304/talents/pulse.jsonl' AND idx=1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("second day accumulator row");
+        assert!(second.contains(r#""title":"Second pulse""#));
+        assert!(second.contains(r#""detail":"afternoon check""#));
+        fs::remove_dir_all(root).expect("cleanup day accumulator root");
+    }
+
+    #[test]
+    fn scan_writes_file_row_for_zero_chunk_chat_stream() {
+        let root = temp_root("zero-chat-stream");
+        write(
+            &root,
+            "chronicle/20260508/chat/130000_300/chat.jsonl",
+            r#"{"kind":"owner_chat_open","ts":1,"request_id":"req","surface":"convey"}
+{"kind":"mystery","ts":2,"text":"skip me"}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan zero chat stream");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='20260508/chat/130000_300/chat.jsonl'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='20260508/chat/130000_300/chat.jsonl'"
+            ),
+            1
+        );
+        fs::remove_dir_all(root).expect("cleanup zero chat stream root");
+    }
+
+    #[test]
     fn scan_writes_files_rows_for_zero_chunk_jsonl() {
         let root = temp_root("zero-jsonl");
         write(

@@ -1,0 +1,154 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 sol pbc
+
+use serde_json::Value;
+
+use super::{IndexChunk, JsonObject, ProducedChunks, display_value};
+
+pub(super) fn render(records: &[JsonObject]) -> ProducedChunks {
+    let mut chunks = Vec::new();
+
+    for record in records {
+        let kind = record
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        let markdown = match kind {
+            "owner_message" => Some(speaker_line("Owner", record.get("text"))),
+            "sol_message" => Some(speaker_line("Sol", record.get("text"))),
+            "talent_spawned" => Some(format!(
+                "*[{} spawned: {}]*",
+                field(record, "name"),
+                field(record, "task")
+            )),
+            "talent_finished" => Some(format!(
+                "*[{} finished: {}]*",
+                field(record, "name"),
+                field(record, "summary")
+            )),
+            "talent_errored" => Some(format!(
+                "*[{} errored: {}]*",
+                field(record, "name"),
+                field(record, "reason")
+            )),
+            "chat_error" => Some(format!("*[chat trouble: {}]*", field(record, "reason"))),
+            "sol_chat_request" => Some(sol_chat_request(record)),
+            "chat_queue_depth"
+            | "support_draft"
+            | "support_submit_claim"
+            | "result"
+            | "sol_chat_request_superseded"
+            | "owner_chat_open"
+            | "owner_chat_dismissed" => None,
+            // Python raises ValueError here, but native must keep indexing infallible:
+            // Python catches that upstream and still writes files(path, mtime).
+            _ => None,
+        };
+        if let Some(content) = markdown
+            && !content.is_empty()
+        {
+            chunks.push(IndexChunk { content });
+        }
+    }
+
+    ProducedChunks {
+        chunks,
+        agent_override: Some("chat".to_string()),
+    }
+}
+
+fn sol_chat_request(record: &JsonObject) -> String {
+    let mut text = format!("[sol] {}", field(record, "summary"))
+        .trim()
+        .to_string();
+    let message = field(record, "message").trim().to_string();
+    if !message.is_empty() {
+        text.push('\n');
+        text.push_str(&message);
+    }
+    text
+}
+
+fn speaker_line(label: &str, body: Option<&Value>) -> String {
+    let text = body.map(display_value).unwrap_or_default();
+    let text = text.trim();
+    if text.is_empty() {
+        format!("**{label}**")
+    } else {
+        format!("**{label}** {text}")
+    }
+}
+
+fn field(record: &JsonObject, key: &str) -> String {
+    record.get(key).map(display_value).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::content::parse_jsonl_objects;
+
+    #[test]
+    fn renders_chat_content_and_skips_non_content_kinds() {
+        let records = parse_jsonl_objects(
+            r#"{"kind":"owner_message","ts":1,"text":"Need a diff"}
+{"kind":"owner_message","ts":2,"text":"   "}
+{"kind":"sol_message","ts":3,"text":"I can do that"}
+{"kind":"talent_spawned","ts":4,"name":"exec","task":"compare drafts"}
+{"kind":"talent_finished","ts":5,"name":"exec","summary":"summarized the differences"}
+{"kind":"talent_errored","ts":6,"name":"exec","reason":"repo unavailable"}
+{"kind":"chat_error","ts":7,"reason":"unknown"}
+{"kind":"sol_chat_request","ts":8,"summary":"unique solar cue","message":"extended detail"}
+{"kind":"owner_chat_open","ts":9,"surface":"convey"}
+{"kind":"mystery","ts":10,"text":"skip me"}
+"#,
+        );
+        let produced = render(&records);
+        let contents: Vec<&str> = produced
+            .chunks
+            .iter()
+            .map(|chunk| chunk.content.as_str())
+            .collect();
+
+        assert_eq!(produced.agent_override.as_deref(), Some("chat"));
+        assert_eq!(
+            contents,
+            vec![
+                "**Owner** Need a diff",
+                "**Owner**",
+                "**Sol** I can do that",
+                "*[exec spawned: compare drafts]*",
+                "*[exec finished: summarized the differences]*",
+                "*[exec errored: repo unavailable]*",
+                "*[chat trouble: unknown]*",
+                "[sol] unique solar cue\nextended detail",
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_chat_fields_render_as_empty_strings() {
+        let records = parse_jsonl_objects(
+            r#"{"kind":"talent_spawned","name":"exec"}
+{"kind":"chat_error"}
+{"kind":"sol_chat_request","message":"  detail only  "}
+"#,
+        );
+        let produced = render(&records);
+        let contents: Vec<&str> = produced
+            .chunks
+            .iter()
+            .map(|chunk| chunk.content.as_str())
+            .collect();
+
+        assert_eq!(
+            contents,
+            vec![
+                "*[exec spawned: ]*",
+                "*[chat trouble: ]*",
+                "[sol]\ndetail only",
+            ]
+        );
+    }
+}

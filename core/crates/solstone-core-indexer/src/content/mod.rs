@@ -4,6 +4,9 @@
 mod action_logs;
 mod activities;
 mod ai_chat;
+mod browser;
+mod chat;
+mod day_accumulator;
 mod events;
 mod imports;
 
@@ -22,6 +25,9 @@ pub enum Family {
     ActionLog,
     StructuredImport,
     AiChat,
+    Chat,
+    Browser,
+    DayAccumulator,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,6 +61,11 @@ pub(crate) const INDEX_FAMILY_PATTERNS: &[FamilyPattern] = &[
         root: PatternRoot::DayRooted,
     },
     FamilyPattern {
+        pattern: "*/talents/*.jsonl",
+        family: Family::DayAccumulator,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
         pattern: "*/*/*/talents/*.md",
         family: Family::Markdown,
         root: PatternRoot::DayRooted,
@@ -72,6 +83,16 @@ pub(crate) const INDEX_FAMILY_PATTERNS: &[FamilyPattern] = &[
     FamilyPattern {
         pattern: "*/import.*/*/imported.md",
         family: Family::Markdown,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/chat/*/chat.jsonl",
+        family: Family::Chat,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/*/*/browser_*.jsonl",
+        family: Family::Browser,
         root: PatternRoot::DayRooted,
     },
     FamilyPattern {
@@ -203,6 +224,9 @@ pub fn produce_chunks(family: Family, rel: &str, text: &str) -> ProducedChunks {
         },
         Family::StructuredImport => imports::render(&parse_jsonl_objects(text)),
         Family::AiChat => ai_chat::render(rel, &parse_jsonl_objects(text)),
+        Family::Chat => chat::render(&parse_jsonl_objects(text)),
+        Family::Browser => browser::render(&parse_jsonl_objects(text)),
+        Family::DayAccumulator => day_accumulator::render(rel, &parse_jsonl_objects(text)),
     }
 }
 
@@ -312,6 +336,19 @@ mod tests {
     fn classifies_indexable_families() {
         assert_eq!(classify("20240101/talents/flow.md"), Some(Family::Markdown));
         assert_eq!(
+            classify("20260304/talents/pulse.jsonl"),
+            Some(Family::DayAccumulator)
+        );
+        assert_ne!(
+            classify("20260304/talents/pulse.md"),
+            Some(Family::DayAccumulator)
+        );
+        assert_eq!(
+            classify("20260304/default/090000_300/talents/sense.jsonl"),
+            None
+        );
+        assert_eq!(classify("20260304/talents/morning_briefing.json"), None);
+        assert_eq!(
             classify("20240101/default/123456_300/talents/audio.md"),
             Some(Family::Markdown)
         );
@@ -346,6 +383,26 @@ mod tests {
         assert_eq!(
             classify("20260101/import.chatgpt/conv_b/imported_audio.jsonl"),
             Some(Family::AiChat)
+        );
+        assert_eq!(
+            classify("20260508/chat/120000_300/chat.jsonl"),
+            Some(Family::Chat)
+        );
+        assert_ne!(
+            classify("20260508/chat/120000_300/chat.jsonl"),
+            Some(Family::Browser)
+        );
+        assert_eq!(
+            classify("20260703/suze.browser/000141_317/browser_mail-google-com.jsonl"),
+            Some(Family::Browser)
+        );
+        assert_ne!(
+            classify("20260703/suze.browser/000141_317/browser_mail-google-com.jsonl"),
+            Some(Family::AiChat)
+        );
+        assert_ne!(
+            classify("20260703/suze.browser/000141_317/browser_mail-google-com.jsonl"),
+            Some(Family::Chat)
         );
         assert_eq!(
             classify("facets/work/news/20240101.md"),
