@@ -15,9 +15,17 @@ struct MessageKey {
     app: String,
     thread: String,
     sender: String,
-    timestamp: Value,
+    timestamp: MessageTimestampKey,
     subject: String,
     text: String,
+}
+
+#[derive(Clone, PartialEq)]
+enum MessageTimestampKey {
+    Null,
+    Int(i128),
+    Float(f64),
+    String(String),
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -68,13 +76,10 @@ fn messaging_rows(
             let Value::Object(message) = message else {
                 continue;
             };
-            let timestamp = message.get("timestamp").cloned().unwrap_or(Value::Null);
-            if matches!(timestamp, Value::Array(_) | Value::Object(_)) {
-                return Err(EdgeError::UnsupportedEdgeValue {
-                    field: "timestamp",
-                    value_type: json_type_name(&timestamp),
-                });
-            }
+            let timestamp = match message.get("timestamp") {
+                Some(value) => timestamp_key(value)?,
+                None => MessageTimestampKey::Null,
+            };
             let sender = string_field(message.get("sender"));
             let key = MessageKey {
                 app: app.clone(),
@@ -145,6 +150,54 @@ fn messaging_rows(
         }
     }
     Ok(rows)
+}
+
+fn timestamp_key(value: &Value) -> Result<MessageTimestampKey, EdgeError> {
+    match value {
+        Value::Null => Ok(MessageTimestampKey::Null),
+        // Python dict keys use numeric equality here:
+        // hash(1) == hash(1.0) == hash(True).
+        Value::Bool(value) => Ok(MessageTimestampKey::Int(i128::from(*value))),
+        Value::Number(value) => number_timestamp_key(value),
+        Value::String(value) => Ok(MessageTimestampKey::String(value.clone())),
+        Value::Array(_) | Value::Object(_) => Err(EdgeError::UnsupportedEdgeValue {
+            field: "timestamp",
+            value_type: json_type_name(value),
+        }),
+    }
+}
+
+fn number_timestamp_key(value: &serde_json::Number) -> Result<MessageTimestampKey, EdgeError> {
+    if let Some(value) = value.as_i64() {
+        return Ok(MessageTimestampKey::Int(i128::from(value)));
+    }
+    if let Some(value) = value.as_u64() {
+        return Ok(MessageTimestampKey::Int(i128::from(value)));
+    }
+    let Some(value) = value.as_f64() else {
+        return Err(EdgeError::UnsupportedEdgeValue {
+            field: "timestamp",
+            value_type: "unrepresentable number",
+        });
+    };
+    Ok(if let Some(integer) = integral_float_key(value) {
+        MessageTimestampKey::Int(integer)
+    } else {
+        MessageTimestampKey::Float(value)
+    })
+}
+
+fn integral_float_key(value: f64) -> Option<i128> {
+    // serde_json rejects non-finite JSON numbers, so NaN/Infinity do not reach
+    // this extractor path.
+    if !value.is_finite() || value.fract() != 0.0 {
+        return None;
+    }
+    if value < i128::MIN as f64 || value > i128::MAX as f64 {
+        return None;
+    }
+    let integer = value as i128;
+    ((integer as f64) == value).then_some(integer)
 }
 
 fn calendar_rows(

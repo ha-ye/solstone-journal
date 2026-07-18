@@ -1568,6 +1568,42 @@ mod tests {
     }
 
     #[test]
+    fn screen_messaging_timestamp_key_matches_python_numeric_equality() {
+        let root = temp_root("screen-timestamp-key");
+        seed_entity(&root, "edge_ada", "Ada Edge");
+        seed_entity(&root, "edge_bob", "Bob Edge");
+        let rel = "20260430/default/091000_300/screen.jsonl";
+        write_jsonl(
+            &root,
+            &format!("chronicle/{rel}"),
+            &[
+                json!({"content":{"messaging":{"view":"conversation","app":"Chat","thread":"Numeric","messages":[
+                    {"sender":"Ada Edge","timestamp":1,"subject":"S","text":"Same"},
+                    {"sender":"Ada Edge","timestamp":1.0,"subject":"S","text":"Same"},
+                    {"sender":"Ada Edge","timestamp":true,"subject":"S","text":"Same"},
+                    {"sender":"Ada Edge","timestamp":1.5,"subject":"S","text":"Same"},
+                    {"sender":"Bob Edge","timestamp":2,"subject":"S","text":"Reply"}
+                ]}}}),
+            ],
+        );
+
+        let mut resolver = EdgeResolver::new(&root);
+        resolver.begin_file();
+        let extracted =
+            extract_file_edges(&root, rel, &root.join("chronicle").join(rel), &mut resolver)
+                .expect("extract numeric timestamp messaging edges");
+        assert!(extracted.warnings.is_empty());
+        assert_eq!(extracted.rows.len(), 1);
+        let row = &extracted.rows[0];
+        assert_eq!(row.kind, "messaged-with");
+        assert_eq!(row.src, "edge_ada");
+        assert_eq!(row.dst, "edge_bob");
+        assert_eq!(row.label, EdgeValue::Text("Numeric".to_string()));
+        assert_eq!(row.weight, 3);
+        fs::remove_dir_all(root).expect("cleanup screen timestamp key root");
+    }
+
+    #[test]
     fn document_edges_dedupe_by_resolved_id_and_keep_first_name() {
         let root = temp_root("document");
         seed_entity_value(
@@ -1649,6 +1685,7 @@ mod tests {
             "edge_target",
             json!({"name":"Cora Target","aka":["Project Zephyr"]}),
         );
+        seed_entity_value(&root, "edge_sam", json!({"name":"Sam Target"}));
         seed_entity_value(
             &root,
             "edge_blocked",
@@ -1669,7 +1706,7 @@ mod tests {
             &[
                 json!({"header":true}),
                 json!({"text":"Project Zephyr met Blocked Target and Captain A."}),
-                json!({"text":"Project Zephyr followed up."}),
+                json!({"text":"Project Zephyr followed up with \u{017f}am Target."}),
             ],
         );
 
@@ -1679,16 +1716,30 @@ mod tests {
             extract_file_edges(&root, rel, &root.join("chronicle").join(rel), &mut resolver)
                 .expect("extract speaker mention edges");
         assert!(extracted.warnings.is_empty());
-        assert_eq!(extracted.rows.len(), 1);
-        let row = &extracted.rows[0];
-        assert_eq!(row.kind, "mentioned");
-        assert_eq!(row.src, "edge_speaker");
-        assert_eq!(row.dst, "edge_target");
-        assert_eq!(row.directed, 1);
-        assert_eq!(row.source, "mention");
-        assert_eq!(row.label, EdgeValue::Text("Project Zephyr".to_string()));
-        assert_eq!(row.dst_name, EdgeValue::Text("Cora Target".to_string()));
-        assert_eq!(row.weight, 2);
+        assert_eq!(extracted.rows.len(), 2);
+        let by_dst = extracted
+            .rows
+            .iter()
+            .map(|row| (row.dst.as_str(), row))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let sam = by_dst.get("edge_sam").expect("long-s mention row");
+        assert_eq!(sam.kind, "mentioned");
+        assert_eq!(sam.src, "edge_speaker");
+        assert_eq!(sam.directed, 1);
+        assert_eq!(sam.source, "mention");
+        assert_eq!(sam.label, EdgeValue::Text("Sam Target".to_string()));
+        assert_eq!(sam.dst_name, EdgeValue::Text("Sam Target".to_string()));
+        assert_eq!(sam.weight, 1);
+        let target = by_dst
+            .get("edge_target")
+            .expect("project zephyr mention row");
+        assert_eq!(target.kind, "mentioned");
+        assert_eq!(target.src, "edge_speaker");
+        assert_eq!(target.directed, 1);
+        assert_eq!(target.source, "mention");
+        assert_eq!(target.label, EdgeValue::Text("Project Zephyr".to_string()));
+        assert_eq!(target.dst_name, EdgeValue::Text("Cora Target".to_string()));
+        assert_eq!(target.weight, 2);
         fs::remove_dir_all(root).expect("cleanup speaker mentions root");
     }
 

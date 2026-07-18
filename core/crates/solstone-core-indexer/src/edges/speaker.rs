@@ -654,6 +654,8 @@ fn python_casefold_key(value: &str) -> String {
     for ch in value.chars() {
         match ch {
             'ß' | 'ẞ' => folded.push_str("ss"),
+            'ſ' => folded.push('s'),
+            'K' => folded.push('k'),
             _ => folded.extend(ch.to_lowercase()),
         }
     }
@@ -724,6 +726,11 @@ mod tests {
 
     #[test]
     fn matcher_enforces_unicode_boundaries_longest_wins_and_casefold_drop() {
+        assert_eq!(
+            python_casefold_key("ſam Kilo İris Straße ẞ"),
+            "sam kilo i\u{307}ris strasse ss"
+        );
+
         let mut candidates = BTreeMap::new();
         candidates.insert(
             "ann".to_string(),
