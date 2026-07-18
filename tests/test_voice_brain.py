@@ -11,11 +11,56 @@ from flask import Flask
 from solstone.think.voice import brain
 from solstone.think.voice.runtime import start_voice_runtime, stop_voice_runtime
 
+COVENANT_LINE_TEMPLATES = (
+    "{agent_name} is sol's spoken voice.",
+    "sol keeps the owner's journal as its memory and runs on the owner's device.",
+    "call the person whose journal this is the owner, not the user.",
+    "in owner-facing speech, describe what sol does with take in, experience, and keep.",
+    "never call sol or its live sensing an observer, listener, recorder, "
+    "capture system, assistant, or keeper.",
+)
+
+RETIRED_COVENANT_PHRASES = (
+    "spoken identity of this solstone journal",
+    "Use the words observer and listen",
+    "Never use the words keeper, assistant, record, or capture.",
+)
+
+
+def _covenant_lines(agent_name: str) -> list[str]:
+    return [line.format(agent_name=agent_name) for line in COVENANT_LINE_TEMPLATES]
+
+
+def _assert_voice_covenant(prompt: str, agent_name: str) -> None:
+    for line in _covenant_lines(agent_name):
+        assert line in prompt
+    for phrase in RETIRED_COVENANT_PHRASES:
+        assert phrase not in prompt
+
 
 def test_extract_instruction():
     text = "before<voice_instruction>Hello there</voice_instruction>after"
     assert brain.extract_instruction(text) == "Hello there"
     assert brain.extract_instruction("no tags here") is None
+
+
+def test_build_init_prompt_carries_voice_covenant(monkeypatch):
+    monkeypatch.setattr(brain, "get_config", lambda: {"agent": {"name": "Astra"}})
+
+    prompt = brain._build_init_prompt()
+
+    _assert_voice_covenant(prompt, "Astra")
+    assert "voice-session instruction" in prompt
+    assert "Astra is sol's spoken voice." in prompt
+
+
+def test_build_refresh_prompt_carries_voice_covenant(monkeypatch):
+    monkeypatch.setattr(brain, "get_config", lambda: {"agent": {"name": "Astra"}})
+
+    prompt = brain._build_refresh_prompt()
+
+    _assert_voice_covenant(prompt, "Astra")
+    assert "Astra is sol's spoken voice." in prompt
 
 
 def test_start_brain_persists_session(monkeypatch, journal_copy):
@@ -42,6 +87,7 @@ def test_refresh_brain_touches_session_file(monkeypatch, journal_copy):
     session_file.write_text("session-1", encoding="utf-8")
 
     async def fake_run_claude(message, extra_args, *, timeout):
+        _assert_voice_covenant(message, "sol")
         assert extra_args == ["--resume", "session-1"]
         assert timeout == 300
         return "<voice_instruction>Fresh voice</voice_instruction>", "session-1"

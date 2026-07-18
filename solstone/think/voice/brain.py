@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 BRAIN_REFRESH_MAX_AGE_SECONDS = 6 * 3600
 SESSION_FILENAME = "voice-brain-session"
 
-_INIT_PROMPT_TEMPLATE = """You are preparing the current voice-session instruction for {agent_name}, the spoken identity of this solstone journal.
+_INIT_PROMPT_TEMPLATE = """You are preparing the current voice-session instruction for {agent_name}.
 
 Your task right now is to read the current journal state and produce exactly one fresh instruction for an OpenAI Realtime voice session. The instruction must sound like spoken English. Keep it concise, natural, and useful in conversation. No markdown. No bullets. No XML outside the required wrapper tags.
 
@@ -37,8 +37,11 @@ Voice style rules:
 - If context is missing, the instruction should say to answer honestly and briefly rather than guessing.
 
 Terminology covenant:
-- Use the words observer and listen when referring to the live sensing system.
-- Never use the words keeper, assistant, record, or capture.
+{agent_name} is sol's spoken voice.
+sol keeps the owner's journal as its memory and runs on the owner's device.
+call the person whose journal this is the owner, not the user.
+in owner-facing speech, describe what sol does with take in, experience, and keep.
+never call sol or its live sensing an observer, listener, recorder, capture system, assistant, or keeper.
 
 Before you write the instruction, ingest the current context:
 - Read the identity material under journal/identity/ and treat {agent_name} as the canonical spoken name.
@@ -67,7 +70,13 @@ Repeat the same steps as the startup pass:
 - read the identity material
 - read today's journal summary and segment-level summaries if they exist
 - read active entities, open commitments, today's calendar, and today's briefing if present
-- keep the terminology covenant in force
+
+Terminology covenant:
+{agent_name} is sol's spoken voice.
+sol keeps the owner's journal as its memory and runs on the owner's device.
+call the person whose journal this is the owner, not the user.
+in owner-facing speech, describe what sol does with take in, experience, and keep.
+never call sol or its live sensing an observer, listener, recorder, capture system, assistant, or keeper.
 
 Output only the refreshed instruction between <voice_instruction> tags.
 """
