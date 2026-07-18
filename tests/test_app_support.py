@@ -270,6 +270,29 @@ def test_portal_anonymous_explicit_handle_is_preserved(tmp_path, monkeypatch):
     assert client.handle == "provided"
 
 
+def test_portal_non_anonymous_explicit_handle_is_preserved(tmp_path, monkeypatch):
+    import socket
+
+    from solstone.apps.support import portal
+
+    def fail_urandom(_size):
+        raise AssertionError("explicit handle must not draw randomness")
+
+    def fail_gethostname():
+        raise AssertionError("explicit handle must not read hostname")
+
+    monkeypatch.setattr(portal.os, "urandom", fail_urandom)
+    monkeypatch.setattr(socket, "gethostname", fail_gethostname)
+
+    client = portal.PortalClient(
+        portal_url="https://support.example.test",
+        storage_dir=tmp_path / "identified",
+        handle="chosen-handle",
+    )
+
+    assert client.handle == "chosen-handle"
+
+
 def test_portal_non_anonymous_no_handle_uses_hostname(tmp_path, monkeypatch):
     import socket
 
