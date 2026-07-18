@@ -51,7 +51,7 @@ home_bp = Blueprint(
     static_url_path="/static",
 )
 
-_FIRST_WEEK_FRAMING = "Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
+_FIRST_WEEK_FRAMING = "most of what i keep becomes useful after about a week, once your journal has enough of your days in it to show patterns. for now, here's what's already happening:"
 
 
 def _today() -> str:
@@ -546,7 +546,7 @@ def _format_heatmap_summary(stats_data: dict[str, Any]) -> str | None:
         range_start = hour
         range_end = hour + 1
     ranges.append(_format_hour_label(range_start, range_end))
-    return "I watched most closely during " + " · ".join(ranges) + "."
+    return "your busiest stretches were " + " · ".join(ranges) + "."
 
 
 def _format_gap_links(
@@ -705,9 +705,7 @@ def _summarize_yesterday_processing(
     )
 
     if mode == "sparse":
-        summary_line = (
-            f"I watched {_format_duration(transcript_seconds / 60)} yesterday."
-        )
+        summary_line = f"i took in {_format_duration(transcript_seconds / 60)} yesterday and kept it in your journal."
         return {
             "title": "Yesterday's processing",
             "mode": mode,

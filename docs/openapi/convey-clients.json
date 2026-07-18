@@ -1131,7 +1131,7 @@
                 "example": {
                   "home_state": "welcome",
                   "journal_age_days": 0,
-                  "welcome_framing": "Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
+                  "welcome_framing": "most of what i keep becomes useful after about a week, once your journal has enough of your days in it to show patterns. for now, here's what's already happening:"
                 },
                 "schema": {
                   "additionalProperties": true,

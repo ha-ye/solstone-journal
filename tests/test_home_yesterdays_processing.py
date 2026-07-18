@@ -331,7 +331,10 @@ def test_yesterdays_card_sparse_mode_copy(tmp_path, monkeypatch):
     assert summary["mode"] == "sparse"
     assert summary["default_collapsed"] is False
     assert summary["first_week_framing"] is None
-    assert summary["summary_line"] == "I watched 45 min yesterday."
+    assert (
+        summary["summary_line"]
+        == "i took in 45 min yesterday and kept it in your journal."
+    )
     assert summary["sparse_lines"] == [
         "I didn't produce any facet newsletters.",
         "There wasn't much else to process.",
@@ -371,7 +374,7 @@ def test_yesterdays_card_healthy_expanded_with_framing_on_days_1_to_7(
     assert summary["default_collapsed"] is False
     assert (
         summary["first_week_framing"]
-        == "Most of what I learn becomes useful after about a week, when I've seen enough patterns to surface them. For now, here's what's already happening:"
+        == "most of what i keep becomes useful after about a week, once your journal has enough of your days in it to show patterns. for now, here's what's already happening:"
     )
 
 
@@ -436,7 +439,7 @@ def test_heatmap_peaks_top_3():
                 }
             }
         )
-        == "I watched most closely during 9-10am · 11am-12pm · 2-3pm."
+        == "your busiest stretches were 9-10am · 11am-12pm · 2-3pm."
     )
 
 
