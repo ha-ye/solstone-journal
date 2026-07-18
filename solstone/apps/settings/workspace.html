@@ -2482,7 +2482,7 @@ button:focus:not(:focus-visible) {
           </label>
           <label for="field-transcribe-preserve" class="toggle-label" style="cursor: pointer;">preserve silent audio</label>
         </div>
-        <small>Keep audio files even when no speech is detected</small>
+        <small>keep audio files even when no speech is detected</small>
       </div>
       </form>
     </section>
@@ -4297,7 +4297,7 @@ async function loadFacetConfig(facetName) {
     setupFacetEditing();
   } catch (err) {
     console.error('Error loading facet config:', err);
-    notifyError( 'Load Failed', 'Error loading facet configuration');
+    notifyError( 'load failed', 'error loading facet configuration');
   }
 }
 
@@ -4306,7 +4306,7 @@ function populateFacetForm(facetName, config) {
   document.getElementById('facetTitleDisplay').textContent = title;
   document.getElementById('facetTitleInput').value = title;
 
-  const desc = config.description || 'No description set';
+  const desc = config.description || 'no description set';
   document.getElementById('facetDescDisplay').textContent = desc;
   document.getElementById('facetDescInput').value = config.description || '';
 
@@ -4768,7 +4768,7 @@ async function saveFacetField(field, value, triggerEl) {
   } catch (err) {
     console.error('Save error:', err);
     // For errors, use notification since they need attention and page won't reload
-    notifyError( 'Save Failed', err.message);
+    notifyError( 'save failed', err.message);
   }
 }
 
@@ -4862,7 +4862,7 @@ document.getElementById('createPersonalBtn').onclick = async () => {
     console.error('Error creating facet:', err);
     btn.disabled = false;
     btn.textContent = 'create personal facet';
-    notifyError( 'Creation Failed', err.message);
+    notifyError( 'creation failed', err.message);
   }
 };
 
@@ -5678,7 +5678,7 @@ function renderRedactRules(data) {
   const rules = data.redact || [];
 
   if (rules.length === 0) {
-    container.innerHTML = '<div class="redact-empty">No redaction rules configured</div>';
+    container.innerHTML = '<div class="redact-empty">no redaction rules configured</div>';
     return;
   }
 
@@ -6133,7 +6133,7 @@ if (agentNameInput) {
       });
       const result = await response.json();
       if (!result.success) {
-        throw new Error(result.error || 'Could not save name');
+        throw new Error(result.error || 'could not save name');
       }
 
       configData = result.config;

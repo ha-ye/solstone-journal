@@ -180,8 +180,18 @@ def test_stats_model_selector_copy_is_byte_identical_across_render_paths(stats_e
     assert (
         '<label for="modelSelector" class="sr-only">filter by model</label>' in rendered
     )
-    assert '<option value="">select a model…</option>' in rendered
-    assert "['select a model…']" in dashboard
+    rendered_match = re.search(r'<option value="">([^<]+)</option>', rendered)
+    dashboard_match = re.search(
+        r"el\('div', \{style: 'font-weight: 600; font-size: 1\.1em;'\}, "
+        r"\['([^']+)'\]\)",
+        dashboard,
+    )
+    assert rendered_match is not None
+    assert dashboard_match is not None
+    rendered_copy = rendered_match.group(1)
+    dashboard_copy = dashboard_match.group(1)
+    assert rendered_copy == dashboard_copy
+    assert rendered_copy == "select a model…"
     assert "Select Model..." not in rendered
     assert "Select a model" not in dashboard
 

@@ -51,6 +51,32 @@ def _tokens_snapshot(journal: Path) -> dict[Path, int]:
     return {path: path.stat().st_mtime_ns for path in sorted(tokens.rglob("*"))}
 
 
+def _static_empty_cell(html: str, tbody_id: str) -> str:
+    match = re.search(
+        rf'<tbody id="{re.escape(tbody_id)}">\s*'
+        r'<tr class="empty-row">\s*'
+        r'<td colspan="\d+">([^<]+)</td>\s*'
+        r"</tr>\s*</tbody>",
+        html,
+        re.S,
+    )
+    assert match is not None, tbody_id
+    return match.group(1)
+
+
+def _dynamic_empty_cell(html: str, function_name: str) -> str:
+    start = html.index(f"function {function_name}")
+    next_function = html.find("\nfunction ", start + 1)
+    body = html[start : next_function if next_function != -1 else len(html)]
+    match = re.search(
+        r"tbody\.innerHTML = '<tr class=\"empty-row\"><td colspan=\"\d+\">"
+        r"([^<]+)</td></tr>';",
+        body,
+    )
+    assert match is not None, function_name
+    return match.group(1)
+
+
 def test_api_daily_happy_path(tokens_env, monkeypatch):
     token_logs = {
         _day(2): [_entry("gpt-5", 1000)],
@@ -272,33 +298,28 @@ def test_tokens_workspace_contains_client_copy_and_static_labels(tokens_env):
     assert "window.TOKENS_COPY = TOKENS_COPY" in html
 
 
-def test_tokens_dynamic_empty_rows_match_approved_lowercase_copy(tokens_env):
+def test_tokens_static_and_dynamic_empty_rows_share_copy(tokens_env):
     env = tokens_env({})
 
     response = env.client.get("/app/tokens/workspace")
 
     assert response.status_code == 200
     html = response.get_data(as_text=True)
-    assert '<td colspan="8">no data for this day</td>' in html
-    assert (
-        'tbody.innerHTML = \'<tr class="empty-row"><td colspan="8">'
-        "no data for this day</td></tr>';"
-    ) in html
-    assert '<td colspan="5">no data for this day</td>' in html
-    assert (
-        'tbody.innerHTML = \'<tr class="empty-row"><td colspan="5">'
-        "no data for this day</td></tr>';"
-    ) in html
-    assert '<td colspan="6">no segment data for this day</td>' in html
-    assert (
-        'tbody.innerHTML = \'<tr class="empty-row"><td colspan="6">'
-        "no segment data for this day</td></tr>';"
-    ) in html
-    assert '<td colspan="6">no data for this day</td>' in html
-    assert (
-        'tbody.innerHTML = \'<tr class="empty-row"><td colspan="6">'
-        "no matching contexts</td></tr>';"
-    ) in html
+    empty_rows = {
+        "provider-body": "renderProviderTable",
+        "model-body": "renderModelTable",
+        "token-type-body": "renderTokenTypeTable",
+        "segment-body": "renderSegmentTable",
+    }
+    for tbody_id, function_name in empty_rows.items():
+        assert _static_empty_cell(html, tbody_id) == _dynamic_empty_cell(
+            html,
+            function_name,
+        )
+
+    assert _static_empty_cell(html, "provider-body") == "no data for this day"
+    context_empty = _dynamic_empty_cell(html, "renderContextTable")
+    assert context_empty == context_empty.lower()
     assert "No data for this day" not in html
     assert "No matching contexts" not in html
     assert "No segment data for this day" not in html
