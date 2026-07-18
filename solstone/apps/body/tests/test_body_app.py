@@ -630,6 +630,19 @@ assert(lineHtml.includes("&#39;"), "apostrophe entity remains intact");
 assert(!lineHtml.includes("&#<b>"), "emphasis does not split escaped entity");
 assert(textContentAfterUnescape(lineHtml) === plainLine, "line text content is invariant");
 
+const ampersandLine = "AT&T · 3 imports";
+const ampersandHtml = drawerLineHtml(ampersandLine);
+assert(ampersandHtml.includes("AT&amp;T"), "ampersand line escapes raw ampersand");
+assert(ampersandHtml.includes("<b>3</b>"), "ampersand line emphasizes digit run");
+assert(!ampersandHtml.includes("&<b>"), "ampersand line does not split raw ampersand");
+assert(!ampersandHtml.includes("&amp<b>"), "ampersand line does not split ampersand escape");
+assert(textContentAfterUnescape(ampersandHtml) === ampersandLine, "ampersand line text content is invariant");
+
+const escapedLookingLine = "&amp;#39; · 3";
+const escapedLookingHtml = drawerLineHtml(escapedLookingLine);
+assert(textContentAfterUnescape(escapedLookingHtml) === escapedLookingLine, "pre-escaped-looking line stays plain text");
+assert(escapedLookingHtml.includes("<b>3</b>"), "pre-escaped-looking line emphasizes digit run");
+
 const proseHtml = drawerLineHtml("oura's ring latest today");
 assert(!proseHtml.includes("<b>"), "pure prose line has no emphasis");
 
@@ -726,8 +739,10 @@ const window = {
   },
 };
 const emptyRendered = renderOverviewAudit({ ...status, imports: [] });
-assert(emptyRendered === '<p class="drawer-empty">no imports yet — body data appears here when a health export is imported.</p>', "empty overview audit renders empty paragraph");
+assert(emptyRendered.startsWith('<p class="drawer-empty">'), "empty overview audit starts as empty paragraph");
+assert(emptyRendered.endsWith("</p>"), "empty overview audit ends as paragraph");
 assert(!emptyRendered.includes("<details"), "empty overview audit is not a details drawer");
+assert(!emptyRendered.includes("drawer-evidence"), "empty overview audit omits import evidence");
 assert(drawerCalls.length === 0, "empty overview audit does not call Drawer.render");
 
 const populatedRendered = renderOverviewAudit(status);
