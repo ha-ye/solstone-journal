@@ -90,6 +90,20 @@ EXPECTED_CONN_LABEL_FALLBACKS = {
     "mentioned": "came up in conversation",
 }
 
+EXPECTED_MOMENT_COPY_STRINGS = {
+    "ENT_OBS_HEADING": "moments",
+    "ENT_GRID_TITLE": "moments over time",
+    "ENT_GRID_UNIT_ONE": "moment",
+    "ENT_GRID_UNIT_OTHER": "moments",
+    "ENT_GRID_UNIT_NONE": "nothing yet",
+    "ENT_OBS_EMPTY": "nothing with {name} yet.",
+    "ENT_OBS_LOAD_FAILED": "sol couldn't load these moments. try again →",
+    "ENT_TRUST_PREVIEW_SUMMARY": (
+        "preview: {aliases} aliases, {facets} facet links, "
+        "{observations} moments, {segments} speaker labels."
+    ),
+}
+
 
 def test_no_literal_copy_in_templates():
     """Templates reference ENT_COPY constants; prose values are never inlined."""
@@ -128,6 +142,21 @@ def test_entities_index_injects_copy(client):
         "entities_copy": entities_copy_payload(),
         "attendance_kinds": sorted(ATTENDANCE_KINDS),
     }
+
+
+def test_moment_copy_is_pinned_byte_for_byte():
+    for name, value in EXPECTED_MOMENT_COPY_STRINGS.items():
+        assert getattr(entity_copy, name) == value
+
+    assert (
+        entity_copy.ENT_TRUST_PREVIEW_SUMMARY.format(
+            aliases=1,
+            facets=2,
+            observations=3,
+            segments=4,
+        )
+        == "preview: 1 aliases, 2 facet links, 3 moments, 4 speaker labels."
+    )
 
 
 def test_connection_copy_is_pinned_byte_for_byte():
