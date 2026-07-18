@@ -277,7 +277,7 @@ def test_main_google_key_decoy_below_floor_surfaces_local_requirement(
     assert exc_info.value.code == 1
     assert audio_file.exists()
     mock_process_one.assert_not_called()
-    assert "Local transcription needs about 4 GB" in caplog.text
+    assert "local transcription needs about 4 GB" in caplog.text
 
 
 def test_resolve_default_backend_auto_selects_confidential_under_lane(monkeypatch):
@@ -370,7 +370,7 @@ def test_resolve_default_backend_warns_but_honors_explicit_local(monkeypatch, ca
         backend = transcribe_main.resolve_default_backend(_args(backend="parakeet"), {})
 
     assert backend == "parakeet"
-    assert "Free memory is below 4 GB" in caplog.text
+    assert "free memory is below 4 GB" in caplog.text
 
 
 def test_resolve_default_backend_stale_config_routes_to_confidential_under_lane(

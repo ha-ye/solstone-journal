@@ -2283,7 +2283,7 @@ button:focus:not(:focus-visible) {
     <!-- Profile Section -->
     <section class="settings-section" id="section-profile" role="tabpanel" aria-labelledby="tab-profile">
       <h2>profile</h2>
-      <p class="settings-section-desc">Your identity information used in AI templates and transcription.</p>
+      <p class="settings-section-desc">your identity information used in AI templates and transcription.</p>
 
       <form class="settings-form" onsubmit="return false;">
 
@@ -2315,7 +2315,7 @@ button:focus:not(:focus-visible) {
       <div class="settings-field">
         <label for="field-pronouns">pronouns</label>
         <select id="field-pronouns" data-section="identity" data-key="pronouns">
-          <option value="">select pronouns...</option>
+          <option value="">select pronouns…</option>
           <option value="she/her/her/herself">she/her/hers/herself</option>
           <option value="he/him/his/himself">he/him/his/himself</option>
           <option value="they/them/their/themselves">they/them/their/themselves</option>
@@ -2395,7 +2395,7 @@ button:focus:not(:focus-visible) {
             <span>&#128065;</span>
           </button>
         </div>
-        <small>Import audio from Plaud recorder. Log into the web portal and extract token from browser console.</small>
+        <small>import audio from Plaud recorder. log into the web portal and extract token from browser console.</small>
       </div>
       </form>
     </section>
@@ -2403,7 +2403,7 @@ button:focus:not(:focus-visible) {
     <!-- Transcription Section -->
     <section class="settings-section" id="section-transcription" role="tabpanel" aria-labelledby="tab-transcription">
       <h2>transcription</h2>
-      <p class="settings-section-desc">Speech-to-text backend and processing settings.</p>
+      <p class="settings-section-desc">speech-to-text backend and processing settings.</p>
       <div id="transcriptionLoadState" class="settings-load-state" aria-live="polite"></div>
 
       <form class="settings-form" onsubmit="return false;">
@@ -2413,7 +2413,7 @@ button:focus:not(:focus-visible) {
         <select id="field-transcribe-backend">
           <!-- Options populated dynamically from /api/transcribe -->
         </select>
-        <small>Speech-to-text engine to use for transcription</small>
+        <small>speech-to-text engine to use for transcription</small>
       </div>
 
       <!-- Backend API key warning (shown when selected backend needs API key) -->
@@ -2434,41 +2434,41 @@ button:focus:not(:focus-visible) {
           <select id="field-parakeet-model-version">
             <option value="v3" selected>v3 - Parakeet TDT 0.6B</option>
           </select>
-          <small>Installed Parakeet model version for local transcription</small>
+          <small>installed Parakeet model version for local transcription</small>
         </div>
 
         <div class="settings-field">
           <label for="field-parakeet-device">device</label>
           <select id="field-parakeet-device">
-            <option value="auto" selected>Auto - Detect best available runtime</option>
-            <option value="cpu">CPU - Force processor runtime</option>
-            <option value="cuda">CUDA - Force NVIDIA runtime</option>
+            <option value="auto" selected>Auto - detect best available runtime</option>
+            <option value="cpu">CPU - force processor runtime</option>
+            <option value="cuda">CUDA - force NVIDIA runtime</option>
           </select>
-          <small>Runtime preference for Parakeet on this host</small>
+          <small>runtime preference for Parakeet on this host</small>
         </div>
 
         <div class="settings-field">
           <label for="field-parakeet-timeout">timeout (seconds)</label>
           <input id="field-parakeet-timeout" type="number" min="1" step="1" value="120">
-          <small>Abort Parakeet model work if it exceeds this timeout</small>
+          <small>abort Parakeet model work if it exceeds this timeout</small>
         </div>
 
-        <div class="form-help">Platform runtime: <span id="parakeet-runtime-label">unsupported</span></div>
+        <div class="form-help">platform runtime: <span id="parakeet-runtime-label">unsupported</span></div>
       </fieldset>
 
       <fieldset id="parakeet-cpp-settings" class="backend-settings" style="display:none">
         <div class="settings-field">
           <label for="field-parakeet-cpp-device">device</label>
           <select id="field-parakeet-cpp-device">
-            <option value="auto" selected>Auto - Use GPU if available, else CPU</option>
-            <option value="cpu">CPU - Force processor runtime</option>
+            <option value="auto" selected>Auto - use GPU if available, else CPU</option>
+            <option value="cpu">CPU - force processor runtime</option>
           </select>
-          <small>Runtime preference for the parakeet.cpp server on this host</small>
+          <small>runtime preference for the parakeet.cpp server on this host</small>
         </div>
         <p class="settings-field-note">
-          Selecting this backend fetches two external artifacts into this journal's
+          selecting this backend fetches two external artifacts into this journal's
           provider cache: the parakeet.cpp server from github.com and the speech model
-          from huggingface.co. Install with <code>journal install-provider parakeet</code>.
+          from huggingface.co. install with <code>journal install-provider parakeet</code>.
         </p>
       </fieldset>
       <div class="form-help" id="transcribeResourceInfo"></div>
@@ -2490,14 +2490,14 @@ button:focus:not(:focus-visible) {
     <!-- Observer Section -->
     <section class="settings-section" id="section-observer" role="tabpanel" aria-labelledby="tab-observer">
       <h2>devices</h2>
-      <p class="settings-section-desc">Configure how the observer works and connects to your journal.</p>
+      <p class="settings-section-desc">configure how the observer works and connects to your journal.</p>
       <div id="observerLoadState" class="settings-load-state" aria-live="polite"></div>
 
       <form class="settings-form" onsubmit="return false;">
 
       <h3 class="settings-subsection-title">terminal observer</h3>
       <p class="settings-subsection-desc">
-        When your screen is idle, the observer can take in terminal content from active tmux sessions.
+        when your screen is idle, the observer can take in terminal content from active tmux sessions.
       </p>
 
       <div class="settings-field">
@@ -2514,11 +2514,11 @@ button:focus:not(:focus-visible) {
       <div class="settings-field" id="tmuxCaptureIntervalField">
         <label for="field-tmux-capture-interval">poll interval (seconds)</label>
         <input type="number" id="field-tmux-capture-interval" style="max-width: 100px;">
-        <small id="tmuxCaptureIntervalHelp">How often to poll terminal content</small>
+        <small id="tmuxCaptureIntervalHelp">how often to poll terminal content</small>
       </div>
 
       <p style="color: #888; font-size: 0.85em; margin-top: 1.5em; padding: 0.75em; background: #f8f9fa; border-radius: 4px;">
-        Changes take effect on next observer restart.
+        changes take effect on next observer restart.
       </p>
       </form>
     </section>
@@ -2526,14 +2526,14 @@ button:focus:not(:focus-visible) {
     <!-- Vision Section -->
     <section class="settings-section" id="section-vision" role="tabpanel" aria-labelledby="tab-vision">
       <h2>vision</h2>
-      <p class="settings-section-desc">Screen analysis settings for observe-describe.</p>
+      <p class="settings-section-desc">screen analysis settings for observe-describe.</p>
 
       <form class="settings-form" onsubmit="return false;">
 
       <div class="settings-field">
         <label for="field-max-extractions">max extractions (of 300 possible frames)</label>
         <input type="number" id="field-max-extractions" min="5" max="100" placeholder="20" style="max-width: 100px;">
-        <small>Maximum frames to extract detailed content from per 5 minute screen segment (big impact on token usage)</small>
+        <small>maximum frames to extract detailed content from per 5 minute screen segment (big impact on token usage)</small>
       </div>
 
       <!-- Redaction Rules -->
@@ -2546,7 +2546,7 @@ button:focus:not(:focus-visible) {
           <p style="color:#666;font-size:0.9em;margin:0 0 1em 0">instructions the ai follows to redact sensitive content from screen analysis. double-click a rule to edit it.</p>
           <div class="redact-list" id="redactRulesList"></div>
           <div class="redact-add-row">
-            <input type="text" class="redact-add-input" id="redactAddInput" placeholder="add a redaction rule..." maxlength="200">
+            <input type="text" class="redact-add-input" id="redactAddInput" placeholder="add a redaction rule…" maxlength="200">
             <button type="button" class="redact-add-btn" id="redactAddBtn">+ add</button>
           </div>
           <div class="redact-validation" id="redactValidation" style="display:none"></div>
@@ -2556,12 +2556,12 @@ button:focus:not(:focus-visible) {
       <!-- Categories -->
       <div class="context-overrides expanded" id="visionCategories">
         <div class="context-overrides-header" id="visionCategoriesHeader">
-          <span class="context-overrides-title">Categories</span>
+          <span class="context-overrides-title">categories</span>
           <span class="context-overrides-toggle">&#9660;</span>
         </div>
         <div class="context-overrides-body" id="visionCategoriesBody">
-          <p style="color:#666;font-size:0.9em;margin:0 0 1em 0">Set importance and extraction rules for each screen category. Double-click guidance text to edit.</p>
-          <div id="visionCategoryGroups">Loading...</div>
+          <p style="color:#666;font-size:0.9em;margin:0 0 1em 0">set importance and extraction rules for each screen category. double-click guidance text to edit.</p>
+          <div id="visionCategoryGroups">loading…</div>
         </div>
       </div>
       </form>
@@ -2832,7 +2832,7 @@ button:focus:not(:focus-visible) {
     <!-- Support Section -->
     <section class="settings-section" id="section-support" role="tabpanel" aria-labelledby="tab-support">
       <h2>support</h2>
-      <p class="settings-section-desc">Configure how your sol communicates with sol pbc support.</p>
+      <p class="settings-section-desc">configure how your sol communicates with sol pbc support.</p>
 
       <form class="settings-form" onsubmit="return false;">
 
@@ -2855,7 +2855,7 @@ button:focus:not(:focus-visible) {
           </label>
           <label for="field-support-proactive" class="toggle-label" style="cursor: pointer;">proactive detection</label>
         </div>
-        <small>Detect repeated errors and suggest filing a support ticket. No data is sent — only a local notification.</small>
+        <small>detect repeated errors and suggest filing a support ticket. no data is sent — only a local notification.</small>
       </div>
 
       <div class="settings-field">
@@ -2866,7 +2866,7 @@ button:focus:not(:focus-visible) {
           </label>
           <label for="field-support-anonymous" class="toggle-label" style="cursor: pointer;">anonymous feedback</label>
         </div>
-        <small>Strip installation identifiers when submitting feedback.</small>
+        <small>strip installation identifiers when submitting feedback.</small>
       </div>
 
       <div class="settings-field">
@@ -2883,7 +2883,7 @@ button:focus:not(:focus-visible) {
       <div class="settings-field">
         <label for="field-support-portal-url">portal URL</label>
         <input type="text" id="field-support-portal-url" data-section="support" data-key="portal_url" placeholder="https://support.solstone.app">
-        <small>Support portal endpoint. Change this if you run your own portal.</small>
+        <small>support portal endpoint. change this if you run your own portal.</small>
       </div>
       </form>
     </section>
@@ -2891,36 +2891,36 @@ button:focus:not(:focus-visible) {
     <!-- Facets Section (journal-level, not per-facet) -->
     <section class="settings-section" id="section-facets" role="tabpanel" aria-labelledby="tab-facets">
       <h2>facets</h2>
-      <p class="settings-section-desc">Manage muted facets. Muted facets are hidden from the facet bar but retain all their data.</p>
+      <p class="settings-section-desc">manage muted facets. muted facets are hidden from the facet bar but retain all their data.</p>
 
       <h3>all facets</h3>
       <div id="allFacetsList">
-        <p class="text-muted">Loading...</p>
+        <p class="text-muted">loading…</p>
       </div>
 
       <h3>muted facets</h3>
       <div id="mutedFacetsList">
-        <p class="text-muted">Loading...</p>
+        <p class="text-muted">loading…</p>
       </div>
     </section>
 
     <!-- Agent Identity Section -->
     <section class="settings-section" id="section-agent" role="tabpanel" aria-labelledby="tab-agent">
       <h2>sol&#32;identity</h2>
-      <p class="settings-section-desc">Your assistant's name and identity.</p>
+      <p class="settings-section-desc">your assistant's name and identity.</p>
 
       <form class="settings-form" onsubmit="return false;">
 
       <div class="settings-field">
         <label for="field-agent-name">name</label>
         <input type="text" id="field-agent-name" placeholder="sol">
-        <small>The name your assistant uses to identify itself</small>
+        <small>the name your assistant uses to identify itself</small>
       </div>
 
       <div class="settings-field">
         <label>status</label>
         <span id="agent-name-status" class="field-display">default</span>
-        <small>How the name was set: default, chosen, self-named, or deferred</small>
+        <small>how the name was set: default, chosen, self-named, or deferred</small>
       </div>
 
       <div class="settings-field">
@@ -3353,7 +3353,7 @@ async function loadAllFacets() {
 
     const facets = data.facets || [];
     if (facets.length === 0) {
-      container.innerHTML = '<p class="text-muted">No facets yet.</p>';
+      container.innerHTML = '<p class="text-muted">no facets yet.</p>';
       return;
     }
 
@@ -3404,7 +3404,7 @@ async function loadAllFacets() {
       container.appendChild(row);
     });
   } catch (err) {
-    container.innerHTML = '<p class="text-muted">Failed to load facets.</p>';
+    container.innerHTML = '<p class="text-muted">failed to load facets.</p>';
   }
 }
 
@@ -3417,7 +3417,7 @@ async function loadMutedFacets() {
 
     const facets = data.facets || [];
     if (facets.length === 0) {
-      container.innerHTML = '<p class="text-muted">No muted facets.</p>';
+      container.innerHTML = '<p class="text-muted">no muted facets.</p>';
       return;
     }
 
@@ -3473,13 +3473,13 @@ async function loadMutedFacets() {
           if (result.error) throw new Error(result.error);
           row.remove();
           if (container.children.length === 0) {
-            container.innerHTML = '<p class="text-muted">No muted facets.</p>';
+            container.innerHTML = '<p class="text-muted">no muted facets.</p>';
           }
-          notifySuccess('Unmuted', `${facet.title} will appear in the facet bar on reload.`);
+          notifySuccess('unmuted', `${facet.title} will appear in the facet bar on reload.`);
         } catch (err) {
           btn.disabled = false;
           btn.textContent = 'unmute';
-          notifyError('Error', 'Failed to unmute facet');
+          notifyError('error', 'failed to unmute facet');
         }
       };
 
@@ -3488,7 +3488,7 @@ async function loadMutedFacets() {
       container.appendChild(row);
     });
   } catch (err) {
-    container.innerHTML = '<p class="text-muted">Failed to load muted facets.</p>';
+    container.innerHTML = '<p class="text-muted">failed to load muted facets.</p>';
   }
 }
 
@@ -3701,11 +3701,11 @@ function updateEnvStatus(fieldId, isJournalConfigured, isSystemConfigured) {
 
   // Update placeholder to indicate status
   if (isJournalConfigured) {
-    field.placeholder = 'Key configured (enter new value to replace)';
+    field.placeholder = 'key configured (enter new value to replace)';
   } else if (isSystemConfigured) {
-    field.placeholder = 'Key available from system environment';
+    field.placeholder = 'key available from system environment';
   } else {
-    field.placeholder = 'Enter API key';
+    field.placeholder = 'enter API key';
   }
 
   // Update label with status indicator
@@ -3739,10 +3739,10 @@ function updateEnvStatus(fieldId, isJournalConfigured, isSystemConfigured) {
         validationSpan.className = 'key-validation-status';
         if (validation.valid) {
           validationSpan.className += ' key-status-valid';
-          validationSpan.textContent = ' ✓ Valid';
+          validationSpan.textContent = ' ✓ valid';
         } else {
           validationSpan.className += ' key-status-invalid';
-          const errMsg = validation.error || 'Invalid';
+          const errMsg = validation.error || 'invalid';
           const shortErr = errMsg.length > 60 ? errMsg.slice(0, 60) + '…' : errMsg;
           validationSpan.textContent = ' ✗ ' + shortErr;
           validationSpan.title = errMsg;
@@ -4634,10 +4634,10 @@ function setupIconPicker() {
 
 function colorName(hex) {
   const names = {
-    '#007bff': 'Blue', '#28a745': 'Green', '#17a2b8': 'Teal',
-    '#ffc107': 'Yellow', '#6f42c1': 'Purple', '#fd7e14': 'Orange',
-    '#e83e8c': 'Pink', '#6c757d': 'Gray', '#20c997': 'Mint',
-    '#ff5722': 'Red-Orange', '#9c27b0': 'Deep Purple', '#795548': 'Brown'
+    '#007bff': 'blue', '#28a745': 'green', '#17a2b8': 'teal',
+    '#ffc107': 'yellow', '#6f42c1': 'purple', '#fd7e14': 'orange',
+    '#e83e8c': 'pink', '#6c757d': 'gray', '#20c997': 'mint',
+    '#ff5722': 'red-orange', '#9c27b0': 'deep purple', '#795548': 'brown'
   };
   return names[hex.toLowerCase()] || hex;
 }
@@ -4797,7 +4797,7 @@ function renderLogDay(data, isFirst) {
   const container = document.getElementById('logEntries');
 
   if (!data.day || !data.entries.length) {
-    if (isFirst) container.innerHTML = '<div class="log-empty">No actions logged</div>';
+    if (isFirst) container.innerHTML = '<div class="log-empty">no actions logged</div>';
     return;
   }
 
@@ -4922,8 +4922,8 @@ function promptReload() {
     window.AppServices.notifications.show({
       app: 'settings',
       icon: '\uD83D\uDD04',
-      title: 'Reload to apply',
-      message: 'Click to update facet bar',
+      title: 'reload to apply',
+      message: 'click to update facet bar',
       action: window.location.pathname,
       dismissible: true
     });
@@ -5047,7 +5047,7 @@ async function loadTranscribeBackends() {
       select.disabled = true;
     }
     setLoadState('transcriptionLoadState', window.SurfaceState.error({
-      heading: "Couldn't load transcription settings",
+      heading: "couldn't load transcription settings",
       desc: window.CONVEY_COPY.RELOAD_HINT,
       serverMessage: err?.serverMessage,
       detail: err,
@@ -5187,7 +5187,7 @@ async function loadObserve() {
   } catch (err) {
     setObserveControlsDisabled(true);
     setLoadState('observerLoadState', window.SurfaceState.error({
-      heading: "Couldn't load observer settings",
+      heading: "couldn't load observer settings",
       desc: window.CONVEY_COPY.RELOAD_HINT,
       serverMessage: err?.serverMessage,
       detail: err,
@@ -5212,7 +5212,7 @@ function populateObserve(data) {
   // Update helper text with default value
   const helpText = document.getElementById('tmuxCaptureIntervalHelp');
   if (helpText) {
-    helpText.textContent = `How often to poll terminal content (default: ${defaults.capture_interval}s)`;
+    helpText.textContent = `how often to poll terminal content (default: ${defaults.capture_interval}s)`;
   }
 
   updateTmuxCaptureIntervalVisibility();
@@ -5435,7 +5435,7 @@ function renderVisionCategories(data) {
     html += `<div class="importance-section-header">${IMPORTANCE_LABELS[level]}</div>`;
 
     if (items.length === 0) {
-      html += `<div class="importance-section-empty">No categories</div>`;
+      html += `<div class="importance-section-empty">no categories</div>`;
     } else {
       for (const item of items) {
         const override = overrides[item.name] || {};
@@ -5468,11 +5468,11 @@ function renderVisionCategories(data) {
         const isOverride = !!extraction;
         html += `<div class="vision-extraction" data-category="${item.name}" style="padding-left:0.5em;">`;
         if (isIgnored) {
-          html += `<span class="vision-extraction-display vision-extraction-disabled">Disabled for ignored categories</span>`;
+          html += `<span class="vision-extraction-display vision-extraction-disabled">disabled for ignored categories</span>`;
         } else if (effectiveExtraction) {
           html += `<span class="vision-extraction-display${isOverride ? '' : ' vision-extraction-default'}" data-category="${item.name}" data-default="${escapeAttr(defaultExtraction)}">${escapeAttr(effectiveExtraction)}</span>`;
         } else {
-          html += `<span class="vision-extraction-display vision-extraction-empty" data-category="${item.name}" data-default="">No extraction guidance</span>`;
+          html += `<span class="vision-extraction-display vision-extraction-empty" data-category="${item.name}" data-default="">no extraction guidance</span>`;
         }
         html += `<input type="text" class="vision-extraction-input" data-category="${item.name}" value="${escapeAttr(extraction)}" data-default="${escapeAttr(defaultExtraction)}" style="display:none;">`;
         html += `</div>`;
@@ -5641,7 +5641,7 @@ async function saveVisionCategory(category, importance, extraction, remove = fal
     renderVisionCategories(result);
   } catch (err) {
     console.error('Error saving vision category:', err);
-    notifyError('Save Failed', err.message);
+    notifyError('save failed', err.message);
   }
 }
 
@@ -5730,7 +5730,7 @@ function setupRedactListeners() {
       }
 
       if (newValue.length > 200) {
-        showRedactValidation('Rule must be 200 characters or less');
+        showRedactValidation('rule must be 200 characters or less');
         input.value = display.textContent;
         return;
       }
@@ -5784,7 +5784,7 @@ async function saveRedactRules(rules) {
     renderRedactRules(result);
   } catch (err) {
     console.error('Error saving redaction rules:', err);
-    notifyError('Save Failed', err.message);
+    notifyError('save failed', err.message);
   }
 }
 
@@ -5813,14 +5813,14 @@ function addRedactRule() {
   if (!value) return;
 
   if (value.length > 200) {
-    showRedactValidation('Rule must be 200 characters or less');
+    showRedactValidation('rule must be 200 characters or less');
     return;
   }
 
   const rules = [...(visionData?.redact || [])];
 
   if (rules.length >= 50) {
-    showRedactValidation('Maximum of 50 rules allowed');
+    showRedactValidation('maximum of 50 rules allowed');
     return;
   }
 
@@ -5865,7 +5865,7 @@ function renderActivities(data) {
 
   // Render attached activities
   if (attached.length === 0) {
-    attachedList.innerHTML = '<div class="activities-empty">No activities attached yet. Add activities below.</div>';
+    attachedList.innerHTML = '<div class="activities-empty">no activities attached yet. add activities below.</div>';
     countEl.textContent = '';
   } else {
     countEl.textContent = `(${attached.length})`;
@@ -5897,7 +5897,7 @@ function renderActivities(data) {
   const availableDefaults = defaults.filter(d => !attachedIds.has(d.id));
 
   if (availableDefaults.length === 0 && attached.length > 0) {
-    defaultsList.innerHTML = '<span style="color:#888;font-size:0.85em;">All default activities attached</span>';
+    defaultsList.innerHTML = '<span style="color:#888;font-size:0.85em;">all default activities attached</span>';
   } else {
     defaultsList.innerHTML = defaults.map(d => {
       const isAttached = attachedIds.has(d.id);
@@ -5967,13 +5967,13 @@ function startEditField(el, field) {
   const activityId = el.dataset.id;
   const currentText = el.textContent.trim();
   const isPlaceholder = el.querySelector('em') !== null;
-  const placeholderLabel = field === 'instructions' ? 'No instructions' : 'No description';
+  const placeholderLabel = field === 'instructions' ? 'no instructions' : 'no description';
 
   const input = document.createElement('input');
   input.type = 'text';
   input.className = 'activity-desc-input';
   input.value = isPlaceholder ? '' : currentText;
-  input.placeholder = field === 'instructions' ? 'Detection hints and level guidance' : '';
+  input.placeholder = field === 'instructions' ? 'detection hints and level guidance' : '';
   input.style.cssText = 'width:100%;padding:0.3em;font-size:0.85em;border:1px solid var(--facet-color,var(--orange));border-radius:4px;';
 
   el.style.display = 'none';
@@ -6015,7 +6015,7 @@ async function addDefaultActivity(activityId) {
     await loadActivities(window.selectedFacet);
   } catch (err) {
     console.error('Error adding activity:', err);
-    notifyError('Add Failed', err.message);
+    notifyError('add failed', err.message);
   }
 }
 
@@ -6032,7 +6032,7 @@ async function updateActivity(activityId, updates) {
     if (result.error) throw new Error(result.error);
   } catch (err) {
     console.error('Error updating activity:', err);
-    notifyError('Update Failed', err.message);
+    notifyError('update failed', err.message);
     // Reload to revert
     await loadActivities(window.selectedFacet);
   }
@@ -6052,7 +6052,7 @@ async function removeActivity(activityId) {
     await loadActivities(window.selectedFacet);
   } catch (err) {
     console.error('Error removing activity:', err);
-    notifyError('Remove Failed', err.message);
+    notifyError('remove failed', err.message);
   }
 }
 
@@ -6081,7 +6081,7 @@ document.getElementById('saveCustomActivityBtn').addEventListener('click', async
   const instructions = document.getElementById('customActivityInstructions').value.trim();
 
   if (!name) {
-    notifyError('Validation Error', 'Name is required');
+    notifyError('validation error', 'name is required');
     return;
   }
 
@@ -6100,7 +6100,7 @@ document.getElementById('saveCustomActivityBtn').addEventListener('click', async
     await loadActivities(window.selectedFacet);
   } catch (err) {
     console.error('Error adding custom activity:', err);
-    notifyError('Add Failed', err.message);
+    notifyError('add failed', err.message);
   }
 });
 
@@ -6172,12 +6172,12 @@ if (resetAgentBtn) {
         if (statusEl) statusEl.textContent = 'default';
         const dateEl = document.getElementById('agent-named-date');
         if (dateEl) dateEl.textContent = '—';
-        notifySuccess('Reset', 'Name reset to sol');
+        notifySuccess('reset', 'name reset to sol');
       } else {
-        notifyError('Reset Failed', result.error || 'Could not reset name');
+        notifyError('reset failed', result.error || 'could not reset name');
       }
     } catch (err) {
-      notifyError('Reset Failed', err.message);
+      notifyError('reset failed', err.message);
     }
   });
 }
@@ -6202,9 +6202,9 @@ async function loadStorage() {
   } catch (err) {
     setStorageControlsDisabled(true);
     setLoadState('storageLoadState', storageLoadedOnce
-      ? renderRefreshLoadState("Couldn't refresh storage settings — showing last known state.", err?.serverMessage)
+      ? renderRefreshLoadState("couldn't refresh storage settings — showing last known state.", err?.serverMessage)
       : window.SurfaceState.error({
-        heading: "Couldn't load storage settings",
+        heading: "couldn't load storage settings",
         desc: window.CONVEY_COPY.RELOAD_HINT,
         serverMessage: err?.serverMessage,
         detail: err,
@@ -6307,10 +6307,10 @@ function populateStreamOverrides(streams, perStream) {
 
     const select = document.createElement('select');
     select.className = 'stream-override-select';
-    select.innerHTML = '<option value="">Use global default</option>'
-      + '<option value="keep">Keep forever</option>'
-      + '<option value="days">Keep N days</option>'
-      + '<option value="processed">Delete after processing</option>';
+    select.innerHTML = '<option value="">use global default</option>'
+      + '<option value="keep">keep forever</option>'
+      + '<option value="days">keep N days</option>'
+      + '<option value="processed">delete after processing</option>';
     select.value = mode;
 
     const daysInput = document.createElement('input');
@@ -6516,7 +6516,7 @@ function openCleanupModal() {
 
   // Populate stream filter
   const select = document.getElementById('cleanupStreamFilter');
-  select.innerHTML = '<option value="">All streams</option>';
+  select.innerHTML = '<option value="">all streams</option>';
   if (storageData && storageData.streams) {
     storageData.streams.forEach(s => {
       const opt = document.createElement('option');
@@ -6540,7 +6540,7 @@ function resetCleanupPreview() {
 async function runCleanupPreview() {
   const days = parseInt(document.getElementById('cleanupDaysInput').value);
   if (!days || days < 1) {
-    notifyError('Invalid Input', 'Enter a positive number of days.');
+    notifyError('invalid input', 'enter a positive number of days.');
     resetCleanupPreview();
     return;
   }
@@ -6582,7 +6582,7 @@ async function runCleanupPreview() {
 async function runCleanupExecute() {
   const days = parseInt(document.getElementById('cleanupDaysInput').value);
   if (!days || days < 1) {
-    notifyError('Invalid Input', 'Enter a positive number of days.');
+    notifyError('invalid input', 'enter a positive number of days.');
     resetCleanupPreview();
     return;
   }
@@ -6608,7 +6608,7 @@ async function runCleanupExecute() {
 
     loadStorage();
   } catch (err) {
-    notifyError('Cleanup Failed', err.message);
+    notifyError('cleanup failed', err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = 'delete files';
@@ -6638,7 +6638,7 @@ function resetLogCleanupPreview() {
 function readLogCleanupDays() {
   const days = parseInt(document.getElementById('cleanupLogsDaysInput').value, 10);
   if (!Number.isFinite(days) || days < 1) {
-    notifyError('Invalid Input', 'Enter a positive number of days.');
+    notifyError('invalid input', 'enter a positive number of days.');
     resetLogCleanupPreview();
     return null;
   }
@@ -6769,7 +6769,7 @@ async function runLogCleanupExecute() {
     closeLogCleanupModal();
     loadStorage();
   } catch (err) {
-    notifyError('Cleanup Failed', err.message);
+    notifyError('cleanup failed', err.message);
   } finally {
     btn.disabled = false;
     btn.textContent = 'delete logs';
@@ -6861,7 +6861,7 @@ function showSettingsStateError(err) {
   if (!settingsStateGate || !window.SurfaceState) return;
   settingsStateGate.hidden = false;
   settingsStateGate.innerHTML = window.SurfaceState.error({
-    heading: "Couldn't load settings",
+    heading: "couldn't load settings",
     retry: true,
     serverMessage: err?.serverMessage,
     detail: err,
