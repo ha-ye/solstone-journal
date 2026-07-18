@@ -207,6 +207,38 @@
   font-size: 0.9em;
 }
 
+.curation-speaker-pair-summary {
+  margin: 0 0 0.65em;
+  color: #4b5563;
+  line-height: 1.45;
+}
+
+.curation-speaker-pair-samples {
+  display: grid;
+  gap: 0.75em;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.curation-speaker-pair-samples h3 {
+  margin: 0 0 0.45em;
+  color: #374151;
+  font-size: 1em;
+  font-weight: 650;
+}
+
+.curation-speaker-pair-samples ul {
+  margin: 0;
+  padding-left: 1.2em;
+  color: #4b5563;
+  line-height: 1.45;
+}
+
+.curation-speaker-pair-samples audio {
+  display: block;
+  width: 100%;
+  margin-top: 0.35em;
+}
+
 @media (max-width: 640px) {
   .curation-shell {
     padding: 1em;
@@ -274,6 +306,54 @@ window.CUR_COPY = CUR_COPY;
         ${sample.segment ? `<span> · ${escapeHtml(sample.segment)}</span>` : ''}
       </li>
     `).join('');
+  }
+
+  function formatSimilarity(value) {
+    const number = Number(value || 0);
+    return Number.isFinite(number) ? number.toFixed(2) : '0.00';
+  }
+
+  function sampleAudioHtml(sample) {
+    if (!sample?.audio_url) return '';
+    return `<audio controls preload="metadata" src="${escapeHtml(sample.audio_url)}"></audio>`;
+  }
+
+  function speakerCandidatePairSampleHtml(sample) {
+    return `
+      <li>
+        <span>${escapeHtml(sample.day)}</span>
+        ${sample.stream ? `<span> · ${escapeHtml(sample.stream)}</span>` : ''}
+        ${sample.segment_key ? `<span> · ${escapeHtml(sample.segment_key)}</span>` : ''}
+        ${sample.source ? `<span> · ${escapeHtml(sample.source)}</span>` : ''}
+        ${sample.cluster_label !== undefined ? `<span> · ${escapeHtml(sample.cluster_label)}</span>` : ''}
+        ${sampleAudioHtml(sample)}
+      </li>
+    `;
+  }
+
+  function speakerCandidatePairEvidenceHtml(item) {
+    const evidence = item.evidence || {};
+    const sourceSamples = evidence.source_samples || [];
+    const targetSamples = evidence.target_samples || [];
+    return `
+      <div class="curation-evidence">
+        <p class="curation-speaker-pair-summary">
+          ${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_SIMILARITY_LABEL)}: ${escapeHtml(formatSimilarity(evidence.similarity))}
+          · ${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_SOURCE_LABEL)} ${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_INTERVALS_LABEL)}: ${escapeHtml(evidence.source_intervals || 0)}
+          · ${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_TARGET_LABEL)} ${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_INTERVALS_LABEL)}: ${escapeHtml(evidence.target_intervals || 0)}
+        </p>
+        <div class="curation-speaker-pair-samples">
+          <section>
+            <h3>${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_SOURCE_LABEL)}</h3>
+            <ul>${sourceSamples.map(speakerCandidatePairSampleHtml).join('')}</ul>
+          </section>
+          <section>
+            <h3>${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_TARGET_LABEL)}</h3>
+            <ul>${targetSamples.map(speakerCandidatePairSampleHtml).join('')}</ul>
+          </section>
+        </div>
+      </div>
+    `;
   }
 
   function facetItemHtml(item) {
@@ -361,6 +441,20 @@ window.CUR_COPY = CUR_COPY;
     `;
   }
 
+  function speakerCandidatePairItemHtml(item) {
+    return `
+      <article class="curation-item" data-curation-item data-kind="speaker_candidate_pair" data-key="${escapeAttr(item.key)}" data-anchor-a="${escapeAttr(item.source_slug)}" data-anchor-b="${escapeAttr(item.target_slug)}">
+        <p class="curation-body">${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_BODY)}</p>
+        ${speakerCandidatePairEvidenceHtml(item)}
+        <div class="curation-actions">
+          <button class="curation-button curation-button-primary" type="button" data-action="speaker-pair-accept">${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_MERGE_ACTION)}</button>
+          <button class="curation-button" type="button" data-action="speaker-pair-dismiss">${escapeHtml(CUR_COPY.CUR_SPEAKER_CANDIDATE_PAIR_DISMISS_ACTION)}</button>
+        </div>
+        <p class="curation-item-error" hidden></p>
+      </article>
+    `;
+  }
+
   function renderState(payload, preserveOutcomes = false) {
     const savedOutcomes = preserveOutcomes
       ? Array.from(root.querySelector('[data-curation-outcomes]')?.children || [])
@@ -371,7 +465,8 @@ window.CUR_COPY = CUR_COPY;
     const entityItems = payload.entity_items || [];
     const ambiguityItems = payload.ambiguity_items || [];
     const speakerItems = payload.speaker_items || [];
-    const empty = !facetItems.length && !entityItems.length && !ambiguityItems.length && !speakerItems.length;
+    const speakerCandidatePairItems = payload.speaker_candidate_pair_items || [];
+    const empty = !facetItems.length && !entityItems.length && !ambiguityItems.length && !speakerItems.length && !speakerCandidatePairItems.length;
     root.innerHTML = `
       <h1 class="curation-header">${escapeHtml(CUR_COPY.CUR_HEADING)}</h1>
       ${empty ? `<p class="curation-empty">${escapeHtml(CUR_COPY.CUR_EMPTY_STATE)}</p>` : ''}
@@ -382,6 +477,7 @@ window.CUR_COPY = CUR_COPY;
         ${entityItems.map(entityItemHtml).join('')}
         ${ambiguityItems.map(ambiguityItemHtml).join('')}
         ${speakerItems.map(speakerItemHtml).join('')}
+        ${speakerCandidatePairItems.map(speakerCandidatePairItemHtml).join('')}
       </div>
     `;
     const outcomes = root.querySelector('[data-curation-outcomes]');
@@ -455,6 +551,10 @@ window.CUR_COPY = CUR_COPY;
     const holder = document.createElement('div');
     holder.textContent = value == null ? '' : String(value);
     return holder.innerHTML;
+  }
+
+  function escapeAttr(value) {
+    return escapeHtml(value).replace(/"/g, '&quot;');
   }
 
   function removeItem(item) {
@@ -585,6 +685,16 @@ window.CUR_COPY = CUR_COPY;
       key: ds.key,
       source_id: ds.sourceId,
       target_id: ds.targetId
+    };
+  }
+
+  function speakerCandidatePairPayload(button) {
+    const item = itemFor(button);
+    const ds = item?.dataset || {};
+    return {
+      key: ds.key,
+      anchor_a: ds.anchorA,
+      anchor_b: ds.anchorB
     };
   }
 
@@ -753,6 +863,28 @@ window.CUR_COPY = CUR_COPY;
         })
         .catch((err) => {
           if (action === 'speaker-accept') {
+            showMutationError(item, button, err, CUR_COPY.CUR_UNDO_FAILED);
+          } else {
+            setBusy(button, false);
+            showError(item, err.serverMessage || err.message);
+          }
+        });
+      return;
+    }
+
+    if (action === 'speaker-pair-accept' || action === 'speaker-pair-dismiss') {
+      const payload = speakerCandidatePairPayload(button);
+      const path = action === 'speaker-pair-accept'
+        ? '/app/curation/api/speaker-candidate-pair/accept'
+        : '/app/curation/api/speaker-candidate-pair/dismiss';
+      setBusy(button, true);
+      postJson(path, payload)
+        .then((data) => {
+          if (action === 'speaker-pair-accept') appendUndoOutcome(data.undo, data.key);
+          removeItem(item);
+        })
+        .catch((err) => {
+          if (action === 'speaker-pair-accept') {
             showMutationError(item, button, err, CUR_COPY.CUR_UNDO_FAILED);
           } else {
             setBusy(button, false);

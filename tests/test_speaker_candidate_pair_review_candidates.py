@@ -14,7 +14,7 @@ from solstone.think.speaker_candidate_pair_review_candidates import (
     find_candidate,
     is_dismissed_pair_suppressed,
     load_candidates,
-    record_candidate_pair_candidate,
+    record_candidate_pair,
     review_candidates_path,
 )
 
@@ -39,9 +39,7 @@ def test_candidate_pair_path_and_key_are_order_independent(candidate_journal):
     assert candidate_key(anchor_a, anchor_b) == candidate_key(anchor_b, anchor_a)
 
 
-def test_record_candidate_pair_candidate_creates_evidence_row(
-    candidate_journal, monkeypatch
-):
+def test_record_candidate_pair_creates_evidence_row(candidate_journal, monkeypatch):
     monkeypatch.setattr(mod, "utc_now_iso", lambda: "2026-06-03T17:30:00Z")
     anchor_a = '["20260101","090000_300","test","mic_audio",1]'
     anchor_b = '["20260102","090000_300","test","mic_audio",2]'
@@ -54,7 +52,7 @@ def test_record_candidate_pair_candidate_creates_evidence_row(
         "audio_url": "/app/speakers/api/serve_audio/20260101/test/090000_300/mic_audio.flac",
     }
 
-    row, created, suppressed = record_candidate_pair_candidate(
+    row, created, suppressed = record_candidate_pair(
         source_anchor=anchor_b,
         target_anchor=anchor_a,
         source_anchors={anchor_b},
@@ -100,7 +98,7 @@ def test_dismissal_suppression_survives_id_churn_membership(
     anchor_b = '["20260102","090000_300","test","mic_audio",1]'
     anchor_c = '["20260103","090000_300","test","mic_audio",1]'
 
-    record_candidate_pair_candidate(
+    record_candidate_pair(
         source_anchor=anchor_a,
         target_anchor=anchor_b,
         source_anchors={anchor_a},
@@ -117,7 +115,7 @@ def test_dismissal_suppression_survives_id_churn_membership(
     rows = load_candidates()
     assert is_dismissed_pair_suppressed(rows, {anchor_a, anchor_c}, {anchor_b})
     assert is_dismissed_pair_suppressed(rows, {anchor_b}, {anchor_a, anchor_c})
-    row, created, suppressed = record_candidate_pair_candidate(
+    row, created, suppressed = record_candidate_pair(
         source_anchor=anchor_c,
         target_anchor=anchor_b,
         source_anchors={anchor_a, anchor_c},
@@ -139,7 +137,7 @@ def test_dismissal_suppression_survives_id_churn_membership(
 def test_dismissed_rows_do_not_reopen(candidate_journal):
     anchor_a = '["20260101","090000_300","test","mic_audio",1]'
     anchor_b = '["20260102","090000_300","test","mic_audio",1]'
-    record_candidate_pair_candidate(
+    record_candidate_pair(
         source_anchor=anchor_a,
         target_anchor=anchor_b,
         source_anchors={anchor_a},
@@ -152,7 +150,7 @@ def test_dismissed_rows_do_not_reopen(candidate_journal):
     )
     dismiss_candidate(anchor_a, anchor_b)
 
-    row, created, suppressed = record_candidate_pair_candidate(
+    row, created, suppressed = record_candidate_pair(
         source_anchor=anchor_a,
         target_anchor=anchor_b,
         source_anchors={anchor_a},

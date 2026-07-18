@@ -6,18 +6,27 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 import solstone.think.curation as curation
+from solstone.apps.speakers.candidate_tracker import (
+    CandidateProfile,
+    CandidateTracker,
+    canonical_candidate_anchor,
+)
 from solstone.think.curation import (
     KIND_ENTITY_AMBIGUITY,
+    KIND_SPEAKER_CANDIDATE_PAIR,
     KIND_SPEAKER_NAME_VARIANT,
     accept_entity_candidate,
     accept_entity_candidate_batch,
     accept_facet_candidate,
+    accept_speaker_candidate_pair,
     dismiss_entity_candidate,
     dismiss_entity_candidate_batch,
     dismiss_facet_candidate,
+    dismiss_speaker_candidate_pair,
     load_open_items,
     merge_preview_fields,
 )
@@ -44,6 +53,12 @@ from solstone.think.facet_review_candidates import (
 from solstone.think.indexer.edges import insert_edges
 from solstone.think.indexer.journal import get_journal_index
 from solstone.think.journal_io import LockTimeout
+from solstone.think.speaker_candidate_pair_review_candidates import (
+    load_candidates as load_pair_candidates,
+)
+from solstone.think.speaker_candidate_pair_review_candidates import (
+    record_candidate_pair,
+)
 from solstone.think.speaker_review_candidates import record_name_variant_candidate
 
 
@@ -202,6 +217,76 @@ def _assert_folded(source_slug: str, target_slug: str, source_name: str) -> None
     assert source_name in target["aka"]
 
 
+def _unit(vector: list[float]) -> np.ndarray:
+    embedding = np.array(vector + [0.0] * (256 - len(vector)), dtype=np.float32)
+    return embedding / np.linalg.norm(embedding)
+
+
+def _source_segment(day: str, cluster_label: int = 1) -> dict[str, object]:
+    return {
+        "day": day,
+        "segment_key": "090000_300",
+        "stream": "test",
+        "source": "mic_audio",
+        "cluster_label": cluster_label,
+    }
+
+
+def _candidate_profile(
+    cand_id: int,
+    centroid: np.ndarray,
+    *,
+    status: str = "pending",
+    confirmed_entity: str | None = None,
+) -> CandidateProfile:
+    source_segment = _source_segment(f"2026010{cand_id}", cand_id)
+    return CandidateProfile(
+        cand_id=cand_id,
+        centroid=centroid,
+        n_segments=1,
+        n_intervals=30,
+        total_duration_s=30.0,
+        source_segments=[source_segment],
+        status=status,
+        confirmed_entity=confirmed_entity,
+    )
+
+
+def _seed_candidate_tracker(
+    journal: Path,
+    candidates: list[CandidateProfile],
+) -> CandidateTracker:
+    tracker = CandidateTracker(journal / "awareness" / "speaker_candidates.json")
+    tracker._candidates = {candidate.cand_id: candidate for candidate in candidates}
+    tracker._next_id = (
+        max((candidate.cand_id for candidate in candidates), default=0) + 1
+    )
+    tracker.save()
+    return CandidateTracker(journal / "awareness" / "speaker_candidates.json")
+
+
+def _record_pair_for_candidates(
+    left: CandidateProfile,
+    right: CandidateProfile,
+    *,
+    similarity: float = 0.70,
+) -> tuple[str, str]:
+    anchor_a = canonical_candidate_anchor(left)
+    anchor_b = canonical_candidate_anchor(right)
+    record_candidate_pair(
+        source_anchor=anchor_a,
+        target_anchor=anchor_b,
+        source_anchors={anchor_a},
+        target_anchors={anchor_b},
+        similarity=similarity,
+        source_intervals=left.n_intervals,
+        target_intervals=right.n_intervals,
+        source_samples=[],
+        target_samples=[],
+    )
+    return anchor_a, anchor_b
+
+
 def test_load_open_items_normalizes_and_orders(curation_journal):
     save_facet_candidates(
         [
@@ -256,6 +341,27 @@ def test_load_open_items_includes_speaker_name_variant(curation_journal):
     assert item.evidence["similarity"] == 0.934
     assert item.evidence["readiness"] == "ready"
     assert item.strength == 93
+
+
+def test_load_open_items_includes_speaker_candidate_pair(curation_journal):
+    left = _candidate_profile(1, _unit([1.0, 0.0]))
+    right = _candidate_profile(2, _unit([0.62, np.sqrt(1.0 - 0.62**2)]))
+    anchor_a, anchor_b = _record_pair_for_candidates(left, right, similarity=0.62)
+
+    items = load_open_items()
+
+    assert len(items) == 1
+    item = items[0]
+    assert item.kind == KIND_SPEAKER_CANDIDATE_PAIR
+    assert item.key == curation._speaker_candidate_pair_key(anchor_a, anchor_b)
+    assert item.source_slug == anchor_a
+    assert item.target_slug == anchor_b
+    assert item.source == "candidate A"
+    assert item.target == "candidate B"
+    assert item.evidence["similarity"] == 0.62
+    assert item.evidence["source_intervals"] == 30
+    assert item.evidence["target_intervals"] == 30
+    assert item.strength == 62
 
 
 def test_entity_merge_equal_strength_uses_shared_neighborhood(curation_journal):
@@ -880,6 +986,100 @@ def test_dismiss_entity_candidate_batch_counts_already_dismissed(curation_journa
         "already_dismissed",
         "dismissed",
     ]
+
+
+def test_accept_speaker_candidate_pair_merges_tracker_without_entity_merge(
+    curation_journal,
+    monkeypatch,
+):
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def merge_entity_spy(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        calls.append((args, kwargs))
+        raise AssertionError("speaker candidate-pair accept must not merge entities")
+
+    monkeypatch.setattr(curation, "merge_entity", merge_entity_spy)
+    left = _candidate_profile(1, _unit([1.0, 0.0]))
+    right = _candidate_profile(
+        2,
+        _unit([0.70, np.sqrt(1.0 - 0.70**2)]),
+        status="confirmed",
+        confirmed_entity="alice_test",
+    )
+    tracker = _seed_candidate_tracker(curation_journal, [left, right])
+    anchor_a, anchor_b = _record_pair_for_candidates(
+        tracker.load_all_candidates()[0],
+        tracker.load_all_candidates()[1],
+    )
+
+    result = accept_speaker_candidate_pair(anchor_b, anchor_a)
+
+    assert calls == []
+    assert result["status"] == "accepted"
+    assert result["kind"] == KIND_SPEAKER_CANDIDATE_PAIR
+    assert result["merge"]["status"] == "merged"
+    assert result["undo"] == {
+        "available": False,
+        "merge_id": None,
+        "reason": "Speaker candidate-pair merges cannot be undone.",
+    }
+    survivor = CandidateTracker(
+        curation_journal / "awareness" / "speaker_candidates.json"
+    ).load_all_candidates()
+    assert len(survivor) == 1
+    assert survivor[0].cand_id == 1
+    assert survivor[0].status == "confirmed"
+    assert survivor[0].confirmed_entity == "alice_test"
+    assert load_pair_candidates()[0]["status"] == "accepted"
+
+
+def test_accept_speaker_candidate_pair_stale_tracker_error_keeps_row_open(
+    curation_journal,
+    monkeypatch,
+):
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    monkeypatch.setattr(
+        curation,
+        "merge_entity",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    left = _candidate_profile(1, _unit([1.0, 0.0]))
+    right = _candidate_profile(2, _unit([0.70, np.sqrt(1.0 - 0.70**2)]))
+    anchor_a, anchor_b = _record_pair_for_candidates(left, right)
+
+    result = accept_speaker_candidate_pair(anchor_a, anchor_b)
+
+    assert calls == []
+    assert result == {
+        "status": "error",
+        "kind": KIND_SPEAKER_CANDIDATE_PAIR,
+        "key": curation._speaker_candidate_pair_key(anchor_a, anchor_b),
+        "error": "candidate anchor not found",
+    }
+    assert load_pair_candidates()[0]["status"] == "open"
+    assert (
+        CandidateTracker(
+            curation_journal / "awareness" / "speaker_candidates.json"
+        ).load_all_candidates()
+        == []
+    )
+
+
+def test_dismiss_speaker_candidate_pair_sets_status_and_removes_open_item(
+    curation_journal,
+):
+    left = _candidate_profile(1, _unit([1.0, 0.0]))
+    right = _candidate_profile(2, _unit([0.62, np.sqrt(1.0 - 0.62**2)]))
+    anchor_a, anchor_b = _record_pair_for_candidates(left, right, similarity=0.62)
+
+    result = dismiss_speaker_candidate_pair(anchor_b, anchor_a)
+
+    assert result["status"] == "dismissed"
+    assert result["kind"] == KIND_SPEAKER_CANDIDATE_PAIR
+    assert load_pair_candidates()[0]["status"] == "dismissed"
+    assert [
+        item for item in load_open_items() if item.kind == KIND_SPEAKER_CANDIDATE_PAIR
+    ] == []
 
 
 def test_merge_preview_fields_returns_compact_summary():

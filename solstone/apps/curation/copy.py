@@ -23,6 +23,15 @@ CUR_SPEAKER_BODY = (
 )
 CUR_SPEAKER_MERGE_ACTION = "review merge"
 CUR_SPEAKER_DISMISS_ACTION = "keep separate"
+CUR_SPEAKER_CANDIDATE_PAIR_BODY = (
+    "solstone found two speaker candidates that sound alike. merge them?"
+)
+CUR_SPEAKER_CANDIDATE_PAIR_MERGE_ACTION = "merge candidates"
+CUR_SPEAKER_CANDIDATE_PAIR_DISMISS_ACTION = "keep separate"
+CUR_SPEAKER_CANDIDATE_PAIR_SIMILARITY_LABEL = "cosine"
+CUR_SPEAKER_CANDIDATE_PAIR_INTERVALS_LABEL = "intervals"
+CUR_SPEAKER_CANDIDATE_PAIR_SOURCE_LABEL = "candidate A"
+CUR_SPEAKER_CANDIDATE_PAIR_TARGET_LABEL = "candidate B"
 CUR_EMPTY_STATE = (
     "nothing to review — solstone hasn't spotted new structure to suggest."
 )

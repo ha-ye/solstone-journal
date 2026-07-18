@@ -26,6 +26,15 @@ from solstone.think.facet_review_candidates import (
 )
 from solstone.think.facet_review_candidates import record_facet_candidate
 from solstone.think.journal_io import LockTimeout
+from solstone.think.speaker_candidate_pair_review_candidates import (
+    candidate_key as pair_candidate_key,
+)
+from solstone.think.speaker_candidate_pair_review_candidates import (
+    load_candidates as load_pair_candidates,
+)
+from solstone.think.speaker_candidate_pair_review_candidates import (
+    record_candidate_pair,
+)
 from solstone.think.speaker_review_candidates import (
     candidate_key as speaker_candidate_key,
 )
@@ -150,6 +159,51 @@ def _speaker_payload(
     }
 
 
+def _pair_anchors() -> tuple[str, str]:
+    return (
+        '["20260101","090000_300","test","mic_audio",1]',
+        '["20260102","090000_300","test","mic_audio",2]',
+    )
+
+
+def _speaker_candidate_pair_payload(
+    anchor_a: str | None = None,
+    anchor_b: str | None = None,
+) -> dict[str, str]:
+    left, right = _pair_anchors()
+    anchor_a = anchor_a or left
+    anchor_b = anchor_b or right
+    return {
+        "key": pair_candidate_key(anchor_a, anchor_b),
+        "anchor_a": anchor_a,
+        "anchor_b": anchor_b,
+    }
+
+
+def _seed_speaker_candidate_pair() -> tuple[str, str]:
+    anchor_a, anchor_b = _pair_anchors()
+    sample = {
+        "day": "20260101",
+        "stream": "test",
+        "segment_key": "090000_300",
+        "source": "mic_audio",
+        "cluster_label": 1,
+        "audio_url": "/app/speakers/api/serve_audio/20260101/test/090000_300/mic_audio.flac",
+    }
+    record_candidate_pair(
+        source_anchor=anchor_a,
+        target_anchor=anchor_b,
+        source_anchors={anchor_a},
+        target_anchors={anchor_b},
+        similarity=0.62,
+        source_intervals=31,
+        target_intervals=35,
+        source_samples=[sample],
+        target_samples=[],
+    )
+    return anchor_a, anchor_b
+
+
 def _embedding(vector: list[float]) -> np.ndarray:
     embedding = np.array(vector + [0.0] * (256 - len(vector)), dtype=np.float32)
     return embedding / np.linalg.norm(embedding)
@@ -258,6 +312,7 @@ def test_index_renders_empty_state(curation_env):
     assert data["facet_items"] == []
     assert data["entity_items"] == []
     assert data["speaker_items"] == []
+    assert data["speaker_candidate_pair_items"] == []
     assert data["copy"]["CUR_HEADING"] == CUR_HEADING
     assert data["copy"]["CUR_EMPTY_STATE"] == CUR_EMPTY_STATE
 
@@ -293,6 +348,28 @@ def test_index_renders_speaker_candidate(curation_env):
     assert data["speaker_items"][0]["kind"] == "speaker_name_variant"
     assert data["speaker_items"][0]["source"] == "Alice"
     assert data["speaker_items"][0]["target"] == "Alice Johnson"
+
+
+def test_index_renders_speaker_candidate_pair_bucket(curation_env):
+    env = curation_env()
+    _seed_speaker_candidate_pair()
+
+    resp = env.client.get("/app/curation/api/state")
+
+    assert resp.status_code == 200
+    data = resp.get_json()
+    assert data["speaker_candidate_pair_items"][0]["kind"] == "speaker_candidate_pair"
+    assert data["speaker_candidate_pair_items"][0]["evidence"]["similarity"] == 0.62
+    assert (
+        data["speaker_candidate_pair_items"][0]["evidence"]["source_samples"][0][
+            "segment_key"
+        ]
+        == "090000_300"
+    )
+    assert (
+        "segment"
+        not in data["speaker_candidate_pair_items"][0]["evidence"]["source_samples"][0]
+    )
 
 
 def test_facet_accept_creates_facet_and_flips_status(curation_env):
@@ -805,6 +882,60 @@ def test_speaker_payload_key_mismatch_returns_400(curation_env):
     assert resp.get_json()["reason_code"] == "invalid_request_value"
 
 
+def test_speaker_candidate_pair_dismiss_sets_status_and_removes_open_item(curation_env):
+    env = curation_env()
+    _seed_speaker_candidate_pair()
+
+    resp = env.client.post(
+        "/app/curation/api/speaker-candidate-pair/dismiss",
+        json=_speaker_candidate_pair_payload(),
+    )
+
+    assert resp.status_code == 200
+    assert resp.get_json()["status"] == "dismissed"
+    assert load_pair_candidates()[0]["status"] == "dismissed"
+    state = env.client.get("/app/curation/api/state").get_json()
+    assert state["speaker_candidate_pair_items"] == []
+
+
+def test_speaker_candidate_pair_payload_key_mismatch_returns_400(curation_env):
+    env = curation_env()
+
+    resp = env.client.post(
+        "/app/curation/api/speaker-candidate-pair/accept",
+        json={
+            "key": "wrong",
+            "anchor_a": _pair_anchors()[0],
+            "anchor_b": _pair_anchors()[1],
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.get_json()["reason_code"] == "invalid_request_value"
+
+
+def test_speaker_candidate_pair_accept_lock_timeout_returns_busy(
+    curation_env,
+    monkeypatch,
+):
+    env = curation_env()
+    _seed_speaker_candidate_pair()
+    from solstone.apps.curation import routes
+
+    def raise_busy(anchor_a: str, anchor_b: str) -> dict[str, Any]:
+        raise LockTimeout(path=env.journal / "speakers" / "busy.jsonl", timeout=0.0)
+
+    monkeypatch.setattr(routes, "accept_speaker_candidate_pair", raise_busy)
+
+    resp = env.client.post(
+        "/app/curation/api/speaker-candidate-pair/accept",
+        json=_speaker_candidate_pair_payload(),
+    )
+
+    assert resp.status_code == 503
+    assert resp.get_json()["reason_code"] == "entity_busy"
+
+
 def test_rendered_payload_matches_copy_source(curation_env):
     env = curation_env()
 
@@ -862,10 +993,12 @@ def test_curation_state_payload_shape_includes_nested_evidence(curation_env):
         "copy",
         "entity_items",
         "facet_items",
+        "speaker_candidate_pair_items",
         "speaker_items",
     }
     assert data["ambiguity_items"] == []
     assert data["entity_items"] == []
+    assert data["speaker_candidate_pair_items"] == []
     assert data["speaker_items"] == []
     assert data["facet_items"][0]["evidence"]["samples"] == [
         {"day": "20260602", "stream": "archon", "segment": "090000_300"}

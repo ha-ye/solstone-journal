@@ -324,12 +324,40 @@ def _low_confidence_review() -> list[dict[str, Any]]:
     return results
 
 
+def _candidate_pair_review() -> list[dict[str, Any]]:
+    from solstone.think import speaker_candidate_pair_review_candidates as pair_store
+
+    results: list[dict[str, Any]] = []
+    for row in pair_store.load_candidates():
+        if row.get("status") != "open":
+            continue
+        evidence = row.get("evidence", {})
+        if not isinstance(evidence, dict):
+            evidence = {}
+        similarity = float(row.get("similarity") or evidence.get("similarity") or 0.0)
+        results.append(
+            {
+                "type": "speaker_candidate_pair",
+                "key": row.get("key"),
+                "anchor_a": row.get("anchor_a"),
+                "anchor_b": row.get("anchor_b"),
+                "similarity": similarity,
+                "source_intervals": evidence.get("source_intervals", 0),
+                "target_intervals": evidence.get("target_intervals", 0),
+            }
+        )
+
+    results.sort(key=lambda item: (-float(item["similarity"]), str(item["key"] or "")))
+    return results
+
+
 def suggest_opportunities(limit: int = 5) -> list[dict[str, Any]]:
     suggestions: list[dict[str, Any]] = []
     for generator in [
         _unknown_recurring,
         _import_linkable,
         _name_variant,
+        _candidate_pair_review,
         _low_confidence_review,
     ]:
         if len(suggestions) >= limit:
@@ -375,6 +403,13 @@ def format_suggestions(suggestions: list[dict[str, Any]]) -> str:
                 f'"{suggestion["source"]["name"]}" '
                 f'\u2194 "{suggestion["target"]["name"]}" '
                 f"(similarity: {suggestion['similarity']:.2f})"
+            )
+        elif suggestion_type == "speaker_candidate_pair":
+            lines.append(
+                "Speaker candidate pair: "
+                f"similarity {suggestion['similarity']:.2f} "
+                f"({suggestion['source_intervals']} vs "
+                f"{suggestion['target_intervals']} intervals)"
             )
         elif suggestion_type == "low_confidence_review":
             seg_info = suggestion.get("segment_key", "")

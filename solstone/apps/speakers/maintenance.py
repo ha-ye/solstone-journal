@@ -135,18 +135,16 @@ def run_candidate_pair_suggestions(args: list[str]) -> int:
                 continue
             found += 1
             try:
-                row, was_created, was_suppressed = (
-                    pair_store.record_candidate_pair_candidate(
-                        source_anchor=canonical_candidate_anchor(left),
-                        target_anchor=canonical_candidate_anchor(right),
-                        source_anchors=candidate_source_anchors(left),
-                        target_anchors=candidate_source_anchors(right),
-                        similarity=score,
-                        source_intervals=left.n_intervals,
-                        target_intervals=right.n_intervals,
-                        source_samples=_candidate_samples(left),
-                        target_samples=_candidate_samples(right),
-                    )
+                row, was_created, was_suppressed = pair_store.record_candidate_pair(
+                    source_anchor=canonical_candidate_anchor(left),
+                    target_anchor=canonical_candidate_anchor(right),
+                    source_anchors=candidate_source_anchors(left),
+                    target_anchors=candidate_source_anchors(right),
+                    similarity=score,
+                    source_intervals=left.n_intervals,
+                    target_intervals=right.n_intervals,
+                    source_samples=_candidate_samples(left),
+                    target_samples=_candidate_samples(right),
                 )
             except LockTimeout as exc:
                 logger.warning("speaker candidate-pair suggestions skipped: %s", exc)

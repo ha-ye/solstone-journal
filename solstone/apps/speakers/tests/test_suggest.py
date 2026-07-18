@@ -13,6 +13,9 @@ from solstone.apps.speakers.suggest import (
     format_suggestions,
     suggest_opportunities,
 )
+from solstone.think.speaker_candidate_pair_review_candidates import (
+    record_candidate_pair,
+)
 
 
 def create_meetings_md(env, day: str, content: str) -> Path:
@@ -131,6 +134,35 @@ def test_suggest_name_variant(speakers_env):
     assert suggestion["target"] == {"id": "alice_test", "name": "Alice Test"}
     assert suggestion["similarity"] > 0.90
     assert suggestion["readiness"] == "ready"
+
+
+def test_suggest_speaker_candidate_pair_and_formats_it(speakers_env):
+    speakers_env()
+    anchor_a = '["20260101","090000_300","test","mic_audio",1]'
+    anchor_b = '["20260102","090000_300","test","mic_audio",2]'
+    record_candidate_pair(
+        source_anchor=anchor_a,
+        target_anchor=anchor_b,
+        source_anchors={anchor_a},
+        target_anchors={anchor_b},
+        similarity=0.62,
+        source_intervals=31,
+        target_intervals=35,
+        source_samples=[],
+        target_samples=[],
+    )
+
+    results = suggest_opportunities()
+    suggestion = next(
+        item for item in results if item["type"] == "speaker_candidate_pair"
+    )
+    rendered = format_suggestions([suggestion])
+
+    assert suggestion["similarity"] == 0.62
+    assert suggestion["source_intervals"] == 31
+    assert suggestion["target_intervals"] == 35
+    assert rendered
+    assert "Speaker candidate pair: similarity 0.62 (31 vs 35 intervals)" in rendered
 
 
 def test_suggest_import_linkable(speakers_env):

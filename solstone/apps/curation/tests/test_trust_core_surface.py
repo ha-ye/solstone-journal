@@ -53,6 +53,24 @@ def test_removing_final_item_does_not_reload_away_undo_outcomes() -> None:
     assert "refreshToolbar();" in html[start:end]
 
 
+def test_speaker_candidate_pair_renderer_includes_audio_and_actions() -> None:
+    html = _workspace()
+
+    assert "function speakerCandidatePairItemHtml(item)" in html
+    assert "payload.speaker_candidate_pair_items || []" in html
+    assert 'data-kind="speaker_candidate_pair"' in html
+    assert 'data-anchor-a="${escapeAttr(item.source_slug)}"' in html
+    assert 'data-action="speaker-pair-accept"' in html
+    assert 'data-action="speaker-pair-dismiss"' in html
+    assert (
+        '<audio controls preload="metadata" src="${escapeHtml(sample.audio_url)}">'
+        in html
+    )
+    assert "sample.segment_key" in html
+    assert "/app/curation/api/speaker-candidate-pair/accept" in html
+    assert "/app/curation/api/speaker-candidate-pair/dismiss" in html
+
+
 def test_repair_required_disables_replay_and_shows_remediation() -> None:
     html = _workspace()
 

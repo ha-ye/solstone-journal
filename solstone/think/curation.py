@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import solstone.think.facet_review_candidates as facet_store
+from solstone.think import (
+    speaker_candidate_pair_review_candidates as speaker_pair_store,
+)
 from solstone.think import speaker_review_candidates as speaker_store
 from solstone.think.entities import review_candidates as entity_store
 from solstone.think.entities.ambiguities import load_ambiguities
@@ -22,6 +25,7 @@ KIND_FACET_CANDIDATE = "facet_candidate"
 KIND_ENTITY_MERGE = "entity_merge"
 KIND_ENTITY_AMBIGUITY = "entity_ambiguity"
 KIND_SPEAKER_NAME_VARIANT = "speaker_name_variant"
+KIND_SPEAKER_CANDIDATE_PAIR = "speaker_candidate_pair"
 NEIGHBORHOOD_WEIGHT = 0.25
 # Entity detection strength is an integer; a sub-1.0 neighborhood contribution
 # can break ties but cannot outrank a genuinely stronger detection count.
@@ -87,6 +91,10 @@ def _speaker_key(source_id: str, target_id: str) -> str:
     return speaker_store.candidate_key(source_id, target_id)
 
 
+def _speaker_candidate_pair_key(anchor_a: str, anchor_b: str) -> str:
+    return speaker_pair_store.candidate_key(anchor_a, anchor_b)
+
+
 def _find_facet_candidate(name_key: str) -> dict[str, Any] | None:
     return facet_store.find_candidate(facet_store.load_candidates(), name_key)
 
@@ -112,6 +120,17 @@ def _find_speaker_candidate(
         speaker_store.load_candidates(),
         source_id,
         target_id,
+    )
+
+
+def _find_speaker_candidate_pair(
+    anchor_a: str,
+    anchor_b: str,
+) -> dict[str, Any] | None:
+    return speaker_pair_store.find_candidate(
+        speaker_pair_store.load_candidates(),
+        anchor_a,
+        anchor_b,
     )
 
 
@@ -174,6 +193,19 @@ def _speaker_error(
     }
 
 
+def _speaker_candidate_pair_error(
+    anchor_a: str,
+    anchor_b: str,
+    message: str,
+) -> dict[str, Any]:
+    return {
+        "status": "error",
+        "kind": KIND_SPEAKER_CANDIDATE_PAIR,
+        "key": _speaker_candidate_pair_key(anchor_a, anchor_b),
+        "error": message,
+    }
+
+
 def _merge_error_context(result: dict[str, Any]) -> dict[str, Any]:
     error = result.get("error")
     nested_repair = isinstance(error, dict) and error.get("code") == "repair_required"
@@ -199,7 +231,17 @@ def _merge_error_message(result: dict[str, Any]) -> str:
     return str(error)
 
 
-def _undo_descriptor(merge_id: Any) -> dict[str, Any]:
+def _undo_descriptor(
+    merge_id: Any,
+    *,
+    kind: str | None = None,
+) -> dict[str, Any]:
+    if kind == KIND_SPEAKER_CANDIDATE_PAIR:
+        return {
+            "available": False,
+            "merge_id": None,
+            "reason": "Speaker candidate-pair merges cannot be undone.",
+        }
     value = str(merge_id or "")
     return {
         "available": bool(value),
@@ -336,6 +378,33 @@ def load_open_items() -> list[CurationItem]:
                 target=str(row.get("target_label") or target_id),
                 target_slug=target_id,
                 evidence=speaker_evidence,
+                strength=int(round(similarity * 100)),
+                composite=float(int(round(similarity * 100))),
+            )
+        )
+
+    for row in speaker_pair_store.load_candidates():
+        if row.get("status") != "open":
+            continue
+        evidence = row.get("evidence", {})
+        if not isinstance(evidence, dict):
+            evidence = {}
+        anchor_a = str(row.get("anchor_a") or "")
+        anchor_b = str(row.get("anchor_b") or "")
+        similarity = float(row.get("similarity") or evidence.get("similarity") or 0.0)
+        pair_evidence = dict(evidence)
+        pair_evidence["similarity"] = similarity
+        items.append(
+            CurationItem(
+                kind=KIND_SPEAKER_CANDIDATE_PAIR,
+                key=_speaker_candidate_pair_key(anchor_a, anchor_b),
+                name=None,
+                facet=None,
+                source="candidate A",
+                source_slug=anchor_a,
+                target="candidate B",
+                target_slug=anchor_b,
+                evidence=pair_evidence,
                 strength=int(round(similarity * 100)),
                 composite=float(int(round(similarity * 100))),
             )
@@ -735,6 +804,81 @@ def dismiss_speaker_candidate(
     return {
         "status": "dismissed",
         "kind": KIND_SPEAKER_NAME_VARIANT,
+        "key": key,
+        "candidate": dismissed,
+    }
+
+
+def accept_speaker_candidate_pair(anchor_a: str, anchor_b: str) -> dict[str, Any]:
+    """Accept one open speaker candidate-pair merge candidate."""
+    key = _speaker_candidate_pair_key(anchor_a, anchor_b)
+    row = _find_speaker_candidate_pair(anchor_a, anchor_b)
+    if row is None:
+        return _speaker_candidate_pair_error(anchor_a, anchor_b, "candidate not found")
+
+    status = _status(row)
+    if status == "accepted":
+        return {
+            "status": "already_accepted",
+            "kind": KIND_SPEAKER_CANDIDATE_PAIR,
+            "key": key,
+            "candidate": row,
+            "undo": _undo_descriptor(None, kind=KIND_SPEAKER_CANDIDATE_PAIR),
+        }
+    if status != "open":
+        return _speaker_candidate_pair_error(
+            anchor_a,
+            anchor_b,
+            f"cannot accept candidate with status {status}",
+        )
+
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+
+    merge = CandidateTracker().merge_candidate_pair(anchor_a, anchor_b)
+    if merge.get("status") != "merged":
+        return _speaker_candidate_pair_error(
+            anchor_a,
+            anchor_b,
+            str(merge.get("error") or "candidate pair is already merged"),
+        )
+
+    accepted = speaker_pair_store.accept_candidate(anchor_a, anchor_b)
+    return {
+        "status": "accepted",
+        "kind": KIND_SPEAKER_CANDIDATE_PAIR,
+        "key": key,
+        "merge": merge,
+        "candidate": accepted,
+        "undo": _undo_descriptor(None, kind=KIND_SPEAKER_CANDIDATE_PAIR),
+    }
+
+
+def dismiss_speaker_candidate_pair(anchor_a: str, anchor_b: str) -> dict[str, Any]:
+    """Dismiss one open speaker candidate-pair merge candidate."""
+    key = _speaker_candidate_pair_key(anchor_a, anchor_b)
+    row = _find_speaker_candidate_pair(anchor_a, anchor_b)
+    if row is None:
+        return _speaker_candidate_pair_error(anchor_a, anchor_b, "candidate not found")
+
+    status = _status(row)
+    if status == "dismissed":
+        return {
+            "status": "already_dismissed",
+            "kind": KIND_SPEAKER_CANDIDATE_PAIR,
+            "key": key,
+            "candidate": row,
+        }
+    if status != "open":
+        return _speaker_candidate_pair_error(
+            anchor_a,
+            anchor_b,
+            f"cannot dismiss candidate with status {status}",
+        )
+
+    dismissed = speaker_pair_store.dismiss_candidate(anchor_a, anchor_b)
+    return {
+        "status": "dismissed",
+        "kind": KIND_SPEAKER_CANDIDATE_PAIR,
         "key": key,
         "candidate": dismissed,
     }

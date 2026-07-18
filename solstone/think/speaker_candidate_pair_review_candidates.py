@@ -169,7 +169,7 @@ def is_dismissed_pair_suppressed(
     return False
 
 
-def record_candidate_pair_candidate(
+def record_candidate_pair(
     *,
     source_anchor: str,
     target_anchor: str,

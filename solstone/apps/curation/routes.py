@@ -17,20 +17,26 @@ from solstone.convey.reasons import (
     MISSING_REQUIRED_FIELD,
 )
 from solstone.convey.utils import error_response, respond_collection
-from solstone.think import speaker_review_candidates
+from solstone.think import (
+    speaker_candidate_pair_review_candidates,
+    speaker_review_candidates,
+)
 from solstone.think.curation import (
     KIND_ENTITY_AMBIGUITY,
     KIND_ENTITY_MERGE,
     KIND_FACET_CANDIDATE,
+    KIND_SPEAKER_CANDIDATE_PAIR,
     KIND_SPEAKER_NAME_VARIANT,
     accept_entity_candidate,
     accept_entity_candidate_batch,
     accept_facet_candidate,
     accept_speaker_candidate,
+    accept_speaker_candidate_pair,
     dismiss_entity_candidate,
     dismiss_entity_candidate_batch,
     dismiss_facet_candidate,
     dismiss_speaker_candidate,
+    dismiss_speaker_candidate_pair,
     load_open_items,
     merge_preview_fields,
 )
@@ -67,6 +73,11 @@ def api_state() -> Response | tuple[Response, int]:
                 item.to_dict()
                 for item in items
                 if item.kind == KIND_SPEAKER_NAME_VARIANT
+            ],
+            "speaker_candidate_pair_items": [
+                item.to_dict()
+                for item in items
+                if item.kind == KIND_SPEAKER_CANDIDATE_PAIR
             ],
             "copy": curation_copy.curation_copy_payload(),
         }
@@ -112,6 +123,28 @@ def _speaker_payload(
             detail="key does not match source_id/target_id",
         )
     return key, source_id, target_id
+
+
+def _speaker_candidate_pair_payload(
+    data: dict[str, Any],
+) -> tuple[str, str, str] | tuple[Response, int]:
+    try:
+        key = str(_required(data, "key"))
+        anchor_a = str(_required(data, "anchor_a"))
+        anchor_b = str(_required(data, "anchor_b"))
+    except KeyError as exc:
+        return _missing_field(str(exc.args[0]))
+
+    expected = speaker_candidate_pair_review_candidates.candidate_key(
+        anchor_a,
+        anchor_b,
+    )
+    if key != expected:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="key does not match anchor_a/anchor_b",
+        )
+    return key, anchor_a, anchor_b
 
 
 @curation_bp.route("/api/facet/candidates")
@@ -212,6 +245,38 @@ def dismiss_speaker() -> Response | tuple[Response, int]:
 
     try:
         result = dismiss_speaker_candidate(source_id, target_id)
+    except LockTimeout:
+        return error_response(
+            ENTITY_BUSY, detail="speaker suggestions are busy; try again"
+        )
+    return _result_response(result)
+
+
+@curation_bp.post("/api/speaker-candidate-pair/accept")
+def accept_speaker_candidate_pair_route() -> Response | tuple[Response, int]:
+    payload = _speaker_candidate_pair_payload(_json_body())
+    if not isinstance(payload, tuple) or len(payload) != 3:
+        return payload
+    _, anchor_a, anchor_b = payload
+
+    try:
+        result = accept_speaker_candidate_pair(anchor_a, anchor_b)
+    except LockTimeout:
+        return error_response(
+            ENTITY_BUSY, detail="speaker suggestions are busy; try again"
+        )
+    return _result_response(result)
+
+
+@curation_bp.post("/api/speaker-candidate-pair/dismiss")
+def dismiss_speaker_candidate_pair_route() -> Response | tuple[Response, int]:
+    payload = _speaker_candidate_pair_payload(_json_body())
+    if not isinstance(payload, tuple) or len(payload) != 3:
+        return payload
+    _, anchor_a, anchor_b = payload
+
+    try:
+        result = dismiss_speaker_candidate_pair(anchor_a, anchor_b)
     except LockTimeout:
         return error_response(
             ENTITY_BUSY, detail="speaker suggestions are busy; try again"
