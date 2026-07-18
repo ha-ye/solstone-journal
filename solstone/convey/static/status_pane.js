@@ -113,7 +113,7 @@
         statusSentence.textContent = 'connecting…';
         statusSentence.style.color = '#f59e0b';
       } else {
-        statusSentence.textContent = 'connection lost — reconnecting';
+        statusSentence.textContent = 'connection lost. reconnecting';
         statusSentence.style.color = '#ef4444';
       }
     }
@@ -195,7 +195,7 @@
 
 	  function restartObserverFromStatusPane(button, resultEl) {
 	    button.disabled = true;
-	    button.textContent = 'reconnecting...';
+	    button.textContent = 'reconnecting…';
 	    resultEl.textContent = '';
 	    // Observer rows are per registration key; supervisor restarts the shared sense worker.
 	    window.apiJson('/app/health/api/restart-observer', {
@@ -331,7 +331,7 @@
     section.style.display = '';
     if (version?.update_available) {
       text.textContent = '';
-      text.appendChild(document.createTextNode('v' + (version.current || '?') + ' — '));
+      text.appendChild(document.createTextNode('v' + (version.current || '?') + ' · '));
       const span = document.createElement('span');
       span.style.color = '#f59e0b';
       span.textContent = 'update available (v' + (version.latest || '?') + ')';
@@ -516,8 +516,8 @@
       bell.setAttribute('aria-label', 'browser notifications enabled');
     } else if (perm === 'denied') {
       bell.textContent = '🔕';
-      bell.title = 'notifications blocked — update in browser settings';
-      bell.setAttribute('aria-label', 'notifications blocked — update in browser settings');
+      bell.title = 'notifications blocked. update in browser settings';
+      bell.setAttribute('aria-label', 'notifications blocked. update in browser settings');
     } else {
       bell.textContent = '🔔';
       bell.title = 'enable browser notifications';

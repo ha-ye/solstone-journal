@@ -13,9 +13,9 @@
     <header class="diagnostic-console-header">
       <h3 id="diagnostic-console-title">system messages</h3>
       <div class="diagnostic-console-actions">
-        <button type="button" data-diagnostic-action="clear">Clear</button>
-        <button type="button" data-diagnostic-action="send-all">Send all</button>
-        <button type="button" data-diagnostic-action="close" aria-label="Close">&times;</button>
+        <button type="button" data-diagnostic-action="clear">clear</button>
+        <button type="button" data-diagnostic-action="send-all">send all</button>
+        <button type="button" data-diagnostic-action="close" aria-label="close">&times;</button>
       </div>
     </header>
     <p data-diagnostic-reporting-off hidden>I can show these messages, but sending reports is off.</p>
@@ -40,11 +40,11 @@
     CONSOLE_TAB_WARNINGS: 'warnings',
     CONSOLE_TAB_INFO: 'info',
     CONSOLE_LINK_LABEL: 'system messages',
-    CONSOLE_ACTION_SEND: 'Send',
-    CONSOLE_ACTION_SEND_ALL: 'Send all',
-    CONSOLE_ACTION_CLEAR: 'Clear',
-    CONSOLE_ACTION_SHOW_DETAILS: 'Show details',
-    CONSOLE_ACTION_CLOSE: 'Close',
+    CONSOLE_ACTION_SEND: 'send',
+    CONSOLE_ACTION_SEND_ALL: 'send all',
+    CONSOLE_ACTION_CLEAR: 'clear',
+    CONSOLE_ACTION_SHOW_DETAILS: 'show details',
+    CONSOLE_ACTION_CLOSE: 'close',
     CONSOLE_REPORTING_OFF: 'I can show these messages, but sending reports is off.',
     CONSOLE_SNAPSHOT_HEADING: 'snapshot of {count} system messages',
     CONSOLE_REPORT_HEADING: 'Last {count} console entries:',
@@ -159,10 +159,10 @@
     document.querySelector('[data-diagnostic-filter="all"]').click();
     document.querySelector('[data-diagnostic-send]').click();
     let lastReport = window.reportCalls.at(-1);
-    assert('entry Send calls reportError with entries', lastReport.source === 'console-entry' && lastReport.consoleEntries.length === 2);
+    assert('entry send calls reportError with entries', lastReport.source === 'console-entry' && lastReport.consoleEntries.length === 2);
     document.querySelector('[data-diagnostic-action="send-all"]').click();
     lastReport = window.reportCalls.at(-1);
-    assert('Send all calls reportError with visible entries', lastReport.source === 'manual' && lastReport.consoleEntries.length === 2);
+    assert('send all calls reportError with visible entries', lastReport.source === 'manual' && lastReport.consoleEntries.length === 2);
 
     diagnostic.clear();
     window.logError(new Error('strip check'), { context: 'smoke' });

@@ -179,7 +179,7 @@
     window.solChatBarAttention = chatBar.attention || null;
     const input = document.getElementById('chatBarInput');
     if (input) {
-      input.placeholder = chatBar.placeholder || 'Send a message...';
+      input.placeholder = chatBar.placeholder || 'send a message…';
     }
   }
 

@@ -269,9 +269,9 @@
       lines.push(`<div>HTTP ${escapeHtml(apiError.status || '')} ${escapeHtml(apiError.statusText || '')} · ${escapeHtml(apiError.url || '')}</div>`);
     }
     lines.push(detailRow('Server reason', apiError.rawDetail || apiError.serverMessage));
-    lines.push(detailRow('Time', formatDateTime(apiError.timestamp)));
-    lines.push(detailRow('Reference', apiError.correlationId));
-    lines.push(detailRow('Reason code', apiError.reasonCode));
+    lines.push(detailRow('time', formatDateTime(apiError.timestamp)));
+    lines.push(detailRow('reference', apiError.correlationId));
+    lines.push(detailRow('reason code', apiError.reasonCode));
     return lines.filter(Boolean).join('');
   }
 
@@ -312,7 +312,7 @@
         <span class="diagnostic-console-entry-icon diagnostic-console-entry-icon--${escapeHtml(entry.severity)}">${escapeHtml(severityIcon(entry.severity))}</span>
         <span class="diagnostic-console-entry-source">${escapeHtml(entry.source)}</span>
         <span class="diagnostic-console-entry-summary">${escapeHtml(entry.summary)}</span>
-        <span class="diagnostic-console-entry-toggle">${escapeHtml(copyText('CONSOLE_ACTION_SHOW_DETAILS', 'Show details'))}</span>
+        <span class="diagnostic-console-entry-toggle">${escapeHtml(copyText('CONSOLE_ACTION_SHOW_DETAILS', 'show details'))}</span>
         ${sendButton}
       </summary>
       <div class="diagnostic-console-entry-detail">${renderEntryDetail(entry)}</div>

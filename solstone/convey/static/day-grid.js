@@ -629,7 +629,7 @@
       previewDay = day;
       selectedRange = null;
       syncRangeClasses();
-      announce(`range starts ${displayDay(day, config.today)} — pick the last day`);
+      announce(`range starts ${displayDay(day, config.today)}. pick the last day.`);
     }
 
     function commitRange(range) {

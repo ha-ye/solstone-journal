@@ -67,7 +67,7 @@ them in HTML.
   "facets": [{ "name": "work", "title": "Work", "color": "#4A90D9" }],
   "selected_facet": "work",
   "chat_bar": {
-    "placeholder": "Send a message...",
+    "placeholder": "send a message…",
     "attention": null,
     "sol_request": null
   },

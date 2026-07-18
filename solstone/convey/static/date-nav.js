@@ -201,7 +201,7 @@
   function weekControlLabel(day, now = new Date()) {
     const target = dateFromDay(day);
     if (!target) return '';
-    let label = `Week of ${MONTHS_SHORT[target.getMonth()]} ${target.getDate()}`;
+    let label = `week of ${MONTHS_SHORT[target.getMonth()]} ${target.getDate()}`;
     if (target.getFullYear() !== now.getFullYear()) {
       label += ` '${String(target.getFullYear()).slice(-2)}`;
     }
@@ -216,7 +216,7 @@
     const lastSunday = thisSunday ? addDays(thisSunday, -7) : null;
     if (normalized === thisSunday) return 'This week';
     if (normalized === lastSunday) return 'Last week';
-    let label = `Week of ${MONTHS_SHORT[target.getMonth()]} ${target.getDate()}`;
+    let label = `week of ${MONTHS_SHORT[target.getMonth()]} ${target.getDate()}`;
     if (target.getFullYear() !== now.getFullYear()) {
       label += `, ${target.getFullYear()}`;
     }

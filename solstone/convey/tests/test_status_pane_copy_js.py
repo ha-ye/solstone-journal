@@ -77,7 +77,7 @@ global.document = {
   }
 };
 global.window = {
-  CONVEY_COPY: { ACTION_RECONNECT: 'Reconnect' },
+  CONVEY_COPY: { ACTION_RECONNECT: 'reconnect' },
   apiJson() {
     return Promise.resolve({});
   }

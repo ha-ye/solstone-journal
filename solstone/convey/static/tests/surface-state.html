@@ -22,7 +22,7 @@
   window.CONVEY_COPY = {
     RELOAD_HINT: 'reload to try again.',
     REPORT_DEFAULT_SUBJECT: 'convey error',
-    REPORT_BUTTON_LABEL: 'Report this'
+    REPORT_BUTTON_LABEL: 'report this'
   };
   window.CONVEY_SETTINGS = { reportingEnabled: true };
   window.marked = { parse(value) { return value; } };
@@ -91,12 +91,12 @@
       }
     });
     const detail = parse(detailHtml);
-    assert('detail summary text', detail.querySelector('.surface-state-detail summary').textContent === 'Show details');
+    assert('detail summary text', detail.querySelector('.surface-state-detail summary').textContent === 'show details');
     assert('detail renders HTTP line', detail.textContent.includes('HTTP 500 Server Error · /api/test'));
     assert('detail escapes server reason', detailHtml.includes('Raw &lt;detail&gt;'));
     assert('detail renders locale timestamp', detail.textContent.includes(new Date(detailTimestamp).toLocaleString()));
     assert('detail renders reference button', !!detail.querySelector('.surface-state-copy-reference'));
-    assert('detail renders reason code', detail.textContent.includes('Reason code: parse'));
+    assert('detail renders reason code', detail.textContent.includes('reason code: parse'));
 
     let copied = '';
     const clipboardSpy = { writeText: async value => { copied = value; } };

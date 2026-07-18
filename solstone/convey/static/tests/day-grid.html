@@ -89,6 +89,10 @@
     return new Promise((resolve) => requestAnimationFrame(() => resolve()));
   }
 
+  function tick() {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
   function setPointer(coarse) {
     window.matchMedia = (query) => ({
       matches: query === '(pointer: coarse)' ? coarse : Boolean(nativeMatchMedia?.(query)?.matches),
@@ -493,6 +497,8 @@
     mar4 = root.querySelector('[data-daygrid-date="20260304"]');
     mar20 = root.querySelector('[data-daygrid-date="20260320"]');
     clickObserved(selected.host, mar4);
+    await tick();
+    equal('select first click live prompt', root.querySelector('.daygrid-live')?.textContent, 'range starts Today. pick the last day.');
     clickObserved(selected.host, mar20);
     equal('select forward order range from', selected.ranges[0]?.from, '20260304');
     equal('select forward order range to', selected.ranges[0]?.to, '20260320');

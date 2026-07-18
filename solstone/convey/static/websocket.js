@@ -378,7 +378,7 @@
             app: 'system',
             icon: '⚠️',
             title: 'connection lost',
-            message: 'reconnecting — some features may be delayed',
+            message: 'reconnecting. some features may be delayed',
             dismissible: false
           });
 	          if (id != null) {

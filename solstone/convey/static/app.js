@@ -69,13 +69,13 @@
       pill.style.background = '';
       pill.style.color = '';
       pill.style.borderColor = '';
-      pill.title = 'Click to show all facets';
+      pill.title = 'show all facets';
     } else {
       pill.classList.remove('selected');
       pill.style.background = '';
       pill.style.color = '';
       pill.style.borderColor = '';
-      pill.title = `Click to filter by ${facet.title}`;
+      pill.title = `filter by ${facet.title}`;
     }
     pill.setAttribute('aria-pressed', String(isSelected));
     pill.style.boxShadow = '';
@@ -250,7 +250,7 @@
       const addButton = document.createElement('button');
       addButton.className = 'facet-add-pill';
       addButton.textContent = '+';
-      addButton.title = 'Create new facet';
+      addButton.title = 'create new facet';
       addButton.setAttribute('aria-label', 'add facet');
       addButton.onclick = () => openFacetCreateModal();
       facetPillsContainer.appendChild(addButton);
@@ -1364,7 +1364,7 @@
         <h3>create new facet</h3>
         <div class="facet-create-field">
           <label for="facetCreateTitle">title</label>
-          <input type="text" id="facetCreateTitle" placeholder="e.g., Work Projects" autofocus>
+          <input type="text" id="facetCreateTitle" placeholder="e.g. work projects" autofocus>
           <div class="facet-create-slug" id="facetCreateSlug"></div>
           <div class="facet-create-error" id="facetCreateError"></div>
         </div>
@@ -1637,26 +1637,26 @@ window.SurfaceState = (() => {
 
     const timestamp = formatDetailTimestamp(detail.timestamp);
     if (timestamp) {
-      lines.push(`<div>Time: ${escapeHtml(timestamp)}</div>`);
+      lines.push(`<div>time: ${escapeHtml(timestamp)}</div>`);
     }
 
     if (hasValue(detail.correlationId)) {
       const correlationId = String(detail.correlationId);
       lines.push(
-        `<div>Reference: <button type="button" class="surface-state-copy-reference" data-copy-value="${escapeHtml(correlationId)}">`
+        `<div>reference: <button type="button" class="surface-state-copy-reference" data-copy-value="${escapeHtml(correlationId)}">`
         + `${escapeHtml(correlationId)} <span class="surface-state-copy-affordance">(click to copy)</span>`
         + `</button></div>`
       );
     }
 
     if (hasValue(detail.reasonCode)) {
-      lines.push(`<div>Reason code: ${escapeHtml(detail.reasonCode)}</div>`);
+      lines.push(`<div>reason code: ${escapeHtml(detail.reasonCode)}</div>`);
     }
 
     if (!lines.length) {
       return '';
     }
-    return `<details class="surface-state-detail"><summary>Show details</summary>${lines.join('')}</details>`;
+    return `<details class="surface-state-detail"><summary>show details</summary>${lines.join('')}</details>`;
   }
 
   document.addEventListener('click', event => {

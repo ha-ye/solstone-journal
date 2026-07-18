@@ -101,11 +101,11 @@
       window.DateNav.isSelectableFutureDay('20991231', { allow_future: false }, now),
       false
     );
-    equal('week control label', window.DateNav.weekControlLabel('20260712', now), 'Week of Jul 12');
-    equal('week control label other year', window.DateNav.weekControlLabel('20251228', now), "Week of Dec 28 '25");
+    equal('week control label', window.DateNav.weekControlLabel('20260712', now), 'week of Jul 12');
+    equal('week control label other year', window.DateNav.weekControlLabel('20251228', now), "week of Dec 28 '25");
     equal('week heading this week', window.DateNav.weekHeadingLabel('20260712', now), 'This week');
     equal('week heading last week', window.DateNav.weekHeadingLabel('20260705', now), 'Last week');
-    equal('week heading older week', window.DateNav.weekHeadingLabel('20260628', now), 'Week of Jun 28');
+    equal('week heading older week', window.DateNav.weekHeadingLabel('20260628', now), 'week of Jun 28');
     equal('stepDay day step', window.DateNav.stepDay('20260308', 1, {}), '20260309');
     equal('stepDay week step', window.DateNav.stepDay('20260308', 1, { step: 'week' }), '20260315');
     equal('sundayOf mid-week', window.DateNav.sundayOf('20260310'), '20260308');
@@ -204,7 +204,7 @@
       }
     );
     equal('week mounted canonical day', window.DateNav.day(), '20260308');
-    equal('week mounted control label', document.querySelector('[data-date-nav-label]')?.textContent, 'Week of Mar 8');
+    equal('week mounted control label', document.querySelector('[data-date-nav-label]')?.textContent, 'week of Mar 8');
     document.querySelector('[data-date-nav-trigger]')?.click();
     await tick();
     await tick();
