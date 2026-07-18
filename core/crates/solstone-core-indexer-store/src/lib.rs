@@ -11,6 +11,7 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub enum StoreError {
     Discovery(solstone_core_indexer::discovery::DiscoveryError),
+    Edge(solstone_core_indexer::edges::EdgeError),
     Io(io::Error),
     Path(solstone_core_indexer::paths::JournalPathError),
     Sql(rusqlite::Error),
@@ -23,6 +24,7 @@ impl fmt::Display for StoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             StoreError::Discovery(error) => write!(formatter, "{error}"),
+            StoreError::Edge(error) => write!(formatter, "{error}"),
             StoreError::Io(error) => write!(formatter, "{error}"),
             StoreError::Path(error) => write!(formatter, "{error}"),
             StoreError::Sql(error) => write!(formatter, "{error}"),
@@ -48,6 +50,12 @@ impl std::error::Error for StoreError {}
 impl From<solstone_core_indexer::discovery::DiscoveryError> for StoreError {
     fn from(error: solstone_core_indexer::discovery::DiscoveryError) -> Self {
         StoreError::Discovery(error)
+    }
+}
+
+impl From<solstone_core_indexer::edges::EdgeError> for StoreError {
+    fn from(error: solstone_core_indexer::edges::EdgeError) -> Self {
+        StoreError::Edge(error)
     }
 }
 

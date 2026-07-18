@@ -9,6 +9,10 @@ use std::time::UNIX_EPOCH;
 use rusqlite::{Connection, OptionalExtension, params};
 use solstone_core_indexer::content::{Family, classify, produce_chunks};
 use solstone_core_indexer::discovery::discover_indexable_files;
+use solstone_core_indexer::edges::candidates::EdgeResolver;
+use solstone_core_indexer::edges::discovery::discover_edge_files;
+use solstone_core_indexer::edges::registry::edge_source_for_rel;
+use solstone_core_indexer::edges::{NormalizedEdge, extract_file_edges};
 use solstone_core_indexer::entity_search::{
     ENTITY_SEARCH_WATERMARK_COUNT_PATH, ENTITY_SEARCH_WATERMARK_MTIME_PATH, EntitySearchBuild,
     build_entity_search,
@@ -27,7 +31,28 @@ pub struct ScanReport {
     pub indexed: usize,
     pub removed: usize,
     pub skipped: usize,
+    pub edges_indexed: usize,
+    pub edges_removed: usize,
+    pub edge_rows_inserted: usize,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EdgeRebuildReport {
+    pub files: usize,
+    pub rows: usize,
+    pub drops: usize,
+    pub failed: usize,
+    pub skipped: usize,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct EdgeScanReport {
+    indexed: usize,
+    removed: usize,
+    rows_inserted: usize,
+    warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,43 +144,275 @@ pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanRepor
     )?);
 
     index_entity_search(&conn, journal, full)?;
+    let edge_report = reconcile_edges(&conn, journal, full, today)?;
+    report.edges_indexed = edge_report.indexed;
+    report.edges_removed = edge_report.removed;
+    report.edge_rows_inserted = edge_report.rows_inserted;
+    report.warnings.extend(edge_report.warnings);
     Ok(report)
 }
 
 pub fn rescan_file(journal: &Path, input: &Path) -> Result<RescanFileStatus, StoreError> {
     let (rel, path) = resolve_rescan_target(journal, input)?;
-    let Some(family) = classify(&rel) else {
+    let family = classify(&rel);
+    let edge_source = edge_source_for_rel(&rel)?;
+    if family.is_none() && edge_source.is_none() {
         return Ok(RescanFileStatus::Declined);
-    };
+    }
     if !path.is_file() {
         return Err(StoreError::MissingFile(path));
     }
     let mtime = file_mtime_secs(&path)?;
     let conn = open_index(journal)?;
-    conn.execute("DELETE FROM chunks WHERE path=?", [&rel])?;
-    match index_file(&conn, journal, &rel, &path, family) {
-        Ok(warnings) => {
-            let mut warnings = warnings;
-            conn.execute(
-                "REPLACE INTO files(path, mtime) VALUES (?, ?)",
-                params![rel, mtime],
-            )?;
-            if let Some(rel_segment) = segment_rel_for_file(&rel) {
-                let mut affected_segments = BTreeSet::new();
-                affected_segments.insert(rel_segment);
-                warnings.extend(index_segment_aggregates(
-                    &conn,
-                    journal,
-                    &affected_segments,
-                )?);
+    let mut warnings = Vec::new();
+    if let Some(family) = family {
+        conn.execute("DELETE FROM chunks WHERE path=?", [&rel])?;
+        match index_file(&conn, journal, &rel, &path, family) {
+            Ok(content_warnings) => {
+                warnings.extend(content_warnings);
+                conn.execute(
+                    "REPLACE INTO files(path, mtime) VALUES (?, ?)",
+                    params![rel, mtime],
+                )?;
+                if let Some(rel_segment) = segment_rel_for_file(&rel) {
+                    let mut affected_segments = BTreeSet::new();
+                    affected_segments.insert(rel_segment);
+                    warnings.extend(index_segment_aggregates(
+                        &conn,
+                        journal,
+                        &affected_segments,
+                    )?);
+                }
             }
-            Ok(RescanFileStatus::Indexed { warnings })
+            Err(warning) => {
+                return Err(StoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    warning,
+                )));
+            }
         }
-        Err(warning) => Err(StoreError::Io(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            warning,
-        ))),
     }
+    if edge_source.is_some() {
+        let mut resolver = EdgeResolver::new(journal);
+        delete_edges_for_path(&conn, &rel)?;
+        let result = process_edge_file(&conn, journal, &rel, &path, &mut resolver)?;
+        warnings.extend(result.warnings);
+        replace_edge_file_mtime(&conn, &rel, mtime)?;
+    }
+    Ok(RescanFileStatus::Indexed { warnings })
+}
+
+pub fn rebuild_edges(journal: &Path) -> Result<EdgeRebuildReport, StoreError> {
+    let conn = open_index(journal)?;
+    conn.execute("DELETE FROM edges", [])?;
+    conn.execute("DELETE FROM edge_files", [])?;
+    conn.execute(
+        "REPLACE INTO edge_files(path, mtime) VALUES (?, ?)",
+        params![EDGES_SCHEMA_PATH, EDGES_SCHEMA_VERSION],
+    )?;
+
+    let files = discover_edge_files(journal)?;
+    let mut resolver = EdgeResolver::new(journal);
+    let mut report = EdgeRebuildReport::default();
+    for (rel, path) in files {
+        let Ok(mtime) = file_mtime_secs(&path) else {
+            continue;
+        };
+        let result = process_edge_file(&conn, journal, &rel, &path, &mut resolver)?;
+        report.files += 1;
+        report.rows += result.rows_inserted;
+        report.drops += result.drops;
+        report.failed += usize::from(result.failed);
+        report.skipped += usize::from(result.invalid_segment);
+        report.warnings.extend(result.warnings);
+        replace_edge_file_mtime(&conn, &rel, mtime)?;
+    }
+    Ok(report)
+}
+
+const EDGES_SCHEMA_PATH: &str = "edges:__schema__";
+const EDGES_SCHEMA_VERSION: i64 = 1;
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct EdgeProcessResult {
+    rows_inserted: usize,
+    drops: usize,
+    failed: bool,
+    invalid_segment: bool,
+    warnings: Vec<String>,
+}
+
+fn reconcile_edges(
+    conn: &Connection,
+    journal: &Path,
+    full: bool,
+    today: &str,
+) -> Result<EdgeScanReport, StoreError> {
+    let mut files = discover_edge_files(journal)?;
+    if !full {
+        files.retain(|rel, _path| !is_historical_day(rel, today));
+    }
+
+    let db_mtimes = edge_file_mtimes(conn)?;
+    let mut to_index = Vec::new();
+    for (rel, path) in &files {
+        let Ok(mtime) = file_mtime_secs(path) else {
+            continue;
+        };
+        if db_mtimes.get(rel) != Some(&mtime) {
+            to_index.push((rel.clone(), path.clone(), mtime));
+        }
+    }
+
+    let discovered: BTreeSet<String> = files.keys().cloned().collect();
+    let mut removed = Vec::new();
+    for rel in db_mtimes.keys() {
+        let in_scope = full || !is_historical_day(rel, today);
+        if in_scope && !discovered.contains(rel) {
+            removed.push(rel.clone());
+        }
+    }
+
+    let mut resolver = EdgeResolver::new(journal);
+    let mut report = EdgeScanReport::default();
+    for (rel, path, mtime) in &to_index {
+        delete_edges_for_path(conn, rel)?;
+        let result = process_edge_file(conn, journal, rel, path, &mut resolver)?;
+        report.indexed += 1;
+        report.rows_inserted += result.rows_inserted;
+        report.warnings.extend(result.warnings);
+        replace_edge_file_mtime(conn, rel, *mtime)?;
+    }
+    for rel in &removed {
+        delete_edges_for_path(conn, rel)?;
+    }
+    report.removed = removed.len();
+    Ok(report)
+}
+
+fn process_edge_file(
+    conn: &Connection,
+    _journal: &Path,
+    rel: &str,
+    path: &Path,
+    resolver: &mut EdgeResolver,
+) -> Result<EdgeProcessResult, StoreError> {
+    resolver.begin_file();
+    let extracted = extract_file_edges(rel, path, resolver);
+    let drops = resolver.drops();
+    match extracted {
+        Ok(extracted) => {
+            if let Some(segment) = extracted.invalid_segment {
+                return Ok(EdgeProcessResult {
+                    drops,
+                    invalid_segment: true,
+                    warnings: vec![format!(
+                        "Skipping edge extraction for {rel}: invalid segment key {segment}"
+                    )],
+                    ..EdgeProcessResult::default()
+                });
+            }
+            match insert_normalized_edges(conn, &extracted.rows) {
+                Ok(rows_inserted) => Ok(EdgeProcessResult {
+                    rows_inserted,
+                    drops,
+                    ..EdgeProcessResult::default()
+                }),
+                Err(error) => Ok(EdgeProcessResult {
+                    drops,
+                    failed: true,
+                    warnings: vec![format!("Skipping edge extraction for {rel}: {error}")],
+                    ..EdgeProcessResult::default()
+                }),
+            }
+        }
+        Err(error) => Ok(EdgeProcessResult {
+            drops,
+            failed: true,
+            warnings: vec![format!("Skipping edge extraction for {rel}: {error}")],
+            ..EdgeProcessResult::default()
+        }),
+    }
+}
+
+fn edge_file_mtimes(conn: &Connection) -> Result<BTreeMap<String, i64>, StoreError> {
+    let mut statement =
+        conn.prepare("SELECT path, mtime FROM edge_files WHERE path != ? ORDER BY path")?;
+    let rows = statement.query_map([EDGES_SCHEMA_PATH], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut mtimes = BTreeMap::new();
+    for row in rows {
+        let (path, mtime) = row?;
+        mtimes.insert(path, mtime);
+    }
+    Ok(mtimes)
+}
+
+fn delete_edges_for_path(conn: &Connection, path: &str) -> Result<usize, StoreError> {
+    let deleted = conn.execute("DELETE FROM edges WHERE path=?", [path])?;
+    if path != EDGES_SCHEMA_PATH {
+        conn.execute("DELETE FROM edge_files WHERE path=?", [path])?;
+    }
+    Ok(deleted)
+}
+
+fn replace_edge_file_mtime(conn: &Connection, rel: &str, mtime: i64) -> Result<(), StoreError> {
+    conn.execute(
+        "REPLACE INTO edge_files(path, mtime) VALUES (?, ?)",
+        params![rel, mtime],
+    )?;
+    Ok(())
+}
+
+fn insert_normalized_edges(
+    conn: &Connection,
+    rows: &[NormalizedEdge],
+) -> Result<usize, StoreError> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    conn.execute("SAVEPOINT edge_insert", [])?;
+    let insert_result = insert_normalized_edges_inner(conn, rows);
+    match insert_result {
+        Ok(()) => {
+            conn.execute("RELEASE SAVEPOINT edge_insert", [])?;
+            Ok(rows.len())
+        }
+        Err(error) => {
+            let _ = conn.execute("ROLLBACK TO SAVEPOINT edge_insert", []);
+            let _ = conn.execute("RELEASE SAVEPOINT edge_insert", []);
+            Err(error)
+        }
+    }
+}
+
+fn insert_normalized_edges_inner(
+    conn: &Connection,
+    rows: &[NormalizedEdge],
+) -> Result<(), StoreError> {
+    for row in rows {
+        conn.execute(
+            "INSERT INTO edges(src, dst, kind, directed, src_name, dst_name, day, facet, source, path, anchor, label, ts, weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                row.src.as_str(),
+                row.dst.as_str(),
+                row.kind.as_str(),
+                row.directed,
+                row.src_name.as_deref(),
+                row.dst_name.as_deref(),
+                row.day.as_deref(),
+                row.facet.as_deref(),
+                row.source.as_str(),
+                row.path.as_str(),
+                row.anchor.as_deref(),
+                row.label.as_deref(),
+                row.ts,
+                row.weight,
+            ],
+        )?;
+    }
+    Ok(())
 }
 
 fn load_file_mtimes(conn: &Connection) -> Result<BTreeMap<String, i64>, StoreError> {
@@ -456,6 +713,279 @@ mod tests {
             row.get(0)
         })
         .expect("file mtime row")
+    }
+
+    fn seed_edge_entity(root: &Path, entity_id: &str, name: &str) {
+        write(
+            root,
+            &format!("entities/{entity_id}/entity.json"),
+            &format!(r#"{{"name":"{name}","type":"Person"}}"#),
+        );
+        write(
+            root,
+            &format!("facets/work/entities/{entity_id}/entity.json"),
+            "{}",
+        );
+    }
+
+    fn edge_rows(conn: &Connection) -> Vec<(String, String, i64, String, String)> {
+        conn.prepare(
+            "SELECT src, dst, weight, anchor, path FROM edges ORDER BY path, src, dst, weight",
+        )
+        .expect("prepare edge rows")
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })
+        .expect("query edge rows")
+        .map(|row| row.expect("edge row"))
+        .collect()
+    }
+
+    fn edge_file_paths(conn: &Connection) -> Vec<String> {
+        conn.prepare("SELECT path FROM edge_files ORDER BY path")
+            .expect("prepare edge files")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query edge files")
+            .map(|row| row.expect("edge file row"))
+            .collect()
+    }
+
+    #[test]
+    fn scan_indexes_copresence_edges_and_second_scan_is_zero_delta() {
+        let root = temp_root("edge-copresence");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        seed_edge_entity(&root, "cora", "Cora Edge");
+        write(
+            &root,
+            "facets/work/entities/20260304.jsonl",
+            r#"{"name":"Alice Edge","segments":["20260304/default/090000_300","20260304/default/090500_300"]}
+{"name":"Bob Edge","segments":["20260304/default/090000_300","20260304/default/090500_300"]}
+{"name":"Cora Edge","segments":["20260304/default/090500_300"]}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan edge copresence");
+        assert_eq!(report.edges_indexed, 1);
+        assert_eq!(report.edge_rows_inserted, 3);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            edge_rows(&conn),
+            vec![
+                (
+                    "alice".to_string(),
+                    "bob".to_string(),
+                    2,
+                    "20260304/default/090000_300".to_string(),
+                    "facets/work/entities/20260304.jsonl".to_string(),
+                ),
+                (
+                    "alice".to_string(),
+                    "cora".to_string(),
+                    1,
+                    "20260304/default/090500_300".to_string(),
+                    "facets/work/entities/20260304.jsonl".to_string(),
+                ),
+                (
+                    "bob".to_string(),
+                    "cora".to_string(),
+                    1,
+                    "20260304/default/090500_300".to_string(),
+                    "facets/work/entities/20260304.jsonl".to_string(),
+                ),
+            ]
+        );
+        drop(conn);
+
+        let second = scan_journal(&root, true, "20260717").expect("second edge scan");
+        assert_eq!(second.edges_indexed, 0);
+        assert_eq!(second.edge_rows_inserted, 0);
+        let conn = Connection::open(db_path(&root)).expect("open db after second scan");
+        assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 3);
+        fs::remove_dir_all(root).expect("cleanup edge copresence root");
+    }
+
+    #[test]
+    fn scan_edge_failure_deletes_prior_rows_advances_mtime_and_keeps_sibling() {
+        let root = temp_root("edge-failure");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        write(
+            &root,
+            "facets/work/entities/20260304.jsonl",
+            r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/20260230.jsonl",
+            r#"{"name":"Alice Edge","segments":["s2"]}
+{"name":"Bob Edge","segments":["s2"]}
+"#,
+        );
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "INSERT INTO edges(src, dst, kind, directed, source, path, weight) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "stale",
+                "edge",
+                "co-present",
+                0_i64,
+                "co-presence",
+                "facets/work/entities/20260230.jsonl",
+                1_i64,
+            ],
+        )
+        .expect("seed stale edge");
+        conn.execute(
+            "REPLACE INTO edge_files(path, mtime) VALUES (?, ?)",
+            params!["facets/work/entities/20260230.jsonl", 0_i64],
+        )
+        .expect("seed stale edge mtime");
+        drop(conn);
+
+        let report = scan_journal(&root, true, "20260717").expect("scan edge failure");
+        assert_eq!(report.edges_indexed, 2);
+        assert_eq!(report.edge_rows_inserted, 1);
+        assert!(report.warnings.iter().any(|warning| {
+            warning.starts_with("Skipping edge extraction for facets/work/entities/20260230.jsonl")
+        }));
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260230.jsonl'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='facets/work/entities/20260230.jsonl'"
+            ),
+            1
+        );
+        fs::remove_dir_all(root).expect("cleanup edge failure root");
+    }
+
+    #[test]
+    fn scan_invalid_segment_edge_file_skips_and_advances_mtime() {
+        let root = temp_root("edge-invalid-segment");
+        write(
+            &root,
+            "facets/999999_300/entities/20260304.jsonl",
+            r#"{"name":"Nobody","segments":["s1"]}"#,
+        );
+        let report = scan_journal(&root, true, "20260717").expect("scan invalid segment");
+        assert_eq!(report.edges_indexed, 1);
+        assert_eq!(report.edge_rows_inserted, 0);
+        assert!(report.warnings.iter().any(|warning| warning.starts_with(
+            "Skipping edge extraction for facets/999999_300/entities/20260304.jsonl"
+        )));
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='facets/999999_300/entities/20260304.jsonl'"
+            ),
+            1
+        );
+        fs::remove_dir_all(root).expect("cleanup invalid segment edge root");
+    }
+
+    #[test]
+    fn rebuild_edges_is_idempotent_and_preserves_content_tables_and_sentinel() {
+        let root = temp_root("edge-rebuild");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        write(
+            &root,
+            "chronicle/20260717/talents/flow.md",
+            "# Flow\n\ncontent",
+        );
+        write(
+            &root,
+            "facets/work/entities/20260304.jsonl",
+            r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+        );
+        scan_journal(&root, true, "20260717").expect("scan before rebuild");
+        let conn = Connection::open(db_path(&root)).expect("open db before rebuild");
+        let chunk_count = count(&conn, "SELECT count(*) FROM chunks");
+        let files_count = count(&conn, "SELECT count(*) FROM files");
+        let before_rows = edge_rows(&conn);
+        drop(conn);
+
+        let first = rebuild_edges(&root).expect("first rebuild edges");
+        assert_eq!(first.files, 1);
+        assert_eq!(first.rows, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db after rebuild");
+        assert_eq!(count(&conn, "SELECT count(*) FROM chunks"), chunk_count);
+        assert_eq!(count(&conn, "SELECT count(*) FROM files"), files_count);
+        assert_eq!(edge_rows(&conn), before_rows);
+        let sentinel: i64 = conn
+            .query_row(
+                "SELECT mtime FROM edge_files WHERE path='edges:__schema__'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("edge schema sentinel");
+        assert_eq!(sentinel, 1);
+        drop(conn);
+
+        let second = rebuild_edges(&root).expect("second rebuild edges");
+        assert_eq!(second.rows, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db after second rebuild");
+        assert_eq!(edge_rows(&conn), before_rows);
+        fs::remove_dir_all(root).expect("cleanup edge rebuild root");
+    }
+
+    #[test]
+    fn rescan_file_indexes_edge_rows_for_facet_entity_file() {
+        let root = temp_root("edge-rescan-file");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        write(
+            &root,
+            "facets/work/entities/20260304.jsonl",
+            r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+        );
+
+        assert_eq!(
+            rescan_file(&root, Path::new("facets/work/entities/20260304.jsonl"))
+                .expect("rescan edge file"),
+            RescanFileStatus::Indexed {
+                warnings: Vec::new()
+            }
+        );
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            1
+        );
+        fs::remove_dir_all(root).expect("cleanup edge rescan file root");
     }
 
     #[test]
@@ -1054,14 +1584,19 @@ mod tests {
         );
 
         assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 0);
-        let edge_files = conn
-            .prepare("SELECT path FROM edge_files ORDER BY path")
-            .expect("prepare edge files")
-            .query_map([], |row| row.get::<_, String>(0))
-            .expect("query edge files")
-            .map(|row| row.expect("edge file row"))
-            .collect::<Vec<_>>();
-        assert_eq!(edge_files, vec!["edges:__schema__".to_string()]);
+        assert_eq!(report.edges_indexed, 5);
+        assert_eq!(report.edge_rows_inserted, 0);
+        assert_eq!(
+            edge_file_paths(&conn),
+            vec![
+                "edges:__schema__".to_string(),
+                "facets/work/entities/123.jsonl".to_string(),
+                "facets/work/entities/20260304.jsonl".to_string(),
+                "facets/work/entities/99999999.jsonl".to_string(),
+                "facets/work/entities/empty.jsonl".to_string(),
+                "facets/work/entities/some-slug.jsonl".to_string(),
+            ]
+        );
         fs::remove_dir_all(root).expect("cleanup facet entities root");
     }
 

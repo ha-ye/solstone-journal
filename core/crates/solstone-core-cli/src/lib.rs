@@ -3,7 +3,7 @@
 
 use std::ffi::{OsStr, OsString};
 
-pub const USAGE: &str = "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rescan | --rescan-full | --rescan-file PATH]\n";
+pub const USAGE: &str = "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -22,6 +22,7 @@ pub struct JournalPathOptions {
 pub struct IndexerOptions {
     pub journal_override: Option<OsString>,
     pub reset: bool,
+    pub rebuild_edges: bool,
     pub rescan: bool,
     pub rescan_full: bool,
     pub rescan_file: Option<OsString>,
@@ -80,6 +81,7 @@ fn parse_journal_path(args: &[OsString]) -> Result<JournalPathOptions, UsageErro
 fn parse_indexer(args: &[OsString]) -> Result<IndexerOptions, UsageError> {
     let mut journal_override = None;
     let mut reset = false;
+    let mut rebuild_edges = false;
     let mut rescan = false;
     let mut rescan_full = false;
     let mut rescan_file = None;
@@ -91,6 +93,14 @@ fn parse_indexer(args: &[OsString]) -> Result<IndexerOptions, UsageError> {
                 return Err(UsageError);
             }
             reset = true;
+            index += 1;
+            continue;
+        }
+        if arg == OsStr::new("--rebuild-edges") {
+            if rebuild_edges {
+                return Err(UsageError);
+            }
+            rebuild_edges = true;
             index += 1;
             continue;
         }
@@ -144,6 +154,7 @@ fn parse_indexer(args: &[OsString]) -> Result<IndexerOptions, UsageError> {
     Ok(IndexerOptions {
         journal_override,
         reset,
+        rebuild_edges,
         rescan,
         rescan_full,
         rescan_file,
@@ -153,7 +164,14 @@ fn parse_indexer(args: &[OsString]) -> Result<IndexerOptions, UsageError> {
 fn is_indexer_flag(value: &OsStr) -> bool {
     matches!(
         value.to_str(),
-        Some("--journal" | "--reset" | "--rescan" | "--rescan-full" | "--rescan-file")
+        Some(
+            "--journal"
+                | "--reset"
+                | "--rebuild-edges"
+                | "--rescan"
+                | "--rescan-full"
+                | "--rescan-file",
+        )
     )
 }
 
@@ -210,6 +228,7 @@ mod tests {
             Ok(Command::Indexer(IndexerOptions {
                 journal_override: None,
                 reset: false,
+                rebuild_edges: false,
                 rescan: false,
                 rescan_full: false,
                 rescan_file: None,
@@ -230,6 +249,7 @@ mod tests {
             Ok(Command::Indexer(IndexerOptions {
                 journal_override: Some(OsString::from("/tmp/journal")),
                 reset: true,
+                rebuild_edges: false,
                 rescan: false,
                 rescan_full: true,
                 rescan_file: None,
@@ -248,9 +268,25 @@ mod tests {
             Ok(Command::Indexer(IndexerOptions {
                 journal_override: None,
                 reset: false,
+                rebuild_edges: false,
                 rescan: false,
                 rescan_full: false,
                 rescan_file: Some(OsString::from("20240101/talents/flow.md")),
+            }))
+        );
+    }
+
+    #[test]
+    fn accepts_indexer_rebuild_edges_composed_with_rescan() {
+        assert_eq!(
+            evaluate_args(&args(&["indexer", "--rebuild-edges", "--rescan"])),
+            Ok(Command::Indexer(IndexerOptions {
+                journal_override: None,
+                reset: false,
+                rebuild_edges: true,
+                rescan: true,
+                rescan_full: false,
+                rescan_file: None,
             }))
         );
     }
@@ -263,6 +299,7 @@ mod tests {
             &["indexer", "--rescan-file", "--rescan"][..],
             &["indexer", "--journal", "--reset"][..],
             &["indexer", "--reset", "--reset"][..],
+            &["indexer", "--rebuild-edges", "--rebuild-edges"][..],
             &["indexer", "--rescan-file", "a.md", "--rescan"][..],
             &["indexer", "--rescan-file", "a.md", "--rescan-full"][..],
             &["indexer", "--unknown"][..],
@@ -372,7 +409,7 @@ mod tests {
     fn usage_lists_supported_commands() {
         assert_eq!(
             USAGE,
-            "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rescan | --rescan-full | --rescan-file PATH]\n"
+            "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n"
         );
     }
 }

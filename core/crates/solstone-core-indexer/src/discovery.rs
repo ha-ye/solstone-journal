@@ -82,7 +82,7 @@ pub fn discover_indexable_files(
     Ok(files)
 }
 
-fn discover_from_root(
+pub(crate) fn discover_from_root(
     root: &Path,
     rel_root: &Path,
     pattern: &str,
@@ -107,7 +107,7 @@ fn discover_from_root(
     Ok(())
 }
 
-fn rooted_pattern(root: &Path, pattern: &str) -> Result<String, DiscoveryError> {
+pub(crate) fn rooted_pattern(root: &Path, pattern: &str) -> Result<String, DiscoveryError> {
     let root = root
         .to_str()
         .ok_or_else(|| DiscoveryError::NonUtf8Root(root.to_path_buf()))?;
@@ -116,7 +116,7 @@ fn rooted_pattern(root: &Path, pattern: &str) -> Result<String, DiscoveryError> 
     Ok(format!("{escaped}{separator}{pattern}"))
 }
 
-fn path_to_posix(path: &Path) -> Option<String> {
+pub(crate) fn path_to_posix(path: &Path) -> Option<String> {
     let mut parts = Vec::new();
     for part in path.components() {
         parts.push(part.as_os_str().to_str()?);

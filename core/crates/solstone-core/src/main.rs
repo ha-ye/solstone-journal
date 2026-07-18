@@ -8,7 +8,9 @@ use solstone_core_cli::{
     Command, IndexerOptions, JournalPathOptions, USAGE, evaluate_args, version_line,
 };
 use solstone_core_indexer_store::db::reset_index;
-use solstone_core_indexer_store::scan::{RescanFileStatus, rescan_file, scan_journal};
+use solstone_core_indexer_store::scan::{
+    RescanFileStatus, rebuild_edges, rescan_file, scan_journal,
+};
 use solstone_core_journal::{
     ConfigError, HomeError, Source, discover_home, ensure_journal_dir_with_label,
     read_config_journal, resolve_journal_path,
@@ -72,7 +74,12 @@ fn run_journal_path(options: JournalPathOptions) -> Result<JournalPathLine, Jour
 }
 
 fn run_indexer(options: IndexerOptions) -> ExitCode {
-    if !options.reset && !options.rescan && !options.rescan_full && options.rescan_file.is_none() {
+    if !options.reset
+        && !options.rebuild_edges
+        && !options.rescan
+        && !options.rescan_full
+        && options.rescan_file.is_none()
+    {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
     }
@@ -97,6 +104,20 @@ fn run_indexer(options: IndexerOptions) -> ExitCode {
     {
         eprintln!("indexer reset failed: {error}");
         return ExitCode::from(EXIT_TEMPFAIL);
+    }
+
+    if options.rebuild_edges {
+        match rebuild_edges(&line.path) {
+            Ok(report) => {
+                for warning in report.warnings {
+                    eprintln!("warning: {warning}");
+                }
+            }
+            Err(error) => {
+                eprintln!("indexer edge rebuild failed: {error}");
+                return ExitCode::from(EXIT_TEMPFAIL);
+            }
+        }
     }
 
     if let Some(path) = options.rescan_file {
