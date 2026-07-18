@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 sol pbc
 
+//! Entity-search tolerates malformed internal domain field values by skipping
+//! wrong-typed values instead of rendering them or aborting indexing:
+//! `name`/`type` fall back, non-string `description` is omitted, `aka`/`tags`
+//! render only string list members, and day parsing accepts ASCII digits only.
+
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
@@ -452,6 +457,70 @@ mod tests {
         assert_eq!(row.day, ts_to_day(&json!(1767249000000i64)));
         assert_eq!(row.idx, 0);
         fs::remove_dir_all(root).expect("cleanup identity-only root");
+    }
+
+    #[test]
+    fn malformed_identity_fields_fall_back_and_filter_aka() {
+        let root = temp_root("malformed-identity-fields");
+        write(
+            &root,
+            "entities/bad_name/entity.json",
+            r#"{"name":123,"type":[],"aka":["Al",7,null]}"#,
+        );
+        write(
+            &root,
+            "entities/no_aka/entity.json",
+            r#"{"name":"No Aka","type":"Person","aka":"notalist"}"#,
+        );
+
+        let build = build_entity_search(&root).expect("build malformed identity fields");
+        assert_eq!(build.count, 2);
+        assert_eq!(build.rows.len(), 2);
+        assert_eq!(
+            build.rows[0].content,
+            "Bad Name (Unknown)\nAlso known as: Al"
+        );
+        assert_eq!(build.rows[1].content, "No Aka (Person)");
+        assert!(!build.rows[1].content.contains("Also known as:"));
+        fs::remove_dir_all(root).expect("cleanup malformed identity fields root");
+    }
+
+    #[test]
+    fn malformed_relationship_fields_are_skipped_and_day_falls_back() {
+        let root = temp_root("malformed-relationship-fields");
+        write(
+            &root,
+            "entities/alice/entity.json",
+            r#"{"name":"Alice","type":"Person"}"#,
+        );
+        write(
+            &root,
+            "facets/personal/entities/alice/entity.json",
+            r#"{"description":null,"tags":[1,2],"last_seen":"１２３４５６７８","updated_at":1767249000000}"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/alice/entity.json",
+            r#"{"description":42,"tags":[1,2]}"#,
+        );
+
+        let build = build_entity_search(&root).expect("build malformed relationship fields");
+        assert_eq!(build.count, 3);
+        assert_eq!(build.rows.len(), 2);
+
+        let personal = &build.rows[0];
+        assert_eq!(personal.facet, "personal");
+        assert_eq!(personal.content, "Alice (Person)");
+        assert_eq!(personal.day, ts_to_day(&json!(1767249000000i64)));
+        assert!(!personal.content.contains("Tags:"));
+
+        let work = &build.rows[1];
+        assert_eq!(work.facet, "work");
+        assert_eq!(work.content, "Alice (Person)");
+        assert_eq!(work.day, "");
+        assert!(!work.content.contains("42"));
+        assert!(!work.content.contains("Tags:"));
+        fs::remove_dir_all(root).expect("cleanup malformed relationship fields root");
     }
 
     #[test]
