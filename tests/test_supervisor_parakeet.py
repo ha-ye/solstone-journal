@@ -375,8 +375,8 @@ def test_start_parakeet_server_forces_cpu_on_small_single_discrete_bundled_brain
     assert parakeet_server.read_parakeet_placement() == "cpu"
     assert (
         "parakeet-server auto placement resolved to CPU: tier=floor "
-        "tier_resident_mib=4137 parakeet_worst_case_mib=2947 margin_mib=1024 "
-        "required_mib=8108 gpu_vram_mib=6144 placement=cpu"
+        "tier_resident_mib=4147 parakeet_worst_case_mib=2947 margin_mib=1024 "
+        "required_mib=8118 gpu_vram_mib=6144 placement=cpu"
     ) in caplog.text
     assert _launch_log("cpu") in caplog.text
 

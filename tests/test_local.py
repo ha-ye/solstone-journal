@@ -2338,7 +2338,7 @@ def test_select_server_tier_vram_thresholds():
                 context_tokens=16384,
                 parallel_slots=1,
                 prompt_cache_mib=0,
-                resident_mib=4137,
+                resident_mib=4147,
             ),
         ),
         (
@@ -2348,7 +2348,7 @@ def test_select_server_tier_vram_thresholds():
                 context_tokens=16384,
                 parallel_slots=1,
                 prompt_cache_mib=0,
-                resident_mib=4137,
+                resident_mib=4147,
             ),
         ),
         (
@@ -2378,7 +2378,7 @@ def test_select_server_tier_vram_thresholds():
         assert tier == expected
         assert tier.context_tokens >= 16384
         assert tier.context_tokens > 0
-    assert local_server._FLOOR_TIER.resident_mib == 4137
+    assert local_server._FLOOR_TIER.resident_mib == 4147
     assert local_server._CAPABLE_TIER.resident_mib is None
 
 

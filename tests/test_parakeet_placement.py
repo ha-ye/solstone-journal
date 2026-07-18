@@ -58,10 +58,10 @@ def test_floor_tier_small_cards_force_cpu() -> None:
     assert decision.force_cpu is True
     assert decision.reason_code == "co_location_requires_cpu"
     assert decision.tier_name == "floor"
-    assert decision.tier_resident_mib == 4137
+    assert decision.tier_resident_mib == 4147
     assert decision.parakeet_worst_case_mib == PARAKEET_WORST_CASE_MIB
     assert decision.margin_mib == CO_FIT_MARGIN_MIB
-    assert decision.required_mib == 8108
+    assert decision.required_mib == 8118
     assert decision.vram_mib == 6144
 
 
@@ -69,8 +69,8 @@ def test_floor_tier_small_cards_force_cpu() -> None:
     ("vram_mib", "force_cpu"),
     [
         (6144, True),
-        (8107, True),
-        (8108, False),
+        (8117, True),
+        (8118, False),
         (8192, False),
     ],
 )
@@ -78,10 +78,10 @@ def test_floor_tier_placement_boundary(vram_mib: int, force_cpu: bool) -> None:
     decision = _decision(vram_mib)
 
     assert decision.tier_name == "floor"
-    assert decision.tier_resident_mib == 4137
+    assert decision.tier_resident_mib == 4147
     assert decision.parakeet_worst_case_mib == PARAKEET_WORST_CASE_MIB
     assert decision.margin_mib == CO_FIT_MARGIN_MIB
-    assert decision.required_mib == 8108
+    assert decision.required_mib == 8118
     assert decision.vram_mib == vram_mib
     assert decision.force_cpu is force_cpu
 

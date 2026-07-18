@@ -3369,7 +3369,7 @@ def test_log_context_assertion(caplog):
         context_tokens=16384,
         parallel_slots=1,
         prompt_cache_mib=0,
-        resident_mib=4137,
+        resident_mib=4147,
     )
     capable = local_server.ServerTier(
         name="capable",
