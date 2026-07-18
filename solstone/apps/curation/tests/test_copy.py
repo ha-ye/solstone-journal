@@ -58,6 +58,10 @@ def test_speaker_copy_avoids_banned_verbs():
     assert hits == {}
 
 
+def test_preview_observations_label_is_pinned_byte_for_byte():
+    assert copy_module.CUR_PREVIEW_OBSERVATIONS_LABEL == "notes moved"
+
+
 def test_curation_state_serves_copy(curation_env):
     env = curation_env()
 

@@ -52,7 +52,7 @@ CUR_ENTITY_PREVIEW_ERRORS = "Some segment updates may need attention."
 CUR_PREVIEW_AKAS_LABEL = "Aliases added"
 CUR_PREVIEW_EMAILS_LABEL = "Emails added"
 CUR_PREVIEW_FACETS_LABEL = "Facet links"
-CUR_PREVIEW_OBSERVATIONS_LABEL = "Observations moved"
+CUR_PREVIEW_OBSERVATIONS_LABEL = "notes moved"
 CUR_PREVIEW_SEGMENTS_LABEL = "Speaker labels updated"
 CUR_PREVIEW_VOICEPRINTS_LABEL = "Voice samples moved"
 
