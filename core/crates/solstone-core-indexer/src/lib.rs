@@ -2,6 +2,7 @@
 // Copyright (c) 2026 sol pbc
 
 pub mod chunker;
+pub mod content;
 pub mod discovery;
 pub mod metadata;
 pub mod paths;

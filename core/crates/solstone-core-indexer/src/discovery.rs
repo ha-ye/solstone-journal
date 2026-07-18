@@ -7,23 +7,8 @@ use std::path::{Path, PathBuf};
 
 use glob::{GlobError, Pattern, PatternError, glob};
 
+use crate::content::{PatternRoot, patterns_for_root};
 use crate::paths::CHRONICLE_DIR;
-
-pub const DAY_ROOTED_PATTERNS: &[&str] = &[
-    "*/talents/*.md",
-    "*/*/*/talents/*.md",
-    "*/*/*/talents/*/*.md",
-    "*/import.*/*/*_transcript.md",
-    "*/import.*/*/imported.md",
-];
-
-pub const STRUCTURAL_PATTERNS: &[&str] = &[
-    "facets/*/activities/*/*/*.md",
-    "facets/*/news/*.md",
-    "reflections/weekly/*.md",
-    "imports/*/summary.md",
-    "apps/*/talents/*.md",
-];
 
 #[derive(Debug)]
 pub enum DiscoveryError {
@@ -77,12 +62,12 @@ impl From<GlobError> for DiscoveryError {
     }
 }
 
-pub fn discover_markdown_files(
+pub fn discover_indexable_files(
     journal: &Path,
 ) -> Result<BTreeMap<String, PathBuf>, DiscoveryError> {
     let mut files = BTreeMap::new();
-    for pattern in STRUCTURAL_PATTERNS {
-        discover_from_root(journal, journal, pattern, &mut files)?;
+    for spec in patterns_for_root(PatternRoot::Structural) {
+        discover_from_root(journal, journal, spec.pattern, &mut files)?;
     }
 
     let chronicle = journal.join(CHRONICLE_DIR);
@@ -91,8 +76,8 @@ pub fn discover_markdown_files(
     } else {
         journal
     };
-    for pattern in DAY_ROOTED_PATTERNS {
-        discover_from_root(day_root, day_root, pattern, &mut files)?;
+    for spec in patterns_for_root(PatternRoot::DayRooted) {
+        discover_from_root(day_root, day_root, spec.pattern, &mut files)?;
     }
     Ok(files)
 }
@@ -157,11 +142,11 @@ mod tests {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().expect("test path should have parent"))
             .expect("create parent");
-        fs::write(path, "# Title\n\nbody\n").expect("write markdown");
+        fs::write(path, "# Title\n\nbody\n").expect("write test file");
     }
 
     #[test]
-    fn discovers_chronicle_free_markdown_rels() {
+    fn discovers_chronicle_free_indexable_rels() {
         let root = temp_root("discover");
         write(&root, "chronicle/20240101/talents/flow.md");
         write(&root, "chronicle/.hidden/talents/secret.md");
@@ -176,9 +161,13 @@ mod tests {
         write(&root, "facets/work/news/20240101.md");
         write(&root, "imports/20260101_120000/summary.md");
         write(&root, "apps/todos/talents/digest.md");
+        write(&root, "config/actions/20240101.jsonl");
+        write(&root, "facets/work/events/20240101.jsonl");
+        write(&root, "facets/work/activities/20240101.jsonl");
+        write(&root, "facets/work/logs/20240101.jsonl");
         write(&root, "chronicle/20240101/default/123456_300/audio.jsonl");
 
-        let files = discover_markdown_files(&root).expect("discover files");
+        let files = discover_indexable_files(&root).expect("discover files");
         let rels: Vec<_> = files.keys().cloned().collect();
         assert_eq!(
             rels,
@@ -188,6 +177,10 @@ mod tests {
                 "20240101/talents/flow.md",
                 "20260101/import.ics/090000_300/event_transcript.md",
                 "apps/todos/talents/digest.md",
+                "config/actions/20240101.jsonl",
+                "facets/work/activities/20240101.jsonl",
+                "facets/work/events/20240101.jsonl",
+                "facets/work/logs/20240101.jsonl",
                 "facets/work/news/20240101.md",
                 "imports/20260101_120000/summary.md",
             ]

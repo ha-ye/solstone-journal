@@ -4,9 +4,6 @@
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use glob::{MatchOptions, Pattern, PatternError};
-
-use crate::discovery::{DAY_ROOTED_PATTERNS, STRUCTURAL_PATTERNS};
 use crate::segment::is_date_key;
 
 pub const CHRONICLE_DIR: &str = "chronicle";
@@ -34,27 +31,6 @@ impl fmt::Display for JournalPathError {
 
 impl std::error::Error for JournalPathError {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PatternMatchError {
-    message: String,
-}
-
-impl fmt::Display for PatternMatchError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for PatternMatchError {}
-
-impl From<PatternError> for PatternMatchError {
-    fn from(error: PatternError) -> Self {
-        PatternMatchError {
-            message: error.to_string(),
-        }
-    }
-}
-
 pub fn resolve_journal_path(journal: &Path, rel: &str) -> Result<PathBuf, JournalPathError> {
     validate_rel(rel)?;
     let first = rel.split('/').next().unwrap_or("");
@@ -71,21 +47,6 @@ pub fn relative_to_journal(journal: &Path, abs_path: &Path) -> Option<String> {
         return path_to_posix(rel);
     }
     abs_path.strip_prefix(journal).ok().and_then(path_to_posix)
-}
-
-pub fn matches_markdown_pattern(rel: &str) -> Result<bool, PatternMatchError> {
-    let options = MatchOptions {
-        case_sensitive: true,
-        require_literal_separator: true,
-        require_literal_leading_dot: false,
-    };
-    let rel_path = Path::new(rel);
-    for pattern in DAY_ROOTED_PATTERNS.iter().chain(STRUCTURAL_PATTERNS.iter()) {
-        if Pattern::new(pattern)?.matches_path_with(rel_path, options) {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }
 
 fn validate_rel(rel: &str) -> Result<(), JournalPathError> {
@@ -130,23 +91,5 @@ mod tests {
             resolve_journal_path(journal, "facets/work/news/20240101.md").unwrap(),
             PathBuf::from("/tmp/journal/facets/work/news/20240101.md")
         );
-    }
-
-    #[test]
-    fn classifies_only_in_scope_markdown_patterns() {
-        assert!(matches_markdown_pattern("20240101/talents/flow.md").unwrap());
-        assert!(matches_markdown_pattern("20240101/default/123456_300/talents/audio.md").unwrap());
-        assert!(
-            matches_markdown_pattern("20240101/default/123456_300/talents/work/audio.md").unwrap()
-        );
-        assert!(
-            matches_markdown_pattern("20260101/import.ics/090000_300/event_transcript.md").unwrap()
-        );
-        assert!(matches_markdown_pattern("20260101/import.ics/090000_300/imported.md").unwrap());
-        assert!(matches_markdown_pattern("facets/work/news/20240101.md").unwrap());
-        assert!(matches_markdown_pattern("imports/20260101_120000/summary.md").unwrap());
-        assert!(matches_markdown_pattern("apps/todos/talents/digest.md").unwrap());
-        assert!(!matches_markdown_pattern("facets/work/events/20240101.jsonl").unwrap());
-        assert!(!matches_markdown_pattern("20240101/default/123456_300/audio.jsonl").unwrap());
     }
 }

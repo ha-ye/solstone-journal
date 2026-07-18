@@ -111,14 +111,14 @@ fn indexer_rescan_file_conflict_exits_usage() {
 #[test]
 fn indexer_unsupported_rescan_file_exits_declined() {
     let root = temp_path("declined");
-    write(&root, "facets/work/events/20240101.jsonl", "{}\n");
+    write(&root, "notes/foo.txt", "unsupported\n");
 
     let output = Command::new(bin())
         .arg("indexer")
         .arg("--journal")
         .arg(&root)
         .arg("--rescan-file")
-        .arg("facets/work/events/20240101.jsonl")
+        .arg("notes/foo.txt")
         .output()
         .expect("solstone-core should execute");
 

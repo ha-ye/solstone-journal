@@ -7,12 +7,10 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use rusqlite::{Connection, params};
-use solstone_core_indexer::chunker::chunk_markdown;
-use solstone_core_indexer::discovery::discover_markdown_files;
+use solstone_core_indexer::content::{Family, classify, produce_chunks};
+use solstone_core_indexer::discovery::discover_indexable_files;
 use solstone_core_indexer::metadata::extract_path_metadata;
-use solstone_core_indexer::paths::{
-    matches_markdown_pattern, relative_to_journal, resolve_journal_path,
-};
+use solstone_core_indexer::paths::{relative_to_journal, resolve_journal_path};
 use solstone_core_indexer::segment::{is_historical_day, time_bucket};
 use solstone_core_indexer::stream::extract_stream;
 
@@ -36,7 +34,7 @@ pub enum RescanFileStatus {
 pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanReport, StoreError> {
     let conn = open_index(journal)?;
     let mut report = ScanReport::default();
-    let mut files = discover_markdown_files(journal)?;
+    let mut files = discover_indexable_files(journal)?;
     if !full {
         files.retain(|rel, _path| !is_historical_day(rel, today));
     }
@@ -60,8 +58,15 @@ pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanRepor
     }
 
     for (rel, path, mtime) in &to_index {
+        let Some(family) = classify(rel) else {
+            report.skipped += 1;
+            report
+                .warnings
+                .push(format!("unclassified discovered file skipped: {rel}"));
+            continue;
+        };
         conn.execute("DELETE FROM chunks WHERE path=?", [rel])?;
-        match index_markdown_file(&conn, journal, rel, path) {
+        match index_file(&conn, journal, rel, path, family) {
             Ok(warnings) => {
                 conn.execute(
                     "REPLACE INTO files(path, mtime) VALUES (?, ?)",
@@ -95,16 +100,16 @@ pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanRepor
 
 pub fn rescan_file(journal: &Path, input: &Path) -> Result<RescanFileStatus, StoreError> {
     let (rel, path) = resolve_rescan_target(journal, input)?;
-    if !matches_markdown_pattern(&rel)? {
+    let Some(family) = classify(&rel) else {
         return Ok(RescanFileStatus::Declined);
-    }
+    };
     if !path.is_file() {
         return Err(StoreError::MissingFile(path));
     }
     let mtime = file_mtime_secs(&path)?;
     let conn = open_index(journal)?;
     conn.execute("DELETE FROM chunks WHERE path=?", [&rel])?;
-    match index_markdown_file(&conn, journal, &rel, &path) {
+    match index_file(&conn, journal, &rel, &path, family) {
         Ok(warnings) => {
             conn.execute(
                 "REPLACE INTO files(path, mtime) VALUES (?, ?)",
@@ -132,25 +137,30 @@ fn load_file_mtimes(conn: &Connection) -> Result<BTreeMap<String, i64>, StoreErr
     Ok(mtimes)
 }
 
-fn index_markdown_file(
+fn index_file(
     conn: &Connection,
     journal: &Path,
     rel: &str,
     path: &Path,
+    family: Family,
 ) -> Result<Vec<String>, String> {
     let text = fs::read_to_string(path)
-        .map_err(|error| format!("markdown read failed for {rel}: {error}"))?;
-    let chunks = chunk_markdown(&text);
+        .map_err(|error| format!("content read failed for {rel}: {error}"))?;
+    let produced = produce_chunks(family, &text);
     let metadata = extract_path_metadata(rel);
     let facet = metadata.facet.to_lowercase();
-    let agent = metadata.agent.to_lowercase();
+    let agent = produced
+        .agent_override
+        .map(str::to_string)
+        .unwrap_or_else(|| metadata.agent.clone())
+        .to_lowercase();
     let stream_lookup = extract_stream(journal, rel);
     let stream = stream_lookup.stream;
     let bucket = time_bucket(rel);
     let warnings: Vec<String> = stream_lookup.warning.into_iter().collect();
 
-    for (idx, chunk) in chunks.iter().enumerate() {
-        let content = chunk.markdown.trim();
+    for (idx, chunk) in produced.chunks.iter().enumerate() {
+        let content = chunk.content.trim();
         if content.is_empty() {
             continue;
         }
@@ -317,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn rescan_file_indexes_markdown_and_declines_other_paths() {
+    fn rescan_file_indexes_classified_families_and_declines_other_paths() {
         let root = temp_root("rescan-file");
         write(
             &root,
@@ -346,13 +356,230 @@ mod tests {
         assert_eq!(row, ("default".to_string(), String::new()));
         drop(conn);
 
-        write(&root, "facets/work/events/20240101.jsonl", "{}\n");
+        write(
+            &root,
+            "facets/work/events/20240101.jsonl",
+            r#"{"type":"meeting","title":"Standup"}
+"#,
+        );
         assert_eq!(
             rescan_file(&root, Path::new("facets/work/events/20240101.jsonl"))
-                .expect("decline jsonl"),
+                .expect("rescan event jsonl"),
+            RescanFileStatus::Indexed {
+                warnings: Vec::new()
+            }
+        );
+        let conn = Connection::open(db_path(&root)).expect("open db after event rescan");
+        let event_agent: String = conn
+            .query_row(
+                "SELECT agent FROM chunks WHERE path='facets/work/events/20240101.jsonl'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event agent row");
+        assert_eq!(event_agent, "event");
+        drop(conn);
+
+        write(&root, "notes/foo.txt", "unsupported");
+        assert_eq!(
+            rescan_file(&root, Path::new("notes/foo.txt")).expect("decline unsupported"),
             RescanFileStatus::Declined
         );
         fs::remove_dir_all(root).expect("cleanup rescan root");
+    }
+
+    #[test]
+    fn scan_indexes_jsonl_families_with_path_metadata() {
+        let root = temp_root("jsonl-families");
+        write(
+            &root,
+            "config/actions/20240101.jsonl",
+            r#"{"action":"identity_update","actor":"settings","source":"app","timestamp":"2025-12-16T07:33:05.135587+00:00","params":{"name":"Alice"}}
+"#,
+        );
+        write(
+            &root,
+            "facets/Work/events/20240101.jsonl",
+            r#"{"type":"meeting","title":"Standup","start":"09:00:00","end":"09:30:00","participants":["Alice","Bob"],"summary":"Daily sync"}
+"#,
+        );
+        write(
+            &root,
+            "facets/work/activities/20240101.jsonl",
+            r#"{}
+{"id":"coding_090000_300","segments":["090000_300"]}
+"#,
+        );
+        write(
+            &root,
+            "facets/work/logs/20240101.jsonl",
+            r#"{"action":"activity_update","actor":"activities","source":"app","params":{"id":"coding"}}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan jsonl families");
+        assert_eq!(report.indexed, 4);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        let config_row: (String, String, String, Option<String>, String, String) = conn
+            .query_row(
+                "SELECT day, facet, agent, stream, time_bucket, content FROM chunks WHERE path='config/actions/20240101.jsonl'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("config action row");
+        assert_eq!(
+            config_row,
+            (
+                "20240101".to_string(),
+                String::new(),
+                "action".to_string(),
+                None,
+                String::new(),
+                "### Identity Update by settings\n\n**Source:** app | **Time:** 07:33:05\n\n**Parameters:**\n- name: Alice".to_string(),
+            )
+        );
+
+        let event_row: (String, String, String, String) = conn
+            .query_row(
+                "SELECT day, facet, agent, content FROM chunks WHERE path='facets/Work/events/20240101.jsonl'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .expect("event row");
+        assert_eq!(event_row.0, "20240101");
+        assert_eq!(event_row.1, "work");
+        assert_eq!(event_row.2, "event");
+        assert!(event_row.3.contains("### Meeting: Standup"));
+        assert!(event_row.3.contains("**Participants:** Alice, Bob"));
+
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='facets/work/activities/20240101.jsonl' AND agent='activity'"
+            ),
+            2
+        );
+        let activity_content: String = conn
+            .query_row(
+                "SELECT content FROM chunks WHERE path='facets/work/activities/20240101.jsonl' AND idx=1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("activity content");
+        assert!(activity_content.contains("### Coding 090000 300"));
+        assert!(activity_content.contains("- Time: 09:00-09:05"));
+
+        let action_log_agent: String = conn
+            .query_row(
+                "SELECT agent FROM chunks WHERE path='facets/work/logs/20240101.jsonl'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("facet log row");
+        assert_eq!(action_log_agent, "action");
+        fs::remove_dir_all(root).expect("cleanup jsonl families root");
+    }
+
+    #[test]
+    fn scan_writes_files_rows_for_zero_chunk_jsonl() {
+        let root = temp_root("zero-jsonl");
+        write(
+            &root,
+            "facets/work/events/20240101.jsonl",
+            r#"{"type":"meeting"}
+{"title":""}
+"#,
+        );
+        write(
+            &root,
+            "facets/work/logs/20240101.jsonl",
+            r#"{"actor":"settings"}
+{"action":""}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan zero jsonl");
+        assert_eq!(report.indexed, 2);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='facets/work/events/20240101.jsonl'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='facets/work/logs/20240101.jsonl'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='facets/work/events/20240101.jsonl'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='facets/work/logs/20240101.jsonl'"
+            ),
+            1
+        );
+        fs::remove_dir_all(root).expect("cleanup zero jsonl root");
+    }
+
+    #[test]
+    fn scan_skips_non_object_jsonl_lines_and_keeps_file_row() {
+        let root = temp_root("non-object-jsonl");
+        write(
+            &root,
+            "facets/work/events/20240101.jsonl",
+            r#"42
+["not", "object"]
+not json
+{"type":"meeting","title":"Planning"}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan non-object jsonl");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='facets/work/events/20240101.jsonl'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='facets/work/events/20240101.jsonl'"
+            ),
+            1
+        );
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM chunks WHERE path='facets/work/events/20240101.jsonl'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("event content");
+        assert!(content.contains("### Meeting: Planning"));
+        fs::remove_dir_all(root).expect("cleanup non-object jsonl root");
     }
 
     #[test]
