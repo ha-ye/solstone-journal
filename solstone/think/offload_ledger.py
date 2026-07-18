@@ -77,7 +77,7 @@ class SegmentOffloadSummary:
 
     @property
     def degraded(self) -> bool:
-        return bool(self.unreadable_ledgers)
+        return bool(self.unreadable_ledgers) or self.skipped_records > 0
 
 
 @dataclass(frozen=True)
@@ -92,7 +92,7 @@ class DayOffloadSummary:
 
     @property
     def degraded(self) -> bool:
-        return bool(self.unreadable_ledgers)
+        return bool(self.unreadable_ledgers) or self.skipped_records > 0
 
 
 @dataclass(frozen=True)
@@ -107,7 +107,7 @@ class JournalOffloadSummary:
 
     @property
     def degraded(self) -> bool:
-        return bool(self.unreadable_ledgers)
+        return bool(self.unreadable_ledgers) or self.skipped_records > 0
 
 
 @dataclass(frozen=True)
@@ -207,8 +207,8 @@ def summarize_day(day: str) -> DayOffloadSummary:
             stream,
             segment,
             current,
-            skipped_records=0,
-            unreadable_ledgers=(),
+            skipped_records=read.skipped_records,
+            unreadable_ledgers=read.unreadable_ledgers,
         )
         for (key_day, stream, segment), current in sorted(states.items())
         if key_day == day

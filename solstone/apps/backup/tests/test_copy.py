@@ -23,6 +23,9 @@ _VERB_SUBJECT = re.compile(
     r"(?:observes|watches|sees|captures|records|monitors|tracks|collects)\b",
     re.IGNORECASE,
 )
+_SURVEILLANCE_NOUN = re.compile(
+    r"\b(?:recording|capture|observation|observer)s?\b", re.IGNORECASE
+)
 
 
 def _backup_js_text() -> str:
@@ -78,17 +81,17 @@ def test_backup_copy_verbatim_strings() -> None:
     )
     assert (
         payload["management"]["teardown_gate_lead"]
-        == "{days} days of recordings ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever."
+        == "{days} days of your journal ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever."
     )
     assert "{days}" in payload["management"]["teardown_gate_lead"]
     assert "{size}" in payload["management"]["teardown_gate_lead"]
     assert (
         payload["management"]["teardown_gate_unavailable_lead"]
-        == "can't verify what exists only in this backup right now. deleting the backup may destroy recordings that exist nowhere else."
+        == "can't verify what exists only in this backup right now. deleting the backup may destroy days of your journal that exist nowhere else."
     )
     assert (
         payload["management"]["teardown_gate_zero_lead"]
-        == "no offloaded recordings exist only in this backup right now."
+        == "nothing exists only in this backup right now. every day is still on your device."
     )
     assert payload["management"]["teardown_confirm_phrase"] == TEARDOWN_CONFIRM_PHRASE
     assert payload["management"]["teardown_confirm_prompt"] == TEARDOWN_CONFIRM_PROMPT
@@ -129,7 +132,7 @@ def test_backup_copy_verbatim_strings() -> None:
     )
     assert (
         offload["stakes"]
-        == "after offload, your backup holds the only copy of your older recordings. if you lose your recovery key, no one can recover them — not even sol pbc."
+        == "after this, your backup holds the only copy of your older days. if you lose your recovery key, no one can recover them — not even sol pbc."
     )
     assert (
         offload["stalled_lead"]
@@ -143,7 +146,7 @@ def test_backup_copy_verbatim_strings() -> None:
     assert "{size}" in offload["restore_expectation"]
     assert (
         offload["disable_note"]
-        == "offloading stops. recordings already in your backup stay there — protected and restorable."
+        == "this stops. days already in your backup stay there — protected and restorable."
     )
     assert offload["unavailable_lead"] == "can't read offload status right now."
     assert (
@@ -160,9 +163,37 @@ def test_backup_copy_verbatim_strings() -> None:
 
 def test_backup_copy_has_no_surveillance_verb_subjects() -> None:
     assert _VERB_SUBJECT.search("sol records your day")
-    assert _VERB_SUBJECT.search("your older recordings") is None
 
     offenders = [value for value in backup_copy_values() if _VERB_SUBJECT.search(value)]
+    assert offenders == []
+
+
+def test_backup_copy_has_no_surveillance_nouns() -> None:
+    assert _SURVEILLANCE_NOUN.search("recording")
+    assert _SURVEILLANCE_NOUN.search("recordings")
+    assert _SURVEILLANCE_NOUN.search("Recording")
+    assert _SURVEILLANCE_NOUN.search("Capture")
+
+    values: list[str] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit({"safe": ["ok", {"nested": "hidden observer copy"}]})
+    assert [value for value in values if _SURVEILLANCE_NOUN.search(value)] == [
+        "hidden observer copy"
+    ]
+
+    offenders = [
+        value for value in backup_copy_values() if _SURVEILLANCE_NOUN.search(value)
+    ]
     assert offenders == []
 
 

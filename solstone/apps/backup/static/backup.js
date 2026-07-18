@@ -77,9 +77,9 @@
     "management": {
       "destructive_action": "turn off & delete backup",
       "destructive_caption": "this deletes all your backup data. no new backups will be created.",
-      "teardown_gate_lead": "{days} days of recordings ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever.",
-      "teardown_gate_unavailable_lead": "can't verify what exists only in this backup right now. deleting the backup may destroy recordings that exist nowhere else.",
-      "teardown_gate_zero_lead": "no offloaded recordings exist only in this backup right now.",
+      "teardown_gate_lead": "{days} days of your journal ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever.",
+      "teardown_gate_unavailable_lead": "can't verify what exists only in this backup right now. deleting the backup may destroy days of your journal that exist nowhere else.",
+      "teardown_gate_zero_lead": "nothing exists only in this backup right now. every day is still on your device.",
       "teardown_confirm_phrase": "delete",
       "teardown_confirm_prompt": "type delete to confirm",
       "teardown_restore_first_action": "restore everything first",
@@ -110,11 +110,11 @@
     },
     "offload": {
       "title": "media offload",
-      "stakes": "after offload, your backup holds the only copy of your older recordings. if you lose your recovery key, no one can recover them — not even sol pbc.",
+      "stakes": "after this, your backup holds the only copy of your older days. if you lose your recovery key, no one can recover them — not even sol pbc.",
       "stalled_lead": "offload is paused: your backup isn't working. nothing has been deleted.",
       "backup_only_label": "in your backup",
       "restore_expectation": "restoring {size} from your backup — a large restore can take a while.",
-      "disable_note": "offloading stops. recordings already in your backup stay there — protected and restorable.",
+      "disable_note": "this stops. days already in your backup stay there — protected and restorable.",
       "unavailable_lead": "can't read offload status right now.",
       "action_error": "media offload couldn't finish. check backup setup, then try again.",
       "invalid_limits": "enter a positive number for each limit, then save again.",
@@ -146,7 +146,7 @@
         "saved": "saved",
         "empty_days": "no offloaded media yet.",
         "show_all_days": "show all {count} days",
-        "degraded": "some offload ledger entries could not be read."
+        "degraded": "some of the record of what's in your backup couldn't be read. these days may hold more than shown."
       },
       "stall_reason_labels": {
         "backup_not_ready": "encrypted backup needs to finish setup before media offload can run.",
@@ -165,7 +165,7 @@
         "backup_not_ready": "encrypted backup is not ready to restore media.",
         "failed": "media restore could not finish.",
         "insufficient_free_space": "this device needs more free space before restoring media.",
-        "ledger_degraded": "media restore is paused because the offload ledger needs repair.",
+        "ledger_degraded": "some of the record of what's in your backup couldn't be read, so a restore can't be trusted to be complete. try again after the next backup runs.",
         "locked": "media restore is waiting for backup maintenance to finish.",
         "missing_file_after_restore": "media restore finished, but a file was still missing.",
         "nothing_to_restore": "nothing to restore for that day.",
@@ -868,7 +868,11 @@
     }
     banner.hidden = false;
     setText('[data-operation-phase]', labelForPhase(operation.phase));
-    setText('[data-operation-error]', reasonLabel(operation.reason_code));
+    const errorLabel =
+      operation.kind === 'offload_restore'
+        ? offloadRestoreReasonLabel(operation.reason_code)
+        : reasonLabel(operation.reason_code);
+    setText('[data-operation-error]', errorLabel);
   }
 
   function renderStatus() {

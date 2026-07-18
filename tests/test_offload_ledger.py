@@ -295,6 +295,58 @@ def test_malformed_line_warns_counts_skipped_and_keeps_valid_totals(
     assert any("malformed" in record.message for record in caplog.records)
 
 
+def test_malformed_line_marks_all_summary_views_degraded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    ledger_path = ledger_path_for_day(DAY)
+    ledger_path.parent.mkdir(parents=True)
+    ledger_path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    _offload_record(
+                        day=DAY,
+                        stream=STREAM,
+                        segment="120000_300",
+                        snapshot_id="snap-1",
+                        size=10,
+                    )
+                ),
+                "{bad",
+                json.dumps(
+                    _offload_record(
+                        day=DAY,
+                        stream=STREAM,
+                        segment="121000_300",
+                        snapshot_id="snap-2",
+                        size=20,
+                        sha256=SHA_B,
+                    )
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    day = summarize_day(DAY)
+    assert day.degraded is True
+    assert day.skipped_records == 1
+    assert day.offloaded_bytes == 30
+    assert all(seg.degraded is True for seg in day.segments)
+
+    segment = summarize_segment(DAY, STREAM, "120000_300")
+    assert segment.degraded is True
+    assert segment.skipped_records == 1
+
+    journal = summarize_journal()
+    assert journal.degraded is True
+    assert journal.skipped_records == 1
+    assert journal.offloaded_bytes == 30
+    assert all(seg.degraded is True for day in journal.days for seg in day.segments)
+
+
 def test_null_time_record_is_skipped_not_fabricated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -740,6 +740,46 @@ def test_restore_tool_unavailable_and_ledger_degraded_reasons(
     assert degraded.reason == "ledger_degraded"
 
 
+def test_skipped_record_degrades_and_refuses_restore(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    _write_config(tmp_path, _backup_config())
+    _segment_dir(tmp_path)
+    _seed_ledger()
+    ledger_path = tmp_path / "health" / "offload" / f"{DAY}.jsonl"
+    with open(ledger_path, "a", encoding="utf-8") as handle:
+        handle.write("{bad\n")
+
+    status = offload_restore.build_offload_status()
+
+    assert status["backup_only"]["degraded"] is True
+    assert status["days"][0]["degraded"] is True
+
+    run_restic = Mock()
+    monkeypatch.setattr(offload_restore, "run_restic", run_restic)
+    monkeypatch.setattr(offload_restore, "device_free_bytes", lambda: 5_000_000_000)
+
+    day_result = offload_restore.restore_day(DAY)
+
+    assert day_result.status == "error"
+    assert day_result.reason == "ledger_degraded"
+    run_restic.assert_not_called()
+
+    from solstone.think.backup.state import get_backup_config
+
+    last_restore = get_backup_config()["last_restore"]
+    assert last_restore["reason"] == "ledger_degraded"
+    assert last_restore["status"] == "error"
+
+    all_result = offload_restore.restore_all()
+
+    assert all_result.status == "error"
+    assert all_result.reason == "ledger_degraded"
+    run_restic.assert_not_called()
+
+
 def test_operated_restore_reports_rclone_unavailable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

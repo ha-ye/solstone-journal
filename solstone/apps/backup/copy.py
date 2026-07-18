@@ -46,9 +46,11 @@ DESTRUCTIVE_ACTION = "turn off & delete backup"
 DESTRUCTIVE_CAPTION = (
     "this deletes all your backup data. no new backups will be created."
 )
-TEARDOWN_GATE_LEAD = "{days} days of recordings ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever."
-TEARDOWN_GATE_UNAVAILABLE_LEAD = "can't verify what exists only in this backup right now. deleting the backup may destroy recordings that exist nowhere else."
-TEARDOWN_GATE_ZERO_LEAD = "no offloaded recordings exist only in this backup right now."
+TEARDOWN_GATE_LEAD = "{days} days of your journal ({size}) exist only in this backup. deleting the backup deletes them everywhere, forever."
+TEARDOWN_GATE_UNAVAILABLE_LEAD = "can't verify what exists only in this backup right now. deleting the backup may destroy days of your journal that exist nowhere else."
+TEARDOWN_GATE_ZERO_LEAD = (
+    "nothing exists only in this backup right now. every day is still on your device."
+)
 TEARDOWN_CONFIRM_PHRASE = "delete"
 TEARDOWN_CONFIRM_PROMPT = "type delete to confirm"
 TEARDOWN_RESTORE_FIRST_ACTION = "restore everything first"
@@ -167,7 +169,7 @@ RESTORE_EXPECTATION = (
     "a large restore can take a while. you can leave this page open while it runs."
 )
 OFFLOAD_TITLE = "media offload"
-OFFLOAD_STAKES = "after offload, your backup holds the only copy of your older recordings. if you lose your recovery key, no one can recover them — not even sol pbc."
+OFFLOAD_STAKES = "after this, your backup holds the only copy of your older days. if you lose your recovery key, no one can recover them — not even sol pbc."
 OFFLOAD_STALLED_LEAD = (
     "offload is paused: your backup isn't working. nothing has been deleted."
 )
@@ -175,7 +177,9 @@ OFFLOAD_BACKUP_ONLY_LABEL = "in your backup"
 OFFLOAD_RESTORE_EXPECTATION = (
     "restoring {size} from your backup — a large restore can take a while."
 )
-OFFLOAD_DISABLE_NOTE = "offloading stops. recordings already in your backup stay there — protected and restorable."
+OFFLOAD_DISABLE_NOTE = (
+    "this stops. days already in your backup stay there — protected and restorable."
+)
 OFFLOAD_UNAVAILABLE_LEAD = "can't read offload status right now."
 OFFLOAD_ACTION_ERROR = (
     "media offload couldn't finish. check backup setup, then try again."
@@ -213,7 +217,7 @@ OFFLOAD_MESSAGES = {
     "saved": "saved",
     "empty_days": "no offloaded media yet.",
     "show_all_days": "show all {count} days",
-    "degraded": "some offload ledger entries could not be read.",
+    "degraded": "some of the record of what's in your backup couldn't be read. these days may hold more than shown.",
 }
 OFFLOAD_STALL_REASON_LABELS = {
     "backup_not_ready": "encrypted backup needs to finish setup before media offload can run.",
@@ -232,7 +236,7 @@ OFFLOAD_RESTORE_REASON_LABELS = {
     "backup_not_ready": "encrypted backup is not ready to restore media.",
     "failed": "media restore could not finish.",
     "insufficient_free_space": "this device needs more free space before restoring media.",
-    "ledger_degraded": "media restore is paused because the offload ledger needs repair.",
+    "ledger_degraded": "some of the record of what's in your backup couldn't be read, so a restore can't be trusted to be complete. try again after the next backup runs.",
     "locked": "media restore is waiting for backup maintenance to finish.",
     "missing_file_after_restore": "media restore finished, but a file was still missing.",
     "nothing_to_restore": "nothing to restore for that day.",

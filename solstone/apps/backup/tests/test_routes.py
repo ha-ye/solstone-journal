@@ -1162,7 +1162,6 @@ def test_forbidden_terms_absent_from_backup_surfaces(backup_env, monkeypatch) ->
         "account",
         "capture",
         "watch",
-        "record",
         "monitor",
         "track",
         "collect",

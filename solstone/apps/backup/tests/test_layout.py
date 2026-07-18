@@ -451,6 +451,14 @@ def test_offload_js_source_contracts() -> None:
     )
     assert "labelForPhase('restoring')" not in offload_restore_day
 
+    render_operation = js[
+        js.index("function renderOperation()") : js.index("function renderStatus()")
+    ]
+    assert "operation.kind === 'offload_restore'" in render_operation
+    assert "offloadRestoreReasonLabel(operation.reason_code)" in render_operation
+    assert "reasonLabel(operation.reason_code)" in render_operation
+    assert "error_intro" not in render_operation
+
     budget_gb = 37
     floor_gb = 23
     assert budget_gb != floor_gb
