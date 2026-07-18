@@ -180,24 +180,29 @@ fn number_timestamp_key(value: &serde_json::Number) -> Result<MessageTimestampKe
             value_type: "unrepresentable number",
         });
     };
-    Ok(if let Some(integer) = integral_float_key(value) {
+    Ok(if let Some(integer) = integral_float_key(value)? {
         MessageTimestampKey::Int(integer)
     } else {
         MessageTimestampKey::Float(value)
     })
 }
 
-fn integral_float_key(value: f64) -> Option<i128> {
+fn integral_float_key(value: f64) -> Result<Option<i128>, EdgeError> {
     // serde_json rejects non-finite JSON numbers, so NaN/Infinity do not reach
     // this extractor path.
     if !value.is_finite() || value.fract() != 0.0 {
-        return None;
+        return Ok(None);
     }
-    if value < i128::MIN as f64 || value > i128::MAX as f64 {
-        return None;
+    // i128::MIN is exactly -2^127 in f64, but i128::MAX rounds up to
+    // 2^127, so the lower bound is inclusive and the upper bound is exclusive.
+    if value < i128::MIN as f64 || value >= i128::MAX as f64 {
+        return Err(EdgeError::UnsupportedEdgeValue {
+            field: "timestamp",
+            value_type: "unrepresentable number",
+        });
     }
     let integer = value as i128;
-    ((integer as f64) == value).then_some(integer)
+    Ok(((integer as f64) == value).then_some(integer))
 }
 
 fn calendar_rows(
@@ -322,5 +327,30 @@ fn string_field(value: Option<&Value>) -> String {
     match value {
         Some(Value::String(value)) => super::python_strip(value).to_string(),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integral_float_key_rejects_positive_i128_boundary_but_accepts_min() {
+        let positive_boundary = serde_json::Number::from_f64(i128::MAX as f64)
+            .expect("positive boundary should be a json number");
+        assert!(matches!(
+            number_timestamp_key(&positive_boundary),
+            Err(EdgeError::UnsupportedEdgeValue {
+                field: "timestamp",
+                value_type: "unrepresentable number"
+            })
+        ));
+
+        let negative_boundary = serde_json::Number::from_f64(i128::MIN as f64)
+            .expect("negative boundary should be a json number");
+        assert!(matches!(
+            number_timestamp_key(&negative_boundary),
+            Ok(MessageTimestampKey::Int(value)) if value == i128::MIN
+        ));
     }
 }
