@@ -162,7 +162,7 @@ const pulsePayload = {
     verdict: 'ok',
     severity: 'green',
     headline: "everything's working",
-    last_observation: null,
+    last_observation: '5m ago',
     cta: null,
     issues: [],
   },
@@ -386,6 +386,7 @@ function makeContext(apiJson) {
   await flush();
   assert(success.apiCalls.filter(url => url === '/app/home/api/pulse').length === 1, 'pulse should fetch once');
   assert(success.surface.innerHTML.includes('pulse-vitals'), 'pulse render did not populate vitals');
+  assert(success.surface.innerHTML.includes('last reached your journal 5m ago'), 'health glance last observation label missing');
   assert(success.surface.innerHTML.includes('pulse-narrative'), 'pulse render did not populate narrative');
   assert(!success.surface.innerHTML.includes('data-home-surface="connections"'), 'missing connections payload should not render connections');
 

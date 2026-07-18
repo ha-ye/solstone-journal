@@ -75,7 +75,7 @@ def build_health_glance(
         return {
             "verdict": "ok",
             "severity": "green",
-            "headline": "no observers yet",
+            "headline": "no devices are running sol yet. set one up to start your journal.",
             "last_observation": None,
             "cta": {"text": "set one up →", "href": "/app/observer/"},
             "issues": [],
@@ -83,7 +83,7 @@ def build_health_glance(
     return {
         "verdict": "unavailable",
         "severity": "amber",
-        "headline": "observer status unavailable",
+        "headline": "i don't know the status of your devices right now.",
         "last_observation": None,
         "cta": None,
         "issues": [],
@@ -105,22 +105,20 @@ def _build_capture_issue(capture_health: Any) -> dict | None:
     if status == "degraded":
         text = format_degraded_capture_line(capture_health)
         if not text:
-            text = "an observer isn't reaching your journal"
+            text = "one of your devices isn't reaching your journal."
         return {"text": text, "severity": "red", "href": "/app/health"}
     if status == "offline":
         return {
-            "text": "no observer is reaching your journal",
+            "text": "nothing is reaching your journal.",
             "severity": "red",
             "href": "/app/health",
         }
     if status == "stale":
-        name = _first_stale_observer_name(capture_health.get("observers"))
-        text = (
-            f"{name} hasn't reported recently"
-            if name
-            else "an observer hasn't reported recently"
-        )
-        return {"text": text, "severity": "amber", "href": "/app/health"}
+        return {
+            "text": "one of your devices hasn't reached your journal recently.",
+            "severity": "amber",
+            "href": "/app/health",
+        }
     return None
 
 
@@ -142,19 +140,6 @@ def _pipeline_href(suggested_action: Any) -> str:
     if suggested_action == "open_support":
         return "/app/support"
     return _HEALTH_DETAIL_HREF
-
-
-def _first_stale_observer_name(observers: Any) -> str | None:
-    if not isinstance(observers, list):
-        return None
-    for observer in observers:
-        if not isinstance(observer, dict) or observer.get("status") != "stale":
-            continue
-        name = observer.get("name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()
-        return None
-    return None
 
 
 def _observer_state(capture_health: Any) -> str:

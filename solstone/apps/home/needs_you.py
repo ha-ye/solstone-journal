@@ -4,12 +4,10 @@
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from solstone.convey.chat_sources import parse_sol_sources
-from solstone.convey.utils import format_month_day
 
 logger = logging.getLogger(__name__)
 
@@ -104,14 +102,6 @@ def needs_dedup_key(item: Any) -> str:
     return "text:" + _normalize_item(_need_display_text(item))
 
 
-def _finite_number(value: Any) -> bool:
-    return (
-        isinstance(value, (int, float))
-        and not isinstance(value, bool)
-        and math.isfinite(value)
-    )
-
-
 def format_degraded_capture_line(capture_health: dict) -> str | None:
     """Single combined owner line for a degraded capture state, else None.
 
@@ -123,35 +113,7 @@ def format_degraded_capture_line(capture_health: dict) -> str | None:
         or capture_health.get("status") != "degraded"
     ):
         return None
-    observers = capture_health.get("observers")
-    candidates = (
-        [
-            o
-            for o in observers
-            if isinstance(o, dict)
-            and o.get("status") == "degraded"
-            and isinstance(o.get("ingest_rejection"), dict)
-        ]
-        if isinstance(observers, list)
-        else []
-    )
-    if not candidates:
-        return "an observer isn't reaching your journal"
-    first = candidates[0]
-    more = len(candidates) - 1
-    suffix = f", and {more} more" if more > 0 else ""
-    name = first.get("name")
-    name = name.strip() if isinstance(name, str) else ""
-    if not name:
-        return "an observer isn't reaching your journal" + suffix
-    rejection = first["ingest_rejection"]
-    count = rejection.get("active_count")
-    first_ts = rejection.get("first_ts")
-    if _finite_number(count) and _finite_number(first_ts):
-        clause = f" — {int(count)} rejected since {format_month_day(first_ts)}"
-    else:
-        clause = ""
-    return f"{name} isn't reaching your journal{clause}{suffix}"
+    return "one of your devices isn't reaching your journal."
 
 
 def _classify_safely(

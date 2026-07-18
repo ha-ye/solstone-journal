@@ -11,7 +11,7 @@ import pytest
 from solstone.apps.home.health_glance import build_health_glance
 
 BANNED_RE = re.compile(
-    r"\b(watch|capture|record|monitor|track|collect)\b",
+    r"\b(watch|capture|record|monitor|track|collect|observer|observation)\b",
     re.IGNORECASE,
 )
 EXTENDED_BANNED_RE = re.compile(
@@ -64,7 +64,10 @@ def test_degraded_capture_returns_red_attention_issue():
     assert len(result["issues"]) == 1
     assert result["issues"][0]["severity"] == "red"
     assert result["issues"][0]["href"] == "/app/health"
-    assert "fedora" in result["issues"][0]["text"]
+    assert (
+        result["issues"][0]["text"]
+        == "one of your devices isn't reaching your journal."
+    )
     assert result["headline"] != "everything's working"
 
 
@@ -74,7 +77,10 @@ def test_degraded_capture_collapses_multiple_observers_to_one_issue():
     )
 
     assert len(result["issues"]) == 1
-    assert "and 2 more" in result["issues"][0]["text"]
+    assert (
+        result["issues"][0]["text"]
+        == "one of your devices isn't reaching your journal."
+    )
 
 
 def test_degraded_capture_and_pipeline_warning_returns_two_issues_red_verdict():
@@ -117,17 +123,24 @@ def test_pipeline_warning_without_headline_uses_fallback_text():
 
 
 @pytest.mark.parametrize(
-    "capture_health",
+    ("capture_health", "issue_text"),
     [
-        {"status": "offline", "observers": []},
-        {"status": "stale", "observers": [{"name": "fedora", "status": "stale"}]},
+        (
+            {"status": "offline", "observers": []},
+            "nothing is reaching your journal.",
+        ),
+        (
+            {"status": "stale", "observers": [{"name": "fedora", "status": "stale"}]},
+            "one of your devices hasn't reached your journal recently.",
+        ),
     ],
 )
-def test_offline_and_stale_capture_do_not_return_ok(capture_health):
+def test_offline_and_stale_capture_do_not_return_ok(capture_health, issue_text):
     result = build_health_glance(capture_health, None, None)
 
     assert result["verdict"] != "ok"
     assert result["headline"] != "everything's working"
+    assert result["issues"][0]["text"] == issue_text
 
 
 def test_active_capture_without_pipeline_returns_ok_with_last_observation():
@@ -147,7 +160,10 @@ def test_no_observers_returns_ok_with_setup_cta():
 
     assert result["verdict"] == "ok"
     assert result["severity"] == "green"
-    assert result["headline"] == "no observers yet"
+    assert (
+        result["headline"]
+        == "no devices are running sol yet. set one up to start your journal."
+    )
     assert result["last_observation"] is None
     assert result["cta"] == {"text": "set one up →", "href": "/app/observer/"}
 
@@ -157,7 +173,7 @@ def test_unknown_observer_state_returns_unavailable():
 
     assert result["verdict"] == "unavailable"
     assert result["severity"] == "amber"
-    assert result["headline"] == "observer status unavailable"
+    assert result["headline"] == "i don't know the status of your devices right now."
     assert result["verdict"] != "ok"
     assert result["headline"] != "everything's working"
 

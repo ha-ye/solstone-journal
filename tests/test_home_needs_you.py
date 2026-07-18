@@ -102,16 +102,17 @@ def test_needs_dedup_key_legacy_strings_normalize_text():
     )
 
 
-def test_format_degraded_capture_line_single_named_full():
+def test_format_degraded_capture_line_returns_flat_sentence():
     line = format_degraded_capture_line(_degraded_capture())
 
-    assert line == "fedora isn't reaching your journal — 79 rejected since jun 22"
+    assert line == "one of your devices isn't reaching your journal."
     assert "segment" not in line
     assert "screen.jsonl" not in line
     assert "/tmp/private" not in line
+    assert "fedora" not in line
 
 
-def test_format_degraded_capture_line_multiple_combines_first_and_count():
+def test_format_degraded_capture_line_multiple_stays_flat():
     capture = _degraded_capture()
     capture["observers"].append(
         {
@@ -129,32 +130,32 @@ def test_format_degraded_capture_line_multiple_combines_first_and_count():
         }
     )
 
-    assert (
-        format_degraded_capture_line(capture)
-        == "fedora isn't reaching your journal — 79 rejected since jun 22, and 1 more"
+    assert format_degraded_capture_line(capture) == (
+        "one of your devices isn't reaching your journal."
     )
 
 
-def test_format_degraded_capture_line_named_without_required_count_or_date():
+def test_format_degraded_capture_line_ignores_missing_count_or_date():
     missing_ts = _degraded_capture()
     del missing_ts["observers"][0]["ingest_rejection"]["first_ts"]
     assert (
-        format_degraded_capture_line(missing_ts) == "fedora isn't reaching your journal"
+        format_degraded_capture_line(missing_ts)
+        == "one of your devices isn't reaching your journal."
     )
     assert (
         format_degraded_capture_line(_degraded_capture(active_count=None))
-        == "fedora isn't reaching your journal"
+        == "one of your devices isn't reaching your journal."
     )
 
 
 def test_format_degraded_capture_line_fallbacks_and_non_degraded():
     assert (
         format_degraded_capture_line(_degraded_capture(include_rejection=False))
-        == "an observer isn't reaching your journal"
+        == "one of your devices isn't reaching your journal."
     )
     assert (
         format_degraded_capture_line({"status": "degraded", "observers": []})
-        == "an observer isn't reaching your journal"
+        == "one of your devices isn't reaching your journal."
     )
     assert format_degraded_capture_line({"status": "active", "observers": []}) is None
 

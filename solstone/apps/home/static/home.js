@@ -238,7 +238,7 @@
       });
     } else {
       if (g.last_observation) {
-        html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-item">last observation ' + esc(g.last_observation) + '</div>';
+        html += '<div class="pulse-vitals-sep"></div><div class="pulse-vitals-item">last reached your journal ' + esc(g.last_observation) + '</div>';
       }
       if (g.cta) {
         html += '<div class="pulse-vitals-sep"></div><a class="pulse-vitals-item pulse-vitals-cta" href="' + esc(g.cta.href || '#') + '">'

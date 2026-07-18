@@ -42,7 +42,7 @@ def _minimal_home_context() -> dict:
             "cta": None,
             "issues": [
                 {
-                    "text": "no observer is reaching your journal",
+                    "text": "nothing is reaching your journal.",
                     "severity": "red",
                     "href": "/app/health",
                 }
