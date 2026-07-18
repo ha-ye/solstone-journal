@@ -17,8 +17,33 @@ from solstone.think.user_config import (
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
     return tmp_path
+
+
+@pytest.mark.parametrize("home_value", ["~", "~/", "~/x", "~~", "~x"])
+def test_home_rejects_tilde_leading_expanded_values(monkeypatch, home_value):
+    monkeypatch.setenv("HOME", home_value)
+
+    for resolve in (default_journal, config_path):
+        with pytest.raises(RuntimeError, match="tilde-leading"):
+            resolve()
+
+
+@pytest.mark.parametrize(
+    ("home_value", "expected_journal", "expected_config"),
+    [
+        ("./~", "~/journal", Path("~/.config/solstone/config.toml")),
+        ("x~", "x~/journal", Path("x~/.config/solstone/config.toml")),
+    ],
+)
+def test_home_allows_non_tilde_leading_edges(
+    monkeypatch, home_value, expected_journal, expected_config
+):
+    monkeypatch.setenv("HOME", home_value)
+
+    assert default_journal() == expected_journal
+    assert config_path() == expected_config
 
 
 def test_default_journal_returns_home_journal(fake_home):

@@ -43,6 +43,7 @@ def patch_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    monkeypatch.setenv("HOME", str(home))
     return home
 
 

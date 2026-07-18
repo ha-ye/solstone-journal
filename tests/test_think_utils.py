@@ -1126,6 +1126,7 @@ class TestJournalResolution:
     def test_get_journal_info_source_tree_fallback(self, monkeypatch, tmp_path):
         monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
 
         path, source = get_journal_info()
 
@@ -1140,6 +1141,7 @@ class TestJournalResolution:
         monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
         monkeypatch.setattr(utils, "get_project_root", lambda: str(tmp_path))
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
 
         path, source = get_journal_info()
 
@@ -1178,6 +1180,7 @@ class TestGetJournalInfoConfigBranch:
     ):
         monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
         self.write_config(tmp_path, 'journal = "/tmp/from-config"\n')
 
         path, source = get_journal_info()
@@ -1200,6 +1203,7 @@ class TestGetJournalInfoConfigBranch:
     ):
         monkeypatch.setenv("SOLSTONE_JOURNAL", "")
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
         self.write_config(tmp_path, 'journal = "/tmp/from-config"\n')
 
         path, source = get_journal_info()
@@ -1210,6 +1214,7 @@ class TestGetJournalInfoConfigBranch:
     def test_empty_journal_key_in_config_falls_through(self, monkeypatch, tmp_path):
         monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
         self.write_config(tmp_path, 'journal = ""\n')
 
         _path, source = get_journal_info()
@@ -1219,6 +1224,7 @@ class TestGetJournalInfoConfigBranch:
     def test_whitespace_only_journal_key_falls_through(self, monkeypatch, tmp_path):
         monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
         self.write_config(tmp_path, 'journal = "   "\n')
 
         _path, source = get_journal_info()
@@ -1228,6 +1234,7 @@ class TestGetJournalInfoConfigBranch:
     def test_config_branch_wins_over_source_branch(self, monkeypatch, tmp_path):
         monkeypatch.delenv("SOLSTONE_JOURNAL", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+        monkeypatch.setenv("HOME", str(tmp_path))
         self.write_config(tmp_path, 'journal = "/tmp/from-config"\n')
 
         path, source = get_journal_info()

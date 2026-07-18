@@ -15,12 +15,21 @@ from pathlib import Path
 from typing import Any
 
 
+def _home() -> Path:
+    expanded = os.path.expanduser("~")
+    if expanded.startswith("~"):
+        raise RuntimeError(
+            f"Could not determine home directory: expanded home {expanded!r} remains tilde-leading"
+        )
+    return Path(expanded)
+
+
 def default_journal() -> str:
-    return str(Path.home() / "journal")
+    return str(_home() / "journal")
 
 
 def config_path() -> Path:
-    return Path.home() / ".config" / "solstone" / "config.toml"
+    return _home() / ".config" / "solstone" / "config.toml"
 
 
 def read_user_config() -> dict[str, str]:
