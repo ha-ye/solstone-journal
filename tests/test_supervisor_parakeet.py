@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,24 @@ from solstone.think.providers import (
     parakeet_install,
     parakeet_server,
 )
+from solstone.think.providers.parakeet_placement import (
+    PARAKEET_ATT_CONTEXT_ENV,
+    PARAKEET_ATT_CONTEXT_FRAMES,
+)
+
+_LaunchRecord = dict[str, Any]
+
+
+def _assert_att_context(launch: _LaunchRecord) -> None:
+    assert launch["env"][PARAKEET_ATT_CONTEXT_ENV] == str(PARAKEET_ATT_CONTEXT_FRAMES)
+
+
+def _launch_log(backend: str) -> str:
+    return (
+        "parakeet-server launch "
+        f"backend={backend} attention=local "
+        f"att_context_frames={PARAKEET_ATT_CONTEXT_FRAMES}"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -63,7 +82,7 @@ def _nvidia_probe(
 
 def _patch_ready_parakeet_launch(
     monkeypatch,
-    launches: list[dict[str, object]],
+    launches: list[_LaunchRecord],
     *,
     poll_sequence: list[tuple[int | None, int | None]] | None = None,
 ) -> list[tuple[str, int]]:
@@ -219,6 +238,7 @@ def test_with_library_path_prepends_dirs() -> None:
 def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
     monkeypatch,
     tmp_path,
+    caplog,
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
     monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES", raising=False)
@@ -271,7 +291,7 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
         ),
     )
 
-    launches = []
+    launches: list[_LaunchRecord] = []
 
     def fake_launch_process(
         name, cmd, *, restart=False, shutdown_timeout=15, ref=None, env=None
@@ -290,6 +310,7 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
 
     monkeypatch.setattr(supervisor, "_launch_process", fake_launch_process)
 
+    caplog.set_level(logging.INFO)
     result = supervisor.start_parakeet_server()
 
     assert result is launches[1]["managed"]
@@ -299,13 +320,17 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
     assert launches[0]["cmd"][0] == "/tmp/vulkan/parakeet-server"
     assert launches[0]["env"]["GGML_VK_VISIBLE_DEVICES"] == "2"
     assert launches[0]["env"]["LD_LIBRARY_PATH"] == "/parakeet/lib"
+    _assert_att_context(launches[0])
     assert launches[1]["cmd"][0] == "/tmp/cpu/parakeet-server"
     assert "GGML_VK_VISIBLE_DEVICES" not in launches[1]["env"]
     assert launches[1]["env"]["LD_LIBRARY_PATH"] == "/parakeet/lib"
+    _assert_att_context(launches[1])
     assert launches[0]["managed"].cleanup_called is True
     assert terminated[0][0] is launches[0]["managed"]
     assert ports == [("parakeet-cpp", 45123)]
     assert parakeet_server.read_parakeet_placement() == "cpu"
+    assert _launch_log("vulkan") in caplog.text
+    assert _launch_log("cpu") in caplog.text
 
 
 def test_start_parakeet_server_forces_cpu_on_small_single_discrete_bundled_brain(
@@ -335,7 +360,7 @@ def test_start_parakeet_server_forces_cpu_on_small_single_discrete_bundled_brain
     monkeypatch.setattr(
         local_cuda, "probe_nvidia_gpu", lambda: _nvidia_probe(vram_mib=6144)
     )
-    launches: list[dict[str, object]] = []
+    launches: list[_LaunchRecord] = []
     ports = _patch_ready_parakeet_launch(monkeypatch, launches)
 
     caplog.set_level(logging.INFO)
@@ -345,13 +370,15 @@ def test_start_parakeet_server_forces_cpu_on_small_single_discrete_bundled_brain
     assert len(launches) == 1
     assert launches[0]["cmd"][0] == "/tmp/cpu/parakeet-server"
     assert "GGML_VK_VISIBLE_DEVICES" not in launches[0]["env"]
+    _assert_att_context(launches[0])
     assert ports == [("parakeet-cpp", 45123)]
     assert parakeet_server.read_parakeet_placement() == "cpu"
     assert (
         "parakeet-server auto placement resolved to CPU: tier=floor "
-        "tier_resident_mib=4541 parakeet_worst_case_mib=5022 margin_mib=1024 "
-        "required_mib=10587 gpu_vram_mib=6144 placement=cpu"
+        "tier_resident_mib=4541 parakeet_worst_case_mib=2947 margin_mib=1024 "
+        "required_mib=8512 gpu_vram_mib=6144 placement=cpu"
     ) in caplog.text
+    assert _launch_log("cpu") in caplog.text
 
 
 def test_start_parakeet_server_brain_lane_inactive_keeps_auto_vulkan(
@@ -375,7 +402,7 @@ def test_start_parakeet_server_brain_lane_inactive_keeps_auto_vulkan(
     monkeypatch.setattr(
         local_cuda, "probe_nvidia_gpu", lambda: _nvidia_probe(vram_mib=6144)
     )
-    launches: list[dict[str, object]] = []
+    launches: list[_LaunchRecord] = []
     _patch_ready_parakeet_launch(monkeypatch, launches)
 
     result = supervisor.start_parakeet_server()
@@ -384,6 +411,7 @@ def test_start_parakeet_server_brain_lane_inactive_keeps_auto_vulkan(
     assert len(launches) == 1
     assert launches[0]["cmd"][0] == "/tmp/vulkan/parakeet-server"
     assert launches[0]["env"]["GGML_VK_VISIBLE_DEVICES"] == "2"
+    _assert_att_context(launches[0])
     assert parakeet_server.read_parakeet_placement() == "gpu"
 
 
@@ -405,13 +433,44 @@ def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
         "probe_nvidia_gpu",
         lambda: pytest.fail("explicit CPU should not probe NVIDIA"),
     )
-    launches: list[dict[str, object]] = []
+    launches: list[_LaunchRecord] = []
     _patch_ready_parakeet_launch(monkeypatch, launches)
 
     result = supervisor.start_parakeet_server()
 
     assert result is launches[0]["managed"]
     assert launches[0]["cmd"][0] == "/tmp/cpu/parakeet-server"
+    _assert_att_context(launches[0])
+    assert parakeet_server.read_parakeet_placement() == "cpu"
+
+
+def test_parakeet_attention_context_overrides_ambient_env(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+    monkeypatch.setenv(PARAKEET_ATT_CONTEXT_ENV, "0")
+    monkeypatch.setattr(supervisor.sys, "platform", "linux")
+    monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
+    monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "cpu")
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: pytest.fail("explicit CPU should not enumerate Vulkan devices"),
+    )
+    monkeypatch.setattr(
+        local_cuda,
+        "probe_nvidia_gpu",
+        lambda: pytest.fail("explicit CPU should not probe NVIDIA"),
+    )
+    launches: list[_LaunchRecord] = []
+    _patch_ready_parakeet_launch(monkeypatch, launches)
+
+    result = supervisor.start_parakeet_server()
+
+    assert result is launches[0]["managed"]
+    assert launches[0]["cmd"][0] == "/tmp/cpu/parakeet-server"
+    _assert_att_context(launches[0])
     assert parakeet_server.read_parakeet_placement() == "cpu"
 
 

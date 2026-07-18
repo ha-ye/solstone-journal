@@ -11,14 +11,15 @@ from typing import Any
 
 from solstone.think.providers.local_server import select_server_tier
 
-# Measured worst-case ordinary segment residency: 300 s is the observer-contract
-# cap. The 1024 MiB margin covers display framebuffer, compositor allocations,
-# driver overhead, and allocator fragmentation on the same monitor-driving GPU.
-# It intentionally uses 1024, not 512, to put 10 GiB cards (10240 MiB) on the
-# CPU side of the 10587 MiB threshold: without margin, only 677 MiB would remain
-# after the two measured residents, which is not reliable display-attached
-# operating slack.
-PARAKEET_WORST_CASE_MIB = 5022
+# 2947 MiB is the measured peak ordinary segment residency under local-128
+# attention, not full attention: 300 s is the observer-contract cap, and the
+# supervisor applies PARAKEET_ATT_CONTEXT_FRAMES to every supervised
+# parakeet.cpp launch. The 1024 MiB margin covers display framebuffer,
+# compositor allocations, driver overhead, and allocator fragmentation on the
+# same monitor-driving GPU.
+PARAKEET_ATT_CONTEXT_FRAMES = 128
+PARAKEET_ATT_CONTEXT_ENV = "PARAKEET_ATT_CONTEXT"
+PARAKEET_WORST_CASE_MIB = 2947
 CO_FIT_MARGIN_MIB = 1024
 
 CPU_PLACEMENT_COPY = (
@@ -190,6 +191,8 @@ def decide_parakeet_auto_placement(
 __all__ = [
     "CO_FIT_MARGIN_MIB",
     "CPU_PLACEMENT_COPY",
+    "PARAKEET_ATT_CONTEXT_ENV",
+    "PARAKEET_ATT_CONTEXT_FRAMES",
     "PARAKEET_WORST_CASE_MIB",
     "ParakeetPlacementDecision",
     "cpu_placement_suffix",

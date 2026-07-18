@@ -2101,7 +2101,17 @@ def _launch_and_warm_parakeet(
     "timeout". Does not clean up on failure; the caller owns termination.
     """
     from solstone.think.providers import parakeet_server
+    from solstone.think.providers.parakeet_placement import (
+        PARAKEET_ATT_CONTEXT_ENV,
+        PARAKEET_ATT_CONTEXT_FRAMES,
+    )
 
+    env = env | {PARAKEET_ATT_CONTEXT_ENV: str(PARAKEET_ATT_CONTEXT_FRAMES)}
+    logging.info(
+        "parakeet-server launch backend=%s attention=local att_context_frames=%d",
+        backend,
+        PARAKEET_ATT_CONTEXT_FRAMES,
+    )
     cmd = _build_parakeet_cmd(binary_path, gguf_path, port, threads)
     managed = _launch_process(PARAKEET_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
     deadline = time.monotonic() + PARAKEET_SERVER_READY_TIMEOUT_S

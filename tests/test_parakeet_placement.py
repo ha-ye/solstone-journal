@@ -61,15 +61,24 @@ def test_floor_tier_small_cards_force_cpu() -> None:
     assert decision.tier_resident_mib == 4541
     assert decision.parakeet_worst_case_mib == PARAKEET_WORST_CASE_MIB
     assert decision.margin_mib == CO_FIT_MARGIN_MIB
-    assert decision.required_mib == 10587
+    assert decision.required_mib == 8512
     assert decision.vram_mib == 6144
 
 
-@pytest.mark.parametrize("vram_mib", [10240, 11264, 12288])
-def test_margin_places_real_floor_tier_cards(vram_mib: int) -> None:
+@pytest.mark.parametrize(
+    ("vram_mib", "force_cpu"),
+    [
+        (8511, True),
+        (8512, False),
+        (8192, True),
+        (10240, False),
+    ],
+)
+def test_floor_tier_placement_boundary(vram_mib: int, force_cpu: bool) -> None:
     decision = _decision(vram_mib)
 
-    assert decision.force_cpu is (vram_mib == 10240)
+    assert decision.required_mib == 8512
+    assert decision.force_cpu is force_cpu
 
 
 def test_capable_tier_unmeasured_residency_keeps_gpu() -> None:
