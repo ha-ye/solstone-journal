@@ -1397,7 +1397,7 @@
 
     if (mode === 'screencast') {
       badge.className = 'health-badge recording';
-      label.textContent = 'observing';
+      label.textContent = 'taking in your screen';
     } else if (mode === 'tmux') {
       badge.className = 'health-badge tmux';
       label.textContent = 'terminal sessions';
@@ -1456,7 +1456,7 @@
           const displayLabel = streamCount === 1 ? 'display' : 'displays';
           const mins = Math.max(1, Math.round(elapsed / 60));
           return {
-            status: `observing (${streamCount} ${displayLabel}, ~${mins} min)`,
+            status: `taking in ${streamCount} ${displayLabel}, ~${mins} min`,
             detail: streamCount > 0
               ? streams.map(s => `${s.position || 'unknown'} ${s.connector || 'unknown'}`).join(', ')
               : '',

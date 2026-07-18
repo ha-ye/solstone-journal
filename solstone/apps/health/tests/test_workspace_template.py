@@ -142,7 +142,15 @@ def test_health_workspace_device_copy_replaces_observer_headings():
     assert ">manage observers →</a>" not in workspace
     assert "no observations active" not in workspace
     assert "registered observers" not in workspace
-    assert "screen observing" in workspace
+    assert '<div class="observe-section-title">screen</div>' in workspace
+
+
+def test_health_static_js_screen_copy_is_pinned_byte_for_byte():
+    source = _health_js()
+
+    assert "label.textContent = 'taking in your screen';" in source
+    assert "status: `taking in ${streamCount} ${displayLabel}, ~${mins} min`," in source
+    assert "status: `observing (${captures} snapshots, ~${mins} min)`," in source
 
 
 def test_health_static_js_syntax_check():
