@@ -379,32 +379,32 @@ def test_thinking_deck_copy_constants() -> None:
     assert not hasattr(thinking_copy, "CONFIDENTIAL_TRUST_EGRESS")
     assert thinking_copy.CONFIDENTIAL_LANE_EGRESS == (
         "when it's on, the thinking leaves your device — text, images, and "
-        "(with the audio switch on, its default) your recordings for "
+        "(with the audio switch on, its default) your audio for "
         "transcription. your journal itself never leaves."
     )
     assert thinking_copy.CONFIDENTIAL_SETUP_EGRESS_AUDIO_ON == (
         "what leaves your device: the text and images sol needs a model to "
-        "work through, and your audio recordings for transcription. your "
-        "journal itself never leaves."
+        "work through, and your audio for transcription. your journal itself "
+        "never leaves."
     )
     assert thinking_copy.CONFIDENTIAL_SETUP_EGRESS_AUDIO_OFF == (
         "what leaves your device: the text and images sol needs a model to "
-        "work through. your recordings stay on your device — speech becomes "
+        "work through. your audio stays on your device — speech becomes "
         "text there."
     )
     assert thinking_copy.CONFIDENTIAL_AUDIO == {
         "label": "transcribe audio on the service",
         "on": (
-            "your recordings are transcribed on the service — sent over the "
-            "verified channel, processed, and not kept. on while confidential "
-            "processing is in use."
+            "your audio is transcribed on the service — sent over the verified "
+            "channel, processed, and not kept. on while confidential processing "
+            "is in use."
         ),
-        "off": "speech becomes text on your device. your recordings don't leave.",
-        "note": "turn it off any time — it takes effect on the next recording.",
+        "off": "speech becomes text on your device. your audio doesn't leave.",
+        "note": "turn it off any time — it takes effect on the next thing you say.",
         "deferral": (
             "transcription is waiting — nothing is sent until your journal "
-            "verifies the service. recordings stay on your device and "
-            "transcribe once the check passes."
+            "verifies the service. your audio stays on your device and "
+            "transcribes once the check passes."
         ),
     }
     assert thinking_copy.CONFIDENTIAL_TRUST_BEATS == {
@@ -412,12 +412,12 @@ def test_thinking_deck_copy_constants() -> None:
         "sub": "operated by sol pbc",
         "egress_audio_on": (
             "what leaves your device: the text and images sol needs a model to "
-            "work through, and your audio recordings for transcription. your "
-            "journal itself never leaves."
+            "work through, and your audio for transcription. your journal itself "
+            "never leaves."
         ),
         "egress_audio_off": (
             "what leaves your device: the text and images sol needs a model to "
-            "work through. your recordings stay on your device — speech "
+            "work through. your audio stays on your device — speech "
             "becomes text there."
         ),
         "claims": "no content is retained · no human reviews it · nothing is used to train",

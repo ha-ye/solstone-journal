@@ -35,9 +35,9 @@ LANES = [
 ]
 CONFIDENTIAL_TRUST_HEADING = "confidential processing"
 CONFIDENTIAL_TRUST_SUB = "operated by sol pbc"
-CONFIDENTIAL_LANE_EGRESS = "when it's on, the thinking leaves your device — text, images, and (with the audio switch on, its default) your recordings for transcription. your journal itself never leaves."
-CONFIDENTIAL_SETUP_EGRESS_AUDIO_ON = "what leaves your device: the text and images sol needs a model to work through, and your audio recordings for transcription. your journal itself never leaves."
-CONFIDENTIAL_SETUP_EGRESS_AUDIO_OFF = "what leaves your device: the text and images sol needs a model to work through. your recordings stay on your device — speech becomes text there."
+CONFIDENTIAL_LANE_EGRESS = "when it's on, the thinking leaves your device — text, images, and (with the audio switch on, its default) your audio for transcription. your journal itself never leaves."
+CONFIDENTIAL_SETUP_EGRESS_AUDIO_ON = "what leaves your device: the text and images sol needs a model to work through, and your audio for transcription. your journal itself never leaves."
+CONFIDENTIAL_SETUP_EGRESS_AUDIO_OFF = "what leaves your device: the text and images sol needs a model to work through. your audio stays on your device — speech becomes text there."
 CONFIDENTIAL_TRUST_CLAIMS = (
     "no content is retained · no human reviews it · nothing is used to train"
 )
@@ -45,14 +45,12 @@ CONFIDENTIAL_TRUST_FAIL_CLOSED = "your journal must verify the service before an
 CONFIDENTIAL_TRUST_SUBSTRATE = "sol pbc runs the model itself on confidential GPUs in Microsoft Azure. the hardware boundary keeps the cloud host excluded from what's processed — no third-party AI provider is in the path."
 CONFIDENTIAL_EARLY_ACCESS = "confidential processing is coming — scouts get it first."
 CONFIDENTIAL_AUDIO_LABEL = "transcribe audio on the service"
-CONFIDENTIAL_AUDIO_ON = "your recordings are transcribed on the service — sent over the verified channel, processed, and not kept. on while confidential processing is in use."
-CONFIDENTIAL_AUDIO_OFF = (
-    "speech becomes text on your device. your recordings don't leave."
-)
+CONFIDENTIAL_AUDIO_ON = "your audio is transcribed on the service — sent over the verified channel, processed, and not kept. on while confidential processing is in use."
+CONFIDENTIAL_AUDIO_OFF = "speech becomes text on your device. your audio doesn't leave."
 CONFIDENTIAL_AUDIO_NOTE = (
-    "turn it off any time — it takes effect on the next recording."
+    "turn it off any time — it takes effect on the next thing you say."
 )
-CONFIDENTIAL_AUDIO_DEFERRAL = "transcription is waiting — nothing is sent until your journal verifies the service. recordings stay on your device and transcribe once the check passes."
+CONFIDENTIAL_AUDIO_DEFERRAL = "transcription is waiting — nothing is sent until your journal verifies the service. your audio stays on your device and transcribes once the check passes."
 CONFIDENTIAL_AUDIO = {
     "label": CONFIDENTIAL_AUDIO_LABEL,
     "on": CONFIDENTIAL_AUDIO_ON,
