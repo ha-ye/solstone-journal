@@ -8,7 +8,9 @@ import json
 import logging
 import math
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import threading
 from datetime import date, timedelta
@@ -63,6 +65,13 @@ def _function_source(source: str, name: str) -> str:
 def _function_sources(*names: str) -> str:
     source = _workspace_source()
     return "\n".join(_function_source(source, name) for name in names)
+
+
+def _node_or_skip() -> str:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+    return node
 
 
 def _collect_strings(node: object) -> list[str]:
@@ -458,6 +467,128 @@ def test_status_api_and_workspace_cover_import_and_dedupe_sections(body_env):
     assert "Dedupe by type" in source
     assert "renderCountList(status.normalized?.by_type" in source
     assert "renderCountList(status.dedupe?.by_type" in source
+
+
+def test_body_drawer_line_builders_run_under_node(body_env):
+    node = _node_or_skip()
+    env = body_env()
+    empty_day = env.client.get("/app/body/api/day/20260703").get_json()
+    _seed_health_import(env.journal)
+    status = env.client.get("/app/body/api/status").get_json()
+    day_payload = env.client.get("/app/body/api/day/20260703").get_json()
+    source = _workspace_source()
+    functions = "\n".join(
+        _function_source(source, name)
+        for name in (
+            "asArray",
+            "asObject",
+            "formatSourceTime",
+            "auditDrawerLine",
+            "dayAuditDrawerLine",
+            "anatomyDrawerLine",
+            "dayAuditHasNothingToDisclose",
+        )
+    )
+    script = "\n".join(
+        [
+            functions,
+            "function assert(condition, message) { if (!condition) throw new Error(message); }",
+            f"const status = {json.dumps(status)};",
+            f"const dayPayload = {json.dumps(day_payload)};",
+            f"const emptyDay = {json.dumps(empty_day)};",
+            """
+function expectedStatusLine(payload) {
+  const imports = Array.isArray(payload.imports) ? payload.imports : [];
+  const dedupe = payload.dedupe && typeof payload.dedupe === 'object' ? payload.dedupe : {};
+  const total = Number(dedupe.total || 0);
+  const latest = latestSourceValue(payload);
+  const parts = [
+    `${imports.length} ${imports.length === 1 ? "import" : "imports"}`,
+    `${total} ${total === 1 ? "row" : "rows"} deduped`,
+  ];
+  if (latest) parts.push(`latest ${formatSourceTime(latest)}`);
+  return parts.join(" · ");
+}
+
+function latestSourceValue(payload) {
+  const latestMap = payload.latest_by_source && typeof payload.latest_by_source === 'object' && !Array.isArray(payload.latest_by_source)
+    ? payload.latest_by_source
+    : {};
+  return Object.values(latestMap)
+    .map((value) => String(value || '').trim())
+    .filter(Boolean)
+    .reduce((max, value) => value > max ? value : max, '');
+}
+
+function expectedDayLine(audit) {
+  const types = audit.types && typeof audit.types === 'object' && !Array.isArray(audit.types) ? audit.types : {};
+  const kinds = Object.keys(types).length;
+  const total = Object.values(types).reduce((sum, count) => sum + Number(count || 0), 0);
+  return `${kinds} ${kinds === 1 ? "kind" : "kinds"} · ${total} ${total === 1 ? "row" : "rows"}`;
+}
+
+function expectedAnatomyLine(items) {
+  if (!items.length) return "";
+  let strongest = null;
+  for (const item of items) {
+    const value = Number(item.value);
+    if (!Number.isFinite(value)) continue;
+    if (!strongest || value > strongest.value) {
+      strongest = { label: String(item.label || ""), value };
+    }
+  }
+  return strongest ? `${items.length} ${items.length === 1 ? "contributor" : "contributors"} · strongest: ${strongest.label}` : "";
+}
+
+assert(formatSourceTime("2026-07-03T12:00:00-06:00") === "jul 3, 12:00 pm", "fixture time formats deterministically");
+const statusLine = auditDrawerLine(status);
+const latest = latestSourceValue(status);
+assert(latest, "status fixture carries latest source times");
+assert(statusLine === expectedStatusLine(status), "overview line carries imports, deduped rows, and latest source time");
+assert(statusLine.includes(`latest ${formatSourceTime(latest)}`), "overview line formats max latest source time");
+const noLatestStatus = {...status, latest_by_source: {}};
+const noLatestLine = auditDrawerLine(noLatestStatus);
+assert(noLatestLine === expectedStatusLine(noLatestStatus), "overview line follows payload with no latest source times");
+assert(!noLatestLine.includes("latest"), "overview no-latest line drops latest fragment");
+assert(noLatestLine.split(" · ").length === 2, "overview no-latest line has no dangling separator");
+assert(dayAuditDrawerLine(dayPayload.audit) === expectedDayLine(dayPayload.audit), "day line carries kinds and rows");
+assert(dayAuditHasNothingToDisclose(emptyDay) === true, "empty day has nothing to disclose");
+assert(dayAuditHasNothingToDisclose(dayPayload) === false, "seeded day has disclosure data");
+assert(anatomyDrawerLine([]) === "", "empty anatomy has no line");
+const tied = [{label: "alpha", value: 10}, {label: "beta", value: 10}, {label: "gamma", value: 9}];
+assert(anatomyDrawerLine(tied) === expectedAnatomyLine(tied), "anatomy line carries contributor count and strongest label");
+assert(anatomyDrawerLine(tied).endsWith(`strongest: ${tied[0].label}`), "strongest contributor tie keeps first payload item");
+""",
+        ]
+    )
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
+def test_day_audit_empty_state_is_not_a_drawer():
+    source = _function_source(_workspace_source(), "renderDayAudit")
+
+    assert (
+        "return '<p class=\"drawer-empty\">no import bookkeeping for this day.</p>';"
+        in source
+    )
+    assert source.index("dayAuditHasNothingToDisclose(bodyDay)") < source.index(
+        "window.Drawer.render"
+    )
+    assert 'label: "raw types"' in source
+
+
+def test_body_drawer_labels_follow_contract():
+    source = _function_sources(
+        "renderOverviewAudit",
+        "renderDayAudit",
+        "renderScoreAnatomy",
+    )
+
+    assert 'label: "audit"' in source
+    assert 'label: "raw types"' in source
+    assert 'label: "why this score?"' in source
+    assert "Audit ·" not in source
+    assert "Why this score" not in source
 
 
 def test_day_api_returns_summary_and_factual_glucose_stats(body_env):
@@ -3950,9 +4081,9 @@ def test_status_api_import_months_render_as_range_label(body_env):
     )
     assert by_id["20260902_010000"]["normalized_months_label"] == "—"
 
-    source = _function_source(_workspace_source(), "renderOverviewAudit")
+    source = _function_sources("renderOverviewAudit", "importEvidenceMeta")
     assert "item.normalized_months_label" in source
-    assert "&mdash;" in source
+    assert "—" in source
 
 
 def test_day_audit_lists_every_bundle_containing_the_day(body_env):
@@ -5985,10 +6116,10 @@ def test_trends_vascular_age_ribbon_is_bare_age_without_typical(body_env):
 # checks for the server-produced strings they render.
 
 
-def test_score_anatomy_renderer_collapsed_by_default_with_aria_pins():
+def test_score_anatomy_renderer_uses_drawer_contract():
     source = _function_sources(
         "renderScoreAnatomy",
-        "bindScoreAnatomy",
+        "anatomyDrawerLine",
         "renderSleepCard",
         "renderRecoveryCard",
     )
@@ -6001,19 +6132,17 @@ def test_score_anatomy_renderer_collapsed_by_default_with_aria_pins():
     assert (
         'renderScoreAnatomy("body-recovery-anatomy", recovery.contributors)' in source
     )
-    # Collapsed by default: the button states it and the panel is hidden.
-    assert 'class="body-anatomy-btn" aria-expanded="false" aria-controls=' in source
-    assert 'class="body-anatomy" id="${escapeHtml(id)}" hidden' in source
-    assert "Why this score" in source
+    assert "window.Drawer.render" in source
+    assert 'label: "why this score?"' in source
+    assert "line: anatomyDrawerLine(items)" in source
+    assert 'if (!items.length) return "";' in source
+    assert "drawer-empty" not in source
     # The list is attributed to Oura, §13-style.
     assert "Oura\\'s contributors" in source
 
-    # The toggle keeps aria-expanded and the panel's hidden attribute in
-    # lockstep, both directions.
-    assert 'root.querySelectorAll(".body-anatomy-btn")' in source
-    assert 'const open = button.getAttribute("aria-expanded") === "true";' in source
-    assert 'button.setAttribute("aria-expanded", open ? "false" : "true");' in source
-    assert "if (panel) panel.hidden = open;" in source
+    lowered = _function_sources("renderScoreAnatomy", "anatomyDrawerLine").lower()
+    for word in ("derived", "computed", "from ", "readings", "timestamp"):
+        assert word not in lowered
 
 
 def test_score_anatomy_guarded_on_contributors_before_rendering():
@@ -6021,7 +6150,8 @@ def test_score_anatomy_guarded_on_contributors_before_rendering():
 
     assert "const items = asArray(contributors);" in source
     assert 'if (!items.length) return "";' in source
-    assert "items.map((item)" in source
+    assert "window.Drawer.render" in source
+    assert "drawer-empty" not in source
 
 
 def test_fact_typical_median_rides_muted_never_colorized(body_env):

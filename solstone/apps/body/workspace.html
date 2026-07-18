@@ -497,68 +497,6 @@ a.body-day-cell:focus-visible {
   font-size: 14px;
 }
 
-.body-anatomy-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  margin-top: var(--space-2);
-  padding: 0;
-  border: 0;
-  background: transparent;
-  font: inherit;
-  font-size: 13px;
-  font-weight: var(--weight-medium);
-  color: var(--orange-ink);
-  cursor: pointer;
-}
-
-.body-anatomy-btn:hover {
-  text-decoration: underline;
-}
-
-.body-anatomy-btn:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: var(--radius-sm);
-}
-
-.body-anatomy-caret {
-  font-size: 10px;
-  color: var(--ink-faint-paper);
-}
-
-.body-anatomy[hidden] {
-  display: none;
-}
-
-.body-anatomy-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  column-gap: var(--space-4);
-  list-style: none;
-  margin: var(--space-2) 0 0;
-  padding: 0;
-}
-
-.body-anatomy-list li {
-  display: flex;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: 2px 0;
-  font-size: 13px;
-  color: var(--ink);
-}
-
-.body-anatomy-list li span:first-child {
-  color: var(--ink-soft-paper);
-}
-
-.body-anatomy-foot {
-  margin: var(--space-2) 0 0;
-  font-size: 12px;
-  color: var(--ink-faint-paper);
-}
-
 .body-chips {
   display: flex;
   flex-wrap: wrap;
@@ -771,31 +709,6 @@ a.body-day-cell:focus-visible {
 .body-prompt:focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
-}
-
-.body-audit {
-  margin-top: var(--space-6);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius);
-  background: var(--cream-bright);
-}
-
-.body-audit > summary {
-  padding: var(--space-3) var(--space-4);
-  font-size: 14px;
-  font-weight: var(--weight-medium);
-  color: var(--ink-soft);
-  cursor: pointer;
-}
-
-.body-audit > summary:focus-visible {
-  outline: 2px solid var(--focus);
-  outline-offset: 2px;
-  border-radius: var(--radius);
-}
-
-.body-audit-inner {
-  padding: 0 var(--space-4) var(--space-4);
 }
 
 .body-table-wrap {
@@ -1093,8 +1006,7 @@ a.body-day-cell:focus-visible {
   .body-main-grid,
   .body-highlights,
   .body-archive-hero,
-  .body-day-brief,
-  .body-anatomy-list {
+  .body-day-brief {
     grid-template-columns: 1fr;
   }
 }
@@ -1442,33 +1354,99 @@ a.body-day-cell:focus-visible {
     return rows.map(([name, count]) => `<li><span${codeName ? ' class="body-code"' : ""}>${escapeHtml(name)}</span><strong class="body-num">${escapeHtml(count)}</strong></li>`).join("");
   }
 
+  function formatSourceTime(value) {
+    const text = String(value ?? "").trim();
+    if (!text) return "";
+    const months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    const match = text.match(/^\d{4}-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})/);
+    if (!match) return text;
+    const month = months[Number(match[1]) - 1] || match[1];
+    const day = String(Number(match[2]));
+    const hour24 = Number(match[3]);
+    const minute = match[4];
+    const suffix = hour24 >= 12 ? "pm" : "am";
+    const hour = String(hour24 % 12 || 12);
+    return `${month} ${day}, ${hour}:${minute} ${suffix}`;
+  }
+
+  function auditDrawerLine(status) {
+    const imports = asArray(status.imports);
+    const dedupe = asObject(status.dedupe);
+    const total = Number(dedupe.total || 0);
+    const latest = Object.values(asObject(status.latest_by_source))
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean)
+      .reduce((max, value) => (value > max ? value : max), "");
+    const parts = [
+      `${imports.length} ${imports.length === 1 ? "import" : "imports"}`,
+      `${total} ${total === 1 ? "row" : "rows"} deduped`,
+    ];
+    if (latest) parts.push(`latest ${formatSourceTime(latest)}`);
+    return parts.join(" · ");
+  }
+
+  function dayAuditDrawerLine(audit) {
+    const types = asObject(audit.types);
+    const kinds = Object.keys(types).length;
+    const total = Object.values(types).reduce((sum, count) => sum + Number(count || 0), 0);
+    return `${kinds} ${kinds === 1 ? "kind" : "kinds"} · ${total} ${total === 1 ? "row" : "rows"}`;
+  }
+
+  function anatomyDrawerLine(contributors) {
+    const items = asArray(contributors);
+    let strongest = null;
+    for (const item of items) {
+      const value = Number(asObject(item).value);
+      if (!Number.isFinite(value)) continue;
+      if (!strongest || value > strongest.value) {
+        strongest = { label: String(item.label ?? ""), value };
+      }
+    }
+    return strongest ? `${items.length} ${items.length === 1 ? "contributor" : "contributors"} · strongest: ${strongest.label}` : "";
+  }
+
+  function dayAuditHasNothingToDisclose(bodyDay) {
+    const audit = asObject(bodyDay.audit);
+    return Object.entries(asObject(audit.types)).length === 0
+      && asArray(audit.import_ids).length === 0
+      && asArray(audit.oura_appendix).length === 0
+      && !bodyDay.summary_markdown;
+  }
+
+  function renderDrawerKv(rows) {
+    const kept = rows.filter((row) => row && row[1] !== undefined && row[1] !== null && row[1] !== "");
+    if (!kept.length) return "";
+    return `<dl class="drawer-kv">${kept.map(([name, value]) => `<dt>${escapeHtml(name)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}</dl>`;
+  }
+
+  function importEvidenceMeta(item) {
+    const entries = Number(item.entry_count || 0);
+    const days = asArray(item.days_affected).length;
+    const months = String(item.normalized_months_label || "—");
+    return `${entries} ${entries === 1 ? "entry" : "entries"} · ${days} ${days === 1 ? "day" : "days"} · ${escapeHtml(months)}`;
+  }
+
+  function renderImportEvidence(imports) {
+    if (!imports.length) return '<p class="drawer-empty">no imports yet — body data appears here when a health export is imported.</p>';
+    return `<ul class="drawer-evidence">${imports.map((item) => {
+      const importId = String(item.import_id ?? "");
+      return `<li class="drawer-evidence-row"><a class="drawer-evidence-title body-code" href="/app/import/${escapeHtml(importId)}">${escapeHtml(importId)}</a><span class="ev-meta">${importEvidenceMeta(item)}</span></li>`;
+    }).join("")}</ul>`;
+  }
+
   function renderOverviewAudit(status) {
     const imports = asArray(status.imports);
-    return html([
-      '<details class="body-audit">',
-      '<summary>Audit &middot; imports &amp; dedupe bookkeeping</summary>',
-      '<div class="body-audit-inner">',
-      '<section class="body-grid body-section" aria-label="Imported health data totals">',
-      `<article class="body-card"><h3 class="body-card-label">Imports</h3><div class="body-metric">${escapeHtml(imports.length)}</div></article>`,
-      `<article class="body-card"><h3 class="body-card-label">Entries</h3><div class="body-metric">${escapeHtml(status.normalized?.total ?? 0)}</div></article>`,
-      `<article class="body-card"><h3 class="body-card-label">Dedupe rows</h3><div class="body-metric">${escapeHtml(status.dedupe?.total ?? 0)}</div></article>`,
-      '<article class="body-card"><h3 class="body-card-label">Coverage window</h3>',
-      status.coverage_window?.start ? `<div class="body-code">${escapeHtml(status.coverage_window.start)}</div><div class="body-code">${escapeHtml(status.coverage_window.end)}</div>` : '<div class="body-muted">No entries yet.</div>',
-      '</article></section>',
-      '<section class="body-section" aria-labelledby="body-imports-title"><h3 id="body-imports-title" class="body-section-title">Import list</h3><div class="body-table-wrap"><table class="body-table"><thead><tr><th>Import</th><th>Source</th><th>Imported</th><th>Entries</th><th>Days</th><th>Months</th></tr></thead><tbody>',
-      imports.length ? imports.map((item) => html([
-        '<tr>',
-        `<td class="body-code">${escapeHtml(item.import_id)}</td>`,
-        `<td>${escapeHtml(item.source_type)}</td>`,
-        `<td>${escapeHtml(item.imported_at)}</td>`,
-        `<td>${escapeHtml(item.entry_count)}</td>`,
-        '<td>',
-        asArray(item.days_affected).length ? asArray(item.days_affected).map((d) => `<a class="body-link" href="${bodyDayHref(d)}">${escapeHtml(d)}</a>`).join(", ") : '<span class="body-muted">&mdash;</span>',
-        '</td>',
-        `<td class="body-num">${escapeHtml(item.normalized_months_label)}</td>`,
-        '</tr>',
-      ])).join("") : '<tr><td colspan="6" class="body-muted">No health imports found.</td></tr>',
-      '</tbody></table></div></section>',
+    const latestRows = Object.entries(asObject(status.latest_by_source)).map(([name, latest]) => [`latest ${name}`, formatSourceTime(latest) || latest]);
+    const bodyHtml = html([
+      renderImportEvidence(imports),
+      renderDrawerKv([
+        ["imports", imports.length],
+        ["entries", status.normalized?.total ?? 0],
+        ["dedupe rows", status.dedupe?.total ?? 0],
+        ["coverage start", status.coverage_window?.start || "—"],
+        ["coverage end", status.coverage_window?.end || "—"],
+        ...latestRows,
+      ]),
       '<section class="body-section body-lists" aria-label="Entry totals">',
       `<article class="body-card"><h3 class="body-card-label">By type</h3><ul class="body-list">${renderCountList(status.normalized?.by_type, "No entries.", true)}</ul></article>`,
       `<article class="body-card"><h3 class="body-card-label">By source${status.sources_month_label ? ` &middot; ${escapeHtml(status.sources_month_label)}` : ""}</h3><ul class="body-list">${renderCountList(status.normalized?.by_source, "No entries.")}</ul></article>`,
@@ -1479,11 +1457,13 @@ a.body-day-cell:focus-visible {
       `<article class="body-card"><h3 class="body-card-label">Dedupe by source</h3><ul class="body-list">${renderCountList(status.dedupe?.by_source, "No entries.")}</ul></article>`,
       `<article class="body-card"><h3 class="body-card-label">Dedupe by month</h3><ul class="body-list">${renderCountList(status.dedupe?.by_month, "No entries.")}</ul></article>`,
       '</section>',
-      '<section class="body-section" aria-labelledby="body-latest-title"><h3 id="body-latest-title" class="body-section-title">Latest source time</h3><div class="body-table-wrap"><table class="body-table"><thead><tr><th>Source</th><th>Latest time</th></tr></thead><tbody>',
-      Object.entries(asObject(status.latest_by_source)).length ? Object.entries(status.latest_by_source).map(([name, latest]) => `<tr><td>${escapeHtml(name)}</td><td class="body-code">${escapeHtml(latest)}</td></tr>`).join("") : '<tr><td colspan="2" class="body-muted">No source times yet.</td></tr>',
-      '</tbody></table></div></section>',
-      '</div></details>',
     ]);
+    return window.Drawer.render({
+      id: "body-overview-audit",
+      label: "audit",
+      line: auditDrawerLine(status),
+      bodyHtml,
+    });
   }
 
   function renderOverview(status) {
@@ -1529,23 +1509,16 @@ a.body-day-cell:focus-visible {
     const items = asArray(contributors);
     if (!items.length) return "";
     const id = safeClass(panelId);
-    return html([
-      `<button type="button" class="body-anatomy-btn" aria-expanded="false" aria-controls="${escapeHtml(id)}">Why this score<span class="body-anatomy-caret" aria-hidden="true">&#9662;</span></button>`,
-      `<div class="body-anatomy" id="${escapeHtml(id)}" hidden>`,
-      '<ul class="body-anatomy-list">',
-      items.map((item) => `<li><span>${escapeHtml(item.label)}</span><strong class="body-num">${escapeHtml(item.value)}</strong></li>`).join(""),
-      '</ul><p class="body-anatomy-foot">Oura\'s contributors</p></div>',
+    const bodyHtml = html([
+      '<dl class="drawer-kv">',
+      items.map((item) => `<dt>${escapeHtml(item.label)}</dt><dd class="body-num">${escapeHtml(item.value)}</dd>`).join(""),
+      '</dl><p class="drawer-provenance">Oura\'s contributors</p>',
     ]);
-  }
-
-  function bindScoreAnatomy() {
-    root.querySelectorAll(".body-anatomy-btn").forEach((button) => {
-      button.addEventListener("click", () => {
-        const open = button.getAttribute("aria-expanded") === "true";
-        const panel = document.getElementById(button.getAttribute("aria-controls"));
-        button.setAttribute("aria-expanded", open ? "false" : "true");
-        if (panel) panel.hidden = open;
-      });
+    return window.Drawer.render({
+      id,
+      label: "why this score?",
+      line: anatomyDrawerLine(items),
+      bodyHtml,
     });
   }
 
@@ -1759,25 +1732,30 @@ a.body-day-cell:focus-visible {
 
   function renderDayAudit(bodyDay) {
     const audit = asObject(bodyDay.audit);
+    if (dayAuditHasNothingToDisclose(bodyDay)) {
+      return '<p class="drawer-empty">no import bookkeeping for this day.</p>';
+    }
     const importIds = asArray(audit.import_ids);
     const appendix = asArray(audit.oura_appendix);
-    return html([
-      '<details class="body-audit">',
-      '<summary>Audit &middot; raw types &amp; imports for this day</summary>',
-      '<div class="body-audit-inner">',
+    const bodyHtml = html([
       '<div class="body-lists">',
       `<article class="body-card"><h3 class="body-card-label">By type</h3><ul class="body-list">${renderCountList(audit.types, "No entries.", true)}</ul></article>`,
-      '<article class="body-card"><h3 class="body-card-label">Imports</h3><ul class="body-list">',
-      importIds.length ? importIds.map((importId) => `<li><span class="body-code">${escapeHtml(importId)}</span></li>`).join("") : '<li class="body-muted">No imports.</li>',
-      '</ul><p class="body-card-footer">Entries are shown once per dedupe key across overlapping bundles.</p></article>',
+      '<article class="body-card"><h3 class="body-card-label">Imports</h3>',
+      importIds.length ? `<ul class="drawer-evidence">${importIds.map((importId) => `<li class="drawer-evidence-row"><a class="drawer-evidence-title body-code" href="/app/import/${escapeHtml(importId)}">${escapeHtml(importId)}</a></li>`).join("")}</ul>` : '<p class="body-muted">No imports.</p>',
+      '</article>',
       appendix.length ? `<article class="body-card"><h3 class="body-card-label">Oura details</h3><ul class="body-list">${appendix.map((item) => `<li><span>${escapeHtml(item.label)}</span><strong class="body-num">${escapeHtml(item.detail)}</strong></li>`).join("")}</ul><p class="body-card-footer">Sessions and tags stay here until a day-card use is clear.</p></article>` : "",
       '</div>',
       '<section class="body-section" aria-labelledby="body-day-summary-title">',
       '<h3 id="body-day-summary-title" class="body-card-label">Day summary</h3>',
       bodyDay.summary_markdown ? `<pre class="body-summary">${escapeHtml(bodyDay.summary_markdown)}</pre>` : `<p class="body-empty">No day summary file for ${escapeHtml(bodyDay.day)}.</p>`,
       '</section>',
-      '</div></details>',
     ]);
+    return window.Drawer.render({
+      id: `body-day-audit-${safeDay(bodyDay.day)}`,
+      label: "raw types",
+      line: dayAuditDrawerLine(audit),
+      bodyHtml,
+    });
   }
 
   function renderDayView(bodyDay) {
@@ -1809,7 +1787,6 @@ a.body-day-cell:focus-visible {
       const bodyDay = await window.apiJson(`/app/body/api/day/${encodeURIComponent(day)}`);
       reveal(renderDayView(bodyDay));
       bindPromptButtons();
-      bindScoreAnatomy();
     } catch (err) {
       showError("Couldn't load body day", err, () => initBodyDay());
     }
