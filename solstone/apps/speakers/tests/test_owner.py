@@ -19,6 +19,7 @@ from flask import Flask
 from solstone.apps.speakers.encoder_config import (
     ENCODER_ID,
     OVERLAP_DETECTOR_ID,
+    OWNER_MARGIN_MIN,
     SPEAKER_EVIDENCE_VERSION,
 )
 from solstone.think.awareness import get_current, update_state
@@ -363,7 +364,7 @@ def _write_rebuild_owner_centroid(
     evidence_hash: str | None = "previous-hash",
     evidence_intra_cosine_p25: float | None = 1.0,
 ) -> Path:
-    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+    from solstone.apps.speakers.encoder_config import OWNER_MARGIN_MIN, OWNER_THRESHOLD
 
     principal_dir = env.create_entity("Self Person", is_principal=True)
     centroid_array = (
@@ -378,6 +379,7 @@ def _write_rebuild_owner_centroid(
             OWNER_THRESHOLD if threshold is None else threshold,
             dtype=np.float32,
         ),
+        "margin": np.array(OWNER_MARGIN_MIN, dtype=np.float32),
         "last_refreshed_at": np.array(last_refreshed_at),
     }
     if created_at is not None:
@@ -1349,15 +1351,18 @@ def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
             "centroid",
             "cluster_size",
             "threshold",
+            "margin",
             "last_refreshed_at",
         }
         centroid = data["centroid"]
         cluster_size = int(np.asarray(data["cluster_size"]).item())
         threshold = float(np.asarray(data["threshold"]).item())
+        margin = float(np.asarray(data["margin"]).item())
         last_refreshed_at = str(np.asarray(data["last_refreshed_at"]).item())
     assert cluster_size == OWNER_BOOTSTRAP_MIN_STMTS
     assert np.isclose(np.linalg.norm(centroid), 1.0)
     assert np.isclose(threshold, OWNER_THRESHOLD)
+    assert np.isclose(margin, OWNER_MARGIN_MIN)
     assert last_refreshed_at.endswith("Z")
     assert get_current()["voiceprint"]["status"] == "confirmed"
 
@@ -1512,7 +1517,7 @@ def test_manual_tag_overlap_boundary_excludes_above_accepts_equal_absent(
 
 
 def test_owner_centroid_schema_parity_between_confirm_and_manual_build(speakers_env):
-    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
+    from solstone.apps.speakers.encoder_config import OWNER_MARGIN_MIN, OWNER_THRESHOLD
     from solstone.apps.speakers.owner import (
         bootstrap_owner_from_manual_tags,
         clear_owner_provisional_cache,
@@ -1536,6 +1541,7 @@ def test_owner_centroid_schema_parity_between_confirm_and_manual_build(speakers_
     owner_path = principal_dir / "owner_centroid.npz"
     with np.load(owner_path, allow_pickle=False) as data:
         confirmed_keys = set(data.files)
+        confirmed_margin = float(np.asarray(data["margin"]).item())
 
     owner_path.unlink()
     clear_owner_provisional_cache("self_person")
@@ -1556,6 +1562,7 @@ def test_owner_centroid_schema_parity_between_confirm_and_manual_build(speakers_
     bootstrap_owner_from_manual_tags()
     with np.load(owner_path, allow_pickle=False) as data:
         manual_keys = set(data.files)
+        manual_margin = float(np.asarray(data["margin"]).item())
 
     assert (
         confirmed_keys
@@ -1564,9 +1571,12 @@ def test_owner_centroid_schema_parity_between_confirm_and_manual_build(speakers_
             "centroid",
             "cluster_size",
             "threshold",
+            "margin",
             "last_refreshed_at",
         }
     )
+    assert np.isclose(confirmed_margin, OWNER_MARGIN_MIN)
+    assert np.isclose(manual_margin, OWNER_MARGIN_MIN)
 
 
 def test_bootstrap_owner_from_manual_tags_is_idempotent(speakers_env):
@@ -1596,9 +1606,12 @@ def test_bootstrap_owner_from_manual_tags_is_idempotent(speakers_env):
     assert dict(get_current()["voiceprint"]) == state_before
 
 
-def test_confirm_owner_candidate_keeps_four_key_schema(speakers_env):
-    from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
-    from solstone.apps.speakers.owner import confirm_owner_candidate
+def test_confirm_owner_candidate_writes_margin_schema(speakers_env):
+    from solstone.apps.speakers.encoder_config import OWNER_MARGIN_MIN, OWNER_THRESHOLD
+    from solstone.apps.speakers.owner import (
+        confirm_owner_candidate,
+        load_owner_centroid,
+    )
 
     env = speakers_env()
     principal_dir = env.create_entity("Self Person", is_principal=True)
@@ -1621,8 +1634,13 @@ def test_confirm_owner_candidate_keeps_four_key_schema(speakers_env):
             "centroid",
             "cluster_size",
             "threshold",
+            "margin",
             "last_refreshed_at",
         }
+        assert np.isclose(float(np.asarray(data["margin"]).item()), OWNER_MARGIN_MIN)
+    loaded = load_owner_centroid()
+    assert loaded is not None
+    assert np.isclose(loaded.margin, OWNER_MARGIN_MIN)
 
 
 def test_confirm_owner_candidate_pre_first_centroid_flow_unchanged(speakers_env):
@@ -1653,9 +1671,12 @@ def test_confirm_owner_candidate_pre_first_centroid_flow_unchanged(speakers_env)
     assert get_current()["voiceprint"]["status"] == "confirmed"
 
 
-def test_bootstrap_owner_from_manual_tags_keeps_four_key_schema(speakers_env):
+def test_bootstrap_owner_from_manual_tags_writes_margin_schema(speakers_env):
     from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
-    from solstone.apps.speakers.owner import bootstrap_owner_from_manual_tags
+    from solstone.apps.speakers.owner import (
+        bootstrap_owner_from_manual_tags,
+        load_owner_centroid,
+    )
 
     env = speakers_env()
     principal_dir = env.create_entity("Self Person", is_principal=True)
@@ -1669,14 +1690,20 @@ def test_bootstrap_owner_from_manual_tags_keeps_four_key_schema(speakers_env):
             "centroid",
             "cluster_size",
             "threshold",
+            "margin",
             "last_refreshed_at",
         }
+        assert np.isclose(float(np.asarray(data["margin"]).item()), OWNER_MARGIN_MIN)
+    loaded = load_owner_centroid()
+    assert loaded is not None
+    assert np.isclose(loaded.margin, OWNER_MARGIN_MIN)
 
 
 def test_rebuild_npz_key_set_includes_only_rebuild_metadata(speakers_env):
     from solstone.apps.speakers.encoder_config import OWNER_THRESHOLD
     from solstone.apps.speakers.owner import (
         OWNER_REBUILD_EXPECTED_KEYS,
+        load_owner_centroid,
         rebuild_owner_centroid,
     )
 
@@ -1688,9 +1715,15 @@ def test_rebuild_npz_key_set_includes_only_rebuild_metadata(speakers_env):
 
     assert result["status"] == "rebuilt"
     assert result["created_at"] == "2026-03-15T12:00:00Z"
+    assert np.isclose(result["margin"], OWNER_MARGIN_MIN)
     with np.load(owner_path, allow_pickle=False) as data:
         assert set(data.files) == set(OWNER_REBUILD_EXPECTED_KEYS)
         assert np.isclose(float(np.asarray(data["threshold"]).item()), OWNER_THRESHOLD)
+        assert np.isclose(float(np.asarray(data["margin"]).item()), OWNER_MARGIN_MIN)
+
+    loaded = load_owner_centroid()
+    assert loaded is not None
+    assert np.isclose(loaded.margin, OWNER_MARGIN_MIN)
 
 
 def test_load_owner_centroid_old_file_missing_rebuild_keys(speakers_env):
@@ -2938,6 +2971,7 @@ def test_api_owner_status_confirmed(speakers_env):
             "created_at": None,
             "last_refreshed_at": "",
             "threshold": None,
+            "margin": None,
             "intra_cosine_p25": None,
             "evidence_hash": None,
             "evidence_intra_cosine_p25": None,

@@ -24,6 +24,7 @@ from solstone.apps.speakers.encoder_config import (
     OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S,
     OWNER_BOOTSTRAP_MIN_STMTS,
     OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS,
+    OWNER_MARGIN_MIN,
     OWNER_REBUILD_MAX_COHESION_DROP,
     OWNER_REBUILD_MIN_CENTROID_AGREEMENT,
     OWNER_REBUILD_MIN_CLUSTER_SIZE_RATIO,
@@ -70,6 +71,7 @@ OWNER_REBUILD_EXPECTED_KEYS = (
     "centroid",
     "cluster_size",
     "threshold",
+    "margin",
     "last_refreshed_at",
     "created_at",
     "evidence_hash",
@@ -93,6 +95,7 @@ class OwnerCentroid:
     created_at: str | None = None
     evidence_hash: str | None = None
     evidence_intra_cosine_p25: float | None = None
+    margin: float | None = None
 
 
 @dataclass(frozen=True)
@@ -669,9 +672,16 @@ def _write_owner_centroid(
             "centroid": np.asarray(centroid, dtype=np.float32).reshape(-1),
             "cluster_size": np.array(cluster_size, dtype=np.int32),
             "threshold": np.array(OWNER_THRESHOLD, dtype=np.float32),
+            "margin": np.array(OWNER_MARGIN_MIN, dtype=np.float32),
             "last_refreshed_at": np.array(_iso_now()),
         },
-        expected_keys=("centroid", "cluster_size", "threshold", "last_refreshed_at"),
+        expected_keys=(
+            "centroid",
+            "cluster_size",
+            "threshold",
+            "margin",
+            "last_refreshed_at",
+        ),
     )
     return owner_path
 
@@ -1414,6 +1424,7 @@ def load_owner_centroid() -> OwnerCentroid | None:
         created_at = data.get("created_at")
         evidence_hash = data.get("evidence_hash")
         evidence_intra_p25 = data.get("evidence_intra_cosine_p25")
+        margin = data.get("margin")
         if centroid is None or threshold is None or cluster_size is None:
             return None
 
@@ -1437,6 +1448,7 @@ def load_owner_centroid() -> OwnerCentroid | None:
             created_at=_array_string(created_at),
             evidence_hash=_array_string(evidence_hash),
             evidence_intra_cosine_p25=_array_float(evidence_intra_p25),
+            margin=_array_float(margin),
         )
     except Exception as exc:
         logger.warning("Failed to load owner centroid %s: %s", centroid_path, exc)
@@ -1788,6 +1800,7 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
         incumbent_rebuild_sourced = incumbent_hash is not None
         incumbent_cluster_size = int(np.asarray(incumbent_cluster_raw).item())
         incumbent_threshold = float(np.asarray(incumbent_threshold_raw).item())
+        incumbent_margin = _array_float(current.get("margin"))
         incumbent_evidence_intra_p25 = _array_float(
             current.get("evidence_intra_cosine_p25")
         )
@@ -1811,6 +1824,7 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
             "created_at": created_at,
             "last_refreshed_at": refreshed_at,
             "threshold": OWNER_THRESHOLD,
+            "margin": incumbent_margin,
             "evidence_hash": candidate_hash,
             "evidence_counts": dict(evidence_counts),
             "evidence_quality": {
@@ -1867,6 +1881,7 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
         decision = {
             "status": "rebuilt",
             **base_payload,
+            "margin": OWNER_MARGIN_MIN,
             "override_applied": override_applied,
             "next_step": "none",
             "guidance": "",
@@ -1875,6 +1890,7 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
             "centroid": candidate_centroid.astype(np.float32),
             "cluster_size": np.array(embeddings_count, dtype=np.int32),
             "threshold": np.array(OWNER_THRESHOLD, dtype=np.float32),
+            "margin": np.array(OWNER_MARGIN_MIN, dtype=np.float32),
             "last_refreshed_at": np.array(refreshed_at),
             "created_at": np.array(created_at),
             "evidence_hash": np.array(candidate_hash),

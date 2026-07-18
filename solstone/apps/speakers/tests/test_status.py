@@ -125,6 +125,7 @@ def test_owner_section_confirmed_includes_centroid_metadata_locked_shape(speaker
         "created_at",
         "last_refreshed_at",
         "threshold",
+        "margin",
         "intra_cosine_p25",
         "evidence_hash",
         "evidence_intra_cosine_p25",
@@ -133,6 +134,7 @@ def test_owner_section_confirmed_includes_centroid_metadata_locked_shape(speaker
     assert result["centroid_metadata"]["streams"] == ["test"]
     assert result["centroid_metadata"]["last_refreshed_at"] == "2026-03-15T12:00:00Z"
     assert np.isclose(result["centroid_metadata"]["threshold"], OWNER_THRESHOLD)
+    assert result["centroid_metadata"]["margin"] is None
     assert result["centroid_metadata"]["intra_cosine_p25"] == 1.0
     assert result["centroid_metadata"]["created_at"] is None
     assert result["centroid_metadata"]["evidence_hash"] is None
@@ -164,6 +166,7 @@ def test_owner_status_payload_after_rebuild_has_created_refreshed_threshold_and_
     assert metadata["created_at"] == rebuild["created_at"]
     assert metadata["last_refreshed_at"] == rebuild["last_refreshed_at"]
     assert np.isclose(metadata["threshold"], OWNER_THRESHOLD)
+    assert np.isclose(metadata["margin"], rebuild["margin"])
     assert metadata["evidence_hash"] == rebuild["evidence_hash"]
     assert np.isclose(
         metadata["evidence_intra_cosine_p25"],

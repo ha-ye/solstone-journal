@@ -769,7 +769,10 @@ def test_owner_tag_after_confirmation_does_not_trigger_rebuild_and_order_is_unch
 
 
 def test_api_owner_bootstrap_full_loop_from_stubbed_labels(speakers_env):
-    from solstone.apps.speakers.encoder_config import OWNER_BOOTSTRAP_MIN_STMTS
+    from solstone.apps.speakers.encoder_config import (
+        OWNER_BOOTSTRAP_MIN_STMTS,
+        OWNER_MARGIN_MIN,
+    )
     from solstone.apps.speakers.routes import speakers_bp
     from solstone.apps.speakers.tests.test_owner import (
         _candidate_record,
@@ -866,10 +869,15 @@ def test_api_owner_bootstrap_full_loop_from_stubbed_labels(speakers_env):
                 "centroid",
                 "cluster_size",
                 "threshold",
+                "margin",
                 "last_refreshed_at",
             }
             assert int(np.asarray(centroid["cluster_size"]).item()) == (
                 OWNER_BOOTSTRAP_MIN_STMTS
+            )
+            assert np.isclose(
+                float(np.asarray(centroid["margin"]).item()),
+                OWNER_MARGIN_MIN,
             )
 
         build_resp = client.post("/app/speakers/api/owner/build-from-tags")
@@ -2578,6 +2586,7 @@ def test_api_owner_status_confirmed_has_centroid_metadata(speakers_env):
     assert metadata["created_at"] is None
     assert metadata["last_refreshed_at"] == "2026-03-15T12:00:00Z"
     assert np.isclose(metadata["threshold"], OWNER_THRESHOLD)
+    assert metadata["margin"] is None
     assert metadata["intra_cosine_p25"] == 1.0
     assert metadata["evidence_hash"] is None
     assert metadata["evidence_intra_cosine_p25"] is None
@@ -2607,6 +2616,7 @@ def test_owner_rebuild_route_response_matches_status_metadata(speakers_env):
     assert metadata["created_at"] == rebuild["created_at"]
     assert metadata["last_refreshed_at"] == rebuild["last_refreshed_at"]
     assert np.isclose(metadata["threshold"], rebuild["threshold"])
+    assert np.isclose(metadata["margin"], rebuild["margin"])
     assert metadata["evidence_hash"] == rebuild["evidence_hash"]
 
 

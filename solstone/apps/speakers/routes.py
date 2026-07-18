@@ -1698,6 +1698,7 @@ def api_owner_status() -> Any:
                 centroid.last_refreshed_at if centroid is not None else ""
             ),
             "threshold": centroid.threshold if centroid is not None else None,
+            "margin": centroid.margin if centroid is not None else None,
             "intra_cosine_p25": (
                 centroid.intra_cosine_p25 if centroid is not None else None
             ),
