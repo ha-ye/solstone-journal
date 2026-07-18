@@ -521,31 +521,31 @@
       <button type="button" class="ws-error-dismiss" onclick="clearError()">dismiss</button>
     </div>
   </div>
-  <section aria-label="observers">
-    <h2 class="section-title">observers</h2>
-    <section aria-label="add observer">
-      <h2 class="section-title">add observer</h2>
+  <section aria-label="devices">
+    <h2 class="section-title">devices</h2>
+    <section aria-label="set up a device">
+      <h2 class="section-title">set up a device</h2>
       <form class="add-observer-form" id="addObserverForm">
-        <label for="observerName">observer name</label>
+        <label for="observerName">device name</label>
         <input type="text" id="observerName" placeholder="e.g., laptop, desktop" maxlength="64" required>
-        <button type="submit">add observer</button>
+        <button type="submit">set up a device</button>
       </form>
     </section>
     <div id="observersList" role="list">
       <div class="surface-state surface-state--loading" role="status" aria-busy="true">
         <div class="surface-state-spinner" aria-hidden="true"></div>
-        <span class="surface-state-text" data-role="loading-status">loading observers...</span>
+        <span class="surface-state-text" data-role="loading-status">loading devices…</span>
       </div>
     </div>
   </section>
 </div>
 
 <!-- Observer Key Modal (for new observers and viewing existing keys) -->
-<div id="keyModal" class="modal" role="dialog" aria-modal="true" aria-label="observer key">
+<div id="keyModal" class="modal" role="dialog" aria-modal="true" aria-label="device key">
   <div class="modal-content">
     <button type="button" class="modal-close" id="keyModalClose" aria-label="close">&times;</button>
-    <h3 id="keyModalTitle">observer: <span id="modalObserverName"></span></h3>
-    <p>Use these credentials in your solstone app's service settings. Bearer authentication (header) is recommended; URL path auth is legacy.</p>
+    <h3 id="keyModalTitle">sol on <span id="modalObserverName"></span></h3>
+    <p>paste these into sol on that device, under settings. keep the key secret — anyone with it can add to your journal.</p>
     <div class="credential-label">Server URL</div>
     <div class="command-box">
       <code id="serverUrlText"></code>
@@ -557,9 +557,6 @@
       <button class="copy-btn" id="revealKeyBtn">reveal</button>
       <button class="copy-btn" id="copyKeyBtn">copy</button>
     </div>
-    <p class="modal-warning">
-      Keep this key secret — anyone with it can upload to your journal.
-    </p>
     <div class="modal-actions">
       <button id="doneBtn" class="modal-primary-btn">done</button>
     </div>
@@ -601,14 +598,14 @@ const GROUP_LABELS = {
 };
 
 function emptyStateHTML() {
-  return '<h3 class="observer-empty-heading">add your first observer</h3>';
+  return '<h3 class="observer-empty-heading">set up your first device</h3>';
 }
 
 function statsHTML(observer, statusClass) {
   const lastSeenBase = observer.last_seen ? `${relativeTime(Date.now() - observer.last_seen)} ago` : 'never';
   const lastSolPing = observer.last_chat_request_at ? `${relativeTime(Date.now() - observer.last_chat_request_at)} ago` : '—';
   const lastSeen = statusClass === 'stale'
-    ? `observer last reported ${lastSeenBase}`
+    ? `sol on this device last reported ${lastSeenBase}`
     : statusClass === 'disconnected'
       ? `${lastSeenBase} — offline`
       : lastSeenBase;
@@ -676,14 +673,6 @@ function statusMeta(state) {
   const currentState = state || 'disconnected';
   return {
     statusClass: currentState,
-    statusText:
-      currentState === 'connected'
-        ? 'Connected'
-        : currentState === 'stale'
-          ? 'Stale'
-          : currentState === 'revoked'
-            ? 'Revoked'
-            : 'Disconnected',
     cardClass: currentState
   };
 }
@@ -699,8 +688,8 @@ function groupHeaderHTML(group) {
 }
 
 function observerCardHTML(observer, labels = {}) {
-  const { statusClass, statusText, cardClass } = statusMeta(observer.state);
-  const label = observer.label || statusText;
+  const { statusClass, cardClass } = statusMeta(observer.state);
+  const label = observer.label;
   const safeLabel = escapeHtml(label);
   const liveLabel = observer.live === true ? (labels.live || '') : '';
   const safeLiveLabel = escapeHtml(liveLabel);
@@ -769,7 +758,7 @@ async function loadObservers() {
       throw new window.ApiError({
         status: 200,
         statusText: 'OK',
-        serverMessage: 'Malformed observer response',
+        serverMessage: '',
         url: '/app/observer/api/list',
         cause: 'parse',
       });
@@ -778,7 +767,7 @@ async function loadObservers() {
       throw new window.ApiError({
         status: 200,
         statusText: 'OK',
-        serverMessage: 'Malformed observer response',
+        serverMessage: '',
         url: '/app/observer/api/list',
         cause: 'parse',
       });
@@ -812,7 +801,7 @@ async function loadObservers() {
     }
   } catch (err) {
     window.SurfaceState.replaceLoading('observersList', window.SurfaceState.error({
-      heading: 'Couldn\'t load observers',
+      heading: 'i couldn\'t load your devices.',
       desc: window.CONVEY_COPY.RELOAD_HINT,
       serverMessage: err?.serverMessage || err?.message || '',
       detail: err,
@@ -827,8 +816,8 @@ function refreshTimestamps() {
     if (!lastSeen) continue;
 	    const text = `${relativeTime(Date.now() - lastSeen)} ago`;
 	    const state = span.getAttribute('data-state');
-	    span.textContent = state === 'stale'
-	      ? `observer last reported ${text}`
+		    span.textContent = state === 'stale'
+	      ? `sol on this device last reported ${text}`
 	      : state === 'disconnected'
 	        ? `${text} — offline`
 	        : text;
@@ -864,7 +853,7 @@ function refreshTimestamps() {
 	}
 
 	async function revokeObserver(keyPrefix, name) {
-  if (!confirm(`Revoke observer "${name}"? The observer will no longer be able to upload.`)) {
+  if (!confirm(`Remove "${name}"? sol on that device won't be able to add to your journal.`)) {
     return;
   }
 
@@ -880,7 +869,7 @@ function refreshTimestamps() {
 
     loadObservers();
   } catch (err) {
-    const msg = 'couldn\'t revoke observer — the server may be unavailable. ' + window.CONVEY_COPY.RELOAD_HINT;
+    const msg = 'i couldn\'t remove that device — your journal may not be reachable. ' + window.CONVEY_COPY.RELOAD_HINT;
     if (window.showError) { showError(msg); } else { showLocalError(msg); }
   }
 }
@@ -898,7 +887,7 @@ async function viewObserverKey(keyPrefix, name) {
 
     showKeyModal(name, data.key, trigger);
   } catch (err) {
-    const msg = 'couldn\'t retrieve observer key — the server may be unavailable. ' + window.CONVEY_COPY.RELOAD_HINT;
+    const msg = 'i couldn\'t retrieve the key for that device — your journal may not be reachable. ' + window.CONVEY_COPY.RELOAD_HINT;
     if (window.showError) { showError(msg); } else { showLocalError(msg); }
   }
 }
@@ -944,7 +933,7 @@ addObserverForm.onsubmit = async (e) => {
     observerNameInput.value = '';
     loadObservers();
   } catch (err) {
-    const msg = 'couldn\'t add observer — the name may already be in use. try a different name or refresh the page.';
+    const msg = 'i couldn\'t set up that device — your journal may not be reachable. ' + window.CONVEY_COPY.RELOAD_HINT;
     if (window.showError) { showError(msg); } else { showLocalError(msg); }
   } finally {
     submitBtn.disabled = false;

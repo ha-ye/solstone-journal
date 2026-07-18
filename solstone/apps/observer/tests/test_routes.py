@@ -74,6 +74,15 @@ def _api_list_observers(env):
     return _api_list_payload(env)["observers"]
 
 
+def test_observer_state_labels_use_device_copy():
+    assert OBSERVER_STATE_LABELS == {
+        "connected": "connected",
+        "stale": "not reporting",
+        "disconnected": "offline",
+        "revoked": "removed",
+    }
+
+
 def test_observer_index_serves_injected_spa_shell(observer_env):
     env = observer_env()
 

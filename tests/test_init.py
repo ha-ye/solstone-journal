@@ -620,7 +620,7 @@ class TestInitObservers:
         assert observers[0]["prefix"] == "abcd1234"
         assert observers[0]["state"] == "disconnected"
         assert observers[0]["group"] == "inactive"
-        assert observers[0]["label"] == "Disconnected"
+        assert observers[0]["label"] == "offline"
         assert observers[0]["elapsed_ms"] is None
         assert observers[0]["clock_skew"] is False
 

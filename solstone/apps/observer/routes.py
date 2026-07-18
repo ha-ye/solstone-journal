@@ -118,10 +118,10 @@ STALE_THRESHOLD_MS = 120_000
 FUTURE_CLOCK_DRIFT_TOLERANCE_MS = 5 * 60 * 1000
 
 OBSERVER_STATE_LABELS = {
-    "connected": "Connected",
-    "stale": "Stale",
-    "disconnected": "Disconnected",
-    "revoked": "Revoked",
+    "connected": "connected",
+    "stale": "not reporting",
+    "disconnected": "offline",
+    "revoked": "removed",
 }
 
 
