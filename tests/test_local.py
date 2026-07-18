@@ -2338,7 +2338,7 @@ def test_select_server_tier_vram_thresholds():
                 context_tokens=16384,
                 parallel_slots=1,
                 prompt_cache_mib=0,
-                resident_mib=4541,
+                resident_mib=4137,
             ),
         ),
         (
@@ -2348,7 +2348,7 @@ def test_select_server_tier_vram_thresholds():
                 context_tokens=16384,
                 parallel_slots=1,
                 prompt_cache_mib=0,
-                resident_mib=4541,
+                resident_mib=4137,
             ),
         ),
         (
@@ -2378,7 +2378,7 @@ def test_select_server_tier_vram_thresholds():
         assert tier == expected
         assert tier.context_tokens >= 16384
         assert tier.context_tokens > 0
-    assert local_server._FLOOR_TIER.resident_mib == 4541
+    assert local_server._FLOOR_TIER.resident_mib == 4137
     assert local_server._CAPABLE_TIER.resident_mib is None
 
 
@@ -2463,25 +2463,6 @@ def test_context_window_tokens_fallback(monkeypatch):
     monkeypatch.setattr(utils, "read_service_port", lambda service: None)
     monkeypatch.setattr(local_server, "read_local_context_window", lambda: None)
     assert local_budget.context_window_tokens() == local_server.LOCAL_MIN_CONTEXT_TOKENS
-
-
-def test_llama_server_pins_are_real_b9291_digests():
-    from solstone.think.providers.local_install import LLAMA_SERVER_PINS
-
-    mac = LLAMA_SERVER_PINS["aarch64-apple-darwin"]
-    linux = LLAMA_SERVER_PINS["x86_64-unknown-linux-gnu"]
-    assert mac["release_tag"] == "b9291"
-    assert mac["filename"] == "llama-b9291-bin-macos-arm64.tar.gz"
-    assert (
-        mac["sha256"]
-        == "0e985f87dd71f96a9cb9ebc3ad26f8388030342d000e7e82d4a38d14913373ff"
-    )
-    assert linux["release_tag"] == "b9291"
-    assert linux["filename"] == "llama-b9291-bin-ubuntu-vulkan-x64.tar.gz"
-    assert (
-        linux["sha256"]
-        == "7e3bf4202bedc71c2c9fbfbe02d10075b8d596bb963e7ab006663582dc2e92c2"
-    )
 
 
 def _select_local_provider(monkeypatch) -> None:

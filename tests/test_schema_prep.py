@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,11 +13,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import tests.eval_schemas as eval_schemas
 from solstone.apps.timeline.rollup import build_rollup_schema
 from solstone.think.models import SchemaValidationError, generate
 from solstone.think.schema_prep import prepare_provider_schema, unsupported_keyword_hits
 from solstone.think.talent import RUNTIME_FACETS_SENTINEL
-from tests.eval_schemas import DEFAULT_CASES, DEFAULT_OUT, load_cases
+from tests.eval_schemas import DEFAULT_CASES, DEFAULT_OUT, load_cases, run_case
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -132,6 +134,83 @@ def test_schema_eval_default_output_is_committable_fixture_path() -> None:
 
     assert rel.parts[:3] == ("tests", "fixtures", "schema_eval")
     assert "tmp" not in rel.parts
+
+
+def test_schema_eval_run_case_uses_generate_signature_without_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signature = inspect.signature(eval_schemas.models.generate_with_result)
+    assert "provider" not in signature.parameters
+    with pytest.raises(TypeError):
+        signature.bind(contents="hello", context="schema.eval", provider="local")
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_generate_with_result(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        signature.bind(*args, **kwargs)
+        calls.append(kwargs)
+        return {
+            "text": '{"status":"ok"}',
+            "finish_reason": "stop",
+            "model": "test-model",
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+
+    monkeypatch.setattr(
+        eval_schemas.models,
+        "generate_with_result",
+        fake_generate_with_result,
+    )
+
+    result = run_case(
+        {
+            "name": "strict_signature",
+            "input": "hello",
+            "system_instruction": "Return JSON.",
+            "schema": {
+                "type": "object",
+                "properties": {"status": {"type": "string"}},
+                "required": ["status"],
+                "additionalProperties": False,
+            },
+            "expect_contains": ["ok"],
+        }
+    )
+
+    assert result["schema_validity"]["valid"] is True
+    assert calls
+    assert "provider" not in calls[0]
+
+
+def test_schema_eval_main_requires_active_local_provider(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        eval_schemas.models,
+        "type_default_is_local",
+        lambda agent_type: False,
+    )
+    monkeypatch.setattr(
+        eval_schemas,
+        "load_cases",
+        lambda _path: pytest.fail("cases should not be loaded"),
+    )
+
+    exit_code = eval_schemas.main(
+        [
+            "--cases",
+            str(tmp_path / "missing.jsonl"),
+            "--out",
+            str(tmp_path / "out"),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 2
+    assert eval_schemas.LOCAL_NOT_READY in captured.err
+    assert captured.out == ""
 
 
 @pytest.mark.parametrize("provider", ["local", "openai", "google", "anthropic", "fake"])

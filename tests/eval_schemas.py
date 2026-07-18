@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from solstone.think.models import generate_with_result  # noqa: E402
+from solstone.think import models  # noqa: E402
 from solstone.think.providers.local import LocalProviderError  # noqa: E402
 from solstone.think.schema_eval import (  # noqa: E402
     content_preservation,
@@ -58,10 +58,9 @@ def load_cases(path: Path) -> list[dict[str, Any]]:
 
 
 def run_case(case: dict[str, Any]) -> dict[str, Any]:
-    result = generate_with_result(
+    result = models.generate_with_result(
         contents=case["input"],
         context="schema.eval",
-        provider="local",
         temperature=0.0,
         max_output_tokens=int(case.get("max_output_tokens", 512)),
         system_instruction=case["system_instruction"],
@@ -113,6 +112,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cases", type=Path, default=DEFAULT_CASES)
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args(argv)
+
+    if not models.type_default_is_local("generate"):
+        print(LOCAL_NOT_READY, file=sys.stderr)
+        return 2
 
     cases = load_cases(_resolve_path(args.cases))
     results: list[dict[str, Any]] = []

@@ -275,43 +275,47 @@ def test_cuda_server_pin_wanted_files_reject_unknown_arch() -> None:
     assert exc_info.value.reason_code == "unsupported_platform"
 
 
-def test_llama_server_pins_cover_expected_platforms() -> None:
+def test_llama_server_pins_are_complete_immutable_artifacts() -> None:
+    expected = {
+        "aarch64-apple-darwin": {
+            "release_tag": "b10068",
+            "filename": "llama-b10068-bin-macos-arm64.tar.gz",
+            "sha256": "13aa2d40c76ad1dcb8ebeec5f0d2814bf3b2f84a66935c7d4dc6f7cca8e38d68",
+            "binary_name": "llama-server",
+        },
+        "x86_64-unknown-linux-gnu": {
+            "release_tag": "b10068",
+            "filename": "llama-b10068-bin-ubuntu-vulkan-x64.tar.gz",
+            "sha256": "713641920dce6c8efb953ebc9ffa309977e200cec5e182e6ad0e8b086203cdc3",
+            "binary_name": "llama-server",
+        },
+        "aarch64-unknown-linux-gnu": {
+            "release_tag": "b10068",
+            "filename": "llama-b10068-bin-ubuntu-vulkan-arm64.tar.gz",
+            "sha256": "c3c49e6e124a574165ca28317be021b1a12a2ea06977e3eb7daee3eb443eb186",
+            "binary_name": "llama-server",
+        },
+    }
     pins = local_install.LLAMA_SERVER_PINS
-    # macOS arm64 (Metal) + both Linux arches on the cross-vendor Vulkan build.
-    assert {
-        "aarch64-apple-darwin",
-        "x86_64-unknown-linux-gnu",
-        "aarch64-unknown-linux-gnu",
-    } <= set(pins)
-    for key, pin in pins.items():
-        assert pin["release_tag"] == "b9291"
-        assert pin["binary_name"] == "llama-server"
-        # sha256 is a 64-char hex digest.
-        assert len(pin["sha256"]) == 64
-        int(pin["sha256"], 16)
-        # Linux GPU acceleration rides the cross-vendor Vulkan prebuilt on both
-        # arches (NVIDIA + AMD + Intel from one binary).
-        if key.endswith("-unknown-linux-gnu"):
-            assert "vulkan" in pin["filename"]
-    assert (
-        pins["aarch64-unknown-linux-gnu"]["filename"]
-        == "llama-b9291-bin-ubuntu-vulkan-arm64.tar.gz"
-    )
+
+    assert set(pins) == set(expected)
+    for key, expected_pin in expected.items():
+        assert pins[key] == expected_pin
 
 
 def test_install_llama_server_relocates_binary_and_libraries(tmp_path, monkeypatch):
     _init_journal(tmp_path, monkeypatch)
     pin = local_install.pin_for_current_platform()
     if local_install.llama_server_artifact_key() == "x86_64-unknown-linux-gnu":
-        assert pin["filename"] == "llama-b9291-bin-ubuntu-vulkan-x64.tar.gz"
+        assert pin["filename"] == "llama-b10068-bin-ubuntu-vulkan-x64.tar.gz"
         assert (
             pin["sha256"]
-            == "7e3bf4202bedc71c2c9fbfbe02d10075b8d596bb963e7ab006663582dc2e92c2"
+            == "713641920dce6c8efb953ebc9ffa309977e200cec5e182e6ad0e8b086203cdc3"
         )
     artifact_key = local_install.llama_server_artifact_key()
     install_dir = local_install.binary_install_dir(artifact_key, pin)
     binary_path = local_install.binary_path_for_pin(artifact_key, pin)
-    inner_name = "llama-b9291"
+    inner_name = "llama-b10068"
     lib_names = ["libllama.so", "libggml.so", "libfoo.dylib"]
     fixture_root = tmp_path / "fixture" / inner_name
     fixture_root.mkdir(parents=True)
@@ -355,6 +359,62 @@ def test_install_llama_server_relocates_binary_and_libraries(tmp_path, monkeypat
     assert result["install_state"] == "installed"
     assert_flat_layout()
     assert quarantine_calls == [install_dir, install_dir]
+
+
+def test_install_llama_server_sha256_mismatch_fails_closed_before_extract(
+    tmp_path, monkeypatch
+):
+    _init_journal(tmp_path, monkeypatch)
+    expected_urls = {
+        "aarch64-apple-darwin": (
+            "https://github.com/ggml-org/llama.cpp/releases/download/b10068/"
+            "llama-b10068-bin-macos-arm64.tar.gz"
+        ),
+        "x86_64-unknown-linux-gnu": (
+            "https://github.com/ggml-org/llama.cpp/releases/download/b10068/"
+            "llama-b10068-bin-ubuntu-vulkan-x64.tar.gz"
+        ),
+        "aarch64-unknown-linux-gnu": (
+            "https://github.com/ggml-org/llama.cpp/releases/download/b10068/"
+            "llama-b10068-bin-ubuntu-vulkan-arm64.tar.gz"
+        ),
+    }
+    artifact_key = local_install.llama_server_artifact_key()
+    pin = local_install.pin_for_current_platform()
+    install_dir = local_install.binary_install_dir(artifact_key, pin)
+    binary_path = local_install.binary_path_for_pin(artifact_key, pin)
+    inner_name = "llama-b10068"
+    fixture_root = tmp_path / "fixture" / inner_name
+    fixture_root.mkdir(parents=True)
+    (fixture_root / pin["binary_name"]).write_bytes(b"not the pinned server")
+    fixture_tarball = tmp_path / pin["filename"]
+    with tarfile.open(fixture_tarball, "w:gz") as archive:
+        archive.add(fixture_root, arcname=inner_name)
+    download_urls: list[str] = []
+
+    def fake_download(url, dest, **_kwargs):
+        download_urls.append(url)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(fixture_tarball, dest)
+
+    monkeypatch.setattr(local_install, "_download_file", fake_download)
+
+    with pytest.raises(local_install.LocalProviderError) as exc_info:
+        local_install.install_llama_server()
+
+    assert exc_info.value.reason_code == "sha256_mismatch"
+    assert download_urls == [expected_urls[artifact_key]]
+    status = _local_status()
+    assert status["install_state"] == "failed"
+    assert status["install_error"] is not None
+    assert "sha256 mismatch" in status["install_error"]
+    slot = _local_slot()
+    assert slot["binary_artifact"] == pin["filename"]
+    assert "binary_sha256" not in slot
+    assert "binary_path" not in slot
+    assert not binary_path.exists()
+    assert not (install_dir / inner_name).exists()
+    assert sorted(child.name for child in install_dir.iterdir()) == [pin["filename"]]
 
 
 def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):
@@ -775,7 +835,7 @@ def test_install_local_reinstalls_runtime_when_binary_record_stale(
     canonical.chmod(0o755)
     local_install._write_local_metadata(
         {
-            "binary_artifact": "llama-b9291-bin-ubuntu-x64.tar.gz",
+            "binary_artifact": "llama-stale-bin-ubuntu-x64.tar.gz",
             "binary_sha256": "deadbeef" * 8,
             "binary_path": str(canonical),
         }
@@ -1053,7 +1113,7 @@ def test_inspect_readiness_stale_non_cuda_binary_record_reports_not_installed(
     canonical.chmod(0o755)
     local_install._write_local_metadata(
         {
-            "binary_artifact": "llama-b9291-bin-ubuntu-x64.tar.gz",
+            "binary_artifact": "llama-stale-bin-ubuntu-x64.tar.gz",
             "binary_sha256": "deadbeef" * 8,
             "binary_path": str(canonical),
         }

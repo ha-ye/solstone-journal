@@ -3237,12 +3237,30 @@ def test_start_local_server_skips_when_mlx_memory_blocked_on_darwin(monkeypatch)
     launch.assert_not_called()
 
 
+@pytest.mark.parametrize(
+    ("vram_mib", "expected_context_tokens", "expected_parallel", "expected_cache_ram"),
+    [
+        (6390, None, "1", "0"),
+        (16000, 32768, "2", "2048"),
+    ],
+)
 def test_start_local_server_launches_llama_server_key_and_cmd(
-    tmp_path, monkeypatch, capsys
+    tmp_path,
+    monkeypatch,
+    capsys,
+    vram_mib: int,
+    expected_context_tokens: int | None,
+    expected_parallel: str,
+    expected_cache_ram: str,
 ):
     mod = importlib.import_module("solstone.think.supervisor")
     from solstone.think.providers import local_install, local_server, local_vulkan
 
+    expected_context_tokens = (
+        local_server.LOCAL_MIN_CONTEXT_TOKENS
+        if expected_context_tokens is None
+        else expected_context_tokens
+    )
     mod._SERVICE_STATE.clear()
     binary = tmp_path / "llama-server"
     # ensure_artifacts_installed always resolves artifacts under the selected
@@ -3275,7 +3293,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
                 1,
                 "NVIDIA GeForce GTX 1660 Ti",
                 local_vulkan.VK_TYPE_DISCRETE,
-                6390,
+                vram_mib,
             )
         ],
     )
@@ -3307,7 +3325,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
 
     assert result is managed
     assert written_ports == [("local", 2468)]
-    assert written_context_windows == [local_server.LOCAL_MIN_CONTEXT_TOKENS]
+    assert written_context_windows == [expected_context_tokens]
     assert spawned == [
         [
             str(binary),
@@ -3323,12 +3341,12 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
             "--n-gpu-layers",
             "999",
             "-c",
-            str(local_server.LOCAL_MIN_CONTEXT_TOKENS),
+            str(expected_context_tokens),
             "--parallel",
-            "1",
+            expected_parallel,
             "--kv-unified",
             "--cache-ram",
-            "0",
+            expected_cache_ram,
             "--no-context-shift",
             "--device",
             "Vulkan0",
@@ -3351,7 +3369,7 @@ def test_log_context_assertion(caplog):
         context_tokens=16384,
         parallel_slots=1,
         prompt_cache_mib=0,
-        resident_mib=4541,
+        resident_mib=4137,
     )
     capable = local_server.ServerTier(
         name="capable",

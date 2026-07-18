@@ -58,26 +58,31 @@ def test_floor_tier_small_cards_force_cpu() -> None:
     assert decision.force_cpu is True
     assert decision.reason_code == "co_location_requires_cpu"
     assert decision.tier_name == "floor"
-    assert decision.tier_resident_mib == 4541
+    assert decision.tier_resident_mib == 4137
     assert decision.parakeet_worst_case_mib == PARAKEET_WORST_CASE_MIB
     assert decision.margin_mib == CO_FIT_MARGIN_MIB
-    assert decision.required_mib == 8512
+    assert decision.required_mib == 8108
     assert decision.vram_mib == 6144
 
 
 @pytest.mark.parametrize(
     ("vram_mib", "force_cpu"),
     [
-        (8511, True),
-        (8512, False),
-        (8192, True),
-        (10240, False),
+        (6144, True),
+        (8107, True),
+        (8108, False),
+        (8192, False),
     ],
 )
 def test_floor_tier_placement_boundary(vram_mib: int, force_cpu: bool) -> None:
     decision = _decision(vram_mib)
 
-    assert decision.required_mib == 8512
+    assert decision.tier_name == "floor"
+    assert decision.tier_resident_mib == 4137
+    assert decision.parakeet_worst_case_mib == PARAKEET_WORST_CASE_MIB
+    assert decision.margin_mib == CO_FIT_MARGIN_MIB
+    assert decision.required_mib == 8108
+    assert decision.vram_mib == vram_mib
     assert decision.force_cpu is force_cpu
 
 

@@ -97,21 +97,21 @@ class LocalArtifacts:
 
 LLAMA_SERVER_PINS: dict[str, dict[str, str]] = {
     "aarch64-apple-darwin": {
-        "release_tag": "b9291",
-        "filename": "llama-b9291-bin-macos-arm64.tar.gz",
-        "sha256": "0e985f87dd71f96a9cb9ebc3ad26f8388030342d000e7e82d4a38d14913373ff",
+        "release_tag": "b10068",
+        "filename": "llama-b10068-bin-macos-arm64.tar.gz",
+        "sha256": "13aa2d40c76ad1dcb8ebeec5f0d2814bf3b2f84a66935c7d4dc6f7cca8e38d68",
         "binary_name": "llama-server",
     },
     "x86_64-unknown-linux-gnu": {
-        "release_tag": "b9291",
-        "filename": "llama-b9291-bin-ubuntu-vulkan-x64.tar.gz",
-        "sha256": "7e3bf4202bedc71c2c9fbfbe02d10075b8d596bb963e7ab006663582dc2e92c2",
+        "release_tag": "b10068",
+        "filename": "llama-b10068-bin-ubuntu-vulkan-x64.tar.gz",
+        "sha256": "713641920dce6c8efb953ebc9ffa309977e200cec5e182e6ad0e8b086203cdc3",
         "binary_name": "llama-server",
     },
     "aarch64-unknown-linux-gnu": {
-        "release_tag": "b9291",
-        "filename": "llama-b9291-bin-ubuntu-vulkan-arm64.tar.gz",
-        "sha256": "c88f06cc72f746d7cbbd69b705f0788488d8b9fe9051995a5e59b3b8b1e8fe61",
+        "release_tag": "b10068",
+        "filename": "llama-b10068-bin-ubuntu-vulkan-arm64.tar.gz",
+        "sha256": "c3c49e6e124a574165ca28317be021b1a12a2ea06977e3eb7daee3eb443eb186",
         "binary_name": "llama-server",
     },
 }

@@ -59,7 +59,7 @@ _FLOOR_TIER = ServerTier(
     context_tokens=LOCAL_MIN_CONTEXT_TOKENS,
     parallel_slots=1,
     prompt_cache_mib=0,
-    resident_mib=4541,
+    resident_mib=4137,
 )
 
 # COPY REVIEW: placeholder owner-facing copy; founder-gated before ship.
