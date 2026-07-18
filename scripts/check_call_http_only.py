@@ -58,7 +58,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 ALLOW_SET: frozenset[str] = frozenset(
-    {"solstone.think.convey_client", "solstone.convey.reasons"}
+    {
+        "solstone.apps.support.copy",
+        "solstone.convey.reasons",
+        "solstone.think.convey_client",
+    }
 )
 FLAGGED_NAMESPACES: tuple[str, ...] = (
     "solstone.think",

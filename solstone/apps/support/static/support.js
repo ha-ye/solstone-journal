@@ -191,7 +191,7 @@
           : '';
         return `<div class="support-ticket" data-id="${attr(ticketId)}" tabindex="0" role="button">
           <div class="support-ticket-header">
-            <span class="support-ticket-subject">${esc(t.subject || 'Untitled')}</span>
+            <span class="support-ticket-subject">${esc(t.subject || 'untitled')}</span>
             <span class="support-status ${statusClass}">${esc(t.status || 'open')}</span>
           </div>
           <div class="support-ticket-meta">

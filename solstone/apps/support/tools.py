@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from solstone.apps.support.copy import FEEDBACK_SUBJECT
+
 logger = logging.getLogger(__name__)
 
 
@@ -96,12 +98,13 @@ def support_feedback(
     Feedback is a ticket with ``category="feedback"`` and low severity.
     """
     return support_create(
-        subject="User feedback",
+        subject=FEEDBACK_SUBJECT,
         description=body,
         product=product,
         severity="low",
         category="feedback",
         user_email=user_email,
+        auto_context=False,
         portal_url=portal_url,
         anonymous=anonymous,
     )

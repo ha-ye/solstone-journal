@@ -37,6 +37,10 @@ _SECRET_KEYS = frozenset(
         "key",
     }
 )
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"\b[A-Za-z0-9_-]*(?:api[_-]?key|access[_-]?token|token|secret|password|passwd|pwd)[A-Za-z0-9_-]*\s*[=:]\s*[^\s;]+",
+    re.IGNORECASE,
+)
 _ENV_SECRET_NAME_RE = re.compile(
     r"\b[A-Z0-9_]*(?:API_KEY|ACCESS_TOKEN|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*\b"
 )
@@ -69,6 +73,7 @@ def _bounded_redacted_text(value: Any, *, limit: int = 240) -> str | None:
     if value is None:
         return None
     clean = " ".join(str(value).split())
+    clean = _SECRET_ASSIGNMENT_RE.sub("<secret>", clean)
     clean = _ENV_SECRET_NAME_RE.sub("<secret>", clean)
     clean = _SECRET_VALUE_RE.sub("<secret>", clean)
     clean = _WINDOWS_PATH_RE.sub("<path>", clean)
@@ -211,8 +216,9 @@ def collect_recent_errors(limit: int = 10) -> list[dict[str, Any]]:
                     dt = datetime.fromisoformat(parts[0])
                     last_parsed_dt = dt
                     approx = False
-                    # Head slice is intentional: the prefix carries ERROR details.
-                    message = (parts[1] if len(parts) > 1 else "").strip()[:500]
+                    # Keep ERROR details, but redact before applying the length bound.
+                    candidate = (parts[1] if len(parts) > 1 else "").strip()
+                    message = _bounded_redacted_text(candidate, limit=500)
                 except ValueError:
                     if last_parsed_dt is not None:
                         dt = last_parsed_dt
@@ -223,7 +229,7 @@ def collect_recent_errors(limit: int = 10) -> list[dict[str, Any]]:
                             )
                         dt = file_mtime
                     approx = True
-                    message = line.strip()[:500]
+                    message = _bounded_redacted_text(line.strip(), limit=500)
 
                 if dt < cutoff:
                     continue

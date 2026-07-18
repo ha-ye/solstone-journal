@@ -41,6 +41,7 @@ from solstone.apps.chat.copy import (
     CHAT_SUPPORT_SUBMIT_FILED_FORMAT,
     CHAT_THINKING_ENGINE_NOT_CHOSEN,
 )
+from solstone.apps.support.copy import FEEDBACK_SUBJECT
 from solstone.apps.support.tools import support_attach, support_create, support_reply
 from solstone.convey.chat_sources import parse_sol_sources
 from solstone.convey.chat_stream import (
@@ -2282,7 +2283,7 @@ def _submit_support_draft(
             ticket_id = result_obj.get("id")
         elif verb == "feedback":
             result_obj = support_create(
-                subject="User feedback",
+                subject=FEEDBACK_SUBJECT,
                 description=payload["body"],
                 product=payload["product"],
                 severity="low",

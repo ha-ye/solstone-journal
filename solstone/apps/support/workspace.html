@@ -553,7 +553,7 @@
           <textarea id="feedback-text" placeholder="what's on your mind?" required></textarea>
           <div class="support-field-error" id="feedback-error">please write something before sending</div>
           <div class="support-feedback-options">
-            <label><input type="checkbox" id="feedback-anonymous" checked> Submit anonymously</label>
+            <label><input type="checkbox" id="feedback-anonymous" checked> submit anonymously</label>
           </div>
           <div class="support-feedback-email-row" id="feedback-email-row" hidden>
             <label for="feedback-email">your email</label>
@@ -671,7 +671,7 @@
 
       let html = `
         <button class="support-detail-back" id="back-to-list">&larr; back to tickets</button>
-        <h2>${esc(t.subject || 'Untitled')} <span class="support-status ${statusClass}">${esc(t.status || 'open')}</span></h2>
+        <h2>${esc(t.subject || 'untitled')} <span class="support-status ${statusClass}">${esc(t.status || 'open')}</span></h2>
         <div class="support-ticket-meta">#${t.id} &middot; ${esc(t.product || '')} &middot; ${esc(t.severity || '')} &middot; ${createdAt}</div>
         <div class="support-message" style="margin-top:1rem;">
           <p>${esc(t.description || '')}</p>

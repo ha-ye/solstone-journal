@@ -21,6 +21,7 @@ from pathlib import Path
 
 import typer
 
+from solstone.apps.support.copy import FEEDBACK_SUBJECT
 from solstone.think.convey_client import (
     ConveyClient,
     ConveyClientError,
@@ -361,7 +362,7 @@ def list_tickets(
     for t in tickets:
         status_str = t.get("status", "?")
         typer.echo(
-            f"  #{t.get('id', '?'):>4}  [{status_str:<12}] {t.get('subject', 'Untitled')}"
+            f"  #{t.get('id', '?'):>4}  [{status_str:<12}] {t.get('subject', 'untitled')}"
         )
     typer.echo(f"\n{len(tickets)} ticket(s).")
 
@@ -553,7 +554,7 @@ def attach(
 def feedback(
     body: str = typer.Option(..., "--body", "-b", help="Your feedback."),
     product: str = typer.Option("solstone", "--product", "-p", help="Product name."),
-    anonymous: bool = typer.Option(False, "--anonymous", help="Submit anonymously."),
+    anonymous: bool = typer.Option(False, "--anonymous", help="submit anonymously."),
     submit: bool = typer.Option(
         False,
         "--submit",
@@ -569,10 +570,10 @@ def feedback(
     config = _check_enabled(client)
     if not submit:
         # Fixed display values mirror tools.support_feedback (source of truth):
-        # subject="User feedback", severity="low", category="feedback".
+        # subject=FEEDBACK_SUBJECT, severity="low", category="feedback".
         diagnostics = client.request("GET", "/app/support/api/diagnostics")
         _print_dry_run_preview(
-            subject="User feedback",
+            subject=FEEDBACK_SUBJECT,
             product=product,
             severity="low",
             category="feedback",

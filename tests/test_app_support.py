@@ -210,6 +210,85 @@ def test_portal_url_env_overrides_configured_host(journal, monkeypatch):
     )
 
 
+def test_portal_anonymous_handles_are_random_stable_and_hostname_free(
+    tmp_path, monkeypatch
+):
+    import socket
+
+    from solstone.apps.support import portal
+
+    draws = iter([b"\x01\x23\x45\x67", b"\x89\xab\xcd\xef"])
+
+    def fake_urandom(size):
+        assert size == 4
+        return next(draws)
+
+    def fail_gethostname():
+        raise AssertionError("anonymous portal handles must not read hostname")
+
+    monkeypatch.setattr(portal.os, "urandom", fake_urandom)
+    monkeypatch.setattr(socket, "gethostname", fail_gethostname)
+
+    first = portal.PortalClient(
+        portal_url="https://support.example.test",
+        storage_dir=tmp_path / "first",
+        anonymous=True,
+    )
+    second = portal.PortalClient(
+        portal_url="https://support.example.test",
+        storage_dir=tmp_path / "second",
+        anonymous=True,
+    )
+
+    first_handle = first.handle
+    second_handle = second.handle
+
+    assert first_handle == "anon-01234567"
+    assert second_handle == "anon-89abcdef"
+    assert first_handle != second_handle
+    assert re.fullmatch(r"anon-[0-9a-f]{8}", first_handle)
+    assert re.fullmatch(r"anon-[0-9a-f]{8}", second_handle)
+    assert first.handle == first_handle
+    assert second.handle == second_handle
+
+
+def test_portal_anonymous_explicit_handle_is_preserved(tmp_path, monkeypatch):
+    from solstone.apps.support import portal
+
+    def fail_urandom(_size):
+        raise AssertionError("explicit anonymous handle must not draw randomness")
+
+    monkeypatch.setattr(portal.os, "urandom", fail_urandom)
+
+    client = portal.PortalClient(
+        portal_url="https://support.example.test",
+        storage_dir=tmp_path / "explicit",
+        handle="provided",
+        anonymous=True,
+    )
+
+    assert client.handle == "provided"
+
+
+def test_portal_non_anonymous_no_handle_uses_hostname(tmp_path, monkeypatch):
+    import socket
+
+    from solstone.apps.support import portal
+
+    def fail_urandom(_size):
+        raise AssertionError("non-anonymous hostname fallback must not draw randomness")
+
+    monkeypatch.setattr(portal.os, "urandom", fail_urandom)
+    monkeypatch.setattr(socket, "gethostname", lambda: "My_Host.local!")
+
+    client = portal.PortalClient(
+        portal_url="https://support.example.test",
+        storage_dir=tmp_path / "identified",
+    )
+
+    assert client.handle == "solstone-my-host.local"
+
+
 def test_config_route_ungated_when_disabled(support_client, monkeypatch):
     monkeypatch.setattr("solstone.apps.support.portal.is_enabled", lambda: False)
     monkeypatch.setattr(
@@ -408,6 +487,103 @@ def test_create_ticket_accepts_error_report_contract(support_client, monkeypatch
     ]
 
 
+def test_support_feedback_uses_feedback_subject_without_auto_context(monkeypatch):
+    from solstone.apps.support import tools
+
+    captured: list[dict] = []
+
+    def recorder(**kwargs):
+        captured.append(kwargs)
+        return {"id": 123}
+
+    monkeypatch.setattr(tools, "support_create", recorder)
+
+    result = tools.support_feedback(body="owner feedback", anonymous=True)
+
+    assert result == {"id": 123}
+    assert len(captured) == 1
+    assert captured[0]["subject"] == "feedback"
+    assert captured[0]["description"] == "owner feedback"
+    assert captured[0]["severity"] == "low"
+    assert captured[0]["category"] == "feedback"
+    assert captured[0]["auto_context"] is False
+    assert "user_context" not in captured[0]
+
+
+def test_feedback_route_submits_without_auto_context(support_client, monkeypatch):
+    captured: list[dict] = []
+
+    class FakePortalClient:
+        def create_ticket(self, **kwargs):
+            captured.append(kwargs)
+            return {"id": 124, "subject": kwargs["subject"]}
+
+    def fail_collect_all():
+        raise AssertionError("feedback must not collect automatic diagnostics")
+
+    def fail_collect_recent_errors():
+        raise AssertionError("feedback must not collect recent errors")
+
+    monkeypatch.setattr("solstone.apps.support.routes._enabled", lambda: True)
+    monkeypatch.setattr(
+        "solstone.apps.support.portal.get_client",
+        lambda **_kwargs: FakePortalClient(),
+    )
+    monkeypatch.setattr(
+        "solstone.apps.support.diagnostics.collect_all", fail_collect_all
+    )
+    monkeypatch.setattr(
+        "solstone.apps.support.diagnostics.collect_recent_errors",
+        fail_collect_recent_errors,
+    )
+
+    resp = support_client.post(
+        "/app/support/api/feedback", json={"body": "hi", "anonymous": True}
+    )
+
+    assert resp.status_code == 201
+    assert len(captured) == 1
+    assert captured[0]["subject"] == "feedback"
+    assert captured[0]["category"] == "feedback"
+    assert captured[0]["severity"] == "low"
+    assert captured[0]["user_context"] is None
+
+
+def test_create_ticket_route_still_collects_auto_context(support_client, monkeypatch):
+    captured: list[dict] = []
+    diagnostics_calls: list[str] = []
+
+    class FakePortalClient:
+        def create_ticket(self, **kwargs):
+            captured.append(kwargs)
+            return {"id": 125, "subject": kwargs["subject"]}
+
+    def collect_all():
+        diagnostics_calls.append("collect_all")
+        return {"version": "9.9.9", "revision": "abc1234"}
+
+    monkeypatch.setattr("solstone.apps.support.routes._enabled", lambda: True)
+    monkeypatch.setattr(
+        "solstone.apps.support.portal.get_client",
+        lambda **_kwargs: FakePortalClient(),
+    )
+    monkeypatch.setattr("solstone.apps.support.diagnostics.collect_all", collect_all)
+
+    resp = support_client.post(
+        "/app/support/api/tickets",
+        json={"subject": "S", "description": "D"},
+    )
+
+    assert resp.status_code == 201
+    assert diagnostics_calls == ["collect_all"]
+    assert len(captured) == 1
+    assert captured[0]["subject"] == "S"
+    assert captured[0]["user_context"] == {
+        "version": "9.9.9",
+        "revision": "abc1234",
+    }
+
+
 def test_feedback_anonymous_no_email_kwarg(support_client, monkeypatch):
     captured: list[dict] = []
 
@@ -504,6 +680,7 @@ def test_cli_feedback_dry_run_preview_content(cli, monkeypatch):
     assert result.exit_code == 0
     assert result.stdout.splitlines()[0] == DRY_RUN_BANNER
     assert "Build identity — version:" in result.stdout
+    assert "Subject:     feedback" in result.stdout
     assert "Body:        owner feedback" in result.stdout
     assert "Severity:    low" in result.stdout
     assert "Category:    feedback" in result.stdout
@@ -1149,6 +1326,43 @@ def test_collect_provider_readiness_is_redacted(monkeypatch):
     assert "Traceback" not in serialized
 
 
+def test_bounded_redacted_text_redacts_secret_assignments_and_preserves_reset():
+    from solstone.apps.support import diagnostics
+
+    assert diagnostics._bounded_redacted_text("/home/alice/secret") == "<path>"
+    assert diagnostics._bounded_redacted_text(r"C:\Users\bob\key.txt") == "<path>"
+
+    token = diagnostics._bounded_redacted_text("CUSTOM_TOKEN=opaquevalue")
+    assert token == "<secret>"
+    assert "CUSTOM_TOKEN" not in token
+    assert "opaquevalue" not in token
+
+    password = diagnostics._bounded_redacted_text("password=hunter2")
+    assert password == "<secret>"
+    assert "hunter2" not in password
+
+    colon = diagnostics._bounded_redacted_text("api_key: sk-live-xyz")
+    assert colon == "<secret>"
+    assert "api_key" not in colon
+    assert "sk-live-xyz" not in colon
+
+    assert diagnostics._bounded_redacted_text("sk-ant-live-secret") == "<secret>"
+    assert diagnostics._bounded_redacted_text("AIzaLiveSecret") == "<secret>"
+    assert (
+        diagnostics._bounded_redacted_text("Traceback (most recent call last): boom")
+        == "traceback redacted boom"
+    )
+    assert diagnostics._bounded_redacted_text("reset_at_ms=123") == "reset_at_ms=123"
+
+    view = diagnostics._redacted_readiness_view(
+        {"operator_detail": "provider=anthropic; reset_at_ms=123; password=hunter2"}
+    )
+
+    assert view["reset_at_ms"] == 123
+    assert "password" not in view["operator_detail"]
+    assert "hunter2" not in view["operator_detail"]
+
+
 def test_collect_all_includes_provider_readiness(monkeypatch):
     from solstone.apps.support import diagnostics
 
@@ -1161,6 +1375,50 @@ def test_collect_all_includes_provider_readiness(monkeypatch):
     assert diagnostics.collect_all()["provider_readiness"] == {
         "interfaces": {"generate": {"provider": "anthropic"}}
     }
+
+
+def test_collect_recent_errors_redacts_before_bounding(tmp_path, monkeypatch):
+    health_dir = _health_dir(tmp_path, monkeypatch)
+    older = (datetime.now() - timedelta(hours=2)).isoformat(timespec="seconds")
+    newer = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+    boundary_secret = "boundarysecret"
+    boundary_prefix = "x" * 490
+
+    _write_log(
+        health_dir,
+        "privacy.log",
+        [
+            (
+                f"{older} [privacy:stderr] ERROR:root:{boundary_prefix} "
+                f"CUSTOM_TOKEN={boundary_secret}; reset_at_ms=123"
+            ),
+            f"{newer} [privacy:stderr] ERROR:root:password=hunter2 /home/alice/secret",
+            "ERROR raw api_key: colonsecret C:\\Users\\bob\\key.txt",
+        ],
+    )
+
+    result = collect_recent_errors()
+    messages = [entry["message"] for entry in result]
+    serialized = "\n".join(messages)
+
+    assert len(result) <= 10
+    assert [entry["time"] for entry in result] == sorted(
+        entry["time"] for entry in result
+    )[::-1]
+    assert all(len(message) <= 500 for message in messages)
+    for leaked in (
+        "CUSTOM_TOKEN",
+        boundary_secret,
+        "password",
+        "hunter2",
+        "api_key",
+        "colonsecret",
+        "/home/alice",
+        "C:\\Users\\bob",
+    ):
+        assert leaked not in serialized
+    assert "<secret>" in serialized
+    assert "<path>" in serialized
 
 
 def test_recent_beats_stale_under_limit(tmp_path, monkeypatch):

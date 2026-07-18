@@ -132,6 +132,8 @@ class PortalClient:
         self.portal_url = portal_url.rstrip("/")
         self.anonymous = anonymous
         self._handle = handle
+        if self.anonymous and not self._handle:
+            self._handle = f"anon-{os.urandom(4).hex()}"
 
         if storage_dir is None:
             from solstone.apps.utils import get_app_storage_path

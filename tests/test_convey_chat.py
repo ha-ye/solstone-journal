@@ -1099,7 +1099,7 @@ def test_support_draft_confirm_feedback_uses_support_create_with_snapshot(
     }
     assert calls == [
         {
-            "subject": "User feedback",
+            "subject": "feedback",
             "description": "I like this",
             "product": "solstone",
             "severity": "low",
