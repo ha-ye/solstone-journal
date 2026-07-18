@@ -804,7 +804,7 @@ def _fallback_activity_title(record: dict[str, Any]) -> str:
     if activity:
         return activity.replace("_", " ").title()
 
-    return "Untitled activity"
+    return "untitled activity"
 
 
 def _normalize_activity_record(record: dict[str, Any]) -> dict[str, Any]:

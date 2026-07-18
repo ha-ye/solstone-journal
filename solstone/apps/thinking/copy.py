@@ -199,7 +199,7 @@ BYO_SETUP = {
     ),
     "terms_link": "terms ↗",
     "endpoint_heading": "point sol at your own endpoint",
-    "endpoint_sub": "any OpenAI-compatible endpoint — your server, your rules.",
+    "endpoint_sub": "any OpenAI-compatible URL. your server, your rules.",
     "endpoint_honesty": (
         "sol checks the endpoint works before it relies on it. if it can't "
         "reach it, sol tells you — it never quietly falls back to anyone else."
@@ -233,7 +233,7 @@ BYO_SETUP = {
     "tier_blurb_top": (
         "the most capable — for the heaviest thinking, at the highest cost on your key."
     ),
-    "tier_blurb_mid": "capable and quick — the middle of the range.",
+    "tier_blurb_mid": "capable and quick. the middle of the range.",
     "tier_blurb_lite": (
         "light and quick — solstone tunes sol's thinking for small models, so this "
         "one does the job well. it's also the least expensive on your key."

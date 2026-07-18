@@ -14,7 +14,7 @@
 </head>
 <body>
   <div id="chatTranscript">
-    <button type="button" class="chat-thinking-expander" aria-expanded="false" data-thinking-id="thinking-demo">Show thinking</button>
+    <button type="button" class="chat-thinking-expander" aria-expanded="false" data-thinking-id="thinking-demo">show thinking</button>
     <div id="thinking-demo" class="chat-thinking-content" hidden>Reasoning line one.
 Reasoning line two.</div>
   </div>
@@ -23,8 +23,8 @@ Reasoning line two.</div>
 
   <script>
     window.solChatCopy = {
-      CHAT_THINKING_EXPANDER_LABEL: 'Show thinking',
-      CHAT_THINKING_COLLAPSER_LABEL: 'Hide thinking'
+      CHAT_THINKING_EXPANDER_LABEL: 'show thinking',
+      CHAT_THINKING_COLLAPSER_LABEL: 'hide thinking'
     };
     const thinking = {
       content: 'Reasoning line one.\nReasoning line two.'
@@ -70,9 +70,9 @@ Reasoning line two.</div>
       content.textContent = thinking.content;
       assert('initially collapsed', button.getAttribute('aria-expanded') === 'false' && content.hidden);
       button.click();
-      assert('expands', button.getAttribute('aria-expanded') === 'true' && !content.hidden && button.textContent === 'Hide thinking');
+      assert('expands', button.getAttribute('aria-expanded') === 'true' && !content.hidden && button.textContent === 'hide thinking');
       button.click();
-      assert('collapses', button.getAttribute('aria-expanded') === 'false' && content.hidden && button.textContent === 'Show thinking');
+      assert('collapses', button.getAttribute('aria-expanded') === 'false' && content.hidden && button.textContent === 'show thinking');
       summary.textContent = failures ? `FAIL ${failures} failure(s)` : 'PASS chat thinking expander';
       summary.className = failures ? 'fail' : 'pass';
     }

@@ -55,6 +55,12 @@ def test_get_default_activities_returns_copy():
     assert defaults2[0]["id"] != "modified"
 
 
+def test_fallback_activity_title_uses_folded_untitled_activity():
+    from solstone.think.activities import _fallback_activity_title
+
+    assert _fallback_activity_title({}) == "untitled activity"
+
+
 def test_always_on_activities(monkeypatch):
     """Test that always-on activities are auto-included for all facets."""
     from solstone.think.activities import DEFAULT_ACTIVITIES, get_facet_activities

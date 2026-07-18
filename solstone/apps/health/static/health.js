@@ -1013,7 +1013,7 @@
 	    if (state.logsCollapsed) {
       state.logsCollapsed = false;
       document.querySelector('.logs-card').classList.remove('logs-collapsed');
-      elements.logsCollapseIndicator.textContent = '▼ Hide';
+      elements.logsCollapseIndicator.textContent = '▼ hide';
       document.querySelector('.logs-header').setAttribute('aria-expanded', 'true');
     }
     renderLogs();
@@ -1137,7 +1137,7 @@
     } else if (state.crashed.size > 0) {
       healthLabel = 'error, services need attention';
     } else if (state.health) {
-      healthLabel = 'OK';
+      healthLabel = 'ok';
     }
     sections[3]?.setAttribute('aria-label', 'Health: ' + healthLabel);
 
@@ -1263,7 +1263,7 @@
         staleListSpan.style.display = 'none';
         updateVitalsStatus('error');
       } else {
-        mainSpan.textContent = 'OK';
+        mainSpan.textContent = 'ok';
         mainSpan.style.color = '';
         staleListSpan.textContent = '';
         staleListSpan.style.display = 'none';
@@ -2266,7 +2266,7 @@
       if (state.logsCollapsed) {
         state.logsCollapsed = false;
         document.querySelector('.logs-card').classList.remove('logs-collapsed');
-        elements.logsCollapseIndicator.textContent = '▼ Hide';
+        elements.logsCollapseIndicator.textContent = '▼ hide';
         document.querySelector('.logs-header').setAttribute('aria-expanded', 'true');
         renderLogs();
         state.lastLogFilter = null;
@@ -2665,7 +2665,7 @@
   if (deepLinkLog) {
     state.logsCollapsed = false;
     document.querySelector('.logs-card').classList.remove('logs-collapsed');
-    elements.logsCollapseIndicator.textContent = '▼ Hide';
+    elements.logsCollapseIndicator.textContent = '▼ hide';
     document.querySelector('.logs-header').setAttribute('aria-expanded', 'true');
     const viewport = elements.logsViewport;
     const logsCard = viewport.closest('.logs-card');

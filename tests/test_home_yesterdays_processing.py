@@ -26,6 +26,7 @@ from solstone.apps.home.routes import (
     _format_gap_links,
     _format_heatmap_summary,
     _newsletter_attempts_from_think_logs,
+    _normalize_activity_title,
     _summarize_yesterday_processing,
 )
 
@@ -466,6 +467,11 @@ def test_activity_bullet_title_duration_facet(tmp_path, monkeypatch):
         )
         == "I took notes on Drafted weekend notes for 10 min in personal."
     )
+    assert _normalize_activity_title({}) == "untitled activity"
+    assert (
+        _format_activity_label({"duration_minutes": 5})
+        == "I took notes on untitled activity for 5 min in unknown."
+    )
 
 
 def test_briefing_missing_counts_as_gap(tmp_path, monkeypatch):
@@ -508,7 +514,7 @@ def test_briefing_summary_matches_fixture_projection(monkeypatch):
 
     assert (
         _briefing_summary(briefing, sections, len(briefing["needs_attention"]))
-        == "Morning briefing — 3 meetings, 3 items need attention"
+        == "morning briefing — 3 meetings, 3 items need attention"
     )
 
 

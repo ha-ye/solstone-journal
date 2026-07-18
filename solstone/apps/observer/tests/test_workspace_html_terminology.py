@@ -53,7 +53,12 @@ def test_workspace_owner_copy_replaces_retired_observer_phrases():
         'aria-label="device key"',
         '<h3 id="keyModalTitle">sol on <span id="modalObserverName"></span></h3>',
         "paste these into sol on that device, under settings. keep the key secret — anyone with it can add to your journal.",
+        '<div class="credential-label">server URL</div>',
+        '<div class="credential-label">key</div>',
         "set up your first device",
+        "<dt>last reported</dt>",
+        "<dt>last sol-ping</dt>",
+        "button.textContent = 'reconnecting…';",
         "i couldn't load your devices.",
         'Remove "${name}"? sol on that device won\'t be able to add to your journal.',
         "i couldn't remove that device — your journal may not be reachable.",
@@ -67,5 +72,11 @@ def test_workspace_owner_copy_replaces_retired_observer_phrases():
     assert (
         "Keep this key secret — anyone with it can upload to your journal." not in text
     )
+    assert '<div class="credential-label">Server URL</div>' not in text
+    assert "<dt>Last reported</dt>" not in text
+    assert "<dt>Last sol-ping</dt>" not in text
+    assert "button.textContent = 'reconnecting...';" not in text
+    assert '<div class="credential-label">address</div>' not in text
+    assert "<dt>last asked sol</dt>" not in text
     assert "serverMessage: 'Malformed observer response'" not in text
     assert "serverMessage: ''" in text

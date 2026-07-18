@@ -132,6 +132,14 @@ def test_reflections_state_payload_shape(reflections_env, monkeypatch):
     )
 
 
+def test_reflections_empty_body_matches_approved_replacement():
+    assert reflections_copy.EMPTY_BODY == (
+        "Every Sunday, sol writes one reflection from the week you've just lived: "
+        "the conversations, decisions, follow-ups, the people. A view of your week, "
+        "in your journal, with sol's notes."
+    )
+
+
 def test_reflections_index_payload_shape(reflections_env):
     _seed_reflection(reflections_env.journal, "20260308")
     _seed_reflection(reflections_env.journal, "20260405")

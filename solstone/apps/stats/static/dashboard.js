@@ -100,7 +100,7 @@ const Dashboard = (function() {
       container.appendChild(
         el('div', {className: 'empty-chart'}, [
           el('div', {style: 'font-size: 2em;'}, ['📊']),
-          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['Select a model']),
+          el('div', {style: 'font-weight: 600; font-size: 1.1em;'}, ['select a model…']),
           el('div', {style: 'color: #999;'}, ['Choose a model above to view token usage'])
         ])
       );

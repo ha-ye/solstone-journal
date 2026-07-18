@@ -107,6 +107,16 @@ def test_workspace_renders_each_lane(settings_env):
     assert "/app/thinking/static/thinking.js" in html
 
 
+def test_workspace_loading_copy_is_folded():
+    workspace = WORKSPACE.read_text(encoding="utf-8")
+    static = STATIC.read_text(encoding="utf-8")
+
+    assert "loading thinking settings…" in workspace
+    assert "loading thinking settings…" in static
+    assert "loading thinking settings..." not in workspace
+    assert "loading thinking settings..." not in static
+
+
 def test_thinking_literal_paths_resolve(settings_env):
     journal_path, config = settings_env()
     config["setup"] = {"completed_at": 1700000000000}
@@ -289,7 +299,7 @@ def test_thinking_deck_copy_constants() -> None:
         ),
         "terms_link": "terms ↗",
         "endpoint_heading": "point sol at your own endpoint",
-        "endpoint_sub": "any OpenAI-compatible endpoint — your server, your rules.",
+        "endpoint_sub": "any OpenAI-compatible URL. your server, your rules.",
         "endpoint_honesty": (
             "sol checks the endpoint works before it relies on it. if it can't "
             "reach it, sol tells you — it never quietly falls back to anyone else."
@@ -324,7 +334,7 @@ def test_thinking_deck_copy_constants() -> None:
             "the most capable — for the heaviest thinking, at the highest cost on "
             "your key."
         ),
-        "tier_blurb_mid": "capable and quick — the middle of the range.",
+        "tier_blurb_mid": "capable and quick. the middle of the range.",
         "tier_blurb_lite": (
             "light and quick — solstone tunes sol's thinking for small models, so "
             "this one does the job well. it's also the least expensive on your key."
@@ -570,7 +580,7 @@ def test_thinking_state_serves_byo_model_copy_bytes(settings_env) -> None:
             "the most capable — for the heaviest thinking, at the highest cost on "
             "your key."
         ),
-        "tier_blurb_mid": "capable and quick — the middle of the range.",
+        "tier_blurb_mid": "capable and quick. the middle of the range.",
         "tier_blurb_lite": (
             "light and quick — solstone tunes sol's thinking for small models, so "
             "this one does the job well. it's also the least expensive on your key."

@@ -51,7 +51,7 @@ def test_network_render_copy_and_posture_helpers() -> None:
           },
         };
         const copy = {
-          STATUS_SENTENCES: { checking: 'checking your journal...' },
+          STATUS_SENTENCES: { checking: 'checking your journal…' },
           REACH_HOST_ADDRESS_PLACEHOLDER: '192.168.1.44:7657',
           APP_ONOFF_SUB_BYO: 'on — reachable over your own network',
           APP_ONOFF_SUB_HOSTED: 'on — reachable from anywhere',

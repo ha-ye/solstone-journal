@@ -37,3 +37,24 @@ def test_timeline_segment_structure_tokens_survive_copy_migration():
     )
     assert "segment-cell" in source
     assert "segmentCount" in source
+
+
+def test_timeline_static_aria_prefixes_are_folded():
+    source = _timeline_js()
+
+    expected = (
+        'aria-label="return to all history"',
+        'aria-label="open ${escapeHtml(label)}"',
+        'aria-label="return to ${month.name} ${month.year || ""}"',
+        'aria-label="return to ${month.name} ${day}, ${month.year || ""}"',
+        'aria-label="return to ${formatHour(hour)} on ${month.name} ${day}, ${month.year || ""}"',
+        'aria-label="open ${month.name} ${day}, ${month.year || ""}"',
+        'aria-label="open ${formatHour(hour)} on ${month.name} ${day}, ${month.year || ""}"',
+        'aria-label="open ${formatTime(hour, minute)}"',
+        'aria-label="open ${month.name} ${month.year || ""}"',
+    )
+    for literal in expected:
+        assert literal in source
+
+    assert 'aria-label="Return to' not in source
+    assert 'aria-label="Open ' not in source

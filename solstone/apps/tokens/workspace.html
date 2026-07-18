@@ -1026,7 +1026,7 @@ function renderProviderTable(providers) {
   const tbody = document.getElementById('provider-body');
 
   if (providers.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="8">No data for this day</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="8">no data for this day</td></tr>';
     return;
   }
 
@@ -1049,7 +1049,7 @@ function renderModelTable(models) {
   const tbody = document.getElementById('model-body');
 
   if (models.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No data for this day</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">no data for this day</td></tr>';
     return;
   }
 
@@ -1073,7 +1073,7 @@ function renderTokenTypeTable(tokenTypes) {
   const hasData = types.some(t => tokenTypes[t].tokens > 0);
 
   if (!hasData) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="5">No data for this day</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="5">no data for this day</td></tr>';
     return;
   }
 
@@ -1111,7 +1111,7 @@ function renderContextTable(contexts, filter = '') {
   }
 
   if (filteredContexts.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No matching contexts</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">no matching contexts</td></tr>';
     return;
   }
 
@@ -1138,7 +1138,7 @@ function renderSegmentTable(segments, filter = '') {
   }
 
   if (filteredSegments.length === 0) {
-    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No segment data for this day</td></tr>';
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">no segment data for this day</td></tr>';
     return;
   }
 

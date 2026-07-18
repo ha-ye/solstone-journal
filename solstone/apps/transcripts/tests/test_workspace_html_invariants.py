@@ -294,3 +294,43 @@ def test_workspace_html_body_panel_focus_management():
     )[1].split("}", 1)[0]
     assert "closeBodyPanel();" in escape_branch
     assert "trImageModal" in escape_branch
+
+
+def test_workspace_html_owner_copy_folds_named_transcript_literals():
+    workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
+
+    text = workspace_html.read_text()
+
+    expected_literals = (
+        "window.SurfaceState.loading({ text: 'loading body context…' })",
+        "window.SurfaceState.loading({ text: 'loading segment…' })",
+        "renderSignalSection(\n        'location',",
+        "renderSignalSection(\n        'glasses battery',",
+        "renderSignalSection('photos and button presses', photoRows)",
+        "renderSignalSection(\n        'device capabilities',",
+        "renderSignalSection(\n        'calendar snapshot',",
+        '<span class="sr-only">audio: </span>',
+        '<span class="sr-only">screen: </span>',
+        "current raw media size: ${formatSize(totalBytes)}",
+    )
+    for literal in expected_literals:
+        assert literal in text
+
+    retired_literals = (
+        "Loading body context...",
+        "Loading segment...",
+        "'Location'",
+        "'Glasses Battery'",
+        "'Photo And Button Events'",
+        "'Device Capabilities'",
+        "'Calendar Snapshot'",
+        '<span class="sr-only">Audio: </span>',
+        '<span class="sr-only">Screen: </span>',
+        "Current raw media size:",
+    )
+    for literal in retired_literals:
+        assert literal not in text
+
+    assert "Loading screen entries..." in text
+    assert "loading screen entries..." in text
+    assert "Current time" in text

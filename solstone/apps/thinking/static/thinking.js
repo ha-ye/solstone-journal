@@ -654,7 +654,7 @@
   function renderInitialLoading() {
     const loading = $('thinking-loading');
     if (!loading) return;
-    loading.innerHTML = window.SurfaceState.loading({ text: 'loading thinking settings...' });
+    loading.innerHTML = window.SurfaceState.loading({ text: 'loading thinking settings…' });
     loading.style.display = '';
     const app = $('thinkingApp');
     if (app) app.hidden = true;

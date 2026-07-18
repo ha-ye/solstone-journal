@@ -272,6 +272,38 @@ def test_tokens_workspace_contains_client_copy_and_static_labels(tokens_env):
     assert "window.TOKENS_COPY = TOKENS_COPY" in html
 
 
+def test_tokens_dynamic_empty_rows_match_approved_lowercase_copy(tokens_env):
+    env = tokens_env({})
+
+    response = env.client.get("/app/tokens/workspace")
+
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert '<td colspan="8">no data for this day</td>' in html
+    assert (
+        'tbody.innerHTML = \'<tr class="empty-row"><td colspan="8">'
+        "no data for this day</td></tr>';"
+    ) in html
+    assert '<td colspan="5">no data for this day</td>' in html
+    assert (
+        'tbody.innerHTML = \'<tr class="empty-row"><td colspan="5">'
+        "no data for this day</td></tr>';"
+    ) in html
+    assert '<td colspan="6">no segment data for this day</td>' in html
+    assert (
+        'tbody.innerHTML = \'<tr class="empty-row"><td colspan="6">'
+        "no segment data for this day</td></tr>';"
+    ) in html
+    assert '<td colspan="6">no data for this day</td>' in html
+    assert (
+        'tbody.innerHTML = \'<tr class="empty-row"><td colspan="6">'
+        "no matching contexts</td></tr>';"
+    ) in html
+    assert "No data for this day" not in html
+    assert "No matching contexts" not in html
+    assert "No segment data for this day" not in html
+
+
 def test_tokens_page_renders_collapsed_details_for_all_breakdowns(tokens_env):
     env = tokens_env({})
 

@@ -577,7 +577,7 @@ button.day-header {
       </div>
 
       <button id="load-more-days" class="load-more-days" style="display: none;">
-        Load more days
+        load more days
       </button>
     </main>
   </div>
@@ -774,7 +774,7 @@ button.day-header {
 
     if (reset) {
       dayOffset = 0;
-      resultsContainer.innerHTML = window.SurfaceState.loading({ text: 'Searching...' });
+      resultsContainer.innerHTML = window.SurfaceState.loading({ text: 'searching…' });
       announce('searching…');
     }
 
@@ -1008,7 +1008,7 @@ button.day-header {
     if (dayData.has_more) {
       const showMoreBtn = document.createElement('button');
       showMoreBtn.className = 'show-more-btn';
-      showMoreBtn.textContent = `Show ${dayData.total - dayData.showing} more`;
+      showMoreBtn.textContent = `show ${dayData.total - dayData.showing} more`;
       showMoreBtn.onclick = function(e) {
         e.stopPropagation();
         loadMoreForDay(dayData.day, dayData.showing, resultsDiv, showMoreBtn);
@@ -1074,7 +1074,7 @@ button.day-header {
         const remaining = data.total - newOffset;
 
         if (remaining > 0) {
-          btn.textContent = `Show ${remaining} more`;
+          btn.textContent = `show ${remaining} more`;
           btn.disabled = false;
           btn.onclick = function(e) {
             e.stopPropagation();
@@ -1087,7 +1087,7 @@ button.day-header {
       .catch(err => {
         if (err.name === 'AbortError') return;
         console.error('Load more error:', err);
-        btn.textContent = 'error - click to retry';
+        btn.textContent = "couldn't load more — click to retry";
         btn.disabled = false;
       });
   }
@@ -1127,7 +1127,7 @@ button.day-header {
     const shownDays = dayOffset + data.showing_days;
 
     if (shownDays < totalDays) {
-      loadMoreDaysBtn.textContent = `Load more days (${shownDays}/${totalDays})`;
+      loadMoreDaysBtn.textContent = `load more days (${shownDays}/${totalDays})`;
       loadMoreDaysBtn.style.display = 'block';
     } else {
       loadMoreDaysBtn.style.display = 'none';

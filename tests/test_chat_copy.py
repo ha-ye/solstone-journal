@@ -69,8 +69,8 @@ def test_talent_label_for_unknown_values_raise():
 def test_liveness_and_error_detail_copy_bytes():
     assert chat_copy.CHAT_LIVENESS_THINKING == "sol is thinking…"
     assert chat_copy.CHAT_LIVENESS_TASK_FORMAT == "{label} {task}"
-    assert chat_copy.CHAT_ERROR_DETAIL_EXPANDER_LABEL == "Show details"
-    assert chat_copy.CHAT_ERROR_DETAIL_COLLAPSER_LABEL == "Hide details"
+    assert chat_copy.CHAT_ERROR_DETAIL_EXPANDER_LABEL == "show details"
+    assert chat_copy.CHAT_ERROR_DETAIL_COLLAPSER_LABEL == "hide details"
 
 
 def test_jobs_and_dispatch_origin_copy_bytes():
@@ -82,13 +82,13 @@ def test_jobs_and_dispatch_origin_copy_bytes():
 
 
 def test_thinking_copy_bytes():
-    expected = """CHAT_THINKING_EXPANDER_LABEL = "Show thinking"
-CHAT_THINKING_COLLAPSER_LABEL = "Hide thinking"
-CHAT_THINKING_SETTING_LABEL = "Thinking surfaces"
+    expected = """CHAT_THINKING_EXPANDER_LABEL = "show thinking"
+CHAT_THINKING_COLLAPSER_LABEL = "hide thinking"
+CHAT_THINKING_SETTING_LABEL = "thinking surfaces"
 CHAT_THINKING_OPT_ON_TAP = "Show on tap"
 CHAT_THINKING_OPT_ALWAYS = "Always show"
 CHAT_THINKING_OPT_NEVER = "Never show"
-CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. Choose how much you want to see."
+CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. choose how much you want to see."
 """
     actual = "\n".join(
         [
@@ -164,13 +164,13 @@ def test_js_parity():
         "CHAT_ERROR_DETAIL_COLLAPSER_LABEL: "
         f'"{chat_copy.CHAT_ERROR_DETAIL_COLLAPSER_LABEL}"'
     ) in text
-    expected_js_thinking = """CHAT_THINKING_EXPANDER_LABEL: "Show thinking",
-CHAT_THINKING_COLLAPSER_LABEL: "Hide thinking",
-CHAT_THINKING_SETTING_LABEL: "Thinking surfaces",
+    expected_js_thinking = """CHAT_THINKING_EXPANDER_LABEL: "show thinking",
+CHAT_THINKING_COLLAPSER_LABEL: "hide thinking",
+CHAT_THINKING_SETTING_LABEL: "thinking surfaces",
 CHAT_THINKING_OPT_ON_TAP: "Show on tap",
 CHAT_THINKING_OPT_ALWAYS: "Always show",
 CHAT_THINKING_OPT_NEVER: "Never show",
-CHAT_THINKING_SETTING_HELP: "sol does some thinking before replying. Choose how much you want to see.",
+CHAT_THINKING_SETTING_HELP: "sol does some thinking before replying. choose how much you want to see.",
 """
     for expected_line in expected_js_thinking.splitlines():
         assert expected_line in text

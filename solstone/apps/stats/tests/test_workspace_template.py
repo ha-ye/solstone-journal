@@ -173,6 +173,19 @@ def test_stats_workspace_observation_hours_heading_copy(stats_env):
     assert "<h2>hours sol was with you, per day</h2>" in rendered
 
 
+def test_stats_model_selector_copy_is_byte_identical_across_render_paths(stats_env):
+    rendered = _render_stats_workspace(stats_env)
+    dashboard = DASHBOARD_JS_PATH.read_text(encoding="utf-8")
+
+    assert (
+        '<label for="modelSelector" class="sr-only">filter by model</label>' in rendered
+    )
+    assert '<option value="">select a model…</option>' in rendered
+    assert "['select a model…']" in dashboard
+    assert "Select Model..." not in rendered
+    assert "Select a model" not in dashboard
+
+
 def test_backlog_mixed_arm_constants_are_literal():
     assert backlog_copy.BACKLOG_VERDICT_MIXED_STUCK_SINGULAR == "1 day needs a hand"
     assert (

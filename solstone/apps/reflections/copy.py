@@ -5,9 +5,9 @@
 SUBTITLE = "sol's weekly synthesis of your journal."
 
 EMPTY_BODY = (
-    "Every Sunday, sol takes the week you've just lived through — "
-    "the conversations, decisions, follow-ups, the people — and writes "
-    "one reflection. A view of your week, in your journal, with sol's notes."
+    "Every Sunday, sol writes one reflection from the week you've just lived: "
+    "the conversations, decisions, follow-ups, the people. A view of your week, "
+    "in your journal, with sol's notes."
 )
 
 EMPTY_NEXT_WITH_DATE = "Your first reflection arrives on {sunday}."

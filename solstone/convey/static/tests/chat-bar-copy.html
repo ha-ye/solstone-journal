@@ -79,8 +79,8 @@
       assert('result try again message', window.solChatCopy.CHAT_RESULT_TRY_AGAIN_MESSAGE === 'please try sending that to solstone support again');
       const removedDiagnosticsLabel = 'CHAT_DRAFT_' + 'DIAGNOSTICS_LABEL';
       assert('old diagnostics label removed', !(removedDiagnosticsLabel in window.solChatCopy));
-      assert('error detail expander copy', window.solChatCopy.CHAT_ERROR_DETAIL_EXPANDER_LABEL === 'Show details');
-      assert('error detail collapser copy', window.solChatCopy.CHAT_ERROR_DETAIL_COLLAPSER_LABEL === 'Hide details');
+      assert('error detail expander copy', window.solChatCopy.CHAT_ERROR_DETAIL_EXPANDER_LABEL === 'show details');
+      assert('error detail collapser copy', window.solChatCopy.CHAT_ERROR_DETAIL_COLLAPSER_LABEL === 'hide details');
       assert('liveness task format copy', window.solChatCopy.CHAT_LIVENESS_TASK_FORMAT === '{label} {task}');
       const phaseTwo = window.solChatCopy.CHAT_LIVENESS_TASK_FORMAT
         .replace('{label}', window.solChatCopy.talentLabel('exec', 'running'))

@@ -54,7 +54,7 @@ def test_reach_shell_spec_fixed_copy_is_locked() -> None:
     assert copy.STATUS_SENTENCES == {
         "direct_online": "your journal is reachable on your network.",
         "direct_online_vpn": "your journal is reachable on your network and over your VPN.",
-        "reconnecting": "reconnecting to your journal...",
+        "reconnecting": "reconnecting to your journal…",
         "offline": "can't reach your journal right now.",
         "lan_unreachable": "your journal is running, but devices can't reach it to pair yet.",
         "spl_online": "your journal is reachable from anywhere.",
@@ -63,7 +63,7 @@ def test_reach_shell_spec_fixed_copy_is_locked() -> None:
             "your journal isn't reaching the network right now — devices can't "
             "connect from away. on your home wifi they still work."
         ),
-        "checking": "checking your journal...",
+        "checking": "checking your journal…",
     }
 
 

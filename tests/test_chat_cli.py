@@ -255,7 +255,7 @@ def test_render_post_error_uses_error_and_detail() -> None:
                 "requested_task": "patterns this month",
             },
             False,
-            "Reading your journal… (patterns this month)",
+            "reading your journal… (patterns this month)",
         ),
         (
             {"tract": "chat", "event": "talent_finished", "use_id": "talent-1"},

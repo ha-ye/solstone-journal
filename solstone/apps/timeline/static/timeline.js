@@ -896,7 +896,7 @@ async function renderMonth(index) {
         <svg class="month-connectors" aria-hidden="true"></svg>
 
         <div class="timeline-focus-heading">
-          <button class="timeline-focus-node" type="button" data-month="${index}" aria-label="Return to all history">
+          <button class="timeline-focus-node" type="button" data-month="${index}" aria-label="return to all history">
             ${month.short}
           </button>
         </div>
@@ -915,7 +915,7 @@ async function renderMonth(index) {
               .join(" ");
             const label = `${month.name} ${day}, ${month.year || ""}`;
             return `
-              <button class="${classes}" type="button" data-month="${index}" data-day="${day}" title="${escapeHtml(label)}" aria-label="Open ${escapeHtml(label)}">
+              <button class="${classes}" type="button" data-month="${index}" data-day="${day}" title="${escapeHtml(label)}" aria-label="open ${escapeHtml(label)}">
                 ${day}
               </button>
             `;
@@ -976,7 +976,7 @@ async function renderDay(monthIndex, day) {
         <svg class="day-connectors" aria-hidden="true"></svg>
 
         <div class="timeline-focus-heading">
-          <button class="day-focus-node" type="button" data-month="${monthIndex}" data-return-month="true" aria-label="Return to ${month.name} ${month.year || ""}">
+          <button class="day-focus-node" type="button" data-month="${monthIndex}" data-return-month="true" aria-label="return to ${month.name} ${month.year || ""}">
             ${dayLabel}
           </button>
           ${renderDayProvenance(data.generated_at, data.model)}
@@ -995,7 +995,7 @@ async function renderDay(monthIndex, day) {
               .join(" ");
             const label = `${formatHour(hour)} on ${month.name} ${day}, ${month.year || ""}${event ? `, ${event.title}` : ""}`;
             return `
-              <button class="${classes}" type="button" data-month="${monthIndex}" data-day="${day}" data-hour="${hour}" title="${escapeHtml(label)}" aria-label="Open ${escapeHtml(label)}">
+              <button class="${classes}" type="button" data-month="${monthIndex}" data-day="${day}" data-hour="${hour}" title="${escapeHtml(label)}" aria-label="open ${escapeHtml(label)}">
                 ${formatHour(hour)}
               </button>
             `;
@@ -1214,7 +1214,7 @@ async function renderMinute(monthIndex, day, hour) {
         <svg class="minute-connectors" aria-hidden="true"></svg>
 
         <div class="timeline-focus-heading">
-          <button class="minute-focus-node" type="button" data-month="${monthIndex}" data-day="${day}" data-return-day="true" aria-label="Return to ${month.name} ${day}, ${month.year || ""}">
+          <button class="minute-focus-node" type="button" data-month="${monthIndex}" data-day="${day}" data-return-day="true" aria-label="return to ${month.name} ${day}, ${month.year || ""}">
             ${focusLabel}
           </button>
         </div>
@@ -1422,7 +1422,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
           <button class="segment-focus-node" type="button"
                   data-month="${monthIndex}" data-day="${day}" data-hour="${hour}"
                   data-return-hour="true"
-                  aria-label="Return to ${formatHour(hour)} on ${month.name} ${day}, ${month.year || ""}">
+                  aria-label="return to ${formatHour(hour)} on ${month.name} ${day}, ${month.year || ""}">
             ${focusLabel}
           </button>
         </div>
@@ -1496,7 +1496,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
 function renderEdgeDay(monthIndex, day, position) {
   const month = months[monthIndex];
   return `
-    <button class="edge-day timeline-${position}" type="button" data-month="${monthIndex}" data-day="${day}" aria-label="Open ${month.name} ${day}, ${month.year || ""}">
+    <button class="edge-day timeline-${position}" type="button" data-month="${monthIndex}" data-day="${day}" aria-label="open ${month.name} ${day}, ${month.year || ""}">
       ${day}
     </button>
   `;
@@ -1505,7 +1505,7 @@ function renderEdgeDay(monthIndex, day, position) {
 function renderEdgeHour(monthIndex, day, hour, position) {
   const month = months[monthIndex];
   return `
-    <button class="edge-hour timeline-${position}" type="button" data-month="${monthIndex}" data-day="${day}" data-hour="${hour}" aria-label="Open ${formatHour(hour)} on ${month.name} ${day}, ${month.year || ""}">
+    <button class="edge-hour timeline-${position}" type="button" data-month="${monthIndex}" data-day="${day}" data-hour="${hour}" aria-label="open ${formatHour(hour)} on ${month.name} ${day}, ${month.year || ""}">
       ${formatHour(hour)}
     </button>
   `;
@@ -1513,7 +1513,7 @@ function renderEdgeHour(monthIndex, day, hour, position) {
 
 function renderEdgeSegment(monthIndex, day, hour, minute, position) {
   return `
-    <button class="edge-segment timeline-${position}" type="button" data-month="${monthIndex}" data-day="${day}" data-hour="${hour}" data-minute="${minute}" aria-label="Open ${formatTime(hour, minute)}">
+    <button class="edge-segment timeline-${position}" type="button" data-month="${monthIndex}" data-day="${day}" data-hour="${hour}" data-minute="${minute}" aria-label="open ${formatTime(hour, minute)}">
       ${formatTime(hour, minute)}
     </button>
   `;
@@ -1521,7 +1521,7 @@ function renderEdgeSegment(monthIndex, day, hour, minute, position) {
 
 function renderEdgeMonth(month, index, position) {
   return `
-    <button class="edge-node timeline-${position} accent-${month.accent}" type="button" data-month="${index}" aria-label="Open ${month.name} ${month.year || ""}">
+    <button class="edge-node timeline-${position} accent-${month.accent}" type="button" data-month="${index}" aria-label="open ${month.name} ${month.year || ""}">
       ${month.short}
     </button>
   `;

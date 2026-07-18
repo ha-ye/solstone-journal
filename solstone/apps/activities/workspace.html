@@ -560,7 +560,7 @@ button.activity-detail-back {
     <div id="timelineView">
       <div class="surface-state surface-state--loading" role="status" aria-busy="true">
         <div class="surface-state-spinner" aria-hidden="true"></div>
-        <span class="surface-state-text" data-role="loading-status">Loading activities...</span>
+        <span class="surface-state-text" data-role="loading-status">loading activities…</span>
       </div>
     </div>
     <div id="activitiesView"></div>
@@ -821,15 +821,15 @@ button.activity-detail-back {
     html += `<div class="ad-tab-pane active" id="pane-summary">`;
     html += `<dl class="ad-fields">`;
     if (timeRange) {
-      html += `<dt>Time</dt><dd>${timeRange}</dd>`;
+      html += `<dt>time</dt><dd>${timeRange}</dd>`;
     }
     if (a.duration_minutes != null) {
-      html += `<dt>Duration</dt><dd>${fmtDuration(a.duration_minutes)}</dd>`;
+      html += `<dt>duration</dt><dd>${fmtDuration(a.duration_minutes)}</dd>`;
     }
-    html += `<dt>Engagement</dt><dd><span class="act-level level-${lvl}" aria-hidden="true"></span> ${lvl}</dd>`;
-    html += `<dt>Segments</dt><dd>${a.segments.length}</dd>`;
+    html += `<dt>engagement</dt><dd><span class="act-level level-${lvl}" aria-hidden="true"></span> ${lvl}</dd>`;
+    html += `<dt>segments</dt><dd>${a.segments.length}</dd>`;
     if (a.active_entities && a.active_entities.length) {
-      html += `<dt>Entities</dt><dd><div class="ad-entities">`;
+      html += `<dt>entities</dt><dd><div class="ad-entities">`;
       a.active_entities.forEach(e => {
         html += `<span class="ad-entity">${escapeHtml(e)}</span>`;
       });
@@ -844,7 +844,7 @@ button.activity-detail-back {
     // Output panes (lazy loaded)
     a.outputs.forEach((out, i) => {
       html += `<div class="ad-tab-pane" id="pane-output-${i}">`;
-      html += `<div class="ad-output-loading">Loading...</div>`;
+      html += `<div class="ad-output-loading">loading…</div>`;
       html += `</div>`;
     });
 

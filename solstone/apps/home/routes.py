@@ -186,7 +186,7 @@ def _briefing_summary(
         meeting_label = "meeting" if meeting_count == 1 else "meetings"
         needs_label = "item needs" if needs_count == 1 else "items need"
         return (
-            f"Morning briefing — {meeting_count} {meeting_label}, "
+            f"morning briefing — {meeting_count} {meeting_label}, "
             f"{needs_count} {needs_label} attention"
         )
 
@@ -198,8 +198,8 @@ def _briefing_summary(
             stripped = stripped.removeprefix("- ").strip()
             if len(stripped) > 58:
                 stripped = stripped[:55].rstrip() + "..."
-            return f"Morning briefing — {stripped}"
-    return "Morning briefing"
+            return f"morning briefing — {stripped}"
+    return "morning briefing"
 
 
 def _load_stats(today: str) -> dict[str, Any]:
@@ -306,7 +306,7 @@ def _normalize_activity_title(record: dict[str, Any]) -> str:
     activity = str(record.get("activity") or "").strip().replace("_", " ")
     if activity:
         return activity.title()
-    return "Untitled activity"
+    return "untitled activity"
 
 
 def _collect_top_activities_yesterday(yesterday: str) -> list[dict[str, Any]]:
@@ -477,7 +477,7 @@ def _join_phrases(parts: list[str]) -> str:
 
 def _format_activity_label(activity: dict[str, Any]) -> str:
     return (
-        f"I took notes on {activity.get('title', 'Untitled activity')} "
+        f"I took notes on {activity.get('title', 'untitled activity')} "
         f"for {_format_duration(activity.get('duration_minutes', 0))} in "
         f"{activity.get('facet', 'unknown')}."
     )

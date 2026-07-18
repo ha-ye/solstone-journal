@@ -546,12 +546,12 @@
     <button type="button" class="modal-close" id="keyModalClose" aria-label="close">&times;</button>
     <h3 id="keyModalTitle">sol on <span id="modalObserverName"></span></h3>
     <p>paste these into sol on that device, under settings. keep the key secret — anyone with it can add to your journal.</p>
-    <div class="credential-label">Server URL</div>
+    <div class="credential-label">server URL</div>
     <div class="command-box">
       <code id="serverUrlText"></code>
       <button class="copy-btn" id="copyServerUrlBtn">copy</button>
     </div>
-    <div class="credential-label">Key</div>
+    <div class="credential-label">key</div>
     <div class="command-box">
       <code id="keyText"></code>
       <button class="copy-btn" id="revealKeyBtn">reveal</button>
@@ -610,8 +610,8 @@ function statsHTML(observer, statusClass) {
       ? `${lastSeenBase} — offline`
       : lastSeenBase;
   return `<dl>
-    <div><dt>Last reported</dt><dd data-last-seen="${observer.last_seen || ''}" data-state="${statusClass}">${lastSeen}</dd></div>
-    <div><dt>Last sol-ping</dt><dd>${lastSolPing}</dd></div>
+    <div><dt>last reported</dt><dd data-last-seen="${observer.last_seen || ''}" data-state="${statusClass}">${lastSeen}</dd></div>
+    <div><dt>last sol-ping</dt><dd>${lastSolPing}</dd></div>
     <div><dt>Segments (5-min chunks)</dt><dd>${observer.stats?.segments_received ?? 0}</dd></div>
     <div><dt>Data</dt><dd>${formatBytes(observer.stats?.bytes_received || 0)}</dd></div>
   </dl>`;
@@ -827,7 +827,7 @@ function refreshTimestamps() {
 	async function restartObserver(keyPrefix, button) {
 	  const result = observersList.querySelector(`[data-reconnect-result="${CSS.escape(keyPrefix)}"]`);
 	  button.disabled = true;
-	  button.textContent = 'reconnecting...';
+	  button.textContent = 'reconnecting…';
 	  if (result) {
 	    result.textContent = '';
 	    result.style.color = '';

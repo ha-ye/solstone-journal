@@ -62,7 +62,7 @@ HERO_HOW_REACH_LABEL = "how reach works ▸"
 STATUS_SENTENCES = {
     "direct_online": "your journal is reachable on your network.",
     "direct_online_vpn": "your journal is reachable on your network and over your VPN.",
-    "reconnecting": "reconnecting to your journal...",
+    "reconnecting": "reconnecting to your journal…",
     "offline": "can't reach your journal right now.",
     "lan_unreachable": "your journal is running, but devices can't reach it to pair yet.",
     "spl_online": "your journal is reachable from anywhere.",
@@ -71,7 +71,7 @@ STATUS_SENTENCES = {
         "your journal isn't reaching the network right now — devices can't connect "
         "from away. on your home wifi they still work."
     ),
-    "checking": "checking your journal...",
+    "checking": "checking your journal…",
 }
 BRANDLOCK_LINE = "your journal is always private, only yours."
 REACH_SELECTOR_TITLE = "how your devices reach your journal"

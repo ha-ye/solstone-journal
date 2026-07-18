@@ -209,6 +209,21 @@ def test_health_glance_copy_literal_and_precedence():
     assert positions == sorted(positions)
 
 
+def test_health_status_and_log_toggle_copy_is_folded():
+    source = _health_js()
+
+    assert "healthLabel = 'ok';" in source
+    assert "mainSpan.textContent = 'ok';" in source
+    assert (
+        "sections[3]?.setAttribute('aria-label', 'Health: ' + healthLabel);" in source
+    )
+    assert "elements.logsCollapseIndicator.textContent = '▼ hide';" in source
+    assert "state.logsCollapsed ? '▶ show' : '▼ hide';" in source
+    assert "healthLabel = 'OK';" not in source
+    assert "mainSpan.textContent = 'OK';" not in source
+    assert "'▼ Hide'" not in source
+
+
 def test_agent_error_state_seed_and_dedupe_are_wired():
     source = _health_js()
 

@@ -2989,7 +2989,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
   async function openBodyWindowFromIso(fromIso, toIso, title, rangeLabel) {
     bodyPanelTitle.textContent = title || 'Body context';
     bodyPanelRange.textContent = rangeLabel || '';
-    bodyPanelBody.innerHTML = window.SurfaceState.loading({ text: 'Loading body context...' });
+    bodyPanelBody.innerHTML = window.SurfaceState.loading({ text: 'loading body context…' });
     openBodyPanelSurface();
     try {
       const payload = await fetchBodyWindow(fromIso, toIso);
@@ -3540,7 +3540,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     tabsContainer.classList.remove('visible');
     tabsContainer.innerHTML = '';
 	    warningNotice.classList.remove('visible');
-    panel.innerHTML = window.SurfaceState.loading({ text: 'Loading segment...' });
+    panel.innerHTML = window.SurfaceState.loading({ text: 'loading segment…' });
     panel.classList.add('loading');
 
     fetch(`/app/transcripts/api/segment/${day}/${seg.stream}/${seg.key}`, { signal })
@@ -4077,7 +4077,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     if (latestLocation) {
       const payload = latestLocation.payload || {};
       html += renderSignalSection(
-        'Location',
+        'location',
         renderSignalRow('updates', locationEvents.length)
         + renderSignalRow('latest', signalTimestampLabel(latestLocation.timestamp))
         + renderSignalRow('latitude', payload.lat)
@@ -4090,7 +4090,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     if (latestBattery) {
       const payload = latestBattery.payload || {};
       html += renderSignalSection(
-        'Glasses Battery',
+        'glasses battery',
         renderSignalRow('latest', signalTimestampLabel(latestBattery.timestamp))
         + renderSignalRow('level', payload.level !== undefined ? `${payload.level}%` : '')
         + renderSignalRow('charging', payload.charging)
@@ -4111,14 +4111,14 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
       .map(type => renderSignalRow(type, counts[type]))
       .join('');
     if (photoRows) {
-      html += renderSignalSection('Photo And Button Events', photoRows);
+      html += renderSignalSection('photos and button presses', photoRows);
     }
 
     const capabilities = latestSignal(data, 'capabilities_update') || latestSignal(data, 'session_start');
     if (capabilities?.payload?.capabilities) {
       const caps = capabilities.payload.capabilities;
       html += renderSignalSection(
-        'Device Capabilities',
+        'device capabilities',
         renderSignalRow('camera', caps.hasCamera)
         + renderSignalRow('microphone', caps.hasMicrophone)
         + renderSignalRow('speaker', caps.hasSpeaker)
@@ -4141,7 +4141,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         ? `<div class="tr-signal-label">${calendarEvents.length - 12} more deduped calendar events hidden in this compact view</div>`
         : '';
       html += renderSignalSection(
-        'Calendar Snapshot',
+        'calendar snapshot',
         renderSignalRow('raw rows', calendar.total || 0)
         + renderSignalRow('unique events', calendar.unique || calendarEvents.length)
         + `<ul class="tr-signal-list">${items}</ul>${more}`
@@ -4247,7 +4247,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
         html += `<div class="tr-entry tr-entry-audio" data-idx="${idx}" data-type="audio" data-timestamp="${item.timestamp}" role="listitem" tabindex="0" aria-label="play from ${timeStr}">`;
         html += `<div class="tr-entry-time">${timeStr}</div>`;
         html += '<div class="tr-entry-content">';
-        html += '<span class="sr-only">Audio: </span>';
+        html += '<span class="sr-only">audio: </span>';
         if (item.speaker_label) {
           const sl = item.speaker_label;
           const dotClass = sl.confidence === 'high' ? 'tr-speaker-dot-high' : 'tr-speaker-dot-medium';
@@ -4286,7 +4286,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
           html += '<div class="tr-entry" role="listitem">';
           html += `<div class="tr-entry-time">${timeStr}</div>`;
           html += '<div class="tr-entry-content">';
-          html += '<span class="sr-only">Screen: </span>';
+          html += '<span class="sr-only">screen: </span>';
           html += `<div class="tr-screen-text">${markdown}</div>`;
           html += '</div></div>';
         } else {
@@ -4611,7 +4611,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     let html = `<div class="tr-entry tr-entry-screen" data-idx="${idx}" data-frame-idx="${frameIdx}" data-type="screen" role="listitem">`;
     html += `<div class="tr-entry-time">${timeStr}</div>`;
     html += '<div class="tr-entry-content">';
-    html += '<span class="sr-only">Screen: </span>';
+    html += '<span class="sr-only">screen: </span>';
 
     if (imageUrl) {
       const description = chunk.source_ref?.analysis?.visual_description || 'screen image';
@@ -5104,7 +5104,7 @@ body.presentation-mode .tr-screen-text { font-size: 16px; padding: 12px 16px; bo
     const seg = selectedSegment;
     const totalBytes = (segmentData?.media_sizes?.audio || 0) + (segmentData?.media_sizes?.screen || 0);
     const sizeLine = totalBytes > 0
-      ? `<p class="tr-delete-segment-size">Current raw media size: ${formatSize(totalBytes)}</p>`
+      ? `<p class="tr-delete-segment-size">current raw media size: ${formatSize(totalBytes)}</p>`
       : '';
 
     deleteSegmentModalBody.innerHTML = `
