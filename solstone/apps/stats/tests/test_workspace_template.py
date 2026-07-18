@@ -84,7 +84,7 @@ BACKLOG_COPY_LITERALS = {
     "BACKLOG_QUEUED_FEEDBACK": "queued — processing now",
     "BACKLOG_WHY_NEVER_ATTEMPTED": "not looked at yet",
     "BACKLOG_WHY_FAILED": "couldn't finish — will retry",
-    "BACKLOG_WHY_SENSED_NOT_THOUGHT": "observed, not yet thought through",
+    "BACKLOG_WHY_SENSED_NOT_THOUGHT": "taken in, not yet thought through",
     "BACKLOG_CATCHING_UP_DAY": "catching up",
     "BACKLOG_CATCHING_UP_AGGREGATE": "{pending_n} day(s) catching up",
     "BACKLOG_CATCHING_UP_TAIL": (
@@ -165,6 +165,12 @@ def test_backlog_copy_script_carries_all_keys(stats_env):
     assert script_values == {
         key: getattr(backlog_copy, key) for key in BACKLOG_COPY_KEYS
     }
+
+
+def test_stats_workspace_observation_hours_heading_copy(stats_env):
+    rendered = _render_stats_workspace(stats_env)
+
+    assert "<h2>hours sol was with you, per day</h2>" in rendered
 
 
 def test_backlog_mixed_arm_constants_are_literal():
