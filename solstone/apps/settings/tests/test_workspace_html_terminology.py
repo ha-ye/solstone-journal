@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from solstone.apps.settings import install_copy
@@ -51,3 +52,28 @@ def test_workspace_does_not_duplicate_install_copy_strings():
     for name in UNIQUE_INSTALL_COPY_NAMES:
         value = getattr(install_copy, name)
         assert text.count(value) == 0
+
+
+def test_workspace_observer_nav_copy_uses_devices():
+    text = _workspace_text()
+
+    assert '<optgroup label="devices">' in text
+    assert '<option value="observer">devices</option>' in text
+    assert '<div class="settings-nav-label">devices</div>' in text
+    assert re.search(
+        r'<button[^>]+data-section="observer"[^>]*>\s*devices\s*</button>',
+        text,
+    )
+    assert "<h2>devices</h2>" in text
+
+    assert '<optgroup label="observation">' not in text
+    assert '<option value="observer">observer</option>' not in text
+    assert '<div class="settings-nav-label">observation</div>' not in text
+    assert (
+        re.search(
+            r'<button[^>]+data-section="observer"[^>]*>\s*observer\s*</button>',
+            text,
+        )
+        is None
+    )
+    assert "<h2>observer</h2>" not in text
