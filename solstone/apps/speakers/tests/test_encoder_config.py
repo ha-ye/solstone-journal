@@ -16,6 +16,7 @@ from solstone.observe.transcribe.main import PYANNOTE_OVERLAP_MODEL_SHA256
 def test_locked_constants():
     assert encoder_config.ENCODER_ID == "wespeaker-resnet34-256"
     assert encoder_config.OWNER_THRESHOLD == 0.43
+    assert encoder_config.OWNER_MARGIN_MIN == 0.05
     assert encoder_config.SOLO_CLUSTER_MIN_COSINE == 0.43
     assert encoder_config.ACOUSTIC_HIGH == 0.36
     assert encoder_config.ACOUSTIC_MEDIUM == 0.22
@@ -93,6 +94,7 @@ def test_attribution_imports_acoustic_constants():
 
 def test_owner_imports_constants():
     assert owner.OWNER_THRESHOLD is encoder_config.OWNER_THRESHOLD
+    assert owner.OWNER_MARGIN_MIN is encoder_config.OWNER_MARGIN_MIN
     assert owner.OWNER_BOOTSTRAP_MIN_STMTS is encoder_config.OWNER_BOOTSTRAP_MIN_STMTS
     assert (
         owner.OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S

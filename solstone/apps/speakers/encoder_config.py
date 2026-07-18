@@ -8,6 +8,8 @@ import math
 ENCODER_ID: str = "wespeaker-resnet34-256"
 
 OWNER_THRESHOLD: float = 0.43
+# Benchmark sweep: 0.05 cuts L1 owner false-claims on non-owner statements from 14.1% to 2.6% at a cost of 69% -> 65% per-statement L1 owner recall.
+OWNER_MARGIN_MIN: float = 0.05
 ACOUSTIC_HIGH: float = 0.36
 ACOUSTIC_MEDIUM: float = 0.22
 # Solo-cluster trim currently shares the owner threshold value because it asks
