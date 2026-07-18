@@ -8,4 +8,5 @@ pub mod entity_search;
 pub mod metadata;
 pub mod paths;
 pub mod segment;
+pub mod segment_aggregate;
 pub mod stream;

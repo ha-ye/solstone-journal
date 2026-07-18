@@ -15,7 +15,8 @@ use solstone_core_indexer::entity_search::{
 };
 use solstone_core_indexer::metadata::extract_path_metadata;
 use solstone_core_indexer::paths::{relative_to_journal, resolve_journal_path};
-use solstone_core_indexer::segment::{is_historical_day, time_bucket};
+use solstone_core_indexer::segment::{is_historical_day, segment_key, time_bucket};
+use solstone_core_indexer::segment_aggregate::build_segment_aggregate;
 use solstone_core_indexer::stream::extract_stream;
 
 use crate::StoreError;
@@ -100,6 +101,23 @@ pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanRepor
     }
     report.removed = removed.len();
 
+    let mut affected_segments = BTreeSet::new();
+    for (rel, _path, _mtime) in &to_index {
+        if let Some(rel_segment) = segment_rel_for_file(rel) {
+            affected_segments.insert(rel_segment);
+        }
+    }
+    for rel in &removed {
+        if let Some(rel_segment) = segment_rel_for_file(rel) {
+            affected_segments.insert(rel_segment);
+        }
+    }
+    report.warnings.extend(index_segment_aggregates(
+        &conn,
+        journal,
+        &affected_segments,
+    )?);
+
     index_entity_search(&conn, journal, full)?;
     Ok(report)
 }
@@ -117,10 +135,20 @@ pub fn rescan_file(journal: &Path, input: &Path) -> Result<RescanFileStatus, Sto
     conn.execute("DELETE FROM chunks WHERE path=?", [&rel])?;
     match index_file(&conn, journal, &rel, &path, family) {
         Ok(warnings) => {
+            let mut warnings = warnings;
             conn.execute(
                 "REPLACE INTO files(path, mtime) VALUES (?, ?)",
                 params![rel, mtime],
             )?;
+            if let Some(rel_segment) = segment_rel_for_file(&rel) {
+                let mut affected_segments = BTreeSet::new();
+                affected_segments.insert(rel_segment);
+                warnings.extend(index_segment_aggregates(
+                    &conn,
+                    journal,
+                    &affected_segments,
+                )?);
+            }
             Ok(RescanFileStatus::Indexed { warnings })
         }
         Err(warning) => Err(StoreError::Io(std::io::Error::new(
@@ -142,6 +170,47 @@ fn load_file_mtimes(conn: &Connection) -> Result<BTreeMap<String, i64>, StoreErr
         mtimes.insert(path, mtime);
     }
     Ok(mtimes)
+}
+
+/// Segment-directory rel for a file rel that lives inside a segment, mirroring
+/// `_index_segment_chunks`'s gate in solstone/think/indexer/journal.py.
+fn segment_rel_for_file(rel: &str) -> Option<String> {
+    let normalized = rel.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').collect();
+    if parts.len() >= 4 && segment_key(parts[2]).is_some() {
+        Some(parts[..3].join("/"))
+    } else {
+        None
+    }
+}
+
+fn index_segment_aggregates(
+    conn: &Connection,
+    journal: &Path,
+    segments: &BTreeSet<String>,
+) -> Result<Vec<String>, StoreError> {
+    let mut warnings = Vec::new();
+    for rel_segment in segments {
+        conn.execute("DELETE FROM chunks WHERE path = ?", [rel_segment])?;
+        let aggregate = build_segment_aggregate(journal, rel_segment);
+        for row in &aggregate.rows {
+            conn.execute(
+                "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                params![
+                    row.content,
+                    row.path,
+                    row.day,
+                    row.facet,
+                    row.agent,
+                    row.stream.as_deref(),
+                    row.idx,
+                    row.time_bucket,
+                ],
+            )?;
+        }
+        warnings.extend(aggregate.warnings);
+    }
+    Ok(warnings)
 }
 
 fn index_entity_search(conn: &Connection, journal: &Path, force: bool) -> Result<(), StoreError> {
@@ -305,7 +374,7 @@ fn file_mtime_secs(path: &Path) -> Result<i64, StoreError> {
 mod tests {
     use super::*;
     use crate::db::{db_path, reset_index};
-    use rusqlite::Connection;
+    use rusqlite::{Connection, params};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_root(name: &str) -> PathBuf {
@@ -324,11 +393,25 @@ mod tests {
     }
 
     fn write_stream(root: &Path, day: &str, stream: &str, segment: &str) {
-        let dir = root.join("chronicle").join(day).join(stream).join(segment);
+        write_stream_marker(root, day, stream, segment, stream);
+    }
+
+    fn write_stream_marker(
+        root: &Path,
+        day: &str,
+        stream_dir: &str,
+        segment: &str,
+        marker_stream: &str,
+    ) {
+        let dir = root
+            .join("chronicle")
+            .join(day)
+            .join(stream_dir)
+            .join(segment);
         fs::create_dir_all(&dir).expect("create stream dir");
         fs::write(
             dir.join("stream.json"),
-            format!(r#"{{"stream":"{stream}"}}"#),
+            format!(r#"{{"stream":"{marker_stream}"}}"#),
         )
         .expect("write stream marker");
     }
@@ -356,6 +439,16 @@ mod tests {
             },
         )
         .expect("chunk metadata row")
+    }
+
+    fn segment_aggregate_content(conn: &Connection, path: &str) -> String {
+        conn.prepare("SELECT content FROM chunks WHERE path=? AND agent='segment' ORDER BY idx")
+            .expect("prepare segment aggregate content")
+            .query_map([path], |row| row.get::<_, String>(0))
+            .expect("query segment aggregate content")
+            .map(|row| row.expect("segment aggregate content row"))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     fn file_mtime(conn: &Connection, path: &str) -> i64 {
@@ -514,6 +607,228 @@ mod tests {
             RescanFileStatus::Declined
         );
         fs::remove_dir_all(root).expect("cleanup rescan root");
+    }
+
+    #[test]
+    fn scan_indexes_segment_aggregate_with_marker_stream_and_no_file_row() {
+        let root = temp_root("segment-aggregate");
+        let segment = "20260717/stream-dir/090000_300";
+        write_stream_marker(
+            &root,
+            "20260717",
+            "stream-dir",
+            "090000_300",
+            "marker-stream",
+        );
+        write(
+            &root,
+            "chronicle/20260717/stream-dir/090000_300/talents/audio.md",
+            "# Audio\n\nMarker-derived stream text",
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan segment aggregate");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        let row = chunk_row(&conn, segment);
+        assert_eq!(row.0, "20260717");
+        assert_eq!(row.1, "");
+        assert_eq!(row.2, "segment");
+        assert_eq!(row.3, Some("marker-stream".to_string()));
+        assert_eq!(row.4, "morning");
+        assert!(row.5.contains("Marker-derived stream text"));
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='20260717/stream-dir/090000_300'"
+            ),
+            0
+        );
+        fs::remove_dir_all(root).expect("cleanup segment aggregate root");
+    }
+
+    #[test]
+    fn scan_writes_no_segment_aggregate_without_talent_markdown() {
+        let root = temp_root("segment-no-markdown");
+        let segment = "20260717/default/101000_300";
+        write_stream(&root, "20260717", "default", "101000_300");
+        write(
+            &root,
+            "chronicle/20260717/default/101000_300/browser_example-com.jsonl",
+            r#"{"t":"segment_start","ts":1,"title":"Example","blocks":[{"type":"text","text":"Browser only"}]}
+"#,
+        );
+
+        scan_journal(&root, true, "20260717").expect("scan browser-only segment");
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM chunks WHERE path=? AND agent='segment'",
+                [segment],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("segment aggregate count"),
+            0
+        );
+        fs::remove_dir_all(root).expect("cleanup no-markdown root");
+    }
+
+    #[test]
+    fn scan_removes_segment_aggregate_when_last_talent_markdown_is_deleted() {
+        let root = temp_root("segment-removed-to-zero");
+        let segment = "20260717/default/102000_300";
+        let talent = "chronicle/20260717/default/102000_300/talents/audio.md";
+        write_stream(&root, "20260717", "default", "102000_300");
+        write(&root, talent, "# Audio\n\nInitial aggregate");
+        scan_journal(&root, true, "20260717").expect("initial scan");
+        let conn = Connection::open(db_path(&root)).expect("open db after initial scan");
+        assert!(!segment_aggregate_content(&conn, segment).is_empty());
+        drop(conn);
+
+        fs::remove_file(root.join(talent)).expect("remove segment talent");
+        scan_journal(&root, true, "20260717").expect("rescan after talent removal");
+        let conn = Connection::open(db_path(&root)).expect("open db after removal scan");
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM chunks WHERE path=? AND agent='segment'",
+                [segment],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("segment aggregate count"),
+            0
+        );
+        fs::remove_dir_all(root).expect("cleanup removed-to-zero root");
+    }
+
+    #[test]
+    fn rescan_file_regenerates_segment_aggregate() {
+        let root = temp_root("segment-rescan-file");
+        let segment = "20260717/default/103000_300";
+        write_stream(&root, "20260717", "default", "103000_300");
+        write(
+            &root,
+            "chronicle/20260717/default/103000_300/talents/audio.md",
+            "# Audio\n\nRescan aggregate phrase",
+        );
+
+        assert_eq!(
+            rescan_file(
+                &root,
+                Path::new("20260717/default/103000_300/talents/audio.md")
+            )
+            .expect("rescan segment talent"),
+            RescanFileStatus::Indexed {
+                warnings: Vec::new()
+            }
+        );
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        let content = segment_aggregate_content(&conn, segment);
+        assert!(content.contains("Rescan aggregate phrase"));
+        fs::remove_dir_all(root).expect("cleanup rescan segment aggregate root");
+    }
+
+    #[test]
+    fn scan_segment_aggregate_warns_and_skips_unreadable_talent_markdown() {
+        let root = temp_root("segment-unreadable-talent");
+        let segment = "20260717/default/104000_300";
+        write_stream(&root, "20260717", "default", "104000_300");
+        write(
+            &root,
+            "chronicle/20260717/default/104000_300/talents/audio.md",
+            "# Audio\n\nReadable aggregate phrase",
+        );
+        let invalid = root.join("chronicle/20260717/default/104000_300/talents/bad.md");
+        fs::write(&invalid, [0xff]).expect("write invalid segment markdown");
+
+        let report = scan_journal(&root, true, "20260717").expect("scan unreadable segment talent");
+        assert!(report.indexed >= 1);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("segment aggregate read failed")
+                    && warning.contains("bad.md"))
+        );
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        let content = segment_aggregate_content(&conn, segment);
+        assert!(content.contains("Readable aggregate phrase"));
+        fs::remove_dir_all(root).expect("cleanup unreadable segment root");
+    }
+
+    #[test]
+    fn scan_segment_aggregate_spans_multiple_talent_files() {
+        let root = temp_root("segment-multiple-talents");
+        let segment = "20260717/default/105000_300";
+        write_stream(&root, "20260717", "default", "105000_300");
+        write(
+            &root,
+            "chronicle/20260717/default/105000_300/talents/audio.md",
+            "# Audio\n\nFirst distinctive phrase",
+        );
+        write(
+            &root,
+            "chronicle/20260717/default/105000_300/talents/work/brief.md",
+            "# Brief\n\nSecond distinctive phrase",
+        );
+
+        scan_journal(&root, true, "20260717").expect("scan multiple talent segment");
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        let content = segment_aggregate_content(&conn, segment);
+        assert!(content.contains("First distinctive phrase"));
+        assert!(content.contains("Second distinctive phrase"));
+        fs::remove_dir_all(root).expect("cleanup multiple talents root");
+    }
+
+    #[test]
+    fn scan_segment_aggregate_rebuild_deletes_stale_rows() {
+        let root = temp_root("segment-stale-rebuild");
+        let segment = "20260717/default/110000_300";
+        let talent = "20260717/default/110000_300/talents/audio.md";
+        write_stream(&root, "20260717", "default", "110000_300");
+        write(
+            &root,
+            "chronicle/20260717/default/110000_300/talents/audio.md",
+            "# Audio\n\nOriginal aggregate phrase",
+        );
+        scan_journal(&root, true, "20260717").expect("initial scan");
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "stale aggregate phrase",
+                segment,
+                "20260717",
+                "",
+                "segment",
+                "default",
+                99_i64,
+                "morning",
+            ],
+        )
+        .expect("seed stale aggregate row");
+        conn.execute("UPDATE files SET mtime=0 WHERE path=?", [talent])
+            .expect("force segment talent reindex");
+        drop(conn);
+        write(
+            &root,
+            "chronicle/20260717/default/110000_300/talents/audio.md",
+            "# Audio\n\nFresh aggregate phrase",
+        );
+
+        scan_journal(&root, true, "20260717").expect("rebuild aggregate scan");
+        let conn = Connection::open(db_path(&root)).expect("open db after rebuild");
+        let content = segment_aggregate_content(&conn, segment);
+        assert!(content.contains("Fresh aggregate phrase"));
+        assert!(!content.contains("stale aggregate phrase"));
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM chunks WHERE path=? AND content='stale aggregate phrase'",
+                [segment],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("stale aggregate count"),
+            0
+        );
+        fs::remove_dir_all(root).expect("cleanup stale rebuild root");
     }
 
     #[test]
