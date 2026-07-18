@@ -147,7 +147,7 @@ def _resolve_identity() -> tuple[str, str]:
     identity = config.get("identity", {})
     owner_name = str(identity.get("preferred") or identity.get("name") or "").strip()
     agent_name = str(config.get("agent", {}).get("name") or "").strip()
-    return owner_name or "Owner", agent_name or "Sol"
+    return owner_name or "Owner", agent_name or "sol"
 
 
 def _build_sol_message_origins(

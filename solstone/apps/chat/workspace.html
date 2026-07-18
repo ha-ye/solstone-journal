@@ -45,7 +45,7 @@
   let isToday = false;
   let solOpenRequestId = '';
   let ownerName = 'Owner';
-  let agentName = 'Sol';
+  let agentName = 'sol';
   let thinkingSurfaces = 'on_tap';
   let renderCtx = null;
   let searchTimer = null;
@@ -113,7 +113,7 @@
       const state = await window.apiJson('/app/chat/api/state?day=' + encodeURIComponent(day));
 
       ownerName = String(state.owner_name || 'Owner');
-      agentName = String(state.agent_name || 'Sol');
+      agentName = String(state.agent_name || 'sol');
       thinkingSurfaces = String(state.thinking_surfaces || 'on_tap');
       todayDay = String(state.today_day || '');
       solOpenRequestId = String(state.sol_open_request_id || '');

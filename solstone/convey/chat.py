@@ -1950,7 +1950,7 @@ def _build_talent_prompt(
         if kind == "owner_message":
             history_lines.append(f"**Owner**: {event['text']}")
         elif kind == "sol_message":
-            history_lines.append(f"**Sol**: {event['text']}")
+            history_lines.append(f"**sol**: {event['text']}")
     if history_lines:
         parts.append("Recent chat:\n" + "\n".join(history_lines[-6:]))
 

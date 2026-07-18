@@ -417,7 +417,38 @@ def test_state_missing_identity_returns_default_names(tmp_path, monkeypatch):
 
     assert response.status_code == 200
     assert state["owner_name"] == "Owner"
-    assert state["agent_name"] == "Sol"
+    assert state["agent_name"] == "sol"
+
+
+def test_state_configured_agent_name_overrides_fallback(tmp_path, monkeypatch):
+    journal = tmp_path / "journal"
+    config_dir = journal / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "journal.json").write_text(
+        json.dumps(
+            {
+                "setup": {"completed_at": 1700000000000},
+                "agent": {"name": "Astra"},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    _set_today(monkeypatch, "20990110")
+    env = _make_env(journal, monkeypatch)
+
+    response, state = _state_json(env, "20990109")
+
+    assert response.status_code == 200
+    assert state["owner_name"] == "Owner"
+    assert state["agent_name"] == "Astra"
+
+
+def test_workspace_agent_fallback_copy_is_lowercase():
+    source = Path("solstone/apps/chat/workspace.html").read_text(encoding="utf-8")
+
+    assert "let agentName = 'sol';" in source
+    assert "agentName = String(state.agent_name || 'sol');" in source
 
 
 def test_state_today_unresolved_request_sets_open_id(journal_copy, monkeypatch):

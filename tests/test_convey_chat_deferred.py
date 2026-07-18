@@ -171,6 +171,14 @@ def _events_of_kind(day: str, kind: str) -> list[dict]:
     return [event for event in read_chat_events(day) if event["kind"] == kind]
 
 
+def test_thinking_engine_not_chosen_copy_is_pinned_byte_for_byte():
+    assert (
+        CHAT_THINKING_ENGINE_NOT_CHOSEN
+        == "no thinking engine is chosen yet. choose one in thinking so i can "
+        "answer from your journal."
+    )
+
+
 def test_compose_honest_degradation_fires_for_deferred_today_pending():
     import solstone.convey.chat as chat
 
