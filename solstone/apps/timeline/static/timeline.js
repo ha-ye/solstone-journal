@@ -877,7 +877,7 @@ async function renderMonth(index) {
 
   if (!monthEvents.length) {
     timeline.innerHTML = renderEmptyState(
-      `nothing observed in ${month.name}`,
+      `nothing in your journal for ${month.name}`,
       "this month has no timeline rollups yet.",
     );
     return;
@@ -944,7 +944,7 @@ async function renderDay(monthIndex, day) {
   const dateLabel = formatDateLabel(month, day);
   if (!plan.length && segmentCount === 0) {
     timeline.innerHTML = renderEmptyState(
-      `nothing observed on ${dateLabel}`,
+      `nothing in your journal for ${dateLabel}`,
       "the day looks empty here.",
       {
         icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>',
@@ -1193,8 +1193,8 @@ async function renderMinute(monthIndex, day, hour) {
   const buckets = segmentAvail[`${monthIndex}:${day}:${hour}`] || [];
   if (!buckets.some((bucket) => bucket && (bucket.best_origin || bucket.browser_origin))) {
     timeline.innerHTML = renderEmptyState(
-      "nothing observed in this hour",
-      `there are no segment observations for ${formatTime(hour, 0)}.`,
+      "nothing in this hour",
+      `sol kept nothing for ${formatTime(hour, 0)}.`,
     );
     return;
   }
@@ -1242,7 +1242,7 @@ async function renderMinute(monthIndex, day, hour) {
                  : bucket.has_screen ? "screen only"
                  : bucket.has_audio ? "audio only"
                  : bucket.has_browser ? "pages" : "metadata only")
-              : "no observation";
+              : "nothing kept";
             const label = `${formatTime(hour, minute)} · ${availLabel}${event ? `, ${event.title}` : ""}`;
             const disabled = hasData ? "" : "disabled aria-disabled=\"true\"";
             return `
@@ -1278,7 +1278,7 @@ async function renderEmptySegment(monthIndex, day, hour, minute, focusLabel) {
                   data-month="${monthIndex}" data-day="${day}" data-hour="${hour}"
                   data-return-hour="true">${focusLabel}</button>
         </div>
-        <div class="segment-empty">no observation in this slice</div>
+        <div class="segment-empty">nothing kept in this slice</div>
       </section>
     </div>
   `;
@@ -1417,7 +1417,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
       ${previous !== null ? renderEdgeSegment(monthIndex, day, hour, previous, "prev") : ""}
       ${next !== null ? renderEdgeSegment(monthIndex, day, hour, next, "next") : ""}
 
-      <section class="segment-panel" aria-label="${month.name} ${day}, ${month.year || ""} ${focusLabel} segment observations">
+      <section class="segment-panel" aria-label="${month.name} ${day}, ${month.year || ""} ${focusLabel} — what sol kept">
         <div class="timeline-focus-heading">
           <button class="segment-focus-node" type="button"
                   data-month="${monthIndex}" data-day="${day}" data-hour="${hour}"
@@ -1437,7 +1437,7 @@ async function renderFiveMinute(monthIndex, day, hour, minute) {
         </header>
 
         <div class="segment-river">
-          <div class="river-screen" aria-label="screen frames sol observed">
+          <div class="river-screen" aria-label="screen frames sol kept">
             ${screenMarks}
           </div>
           <div class="river-axis">
