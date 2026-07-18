@@ -2,6 +2,7 @@
 // Copyright (c) 2026 sol pbc
 
 use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use serde_json::Value;
@@ -40,6 +41,12 @@ pub fn extract_stream(journal: &Path, rel: &str) -> StreamLookup {
     let text = match fs::read_to_string(&marker_path) {
         Ok(text) => text,
         Err(error) => {
+            if error.kind() == ErrorKind::NotFound {
+                return StreamLookup {
+                    stream: None,
+                    warning: None,
+                };
+            }
             return StreamLookup {
                 stream: None,
                 warning: Some(format!(
@@ -94,6 +101,33 @@ mod tests {
         let lookup = extract_stream(&root, "20240101/default/123456_300/talents/audio.md");
         assert_eq!(lookup.stream, Some("default".to_string()));
         assert_eq!(lookup.warning, None);
+        fs::remove_dir_all(root).expect("cleanup stream root");
+    }
+
+    #[test]
+    fn missing_stream_marker_is_silent() {
+        let root = temp_root("missing");
+        let seg = root.join("chronicle/20240101/default/123456_300");
+        fs::create_dir_all(&seg).expect("create segment");
+        let lookup = extract_stream(&root, "20240101/default/123456_300/talents/audio.md");
+        assert_eq!(lookup.stream, None);
+        assert_eq!(lookup.warning, None);
+        fs::remove_dir_all(root).expect("cleanup stream root");
+    }
+
+    #[test]
+    fn malformed_stream_marker_warns() {
+        let root = temp_root("malformed");
+        let seg = root.join("chronicle/20240101/default/123456_300");
+        fs::create_dir_all(&seg).expect("create segment");
+        fs::write(seg.join("stream.json"), "{not json").expect("write marker");
+        let lookup = extract_stream(&root, "20240101/default/123456_300/talents/audio.md");
+        assert_eq!(lookup.stream, None);
+        assert!(
+            lookup
+                .warning
+                .is_some_and(|warning| warning.contains("stream marker JSON failed"))
+        );
         fs::remove_dir_all(root).expect("cleanup stream root");
     }
 
