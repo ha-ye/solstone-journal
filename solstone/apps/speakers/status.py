@@ -15,7 +15,15 @@ from solstone.think.utils import day_dirs, get_journal
 
 logger = logging.getLogger(__name__)
 
-SECTIONS = ("embeddings", "owner", "speakers", "clusters", "imports", "attribution")
+SECTIONS = (
+    "embeddings",
+    "owner",
+    "speakers",
+    "pool",
+    "clusters",
+    "imports",
+    "attribution",
+)
 
 
 def get_speakers_status(section: str | None = None) -> Any:
@@ -31,6 +39,7 @@ def get_speakers_status(section: str | None = None) -> Any:
         "embeddings": _embeddings_section,
         "owner": _owner_section,
         "speakers": _speakers_section,
+        "pool": _pool_section,
         "clusters": _clusters_section,
         "imports": _imports_section,
         "attribution": _attribution_section,
@@ -171,6 +180,29 @@ def _speakers_section() -> list[dict[str, Any]]:
         )
 
     return speakers
+
+
+def _pool_section() -> dict[str, Any]:
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+    from solstone.apps.speakers.encoder_config import CONSOLIDATE_MIN_INTERVALS
+
+    tracker = CandidateTracker()
+    candidates = tracker.load_all_candidates()
+    status_breakdown: dict[str, int] = {}
+    for candidate in candidates:
+        status = candidate.status
+        status_breakdown[status] = status_breakdown.get(status, 0) + 1
+    dense_count = sum(
+        1
+        for candidate in candidates
+        if candidate.n_intervals >= CONSOLIDATE_MIN_INTERVALS
+    )
+    return {
+        "candidate_count": len(candidates),
+        "dense_count": dense_count,
+        "status_breakdown": dict(sorted(status_breakdown.items())),
+        "consolidation_summary": tracker.consolidation_summary,
+    }
 
 
 def _clusters_section() -> dict[str, Any] | None:

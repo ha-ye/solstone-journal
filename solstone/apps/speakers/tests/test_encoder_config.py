@@ -40,6 +40,9 @@ def test_locked_constants():
     assert encoder_config.MERGE_THRESHOLD == 0.72
     assert encoder_config.SPLIT_THRESHOLD == 0.55
     assert encoder_config.STABILITY_THRESHOLD == 0.25
+    assert encoder_config.CONSOLIDATE_MIN_INTERVALS == 30
+    assert encoder_config.CONSOLIDATE_MERGE_THRESHOLD == 0.65
+    assert encoder_config.CONSOLIDATE_SUGGEST_MIN == 0.45
     assert encoder_config.CONFIRM_MIN_SEGMENTS == 2
     assert encoder_config.CONFIRM_MIN_INTERVALS == 5
     assert encoder_config.CONFIRM_MIN_DURATION_S == 25.0
@@ -63,6 +66,9 @@ def test_candidate_tracker_constants_are_not_assigned_in_tracker_module():
         "MERGE_THRESHOLD",
         "SPLIT_THRESHOLD",
         "STABILITY_THRESHOLD",
+        "CONSOLIDATE_MIN_INTERVALS",
+        "CONSOLIDATE_MERGE_THRESHOLD",
+        "CONSOLIDATE_SUGGEST_MIN",
         "CONFIRM_MIN_SEGMENTS",
         "CONFIRM_MIN_INTERVALS",
         "CONFIRM_MIN_DURATION_S",

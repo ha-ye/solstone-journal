@@ -88,14 +88,22 @@ def status(
     section: str | None = typer.Argument(
         None,
         help=(
-            "Section to show (embeddings, owner, speakers, clusters, imports, "
+            "Section to show (embeddings, owner, speakers, pool, clusters, imports, "
             "attribution). Omit for all."
         ),
     ),
 ) -> None:
     """Show speaker subsystem status as JSON."""
     body = _request("GET", "/app/speakers/api/status")
-    valid = ["embeddings", "owner", "speakers", "clusters", "imports", "attribution"]
+    valid = [
+        "embeddings",
+        "owner",
+        "speakers",
+        "pool",
+        "clusters",
+        "imports",
+        "attribution",
+    ]
     if section is None:
         result = body
     elif section in valid:

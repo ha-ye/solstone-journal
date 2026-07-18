@@ -6,18 +6,26 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 import numpy as np
 
 from solstone.apps.speakers.candidate_tracker import (
     SOLO_CLUSTER_LABEL,
+    CandidateProfile,
     CandidateTracker,
+    candidate_source_anchors,
+    canonical_candidate_anchor,
+    encode_source_key,
 )
 from solstone.apps.speakers.encoder_config import (
     CONFIRM_MIN_DURATION_S,
     CONFIRM_MIN_INTERVALS,
     CONFIRM_MIN_SEGMENTS,
+    CONSOLIDATE_MERGE_THRESHOLD,
+    CONSOLIDATE_MIN_INTERVALS,
+    CONSOLIDATE_SUGGEST_MIN,
     ENCODER_ID,
     MERGE_THRESHOLD,
     SOLO_CLUSTER_MIN_COSINE,
@@ -123,10 +131,78 @@ def _only_candidate(tracker: CandidateTracker):
     return next(iter(tracker._candidates.values()))
 
 
+def _source_segment(day: str, cluster_label: int = 1) -> dict[str, object]:
+    return {
+        "day": day,
+        "segment_key": "090000_300",
+        "stream": STREAM,
+        "source": "mic_audio",
+        "cluster_label": cluster_label,
+    }
+
+
+def _profile(
+    cand_id: int,
+    centroid: np.ndarray,
+    *,
+    n_intervals: int = CONSOLIDATE_MIN_INTERVALS,
+    status: str = "pending",
+    confirmed_entity: str | None = None,
+    source_segments: list[dict[str, object]] | None = None,
+    merge_events: list[dict[str, object]] | None = None,
+) -> CandidateProfile:
+    return CandidateProfile(
+        cand_id=cand_id,
+        centroid=centroid,
+        n_segments=len(
+            {
+                (
+                    str(source_segment["day"]),
+                    str(source_segment["segment_key"]),
+                    str(source_segment["stream"]),
+                    str(source_segment["source"]),
+                )
+                for source_segment in (
+                    source_segments or [_source_segment(f"2026010{cand_id}")]
+                )
+            }
+        ),
+        n_intervals=n_intervals,
+        total_duration_s=float(n_intervals),
+        source_segments=list(source_segments or [_source_segment(f"2026010{cand_id}")]),
+        confirmed_entity=confirmed_entity,
+        status=status,
+        merge_events=list(merge_events or []),
+    )
+
+
+def _seed_tracker(store: Path, candidates: list[CandidateProfile]) -> CandidateTracker:
+    tracker = CandidateTracker(store)
+    tracker._candidates = {candidate.cand_id: candidate for candidate in candidates}
+    tracker._next_id = (
+        max((candidate.cand_id for candidate in candidates), default=0) + 1
+    )
+    tracker.save()
+    return CandidateTracker(store)
+
+
+def _all_source_anchors(tracker: CandidateTracker) -> list[str]:
+    return [
+        encode_source_key(tuple_key)
+        for tuple_key in sorted(
+            tracker._existing_source_keys(),
+            key=lambda item: encode_source_key(item),
+        )
+    ]
+
+
 def test_tracker_constants_locked():
     assert MERGE_THRESHOLD == 0.72
     assert SPLIT_THRESHOLD == 0.55
     assert STABILITY_THRESHOLD == 0.25
+    assert CONSOLIDATE_MIN_INTERVALS == 30
+    assert CONSOLIDATE_MERGE_THRESHOLD == 0.65
+    assert CONSOLIDATE_SUGGEST_MIN == 0.45
     assert SOLO_CLUSTER_MIN_COSINE == 0.43
     assert CONFIRM_MIN_SEGMENTS == 2
     assert CONFIRM_MIN_INTERVALS == 5
@@ -462,7 +538,9 @@ def test_split_threshold_creates_distinct_candidate(speakers_env, tmp_path):
     assert len(tracker._candidates) == 2
 
 
-def test_hold_band_does_not_merge_or_create(speakers_env, tmp_path):
+def test_dead_zone_creates_distinct_candidate_without_growing_existing(
+    speakers_env, tmp_path
+):
     env = speakers_env()
     store = tmp_path / "speaker_candidates.json"
     base = _unit([0.0, 1.0])
@@ -478,6 +556,8 @@ def test_hold_band_does_not_merge_or_create(speakers_env, tmp_path):
     )
     tracker = CandidateTracker(store)
     tracker.process_segment("20260101", "090000_300", STREAM, "mic_audio", seg_dir)
+    original = _only_candidate(CandidateTracker(store))
+    original_sources = list(original.source_segments)
 
     seg_dir = _write_labeled_segment(
         env,
@@ -489,9 +569,349 @@ def test_hold_band_does_not_merge_or_create(speakers_env, tmp_path):
     tracker.process_segment("20260102", "090000_300", STREAM, "mic_audio", seg_dir)
 
     tracker = CandidateTracker(store)
-    candidate = _only_candidate(tracker)
-    assert candidate.n_segments == 1
-    assert candidate.n_intervals == 3
+    assert len(tracker._candidates) == 2
+    assert tracker._candidates[original.cand_id].source_segments == original_sources
+    assert sorted(
+        candidate.n_intervals for candidate in tracker._candidates.values()
+    ) == [
+        3,
+        3,
+    ]
+
+
+def test_consolidate_dense_candidates_chained_trio_recomputes_centroid_to_fixpoint(
+    tmp_path,
+):
+    store = tmp_path / "speaker_candidates.json"
+    a = _unit([1.0, 0.0, 0.0])
+    b = _unit([0.70, np.sqrt(1.0 - 0.70**2), 0.0])
+    c_y = (0.66 - 0.70 * 0.30) / np.sqrt(1.0 - 0.70**2)
+    c = _unit([0.30, c_y, np.sqrt(1.0 - 0.30**2 - c_y**2)])
+    assert np.isclose(float(np.dot(a, b)), 0.70)
+    assert np.isclose(float(np.dot(b, c)), 0.66)
+    assert np.isclose(float(np.dot(a, c)), 0.30)
+
+    _seed_tracker(
+        store,
+        [
+            _profile(1, a),
+            _profile(2, b),
+            _profile(3, c),
+        ],
+    )
+
+    result = CandidateTracker(store).consolidate_dense_candidates()
+
+    assert result["merged"] == 1
+    tracker = CandidateTracker(store)
+    assert sorted(tracker._candidates) == [1, 3]
+    survivor = tracker._candidates[1]
+    assert np.isclose(float(np.dot(survivor.centroid, c)), 0.520633, atol=1e-5)
+    assert float(np.dot(survivor.centroid, c)) < CONSOLIDATE_MERGE_THRESHOLD
+    assert survivor.merge_events[-1]["survivor_id"] == 1
+    assert survivor.merge_events[-1]["absorbed_id"] == 2
+
+
+def test_consolidate_dense_candidates_fixpoint_merges_newly_eligible_pair(tmp_path):
+    store = tmp_path / "speaker_candidates.json"
+    ab = 0.66
+    ac = 0.64
+    bc = 0.64
+    a = _unit([1.0, 0.0, 0.0])
+    b = _unit([ab, np.sqrt(1.0 - ab**2), 0.0])
+    c_y = (bc - ab * ac) / np.sqrt(1.0 - ab**2)
+    c = _unit([ac, c_y, np.sqrt(1.0 - ac**2 - c_y**2)])
+    assert float(np.dot(a, b)) >= CONSOLIDATE_MERGE_THRESHOLD
+    assert float(np.dot(a, c)) < CONSOLIDATE_MERGE_THRESHOLD
+    assert float(np.dot(b, c)) < CONSOLIDATE_MERGE_THRESHOLD
+
+    _seed_tracker(store, [_profile(1, a), _profile(2, b), _profile(3, c)])
+
+    result = CandidateTracker(store).consolidate_dense_candidates()
+
+    assert result["merged"] == 2
+    tracker = CandidateTracker(store)
+    survivor = _only_candidate(tracker)
+    assert survivor.cand_id == 1
+    assert survivor.n_intervals == CONSOLIDATE_MIN_INTERVALS * 3
+    assert len(_all_source_anchors(tracker)) == 3
+
+
+def test_consolidate_dense_candidates_positive_then_idempotent_no_churn(tmp_path):
+    store = tmp_path / "speaker_candidates.json"
+    a = _unit([1.0, 0.0])
+    b = _unit([0.70, np.sqrt(1.0 - 0.70**2)])
+    _seed_tracker(store, [_profile(1, a), _profile(2, b)])
+
+    first = CandidateTracker(store).consolidate_dense_candidates()
+    after_first = store.read_text(encoding="utf-8")
+    second = CandidateTracker(store).consolidate_dense_candidates()
+
+    assert first["merged"] == 1
+    assert second["merged"] == 0
+    assert store.read_text(encoding="utf-8") == after_first
+
+
+def test_consolidate_dense_candidates_excludes_rejected_and_confirmed(tmp_path):
+    store = tmp_path / "speaker_candidates.json"
+    a = _unit([1.0, 0.0])
+    b = _unit([0.0, 1.0])
+    _seed_tracker(
+        store,
+        [
+            _profile(1, a, status="rejected"),
+            _profile(2, a),
+            _profile(3, b),
+            _profile(4, b, status="confirmed", confirmed_entity="alice_test"),
+        ],
+    )
+
+    result = CandidateTracker(store).consolidate_dense_candidates()
+
+    assert result["merged"] == 0
+    tracker = CandidateTracker(store)
+    assert sorted(tracker._candidates) == [1, 2, 3, 4]
+
+
+def test_manual_merge_pending_pending_matches_auto_semantics(tmp_path):
+    a = _unit([1.0, 0.0])
+    b = _unit([0.70, np.sqrt(1.0 - 0.70**2)])
+    auto_store = tmp_path / "auto.json"
+    manual_store = tmp_path / "manual.json"
+    _seed_tracker(auto_store, [_profile(1, a), _profile(2, b)])
+    manual = _seed_tracker(manual_store, [_profile(1, a), _profile(2, b)])
+    anchors = [
+        canonical_candidate_anchor(candidate)
+        for candidate in manual.load_all_candidates()
+    ]
+
+    auto_result = CandidateTracker(auto_store).consolidate_dense_candidates()
+    manual_result = CandidateTracker(manual_store).merge_candidate_pair(
+        anchors[0], anchors[1]
+    )
+
+    assert auto_result["merged"] == 1
+    assert manual_result["status"] == "merged"
+    auto_candidate = _only_candidate(CandidateTracker(auto_store))
+    manual_candidate = _only_candidate(CandidateTracker(manual_store))
+    assert manual_candidate.cand_id == auto_candidate.cand_id == 1
+    assert manual_candidate.status == auto_candidate.status == "pending"
+    assert manual_candidate.confirmed_entity is None
+    assert manual_candidate.n_intervals == auto_candidate.n_intervals
+    assert candidate_source_anchors(manual_candidate) == candidate_source_anchors(
+        auto_candidate
+    )
+
+
+def test_manual_merge_pending_confirmed_confirms_lowest_id_survivor(tmp_path):
+    store = tmp_path / "speaker_candidates.json"
+    a = _unit([1.0, 0.0])
+    b = _unit([0.70, np.sqrt(1.0 - 0.70**2)])
+    tracker = _seed_tracker(
+        store,
+        [
+            _profile(1, a),
+            _profile(2, b, status="confirmed", confirmed_entity="alice_test"),
+        ],
+    )
+    anchors = [
+        canonical_candidate_anchor(candidate)
+        for candidate in tracker.load_all_candidates()
+    ]
+
+    result = CandidateTracker(store).merge_candidate_pair(anchors[0], anchors[1])
+
+    assert result["status"] == "merged"
+    survivor = _only_candidate(CandidateTracker(store))
+    assert survivor.cand_id == 1
+    assert survivor.status == "confirmed"
+    assert survivor.confirmed_entity == "alice_test"
+    assert survivor.merge_events[-1]["absorbed_id"] == 2
+
+
+def test_manual_merge_refuses_rejected_and_two_confirmed(tmp_path):
+    a = _unit([1.0, 0.0])
+    b = _unit([0.70, np.sqrt(1.0 - 0.70**2)])
+    rejected_store = tmp_path / "rejected.json"
+    confirmed_store = tmp_path / "confirmed.json"
+    rejected = _seed_tracker(
+        rejected_store,
+        [_profile(1, a, status="rejected"), _profile(2, b)],
+    )
+    confirmed = _seed_tracker(
+        confirmed_store,
+        [
+            _profile(1, a, status="confirmed", confirmed_entity="alice_test"),
+            _profile(2, b, status="confirmed", confirmed_entity="bob_test"),
+        ],
+    )
+
+    rejected_anchors = [
+        canonical_candidate_anchor(candidate)
+        for candidate in rejected.load_all_candidates()
+    ]
+    confirmed_anchors = [
+        canonical_candidate_anchor(candidate)
+        for candidate in confirmed.load_all_candidates()
+    ]
+
+    assert (
+        CandidateTracker(rejected_store).merge_candidate_pair(
+            rejected_anchors[0], rejected_anchors[1]
+        )["error"]
+        == "cannot merge rejected candidate"
+    )
+    assert (
+        CandidateTracker(confirmed_store).merge_candidate_pair(
+            confirmed_anchors[0], confirmed_anchors[1]
+        )["error"]
+        == "cannot merge two confirmed candidates"
+    )
+    assert len(CandidateTracker(rejected_store)._candidates) == 2
+    assert len(CandidateTracker(confirmed_store)._candidates) == 2
+
+
+def test_consolidate_dense_candidates_serializes_threads_no_duplicate_sources(
+    tmp_path,
+):
+    store = tmp_path / "speaker_candidates.json"
+    base = _unit([1.0, 0.0])
+    _seed_tracker(store, [_profile(i, base) for i in range(1, 7)])
+    barrier = threading.Barrier(4)
+    errors: list[BaseException] = []
+
+    def worker() -> None:
+        try:
+            barrier.wait()
+            CandidateTracker(store).consolidate_dense_candidates()
+        except BaseException as exc:  # pragma: no cover - assertion surface
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    tracker = CandidateTracker(store)
+    survivor = _only_candidate(tracker)
+    source_anchors = list(candidate_source_anchors(survivor))
+    assert len(source_anchors) == 6
+    assert len(set(source_anchors)) == 6
+    final_ids = set(tracker._candidates)
+    for event in survivor.merge_events:
+        assert event["survivor_id"] in final_ids
+        assert event["absorbed_id"] not in final_ids
+
+
+def test_merge_events_include_content_and_carry_forward(tmp_path):
+    store = tmp_path / "speaker_candidates.json"
+    previous_event = {
+        "survivor_id": 2,
+        "absorbed_id": 7,
+        "score": 0.91,
+        "merged_at": "2026-01-01T00:00:00Z",
+        "absorbed_n_intervals": 9,
+        "survivor_n_intervals_after": 39,
+    }
+    a = _unit([1.0, 0.0])
+    b = _unit([0.70, np.sqrt(1.0 - 0.70**2)])
+    _seed_tracker(
+        store,
+        [
+            _profile(1, a),
+            _profile(2, b, merge_events=[previous_event]),
+        ],
+    )
+
+    result = CandidateTracker(store).consolidate_dense_candidates()
+
+    assert result["merged"] == 1
+    event = result["merges"][0]
+    assert event["survivor_id"] == 1
+    assert event["absorbed_id"] == 2
+    assert np.isclose(event["score"], 0.70)
+    assert event["absorbed_n_intervals"] == CONSOLIDATE_MIN_INTERVALS
+    assert event["survivor_n_intervals_after"] == CONSOLIDATE_MIN_INTERVALS * 2
+    survivor = _only_candidate(CandidateTracker(store))
+    assert survivor.merge_events[0] == previous_event
+    assert survivor.merge_events[-1]["absorbed_id"] == 2
+
+
+def test_edge_trigger_fires_after_save_for_merge_and_create(
+    speakers_env, tmp_path, monkeypatch
+):
+    env = speakers_env()
+    calls: list[list[int]] = []
+
+    def fake_consolidate(self):
+        data = json.loads(self.store_path.read_text(encoding="utf-8"))
+        calls.append([candidate["n_intervals"] for candidate in data["candidates"]])
+        return {"status": "ok", "merged": 0, "merges": []}
+
+    monkeypatch.setattr(
+        CandidateTracker, "consolidate_dense_candidates", fake_consolidate
+    )
+
+    store = tmp_path / "merge_edge.json"
+    base = _unit([0.0, 1.0])
+    first_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([base] * (CONSOLIDATE_MIN_INTERVALS - 1))},
+    )
+    CandidateTracker(store).process_segment(
+        "20260101", "090000_300", STREAM, "mic_audio", first_dir
+    )
+    assert calls == []
+
+    second_dir = _write_labeled_segment(
+        env,
+        "20260102",
+        "090000_300",
+        {1: np.stack([base])},
+    )
+    CandidateTracker(store).process_segment(
+        "20260102", "090000_300", STREAM, "mic_audio", second_dir
+    )
+    assert calls == [[CONSOLIDATE_MIN_INTERVALS]]
+
+    create_store = tmp_path / "create_edge.json"
+    create_dir = _write_labeled_segment(
+        env,
+        "20260103",
+        "090000_300",
+        {1: np.stack([base] * CONSOLIDATE_MIN_INTERVALS)},
+    )
+    CandidateTracker(create_store).process_segment(
+        "20260103", "090000_300", STREAM, "mic_audio", create_dir
+    )
+    assert calls == [[CONSOLIDATE_MIN_INTERVALS], [CONSOLIDATE_MIN_INTERVALS]]
+
+
+def test_pool_summary_defaults_roundtrip_and_noop_no_churn(tmp_path):
+    store = tmp_path / "speaker_candidates.json"
+    legacy = json.dumps({"next_id": 1, "candidates": []}, indent=2) + "\n"
+    store.write_text(legacy, encoding="utf-8")
+
+    tracker = CandidateTracker(store)
+    assert tracker.consolidation_summary == {
+        "merge_count_total": 0,
+        "last_merge": None,
+    }
+    result = tracker.consolidate_dense_candidates()
+    assert result["merged"] == 0
+    assert store.read_text(encoding="utf-8") == legacy
+
+    tracker.save()
+    reloaded = CandidateTracker(store)
+    assert reloaded.consolidation_summary == {
+        "merge_count_total": 0,
+        "last_merge": None,
+    }
+    assert "consolidation_summary" in json.loads(store.read_text(encoding="utf-8"))
 
 
 def test_stability_rejects_incoherent_cluster(speakers_env, tmp_path):
@@ -612,6 +1032,80 @@ def test_retroactive_confirm_backfills_with_accumulate_guard(speakers_env, tmp_p
     candidate = _only_candidate(tracker)
     assert candidate.status == "confirmed"
     assert candidate.confirmed_entity == "alice_test"
+
+
+def test_owner_selection_and_expansion_use_consolidated_survivor(speakers_env):
+    from solstone.apps.speakers.owner import (
+        _expand_owner_candidate,
+        _select_owner_candidate,
+    )
+
+    env = speakers_env()
+    a = _unit([0.0, 1.0, 0.0])
+    b = _unit([0.0, 0.70, np.sqrt(1.0 - 0.70**2)])
+    first_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([a] * CONSOLIDATE_MIN_INTERVALS)},
+    )
+    second_dir = _write_labeled_segment(
+        env,
+        "20260102",
+        "090000_300",
+        {1: np.stack([b] * CONSOLIDATE_MIN_INTERVALS)},
+    )
+
+    CandidateTracker().process_segment(
+        "20260101", "090000_300", STREAM, "mic_audio", first_dir
+    )
+    CandidateTracker().process_segment(
+        "20260102", "090000_300", STREAM, "mic_audio", second_dir
+    )
+
+    tracker = CandidateTracker()
+    assert sorted(tracker._candidates) == [1]
+    candidate, missing_reason = _select_owner_candidate(None)
+    assert missing_reason is None
+    assert candidate is not None
+    assert candidate.cand_id == 1
+    expansion = _expand_owner_candidate(candidate)
+    assert expansion.embeddings.shape[0] == CONSOLIDATE_MIN_INTERVALS * 2
+
+
+def test_retroactive_confirm_backfills_from_all_merged_sources(speakers_env):
+    env = speakers_env()
+    _setup_owner(env)
+    alice_dir = env.create_entity("Alice Test")
+    a = _unit([0.0, 1.0, 0.0])
+    b = _unit([0.0, 0.70, np.sqrt(1.0 - 0.70**2)])
+    first_dir = _write_labeled_segment(
+        env,
+        "20260101",
+        "090000_300",
+        {1: np.stack([a] * CONSOLIDATE_MIN_INTERVALS)},
+    )
+    second_dir = _write_labeled_segment(
+        env,
+        "20260102",
+        "090000_300",
+        {1: np.stack([b] * CONSOLIDATE_MIN_INTERVALS)},
+    )
+    CandidateTracker().process_segment(
+        "20260101", "090000_300", STREAM, "mic_audio", first_dir
+    )
+    CandidateTracker().process_segment(
+        "20260102", "090000_300", STREAM, "mic_audio", second_dir
+    )
+    survivor = _only_candidate(CandidateTracker())
+
+    saved = CandidateTracker().retroactive_confirm(survivor.centroid, "alice_test")
+
+    assert saved == CONSOLIDATE_MIN_INTERVALS * 2
+    assert _voiceprint_count(alice_dir) == CONSOLIDATE_MIN_INTERVALS * 2
+    confirmed = _only_candidate(CandidateTracker())
+    assert confirmed.status == "confirmed"
+    assert confirmed.confirmed_entity == "alice_test"
 
 
 def test_retroactive_confirm_noops_below_merge_threshold(speakers_env, tmp_path):

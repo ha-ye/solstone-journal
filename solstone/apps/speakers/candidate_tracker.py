@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections import defaultdict
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -22,12 +24,16 @@ from solstone.apps.speakers.encoder_config import (
     CONFIRM_MIN_DURATION_S,
     CONFIRM_MIN_INTERVALS,
     CONFIRM_MIN_SEGMENTS,
+    CONSOLIDATE_MERGE_THRESHOLD,
+    CONSOLIDATE_MIN_INTERVALS,
+    CONSOLIDATE_SUGGEST_MIN,
     MERGE_THRESHOLD,
     SOLO_CLUSTER_MIN_COSINE,
     SPLIT_THRESHOLD,
     STABILITY_THRESHOLD,
 )
 from solstone.think.journal_io import (
+    LockTimeout,
     MalformedPolicy,
     atomic_replace,
     hold_lock,
@@ -37,6 +43,7 @@ from solstone.think.utils import get_journal
 
 # Synthetic cluster label for producer-proven solo speaker segments.
 SOLO_CLUSTER_LABEL: int = -1
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -49,6 +56,7 @@ class CandidateProfile:
     source_segments: list[dict[str, Any]] = field(default_factory=list)
     confirmed_entity: str | None = None
     status: str = "pending"
+    merge_events: list[dict[str, Any]] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -60,6 +68,7 @@ class CandidateProfile:
             "source_segments": self.source_segments,
             "confirmed_entity": self.confirmed_entity,
             "status": self.status,
+            "merge_events": self.merge_events,
         }
 
     @classmethod
@@ -73,6 +82,7 @@ class CandidateProfile:
             source_segments=list(data.get("source_segments", [])),
             confirmed_entity=data.get("confirmed_entity"),
             status=str(data.get("status", "pending")),
+            merge_events=list(data.get("merge_events", [])),
         )
 
     def ready_for_confirmation(self) -> bool:
@@ -103,6 +113,44 @@ def _source_key(source_segment: dict[str, Any]) -> tuple[str, str, str, str, int
     )
 
 
+def encode_source_key(source_key: tuple[str, str, str, str, int]) -> str:
+    """Return the stable JSON-string anchor for a source key tuple."""
+    return json.dumps(list(source_key), ensure_ascii=False, separators=(",", ":"))
+
+
+def source_segment_anchor(source_segment: dict[str, Any]) -> str:
+    """Return the stable anchor for one source segment."""
+    return encode_source_key(_source_key(source_segment))
+
+
+def candidate_source_anchors(candidate: CandidateProfile) -> set[str]:
+    """Return all stable anchors carried by one candidate."""
+    return {
+        source_segment_anchor(source_segment)
+        for source_segment in candidate.source_segments
+    }
+
+
+def canonical_candidate_anchor(candidate: CandidateProfile) -> str:
+    """Return the deterministic record-time canonical anchor for one candidate."""
+    return min(sorted(candidate_source_anchors(candidate)))
+
+
+def _segment_identity(source_segment: dict[str, Any]) -> tuple[str, str, str, str]:
+    return (
+        str(source_segment["day"]),
+        str(source_segment["segment_key"]),
+        str(source_segment["stream"]),
+        str(source_segment["source"]),
+    )
+
+
+def _utc_now_iso() -> str:
+    return (
+        datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    )
+
+
 class CandidateTracker:
     def __init__(self, store_path: Path | None = None) -> None:
         self.store_path = store_path or (
@@ -110,6 +158,10 @@ class CandidateTracker:
         )
         self._candidates: dict[int, CandidateProfile] = {}
         self._next_id = 1
+        self.consolidation_summary: dict[str, Any] = {
+            "merge_count_total": 0,
+            "last_merge": None,
+        }
         self.load()
 
     def load(self) -> None:
@@ -119,6 +171,18 @@ class CandidateTracker:
             default={"next_id": 1, "candidates": []},
         )
         self._next_id = int(data.get("next_id", 1))
+        summary = data.get("consolidation_summary")
+        if isinstance(summary, dict):
+            last_merge = summary.get("last_merge")
+            self.consolidation_summary = {
+                "merge_count_total": int(summary.get("merge_count_total", 0)),
+                "last_merge": last_merge if isinstance(last_merge, dict) else None,
+            }
+        else:
+            self.consolidation_summary = {
+                "merge_count_total": 0,
+                "last_merge": None,
+            }
         self._candidates = {
             candidate.cand_id: candidate
             for candidate in (
@@ -129,6 +193,10 @@ class CandidateTracker:
         }
 
     def save(self) -> None:
+        with hold_lock(self.store_path):
+            self._write()
+
+    def _write(self) -> None:
         data = {
             "next_id": self._next_id,
             "candidates": [
@@ -137,16 +205,22 @@ class CandidateTracker:
                     self._candidates.values(), key=lambda item: item.cand_id
                 )
             ],
+            "consolidation_summary": self.consolidation_summary,
         }
-        with hold_lock(self.store_path):
-            atomic_replace(
-                self.store_path,
-                json.dumps(data, indent=2, sort_keys=True) + "\n",
-            )
+        atomic_replace(
+            self.store_path,
+            json.dumps(data, indent=2, sort_keys=True) + "\n",
+        )
 
     def load_all_candidates(self) -> list[CandidateProfile]:
         """Return all tracked speaker candidates without mutating state."""
         return sorted(self._candidates.values(), key=lambda item: item.cand_id)
+
+    def snapshot_candidates_locked(self) -> list[CandidateProfile]:
+        """Return a fresh candidate snapshot under the pool lock."""
+        with hold_lock(self.store_path):
+            self.load()
+            return self.load_all_candidates()
 
     def _new_id(self) -> int:
         cand_id = self._next_id
@@ -206,9 +280,9 @@ class CandidateTracker:
         n_intervals: int,
         duration_s: float,
         source_segment: dict[str, Any],
-    ) -> None:
+    ) -> CandidateProfile:
         cand_id = self._new_id()
-        self._candidates[cand_id] = CandidateProfile(
+        candidate = CandidateProfile(
             cand_id=cand_id,
             centroid=centroid,
             n_segments=1,
@@ -216,6 +290,183 @@ class CandidateTracker:
             total_duration_s=duration_s,
             source_segments=[source_segment],
         )
+        self._candidates[cand_id] = candidate
+        return candidate
+
+    def _eligible_for_auto_consolidation(self, candidate: CandidateProfile) -> bool:
+        return (
+            candidate.n_intervals >= CONSOLIDATE_MIN_INTERVALS
+            and candidate.status == "pending"
+            and candidate.confirmed_entity is None
+        )
+
+    def _best_consolidation_pair(self) -> tuple[int, int, float] | None:
+        eligible = [
+            candidate
+            for candidate in self.load_all_candidates()
+            if self._eligible_for_auto_consolidation(candidate)
+        ]
+        best: tuple[int, int, float] | None = None
+        for left_idx, left in enumerate(eligible):
+            for right in eligible[left_idx + 1 :]:
+                score = float(np.dot(left.centroid, right.centroid))
+                if score < CONSOLIDATE_MERGE_THRESHOLD:
+                    continue
+                left_id, right_id = sorted([left.cand_id, right.cand_id])
+                if best is None:
+                    best = (left_id, right_id, score)
+                    continue
+                best_left, best_right, best_score = best
+                if score > best_score or (
+                    score == best_score
+                    and (left_id, right_id) < (best_left, best_right)
+                ):
+                    best = (left_id, right_id, score)
+        return best
+
+    def _merge_candidate_profile(
+        self,
+        survivor: CandidateProfile,
+        absorbed: CandidateProfile,
+        score: float,
+    ) -> dict[str, Any]:
+        _load_embeddings_file, normalize_embedding = _routes_helpers()
+        combined = survivor.centroid * float(survivor.n_intervals)
+        combined += absorbed.centroid * float(absorbed.n_intervals)
+        merged = normalize_embedding(combined)
+        if merged is not None:
+            survivor.centroid = merged
+
+        existing_source_keys = {
+            _source_key(source_segment) for source_segment in survivor.source_segments
+        }
+        for source_segment in absorbed.source_segments:
+            source_key = _source_key(source_segment)
+            if source_key in existing_source_keys:
+                continue
+            survivor.source_segments.append(source_segment)
+            existing_source_keys.add(source_key)
+
+        survivor.n_intervals += absorbed.n_intervals
+        survivor.total_duration_s += absorbed.total_duration_s
+        survivor.n_segments = len(
+            {
+                _segment_identity(source_segment)
+                for source_segment in survivor.source_segments
+            }
+        )
+        survivor.merge_events.extend(absorbed.merge_events)
+
+        event = {
+            "survivor_id": survivor.cand_id,
+            "absorbed_id": absorbed.cand_id,
+            "score": score,
+            "merged_at": _utc_now_iso(),
+            "absorbed_n_intervals": absorbed.n_intervals,
+            "survivor_n_intervals_after": survivor.n_intervals,
+        }
+        survivor.merge_events.append(event)
+        del self._candidates[absorbed.cand_id]
+        return event
+
+    def _record_consolidation_merge(self, event: dict[str, Any]) -> None:
+        self.consolidation_summary = {
+            "merge_count_total": int(
+                self.consolidation_summary.get("merge_count_total", 0)
+            )
+            + 1,
+            "last_merge": dict(event),
+        }
+
+    def consolidate_dense_candidates(self) -> dict[str, Any]:
+        """Merge dense pending candidates to fixpoint under one pool lock."""
+        merges: list[dict[str, Any]] = []
+        with hold_lock(self.store_path):
+            self.load()
+            while True:
+                pair = self._best_consolidation_pair()
+                if pair is None:
+                    break
+                survivor_id, absorbed_id, score = pair
+                survivor = self._candidates[survivor_id]
+                absorbed = self._candidates[absorbed_id]
+                event = self._merge_candidate_profile(survivor, absorbed, score)
+                survivor.status = "pending"
+                survivor.confirmed_entity = None
+                self._record_consolidation_merge(event)
+                merges.append(event)
+                logger.info(
+                    "speaker candidate auto-merged: survivor_id=%s absorbed_id=%s "
+                    "score=%.4f absorbed_n_intervals=%s survivor_n_intervals_after=%s",
+                    event["survivor_id"],
+                    event["absorbed_id"],
+                    event["score"],
+                    event["absorbed_n_intervals"],
+                    event["survivor_n_intervals_after"],
+                )
+            if merges:
+                self._write()
+        return {"status": "ok", "merged": len(merges), "merges": merges}
+
+    def _candidate_for_anchor(self, anchor: str) -> CandidateProfile | None:
+        for candidate in self._candidates.values():
+            if anchor in candidate_source_anchors(candidate):
+                return candidate
+        return None
+
+    def merge_candidate_pair(self, anchor_a: str, anchor_b: str) -> dict[str, Any]:
+        """Manually merge one review-approved candidate pair by source anchors."""
+        with hold_lock(self.store_path):
+            self.load()
+            left = self._candidate_for_anchor(anchor_a)
+            right = self._candidate_for_anchor(anchor_b)
+            if left is None or right is None:
+                return {"status": "error", "error": "candidate anchor not found"}
+            if left.cand_id == right.cand_id:
+                return {"status": "already_merged", "survivor_id": left.cand_id}
+            if left.status == "rejected" or right.status == "rejected":
+                return {"status": "error", "error": "cannot merge rejected candidate"}
+            confirmed = [
+                candidate
+                for candidate in (left, right)
+                if candidate.status == "confirmed"
+                or candidate.confirmed_entity is not None
+            ]
+            if len(confirmed) > 1:
+                return {
+                    "status": "error",
+                    "error": "cannot merge two confirmed candidates",
+                }
+            score = float(np.dot(left.centroid, right.centroid))
+            if score < CONSOLIDATE_SUGGEST_MIN:
+                return {
+                    "status": "error",
+                    "error": "candidate pair is below review threshold",
+                    "score": score,
+                }
+
+            survivor_id, absorbed_id = sorted([left.cand_id, right.cand_id])
+            survivor = self._candidates[survivor_id]
+            absorbed = self._candidates[absorbed_id]
+            confirmed_entity = (
+                confirmed[0].confirmed_entity if confirmed and confirmed[0] else None
+            )
+            event = self._merge_candidate_profile(survivor, absorbed, score)
+            if confirmed_entity is not None:
+                survivor.status = "confirmed"
+                survivor.confirmed_entity = confirmed_entity
+            else:
+                survivor.status = "pending"
+                survivor.confirmed_entity = None
+            self._write()
+        return {
+            "status": "merged",
+            "survivor_id": survivor_id,
+            "absorbed_id": absorbed_id,
+            "score": score,
+            "merge_event": event,
+            "confirmed_entity": confirmed_entity,
+        }
 
     def process_segment(
         self,
@@ -239,6 +490,7 @@ class CandidateTracker:
         sid_to_idx = {int(sid): idx for idx, sid in enumerate(statement_ids)}
         existing_source_keys = self._existing_source_keys()
         changed = False
+        density_edges: set[int] = set()
 
         cluster_sids: dict[int, list[int]] = defaultdict(list)
         if integer_labels:
@@ -308,6 +560,7 @@ class CandidateTracker:
             duration_s = sum(duration for _, duration in cluster_rows)
             best_id, best_score = self._best_match(centroid)
             if best_id is not None and best_score >= MERGE_THRESHOLD:
+                pre_intervals = self._candidates[best_id].n_intervals
                 self._merge_candidate(
                     self._candidates[best_id],
                     centroid,
@@ -316,20 +569,49 @@ class CandidateTracker:
                     source_segment,
                     normalize_embedding,
                 )
+                candidate = self._candidates[best_id]
+                if (
+                    pre_intervals < CONSOLIDATE_MIN_INTERVALS
+                    and candidate.n_intervals >= CONSOLIDATE_MIN_INTERVALS
+                ):
+                    density_edges.add(best_id)
                 existing_source_keys.add(source_key)
                 changed = True
             elif best_id is None or best_score < SPLIT_THRESHOLD:
+                cand_id = self._next_id
                 self._create_candidate(
                     centroid,
                     n_intervals,
                     duration_s,
                     source_segment,
                 )
+                candidate = self._candidates[cand_id]
+                if candidate.n_intervals >= CONSOLIDATE_MIN_INTERVALS:
+                    density_edges.add(candidate.cand_id)
+                existing_source_keys.add(source_key)
+                changed = True
+            else:
+                candidate = self._create_candidate(
+                    centroid,
+                    n_intervals,
+                    duration_s,
+                    source_segment,
+                )
+                if candidate.n_intervals >= CONSOLIDATE_MIN_INTERVALS:
+                    density_edges.add(candidate.cand_id)
                 existing_source_keys.add(source_key)
                 changed = True
 
         if changed:
             self.save()
+            if density_edges:
+                try:
+                    self.consolidate_dense_candidates()
+                except LockTimeout as exc:
+                    logger.warning(
+                        "speaker candidate consolidation skipped after density edge: %s",
+                        exc,
+                    )
 
     def confirmation_queue(self) -> list[CandidateProfile]:
         return [

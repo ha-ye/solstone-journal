@@ -10,13 +10,20 @@ from pathlib import Path
 
 import numpy as np
 
-from solstone.apps.speakers.maintenance import run_name_variants
+from solstone.apps.speakers.maintenance import (
+    run_candidate_pair_suggestions,
+    run_consolidation,
+    run_name_variants,
+)
 from solstone.apps.speakers.suggest import suggest_opportunities
 from solstone.think.entities.journal import load_journal_entity, scan_journal_entities
 from solstone.think.maintenance import (
     discover_routines,
     expected_schedule_entry,
     maintenance_schedule_name,
+)
+from solstone.think.speaker_candidate_pair_review_candidates import (
+    load_candidates as load_pair_candidates,
 )
 from solstone.think.speaker_review_candidates import load_candidates
 
@@ -57,6 +64,55 @@ def _create_meetings_md(env, day: str, content: str) -> Path:
     return meetings_path
 
 
+def _unit(vector: list[float]) -> np.ndarray:
+    emb = np.array(vector + [0.0] * (256 - len(vector)), dtype=np.float32)
+    return emb / np.linalg.norm(emb)
+
+
+def _source_segment(day: str, cluster_label: int = 1) -> dict[str, object]:
+    return {
+        "day": day,
+        "segment_key": "090000_300",
+        "stream": "test",
+        "source": "mic_audio",
+        "cluster_label": cluster_label,
+    }
+
+
+def _seed_candidate_pool(env, candidates) -> None:
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+
+    tracker = CandidateTracker(env.journal / "awareness" / "speaker_candidates.json")
+    tracker._candidates = {candidate.cand_id: candidate for candidate in candidates}
+    tracker._next_id = (
+        max((candidate.cand_id for candidate in candidates), default=0) + 1
+    )
+    tracker.save()
+
+
+def _profile(
+    cand_id: int,
+    centroid: np.ndarray,
+    *,
+    n_intervals: int = 30,
+    status: str = "pending",
+    confirmed_entity: str | None = None,
+):
+    from solstone.apps.speakers.candidate_tracker import CandidateProfile
+
+    source_segment = _source_segment(f"2026010{cand_id}", cand_id)
+    return CandidateProfile(
+        cand_id=cand_id,
+        centroid=centroid,
+        n_segments=1,
+        n_intervals=n_intervals,
+        total_duration_s=float(n_intervals),
+        source_segments=[source_segment],
+        confirmed_entity=confirmed_entity,
+        status=status,
+    )
+
+
 def test_speakers_name_variant_routine_is_discovered():
     routines = discover_routines()
 
@@ -73,6 +129,108 @@ def test_speakers_name_variant_routine_is_discovered():
     assert maintenance_schedule_name("speakers:name-variants") == (
         "maintenance:speakers:name-variants"
     )
+
+
+def test_speakers_pool_routines_are_discovered():
+    routines = discover_routines()
+
+    for routine_id in (
+        "speakers:consolidate-pool",
+        "speakers:candidate-pair-suggestions",
+    ):
+        assert routine_id in routines
+        routine = routines[routine_id]
+        assert routine.every == "daily"
+        assert routine.max_runtime == "10m"
+        assert expected_schedule_entry(routine_id, routine) == {
+            "cmd": ["journal", "maintenance", "run", routine_id],
+            "every": "daily",
+            "enabled": True,
+            "max_runtime": "10m",
+        }
+        assert maintenance_schedule_name(routine_id) == f"maintenance:{routine_id}"
+
+
+def test_run_consolidation_merges_dense_pool(speakers_env):
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+
+    env = speakers_env()
+    a = _unit([1.0, 0.0])
+    b = _unit([0.70, np.sqrt(1.0 - 0.70**2)])
+    _seed_candidate_pool(env, [_profile(1, a), _profile(2, b)])
+
+    assert run_consolidation([]) == 0
+
+    tracker = CandidateTracker(env.journal / "awareness" / "speaker_candidates.json")
+    assert len(tracker._candidates) == 1
+    assert tracker.consolidation_summary["merge_count_total"] == 1
+
+
+def test_run_candidate_pair_suggestions_records_idempotently_with_audio(
+    speakers_env,
+):
+    env = speakers_env()
+    a = _unit([1.0, 0.0])
+    b = _unit([0.60, np.sqrt(1.0 - 0.60**2)])
+    for cand_id in (1, 2):
+        env.create_segment(
+            f"2026010{cand_id}",
+            "090000_300",
+            ["mic_audio"],
+            stream="test",
+            embeddings=np.tile(a.reshape(1, -1), (2, 1)),
+        )
+    _seed_candidate_pool(env, [_profile(1, a), _profile(2, b)])
+
+    assert run_candidate_pair_suggestions([]) == 0
+    assert run_candidate_pair_suggestions([]) == 0
+
+    rows = load_pair_candidates()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["status"] == "open"
+    assert np.isclose(row["similarity"], 0.60)
+    assert row["evidence"]["source_intervals"] == 30
+    assert row["evidence"]["target_intervals"] == 30
+    sample = row["evidence"]["source_samples"][0]
+    assert sample["segment_key"] == "090000_300"
+    assert "segment" not in sample
+    assert sample["audio_url"].endswith("/mic_audio.flac")
+
+
+def test_run_candidate_pair_suggestions_filters_status_and_confirmed_pairs(
+    speakers_env,
+):
+    from solstone.apps.speakers.maintenance import _eligible_for_pair_suggestion
+
+    env = speakers_env()
+    pending = _unit([1.0, 0.0])
+    ambiguous = _unit([0.60, np.sqrt(1.0 - 0.60**2)])
+    confirmed_y = (0.20 - 0.60 * 0.70) / np.sqrt(1.0 - 0.60**2)
+    confirmed_high = _unit([0.70, confirmed_y, np.sqrt(1.0 - 0.70**2 - confirmed_y**2)])
+    far = _unit([0.0, 1.0])
+    confirmed = _profile(
+        3, confirmed_high, status="confirmed", confirmed_entity="alice"
+    )
+    rejected = _profile(5, far, status="rejected")
+    assert not _eligible_for_pair_suggestion(confirmed, confirmed, 0.90)
+    assert not _eligible_for_pair_suggestion(rejected, _profile(6, pending), 0.60)
+    _seed_candidate_pool(
+        env,
+        [
+            _profile(1, pending),
+            _profile(2, ambiguous),
+            confirmed,
+            rejected,
+        ],
+    )
+
+    assert run_candidate_pair_suggestions([]) == 0
+
+    rows = load_pair_candidates()
+    assert len(rows) == 2
+    similarities = sorted(round(float(row["similarity"]), 2) for row in rows)
+    assert similarities == [0.6, 0.7]
 
 
 def test_run_name_variants_records_idempotently_without_merging(speakers_env):

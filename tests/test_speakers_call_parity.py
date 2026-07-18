@@ -157,6 +157,7 @@ def test_status_full_section_and_unknown(
         "embeddings": {"total": 1},
         "owner": {"status": "confirmed"},
         "speakers": [{"name": "Alice"}],
+        "pool": {"candidate_count": 2},
         "clusters": {"count": 0},
         "imports": {"names": []},
         "attribution": {"labels": 2},
@@ -165,16 +166,18 @@ def test_status_full_section_and_unknown(
 
     full = runner.invoke(app, ["status"])
     speakers = runner.invoke(app, ["status", "speakers"])
+    pool = runner.invoke(app, ["status", "pool"])
     unknown = runner.invoke(app, ["status", "nope"])
 
     _assert_json_stdout(full, status)
     _assert_json_stdout(speakers, [{"name": "Alice"}])
+    _assert_json_stdout(pool, {"candidate_count": 2})
     _assert_json_stdout(
         unknown,
         {
             "error": (
                 "Unknown section 'nope'. Valid: embeddings, owner, speakers, "
-                "clusters, imports, attribution"
+                "pool, clusters, imports, attribution"
             )
         },
     )

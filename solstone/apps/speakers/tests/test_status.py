@@ -49,6 +49,7 @@ def test_status_all_sections(speakers_env):
     assert "embeddings" in result
     assert "owner" in result
     assert "speakers" in result
+    assert "pool" in result
     assert "clusters" in result
     assert "imports" in result
     assert "attribution" in result
@@ -254,6 +255,72 @@ def test_status_unknown_section(speakers_env):
     speakers_env()
     result = get_speakers_status(section="nonexistent")
     assert "error" in result
+
+
+def test_status_pool_section_reports_counts_and_summary(speakers_env):
+    from solstone.apps.speakers.candidate_tracker import (
+        CandidateProfile,
+        CandidateTracker,
+    )
+    from solstone.apps.speakers.status import get_speakers_status
+
+    env = speakers_env()
+    store = env.journal / "awareness" / "speaker_candidates.json"
+    tracker = CandidateTracker(store)
+    tracker._candidates = {
+        1: CandidateProfile(
+            cand_id=1,
+            centroid=np.array([1.0] + [0.0] * 255, dtype=np.float32),
+            n_segments=1,
+            n_intervals=30,
+            total_duration_s=30.0,
+            source_segments=[
+                {
+                    "day": "20260101",
+                    "segment_key": "090000_300",
+                    "stream": "test",
+                    "source": "mic_audio",
+                    "cluster_label": 1,
+                }
+            ],
+        ),
+        2: CandidateProfile(
+            cand_id=2,
+            centroid=np.array([0.0, 1.0] + [0.0] * 254, dtype=np.float32),
+            n_segments=1,
+            n_intervals=5,
+            total_duration_s=5.0,
+            source_segments=[
+                {
+                    "day": "20260102",
+                    "segment_key": "090000_300",
+                    "stream": "test",
+                    "source": "mic_audio",
+                    "cluster_label": 1,
+                }
+            ],
+            status="confirmed",
+            confirmed_entity="alice_test",
+        ),
+    }
+    tracker._next_id = 3
+    tracker.consolidation_summary = {
+        "merge_count_total": 4,
+        "last_merge": {"survivor_id": 1, "absorbed_id": 3},
+    }
+    tracker.save()
+
+    result = get_speakers_status(section="pool")
+
+    assert result == {
+        "candidate_count": 2,
+        "dense_count": 1,
+        "status_breakdown": {"confirmed": 1, "pending": 1},
+        "consolidation_summary": {
+            "merge_count_total": 4,
+            "last_merge": {"survivor_id": 1, "absorbed_id": 3},
+        },
+    }
 
 
 def test_status_embeddings_with_data(speakers_env):
