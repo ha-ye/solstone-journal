@@ -317,6 +317,7 @@ def attribute_segment(
 
     owner_centroid = centroid_data.centroid
     owner_threshold = centroid_data.threshold
+    owner_margin = centroid_data.margin
 
     # --- prerequisite: embeddings ---
     npz_files = sorted(
@@ -359,10 +360,54 @@ def attribute_segment(
             "method": None,
         }
 
+    margin_non_principal_entity_ids = sorted(
+        {
+            str(e["id"])
+            for e in entities_list
+            if e.get("id") != owner_entity_id and not e.get("is_principal")
+        }
+    )
+    voiceprint_centroid_cache: dict[str, dict[str, Any]] = {}
+    centroid_now_ms: int | None = None
+
+    def _voiceprint_centroid_entry(eid: str) -> dict[str, Any]:
+        nonlocal centroid_now_ms
+
+        cached = voiceprint_centroid_cache.get(eid)
+        if cached is not None:
+            return cached
+
+        entry: dict[str, Any] = {
+            "centroid": None,
+            "embedding_count": 0,
+            "usable": False,
+        }
+        result = load_entity_voiceprints_file(eid)
+        if result is not None:
+            vp_embs, vp_meta = result
+            entry["embedding_count"] = len(vp_embs)
+            if len(vp_embs) > 0:
+                if centroid_now_ms is None:
+                    centroid_now_ms = int(time.time() * 1000)
+                centroid = _decay_weighted_centroid(
+                    vp_embs,
+                    vp_meta,
+                    stream,
+                    centroid_now_ms,
+                    normalize_embedding,
+                )
+                if centroid is not None:
+                    entry["centroid"] = centroid
+                    entry["usable"] = True
+
+        voiceprint_centroid_cache[eid] = entry
+        return entry
+
     # ==========================
     # LAYER 1: Owner separation
     # ==========================
     non_owner_sids: list[int] = []
+    margin_declined_sids: set[int] = set()
 
     for emb, sid in zip(embeddings, statement_ids):
         sid_int = int(sid)
@@ -370,7 +415,20 @@ def attribute_segment(
         if normalized is None:
             continue
         score = float(np.dot(normalized, owner_centroid))
-        if score >= owner_threshold:
+        owner_claimed = score >= owner_threshold
+        if owner_claimed and owner_margin is not None:
+            best_non_owner_cos = float("-inf")
+            for eid in margin_non_principal_entity_ids:
+                entry = _voiceprint_centroid_entry(eid)
+                if not entry["usable"]:
+                    continue
+                best_non_owner_cos = max(
+                    best_non_owner_cos,
+                    float(np.dot(normalized, entry["centroid"])),
+                )
+            owner_claimed = (score - best_non_owner_cos) >= owner_margin
+
+        if owner_claimed:
             labels[sid_int] = {
                 "sentence_id": sid_int,
                 "speaker": owner_entity_id,
@@ -378,6 +436,9 @@ def attribute_segment(
                 "method": "owner_centroid",
             }
         else:
+            if score >= owner_threshold and owner_margin is not None:
+                labels[sid_int]["owner_margin_declined"] = True
+                margin_declined_sids.add(sid_int)
             non_owner_sids.append(sid_int)
 
     # ================================
@@ -429,12 +490,15 @@ def attribute_segment(
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             for sid in non_owner_sids:
                 if labels[sid]["speaker"] is None:
+                    confidence = "medium" if sid in margin_declined_sids else "high"
                     labels[sid] = {
                         "sentence_id": sid,
                         "speaker": resolution.entity["id"],
-                        "confidence": "high",
+                        "confidence": confidence,
                         "method": "structural_single_speaker",
                     }
+                    if sid in margin_declined_sids:
+                        labels[sid]["owner_margin_declined"] = True
 
     # 2b: single setting-field participant (import segments without speakers.json)
     elif not speakers and len(setting_names) == 1:
@@ -452,12 +516,15 @@ def attribute_segment(
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             for sid in non_owner_sids:
                 if labels[sid]["speaker"] is None:
+                    confidence = "medium" if sid in margin_declined_sids else "high"
                     labels[sid] = {
                         "sentence_id": sid,
                         "speaker": resolution.entity["id"],
-                        "confidence": "high",
+                        "confidence": confidence,
                         "method": "structural_setting",
                     }
+                    if sid in margin_declined_sids:
+                        labels[sid]["owner_margin_declined"] = True
 
     # ============================
     # LAYER 3: Acoustic matching
@@ -475,26 +542,17 @@ def attribute_segment(
             }
 
         # Load centroids with same-stream preference
-        layer3_now_ms = int(time.time() * 1000)
+        if centroid_now_ms is None:
+            centroid_now_ms = int(time.time() * 1000)
         voiceprint_centroids: dict[str, np.ndarray] = {}
         for eid in vp_entity_ids:
-            result = load_entity_voiceprints_file(eid)
-            if result is None:
+            entry = _voiceprint_centroid_entry(eid)
+            if entry["embedding_count"] == 0:
                 continue
-            vp_embs, vp_meta = result
-            if len(vp_embs) == 0:
-                continue
-            voiceprint_versions[eid] = len(vp_embs)
+            voiceprint_versions[eid] = entry["embedding_count"]
 
-            centroid = _decay_weighted_centroid(
-                vp_embs,
-                vp_meta,
-                stream,
-                layer3_now_ms,
-                normalize_embedding,
-            )
-            if centroid is not None:
-                voiceprint_centroids[eid] = centroid
+            if entry["usable"]:
+                voiceprint_centroids[eid] = entry["centroid"]
 
         # Build sentence-to-embedding index
         sid_to_idx = {int(s): i for i, s in enumerate(statement_ids)}
@@ -551,12 +609,20 @@ def attribute_segment(
                             continue
                         confidence = "high" if score >= ACOUSTIC_HIGH else "medium"
                         for sid in cluster_members[cluster_id]:
+                            label_confidence = confidence
+                            if (
+                                sid in margin_declined_sids
+                                and label_confidence == "high"
+                            ):
+                                label_confidence = "medium"
                             labels[sid] = {
                                 "sentence_id": sid,
                                 "speaker": eid,
-                                "confidence": confidence,
+                                "confidence": label_confidence,
                                 "method": "acoustic_cluster",
                             }
+                            if sid in margin_declined_sids:
+                                labels[sid]["owner_margin_declined"] = True
 
         for sid in unresolved:
             if labels[sid]["speaker"] is not None:
@@ -581,7 +647,9 @@ def attribute_segment(
                     labels[sid] = {
                         "sentence_id": sid,
                         "speaker": best_eid,
-                        "confidence": "high",
+                        "confidence": (
+                            "medium" if sid in margin_declined_sids else "high"
+                        ),
                         "method": "acoustic",
                     }
                 elif best_score >= ACOUSTIC_MEDIUM:
@@ -591,6 +659,8 @@ def attribute_segment(
                         "confidence": "medium",
                         "method": "acoustic",
                     }
+                if sid in margin_declined_sids and labels[sid]["speaker"] is not None:
+                    labels[sid]["owner_margin_declined"] = True
 
     # --- collect final unmatched for Layer 4 ---
     final_unmatched = [

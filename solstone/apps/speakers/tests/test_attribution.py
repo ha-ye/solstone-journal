@@ -6,11 +6,17 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 
 import numpy as np
 
-from solstone.apps.speakers.encoder_config import ENCODER_ID, OVERLAP_DETECTOR_ID
+from solstone.apps.speakers.encoder_config import (
+    ACOUSTIC_HIGH,
+    ENCODER_ID,
+    OVERLAP_DETECTOR_ID,
+    OWNER_MARGIN_MIN,
+)
 from solstone.apps.speakers.owner import OWNER_THRESHOLD
 
 # Test stream name (matches conftest.STREAM)
@@ -22,6 +28,20 @@ def _normalized(vector: list[float]) -> np.ndarray:
     return emb / np.linalg.norm(emb)
 
 
+def _embedding_with_owner_cos(cosine: float) -> np.ndarray:
+    return _normalized([cosine, math.sqrt(1.0 - cosine * cosine)])
+
+
+def _embedding_with_cosine_to(target: np.ndarray, cosine: float) -> np.ndarray:
+    orthogonal = np.zeros_like(target)
+    orthogonal[0] = -target[1]
+    orthogonal[1] = target[0]
+    orthogonal = orthogonal / np.linalg.norm(orthogonal)
+    return ((target * cosine) + (orthogonal * math.sqrt(1.0 - cosine * cosine))).astype(
+        np.float32
+    )
+
+
 def _setup_owner(env, name: str = "Self Person") -> tuple[Path, np.ndarray]:
     """Create a principal entity with confirmed owner centroid."""
     principal_dir = env.create_entity(name, is_principal=True)
@@ -31,6 +51,21 @@ def _setup_owner(env, name: str = "Self Person") -> tuple[Path, np.ndarray]:
         centroid=centroid,
         cluster_size=np.array(70, dtype=np.int32),
         threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
+        last_refreshed_at=np.array("2026-03-15T12:00:00Z"),
+    )
+    return principal_dir, centroid
+
+
+def _setup_margin_owner(env, name: str = "Self Person") -> tuple[Path, np.ndarray]:
+    """Create a principal entity with a margin-bearing owner centroid."""
+    principal_dir = env.create_entity(name, is_principal=True)
+    centroid = _normalized([1.0, 0.0])
+    np.savez_compressed(
+        principal_dir / "owner_centroid.npz",
+        centroid=centroid,
+        cluster_size=np.array(70, dtype=np.int32),
+        threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
+        margin=np.array(OWNER_MARGIN_MIN, dtype=np.float32),
         last_refreshed_at=np.array("2026-03-15T12:00:00Z"),
     )
     return principal_dir, centroid
@@ -117,6 +152,31 @@ def _rewrite_segment_header(seg_dir: Path, source: str, **updates: object) -> No
     header.update(updates)
     lines[0] = json.dumps(header)
     jsonl_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _setup_margin_trap_entities(
+    env,
+) -> tuple[np.ndarray, Path, Path]:
+    trap = _embedding_with_owner_cos(0.45)
+    competitor = _embedding_with_cosine_to(trap, 0.41)
+    distractor = _normalized([0.0, 0.0, 1.0])
+    competitor_dir = env.create_entity("Casey Rival")
+    distractor_dir = env.create_entity("Distractor Test")
+    _write_entity_voiceprints(competitor_dir, [competitor] * 5)
+    _write_entity_voiceprints(distractor_dir, [distractor] * 5)
+
+    assert float(np.dot(trap, _normalized([1.0, 0.0]))) >= OWNER_THRESHOLD
+    assert (
+        ACOUSTIC_HIGH
+        < float(np.dot(trap, competitor))
+        < float(np.dot(trap, _normalized([1.0, 0.0])))
+    )
+    assert (
+        float(np.dot(trap, competitor))
+        > float(np.dot(trap, _normalized([1.0, 0.0]))) - OWNER_MARGIN_MIN
+    )
+    assert np.isclose(float(np.dot(trap, distractor)), 0.0)
+    return trap, competitor_dir, distractor_dir
 
 
 # ---------------------------------------------------------------------------
@@ -349,6 +409,142 @@ def test_attribute_segment_metadata_uses_same_loaded_centroid_timestamp(
     assert result["metadata"]["owner_centroid_last_refreshed_at"] == "loaded-once"
 
 
+def test_l2_single_speaker_downgrades_margin_declined_statement(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_margin_owner(env)
+    trap, _competitor_dir, _distractor_dir = _setup_margin_trap_entities(env)
+    control = _normalized([0.1, 0.99])
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "091500_300",
+        np.vstack([trap, control]),
+    )
+    env.create_speakers_json("20240101", "091500_300", ["Distractor Test"])
+
+    result = attribute_segment("20240101", STREAM, "091500_300")
+    margin_label = result["labels"][0]
+    control_label = result["labels"][1]
+
+    assert margin_label["speaker"] == "distractor_test"
+    assert margin_label["confidence"] == "medium"
+    assert margin_label["confidence"] != "high"
+    assert margin_label["method"] == "structural_single_speaker"
+    assert margin_label["owner_margin_declined"] is True
+    assert control_label["speaker"] == "distractor_test"
+    assert control_label["confidence"] == "high"
+    assert control_label["method"] == "structural_single_speaker"
+    assert "owner_margin_declined" not in control_label
+    assert result["unmatched"] == []
+    assert result["candidate_entity_ids"] == ["distractor_test"]
+    assert result["metadata"]["voiceprint_versions"] == {}
+
+
+def test_l1_owner_margin_keeps_clean_owner_claim_when_best_non_owner_is_low(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_margin_owner(env)
+    owner_like = _embedding_with_owner_cos(0.50)
+    competitor = _embedding_with_cosine_to(owner_like, 0.20)
+    competitor_dir = env.create_entity("Casey Rival")
+    _write_entity_voiceprints(competitor_dir, [competitor] * 5)
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "092500_300",
+        owner_like.reshape(1, -1),
+    )
+
+    result = attribute_segment("20240101", STREAM, "092500_300")
+    label = result["labels"][0]
+
+    assert label["speaker"] == "self_person"
+    assert label["confidence"] == "high"
+    assert label["method"] == "owner_centroid"
+    assert "owner_margin_declined" not in label
+
+
+def test_l1_owner_margin_is_vacuous_without_usable_non_owner_voiceprints(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_margin_owner(env)
+    env.create_entity("Silent Person")
+    owner_like = _embedding_with_owner_cos(0.45)
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "093500_300",
+        owner_like.reshape(1, -1),
+    )
+
+    result = attribute_segment("20240101", STREAM, "093500_300")
+    label = result["labels"][0]
+
+    assert label["speaker"] == "self_person"
+    assert label["method"] == "owner_centroid"
+    assert "owner_margin_declined" not in label
+    assert result["metadata"]["voiceprint_versions"] == {}
+
+
+def test_l1_owner_margin_excludes_principal_voiceprints_from_competition(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    principal_dir, _centroid = _setup_margin_owner(env)
+    owner_like = _embedding_with_owner_cos(0.45)
+    _write_entity_voiceprints(principal_dir, [owner_like] * 5)
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "094500_300",
+        owner_like.reshape(1, -1),
+    )
+
+    result = attribute_segment("20240101", STREAM, "094500_300")
+    label = result["labels"][0]
+
+    assert label["speaker"] == "self_person"
+    assert label["method"] == "owner_centroid"
+    assert "owner_margin_declined" not in label
+
+
+def test_legacy_owner_snapshot_does_not_emit_margin_flag_or_change_l2_flow(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    env.create_entity("Ryan Bennett")
+    owner_emb = _normalized([0.95, 0.05])
+    other_emb = _normalized([0.1, 0.99])
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "095500_300",
+        np.vstack([owner_emb, other_emb]),
+    )
+    env.create_speakers_json("20240101", "095500_300", ["Ryan Bennett"])
+
+    result = attribute_segment("20240101", STREAM, "095500_300")
+
+    assert result["labels"][0]["method"] == "owner_centroid"
+    assert result["labels"][1]["speaker"] == "ryan_bennett"
+    assert result["labels"][1]["confidence"] == "high"
+    assert result["labels"][1]["method"] == "structural_single_speaker"
+    assert all("owner_margin_declined" not in label for label in result["labels"])
+
+
 # ---------------------------------------------------------------------------
 # Layer 2: Structural heuristics — single speaker
 # ---------------------------------------------------------------------------
@@ -453,6 +649,43 @@ def test_layer2_setting_field(speakers_env):
     assert labels[1]["method"] == "structural_setting"
 
 
+def test_l2_setting_field_downgrades_margin_declined_statement(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    env.set_identity(preferred="Self", name="Self Person", aliases=[])
+    _setup_margin_owner(env)
+    trap, _competitor_dir, _distractor_dir = _setup_margin_trap_entities(env)
+    control = _normalized([0.1, 0.99])
+    seg_dir = _write_controlled_segment(
+        env,
+        "20240101",
+        "101500_300",
+        np.vstack([trap, control]),
+        source="imported_audio",
+    )
+    _rewrite_segment_header(
+        seg_dir,
+        "imported_audio",
+        setting="Self and Distractor Test at coffee",
+    )
+
+    result = attribute_segment("20240101", STREAM, "101500_300")
+    margin_label = result["labels"][0]
+    control_label = result["labels"][1]
+
+    assert margin_label["speaker"] == "distractor_test"
+    assert margin_label["confidence"] == "medium"
+    assert margin_label["confidence"] != "high"
+    assert margin_label["method"] == "structural_setting"
+    assert margin_label["owner_margin_declined"] is True
+    assert control_label["speaker"] == "distractor_test"
+    assert control_label["confidence"] == "high"
+    assert control_label["method"] == "structural_setting"
+    assert "owner_margin_declined" not in control_label
+    assert result["unmatched"] == []
+
+
 # ---------------------------------------------------------------------------
 # Layer 3: Acoustic matching
 # ---------------------------------------------------------------------------
@@ -505,6 +738,57 @@ def test_layer3_acoustic_matching(speakers_env):
     assert (
         result["metadata"]["owner_centroid_last_refreshed_at"] == "2026-03-15T12:00:00Z"
     )
+
+
+def test_l3_per_statement_downgrades_margin_declined_high_match_to_medium(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_margin_owner(env)
+    trap, _competitor_dir, _distractor_dir = _setup_margin_trap_entities(env)
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "102500_300",
+        trap.reshape(1, -1),
+    )
+
+    result = attribute_segment("20240101", STREAM, "102500_300")
+    label = result["labels"][0]
+
+    assert label["speaker"] == "casey_rival"
+    assert label["method"] == "acoustic"
+    assert label["confidence"] == "medium"
+    assert label["owner_margin_declined"] is True
+    assert result["unmatched"] == []
+
+
+def test_l3_acoustic_cluster_downgrades_margin_declined_high_match_to_medium(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_margin_owner(env)
+    trap, _competitor_dir, _distractor_dir = _setup_margin_trap_entities(env)
+    _write_labeled_controlled_segment(
+        env,
+        "20240101",
+        "103500_300",
+        trap.reshape(1, -1),
+        [1],
+    )
+
+    result = attribute_segment("20240101", STREAM, "103500_300")
+    label = result["labels"][0]
+
+    assert label["speaker"] == "casey_rival"
+    assert label["method"] == "acoustic_cluster"
+    assert label["confidence"] == "medium"
+    assert label["owner_margin_declined"] is True
+    assert result["unmatched"] == []
 
 
 def test_rebuild_resnapshots_current_owner_threshold_without_changing_read_paths(
@@ -928,6 +1212,51 @@ def test_accumulate_contamination_guard(speakers_env):
 
     # Should not save — embedding is too similar to owner
     assert saved == {}
+
+
+def test_accumulate_voiceprints_skips_margin_declined_relabel_but_keeps_control(
+    speakers_env,
+):
+    from solstone.apps.speakers.attribution import accumulate_voiceprints
+
+    env = speakers_env()
+    _setup_margin_owner(env)
+    env.create_entity("Bob Smith")
+    trap = _embedding_with_owner_cos(0.45)
+    control = _normalized([0.1, 0.99])
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "104500_300",
+        np.vstack([trap, control]),
+    )
+
+    labels = [
+        {
+            "sentence_id": 1,
+            "speaker": "bob_smith",
+            "confidence": "high",
+            "method": "acoustic",
+            "owner_margin_declined": True,
+        },
+        {
+            "sentence_id": 2,
+            "speaker": "bob_smith",
+            "confidence": "high",
+            "method": "acoustic",
+        },
+    ]
+
+    saved = accumulate_voiceprints(
+        "20240101", STREAM, "104500_300", labels, "mic_audio"
+    )
+
+    assert saved == {"bob_smith": 1}
+    vp_path = env.journal / "entities" / "bob_smith" / "voiceprints.npz"
+    with np.load(vp_path, allow_pickle=False) as data:
+        assert len(data["embeddings"]) == 1
+        metadata = json.loads(str(data["metadata"][0]))
+    assert metadata["sentence_id"] == 2
 
 
 def test_accumulate_skips_medium_confidence(speakers_env):
