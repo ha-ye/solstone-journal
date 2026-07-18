@@ -217,12 +217,12 @@
     const labels = {
       active: 'active',
       x: 'disconnected',
-      error: 'observers offline',
-      degraded: 'observer needs attention',
+      error: 'devices offline',
+      degraded: 'a device needs attention',
       question: 'status unknown',
       bang: 'attention',
-      half: 'observers stale',
-      paused: 'no observers'
+      half: 'devices out of touch',
+      paused: 'no devices running sol'
     };
 
     return {

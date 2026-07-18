@@ -104,7 +104,7 @@
 
     if (statusSentence) {
       if (metrics.state === 'connected' && lastCaptureStatusForPane === 'degraded') {
-        statusSentence.textContent = 'an observer needs attention';
+        statusSentence.textContent = 'a device needs attention';
         statusSentence.style.color = '#b91c1c';
       } else if (metrics.state === 'connected') {
         statusSentence.textContent = 'all systems connected';
@@ -212,7 +212,7 @@
 	        button.disabled = false;
 	        button.textContent = window.CONVEY_COPY?.ACTION_RECONNECT || 'Reconnect';
 	        resultEl.style.color = '#ef4444';
-	        resultEl.textContent = err?.serverMessage || err?.reasonCode || "I couldn't reconnect.";
+	        resultEl.textContent = err?.serverMessage || "i couldn't restart sol's processing.";
 	      });
 	  }
 
@@ -222,8 +222,7 @@
     if (!section || !text) return;
 
     section.style.display = '';
-    const status = capture?.status;
-	    const displayStatus = status === 'no_observers' ? 'no observers' : (status || 'unknown');
+	    const status = capture?.status;
 		    if (status === 'active') {
 		      text.style.color = '#10b981';
 		    } else if (status === 'degraded') {
@@ -240,14 +239,14 @@
 		      const appendHealthLink = () => {
 		        const link = document.createElement('a');
 		        link.href = '/app/health';
-		        link.textContent = 'view observer health →';
+		        link.textContent = 'view device health →';
 		        link.style.cssText = 'display: inline-block; margin-top: 4px; color: #b91c1c; font-size: 12px;';
 		        text.appendChild(link);
 		      };
 
 		      if (!degraded.length) {
-		        appendLine('observer needs attention', 'color: #b91c1c; font-weight: 600;');
-		        appendLine("an observer isn't reaching your journal.", 'color: #b91c1c; font-size: 12px;');
+		        appendLine('a device needs attention', 'color: #b91c1c; font-weight: 600;');
+		        appendLine("a device isn't reaching your journal.", 'color: #b91c1c; font-size: 12px;');
 		        appendHealthLink();
 		        return;
 		      }
@@ -255,25 +254,25 @@
 		      const first = degraded[0];
 		      const rej = first.ingest_rejection;
 		      const name = (first.name || '').trim();
-		      const title = name ? name + ' needs attention' : 'observer needs attention';
+		      const title = name ? name + ' needs attention' : 'a device needs attention';
 		      const hasFirstTs = typeof rej.first_ts === 'number' && isFinite(rej.first_ts);
 		      const hasActiveCount = typeof rej.active_count === 'number' && isFinite(rej.active_count);
 		      appendLine(title, 'color: #b91c1c; font-weight: 600;');
 
 		      let consequence;
 		      if (hasFirstTs && hasActiveCount) {
-		        consequence = "its recordings haven't reached your journal since " + captureMonthDay(rej.first_ts) + ' — ' + rej.active_count + ' rejected.';
+			        consequence = "what it sensed hasn't reached your journal since " + captureMonthDay(rej.first_ts) + ', ' + rej.active_count + ' uploads turned away.';
 		      } else if (hasActiveCount) {
-		        consequence = "its recordings aren't reaching your journal — " + rej.active_count + ' rejected.';
+			        consequence = "what it senses isn't reaching your journal, " + rej.active_count + ' uploads turned away.';
 		      } else if (hasFirstTs) {
-		        consequence = "its recordings haven't reached your journal since " + captureMonthDay(rej.first_ts) + '.';
+			        consequence = "what it sensed hasn't reached your journal since " + captureMonthDay(rej.first_ts) + '.';
 		      } else {
-		        consequence = "its recordings aren't reaching your journal.";
+			        consequence = "what it senses isn't reaching your journal.";
 		      }
 		      appendLine(consequence, 'color: #b91c1c; font-size: 12px;');
 
 		      const recovery = rej.version
-		        ? (name || 'this observer') + ' is on v' + rej.version + '. update or restart it on that device, then a valid upload clears this.'
+		        ? (name || 'this device') + ' is running sol v' + rej.version + '. update or restart sol on that device, then the next upload clears this.'
 		        : 'update or restart it on that device, then a valid upload clears this.';
 		      appendLine(recovery, 'color: #6b7280; font-size: 12px;');
 
@@ -296,9 +295,9 @@
 		    } else if (status === 'stale') {
 		      const stale = (capture.observers || []).filter(o => o.status === 'stale');
 	      const names = stale.map(o => o.name).filter(Boolean).join(', ');
-	      const label = stale.length === 1 ? 'observer' : 'observers';
+	      const label = stale.length === 1 ? 'device' : 'devices';
 	      const lastReported = formatObserverLastReported(stale);
-	      text.textContent = `${label} ${names || 'observer'} last reported ${lastReported || 'recently'}`;
+	      text.textContent = `${label} ${names || 'device'} last reported ${lastReported || 'recently'}`;
 	      text.style.color = '#f59e0b';
 	      const button = document.createElement('button');
 	      button.type = 'button';
@@ -315,8 +314,14 @@
     } else {
       text.style.color = '#9ca3af';
     }
-    text.textContent = 'observer ' + displayStatus;
-  }
+	    if (status === 'no_observers') {
+	      text.textContent = 'no devices are running sol yet. set one up to start your journal.';
+	    } else if (status === 'active' || status === 'offline') {
+	      text.textContent = 'device ' + status;
+	    } else {
+	      text.textContent = "i don't know the status of your devices right now.";
+	    }
+	  }
 
   function renderVersionSection(version) {
     const section = document.getElementById('version-section');
