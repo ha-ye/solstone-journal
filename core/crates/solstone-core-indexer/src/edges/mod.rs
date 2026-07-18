@@ -1477,8 +1477,25 @@ mod tests {
             .expect("compute utc fallback timestamp"),
             1_772_937_000_000
         );
+        let invalid = temp_root("invalid-timezone");
+        write_json(
+            &invalid,
+            "config/journal.json",
+            json!({"identity":{"timezone":"Not/A_Zone"}}),
+        );
+        assert_eq!(owner_timezone_for_journal(&invalid), Tz::UTC);
+        assert_eq!(
+            segment_start_ts_ms(
+                "20260308",
+                "023000_300",
+                owner_timezone_for_journal(&invalid)
+            )
+            .expect("compute invalid timezone utc fallback timestamp"),
+            1_772_937_000_000
+        );
         fs::remove_dir_all(configured).expect("cleanup configured timezone root");
         let _ = fs::remove_dir_all(fallback);
+        fs::remove_dir_all(invalid).expect("cleanup invalid timezone root");
     }
 
     #[test]

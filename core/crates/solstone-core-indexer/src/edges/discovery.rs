@@ -60,12 +60,29 @@ mod tests {
         write(&root, "facets/work/events/20260304.jsonl");
         write(&root, "facets/work/entities/alice/not-observations.jsonl");
         write(&root, "facets/work/entities/alice/extra/observations.jsonl");
+        write(&root, "chronicle/20260430/default/090000_300/screen.jsonl");
+        write(
+            &root,
+            "chronicle/20260430/default/090000_300/left_screen.jsonl",
+        );
+        write(
+            &root,
+            "chronicle/20260430/default/090000_300/talents/documents.json",
+        );
+        write(
+            &root,
+            "chronicle/20260430/default/090000_300/talents/speaker_labels.json",
+        );
 
         let files = discover_edge_files(&root).expect("discover edge files");
         let rels: Vec<_> = files.keys().cloned().collect();
         assert_eq!(
             rels,
             vec![
+                "20260430/default/090000_300/left_screen.jsonl",
+                "20260430/default/090000_300/screen.jsonl",
+                "20260430/default/090000_300/talents/documents.json",
+                "20260430/default/090000_300/talents/speaker_labels.json",
                 "facets/work/activities/20260304.jsonl",
                 "facets/work/entities/20260304.jsonl",
                 "facets/work/entities/alice/observations.jsonl",
