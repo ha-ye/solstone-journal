@@ -1231,13 +1231,13 @@ a.body-day-cell:focus-visible {
       '<div class="body-hero-icon" aria-hidden="true">♡</div>',
       '<div>',
       '<h2 id="body-archive-title" class="body-section-title">Body archive</h2>',
-      '<p class="body-hero-kicker">What Solstone holds about your body over time.</p>',
+      '<p class="body-hero-kicker">what your journal holds about your body over time.</p>',
       coverage ? html([
         '<p class="body-hero-coverage body-num">',
-        `${escapeHtml(coverage.range_label)} &middot; ${escapeHtml(archive.months_observed)} months observed`,
+        `${escapeHtml(coverage.range_label)} &middot; ${escapeHtml(archive.months_observed)} months held`,
         '</p>',
         '<p class="body-hero-stats">',
-        `<span class="body-num">${escapeHtml(archive.entry_total_label)}</span> entries`,
+        `<span class="body-num">${escapeHtml(archive.entry_total_label)}</span> entries kept`,
         ` &middot; <span class="body-num">${escapeHtml(archive.import_count)}</span> health `,
         Number(archive.import_count) === 1 ? "import" : "imports",
         '</p>',
@@ -1489,7 +1489,7 @@ a.body-day-cell:focus-visible {
   function renderOverview(status) {
     const archive = asObject(status.archive);
     return html([
-      renderHeader("Body", "Personal health context imported into Solstone.", false),
+      renderHeader("body", "your health, brought into your journal.", false),
       renderFreshnessStrip(status.freshness),
       renderArchiveHero(archive),
       renderQuickActions(archive),
@@ -1742,7 +1742,7 @@ a.body-day-cell:focus-visible {
     if (!items.length) return "";
     return html([
       '<section class="body-card body-section" aria-labelledby="body-ask-title">',
-      '<h2 id="body-ask-title" class="body-question-title">Ask Solstone about this day</h2>',
+      '<h2 id="body-ask-title" class="body-question-title">ask sol about this day</h2>',
       '<div class="body-prompts">',
       items.map((prompt) => `<button type="button" class="body-prompt" data-prompt="${escapeHtml(prompt)}">${escapeHtml(prompt)}</button>`).join(""),
       '</div></section>',

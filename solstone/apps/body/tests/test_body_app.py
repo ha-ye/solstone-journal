@@ -1493,7 +1493,7 @@ def test_day_api_prompts_and_workspace_chat_hook(body_env):
     assert any("glucose peak" in prompt for prompt in payload["prompts"])
 
     source = _function_sources("renderPrompts", "bindPromptButtons")
-    assert "Ask Solstone about this day" in source
+    assert "ask sol about this day" in source
     assert "data-prompt=" in source
     assert "window.fillChat" in source
 
@@ -1960,7 +1960,7 @@ def test_status_api_and_workspace_cover_archive_sections(body_env):
     assert "Coverage areas" in source
     assert "Sources represented" in source
     assert "body-day-cell" in source
-    assert "months observed" in source
+    assert "months held" in source
     # Month labels above the grid and the ramp legend under it.
     assert "body-days-months" in source
     assert "more body data" in source
@@ -2062,7 +2062,7 @@ def test_overview_mounts_dayless_date_nav_and_keeps_body_title(body_env):
     assert "data-date-nav" in source
     assert "data-date-nav-heading" in source
     assert (
-        'renderHeader("Body", "Personal health context imported into Solstone.", false)'
+        'renderHeader("body", "your health, brought into your journal.", false)'
         in source
     )
 
