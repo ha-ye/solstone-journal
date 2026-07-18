@@ -3,7 +3,9 @@
 
 mod action_logs;
 mod activities;
+mod ai_chat;
 mod events;
+mod imports;
 
 use std::path::Path;
 
@@ -18,6 +20,8 @@ pub enum Family {
     Event,
     Activity,
     ActionLog,
+    StructuredImport,
+    AiChat,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,7 +32,7 @@ pub struct IndexChunk {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProducedChunks {
     pub chunks: Vec<IndexChunk>,
-    pub agent_override: Option<&'static str>,
+    pub agent_override: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +72,41 @@ pub(crate) const INDEX_FAMILY_PATTERNS: &[FamilyPattern] = &[
     FamilyPattern {
         pattern: "*/import.*/*/imported.md",
         family: Family::Markdown,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/import.*/imported.jsonl",
+        family: Family::StructuredImport,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/import.chatgpt/*/conversation_transcript.jsonl",
+        family: Family::AiChat,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/import.claude/*/conversation_transcript.jsonl",
+        family: Family::AiChat,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/import.gemini/*/conversation_transcript.jsonl",
+        family: Family::AiChat,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/import.chatgpt/*/imported_audio.jsonl",
+        family: Family::AiChat,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/import.claude/*/imported_audio.jsonl",
+        family: Family::AiChat,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/import.gemini/*/imported_audio.jsonl",
+        family: Family::AiChat,
         root: PatternRoot::DayRooted,
     },
     FamilyPattern {
@@ -139,7 +178,7 @@ pub(crate) fn patterns_for_root(root: PatternRoot) -> impl Iterator<Item = &'sta
         .filter(move |spec| spec.root == root)
 }
 
-pub fn produce_chunks(family: Family, text: &str) -> ProducedChunks {
+pub fn produce_chunks(family: Family, rel: &str, text: &str) -> ProducedChunks {
     match family {
         Family::Markdown => ProducedChunks {
             chunks: chunk_markdown(text)
@@ -152,16 +191,18 @@ pub fn produce_chunks(family: Family, text: &str) -> ProducedChunks {
         },
         Family::Event => ProducedChunks {
             chunks: events::render(&parse_jsonl_objects(text)),
-            agent_override: Some("event"),
+            agent_override: Some("event".to_string()),
         },
         Family::Activity => ProducedChunks {
             chunks: activities::render(&parse_jsonl_objects(text)),
-            agent_override: Some("activity"),
+            agent_override: Some("activity".to_string()),
         },
         Family::ActionLog => ProducedChunks {
             chunks: action_logs::render(&parse_jsonl_objects(text)),
-            agent_override: Some("action"),
+            agent_override: Some("action".to_string()),
         },
+        Family::StructuredImport => imports::render(&parse_jsonl_objects(text)),
+        Family::AiChat => ai_chat::render(rel, &parse_jsonl_objects(text)),
     }
 }
 
@@ -287,6 +328,26 @@ mod tests {
             Some(Family::Markdown)
         );
         assert_eq!(
+            classify("20260101/import.ics/imported.jsonl"),
+            Some(Family::StructuredImport)
+        );
+        assert_ne!(
+            classify("20260101/import.ics/imported.jsonl"),
+            Some(Family::AiChat)
+        );
+        assert_eq!(
+            classify("20260101/import.claude/thread_a/conversation_transcript.jsonl"),
+            Some(Family::AiChat)
+        );
+        assert_ne!(
+            classify("20260101/import.claude/thread_a/conversation_transcript.jsonl"),
+            Some(Family::StructuredImport)
+        );
+        assert_eq!(
+            classify("20260101/import.chatgpt/conv_b/imported_audio.jsonl"),
+            Some(Family::AiChat)
+        );
+        assert_eq!(
             classify("facets/work/news/20240101.md"),
             Some(Family::Markdown)
         );
@@ -326,7 +387,7 @@ mod tests {
             .into_iter()
             .map(|chunk| chunk.markdown)
             .collect();
-        let produced = produce_chunks(Family::Markdown, text);
+        let produced = produce_chunks(Family::Markdown, "20240101/talents/flow.md", text);
         let got: Vec<String> = produced
             .chunks
             .into_iter()
@@ -345,13 +406,14 @@ mod tests {
 not json
 {"title":"Review","type":"task"}
 "#;
-        let produced = produce_chunks(Family::Event, text);
+        let produced = produce_chunks(Family::Event, "facets/work/events/20240101.jsonl", text);
         assert_eq!(produced.chunks.len(), 2);
         assert!(produced.chunks[0].content.contains("Meeting: Planning"));
         assert!(produced.chunks[1].content.contains("Task: Review"));
 
         let produced = produce_chunks(
             Family::ActionLog,
+            "config/actions/20240101.jsonl",
             r#"
 42
 not json
@@ -367,6 +429,7 @@ not json
 
         let produced = produce_chunks(
             Family::Activity,
+            "facets/work/activities/20240101.jsonl",
             r#"
 42
 not json
@@ -378,14 +441,111 @@ not json
     }
 
     #[test]
+    fn structured_import_agent_preserves_source_case_until_merge() {
+        let produced = produce_chunks(
+            Family::StructuredImport,
+            "20260101/import.ics/imported.jsonl",
+            "",
+        );
+        assert_eq!(produced.agent_override, None);
+        assert_eq!(produced.chunks.len(), 0);
+
+        let produced = produce_chunks(
+            Family::StructuredImport,
+            "20260101/import.ics/imported.jsonl",
+            r#"{"import":{"source":"ics"}}"#,
+        );
+        assert_eq!(produced.agent_override.as_deref(), Some("import.ics"));
+
+        let produced = produce_chunks(
+            Family::StructuredImport,
+            "20260101/import.ics/imported.jsonl",
+            r#"{"import":{"source":"ICS"}}"#,
+        );
+        assert_eq!(produced.agent_override.as_deref(), Some("import.ICS"));
+
+        let produced = produce_chunks(
+            Family::StructuredImport,
+            "20260101/import.ics/imported.jsonl",
+            r#"{"entry_count":1}"#,
+        );
+        assert_eq!(produced.agent_override.as_deref(), Some("import.unknown"));
+    }
+
+    #[test]
+    fn structured_import_skips_header_and_empty_generic_entries() {
+        let produced = produce_chunks(
+            Family::StructuredImport,
+            "20260101/import.ics/imported.jsonl",
+            r#"{"import":{"source":"ics"},"title":"Header"}
+{"type":"generic"}"#,
+        );
+        assert_eq!(produced.chunks.len(), 0);
+
+        let produced = produce_chunks(
+            Family::StructuredImport,
+            "20260101/import.ics/imported.jsonl",
+            r#"{"import":{"source":"ics"}}
+{"type":"calendar_event","title":"Quarterly Planning","ts":"2026-01-01T09:30:00-07:00"}"#,
+        );
+        assert_eq!(produced.chunks.len(), 1);
+        assert!(produced.chunks[0].content.contains("Quarterly Planning"));
+    }
+
+    #[test]
+    fn ai_chat_agent_comes_from_path_or_fallback() {
+        let produced = produce_chunks(
+            Family::AiChat,
+            "20260101/import.claude/thread_a/conversation_transcript.jsonl",
+            r#"{"model":"claude-3"}"#,
+        );
+        assert_eq!(produced.agent_override.as_deref(), Some("import.claude"));
+
+        let produced = produce_chunks(
+            Family::AiChat,
+            "20260101/misc/thread_a/conversation_transcript.jsonl",
+            r#"{"model":"claude-3"}"#,
+        );
+        assert_eq!(produced.agent_override.as_deref(), Some("import.ai_chat"));
+    }
+
+    #[test]
+    fn ai_chat_indexes_only_non_empty_start_bearing_turns() {
+        let produced = produce_chunks(
+            Family::AiChat,
+            "20260101/import.claude/thread_a/conversation_transcript.jsonl",
+            r#"{"model":"claude-3","imported":{"facet":"work"}}
+{"start":"00:00:01","speaker":"User","text":"Hello"}
+{"start":"00:00:02","speaker":"Assistant","text":""}
+{"start":"00:00:03","speaker":"Assistant","text":"Hi there"}
+{"speaker":"System","text":"metadata-like"}"#,
+        );
+        let contents: Vec<&str> = produced
+            .chunks
+            .iter()
+            .map(|chunk| chunk.content.as_str())
+            .collect();
+        assert_eq!(contents, vec!["**User:** Hello", "**Assistant:** Hi there"]);
+
+        let produced = produce_chunks(
+            Family::AiChat,
+            "20260101/import.claude/thread_a/conversation_transcript.jsonl",
+            r#"{"model":"claude-3"}
+{"start":"00:00:01","speaker":"User","text":""}"#,
+        );
+        assert_eq!(produced.chunks.len(), 0);
+    }
+
+    #[test]
     fn event_skip_predicate_is_title_only() {
         let produced = produce_chunks(
             Family::Event,
+            "facets/work/events/20240101.jsonl",
             r#"{"type":"meeting"}
 {"title":"","type":"meeting"}
 {"title":"Standup","type":"meeting","participants":["Alice","Bob"],"summary":"Daily sync"}"#,
         );
-        assert_eq!(produced.agent_override, Some("event"));
+        assert_eq!(produced.agent_override.as_deref(), Some("event"));
         assert_eq!(produced.chunks.len(), 1);
         assert!(produced.chunks[0].content.contains("### Meeting: Standup"));
         assert!(
@@ -400,11 +560,12 @@ not json
     fn action_log_skip_predicate_is_action_only() {
         let produced = produce_chunks(
             Family::ActionLog,
+            "config/actions/20240101.jsonl",
             r#"{"actor":"settings"}
 {"action":"","actor":"settings"}
 {"action":"identity_update","actor":"settings","source":"app","timestamp":"2025-12-16T07:33:05.135587+00:00","use_id":"123","params":{"name":"Alice"}}"#,
         );
-        assert_eq!(produced.agent_override, Some("action"));
+        assert_eq!(produced.agent_override.as_deref(), Some("action"));
         assert_eq!(produced.chunks.len(), 1);
         assert!(
             produced.chunks[0]
@@ -428,11 +589,12 @@ not json
     fn activity_objects_always_produce_chunks() {
         let produced = produce_chunks(
             Family::Activity,
+            "facets/work/activities/20240101.jsonl",
             r#"{}
 {"id":"x"}
 {"title":"Launch sync","activity":"meeting","facet":"work","day":"20260418","segments":["090000_300"],"level_avg":0.5,"description":"Team sync","details":"Assigned owners","participation":[{"name":"Mina"}],"story":{"body":"Aligned on launch.","topics":["launch","owners"]},"hidden":true}"#,
         );
-        assert_eq!(produced.agent_override, Some("activity"));
+        assert_eq!(produced.agent_override.as_deref(), Some("activity"));
         assert_eq!(produced.chunks.len(), 3);
         assert!(produced.chunks[0].content.contains("### Untitled activity"));
         assert!(produced.chunks[1].content.contains("### X"));

@@ -146,12 +146,11 @@ fn index_file(
 ) -> Result<Vec<String>, String> {
     let text = fs::read_to_string(path)
         .map_err(|error| format!("content read failed for {rel}: {error}"))?;
-    let produced = produce_chunks(family, &text);
+    let produced = produce_chunks(family, rel, &text);
     let metadata = extract_path_metadata(rel);
     let facet = metadata.facet.to_lowercase();
     let agent = produced
         .agent_override
-        .map(str::to_string)
         .unwrap_or_else(|| metadata.agent.clone())
         .to_lowercase();
     let stream_lookup = extract_stream(journal, rel);
@@ -487,6 +486,147 @@ mod tests {
             .expect("facet log row");
         assert_eq!(action_log_agent, "action");
         fs::remove_dir_all(root).expect("cleanup jsonl families root");
+    }
+
+    #[test]
+    fn scan_indexes_structured_imports_with_formatter_agent() {
+        let root = temp_root("structured-import");
+        write(
+            &root,
+            "chronicle/20260101/import.ics/imported.jsonl",
+            r#"{"import":{"source":"ICS"},"entry_count":2}
+{"type":"calendar_event","title":"Planning Session","ts":"2026-01-01T09:30:00-07:00","duration_minutes":30}
+{"type":"generic"}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan structured import");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='20260101/import.ics/imported.jsonl'"
+            ),
+            1
+        );
+        let row: (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT day, facet, agent, stream, time_bucket, content FROM chunks WHERE path='20260101/import.ics/imported.jsonl'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("structured import row");
+        assert_eq!(row.0, "20260101");
+        assert_eq!(row.1, "");
+        assert_eq!(row.2, "import.ics");
+        assert_eq!(row.3, None);
+        assert_eq!(row.4, "");
+        assert!(row.5.contains("Planning Session"));
+        fs::remove_dir_all(root).expect("cleanup structured import root");
+    }
+
+    #[test]
+    fn scan_indexes_ai_chat_imports_without_metadata_facet() {
+        let root = temp_root("ai-chat-import");
+        write(
+            &root,
+            "chronicle/20260101/import.claude/thread_a/conversation_transcript.jsonl",
+            r#"{"model":"claude-3","imported":{"facet":"work"}}
+{"start":"00:00:01","speaker":"User","text":"Hello"}
+{"start":"00:00:02","speaker":"Assistant","text":"Hi there"}
+{"start":"00:00:03","speaker":"Assistant","text":""}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan ai chat import");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='20260101/import.claude/thread_a/conversation_transcript.jsonl'"
+            ),
+            2
+        );
+        let row: (
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            String,
+        ) = conn
+            .query_row(
+                "SELECT day, facet, agent, stream, time_bucket, content FROM chunks WHERE path='20260101/import.claude/thread_a/conversation_transcript.jsonl' ORDER BY idx LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("ai chat import row");
+        assert_eq!(row.0, "20260101");
+        assert_eq!(row.1, "");
+        assert_eq!(row.2, "import.claude");
+        assert_eq!(row.3, None);
+        assert_eq!(row.4, "");
+        assert!(row.5.contains("**User:**"));
+        fs::remove_dir_all(root).expect("cleanup ai chat import root");
+    }
+
+    #[test]
+    fn scan_writes_file_row_for_zero_chunk_ai_chat_import() {
+        let root = temp_root("zero-ai-chat-import");
+        write(
+            &root,
+            "chronicle/20260101/import.gemini/thread_a/conversation_transcript.jsonl",
+            r#"{"model":"gemini"}
+{"start":"00:00:01","speaker":"User","text":""}
+{"start":"00:00:02","speaker":"Assistant","text":""}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan zero ai chat import");
+        assert_eq!(report.indexed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='20260101/import.gemini/thread_a/conversation_transcript.jsonl'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='20260101/import.gemini/thread_a/conversation_transcript.jsonl'"
+            ),
+            1
+        );
+        fs::remove_dir_all(root).expect("cleanup zero ai chat import root");
     }
 
     #[test]

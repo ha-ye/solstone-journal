@@ -187,4 +187,26 @@ mod tests {
         );
         fs::remove_dir_all(root).expect("cleanup discover root");
     }
+
+    #[test]
+    fn discovers_import_content_families() {
+        let root = temp_root("discover-imports");
+        write(&root, "chronicle/20260101/import.ics/imported.jsonl");
+        write(
+            &root,
+            "chronicle/20260101/import.claude/thread_a/conversation_transcript.jsonl",
+        );
+        write(
+            &root,
+            "chronicle/20260101/import.chatgpt/conv_b/imported_audio.jsonl",
+        );
+
+        let files = discover_indexable_files(&root).expect("discover files");
+        assert!(files.contains_key("20260101/import.ics/imported.jsonl"));
+        assert!(
+            files.contains_key("20260101/import.claude/thread_a/conversation_transcript.jsonl")
+        );
+        assert!(files.contains_key("20260101/import.chatgpt/conv_b/imported_audio.jsonl"));
+        fs::remove_dir_all(root).expect("cleanup discover imports root");
+    }
 }
