@@ -15,7 +15,10 @@ pub(crate) enum EdgePatternRoot {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeSourceKind {
+    Activity,
+    Observation,
     Copresence,
+    EventLegacy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,11 +28,28 @@ pub(crate) struct EdgeSourcePattern {
     pub kind: EdgeSourceKind,
 }
 
-pub(crate) const EDGE_SOURCE_PATTERNS: &[EdgeSourcePattern] = &[EdgeSourcePattern {
-    pattern: "facets/*/entities/*.jsonl",
-    root: EdgePatternRoot::Structural,
-    kind: EdgeSourceKind::Copresence,
-}];
+pub(crate) const EDGE_SOURCE_PATTERNS: &[EdgeSourcePattern] = &[
+    EdgeSourcePattern {
+        pattern: "facets/*/activities/*.jsonl",
+        root: EdgePatternRoot::Structural,
+        kind: EdgeSourceKind::Activity,
+    },
+    EdgeSourcePattern {
+        pattern: "facets/*/entities/*/observations.jsonl",
+        root: EdgePatternRoot::Structural,
+        kind: EdgeSourceKind::Observation,
+    },
+    EdgeSourcePattern {
+        pattern: "facets/*/entities/*.jsonl",
+        root: EdgePatternRoot::Structural,
+        kind: EdgeSourceKind::Copresence,
+    },
+    EdgeSourcePattern {
+        pattern: "facets/*/events/*.jsonl",
+        root: EdgePatternRoot::Structural,
+        kind: EdgeSourceKind::EventLegacy,
+    },
+];
 
 pub(crate) fn patterns_for_root(
     root: EdgePatternRoot,
@@ -54,4 +74,33 @@ pub fn edge_source_for_rel(rel: &str) -> Result<Option<EdgeSourceKind>, EdgeErro
         }
     }
     Ok(None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edge_source_patterns_match_exact_structural_shapes() {
+        assert_eq!(
+            edge_source_for_rel("facets/work/activities/20260430.jsonl"),
+            Ok(Some(EdgeSourceKind::Activity))
+        );
+        assert_eq!(
+            edge_source_for_rel("facets/work/entities/alice/observations.jsonl"),
+            Ok(Some(EdgeSourceKind::Observation))
+        );
+        assert_eq!(
+            edge_source_for_rel("facets/work/entities/20260430.jsonl"),
+            Ok(Some(EdgeSourceKind::Copresence))
+        );
+        assert_eq!(
+            edge_source_for_rel("facets/work/events/20260430.jsonl"),
+            Ok(Some(EdgeSourceKind::EventLegacy))
+        );
+        assert_eq!(
+            edge_source_for_rel("facets/work/entities/alice/extra/observations.jsonl"),
+            Ok(None)
+        );
+    }
 }

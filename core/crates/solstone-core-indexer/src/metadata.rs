@@ -159,6 +159,12 @@ mod tests {
                 "work",
                 "",
             ),
+            (
+                "facets/work/entities/alice/observations.jsonl",
+                "",
+                "work",
+                "",
+            ),
             ("facets/work/logs/20240101.jsonl", "20240101", "work", ""),
         ];
         for (rel, day, facet, agent) in cases {

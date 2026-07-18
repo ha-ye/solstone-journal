@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value};
 
 use super::candidates::EdgeResolver;
-use super::{EdgeContext, EdgeError, EdgeRow};
+use super::{EdgeContext, EdgeError, EdgeRow, EdgeValue};
 
 type JsonObject = Map<String, Value>;
 
@@ -71,15 +71,15 @@ pub(crate) fn extract_copresence_edges(
                 src: left.entity_id.clone(),
                 dst: right.entity_id.clone(),
                 kind: "co-present".to_string(),
-                src_name: Some(left.name.clone()),
-                dst_name: Some(right.name.clone()),
+                src_name: EdgeValue::Text(left.name.clone()),
+                dst_name: EdgeValue::Text(right.name.clone()),
                 day: Some(context.day.clone()),
                 facet: Some(context.facet.clone()),
                 source: "co-presence".to_string(),
                 path: context.path.clone(),
                 anchor: Some(anchor.clone()),
-                label: Some(String::new()),
-                ts: Some(0),
+                label: EdgeValue::Text(String::new()),
+                ts: EdgeValue::Int(0),
                 weight: shared.len() as i64,
             });
         }

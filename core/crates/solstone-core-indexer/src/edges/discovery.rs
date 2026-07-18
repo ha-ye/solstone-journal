@@ -56,10 +56,22 @@ mod tests {
         write(&root, "chronicle/20240101/talents/flow.md");
         write(&root, "facets/work/entities/20260304.jsonl");
         write(&root, "facets/work/activities/20260304.jsonl");
+        write(&root, "facets/work/entities/alice/observations.jsonl");
+        write(&root, "facets/work/events/20260304.jsonl");
+        write(&root, "facets/work/entities/alice/not-observations.jsonl");
+        write(&root, "facets/work/entities/alice/extra/observations.jsonl");
 
         let files = discover_edge_files(&root).expect("discover edge files");
         let rels: Vec<_> = files.keys().cloned().collect();
-        assert_eq!(rels, vec!["facets/work/entities/20260304.jsonl"]);
+        assert_eq!(
+            rels,
+            vec![
+                "facets/work/activities/20260304.jsonl",
+                "facets/work/entities/20260304.jsonl",
+                "facets/work/entities/alice/observations.jsonl",
+                "facets/work/events/20260304.jsonl",
+            ]
+        );
         fs::remove_dir_all(root).expect("cleanup edge discovery root");
     }
 }

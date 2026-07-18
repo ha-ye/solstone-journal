@@ -13,10 +13,29 @@ use crate::entity_name_matcher::{EntityNameCandidate, find_matching_entity};
 
 type JsonObject = Map<String, Value>;
 
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct EdgeDropCounter {
+    drops: usize,
+}
+
+impl EdgeDropCounter {
+    pub fn reset(&mut self) {
+        self.drops = 0;
+    }
+
+    pub fn record_drop(&mut self) {
+        self.drops += 1;
+    }
+
+    pub fn drops(&self) -> usize {
+        self.drops
+    }
+}
+
 pub struct EdgeResolver {
     journal: PathBuf,
     cache: BTreeMap<String, Vec<EntityNameCandidate>>,
-    drops: usize,
+    drops: EdgeDropCounter,
 }
 
 impl EdgeResolver {
@@ -24,16 +43,20 @@ impl EdgeResolver {
         Self {
             journal: journal.to_path_buf(),
             cache: BTreeMap::new(),
-            drops: 0,
+            drops: EdgeDropCounter::default(),
         }
     }
 
     pub fn begin_file(&mut self) {
-        self.drops = 0;
+        self.drops.reset();
     }
 
     pub fn drops(&self) -> usize {
-        self.drops
+        self.drops.drops()
+    }
+
+    pub fn drops_mut(&mut self) -> &mut EdgeDropCounter {
+        &mut self.drops
     }
 
     pub fn resolve(
@@ -70,7 +93,7 @@ impl EdgeResolver {
     }
 
     pub fn record_drop(&mut self) {
-        self.drops += 1;
+        self.drops.record_drop();
     }
 }
 

@@ -6,13 +6,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use rusqlite::types::Value as SqlValue;
 use rusqlite::{Connection, OptionalExtension, params};
 use solstone_core_indexer::content::{Family, classify, produce_chunks};
 use solstone_core_indexer::discovery::discover_indexable_files;
 use solstone_core_indexer::edges::candidates::EdgeResolver;
 use solstone_core_indexer::edges::discovery::discover_edge_files;
 use solstone_core_indexer::edges::registry::edge_source_for_rel;
-use solstone_core_indexer::edges::{NormalizedEdge, extract_file_edges};
+use solstone_core_indexer::edges::{EdgeValue, NormalizedEdge, extract_file_edges};
 use solstone_core_indexer::entity_search::{
     ENTITY_SEARCH_WATERMARK_COUNT_PATH, ENTITY_SEARCH_WATERMARK_MTIME_PATH, EntitySearchBuild,
     build_entity_search,
@@ -392,6 +393,10 @@ fn insert_normalized_edges_inner(
     rows: &[NormalizedEdge],
 ) -> Result<(), StoreError> {
     for row in rows {
+        let src_name = edge_value_to_sql(&row.src_name);
+        let dst_name = edge_value_to_sql(&row.dst_name);
+        let label = edge_value_to_sql(&row.label);
+        let ts = edge_value_to_sql(&row.ts);
         conn.execute(
             "INSERT INTO edges(src, dst, kind, directed, src_name, dst_name, day, facet, source, path, anchor, label, ts, weight) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             params![
@@ -399,20 +404,29 @@ fn insert_normalized_edges_inner(
                 row.dst.as_str(),
                 row.kind.as_str(),
                 row.directed,
-                row.src_name.as_deref(),
-                row.dst_name.as_deref(),
+                src_name,
+                dst_name,
                 row.day.as_deref(),
                 row.facet.as_deref(),
                 row.source.as_str(),
                 row.path.as_str(),
                 row.anchor.as_deref(),
-                row.label.as_deref(),
-                row.ts,
+                label,
+                ts,
                 row.weight,
             ],
         )?;
     }
     Ok(())
+}
+
+fn edge_value_to_sql(value: &EdgeValue) -> SqlValue {
+    match value {
+        EdgeValue::Null => SqlValue::Null,
+        EdgeValue::Text(value) => SqlValue::Text(value.clone()),
+        EdgeValue::Int(value) => SqlValue::Integer(*value),
+        EdgeValue::Float(value) => SqlValue::Real(*value),
+    }
 }
 
 fn load_file_mtimes(conn: &Connection) -> Result<BTreeMap<String, i64>, StoreError> {
@@ -754,6 +768,168 @@ mod tests {
             .expect("query edge files")
             .map(|row| row.expect("edge file row"))
             .collect()
+    }
+
+    type EdgeValueStorageRow = (
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+        String,
+    );
+
+    fn normalized_edge(
+        path: &str,
+        src_name: EdgeValue,
+        dst_name: EdgeValue,
+        label: EdgeValue,
+        ts: EdgeValue,
+    ) -> NormalizedEdge {
+        NormalizedEdge {
+            src: "alice".to_string(),
+            dst: "bob".to_string(),
+            kind: "works-with".to_string(),
+            directed: 0,
+            src_name,
+            dst_name,
+            day: Some("20260430".to_string()),
+            facet: Some("work".to_string()),
+            source: "observation".to_string(),
+            path: path.to_string(),
+            anchor: Some("anchor".to_string()),
+            label,
+            ts,
+            weight: 1,
+        }
+    }
+
+    #[test]
+    fn insert_normalized_edges_binds_edge_value_variants() {
+        let root = temp_root("edge-value-bind");
+        let conn = open_index(&root).expect("open index");
+        let rows = vec![
+            normalized_edge(
+                "row-null-text-int-float",
+                EdgeValue::Null,
+                EdgeValue::Text("target".to_string()),
+                EdgeValue::Int(12),
+                EdgeValue::Float(1.5),
+            ),
+            normalized_edge(
+                "row-int-float-text-text",
+                EdgeValue::Int(7),
+                EdgeValue::Float(2.5),
+                EdgeValue::Text("label".to_string()),
+                EdgeValue::Text("not-a-time".to_string()),
+            ),
+            normalized_edge(
+                "row-text-null-null-int",
+                EdgeValue::Text("source".to_string()),
+                EdgeValue::Null,
+                EdgeValue::Null,
+                EdgeValue::Int(42),
+            ),
+        ];
+
+        assert_eq!(
+            insert_normalized_edges(&conn, &rows).expect("insert normalized edges"),
+            3
+        );
+        let stored: Vec<EdgeValueStorageRow> = conn
+            .prepare(
+                "SELECT path, typeof(src_name), quote(src_name), typeof(dst_name), quote(dst_name), typeof(label), quote(label), typeof(ts), quote(ts) FROM edges ORDER BY path",
+            )
+            .expect("prepare edge value query")
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                ))
+            })
+            .expect("query edge values")
+            .map(|row| row.expect("edge value row"))
+            .collect();
+        assert_eq!(
+            stored,
+            vec![
+                (
+                    "row-int-float-text-text".to_string(),
+                    "text".to_string(),
+                    "'7'".to_string(),
+                    "text".to_string(),
+                    "'2.5'".to_string(),
+                    "text".to_string(),
+                    "'label'".to_string(),
+                    "text".to_string(),
+                    "'not-a-time'".to_string(),
+                ),
+                (
+                    "row-null-text-int-float".to_string(),
+                    "null".to_string(),
+                    "NULL".to_string(),
+                    "text".to_string(),
+                    "'target'".to_string(),
+                    "text".to_string(),
+                    "'12'".to_string(),
+                    "real".to_string(),
+                    "1.5".to_string(),
+                ),
+                (
+                    "row-text-null-null-int".to_string(),
+                    "text".to_string(),
+                    "'source'".to_string(),
+                    "null".to_string(),
+                    "NULL".to_string(),
+                    "null".to_string(),
+                    "NULL".to_string(),
+                    "integer".to_string(),
+                    "42".to_string(),
+                ),
+            ]
+        );
+        fs::remove_dir_all(root).expect("cleanup edge value bind root");
+    }
+
+    #[test]
+    fn scan_observation_container_passthrough_fails_before_partial_insert() {
+        let root = temp_root("edge-observation-container-failure");
+        let rel = "facets/work/entities/source/observations.jsonl";
+        write(
+            &root,
+            rel,
+            r#"{"observed_at":1777556000000,"source_day":"20260430","relation":{"kind":"works-with","target_entity_id":"target","target_name":"Target","note":"valid"}}
+{"observed_at":1777556100000,"source_day":"20260430","relation":{"kind":"works-with","target_entity_id":"other","target_name":"Other","note":{"bad":true}}}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan observation failure");
+        assert_eq!(report.edges_indexed, 1);
+        assert_eq!(report.edge_rows_inserted, 0);
+        assert!(report.warnings.iter().any(|warning| {
+            warning
+                == "Skipping edge extraction for facets/work/entities/source/observations.jsonl: edge field label does not support object"
+        }));
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='facets/work/entities/source/observations.jsonl'"
+            ),
+            1
+        );
+        fs::remove_dir_all(root).expect("cleanup observation failure root");
     }
 
     #[test]
@@ -1802,7 +1978,7 @@ mod tests {
         );
 
         assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 0);
-        assert_eq!(report.edges_indexed, 5);
+        assert_eq!(report.edges_indexed, 7);
         assert_eq!(report.edge_rows_inserted, 0);
         assert_eq!(
             edge_file_paths(&conn),
@@ -1812,6 +1988,8 @@ mod tests {
                 "facets/work/entities/20260304.jsonl".to_string(),
                 "facets/work/entities/99999999.jsonl".to_string(),
                 "facets/work/entities/empty.jsonl".to_string(),
+                "facets/work/entities/empty_person/observations.jsonl".to_string(),
+                "facets/work/entities/romeo_montague/observations.jsonl".to_string(),
                 "facets/work/entities/some-slug.jsonl".to_string(),
             ]
         );
