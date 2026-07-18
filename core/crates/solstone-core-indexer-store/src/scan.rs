@@ -883,6 +883,64 @@ mod tests {
     }
 
     #[test]
+    fn scan_candidate_load_failure_warns_and_advances_mtime() {
+        let root = temp_root("edge-candidate-load-failure");
+        write(&root, "entities", "not a directory");
+        write(&root, "facets/work/entities/alice/entity.json", "{}");
+        write(
+            &root,
+            "facets/work/entities/20260304.jsonl",
+            r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+        );
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "INSERT INTO edges(src, dst, kind, directed, source, path, weight) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "stale",
+                "edge",
+                "co-present",
+                0_i64,
+                "co-presence",
+                "facets/work/entities/20260304.jsonl",
+                1_i64,
+            ],
+        )
+        .expect("seed stale edge");
+        conn.execute(
+            "REPLACE INTO edge_files(path, mtime) VALUES (?, ?)",
+            params!["facets/work/entities/20260304.jsonl", 0_i64],
+        )
+        .expect("seed stale edge mtime");
+        drop(conn);
+
+        let report = scan_journal(&root, true, "20260717").expect("scan candidate load failure");
+        assert_eq!(report.edges_indexed, 1);
+        assert_eq!(report.edge_rows_inserted, 0);
+        assert!(report.warnings.iter().any(|warning| {
+            warning.starts_with("Skipping edge extraction for facets/work/entities/20260304.jsonl")
+                && warning.contains("candidate load failed")
+        }));
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            1
+        );
+        fs::remove_dir_all(root).expect("cleanup candidate load failure root");
+    }
+
+    #[test]
     fn scan_invalid_segment_edge_file_skips_and_advances_mtime() {
         let root = temp_root("edge-invalid-segment");
         write(
@@ -906,6 +964,114 @@ mod tests {
             1
         );
         fs::remove_dir_all(root).expect("cleanup invalid segment edge root");
+    }
+
+    #[test]
+    fn scan_removed_edge_file_deletes_rows_and_mtime() {
+        let root = temp_root("edge-removed-file");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        let rel = "facets/work/entities/20260304.jsonl";
+        write(
+            &root,
+            rel,
+            r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+        );
+        let report = scan_journal(&root, true, "20260717").expect("initial edge scan");
+        assert_eq!(report.edges_indexed, 1);
+        assert_eq!(report.edge_rows_inserted, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            1
+        );
+        drop(conn);
+
+        fs::remove_file(root.join(rel)).expect("remove edge source");
+        let report = scan_journal(&root, true, "20260717").expect("scan removed edge source");
+        assert_eq!(report.edges_removed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db after remove");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edges WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='facets/work/entities/20260304.jsonl'"
+            ),
+            0
+        );
+        fs::remove_dir_all(root).expect("cleanup removed edge file root");
+    }
+
+    #[test]
+    fn scan_changed_edge_file_replaces_rows() {
+        let root = temp_root("edge-changed-file");
+        seed_edge_entity(&root, "alice", "Alice Edge");
+        seed_edge_entity(&root, "bob", "Bob Edge");
+        seed_edge_entity(&root, "cora", "Cora Edge");
+        let rel = "facets/work/entities/20260304.jsonl";
+        write(
+            &root,
+            rel,
+            r#"{"name":"Alice Edge","segments":["s1"]}
+{"name":"Bob Edge","segments":["s1"]}
+"#,
+        );
+        scan_journal(&root, true, "20260717").expect("initial edge scan");
+        let conn = open_index(&root).expect("open index");
+        assert_eq!(
+            edge_rows(&conn),
+            vec![(
+                "alice".to_string(),
+                "bob".to_string(),
+                1,
+                "s1".to_string(),
+                "facets/work/entities/20260304.jsonl".to_string(),
+            )]
+        );
+        conn.execute("UPDATE edge_files SET mtime=0 WHERE path=?", [rel])
+            .expect("force edge reextract");
+        drop(conn);
+        write(
+            &root,
+            rel,
+            r#"{"name":"Alice Edge","segments":["s2"]}
+{"name":"Cora Edge","segments":["s2"]}
+"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("changed edge scan");
+        assert_eq!(report.edges_indexed, 1);
+        assert_eq!(report.edge_rows_inserted, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db after changed scan");
+        assert_eq!(
+            edge_rows(&conn),
+            vec![(
+                "alice".to_string(),
+                "cora".to_string(),
+                1,
+                "s2".to_string(),
+                "facets/work/entities/20260304.jsonl".to_string(),
+            )]
+        );
+        fs::remove_dir_all(root).expect("cleanup changed edge file root");
     }
 
     #[test]
@@ -1061,6 +1227,58 @@ mod tests {
         let report = scan_journal(&root, true, "20260717").expect("full removal scan");
         assert_eq!(report.removed, 1);
         fs::remove_dir_all(root).expect("cleanup light root");
+    }
+
+    #[test]
+    fn light_mode_excludes_historical_edge_removed_set() {
+        let root = temp_root("edge-light-removed");
+        let rel = "20240101/default/090000_300/talents/speaker_labels.json";
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "INSERT INTO edges(src, dst, kind, directed, source, path, weight) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![
+                "alice",
+                "bob",
+                "spoke-with",
+                0_i64,
+                "speaker-labels",
+                rel,
+                1_i64,
+            ],
+        )
+        .expect("seed historical edge");
+        conn.execute(
+            "REPLACE INTO edge_files(path, mtime) VALUES (?, ?)",
+            params![rel, 1_i64],
+        )
+        .expect("seed historical edge mtime");
+        drop(conn);
+
+        let light = scan_journal(&root, false, "20260717").expect("light scan");
+        assert_eq!(light.edges_removed, 0);
+        let conn = Connection::open(db_path(&root)).expect("open db after light scan");
+        assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 1);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='20240101/default/090000_300/talents/speaker_labels.json'"
+            ),
+            1
+        );
+        drop(conn);
+
+        let full = scan_journal(&root, true, "20260717").expect("full scan");
+        assert_eq!(full.edges_removed, 1);
+        let conn = Connection::open(db_path(&root)).expect("open db after full scan");
+        assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM edge_files WHERE path='20240101/default/090000_300/talents/speaker_labels.json'"
+            ),
+            0
+        );
+        fs::remove_dir_all(root).expect("cleanup edge light removed root");
     }
 
     #[test]

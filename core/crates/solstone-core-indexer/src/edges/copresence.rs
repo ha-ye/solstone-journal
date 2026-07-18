@@ -6,7 +6,7 @@ use std::collections::BTreeSet;
 use serde_json::{Map, Value};
 
 use super::candidates::EdgeResolver;
-use super::{EdgeContext, EdgeRow};
+use super::{EdgeContext, EdgeError, EdgeRow};
 
 type JsonObject = Map<String, Value>;
 
@@ -20,7 +20,7 @@ pub(crate) fn extract_copresence_edges(
     entries: &[JsonObject],
     context: &EdgeContext,
     resolver: &mut EdgeResolver,
-) -> Vec<EdgeRow> {
+) -> Result<Vec<EdgeRow>, EdgeError> {
     let mut resolved = Vec::new();
     for entry in entries {
         let Some(Value::String(name)) = entry.get("name") else {
@@ -42,7 +42,7 @@ pub(crate) fn extract_copresence_edges(
         if segment_ids.is_empty() {
             continue;
         }
-        let Some(entity_id) = resolver.resolve(context, name) else {
+        let Some(entity_id) = resolver.resolve(context, name)? else {
             continue;
         };
         resolved.push(ResolvedPresence {
@@ -84,5 +84,5 @@ pub(crate) fn extract_copresence_edges(
             });
         }
     }
-    rows
+    Ok(rows)
 }

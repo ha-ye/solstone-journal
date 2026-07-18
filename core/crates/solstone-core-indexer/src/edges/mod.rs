@@ -103,7 +103,6 @@ pub struct EdgeFileRows {
 pub enum EdgeError {
     InvalidPattern(String),
     Io(String),
-    UnknownSource(String),
     UnknownKind(String),
     MissingSrc,
     MissingDst,
@@ -115,7 +114,6 @@ impl fmt::Display for EdgeError {
         match self {
             EdgeError::InvalidPattern(error) => write!(formatter, "invalid edge pattern: {error}"),
             EdgeError::Io(error) => write!(formatter, "{error}"),
-            EdgeError::UnknownSource(path) => write!(formatter, "unknown edge source: {path}"),
             EdgeError::UnknownKind(kind) => write!(formatter, "Unknown edge kind: {kind:?}"),
             EdgeError::MissingSrc => formatter.write_str("edge row requires non-empty string src"),
             EdgeError::MissingDst => formatter.write_str("edge row requires non-empty string dst"),
@@ -155,7 +153,7 @@ pub fn extract_file_edges(
     let rows = match kind {
         EdgeSourceKind::Copresence => {
             let entries = read_jsonl_objects(path)?;
-            copresence::extract_copresence_edges(&entries, &context, resolver)
+            copresence::extract_copresence_edges(&entries, &context, resolver)?
         }
     };
     Ok(EdgeFileRows {
@@ -342,6 +340,14 @@ mod tests {
         assert_eq!(normalized[0].facet.as_deref(), Some("work"));
         assert_eq!(normalized[0].directed, 0);
 
+        let directed = normalize_edges(vec![row("zeta", "alpha", "mentioned", Some("20260430"))])
+            .expect("normalize directed row");
+        assert_eq!(directed[0].src, "zeta");
+        assert_eq!(directed[0].dst, "alpha");
+        assert_eq!(directed[0].src_name.as_deref(), Some("zeta name"));
+        assert_eq!(directed[0].dst_name.as_deref(), Some("alpha name"));
+        assert_eq!(directed[0].directed, 1);
+
         let error = normalize_edges(vec![
             row("alpha", "zeta", "co-present", Some("20260430")),
             row("alpha", "zeta", "not-a-kind", Some("20260430")),
@@ -403,6 +409,30 @@ mod tests {
         assert_eq!(extracted.rows[1].dst, "bob");
         assert_eq!(extracted.rows[1].weight, 1);
         fs::remove_dir_all(root).expect("cleanup copresence root");
+    }
+
+    #[test]
+    fn copresence_emits_no_edges_without_shared_segments() {
+        let root = temp_root("copresence-no-shared");
+        seed_entity(&root, "alice", "Alice Edge");
+        seed_entity(&root, "bob", "Bob Edge");
+        let rel = "facets/work/entities/20260304.jsonl";
+        write_jsonl(
+            &root,
+            rel,
+            &[
+                json!({"name":"Alice Edge","segments":["s1"]}),
+                json!({"name":"Bob Edge","segments":["s2"]}),
+            ],
+        );
+
+        let mut resolver = EdgeResolver::new(&root);
+        resolver.begin_file();
+        let extracted =
+            extract_file_edges(rel, &root.join(rel), &mut resolver).expect("extract edges");
+        assert_eq!(resolver.drops(), 0);
+        assert!(extracted.rows.is_empty());
+        fs::remove_dir_all(root).expect("cleanup no shared root");
     }
 
     #[test]

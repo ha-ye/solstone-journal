@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-use crate::edges::EdgeContext;
+use crate::edges::{EdgeContext, EdgeError};
 use crate::entity_name_matcher::{EntityNameCandidate, find_matching_entity};
 
 type JsonObject = Map<String, Value>;
@@ -36,26 +36,37 @@ impl EdgeResolver {
         self.drops
     }
 
-    pub fn resolve(&mut self, context: &EdgeContext, name: &str) -> Option<String> {
+    pub fn resolve(
+        &mut self,
+        context: &EdgeContext,
+        name: &str,
+    ) -> Result<Option<String>, EdgeError> {
         if name.trim().is_empty() {
             self.record_drop();
-            return None;
+            return Ok(None);
         }
         if !self.cache.contains_key(&context.facet) {
-            let candidates = load_candidates(&self.journal, &context.facet).unwrap_or_default();
+            let candidates = load_candidates(&self.journal, &context.facet).map_err(|error| {
+                EdgeError::Io(format!(
+                    "candidate load failed for facet {:?}: {error}",
+                    context.facet
+                ))
+            })?;
             self.cache.insert(context.facet.clone(), candidates);
         }
-        let candidates = self.cache.get(&context.facet)?;
+        let candidates = self.cache.get(&context.facet).ok_or_else(|| {
+            EdgeError::Io(format!("candidate cache missing for {:?}", context.facet))
+        })?;
         let matched = find_matching_entity(name, candidates, 90.0);
         let candidate = matched.and_then(|result| candidates.get(result.candidate_index));
         let entity_id = candidate.and_then(|candidate| candidate.id.as_deref());
-        match entity_id {
+        Ok(match entity_id {
             Some(entity_id) if !entity_id.is_empty() => Some(entity_id.to_string()),
             _ => {
                 self.record_drop();
                 None
             }
-        }
+        })
     }
 
     pub fn record_drop(&mut self) {
@@ -161,15 +172,11 @@ fn enrich_relationship_with_journal(
         {
             relationship.insert("aka".to_string(), value.clone());
         }
-        if json_truthy(journal_entity.get("is_principal"))
-            && let Some(value) = journal_entity.get("is_principal")
-        {
-            relationship.insert("is_principal".to_string(), value.clone());
+        if json_truthy(journal_entity.get("is_principal")) {
+            relationship.insert("is_principal".to_string(), Value::Bool(true));
         }
-        if json_truthy(journal_entity.get("blocked"))
-            && let Some(value) = journal_entity.get("blocked")
-        {
-            relationship.insert("blocked".to_string(), value.clone());
+        if json_truthy(journal_entity.get("blocked")) {
+            relationship.insert("blocked".to_string(), Value::Bool(true));
         }
     } else {
         relationship.insert("id".to_string(), Value::String(relationship_entity_id));
@@ -193,8 +200,14 @@ fn candidate_from_entity(entity: &JsonObject) -> Option<EntityNameCandidate> {
 }
 
 fn sorted_child_dirs(root: &Path) -> io::Result<Vec<(String, PathBuf)>> {
-    if !root.is_dir() {
+    if !root.exists() {
         return Ok(Vec::new());
+    }
+    if !root.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotADirectory,
+            format!("{} is not a directory", root.display()),
+        ));
     }
     let mut dirs = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -329,6 +342,22 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].aka, vec!["Journal Alice"]);
         fs::remove_dir_all(root).expect("cleanup truthy root");
+    }
+
+    #[test]
+    fn enrichment_truthy_booleans_canonicalize_to_true() {
+        let relationship = json!({"entity_id":"alice","is_principal":"relationship"});
+        let journal_entity = json!({"id":"alice","name":"Alice Example","type":"Person","is_principal":"yes","blocked":"yes"});
+        let enriched = enrich_relationship_with_journal(
+            relationship
+                .as_object()
+                .expect("relationship object")
+                .clone(),
+            Some(journal_entity.as_object().expect("journal object")),
+        );
+
+        assert_eq!(enriched.get("is_principal"), Some(&Value::Bool(true)));
+        assert_eq!(enriched.get("blocked"), Some(&Value::Bool(true)));
     }
 
     #[test]
