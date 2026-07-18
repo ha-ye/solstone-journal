@@ -2696,7 +2696,7 @@ function loadImportDetail() {
           overviewHtml += `
             <div class="merge-collision-callout">
               <h3>owner identity differs between journals</h3>
-              <p>this journal belongs to ${escapeHtml(principalCollision.target_name || '')}, and the imported archive marks ${escapeHtml(principalCollision.source_name || '')} as the owner. solstone kept this journal&#39;s owner and brought the other person in as a regular entity.</p>
+              <p>this journal belongs to ${escapeHtml(principalCollision.target_name || '')}, and the imported journal marks ${escapeHtml(principalCollision.source_name || '')} as its owner. this journal&#39;s owner is unchanged; the other person came in as a regular entity.</p>
             </div>
           `;
         }

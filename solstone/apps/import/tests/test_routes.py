@@ -103,6 +103,46 @@ def test_import_detail_api_path_resolves(client):
     assert endpoint == "app:import.import_detail_api"
 
 
+def test_source_metadata_descriptions_are_pinned_byte_for_byte():
+    import importlib
+
+    import_routes = importlib.import_module("solstone.apps.import.routes")
+    source_metadata = {
+        source["name"]: source for source in import_routes.SOURCE_METADATA
+    }
+
+    assert (
+        source_metadata["journal_archive"]["description"]
+        == "import a full journal export from another journal"
+    )
+    assert (
+        source_metadata["recording"]["description"]
+        == "import audio from meetings or conversations"
+    )
+
+
+def test_owner_collision_copy_preserves_placeholders_and_entity():
+    workspace = (Path(__file__).resolve().parents[1] / "workspace.html").read_text(
+        encoding="utf-8"
+    )
+    target = "${escapeHtml(principalCollision.target_name || '')}"
+    source = "${escapeHtml(principalCollision.source_name || '')}"
+    expected = (
+        "<p>this journal belongs to "
+        + target
+        + ", and the imported journal marks "
+        + source
+        + " as its owner. this journal&#39;s owner is unchanged; the other person "
+        "came in as a regular entity.</p>"
+    )
+
+    assert "if (data.imported_json.principal_collision)" in workspace
+    assert target in workspace
+    assert source in workspace
+    assert "journal&#39;s" in workspace
+    assert expected in workspace
+
+
 def test_document_upload_stages_emits_command_and_imports_new_shape_segment(
     client, tmp_path, monkeypatch
 ):
