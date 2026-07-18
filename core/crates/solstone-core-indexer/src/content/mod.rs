@@ -9,8 +9,10 @@ mod chat;
 mod day_accumulator;
 mod documents;
 mod events;
+mod facet_entities;
 mod imports;
 mod morning_briefing;
+mod observations;
 mod screen;
 mod sense;
 
@@ -32,6 +34,8 @@ pub enum Family {
     Chat,
     Browser,
     DayAccumulator,
+    FacetEntity,
+    Observation,
     Documents,
     Screen,
     Sense,
@@ -169,6 +173,16 @@ pub(crate) const INDEX_FAMILY_PATTERNS: &[FamilyPattern] = &[
         root: PatternRoot::Structural,
     },
     FamilyPattern {
+        pattern: "facets/*/entities/*/observations.jsonl",
+        family: Family::Observation,
+        root: PatternRoot::Structural,
+    },
+    FamilyPattern {
+        pattern: "facets/*/entities/*.jsonl",
+        family: Family::FacetEntity,
+        root: PatternRoot::Structural,
+    },
+    FamilyPattern {
         pattern: "facets/*/activities/*.jsonl",
         family: Family::Activity,
         root: PatternRoot::Structural,
@@ -255,6 +269,11 @@ pub fn produce_chunks(family: Family, rel: &str, text: &str) -> ProducedChunks {
         Family::Chat => chat::render(&parse_jsonl_objects(text)),
         Family::Browser => browser::render(&parse_jsonl_objects(text)),
         Family::DayAccumulator => day_accumulator::render(rel, &parse_jsonl_objects(text)),
+        Family::FacetEntity => facet_entities::render(rel, &parse_jsonl_objects(text)),
+        Family::Observation => ProducedChunks {
+            chunks: observations::render(&parse_jsonl_objects(text)),
+            agent_override: Some("observation".to_string()),
+        },
         Family::Documents => documents::render(&parse_json_object(text)),
         Family::Screen => screen::render(&parse_json_object(text)),
         Family::Sense => sense::render(&parse_json_object(text)),
@@ -512,7 +531,15 @@ mod tests {
             Some(Family::ActionLog)
         );
         assert_eq!(classify("notes/foo.txt"), None);
-        assert_eq!(classify("facets/work/entities/foo.jsonl"), None);
+        assert_eq!(
+            classify("facets/work/entities/foo.jsonl"),
+            Some(Family::FacetEntity)
+        );
+        assert_eq!(
+            classify("facets/work/entities/alice/observations.jsonl"),
+            Some(Family::Observation)
+        );
+        assert_eq!(classify("entities/alice/entity.json"), None);
         assert_eq!(classify("20240101/default/123456_300/audio.jsonl"), None);
     }
 
@@ -752,5 +779,77 @@ not json
                 .contains("Topics: launch, owners")
         );
         assert!(produced.chunks[2].content.contains("- Hidden: yes"));
+    }
+
+    #[test]
+    fn facet_entity_agent_comes_from_ascii_digit_file_stem() {
+        for (rel, agent) in [
+            ("facets/work/entities/20260304.jsonl", "entity:detected"),
+            ("facets/work/entities/123.jsonl", "entity:detected"),
+            ("facets/work/entities/99999999.jsonl", "entity:detected"),
+            ("facets/work/entities/some-slug.jsonl", "entity:attached"),
+        ] {
+            let produced = produce_chunks(Family::FacetEntity, rel, "");
+            assert_eq!(produced.agent_override.as_deref(), Some(agent), "{rel}");
+            assert_eq!(produced.chunks.len(), 0, "{rel}");
+        }
+    }
+
+    #[test]
+    fn facet_entity_renderer_formats_entity_fields() {
+        let produced = produce_chunks(
+            Family::FacetEntity,
+            "facets/work/entities/20260304.jsonl",
+            r#"{"id":"alice","type":"Person","name":"Alice","description":"Friend from work","tags":["tech","mentor"],"aka":["A","Al"],"contact":"alice@example.com","roles":["lead","reviewer"],"empty_note":"","last_seen":"20260304","detached":true}
+{"type":"Project","name":"No Description","description":""}
+{"description":"Only description"}"#,
+        );
+
+        assert_eq!(produced.agent_override.as_deref(), Some("entity:detected"));
+        assert_eq!(produced.chunks.len(), 3);
+        let first = &produced.chunks[0].content;
+        assert!(first.contains("### Person: Alice"));
+        assert!(first.contains("Friend from work"));
+        assert!(first.contains("**Tags:** tech, mentor"));
+        assert!(first.contains("**Also known as:** A, Al"));
+        assert!(first.contains("**Contact:** alice@example.com"));
+        assert!(first.contains("**Roles:** lead, reviewer"));
+        assert!(first.contains("**Empty Note:** "));
+        assert!(!first.contains("Last Seen"));
+        assert!(!first.contains("Detached"));
+        assert!(
+            produced.chunks[1]
+                .content
+                .contains("*(No description available)*")
+        );
+        assert!(produced.chunks[2].content.contains("### Unknown: Unnamed"));
+    }
+
+    #[test]
+    fn observation_renderer_formats_source_day_when_truthy() {
+        let produced = produce_chunks(
+            Family::Observation,
+            "facets/work/entities/alice/observations.jsonl",
+            r#"{"content":"Prefers morning meetings","source_day":"20250113"}
+{"content":"Expert in distributed systems"}
+{"source_day":"20250114"}
+{"content":"","source_day":""}"#,
+        );
+
+        assert_eq!(produced.agent_override.as_deref(), Some("observation"));
+        let contents: Vec<&str> = produced
+            .chunks
+            .iter()
+            .map(|chunk| chunk.content.as_str())
+            .collect();
+        assert_eq!(
+            contents,
+            vec![
+                "- Prefers morning meetings (observed: 20250113)",
+                "- Expert in distributed systems",
+                "-  (observed: 20250114)",
+                "- ",
+            ]
+        );
     }
 }

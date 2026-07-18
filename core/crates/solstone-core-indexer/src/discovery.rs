@@ -180,6 +180,11 @@ mod tests {
         write(&root, "apps/todos/talents/digest.md");
         write(&root, "config/actions/20240101.jsonl");
         write(&root, "facets/work/events/20240101.jsonl");
+        write(&root, "facets/work/entities/20260304.jsonl");
+        write(
+            &root,
+            "facets/work/entities/alice_johnson/observations.jsonl",
+        );
         write(&root, "facets/work/activities/20240101.jsonl");
         write(&root, "facets/work/logs/20240101.jsonl");
         write(&root, "chronicle/20240101/default/123456_300/audio.jsonl");
@@ -200,6 +205,8 @@ mod tests {
                 "apps/todos/talents/digest.md",
                 "config/actions/20240101.jsonl",
                 "facets/work/activities/20240101.jsonl",
+                "facets/work/entities/20260304.jsonl",
+                "facets/work/entities/alice_johnson/observations.jsonl",
                 "facets/work/events/20240101.jsonl",
                 "facets/work/logs/20240101.jsonl",
                 "facets/work/news/20240101.md",
@@ -251,5 +258,25 @@ mod tests {
         );
         assert!(files.contains_key("20260101/import.chatgpt/conv_b/imported_audio.jsonl"));
         fs::remove_dir_all(root).expect("cleanup discover imports root");
+    }
+
+    #[test]
+    fn facet_entity_pattern_does_not_capture_observation_paths() {
+        let options = glob::MatchOptions {
+            case_sensitive: true,
+            require_literal_separator: true,
+            require_literal_leading_dot: false,
+        };
+        let observation_path = Path::new("facets/work/entities/alice/observations.jsonl");
+        assert!(
+            Pattern::new("facets/*/entities/*/observations.jsonl")
+                .expect("valid observation pattern")
+                .matches_path_with(observation_path, options)
+        );
+        assert!(
+            !Pattern::new("facets/*/entities/*.jsonl")
+                .expect("valid entity pattern")
+                .matches_path_with(observation_path, options)
+        );
     }
 }

@@ -242,6 +242,27 @@ mod tests {
         conn.query_row(sql, [], |row| row.get(0)).expect("count")
     }
 
+    fn chunk_row(
+        conn: &Connection,
+        path: &str,
+    ) -> (String, String, String, Option<String>, String, String) {
+        conn.query_row(
+            "SELECT day, facet, agent, stream, time_bucket, content FROM chunks WHERE path=? ORDER BY idx LIMIT 1",
+            [path],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
+        )
+        .expect("chunk metadata row")
+    }
+
     #[test]
     fn scan_skips_reindexes_and_deletes_missing() {
         let root = temp_root("mtime");
@@ -486,6 +507,139 @@ mod tests {
             .expect("facet log row");
         assert_eq!(action_log_agent, "action");
         fs::remove_dir_all(root).expect("cleanup jsonl families root");
+    }
+
+    #[test]
+    fn scan_indexes_facet_entities_and_observations() {
+        let root = temp_root("facet-entities-observations");
+        write(
+            &root,
+            "facets/work/entities/20260304.jsonl",
+            r#"{"type":"Person","name":"Romeo Montague","description":"Met Juliet at Denver Tech Summit","tags":["summit"],"aka":["Romeo"],"role":"Engineer"}
+"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/123.jsonl",
+            r#"{"type":"Person","name":"Short Stem","description":"Short digit stem"}
+"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/99999999.jsonl",
+            r#"{"type":"Person","name":"Invalid Day","description":"Invalid calendar day"}
+"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/some-slug.jsonl",
+            r#"{"type":"Project","name":"Attached Shape","description":"Slug-shaped jsonl"}
+"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/romeo_montague/observations.jsonl",
+            r#"{"content":"Prefers morning product reviews","observed_at":1772658000000,"source_day":"20260304"}
+"#,
+        );
+        write(&root, "facets/work/entities/empty.jsonl", "");
+        write(
+            &root,
+            "facets/work/entities/empty_person/observations.jsonl",
+            "",
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan facet entities");
+        assert_eq!(report.indexed, 7);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+
+        for (path, expected_agent, expected_day) in [
+            (
+                "facets/work/entities/20260304.jsonl",
+                "entity:detected",
+                "20260304",
+            ),
+            // This fails if the agent predicate is implemented via is_date_key.
+            ("facets/work/entities/123.jsonl", "entity:detected", ""),
+            (
+                "facets/work/entities/99999999.jsonl",
+                "entity:detected",
+                "99999999",
+            ),
+            (
+                "facets/work/entities/some-slug.jsonl",
+                "entity:attached",
+                "",
+            ),
+        ] {
+            let row = chunk_row(&conn, path);
+            assert_eq!(row.0, expected_day, "{path}");
+            assert_eq!(row.1, "work", "{path}");
+            assert_eq!(row.2, expected_agent, "{path}");
+            assert_eq!(row.3, None, "{path}");
+            assert_eq!(row.4, "", "{path}");
+        }
+
+        let entity_row = chunk_row(&conn, "facets/work/entities/20260304.jsonl");
+        assert!(entity_row.5.contains("### Person: Romeo Montague"));
+        assert!(entity_row.5.contains("Met Juliet at Denver Tech Summit"));
+        assert!(entity_row.5.contains("**Tags:** summit"));
+        assert!(entity_row.5.contains("**Role:** Engineer"));
+
+        let observation_row = chunk_row(
+            &conn,
+            "facets/work/entities/romeo_montague/observations.jsonl",
+        );
+        assert_eq!(observation_row.0, "");
+        assert_eq!(observation_row.1, "work");
+        assert_eq!(observation_row.2, "observation");
+        assert_eq!(observation_row.3, None);
+        assert_eq!(observation_row.4, "");
+        assert!(
+            observation_row
+                .5
+                .contains("- Prefers morning product reviews (observed: 20260304)")
+        );
+
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='facets/work/entities/empty.jsonl'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='facets/work/entities/empty.jsonl'"
+            ),
+            1
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path='facets/work/entities/empty_person/observations.jsonl'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path='facets/work/entities/empty_person/observations.jsonl'"
+            ),
+            1
+        );
+
+        assert_eq!(count(&conn, "SELECT count(*) FROM edges"), 0);
+        let edge_files = conn
+            .prepare("SELECT path FROM edge_files ORDER BY path")
+            .expect("prepare edge files")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query edge files")
+            .map(|row| row.expect("edge file row"))
+            .collect::<Vec<_>>();
+        assert_eq!(edge_files, vec!["edges:__schema__".to_string()]);
+        fs::remove_dir_all(root).expect("cleanup facet entities root");
     }
 
     #[test]
