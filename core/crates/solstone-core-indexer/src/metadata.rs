@@ -56,6 +56,14 @@ pub fn extract_path_metadata(rel_path: &str) -> PathMetadata {
         };
     }
 
+    if parts.first() == Some(&"config")
+        && parts.len() >= 3
+        && parts.get(1) == Some(&"actions")
+        && is_date_key(&basename)
+    {
+        day = basename.clone();
+    }
+
     if is_markdown {
         if parts.first() == Some(&"facets") && parts.len() >= 4 && parts.get(2) == Some(&"news") {
             agent = "news".to_string();
@@ -143,6 +151,15 @@ mod tests {
                 "",
                 "event_transcript",
             ),
+            ("config/actions/20240101.jsonl", "20240101", "", ""),
+            ("facets/work/events/20240101.jsonl", "20240101", "work", ""),
+            (
+                "facets/work/activities/20240101.jsonl",
+                "20240101",
+                "work",
+                "",
+            ),
+            ("facets/work/logs/20240101.jsonl", "20240101", "work", ""),
         ];
         for (rel, day, facet, agent) in cases {
             assert_eq!(
