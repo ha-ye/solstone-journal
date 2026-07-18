@@ -767,6 +767,179 @@ def test_markdown_only_import_segment_renders_markdown_chunk(client, journal_cop
     assert chunk["source_ref"] == {"filename": "day_summary_transcript.md"}
 
 
+def test_image_import_segment_renders_markdown_and_ignores_preserved_original(
+    client, journal_copy
+):
+    day = "20990216"
+    stream = "import.image"
+    segment = "000000_300"
+    transcript = "# Imported Image\n\nExtracted text from the preserved scan."
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "original.jpg").write_bytes(b"preserved-jpeg")
+    (segment_dir / "image_transcript.md").write_text(
+        transcript + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    markdown_chunks = [chunk for chunk in data["chunks"] if chunk["type"] == "markdown"]
+    assert len(markdown_chunks) == 1
+    assert markdown_chunks[0]["markdown"] == transcript
+    assert data["data_state"] == {"markdown": "analyzed"}
+    assert data["media_sizes"] == {"audio": 0, "screen": 0}
+    assert data["media_purged"] == {"audio": False, "screen": False}
+
+
+def test_document_import_segment_renders_markdown_transcript(client, journal_copy):
+    day = "20990217"
+    stream = "import.document"
+    segment = "000000_300"
+    transcript = "# Imported Document\n\nContract section two text."
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "original.pdf").write_bytes(b"%PDF-1.4 synthetic")
+    (segment_dir / "document_transcript.md").write_text(
+        transcript + "\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    markdown_chunks = [chunk for chunk in data["chunks"] if chunk["type"] == "markdown"]
+    assert len(markdown_chunks) == 1
+    assert markdown_chunks[0]["markdown"] == transcript
+    assert data["data_state"] == {"markdown": "analyzed"}
+
+
+def test_image_import_segment_lists_as_markdown(client, journal_copy):
+    day = "20990218"
+    stream = "import.image"
+    segment = "000000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "original.jpg").write_bytes(b"list-jpeg")
+    (segment_dir / "image_transcript.md").write_text(
+        "# Image List\n\nGallery import transcript.\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segments/{day}")
+
+    assert response.status_code == 200
+    segments = response.get_json()["segments"]
+    image_segment = next(seg for seg in segments if seg["stream"] == stream)
+    assert image_segment["types"] == ["markdown"]
+    assert image_segment["data_state"] == {"markdown": "analyzed"}
+
+
+def test_image_import_segment_with_empty_transcript_reports_no_screen_state(
+    client, journal_copy
+):
+    day = "20990219"
+    stream = "import.image"
+    segment = "000000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "original.jpg").write_bytes(b"empty-transcript-jpeg")
+    (segment_dir / "image_transcript.md").write_text(
+        "   \n\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert [chunk for chunk in data["chunks"] if chunk["type"] == "markdown"] == []
+    assert "screen" not in data["data_state"]
+    assert "audio" not in data["data_state"]
+    assert data["media_sizes"]["screen"] == 0
+
+
+def test_import_segment_with_screen_jsonl_is_not_markdown_only(client, journal_copy):
+    day = "20990220"
+    stream = "import.image"
+    segment = "000000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "original.jpg").write_bytes(b"screen-jsonl-jpeg")
+    (segment_dir / "image_transcript.md").write_text(
+        "# Screen Import\n\nThis transcript must not make the segment markdown-only.\n",
+        encoding="utf-8",
+    )
+    _write_jsonl(
+        segment_dir / "screen.jsonl",
+        [
+            {
+                "frame_id": 1,
+                "timestamp": 0,
+                "analysis": {"primary": "media"},
+                "content": {},
+            }
+        ],
+    )
+
+    response = client.get(f"/app/transcripts/api/segment/{day}/{stream}/{segment}")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["data_state"] == {"screen": "analyzed"}
+    assert any(chunk["type"] == "screen" for chunk in data["chunks"])
+    assert data["media_sizes"]["screen"] == len(b"screen-jsonl-jpeg")
+
+
+def test_non_import_stream_with_transcript_md_is_not_markdown_only(
+    client, journal_copy
+):
+    day = "20990221"
+    stream = "default"
+    segment = "000000_300"
+    segment_dir = journal_copy / "chronicle" / day / stream / segment
+    segment_dir.mkdir(parents=True)
+    (segment_dir / "stream.json").write_text(
+        json.dumps({"stream": stream}),
+        encoding="utf-8",
+    )
+    (segment_dir / "note_transcript.md").write_text(
+        "# Local Transcript\n\nDefault stream transcript text.\n",
+        encoding="utf-8",
+    )
+
+    response = client.get(f"/app/transcripts/api/segments/{day}")
+
+    assert response.status_code == 200
+    segments = response.get_json()["segments"]
+    default_segment = next(seg for seg in segments if seg["stream"] == stream)
+    assert default_segment["types"] == ["audio"]
+    assert default_segment["data_state"] == {"audio": "analyzed"}
+
+
 def test_segment_content_marks_headerless_screen_frame_analyzed(client, journal_copy):
     day = "20990115"
     stream = "default"

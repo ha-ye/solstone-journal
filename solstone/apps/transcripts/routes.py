@@ -72,7 +72,7 @@ from solstone.think.data_state import (
 )
 from solstone.think.entities.journal import get_journal_principal, load_journal_entity
 from solstone.think.journal_stats import load_fresh_day_cache
-from solstone.think.media import MIME_TYPES, PDF_EXTENSIONS
+from solstone.think.media import MIME_TYPES
 from solstone.think.models import get_usage_cost
 from solstone.think.pipeline_health import (
     lookup_segment_progress,
@@ -229,16 +229,7 @@ def _is_markdown_only_segment(segment_dir_path: Path, stream: str) -> bool:
         if any(path.is_file() for path in segment_dir_path.glob(pattern)):
             return False
 
-    raw_extensions = (
-        set(AUDIO_EXTENSIONS)
-        | set(VIDEO_EXTENSIONS)
-        | set(IMAGE_EXTENSIONS)
-        | set(PDF_EXTENSIONS)
-    )
-    return not any(
-        path.is_file() and path.suffix.lower() in raw_extensions
-        for path in segment_dir_path.iterdir()
-    )
+    return True
 
 
 def _normalize_markdown_only_segments(segments: list[dict[str, Any]], day: str) -> None:
@@ -860,18 +851,20 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
     counted_media_paths: set[Path] = set()
     warning_details: list[dict[str, str]] = []
 
-    for raw_media in sorted(segment_dir_path.iterdir()):
-        if not raw_media.is_file():
-            continue
-        suffix = raw_media.suffix.lower()
-        if suffix in AUDIO_EXTENSIONS:
-            has_raw_present["audio"] = True
-            counted_media_paths.add(raw_media.resolve())
-            media_sizes["audio"] += raw_media.stat().st_size
-        elif suffix in VIDEO_EXTENSIONS or suffix in IMAGE_EXTENSIONS:
-            has_raw_present["screen"] = True
-            counted_media_paths.add(raw_media.resolve())
-            media_sizes["screen"] += raw_media.stat().st_size
+    markdown_only_segment = _is_markdown_only_segment(segment_dir_path, stream)
+    if not markdown_only_segment:
+        for raw_media in sorted(segment_dir_path.iterdir()):
+            if not raw_media.is_file():
+                continue
+            suffix = raw_media.suffix.lower()
+            if suffix in AUDIO_EXTENSIONS:
+                has_raw_present["audio"] = True
+                counted_media_paths.add(raw_media.resolve())
+                media_sizes["audio"] += raw_media.stat().st_size
+            elif suffix in VIDEO_EXTENSIONS or suffix in IMAGE_EXTENSIONS:
+                has_raw_present["screen"] = True
+                counted_media_paths.add(raw_media.resolve())
+                media_sizes["screen"] += raw_media.stat().st_size
 
     # Load speaker labels if available.
     speaker_labels_path = segment_dir_path / "talents" / "speaker_labels.json"
@@ -1277,7 +1270,7 @@ def segment_content(day: str, stream: str, segment_key: str) -> Any:
             continue
 
     markdown_chunks_added = False
-    if _is_markdown_only_segment(segment_dir_path, stream):
+    if markdown_only_segment:
         time_str = _format_time_from_offset(segment_key, 0)
         timestamp = _timestamp_from_day_time(day, time_str)
         for md_path in _segment_markdown_files(segment_dir_path):
