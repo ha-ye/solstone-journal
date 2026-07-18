@@ -8,6 +8,7 @@ publish = false
 
 [dependencies]
 chrono.workspace = true
+chrono-tz.workspace = true
 glob.workspace = true
 md5.workspace = true
 pulldown-cmark.workspace = true

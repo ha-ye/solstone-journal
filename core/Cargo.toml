@@ -20,6 +20,7 @@ solstone-core-indexer = { path = "crates/solstone-core-indexer" }
 solstone-core-indexer-store = { path = "crates/solstone-core-indexer-store" }
 solstone-core-journal = { path = "crates/solstone-core-journal" }
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+chrono-tz = "0.10.4"
 glob = "0.3.3"
 md5 = "0.8.1"
 pulldown-cmark = { version = "0.13.4", default-features = false }

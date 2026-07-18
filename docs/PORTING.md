@@ -26,6 +26,14 @@ adapter, not for the indexer logic. The eventual iOS path is to link the system
 `libsqlite3` that iOS ships instead of bundling SQLite, then return the store
 crate to the iOS gate.
 
+## Owner Timezone
+
+The Python owner-timezone fallback is effectively `identity.timezone` from
+`config/journal.json`, then UTC. The apparent host-local branches in
+`get_owner_timezone()` are dead because CPython `astimezone()` returns a
+fixed-offset `datetime.timezone` without a `.key`. Reproducing host-local time
+in Rust would diverge from Python behavior.
+
 ## Layering
 
 `solstone-core` is a process shell only: it reads `std::env::args()`, writes
