@@ -893,8 +893,8 @@ def test_edge_trigger_fires_after_save_for_merge_and_create(
 
 def test_pool_summary_defaults_roundtrip_and_noop_no_churn(tmp_path):
     store = tmp_path / "speaker_candidates.json"
-    legacy = json.dumps({"next_id": 1, "candidates": []}, indent=2) + "\n"
-    store.write_text(legacy, encoding="utf-8")
+    pool_without_summary = json.dumps({"next_id": 1, "candidates": []}, indent=2) + "\n"
+    store.write_text(pool_without_summary, encoding="utf-8")
 
     tracker = CandidateTracker(store)
     assert tracker.consolidation_summary == {
@@ -903,7 +903,7 @@ def test_pool_summary_defaults_roundtrip_and_noop_no_churn(tmp_path):
     }
     result = tracker.consolidate_dense_candidates()
     assert result["merged"] == 0
-    assert store.read_text(encoding="utf-8") == legacy
+    assert store.read_text(encoding="utf-8") == pool_without_summary
 
     tracker.save()
     reloaded = CandidateTracker(store)
