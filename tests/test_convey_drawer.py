@@ -92,6 +92,7 @@ def test_drawer_smoke_harness_covers_contract():
     assert "data-drawer-id" in source
     assert "drawer-chev" in source
     assert "drawer-summary-text" in source
+    assert "drawer-body" in source
     assert "drawer-chip--warn" in source
     assert "drawer-chip--danger" in source
     assert "no line omits line span" in source

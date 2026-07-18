@@ -483,6 +483,7 @@ def test_body_drawer_line_builders_run_under_node(body_env):
             "asArray",
             "asObject",
             "formatSourceTime",
+            "sourceTimeSortKey",
             "auditDrawerLine",
             "dayAuditDrawerLine",
             "anatomyDrawerLine",
@@ -517,7 +518,7 @@ function latestSourceValue(payload) {
   return Object.values(latestMap)
     .map((value) => String(value || '').trim())
     .filter(Boolean)
-    .reduce((max, value) => value > max ? value : max, '');
+    .reduce((max, value) => sourceTimeSortKey(value) > sourceTimeSortKey(max) ? value : max, '');
 }
 
 function expectedDayLine(audit) {
@@ -541,6 +542,8 @@ function expectedAnatomyLine(items) {
 }
 
 assert(formatSourceTime("2026-07-03T12:00:00-06:00") === "jul 3, 12:00 pm", "fixture time formats deterministically");
+assert(sourceTimeSortKey("2026-07-04T10:00:00") === sourceTimeSortKey("2026-07-04T10:00:00Z"), "missing offset sorts as utc");
+assert(sourceTimeSortKey("not a time") < sourceTimeSortKey("2026-07-04T10:00:00Z"), "unparseable source time sorts before parsed values");
 const statusLine = auditDrawerLine(status);
 const latest = latestSourceValue(status);
 assert(latest, "status fixture carries latest source times");
@@ -551,6 +554,25 @@ const noLatestLine = auditDrawerLine(noLatestStatus);
 assert(noLatestLine === expectedStatusLine(noLatestStatus), "overview line follows payload with no latest source times");
 assert(!noLatestLine.includes("latest"), "overview no-latest line drops latest fragment");
 assert(noLatestLine.split(" · ").length === 2, "overview no-latest line has no dangling separator");
+const sameWallClockStatus = {
+  ...status,
+  latest_by_source: {
+    lexical: "2026-07-04T09:00:00Z",
+    later: "2026-07-04T09:00:00-06:00",
+  },
+};
+assert(sameWallClockStatus.latest_by_source.lexical > sameWallClockStatus.latest_by_source.later, "same-wall-clock fixture defeats lexicographic max");
+assert(sourceTimeSortKey(sameWallClockStatus.latest_by_source.lexical) < sourceTimeSortKey(sameWallClockStatus.latest_by_source.later), "same-wall-clock mixed offsets sort by instant");
+const mixedOffsetStatus = {
+  ...status,
+  latest_by_source: {
+    lexical: "2026-07-04T23:30:00+14:00",
+    later: "2026-07-04T10:00:00-06:00",
+  },
+};
+assert(mixedOffsetStatus.latest_by_source.lexical > mixedOffsetStatus.latest_by_source.later, "mixed-offset fixture defeats lexicographic max");
+assert(auditDrawerLine(mixedOffsetStatus) === expectedStatusLine(mixedOffsetStatus), "overview line follows mixed-offset payload");
+assert(auditDrawerLine(mixedOffsetStatus).includes(`latest ${formatSourceTime(mixedOffsetStatus.latest_by_source.later)}`), "overview line normalizes mixed offsets");
 assert(dayAuditDrawerLine(dayPayload.audit) === expectedDayLine(dayPayload.audit), "day line carries kinds and rows");
 assert(dayAuditHasNothingToDisclose(emptyDay) === true, "empty day has nothing to disclose");
 assert(dayAuditHasNothingToDisclose(dayPayload) === false, "seeded day has disclosure data");
@@ -558,6 +580,48 @@ assert(anatomyDrawerLine([]) === "", "empty anatomy has no line");
 const tied = [{label: "alpha", value: 10}, {label: "beta", value: 10}, {label: "gamma", value: 9}];
 assert(anatomyDrawerLine(tied) === expectedAnatomyLine(tied), "anatomy line carries contributor count and strongest label");
 assert(anatomyDrawerLine(tied).endsWith(`strongest: ${tied[0].label}`), "strongest contributor tie keeps first payload item");
+""",
+        ]
+    )
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
+def test_overview_import_evidence_preserves_manifest_fields(body_env):
+    node = _node_or_skip()
+    env = body_env()
+    _seed_health_import(env.journal)
+    status = env.client.get("/app/body/api/status").get_json()
+    item = status["imports"][0]
+    source = _workspace_source()
+    functions = "\n".join(
+        _function_source(source, name)
+        for name in (
+            "asArray",
+            "safeDay",
+            "bodyDayHref",
+            "importEvidenceMeta",
+            "renderImportEvidence",
+        )
+    )
+    script = "\n".join(
+        [
+            "const DAY_RE = /^\\d{8}$/;",
+            "function escapeHtml(value) { return String(value ?? ''); }",
+            functions,
+            "function assert(condition, message) { if (!condition) throw new Error(message); }",
+            f"const item = {json.dumps(item)};",
+            """
+const rendered = renderImportEvidence([item]);
+assert(rendered.includes(item.import_id), "import id renders");
+assert(rendered.includes(`/app/import/${item.import_id}`), "import id links to import detail");
+assert(rendered.includes(item.source_type), "source type renders");
+assert(rendered.includes(item.imported_at), "imported timestamp renders");
+assert(rendered.includes(String(item.entry_count)), "entry count renders");
+assert(rendered.includes(item.normalized_months_label), "normalized months render");
+for (const day of item.days_affected) {
+  assert(rendered.includes(`href="/app/body/${day}"`), `day ${day} link renders`);
+  assert(rendered.includes(`>${day}</a>`), `day ${day} text renders`);
+}
 """,
         ]
     )

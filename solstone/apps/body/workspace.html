@@ -1369,6 +1369,35 @@ a.body-day-cell:focus-visible {
     return `${month} ${day}, ${hour}:${minute} ${suffix}`;
   }
 
+  function sourceTimeSortKey(value) {
+    const text = String(value ?? "").trim();
+    const match = text.match(/^(\d{4})-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3})\d*)?)?(Z|[+-]\d{2}:\d{2})?$/);
+    if (!match) return Number.NEGATIVE_INFINITY;
+
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    const hour = Number(match[4]);
+    const minute = Number(match[5]);
+    const second = Number(match[6] || 0);
+    const millisecond = Number((match[7] || "").padEnd(3, "0"));
+    if (!(month >= 1 && month <= 12 && day >= 1 && day <= 31 && hour <= 23 && minute <= 59 && second <= 59)) {
+      return Number.NEGATIVE_INFINITY;
+    }
+
+    const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+    const monthDays = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    const y = year - 1;
+    const daysBeforeYear = (y * 365) + Math.floor(y / 4) - Math.floor(y / 100) + Math.floor(y / 400);
+    const daysBeforeMonth = monthDays[month - 1] + (leap && month > 2 ? 1 : 0);
+    const offsetText = match[8] || "+00:00";
+    const offsetMinutes = offsetText === "Z" ? 0 : (() => {
+      const sign = offsetText[0] === "-" ? -1 : 1;
+      return sign * ((Number(offsetText.slice(1, 3)) * 60) + Number(offsetText.slice(4, 6)));
+    })();
+    return (((((daysBeforeYear + daysBeforeMonth + day - 1) * 24) + hour) * 60 + minute - offsetMinutes) * 60 + second) * 1000 + millisecond;
+  }
+
   function auditDrawerLine(status) {
     const imports = asArray(status.imports);
     const dedupe = asObject(status.dedupe);
@@ -1376,7 +1405,7 @@ a.body-day-cell:focus-visible {
     const latest = Object.values(asObject(status.latest_by_source))
       .map((value) => String(value ?? "").trim())
       .filter(Boolean)
-      .reduce((max, value) => (value > max ? value : max), "");
+      .reduce((max, value) => (sourceTimeSortKey(value) > sourceTimeSortKey(max) ? value : max), "");
     const parts = [
       `${imports.length} ${imports.length === 1 ? "import" : "imports"}`,
       `${total} ${total === 1 ? "row" : "rows"} deduped`,
@@ -1423,14 +1452,19 @@ a.body-day-cell:focus-visible {
     const entries = Number(item.entry_count || 0);
     const days = asArray(item.days_affected).length;
     const months = String(item.normalized_months_label || "—");
-    return `${entries} ${entries === 1 ? "entry" : "entries"} · ${days} ${days === 1 ? "day" : "days"} · ${escapeHtml(months)}`;
+    const source = String(item.source_type || "—");
+    const imported = String(item.imported_at || "—");
+    return `${escapeHtml(source)} · ${escapeHtml(imported)} · ${entries} ${entries === 1 ? "entry" : "entries"} · ${days} ${days === 1 ? "day" : "days"} · ${escapeHtml(months)}`;
   }
 
   function renderImportEvidence(imports) {
     if (!imports.length) return '<p class="drawer-empty">no imports yet — body data appears here when a health export is imported.</p>';
     return `<ul class="drawer-evidence">${imports.map((item) => {
       const importId = String(item.import_id ?? "");
-      return `<li class="drawer-evidence-row"><a class="drawer-evidence-title body-code" href="/app/import/${escapeHtml(importId)}">${escapeHtml(importId)}</a><span class="ev-meta">${importEvidenceMeta(item)}</span></li>`;
+      const dayLinks = asArray(item.days_affected).length
+        ? asArray(item.days_affected).map((day) => `<a class="body-link" href="${bodyDayHref(day)}">${escapeHtml(day)}</a>`).join(", ")
+        : '<span class="body-muted">&mdash;</span>';
+      return `<li class="drawer-evidence-row"><a class="drawer-evidence-title body-code" href="/app/import/${escapeHtml(importId)}">${escapeHtml(importId)}</a><span class="ev-meta">${importEvidenceMeta(item)}</span><span class="ev-meta">${dayLinks}</span></li>`;
     }).join("")}</ul>`;
   }
 

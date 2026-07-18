@@ -64,6 +64,7 @@
     equal('label text', drawer.querySelector('.drawer-label').textContent, 'audit');
     equal('line text', drawer.querySelector('.drawer-line').textContent, '4 imports');
     assert('warn chip', drawer.querySelector('.drawer-chip--warn') !== null);
+    assert('body wrapper renders', drawer.querySelector('.drawer-body') !== null);
     assert('body classes render', drawer.querySelector('.drawer-empty') && drawer.querySelector('.drawer-evidence') && drawer.querySelector('.drawer-kv'));
 
     drawer = renderToFixture({ chipText: 'danger', chipTone: 'danger' });
