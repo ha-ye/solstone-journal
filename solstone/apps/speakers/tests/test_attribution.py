@@ -160,8 +160,10 @@ def _setup_margin_trap_entities(
     trap = _embedding_with_owner_cos(0.45)
     competitor = _embedding_with_cosine_to(trap, 0.41)
     distractor = _normalized([0.0, 0.0, 1.0])
-    competitor_dir = env.create_entity("Casey Rival")
-    distractor_dir = env.create_entity("Distractor Test")
+    # Sort order is load-bearing: first-only margin implementations must see
+    # the low-cosine distractor before the real trap-band competitor.
+    distractor_dir = env.create_entity("Aaron Reed")
+    competitor_dir = env.create_entity("Zara Vale")
     _write_entity_voiceprints(competitor_dir, [competitor] * 5)
     _write_entity_voiceprints(distractor_dir, [distractor] * 5)
 
@@ -424,23 +426,23 @@ def test_l2_single_speaker_downgrades_margin_declined_statement(
         "091500_300",
         np.vstack([trap, control]),
     )
-    env.create_speakers_json("20240101", "091500_300", ["Distractor Test"])
+    env.create_speakers_json("20240101", "091500_300", ["Aaron Reed"])
 
     result = attribute_segment("20240101", STREAM, "091500_300")
     margin_label = result["labels"][0]
     control_label = result["labels"][1]
 
-    assert margin_label["speaker"] == "distractor_test"
+    assert margin_label["speaker"] == "aaron_reed"
     assert margin_label["confidence"] == "medium"
     assert margin_label["confidence"] != "high"
     assert margin_label["method"] == "structural_single_speaker"
     assert margin_label["owner_margin_declined"] is True
-    assert control_label["speaker"] == "distractor_test"
+    assert control_label["speaker"] == "aaron_reed"
     assert control_label["confidence"] == "high"
     assert control_label["method"] == "structural_single_speaker"
     assert "owner_margin_declined" not in control_label
     assert result["unmatched"] == []
-    assert result["candidate_entity_ids"] == ["distractor_test"]
+    assert result["candidate_entity_ids"] == ["aaron_reed"]
     assert result["metadata"]["voiceprint_versions"] == {}
 
 
@@ -667,19 +669,19 @@ def test_l2_setting_field_downgrades_margin_declined_statement(speakers_env):
     _rewrite_segment_header(
         seg_dir,
         "imported_audio",
-        setting="Self and Distractor Test at coffee",
+        setting="Self and Aaron Reed at coffee",
     )
 
     result = attribute_segment("20240101", STREAM, "101500_300")
     margin_label = result["labels"][0]
     control_label = result["labels"][1]
 
-    assert margin_label["speaker"] == "distractor_test"
+    assert margin_label["speaker"] == "aaron_reed"
     assert margin_label["confidence"] == "medium"
     assert margin_label["confidence"] != "high"
     assert margin_label["method"] == "structural_setting"
     assert margin_label["owner_margin_declined"] is True
-    assert control_label["speaker"] == "distractor_test"
+    assert control_label["speaker"] == "aaron_reed"
     assert control_label["confidence"] == "high"
     assert control_label["method"] == "structural_setting"
     assert "owner_margin_declined" not in control_label
@@ -758,7 +760,7 @@ def test_l3_per_statement_downgrades_margin_declined_high_match_to_medium(
     result = attribute_segment("20240101", STREAM, "102500_300")
     label = result["labels"][0]
 
-    assert label["speaker"] == "casey_rival"
+    assert label["speaker"] == "zara_vale"
     assert label["method"] == "acoustic"
     assert label["confidence"] == "medium"
     assert label["owner_margin_declined"] is True
@@ -784,7 +786,7 @@ def test_l3_acoustic_cluster_downgrades_margin_declined_high_match_to_medium(
     result = attribute_segment("20240101", STREAM, "103500_300")
     label = result["labels"][0]
 
-    assert label["speaker"] == "casey_rival"
+    assert label["speaker"] == "zara_vale"
     assert label["method"] == "acoustic_cluster"
     assert label["confidence"] == "medium"
     assert label["owner_margin_declined"] is True

@@ -409,6 +409,22 @@ def attribute_segment(
     non_owner_sids: list[int] = []
     margin_declined_sids: set[int] = set()
 
+    def _replacement_label(
+        sid: int,
+        speaker: str,
+        confidence: str,
+        method: str,
+    ) -> dict[str, Any]:
+        label: dict[str, Any] = {
+            "sentence_id": sid,
+            "speaker": speaker,
+            "confidence": confidence,
+            "method": method,
+        }
+        if sid in margin_declined_sids:
+            label["owner_margin_declined"] = True
+        return label
+
     for emb, sid in zip(embeddings, statement_ids):
         sid_int = int(sid)
         normalized = normalize_embedding(emb)
@@ -491,14 +507,12 @@ def attribute_segment(
             for sid in non_owner_sids:
                 if labels[sid]["speaker"] is None:
                     confidence = "medium" if sid in margin_declined_sids else "high"
-                    labels[sid] = {
-                        "sentence_id": sid,
-                        "speaker": resolution.entity["id"],
-                        "confidence": confidence,
-                        "method": "structural_single_speaker",
-                    }
-                    if sid in margin_declined_sids:
-                        labels[sid]["owner_margin_declined"] = True
+                    labels[sid] = _replacement_label(
+                        sid,
+                        resolution.entity["id"],
+                        confidence,
+                        "structural_single_speaker",
+                    )
 
     # 2b: single setting-field participant (import segments without speakers.json)
     elif not speakers and len(setting_names) == 1:
@@ -517,14 +531,12 @@ def attribute_segment(
             for sid in non_owner_sids:
                 if labels[sid]["speaker"] is None:
                     confidence = "medium" if sid in margin_declined_sids else "high"
-                    labels[sid] = {
-                        "sentence_id": sid,
-                        "speaker": resolution.entity["id"],
-                        "confidence": confidence,
-                        "method": "structural_setting",
-                    }
-                    if sid in margin_declined_sids:
-                        labels[sid]["owner_margin_declined"] = True
+                    labels[sid] = _replacement_label(
+                        sid,
+                        resolution.entity["id"],
+                        confidence,
+                        "structural_setting",
+                    )
 
     # ============================
     # LAYER 3: Acoustic matching
@@ -615,14 +627,12 @@ def attribute_segment(
                                 and label_confidence == "high"
                             ):
                                 label_confidence = "medium"
-                            labels[sid] = {
-                                "sentence_id": sid,
-                                "speaker": eid,
-                                "confidence": label_confidence,
-                                "method": "acoustic_cluster",
-                            }
-                            if sid in margin_declined_sids:
-                                labels[sid]["owner_margin_declined"] = True
+                            labels[sid] = _replacement_label(
+                                sid,
+                                eid,
+                                label_confidence,
+                                "acoustic_cluster",
+                            )
 
         for sid in unresolved:
             if labels[sid]["speaker"] is not None:
@@ -644,23 +654,20 @@ def attribute_segment(
 
             if best_eid is not None:
                 if best_score >= ACOUSTIC_HIGH:
-                    labels[sid] = {
-                        "sentence_id": sid,
-                        "speaker": best_eid,
-                        "confidence": (
-                            "medium" if sid in margin_declined_sids else "high"
-                        ),
-                        "method": "acoustic",
-                    }
+                    confidence = "medium" if sid in margin_declined_sids else "high"
+                    labels[sid] = _replacement_label(
+                        sid,
+                        best_eid,
+                        confidence,
+                        "acoustic",
+                    )
                 elif best_score >= ACOUSTIC_MEDIUM:
-                    labels[sid] = {
-                        "sentence_id": sid,
-                        "speaker": best_eid,
-                        "confidence": "medium",
-                        "method": "acoustic",
-                    }
-                if sid in margin_declined_sids and labels[sid]["speaker"] is not None:
-                    labels[sid]["owner_margin_declined"] = True
+                    labels[sid] = _replacement_label(
+                        sid,
+                        best_eid,
+                        "medium",
+                        "acoustic",
+                    )
 
     # --- collect final unmatched for Layer 4 ---
     final_unmatched = [
