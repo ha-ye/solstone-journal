@@ -95,6 +95,11 @@ def test_drawer_smoke_harness_covers_contract():
     assert "drawer-body" in source
     assert "drawer-chip--warn" in source
     assert "drawer-chip--danger" in source
+    assert "emphasized line text" in source
+    assert "digit runs emphasized" in source
+    assert "label has no emphasis" in source
+    assert "chip has no emphasis" in source
+    assert "prose line has no emphasis" in source
     assert "no line omits line span" in source
     assert "preserve restores open id" in source
     assert "vanished id is clean no-op" in source

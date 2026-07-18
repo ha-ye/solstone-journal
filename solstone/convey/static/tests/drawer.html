@@ -67,6 +67,17 @@
     assert('body wrapper renders', drawer.querySelector('.drawer-body') !== null);
     assert('body classes render', drawer.querySelector('.drawer-empty') && drawer.querySelector('.drawer-evidence') && drawer.querySelector('.drawer-kv'));
 
+    const emphasizedLine = "oura's ring · 3 imports · latest jul 3, 12:00 pm";
+    drawer = renderToFixture({ label: 'audit 2', line: emphasizedLine, chipText: '9 warnings', chipTone: 'warn' });
+    const lineEl = drawer.querySelector('.drawer-line');
+    equal('emphasized line text', lineEl.textContent, emphasizedLine);
+    assert('digit runs emphasized', Array.from(lineEl.querySelectorAll('b')).map((node) => node.textContent).join('|') === '3|3,|12:00 pm');
+    assert('label has no emphasis', drawer.querySelector('.drawer-label b') === null);
+    assert('chip has no emphasis', drawer.querySelector('.drawer-chip b') === null);
+
+    drawer = renderToFixture({ line: "oura's ring latest today" });
+    assert('prose line has no emphasis', drawer.querySelector('.drawer-line b') === null);
+
     drawer = renderToFixture({ chipText: 'danger', chipTone: 'danger' });
     assert('danger chip', drawer.querySelector('.drawer-chip--danger') !== null);
     assert('no line omits line span', drawer.querySelector('.drawer-line') === null);

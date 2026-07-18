@@ -23,7 +23,9 @@
     const idAttr = id ? ` data-drawer-id="${escapeHtml(id)}"` : '';
     const openAttr = config.open ? ' open' : '';
     const line = String(config.line ?? '').trim();
-    const lineHtml = line ? `<span class="drawer-line">${escapeHtml(line)}</span>` : '';
+    const lineHtml = line
+      ? `<span class="drawer-line">${escapeHtml(line).replace(/&#?\w+;|\d[\d,.:]*(?:\s?(?:am|pm|s))?/g, (m) => (m.startsWith('&') ? m : `<b>${m}</b>`))}</span>`
+      : '';
     const chipText = String(config.chipText ?? '').trim();
     const chipTone = config.chipTone === 'warn' || config.chipTone === 'danger'
       ? ` drawer-chip--${config.chipTone}`

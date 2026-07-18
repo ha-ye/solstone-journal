@@ -586,6 +586,62 @@ assert(anatomyDrawerLine(tied).endsWith(`strongest: ${tied[0].label}`), "stronge
     subprocess.run([node, "-e", script], check=True, text=True)
 
 
+def test_drawer_render_emphasizes_digits_after_escaping_under_node():
+    node = _node_or_skip()
+    source = Path("solstone/convey/static/drawer.js").read_text(encoding="utf-8")
+    functions = "\n".join(
+        _function_source(source, name) for name in ("escapeHtml", "render")
+    )
+    script = "\n".join(
+        [
+            functions,
+            "function assert(condition, message) { if (!condition) throw new Error(message); }",
+            """
+function decodeEntities(text) {
+  const named = { amp: "&", lt: "<", gt: ">", quot: "\\\"", apos: "'" };
+  return String(text).replace(/&(#\\d+|#x[0-9a-fA-F]+|\\w+);/g, (entity, body) => {
+    if (body[0] === "#") {
+      const value = body[1]?.toLowerCase() === "x"
+        ? Number.parseInt(body.slice(2), 16)
+        : Number.parseInt(body.slice(1), 10);
+      return Number.isFinite(value) ? String.fromCodePoint(value) : entity;
+    }
+    return Object.prototype.hasOwnProperty.call(named, body) ? named[body] : entity;
+  });
+}
+
+function textContentAfterUnescape(html) {
+  return String(html).split(/(<[^>]*>)/g)
+    .filter((chunk) => chunk && !chunk.startsWith("<"))
+    .map(decodeEntities)
+    .join("");
+}
+
+function drawerLineHtml(line) {
+  const rendered = render({ id: "probe", label: "audit", line, bodyHtml: "" });
+  const match = rendered.match(/<span class="drawer-line">([\\s\\S]*?)<\\/span>/);
+  return match ? match[1] : "";
+}
+
+const plainLine = "oura's ring · 3 imports · latest jul 3, 12:00 pm";
+const lineHtml = drawerLineHtml(plainLine);
+assert(lineHtml.includes("<b>3</b>"), "digit run is emphasized");
+assert(lineHtml.includes("&#39;"), "apostrophe entity remains intact");
+assert(!lineHtml.includes("&#<b>"), "emphasis does not split escaped entity");
+assert(textContentAfterUnescape(lineHtml) === plainLine, "line text content is invariant");
+
+const proseHtml = drawerLineHtml("oura's ring latest today");
+assert(!proseHtml.includes("<b>"), "pure prose line has no emphasis");
+
+const injectionHtml = drawerLineHtml("<img src=x onerror=alert(1)>");
+assert(injectionHtml.includes("&lt;img"), "injection probe remains escaped");
+assert(!injectionHtml.includes("<img"), "injection probe does not render raw tag");
+""",
+        ]
+    )
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
 def test_overview_import_evidence_preserves_manifest_fields(body_env):
     node = _node_or_skip()
     env = body_env()
@@ -622,6 +678,62 @@ for (const day of item.days_affected) {
   assert(rendered.includes(`href="/app/body/${day}"`), `day ${day} link renders`);
   assert(rendered.includes(`>${day}</a>`), `day ${day} text renders`);
 }
+""",
+        ]
+    )
+    subprocess.run([node, "-e", script], check=True, text=True)
+
+
+def test_overview_audit_empty_state_is_not_a_drawer(body_env):
+    node = _node_or_skip()
+    env = body_env()
+    _seed_health_import(env.journal)
+    status = env.client.get("/app/body/api/status").get_json()
+    source = _workspace_source()
+    functions = "\n".join(
+        _function_source(source, name)
+        for name in (
+            "html",
+            "asArray",
+            "asObject",
+            "safeDay",
+            "bodyDayHref",
+            "renderCountList",
+            "formatSourceTime",
+            "sourceTimeSortKey",
+            "auditDrawerLine",
+            "renderDrawerKv",
+            "importEvidenceMeta",
+            "renderImportEvidence",
+            "renderOverviewAudit",
+        )
+    )
+    script = "\n".join(
+        [
+            "const DAY_RE = /^\\d{8}$/;",
+            "function escapeHtml(value) { return String(value ?? ''); }",
+            functions,
+            "function assert(condition, message) { if (!condition) throw new Error(message); }",
+            f"const status = {json.dumps(status)};",
+            """
+const drawerCalls = [];
+const window = {
+  Drawer: {
+    render(options) {
+      drawerCalls.push(options);
+      return `<details class="drawer"><summary>${options.label}</summary><div>${options.bodyHtml || ""}</div></details>`;
+    },
+  },
+};
+const emptyRendered = renderOverviewAudit({ ...status, imports: [] });
+assert(emptyRendered === '<p class="drawer-empty">no imports yet — body data appears here when a health export is imported.</p>', "empty overview audit renders empty paragraph");
+assert(!emptyRendered.includes("<details"), "empty overview audit is not a details drawer");
+assert(drawerCalls.length === 0, "empty overview audit does not call Drawer.render");
+
+const populatedRendered = renderOverviewAudit(status);
+assert(populatedRendered.includes('<details class="drawer">'), "populated overview audit renders drawer");
+assert(drawerCalls.length === 1, "populated overview audit calls Drawer.render");
+assert(drawerCalls[0].id === "body-overview-audit", "populated overview audit uses audit drawer id");
 """,
         ]
     )

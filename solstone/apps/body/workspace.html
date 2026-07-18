@@ -1458,7 +1458,6 @@ a.body-day-cell:focus-visible {
   }
 
   function renderImportEvidence(imports) {
-    if (!imports.length) return '<p class="drawer-empty">no imports yet — body data appears here when a health export is imported.</p>';
     return `<ul class="drawer-evidence">${imports.map((item) => {
       const importId = String(item.import_id ?? "");
       const dayLinks = asArray(item.days_affected).length
@@ -1470,6 +1469,7 @@ a.body-day-cell:focus-visible {
 
   function renderOverviewAudit(status) {
     const imports = asArray(status.imports);
+    if (!imports.length) return '<p class="drawer-empty">no imports yet — body data appears here when a health export is imported.</p>';
     const latestRows = Object.entries(asObject(status.latest_by_source)).map(([name, latest]) => [`latest ${name}`, formatSourceTime(latest) || latest]);
     const bodyHtml = html([
       renderImportEvidence(imports),
