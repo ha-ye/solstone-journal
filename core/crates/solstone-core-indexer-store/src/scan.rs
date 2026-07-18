@@ -838,6 +838,218 @@ mod tests {
     }
 
     #[test]
+    fn scan_indexes_talent_json_families_with_static_agents_and_metadata() {
+        let root = temp_root("talent-json");
+        write_stream(&root, "20260717", "default", "090000_300");
+        write(
+            &root,
+            "chronicle/20260717/default/090000_300/talents/documents.json",
+            r#"{"overview":"Trust update.","parties":[{"name":"Priya Shah","role":"trustee"}],"key_provisions":[{"text":"Trustee may distribute assets."}],"assets":[{"name":"Brokerage Account"}],"conditions":[{"trigger":"Settlor's death","effect":"Successor trustee takes office."}],"important_dates":[{"date":"2026-07-17","meaning":"Effective date."}],"summary":"Summary."}"#,
+        );
+        write(
+            &root,
+            "chronicle/20260717/default/090000_300/talents/screen.json",
+            r#"{"narrative":"Viewed the release dashboard.","entities":[{"type":"Tool","name":"Grafana","context":"Latency dashboard."}]}"#,
+        );
+        write(
+            &root,
+            "chronicle/20260717/default/090000_300/talents/sense.json",
+            r#"{"content_type":"meeting","emotional_register":"focused","activity_summary":"Reviewed launch status.","entities":[{"type":"Person","name":"Alice"}],"facets":[{"facet":"work","activity":"launch","level":"high"}],"meeting_detected":true,"speakers":["Alice"]}"#,
+        );
+        write(
+            &root,
+            "chronicle/20260717/talents/morning_briefing.json",
+            r#"{"metadata":{"coverage_preamble":"Daily briefing."},"your_day":[{"time":"09:00","text":"Meet Alice."}],"yesterday":["Shipped."],"needs_attention":[{"text":"Review."}],"forward_look":["Prepare."],"reading":[{"facet":"work","summary":"News."}]}"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan talent json");
+        assert_eq!(report.indexed, 4);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+
+        for (path, agent) in [
+            (
+                "20260717/default/090000_300/talents/documents.json",
+                "documents",
+            ),
+            ("20260717/default/090000_300/talents/screen.json", "screen"),
+            ("20260717/default/090000_300/talents/sense.json", "sense"),
+        ] {
+            let row: (String, String, String, String, String) = conn
+                .query_row(
+                    "SELECT day, facet, agent, stream, time_bucket FROM chunks WHERE path=? ORDER BY idx LIMIT 1",
+                    [path],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .expect("segment talent json metadata row");
+            assert_eq!(
+                row,
+                (
+                    "20260717".to_string(),
+                    String::new(),
+                    agent.to_string(),
+                    "default".to_string(),
+                    "morning".to_string(),
+                ),
+                "{path}"
+            );
+            assert_eq!(
+                count(
+                    &conn,
+                    &format!("SELECT count(*) FROM files WHERE path='{path}'")
+                ),
+                1,
+                "{path}"
+            );
+        }
+
+        let morning_row: (String, String, String, Option<String>, String, String) = conn
+            .query_row(
+                "SELECT day, facet, agent, stream, time_bucket, content FROM chunks WHERE path='20260717/talents/morning_briefing.json' ORDER BY idx LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
+            )
+            .expect("morning briefing row");
+        assert_eq!(morning_row.0, "20260717");
+        assert_eq!(morning_row.1, "");
+        assert_eq!(morning_row.2, "morning_briefing");
+        assert_eq!(morning_row.3, None);
+        assert_eq!(morning_row.4, "");
+        assert!(morning_row.5.contains("## Your Day"));
+        fs::remove_dir_all(root).expect("cleanup talent json root");
+    }
+
+    #[test]
+    fn scan_writes_file_rows_for_invalid_or_non_object_talent_json() {
+        let root = temp_root("invalid-talent-json");
+        for segment in ["090000_300", "100000_300", "110000_300", "120000_300"] {
+            write_stream(&root, "20260717", "default", segment);
+        }
+        let cases = [
+            (
+                "chronicle/20260717/default/090000_300/talents/documents.json",
+                "{",
+            ),
+            (
+                "chronicle/20260717/default/100000_300/talents/screen.json",
+                "null",
+            ),
+            (
+                "chronicle/20260717/default/110000_300/talents/sense.json",
+                "42",
+            ),
+            (
+                "chronicle/20260717/default/120000_300/talents/documents.json",
+                "[]",
+            ),
+            ("chronicle/20260717/talents/morning_briefing.json", ""),
+        ];
+        for (path, text) in cases {
+            write(&root, path, text);
+        }
+
+        let report = scan_journal(&root, true, "20260717").expect("scan invalid talent json");
+        assert_eq!(report.indexed, 5);
+        assert_eq!(report.skipped, 0);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        for path in [
+            "20260717/default/090000_300/talents/documents.json",
+            "20260717/default/100000_300/talents/screen.json",
+            "20260717/default/110000_300/talents/sense.json",
+            "20260717/default/120000_300/talents/documents.json",
+            "20260717/talents/morning_briefing.json",
+        ] {
+            assert_eq!(
+                count(
+                    &conn,
+                    &format!("SELECT count(*) FROM chunks WHERE path='{path}'")
+                ),
+                0,
+                "{path}"
+            );
+            assert_eq!(
+                count(
+                    &conn,
+                    &format!("SELECT count(*) FROM files WHERE path='{path}'")
+                ),
+                1,
+                "{path}"
+            );
+        }
+        fs::remove_dir_all(root).expect("cleanup invalid talent json root");
+    }
+
+    #[test]
+    fn scan_preserves_empty_object_chunk_counts_by_talent_json_family() {
+        let root = temp_root("empty-talent-json");
+        write_stream(&root, "20260717", "default", "090000_300");
+        write(
+            &root,
+            "chronicle/20260717/default/090000_300/talents/documents.json",
+            "{}",
+        );
+        write(
+            &root,
+            "chronicle/20260717/default/090000_300/talents/screen.json",
+            "{}",
+        );
+        write(
+            &root,
+            "chronicle/20260717/default/090000_300/talents/sense.json",
+            "{}",
+        );
+        write(
+            &root,
+            "chronicle/20260717/talents/morning_briefing.json",
+            "{}",
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan empty talent json");
+        assert_eq!(report.indexed, 4);
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        for (path, chunks) in [
+            ("20260717/default/090000_300/talents/documents.json", 1),
+            ("20260717/default/090000_300/talents/screen.json", 1),
+            ("20260717/default/090000_300/talents/sense.json", 0),
+            ("20260717/talents/morning_briefing.json", 1),
+        ] {
+            assert_eq!(
+                count(
+                    &conn,
+                    &format!("SELECT count(*) FROM chunks WHERE path='{path}'")
+                ),
+                chunks,
+                "{path}"
+            );
+            assert_eq!(
+                count(
+                    &conn,
+                    &format!("SELECT count(*) FROM files WHERE path='{path}'")
+                ),
+                1,
+                "{path}"
+            );
+        }
+        fs::remove_dir_all(root).expect("cleanup empty talent json root");
+    }
+
+    #[test]
     fn scan_writes_file_row_for_zero_chunk_chat_stream() {
         let root = temp_root("zero-chat-stream");
         write(

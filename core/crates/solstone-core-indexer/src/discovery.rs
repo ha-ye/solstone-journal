@@ -156,6 +156,23 @@ mod tests {
         );
         write(
             &root,
+            "chronicle/20240101/default/123456_300/talents/documents.json",
+        );
+        write(
+            &root,
+            "chronicle/20240101/default/123456_300/talents/screen.json",
+        );
+        write(
+            &root,
+            "chronicle/20240101/default/123456_300/talents/sense.json",
+        );
+        write(
+            &root,
+            "chronicle/20240101/default/123456_300/talents/morning_briefing.json",
+        );
+        write(&root, "chronicle/20240101/talents/morning_briefing.json");
+        write(
+            &root,
             "chronicle/20260101/import.ics/090000_300/event_transcript.md",
         );
         write(&root, "facets/work/news/20240101.md");
@@ -174,7 +191,11 @@ mod tests {
             vec![
                 ".hidden/talents/secret.md",
                 "20240101/default/123456_300/talents/audio.md",
+                "20240101/default/123456_300/talents/documents.json",
+                "20240101/default/123456_300/talents/screen.json",
+                "20240101/default/123456_300/talents/sense.json",
                 "20240101/talents/flow.md",
+                "20240101/talents/morning_briefing.json",
                 "20260101/import.ics/090000_300/event_transcript.md",
                 "apps/todos/talents/digest.md",
                 "config/actions/20240101.jsonl",
@@ -185,7 +206,29 @@ mod tests {
                 "imports/20260101_120000/summary.md",
             ]
         );
+        assert!(!files.contains_key("20240101/default/123456_300/talents/morning_briefing.json"));
         fs::remove_dir_all(root).expect("cleanup discover root");
+    }
+
+    #[test]
+    fn discovers_talent_json_from_chronicle_less_root() {
+        let root = temp_root("discover-talent-json-rootless");
+        write(&root, "20240101/default/123456_300/talents/documents.json");
+        write(&root, "20240101/default/123456_300/talents/screen.json");
+        write(&root, "20240101/default/123456_300/talents/sense.json");
+        write(
+            &root,
+            "20240101/default/123456_300/talents/morning_briefing.json",
+        );
+        write(&root, "20240101/talents/morning_briefing.json");
+
+        let files = discover_indexable_files(&root).expect("discover files");
+        assert!(files.contains_key("20240101/default/123456_300/talents/documents.json"));
+        assert!(files.contains_key("20240101/default/123456_300/talents/screen.json"));
+        assert!(files.contains_key("20240101/default/123456_300/talents/sense.json"));
+        assert!(files.contains_key("20240101/talents/morning_briefing.json"));
+        assert!(!files.contains_key("20240101/default/123456_300/talents/morning_briefing.json"));
+        fs::remove_dir_all(root).expect("cleanup discover rootless root");
     }
 
     #[test]

@@ -7,8 +7,12 @@ mod ai_chat;
 mod browser;
 mod chat;
 mod day_accumulator;
+mod documents;
 mod events;
 mod imports;
+mod morning_briefing;
+mod screen;
+mod sense;
 
 use std::path::Path;
 
@@ -28,6 +32,10 @@ pub enum Family {
     Chat,
     Browser,
     DayAccumulator,
+    Documents,
+    Screen,
+    Sense,
+    MorningBriefing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +66,26 @@ pub(crate) const INDEX_FAMILY_PATTERNS: &[FamilyPattern] = &[
     FamilyPattern {
         pattern: "*/talents/*.md",
         family: Family::Markdown,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/*/*/talents/sense.json",
+        family: Family::Sense,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/*/*/talents/documents.json",
+        family: Family::Documents,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/*/*/talents/screen.json",
+        family: Family::Screen,
+        root: PatternRoot::DayRooted,
+    },
+    FamilyPattern {
+        pattern: "*/talents/morning_briefing.json",
+        family: Family::MorningBriefing,
         root: PatternRoot::DayRooted,
     },
     FamilyPattern {
@@ -227,6 +255,10 @@ pub fn produce_chunks(family: Family, rel: &str, text: &str) -> ProducedChunks {
         Family::Chat => chat::render(&parse_jsonl_objects(text)),
         Family::Browser => browser::render(&parse_jsonl_objects(text)),
         Family::DayAccumulator => day_accumulator::render(rel, &parse_jsonl_objects(text)),
+        Family::Documents => documents::render(&parse_json_object(text)),
+        Family::Screen => screen::render(&parse_json_object(text)),
+        Family::Sense => sense::render(&parse_json_object(text)),
+        Family::MorningBriefing => morning_briefing::render(&parse_json_object(text)),
     }
 }
 
@@ -247,6 +279,18 @@ fn parse_jsonl_objects(text: &str) -> Vec<JsonObject> {
         .collect()
 }
 
+// Whole-file JSON talent outputs are intentionally infallible. Python writes
+// files(path, mtime) after _index_file returns, even on JSONDecodeError; native
+// scan.rs writes that row only from index_file's Ok arm. Malformed, empty, or
+// non-object content must therefore render zero chunks instead of becoming an
+// indexing error, or the files table diverges.
+fn parse_json_object(text: &str) -> Vec<JsonObject> {
+    match serde_json::from_str::<Value>(text) {
+        Ok(Value::Object(record)) => vec![record],
+        Ok(_) | Err(_) => Vec::new(),
+    }
+}
+
 fn json_falsy(value: Option<&Value>) -> bool {
     match value {
         None | Some(Value::Null) => true,
@@ -255,6 +299,18 @@ fn json_falsy(value: Option<&Value>) -> bool {
         Some(Value::String(value)) => value.is_empty(),
         Some(Value::Array(value)) => value.is_empty(),
         Some(Value::Object(value)) => value.is_empty(),
+    }
+}
+
+fn clean_value(value: Option<&Value>) -> String {
+    if json_falsy(value) {
+        String::new()
+    } else {
+        value
+            .map(display_value)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
     }
 }
 
@@ -344,10 +400,33 @@ mod tests {
             Some(Family::Markdown)
         );
         assert_eq!(
+            classify("20260304/default/090000_300/talents/sense.json"),
+            Some(Family::Sense)
+        );
+        assert_eq!(
+            classify("20260304/default/090000_300/talents/documents.json"),
+            Some(Family::Documents)
+        );
+        assert_eq!(
+            classify("20260304/default/090000_300/talents/screen.json"),
+            Some(Family::Screen)
+        );
+        assert_eq!(
             classify("20260304/default/090000_300/talents/sense.jsonl"),
             None
         );
-        assert_eq!(classify("20260304/talents/morning_briefing.json"), None);
+        assert_eq!(
+            classify("20260304/default/090000_300/talents/documents.jsonl"),
+            None
+        );
+        assert_eq!(
+            classify("20260304/default/090000_300/talents/screen.jsonl"),
+            None
+        );
+        assert_eq!(
+            classify("20260304/talents/morning_briefing.json"),
+            Some(Family::MorningBriefing)
+        );
         assert_eq!(
             classify("20240101/default/123456_300/talents/audio.md"),
             Some(Family::Markdown)
@@ -495,6 +574,14 @@ not json
         );
         assert_eq!(produced.chunks.len(), 1);
         assert!(produced.chunks[0].content.contains("### Coding 090000 300"));
+    }
+
+    #[test]
+    fn json_object_parser_is_infallible_for_talent_json_inputs() {
+        assert_eq!(parse_json_object(r#"{"title":"Planning"}"#).len(), 1);
+        for text in ["", "   ", "not json", "null", "42", r#""string""#, "[]"] {
+            assert!(parse_json_object(text).is_empty(), "{text:?}");
+        }
     }
 
     #[test]
