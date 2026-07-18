@@ -7,6 +7,7 @@ license.workspace = true
 publish = false
 
 [dependencies]
+chrono.workspace = true
 glob.workspace = true
 pulldown-cmark.workspace = true
 serde_json.workspace = true

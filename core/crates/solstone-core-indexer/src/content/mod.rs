@@ -540,6 +540,7 @@ mod tests {
             Some(Family::Observation)
         );
         assert_eq!(classify("entities/alice/entity.json"), None);
+        assert_eq!(classify("facets/work/entities/alice/entity.json"), None);
         assert_eq!(classify("20240101/default/123456_300/audio.jsonl"), None);
     }
 

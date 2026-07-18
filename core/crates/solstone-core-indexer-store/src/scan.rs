@@ -6,9 +6,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use solstone_core_indexer::content::{Family, classify, produce_chunks};
 use solstone_core_indexer::discovery::discover_indexable_files;
+use solstone_core_indexer::entity_search::{
+    ENTITY_SEARCH_WATERMARK_COUNT_PATH, ENTITY_SEARCH_WATERMARK_MTIME_PATH, EntitySearchBuild,
+    build_entity_search,
+};
 use solstone_core_indexer::metadata::extract_path_metadata;
 use solstone_core_indexer::paths::{relative_to_journal, resolve_journal_path};
 use solstone_core_indexer::segment::{is_historical_day, time_bucket};
@@ -95,6 +99,8 @@ pub fn scan_journal(journal: &Path, full: bool, today: &str) -> Result<ScanRepor
         conn.execute("DELETE FROM files WHERE path=?", [rel])?;
     }
     report.removed = removed.len();
+
+    index_entity_search(&conn, journal, full)?;
     Ok(report)
 }
 
@@ -125,7 +131,8 @@ pub fn rescan_file(journal: &Path, input: &Path) -> Result<RescanFileStatus, Sto
 }
 
 fn load_file_mtimes(conn: &Connection) -> Result<BTreeMap<String, i64>, StoreError> {
-    let mut statement = conn.prepare("SELECT path, mtime FROM files")?;
+    let mut statement =
+        conn.prepare("SELECT path, mtime FROM files WHERE path NOT LIKE 'entity_search:%'")?;
     let rows = statement.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
     })?;
@@ -135,6 +142,94 @@ fn load_file_mtimes(conn: &Connection) -> Result<BTreeMap<String, i64>, StoreErr
         mtimes.insert(path, mtime);
     }
     Ok(mtimes)
+}
+
+fn index_entity_search(conn: &Connection, journal: &Path, force: bool) -> Result<(), StoreError> {
+    let build = build_entity_search(journal)?;
+    let stored_mtime = stored_entity_search_mtime(conn)?;
+    let stored_count = stored_entity_search_count(conn)?;
+    let has_entity_chunks = has_entity_search_chunks(conn)?;
+
+    let entity_changed = force
+        || build.watermark_mtime_secs > stored_mtime
+        || build.count != stored_count
+        || (build.count > 0 && !has_entity_chunks);
+    if !entity_changed {
+        return Ok(());
+    }
+
+    conn.execute("DELETE FROM chunks WHERE agent='entity'", [])?;
+    conn.execute("DELETE FROM chunks WHERE path LIKE 'entity_search:%'", [])?;
+    conn.execute(
+        "DELETE FROM chunks WHERE path LIKE 'entities/%/entity.json'",
+        [],
+    )?;
+    insert_entity_search_rows(conn, &build)?;
+    conn.execute(
+        "REPLACE INTO files(path, mtime) VALUES (?, ?)",
+        params![
+            ENTITY_SEARCH_WATERMARK_MTIME_PATH,
+            build.watermark_mtime_secs
+        ],
+    )?;
+    conn.execute(
+        "REPLACE INTO files(path, mtime) VALUES (?, ?)",
+        params![ENTITY_SEARCH_WATERMARK_COUNT_PATH, build.count],
+    )?;
+    Ok(())
+}
+
+fn insert_entity_search_rows(
+    conn: &Connection,
+    build: &EntitySearchBuild,
+) -> Result<(), StoreError> {
+    for row in &build.rows {
+        conn.execute(
+            "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                row.content,
+                row.path,
+                row.day,
+                row.facet,
+                row.agent,
+                row.stream,
+                row.idx,
+                row.time_bucket,
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+fn stored_entity_search_mtime(conn: &Connection) -> Result<i64, StoreError> {
+    let stored = conn
+        .query_row(
+            "SELECT mtime FROM files WHERE path=?",
+            [ENTITY_SEARCH_WATERMARK_MTIME_PATH],
+            |row| row.get::<_, f64>(0),
+        )
+        .optional()?;
+    Ok(stored.map(|value| value.trunc() as i64).unwrap_or(0))
+}
+
+fn stored_entity_search_count(conn: &Connection) -> Result<i64, StoreError> {
+    let stored = conn
+        .query_row(
+            "SELECT mtime FROM files WHERE path=?",
+            [ENTITY_SEARCH_WATERMARK_COUNT_PATH],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()?;
+    Ok(stored.unwrap_or(0))
+}
+
+fn has_entity_search_chunks(conn: &Connection) -> Result<bool, StoreError> {
+    let exists = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM chunks WHERE agent='entity' LIMIT 1)",
+        [],
+        |row| row.get::<_, i64>(0),
+    )?;
+    Ok(exists != 0)
 }
 
 fn index_file(
@@ -263,6 +358,13 @@ mod tests {
         .expect("chunk metadata row")
     }
 
+    fn file_mtime(conn: &Connection, path: &str) -> i64 {
+        conn.query_row("SELECT mtime FROM files WHERE path=?", [path], |row| {
+            row.get(0)
+        })
+        .expect("file mtime row")
+    }
+
     #[test]
     fn scan_skips_reindexes_and_deletes_missing() {
         let root = temp_root("mtime");
@@ -297,7 +399,13 @@ mod tests {
         let report = scan_journal(&root, true, "20260717").expect("remove scan");
         assert_eq!(report.removed, 1);
         let conn = Connection::open(db_path(&root)).expect("open db");
-        assert_eq!(count(&conn, "SELECT count(*) FROM files"), 0);
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path NOT LIKE 'entity_search:%'"
+            ),
+            0
+        );
         fs::remove_dir_all(root).expect("cleanup mtime root");
     }
 
@@ -640,6 +748,344 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(edge_files, vec!["edges:__schema__".to_string()]);
         fs::remove_dir_all(root).expect("cleanup facet entities root");
+    }
+
+    #[test]
+    fn scan_indexes_entity_search_rows_and_watermarks() {
+        let root = temp_root("entity-search");
+        write(
+            &root,
+            "entities/alice/entity.json",
+            r#"{"name":"Alice Johnson","type":"Person","aka":["AJ"],"created_at":1767249000000}"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/alice/entity.json",
+            r#"{"description":"Works on native search","tags":["rust"],"last_seen":"20260102"}"#,
+        );
+
+        let report = scan_journal(&root, true, "20260717").expect("scan entity search");
+        assert_eq!(report.indexed, 0);
+        assert_eq!(report.removed, 0);
+
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        let row: (String, String, String, String, String, String, i64, String) = conn
+            .query_row(
+                "SELECT content, path, day, facet, agent, stream, idx, time_bucket FROM chunks WHERE agent='entity'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .expect("entity search row");
+        assert_eq!(
+            row,
+            (
+                "Alice Johnson (Person)\nAlso known as: AJ\nWorks on native search\nTags: rust"
+                    .to_string(),
+                "entity_search:alice".to_string(),
+                "20260102".to_string(),
+                "work".to_string(),
+                "entity".to_string(),
+                String::new(),
+                0,
+                String::new(),
+            )
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path IN ('entity_search:__mtime__', 'entity_search:__count__')"
+            ),
+            2
+        );
+        let stored_count: i64 = conn
+            .query_row(
+                "SELECT mtime FROM files WHERE path='entity_search:__count__'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("entity search count watermark");
+        assert_eq!(stored_count, 2);
+        fs::remove_dir_all(root).expect("cleanup entity search root");
+    }
+
+    #[test]
+    fn entity_search_incremental_with_zero_sources_writes_no_watermarks() {
+        let root = temp_root("entity-search-empty");
+        let report = scan_journal(&root, false, "20260717").expect("scan empty journal");
+        assert_eq!(report.indexed, 0);
+        assert_eq!(report.removed, 0);
+
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path LIKE 'entity_search:%'"
+            ),
+            0
+        );
+        assert_eq!(
+            count(&conn, "SELECT count(*) FROM chunks WHERE agent='entity'"),
+            0
+        );
+        fs::remove_dir_all(root).expect("cleanup empty entity search root");
+    }
+
+    #[test]
+    fn entity_search_excludes_python_real_watermark_from_file_mtimes() {
+        let root = temp_root("entity-search-python-real");
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "REPLACE INTO files(path, mtime) VALUES ('entity_search:__mtime__', 1784360332.93201)",
+            [],
+        )
+        .expect("seed python mtime watermark");
+        conn.execute(
+            "REPLACE INTO files(path, mtime) VALUES ('entity_search:__count__', 73.0)",
+            [],
+        )
+        .expect("seed python count watermark");
+        drop(conn);
+
+        let report = scan_journal(&root, false, "20260717").expect("scan with real watermark");
+        assert_eq!(report.indexed, 0);
+        assert_eq!(report.removed, 0);
+
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path IN ('entity_search:__mtime__', 'entity_search:__count__')"
+            ),
+            2
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM files WHERE path LIKE 'entity_search:%' AND typeof(mtime)='integer'"
+            ),
+            2
+        );
+        fs::remove_dir_all(root).expect("cleanup python real root");
+    }
+
+    #[test]
+    fn entity_search_incremental_skips_and_full_forces_rebuild() {
+        let root = temp_root("entity-search-full-force");
+        write(
+            &root,
+            "entities/alice/entity.json",
+            r#"{"name":"Alice Johnson","type":"Person"}"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/alice/entity.json",
+            r#"{"description":"Fresh content"}"#,
+        );
+
+        scan_journal(&root, true, "20260717").expect("initial full scan");
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        conn.execute(
+            "UPDATE chunks SET content='stale content' WHERE agent='entity'",
+            [],
+        )
+        .expect("make entity chunk stale");
+        drop(conn);
+
+        scan_journal(&root, false, "20260717").expect("incremental scan");
+        let conn = Connection::open(db_path(&root)).expect("open db after incremental");
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM chunks WHERE agent='entity'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("entity content after incremental");
+        assert_eq!(content, "stale content");
+        drop(conn);
+
+        scan_journal(&root, true, "20260717").expect("forced full scan");
+        let conn = Connection::open(db_path(&root)).expect("open db after full");
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM chunks WHERE agent='entity'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("entity content after full");
+        assert_eq!(content, "Alice Johnson (Person)\nFresh content");
+        fs::remove_dir_all(root).expect("cleanup full force root");
+    }
+
+    #[test]
+    fn entity_search_entity_data_mtime_change_rebuilds_incrementally() {
+        let root = temp_root("entity-search-data-change");
+        write(
+            &root,
+            "entities/alice/entity.json",
+            r#"{"name":"Alice Johnson","type":"Person"}"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/alice/entity.json",
+            r#"{"description":"Original description"}"#,
+        );
+
+        scan_journal(&root, true, "20260717").expect("initial full scan");
+        let conn = Connection::open(db_path(&root)).expect("open db");
+        let initial_mtime = file_mtime(&conn, "entity_search:__mtime__");
+        let initial_count = file_mtime(&conn, "entity_search:__count__");
+        assert_eq!(initial_count, 2);
+        conn.execute(
+            "UPDATE files SET mtime=0 WHERE path='entity_search:__mtime__'",
+            [],
+        )
+        .expect("age stored entity search mtime");
+        drop(conn);
+
+        write(
+            &root,
+            "entities/alice/entity.json",
+            r#"{"name":"Alice Updated","type":"Person"}"#,
+        );
+        let report = scan_journal(&root, false, "20260717").expect("incremental rebuild");
+        assert_eq!(report.indexed, 0);
+        assert_eq!(report.removed, 0);
+
+        let conn = Connection::open(db_path(&root)).expect("open db after rebuild");
+        let row = chunk_row(&conn, "entity_search:alice");
+        assert_eq!(row.5, "Alice Updated (Person)\nOriginal description");
+        assert!(file_mtime(&conn, "entity_search:__mtime__") > 0);
+        assert_eq!(file_mtime(&conn, "entity_search:__count__"), initial_count);
+        assert!(initial_mtime > 0);
+        fs::remove_dir_all(root).expect("cleanup data change root");
+    }
+
+    #[test]
+    fn entity_search_removing_all_sources_rebuilds_to_zero_watermarks() {
+        let root = temp_root("entity-search-remove-all");
+        write(
+            &root,
+            "entities/alice/entity.json",
+            r#"{"name":"Alice Johnson","type":"Person"}"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/alice/entity.json",
+            r#"{"description":"Will be removed"}"#,
+        );
+
+        scan_journal(&root, true, "20260717").expect("initial full scan");
+        fs::remove_file(root.join("entities/alice/entity.json")).expect("remove identity");
+        fs::remove_file(root.join("facets/work/entities/alice/entity.json"))
+            .expect("remove relationship");
+
+        scan_journal(&root, false, "20260717").expect("incremental remove all");
+        let conn = Connection::open(db_path(&root)).expect("open db after remove all");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE path LIKE 'entity_search:%' OR agent='entity'"
+            ),
+            0
+        );
+        assert_eq!(file_mtime(&conn, "entity_search:__mtime__"), 0);
+        assert_eq!(file_mtime(&conn, "entity_search:__count__"), 0);
+        fs::remove_dir_all(root).expect("cleanup remove all root");
+    }
+
+    #[test]
+    fn entity_search_blocked_only_rebuilds_every_incremental_scan_without_chunks() {
+        let root = temp_root("entity-search-blocked-only");
+        write(
+            &root,
+            "entities/blocked/entity.json",
+            r#"{"name":"Blocked Person","type":"Person","blocked":true}"#,
+        );
+
+        scan_journal(&root, false, "20260717").expect("first blocked-only scan");
+        let conn = Connection::open(db_path(&root)).expect("open db after first blocked scan");
+        assert_eq!(file_mtime(&conn, "entity_search:__count__"), 1);
+        assert!(file_mtime(&conn, "entity_search:__mtime__") > 0);
+        assert_eq!(
+            count(&conn, "SELECT count(*) FROM chunks WHERE agent='entity'"),
+            0
+        );
+        conn.execute(
+            "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) VALUES ('stale blocked rebuild probe', 'entity_search:stale', '', '', 'legacy', '', 0, '')",
+            [],
+        )
+        .expect("seed stale non-entity chunk");
+        drop(conn);
+
+        scan_journal(&root, false, "20260717").expect("second blocked-only scan");
+        let conn = Connection::open(db_path(&root)).expect("open db after second blocked scan");
+        assert_eq!(file_mtime(&conn, "entity_search:__count__"), 1);
+        assert!(file_mtime(&conn, "entity_search:__mtime__") > 0);
+        assert_eq!(
+            count(&conn, "SELECT count(*) FROM chunks WHERE agent='entity'"),
+            0
+        );
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE content='stale blocked rebuild probe'"
+            ),
+            0
+        );
+        fs::remove_dir_all(root).expect("cleanup blocked-only root");
+    }
+
+    #[test]
+    fn entity_search_clean_rebuild_clears_stale_entity_rows() {
+        let root = temp_root("entity-search-clean-rebuild");
+        write(
+            &root,
+            "entities/alice/entity.json",
+            r#"{"name":"Alice Johnson","type":"Person"}"#,
+        );
+        write(
+            &root,
+            "facets/work/entities/alice/entity.json",
+            r#"{"description":"Fresh row"}"#,
+        );
+        let conn = open_index(&root).expect("open index");
+        conn.execute(
+            "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) VALUES ('stale entity-search row', 'entity_search:stale', '', '', 'entity', '', 0, '')",
+            [],
+        )
+        .expect("seed stale entity-search row");
+        conn.execute(
+            "INSERT INTO chunks(content, path, day, facet, agent, stream, idx, time_bucket) VALUES ('stale legacy entity row', 'entities/stale/entity.json', '', '', 'legacy', '', 0, '')",
+            [],
+        )
+        .expect("seed stale legacy entity row");
+        drop(conn);
+
+        scan_journal(&root, false, "20260717").expect("clean rebuild scan");
+        let conn = Connection::open(db_path(&root)).expect("open db after clean rebuild");
+        assert_eq!(
+            count(
+                &conn,
+                "SELECT count(*) FROM chunks WHERE content IN ('stale entity-search row', 'stale legacy entity row')"
+            ),
+            0
+        );
+        assert_eq!(count(&conn, "SELECT count(*) FROM chunks"), 1);
+        let row = chunk_row(&conn, "entity_search:alice");
+        assert_eq!(row.2, "entity");
+        assert_eq!(row.5, "Alice Johnson (Person)\nFresh row");
+        fs::remove_dir_all(root).expect("cleanup clean rebuild root");
     }
 
     #[test]

@@ -4,6 +4,7 @@
 pub mod chunker;
 pub mod content;
 pub mod discovery;
+pub mod entity_search;
 pub mod metadata;
 pub mod paths;
 pub mod segment;

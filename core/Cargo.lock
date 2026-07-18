@@ -394,6 +394,7 @@ version = "0.8.9"
 name = "solstone-core-indexer"
 version = "0.8.9"
 dependencies = [
+ "chrono",
  "glob",
  "pulldown-cmark",
  "serde_json",
