@@ -241,7 +241,7 @@ def _resolve_placeholder(awareness_current: dict, day_count: int) -> str:
         if day_count >= 7:
             return "Ask me about your day, search your journal, or explore insights..."
         return "Your daily analysis is ready — ask about today or anything in your journal..."
-    return "observing — your first daily analysis will be ready soon..."
+    return "sol is keeping your journal. your first daily analysis will be ready soon…"
 
 
 def _build_apps(registry: AppRegistry, config: dict[str, Any]) -> list[dict[str, Any]]:

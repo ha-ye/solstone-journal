@@ -226,7 +226,7 @@ class TestPlaceholderResolution:
 
         current = {"imports": {"has_imported": True}}
         result = _resolve_placeholder(current, 0)
-        assert "observing" in result
+        assert "sol is keeping your journal" in result
 
     def test_first_daily_young(self):
         from solstone.convey.shell_data import _resolve_placeholder
@@ -257,7 +257,7 @@ class TestPlaceholderResolution:
         from solstone.convey.shell_data import _resolve_placeholder
 
         result = _resolve_placeholder({}, 5)
-        assert "observing" in result
+        assert "sol is keeping your journal" in result
 
 
 class TestInjectedChatBarContext:
@@ -267,7 +267,7 @@ class TestInjectedChatBarContext:
         context = _context(monkeypatch, tmp_path, {"imports": {"has_imported": True}})
 
         assert context["chat_bar_placeholder"] == (
-            "observing — your first daily analysis will be ready soon..."
+            "sol is keeping your journal. your first daily analysis will be ready soon…"
         )
         assert context["chat_bar_attention"] is None
         assert context["chat_bar_sol_request"] is None
@@ -294,7 +294,7 @@ class TestInjectedChatBarContext:
         }
         assert context["chat_bar_sol_request"] is None
         assert context["chat_bar_placeholder"] == (
-            "observing — your first daily analysis will be ready soon..."
+            "sol is keeping your journal. your first daily analysis will be ready soon…"
         )
 
     def test_sol_request_surfaces_structured_state(self, monkeypatch, tmp_path):
@@ -318,7 +318,7 @@ class TestInjectedChatBarContext:
         }
         assert context["chat_bar_attention"] is None
         assert context["chat_bar_placeholder"] == (
-            "observing — your first daily analysis will be ready soon..."
+            "sol is keeping your journal. your first daily analysis will be ready soon…"
         )
 
     def test_past_day_request_does_not_surface(self, monkeypatch, tmp_path):
