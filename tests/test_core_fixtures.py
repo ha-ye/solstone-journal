@@ -68,11 +68,15 @@ def test_core_fixtures_check_reports_stale_paths(
     fixture_dir = root / "core" / "fixtures"
     callosum_path = fixture_dir / "callosum_registry.json"
     cogitate_path = fixture_dir / "cogitate_contract.json"
+    edge_schema_path = fixture_dir / "edge_schema.json"
 
     monkeypatch.setattr(build_core_fixtures, "ROOT", root)
     monkeypatch.setattr(build_core_fixtures, "FIXTURE_DIR", fixture_dir)
     monkeypatch.setattr(build_core_fixtures, "CALLOSUM_ARTIFACT_PATH", callosum_path)
     monkeypatch.setattr(build_core_fixtures, "COGITATE_ARTIFACT_PATH", cogitate_path)
+    monkeypatch.setattr(
+        build_core_fixtures, "EDGE_SCHEMA_ARTIFACT_PATH", edge_schema_path
+    )
 
     build_core_fixtures.write_outputs()
     assert build_core_fixtures.check_outputs() == 0
