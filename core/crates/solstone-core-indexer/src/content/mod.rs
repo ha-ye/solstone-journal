@@ -339,9 +339,9 @@ mod tests {
             classify("20260304/talents/pulse.jsonl"),
             Some(Family::DayAccumulator)
         );
-        assert_ne!(
+        assert_eq!(
             classify("20260304/talents/pulse.md"),
-            Some(Family::DayAccumulator)
+            Some(Family::Markdown)
         );
         assert_eq!(
             classify("20260304/default/090000_300/talents/sense.jsonl"),

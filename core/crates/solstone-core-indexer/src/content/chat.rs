@@ -3,7 +3,7 @@
 
 use serde_json::Value;
 
-use super::{IndexChunk, JsonObject, ProducedChunks, display_value};
+use super::{IndexChunk, JsonObject, ProducedChunks, display_value, json_falsy};
 
 pub(super) fn render(records: &[JsonObject]) -> ProducedChunks {
     let mut chunks = Vec::new();
@@ -59,10 +59,10 @@ pub(super) fn render(records: &[JsonObject]) -> ProducedChunks {
 }
 
 fn sol_chat_request(record: &JsonObject) -> String {
-    let mut text = format!("[sol] {}", field(record, "summary"))
+    let mut text = format!("[sol] {}", falsy_text(record.get("summary")))
         .trim()
         .to_string();
-    let message = field(record, "message").trim().to_string();
+    let message = falsy_text(record.get("message"));
     if !message.is_empty() {
         text.push('\n');
         text.push_str(&message);
@@ -71,12 +71,23 @@ fn sol_chat_request(record: &JsonObject) -> String {
 }
 
 fn speaker_line(label: &str, body: Option<&Value>) -> String {
-    let text = body.map(display_value).unwrap_or_default();
-    let text = text.trim();
+    let text = falsy_text(body);
     if text.is_empty() {
         format!("**{label}**")
     } else {
         format!("**{label}** {text}")
+    }
+}
+
+fn falsy_text(value: Option<&Value>) -> String {
+    if json_falsy(value) {
+        String::new()
+    } else {
+        value
+            .map(display_value)
+            .unwrap_or_default()
+            .trim()
+            .to_string()
     }
 }
 
@@ -123,6 +134,33 @@ mod tests {
                 "*[exec errored: repo unavailable]*",
                 "*[chat trouble: unknown]*",
                 "[sol] unique solar cue\nextended detail",
+            ]
+        );
+    }
+
+    #[test]
+    fn falsy_chat_fields_match_python_coercion_boundaries() {
+        let records = parse_jsonl_objects(
+            r#"{"kind":"owner_message","text":0}
+{"kind":"sol_message","text":null}
+{"kind":"sol_chat_request","summary":0,"message":"body text"}
+{"kind":"talent_spawned","name":0,"task":"x"}
+"#,
+        );
+        let produced = render(&records);
+        let contents: Vec<&str> = produced
+            .chunks
+            .iter()
+            .map(|chunk| chunk.content.as_str())
+            .collect();
+
+        assert_eq!(
+            contents,
+            vec![
+                "**Owner**",
+                "**Sol**",
+                "[sol]\nbody text",
+                "*[0 spawned: x]*",
             ]
         );
     }
