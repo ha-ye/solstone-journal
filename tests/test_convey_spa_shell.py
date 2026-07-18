@@ -90,7 +90,7 @@ def test_api_shell_chat_seed_degrades_to_defaults(client, monkeypatch):
     assert response.status_code == 200
     chat_bar = response.get_json()["chat_bar"]
     assert chat_bar == {
-        "placeholder": "Send a message...",
+        "placeholder": "send a message…",
         "attention": None,
         "sol_request": None,
     }

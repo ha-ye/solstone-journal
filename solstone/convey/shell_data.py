@@ -172,9 +172,9 @@ def _resolve_attention(awareness_current: dict) -> AttentionItem | None:
 
             completed_dt = datetime.fromisoformat(last_completed)
             if datetime.now() - completed_dt < timedelta(hours=1):
-                placeholder = f"Import complete: {last_summary} — ask me about it"
+                placeholder = f"import complete: {last_summary}. ask me about it"
                 if len(placeholder) > 90:
-                    placeholder = "New import complete — ask me what arrived"
+                    placeholder = "new import complete. ask me what arrived"
                 context = [
                     f"System health: import recently completed — {last_summary}. "
                     "If user asks what needs attention, mention the new import."
@@ -220,7 +220,7 @@ def _resolve_attention(awareness_current: dict) -> AttentionItem | None:
     voiceprint = awareness_current.get("voiceprint", {})
     if voiceprint.get("status") == "candidate":
         cluster_size = voiceprint.get("cluster_size", 0)
-        placeholder = "Voice pattern detected — confirm in Speakers"
+        placeholder = "voice pattern detected. confirm in speakers"
         context = [
             f"System detected owner voice pattern from {cluster_size} voice samples. "
             "Direct user to the Speakers app (/app/speakers) to confirm their voiceprint."
@@ -234,13 +234,15 @@ def _resolve_placeholder(awareness_current: dict, day_count: int) -> str:
     """Resolve fallback chat bar placeholder text based on journal state."""
     imports = awareness_current.get("imports", {})
     if not imports.get("has_imported") and day_count < 3:
-        return "Bring in past conversations, calendar, or notes to give me context..."
+        return "bring in past conversations, calendar, or notes to give me context…"
     if awareness_current.get("journal", {}).get("first_daily_ready"):
         if day_count < 2:
-            return "Your first daily analysis is ready — ask me what I found..."
+            return "your first daily analysis is ready. ask me what i found…"
         if day_count >= 7:
-            return "Ask me about your day, search your journal, or explore insights..."
-        return "Your daily analysis is ready — ask about today or anything in your journal..."
+            return "ask me about your day, search your journal, or explore insights…"
+        return (
+            "your daily analysis is ready. ask about today or anything in your journal…"
+        )
     return "sol is keeping your journal. your first daily analysis will be ready soon…"
 
 
@@ -288,7 +290,7 @@ def _build_apps(registry: AppRegistry, config: dict[str, Any]) -> list[dict[str,
 
 def _build_chat_bar() -> dict[str, Any]:
     default_chat_bar = {
-        "placeholder": "Send a message...",
+        "placeholder": "send a message…",
         "attention": None,
         "sol_request": None,
     }

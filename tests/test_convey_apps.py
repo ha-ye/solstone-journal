@@ -219,7 +219,7 @@ class TestPlaceholderResolution:
         from solstone.convey.shell_data import _resolve_placeholder
 
         result = _resolve_placeholder({}, 0)
-        assert "Bring in past conversations" in result
+        assert "bring in past conversations" in result
 
     def test_no_daily(self):
         from solstone.convey.shell_data import _resolve_placeholder
@@ -251,7 +251,7 @@ class TestPlaceholderResolution:
 
         current = {"journal": {"first_daily_ready": True}}
         result = _resolve_placeholder(current, 10)
-        assert "Ask me about your day" in result
+        assert "ask me about your day" in result
 
     def test_default_fallback(self):
         from solstone.convey.shell_data import _resolve_placeholder
@@ -290,7 +290,7 @@ class TestInjectedChatBarContext:
         )
 
         assert context["chat_bar_attention"] == {
-            "placeholder_text": "Import complete: 142 Calendar events — ask me about it"
+            "placeholder_text": "import complete: 142 Calendar events. ask me about it"
         }
         assert context["chat_bar_sol_request"] is None
         assert context["chat_bar_placeholder"] == (
@@ -361,7 +361,7 @@ class TestInjectedChatBarContext:
                 context: dict = {}
                 app.update_template_context(context)
 
-        assert context["chat_bar_placeholder"] == "Send a message..."
+        assert context["chat_bar_placeholder"] == "send a message…"
         assert context["chat_bar_attention"] is None
         assert "failed to resolve chat bar shell context" in caplog.text
 
@@ -802,7 +802,7 @@ class TestAttentionResolution:
 
         current = {"journal": {"first_daily_ready": True}}
         result = _resolve_placeholder(current, 10)
-        assert "Ask me about your day" in result
+        assert "ask me about your day" in result
 
     def test_all_placeholder_texts_under_90_chars(self, tmp_path, monkeypatch):
         """All attention placeholder texts must be <=90 characters."""
