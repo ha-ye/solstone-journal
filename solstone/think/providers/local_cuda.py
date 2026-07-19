@@ -26,8 +26,8 @@ MEMORY_SOURCE_UNAVAILABLE = "unavailable"
 MEMORY_SOURCE_NVIDIA_VRAM = "nvidia memory.total"
 MEMORY_SOURCE_SYSTEM_AVAILABLE = "system MemAvailable (unified memory)"
 # The CUDA arch set embedded in the pinned llama.cpp CUDA server image, and the
-# minimum driver CUDA major version it requires. Sole source of truth; the
-# bundled-provider pin and `sol check` both read these.
+# minimum driver CUDA major version it requires. The bundled-provider CUDA pin
+# reads these as its sole source of truth.
 # TODO(AC10): confirm via cuobjdump --list-elf libggml-cuda.so on hardware.
 CUDA_EMBEDDED_ARCH_SET: frozenset[str] = frozenset(
     {"sm_86", "sm_89", "sm_120a", "sm_121a"}

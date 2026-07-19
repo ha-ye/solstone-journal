@@ -78,15 +78,7 @@ def build_local_fit_report(model_id: str) -> FitReport:
     brain_lane_active = True
     if sys.platform.startswith("linux"):
         probe = local_cuda.probe_nvidia_gpu()
-        choice = local_cuda.select_local_backend(
-            probe,
-            local_install.CUDA_SERVER_PIN.embedded_arch_set,
-            local_install.CUDA_SERVER_PIN.cuda_version,
-            local_install.probe_cuda_runtime_artifact_trust(
-                local_install.CUDA_SERVER_PIN
-            ),
-            persisted_installed_cuda=local_install.has_persisted_installed_cuda_target(),
-        )
+        choice = local_cuda.resolve_local_backend(local_install.CUDA_SERVER_PIN)
         unknown_server = (
             "CUDA llama-server OCI image"
             if choice.backend == "cuda"

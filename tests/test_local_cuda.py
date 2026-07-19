@@ -349,13 +349,13 @@ def test_select_local_backend_matrix() -> None:
         ),
         (
             True,
-            "sm_121",
+            "sm_86",
             13,
             local_cuda.ArtifactTrust.ABSENT,
             False,
             "vulkan",
             (
-                "compute_cap sm_121 covered; driver CUDA 13 >= 13; "
+                "compute_cap sm_86 covered; driver CUDA 13 >= 13; "
                 "no trusted CUDA runtime artifact present"
             ),
         ),
