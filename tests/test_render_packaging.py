@@ -81,7 +81,7 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         tmp_path / "packages" / "solstone-core" / "pyproject.toml",
         """
         [build-system]
-        requires = ["maturin>=1.14,<2"]
+        requires = ["maturin==1.14.1"]
         build-backend = "maturin"
 
         [project]
@@ -105,7 +105,7 @@ def _fixture_root(tmp_path: Path, *, root_version: str = "1.2.3") -> Path:
         [workspace.package]
         version = "0.0.1"
         edition = "2024"
-        rust-version = "1.87"
+        rust-version = "1.95"
         license = "AGPL-3.0-only"
 
         [workspace.dependencies]

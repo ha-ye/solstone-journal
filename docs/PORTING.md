@@ -10,7 +10,7 @@ The Rust workspace lives at `core/`. It contains a thin `solstone-core` bin,
 the `solstone-core-cli` adapter library, and subsystem crates such as
 `solstone-core-journal` as Python behavior is ported.
 
-Rust crates use edition 2024, `rust-version = "1.87"`, and
+Rust crates use edition 2024, `rust-version = "1.95"`, and
 `license = "AGPL-3.0-only"` inherited from `core/Cargo.toml`. Every `.rs` file
 starts with the two-line `//` SPDX header used by `AGENTS.md`.
 
@@ -25,6 +25,16 @@ cannot cross-compile from the Linux host. That exclusion is for the storage
 adapter, not for the indexer logic. The eventual iOS path is to link the system
 `libsqlite3` that iOS ships instead of bundling SQLite, then return the store
 crate to the iOS gate.
+
+## Native Dependency Release Proof
+
+A Rust conversion that adds or bumps a dependency with C/C++ build steps or
+native linkage is not complete after source checks alone. Before the conversion
+wave closes, prove the supported release targets still build and pass artifact
+validation: Linux x86_64 musl, Linux aarch64 musl, and macOS arm64. Keep
+required toolchain, target, and linker behavior in checked-in repository release
+paths, not in a local shell profile. If a dependency cannot satisfy a supported
+target, document the blocker and stop the conversion before merging it.
 
 ## Owner Timezone
 
@@ -200,11 +210,11 @@ before tagging one, add and test an explicit translation rule.
 The first behavior port is `get_journal_info()` / `get_journal()` from
 `solstone/think/utils.py`, backed by `solstone/think/user_config.py`.
 
-1. **MSRV is 1.87 for safe home fallback.** Rust 1.85 still deprecates
-   `std::env::home_dir()` under `-D warnings`; Rust 1.87 undeprecates it. The
-   journal resolver uses the hybrid shape: literal `HOME` when present, and
-   `std::env::home_dir()` only when `HOME` is absent. This avoids a hand-rolled
-   unsafe `getpwuid_r` implementation.
+1. **MSRV is 1.95 for the locked native dependency set.** Rust 1.87 is enough
+   for the safe home fallback, but the current bundled SQLite dependency line
+   requires Rust 1.95. The journal resolver uses the hybrid shape: literal
+   `HOME` when present, and `std::env::home_dir()` only when `HOME` is absent.
+   This avoids a hand-rolled unsafe `getpwuid_r` implementation.
 2. **No unsafe passwd FFI.** Keeping the old 1.85 floor would require libc
    fallback code with buffer sizing and retry behavior for a home-directory
    lookup. That defect surface is not justified for this port.
