@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit openapi check-openapi contract check-contract journal-resolution-vectors check-journal-resolution-vectors dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit openapi check-openapi contract check-contract journal-resolution-vectors check-journal-resolution-vectors dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -480,6 +480,9 @@ install-checks: .installed
 	@echo "=== Running journal-io mechanic check ==="
 	@$(MAKE) check-journal-io-mechanic
 	@echo ""
+	@echo "=== Running journal-config owner check ==="
+	@$(MAKE) check-journal-config-owner
+	@echo ""
 	@echo "=== Running call-http-only check ==="
 	@$(MAKE) check-call-http-only
 	@echo ""
@@ -604,6 +607,10 @@ check-journal-io-access: .installed
 # Journal raw-mechanic check (see AGENTS.md §7 L2)
 check-journal-io-mechanic: .installed
 	$(VENV_BIN)/python scripts/check_journal_io_mechanic.py
+
+# Journal config owner transaction boundary gate
+check-journal-config-owner: .installed
+	$(VENV_BIN)/python scripts/check_journal_config_owner.py
 
 # sol call HTTP-only gate (call.py reaches the journal only over HTTP)
 check-call-http-only: .installed
