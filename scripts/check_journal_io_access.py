@@ -132,6 +132,7 @@ OWNER_FILES: frozenset[str] = frozenset(
         # Provider install status, proof cache, and artifact manifests.
         "solstone/think/providers/artifact_proof.py",
         "solstone/think/providers/install_state.py",
+        "solstone/think/providers/runtime_health.py",
         "solstone/think/schedule_config.py",
         "solstone/think/push/devices.py",
         # Backup hosted-tier binding (0600 broker-token cache).

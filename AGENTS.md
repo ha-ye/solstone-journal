@@ -207,6 +207,7 @@ Each domain has exactly **one** write-owning module (or one tightly-scoped famil
 | Local inference operational telemetry (`health/local-inference/YYYYMMDD.jsonl`) | `solstone/think/providers/local_admission.py` |
 | Provider install status records and proof cache (`health/providers/{local,parakeet}.json`, `health/providers/{local,parakeet}.proof-cache.json`) | `solstone/think/providers/install_state.py` + `solstone/think/providers/artifact_proof.py` |
 | Provider install leases (`health/providers/{local,parakeet}.lease`) | `solstone/think/providers/install_lease.py` |
+| Provider runtime health and retry-token records (`health/providers/runtime/{local,parakeet}.json`, `health/providers/runtime/{local,parakeet}.retry-token.json`, `health/providers/runtime/{local,parakeet}.operation.lock`) | `solstone/think/providers/runtime_health.py` |
 | Provider artifact manifests (`cache/providers/**/.solstone-provider-manifest.json`, `cache/providers/local/mlx/**/*.manifest.json`) | `solstone/think/providers/artifact_proof.py` |
 | Media offload ledger (`health/offload/<YYYYMMDD>.jsonl`) | `solstone/think/offload_ledger.py` |
 | Parakeet server placement record (`health/parakeet-cpp.placement`) | `solstone/think/providers/parakeet_server.py` |
