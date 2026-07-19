@@ -4,6 +4,23 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [0.9.0] - 2026-07-19
+
+### Added
+
+- the calendar day grid now reaches entities and news. pick a day on an entity to narrow its page to that day, and browse news one day at a time.
+
+### Changed
+
+- setting up a local AI model no longer loses your settings when two changes save at the same time, and the install status now reflects what's actually ready instead of showing a model as ready before it can run.
+- speaker naming is more accurate. sol is less likely to mistake another person's voice for yours, and busy conversations with many similar-sounding voices now settle to the true set of speakers for you to review and confirm.
+- on Linux, local speech-to-text now uses much less memory, so more graphics cards can run it on the GPU instead of the CPU. transcription quality is unchanged.
+
+### Fixed
+
+- when you send anonymous feedback, it now uses a generated handle instead of your device's name, no longer attaches diagnostic details automatically, and scrubs secrets from any error text before it's included.
+- if a local AI model stops responding, your settings now show a repair action that gets it working again in place, without restarting your whole journal.
+
 ## [0.8.9] - 2026-07-17
 
 ### Added
