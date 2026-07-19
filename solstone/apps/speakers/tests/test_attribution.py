@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from solstone.apps.speakers.encoder_config import (
     ACOUSTIC_HIGH,
@@ -1310,6 +1311,17 @@ def test_owner_correction_output_preserves_public_label_overlay(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_voiceprint_accumulation_methods_are_explicit() -> None:
+    from solstone.apps.speakers.attribution import VOICEPRINT_ACCUMULATION_METHODS
+
+    assert VOICEPRINT_ACCUMULATION_METHODS == {
+        "structural_single_speaker",
+        "structural_setting",
+        "acoustic",
+        "acoustic_cluster",
+    }
+
+
 def test_accumulate_voiceprints_saves(speakers_env):
     from solstone.apps.speakers.attribution import accumulate_voiceprints
     from solstone.think.utils import segment_start_ts_ms
@@ -1480,7 +1492,8 @@ def test_accumulate_skips_medium_confidence(speakers_env):
     assert saved == {}
 
 
-def test_accumulate_skips_contextual_method(speakers_env):
+@pytest.mark.parametrize("method", ["context", "contextual"])
+def test_accumulate_skips_context_methods(speakers_env, method: str):
     from solstone.apps.speakers.attribution import accumulate_voiceprints
 
     env = speakers_env()
@@ -1495,7 +1508,7 @@ def test_accumulate_skips_contextual_method(speakers_env):
             "sentence_id": 1,
             "speaker": "bob_smith",
             "confidence": "high",
-            "method": "contextual",  # Layer 4 — should not accumulate
+            "method": method,
         }
     ]
 

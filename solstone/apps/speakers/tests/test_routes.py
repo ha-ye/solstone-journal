@@ -153,6 +153,79 @@ def _voiceprint_row_count(env, entity_id: str = OWNER_ID) -> int:
         return int(data["embeddings"].shape[0])
 
 
+def _normalized(vector: list[float]) -> np.ndarray:
+    embedding = np.array(vector + [0.0] * (256 - len(vector)), dtype=np.float32)
+    return embedding / np.linalg.norm(embedding)
+
+
+def _write_confirmed_owner_centroid(env, name: str = "Self Person") -> Path:
+    from solstone.apps.speakers.owner import OWNER_THRESHOLD
+
+    principal_dir = env.create_entity(name, is_principal=True)
+    np.savez_compressed(
+        principal_dir / "owner_centroid.npz",
+        centroid=_normalized([1.0, 0.0]),
+        cluster_size=np.array(70, dtype=np.int32),
+        threshold=np.array(OWNER_THRESHOLD, dtype=np.float32),
+        last_refreshed_at=np.array("2026-03-15T12:00:00Z"),
+    )
+    return principal_dir
+
+
+def _write_voiceprints(
+    env,
+    entity_id: str,
+    rows: list[tuple[np.ndarray, str, str, str, int]],
+) -> Path:
+    entity_dir = env.journal / "entities" / entity_id
+    entity_dir.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        entity_dir / "voiceprints.npz",
+        embeddings=np.vstack([row[0] for row in rows]).astype(np.float32),
+        metadata=np.array(
+            [
+                json.dumps(
+                    {
+                        "day": day,
+                        "segment_key": segment_key,
+                        "source": source,
+                        "sentence_id": sentence_id,
+                        "stream": SERVE_AUDIO_STREAM,
+                        "added_at": 1700000000000,
+                    }
+                )
+                for _, day, segment_key, source, sentence_id in rows
+            ],
+            dtype=str,
+        ),
+    )
+    return entity_dir / "voiceprints.npz"
+
+
+def _segment_labels_path(env, day: str, segment_key: str) -> Path:
+    return (
+        env.journal
+        / "chronicle"
+        / day
+        / SERVE_AUDIO_STREAM
+        / segment_key
+        / "talents"
+        / "speaker_labels.json"
+    )
+
+
+def _segment_corrections_path(env, day: str, segment_key: str) -> Path:
+    return (
+        env.journal
+        / "chronicle"
+        / day
+        / SERVE_AUDIO_STREAM
+        / segment_key
+        / "talents"
+        / "speaker_corrections.json"
+    )
+
+
 def _chronicle_snapshot(journal: Path) -> dict[Path, int]:
     chronicle = journal / "chronicle"
     if not chronicle.exists():
@@ -1964,14 +2037,32 @@ def test_api_confirm_wrong_confidence(speakers_env):
 
 
 def test_api_correct_attribution(speakers_env):
-    """Correct changes speaker attribution and manages voiceprints."""
+    """Correct changes attribution and audits a surviving NPZ rewrite."""
     from solstone.apps.speakers.routes import speakers_bp
+    from solstone.think.entities import load_entity_voiceprints_file
 
     env = speakers_env()
     env.create_segment("20240101", "143022_300", ["mic_audio"])
-    env.create_entity(
-        "Alice Test",
-        voiceprints=[("20240101", "143022_300", "mic_audio", 1)],
+    alice_dir = env.create_entity("Alice Test")
+    _write_voiceprints(
+        env,
+        "alice_test",
+        [
+            (
+                _normalized([0.0, 1.0]),
+                "20240101",
+                "143022_300",
+                "mic_audio",
+                1,
+            ),
+            (
+                _normalized([0.0, 1.0]),
+                "20240101",
+                "143022_300",
+                "mic_audio",
+                2,
+            ),
+        ],
     )
     env.create_entity("Bob Test")
     env.create_speaker_labels(
@@ -2019,15 +2110,79 @@ def test_api_correct_attribution(speakers_env):
 
     bob_vp = env.journal / "entities" / "bob_test" / "voiceprints.npz"
     assert bob_vp.exists()
-    alice_vp = env.journal / "entities" / "alice_test" / "voiceprints.npz"
-    assert not alice_vp.exists()
+    alice_vp = alice_dir / "voiceprints.npz"
+    assert alice_vp.exists()
+    loaded = load_entity_voiceprints_file("alice_test")
+    assert loaded is not None
+    embeddings, metadata = loaded
+    assert embeddings.shape[0] == 1
+    assert {
+        (row["day"], row["segment_key"], row["source"], row["sentence_id"])
+        for row in metadata
+    } == {("20240101", "143022_300", "mic_audio", 2)}
 
     action_entries = _read_action_entries(env.journal)
     assert len(action_entries) == 1
     assert action_entries[0]["action"] == "attribution_correct"
-    assert action_entries[0]["params"]["voiceprints_removed"] == [
-        "entities/alice_test/voiceprints.npz"
-    ]
+    assert action_entries[0]["params"]["voiceprint_removal"] == {
+        "outcome": "rewritten",
+        "entity_id": "alice_test",
+        "keys_removed": ["20240101/143022_300/mic_audio#1"],
+        "file_deleted": False,
+        "path": "entities/alice_test/voiceprints.npz",
+    }
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "structural_single_speaker",
+        "structural_setting",
+        "acoustic",
+        "acoustic_cluster",
+        "user_assigned",
+        "user_corrected",
+        "user_identified",
+        "user_confirmed",
+    ],
+)
+def test_api_correct_removes_old_voiceprint_for_all_writer_methods(
+    speakers_env,
+    method: str,
+):
+    env = speakers_env()
+    env.create_segment("20240101", "143022_300", ["mic_audio"])
+    env.create_entity(
+        "Alice Test",
+        voiceprints=[("20240101", "143022_300", "mic_audio", 1)],
+    )
+    env.create_entity("Bob Test")
+    env.create_speaker_labels(
+        "20240101",
+        "143022_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice_test",
+                "confidence": "high",
+                "method": method,
+            },
+        ],
+    )
+
+    resp = _post_correct("bob_test")
+
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["status"] == "corrected"
+    assert body["voiceprint_removal"] == {
+        "outcome": "unlinked",
+        "entity_id": "alice_test",
+        "keys_removed": ["20240101/143022_300/mic_audio#1"],
+        "file_deleted": True,
+        "path": "entities/alice_test/voiceprints.npz",
+    }
+    assert not (env.journal / "entities" / "alice_test" / "voiceprints.npz").exists()
 
 
 def test_api_correct_same_speaker(speakers_env):
@@ -2071,18 +2226,19 @@ def test_api_correct_same_speaker(speakers_env):
         assert resp.get_json()["status"] == "already_correct"
 
 
-def test_api_correct_contextual_removes_old_voiceprint(speakers_env):
-    """Correcting a contextual label removes the old auto-saved voiceprint."""
+@pytest.mark.parametrize("method", ["contextual", "owner_centroid"])
+def test_api_correct_reports_not_found_for_non_accumulated_methods(
+    speakers_env,
+    method: str,
+):
+    """Correcting methods that never write voiceprints succeeds with not_found."""
     from flask import Flask
 
     from solstone.apps.speakers.routes import speakers_bp
 
     env = speakers_env()
     env.create_segment("20240101", "143022_300", ["mic_audio"])
-    env.create_entity(
-        "Alice Test",
-        voiceprints=[("20240101", "143022_300", "mic_audio", 1)],
-    )
+    env.create_entity("Alice Test")
     env.create_entity("Bob Test")
     env.create_speaker_labels(
         "20240101",
@@ -2092,7 +2248,7 @@ def test_api_correct_contextual_removes_old_voiceprint(speakers_env):
                 "sentence_id": 1,
                 "speaker": "alice_test",
                 "confidence": "medium",
-                "method": "contextual",
+                "method": method,
             },
         ],
     )
@@ -2113,9 +2269,278 @@ def test_api_correct_contextual_removes_old_voiceprint(speakers_env):
             },
         )
         assert resp.status_code == 200
+        assert resp.get_json()["voiceprint_removal"]["outcome"] == "not_found"
 
     alice_vp = env.journal / "entities" / "alice_test" / "voiceprints.npz"
     assert not alice_vp.exists()
+
+
+def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
+    speakers_env,
+):
+    from solstone.apps.speakers.routes import speakers_bp
+
+    env = speakers_env()
+    _write_confirmed_owner_centroid(env)
+    env.create_entity("Alice Test")
+    env.create_entity("Bob Test")
+
+    speaker_embedding = _normalized([0.0, 1.0])
+    env.create_segment(
+        "20240101",
+        "143022_300",
+        ["mic_audio"],
+        embeddings=np.vstack([speaker_embedding]),
+    )
+    _write_voiceprints(
+        env,
+        "alice_test",
+        [
+            (
+                speaker_embedding,
+                "20240101",
+                "143022_300",
+                "mic_audio",
+                1,
+            )
+        ],
+    )
+    env.create_speaker_labels(
+        "20240101",
+        "143022_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice_test",
+                "confidence": "high",
+                "method": "acoustic",
+            }
+        ],
+    )
+
+    env.create_segment(
+        "20240101",
+        "144000_300",
+        ["mic_audio"],
+        embeddings=np.vstack([speaker_embedding]),
+    )
+    env.create_speaker_labels(
+        "20240101",
+        "144000_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice_test",
+                "confidence": "high",
+                "method": "acoustic",
+            }
+        ],
+    )
+
+    env.create_segment(
+        "20240101",
+        "145000_300",
+        ["mic_audio"],
+        embeddings=np.vstack([speaker_embedding]),
+    )
+    env.create_speaker_labels(
+        "20240101",
+        "145000_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice_test",
+                "confidence": "high",
+                "method": "user_corrected",
+            }
+        ],
+    )
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+    other_labels_path = _segment_labels_path(env, "20240101", "144000_300")
+    user_labels_path = _segment_labels_path(env, "20240101", "145000_300")
+    other_corrections_path = _segment_corrections_path(env, "20240101", "144000_300")
+    user_corrections_path = _segment_corrections_path(env, "20240101", "145000_300")
+
+    with app.test_client() as client:
+        correction = client.post(
+            "/app/speakers/api/correct-attribution",
+            json={
+                "day": "20240101",
+                "stream": "test",
+                "segment_key": "143022_300",
+                "source": "mic_audio",
+                "sentence_id": 1,
+                "new_speaker": "bob_test",
+            },
+        )
+        assert correction.status_code == 200
+        correction_body = correction.get_json()
+        offer = correction_body["propagation_offer"]
+        assert offer["available"] is True
+        assert offer["statement_count"] == 1
+        assert offer["segment_count"] == 1
+
+        other_after_correction = json.loads(other_labels_path.read_text())
+        assert other_after_correction["labels"][0]["speaker"] == "alice_test"
+        assert not other_corrections_path.exists()
+
+        other_before_preview = other_labels_path.read_bytes()
+        preview = client.post(
+            "/app/speakers/api/propagate-correction",
+            json={
+                "old_speaker": "alice_test",
+                "new_speaker": "bob_test",
+                "commit": False,
+            },
+        )
+        assert preview.status_code == 200
+        preview_body = preview.get_json()
+        assert preview_body["status"] == "preview"
+        assert preview_body["statement_count"] == 1
+        assert preview_body["segment_count"] == 1
+        assert preview_body["reversal"] == {
+            "verb": "speakers propagate-correction",
+            "old_speaker": "bob_test",
+            "new_speaker": "alice_test",
+            "bounded_to": "segments where these two appear",
+        }
+        assert other_labels_path.read_bytes() == other_before_preview
+        assert not other_corrections_path.exists()
+
+        committed = client.post(
+            "/app/speakers/api/propagate-correction",
+            json={
+                "old_speaker": "alice_test",
+                "new_speaker": "bob_test",
+                "commit": True,
+            },
+        )
+        assert committed.status_code == 200
+        committed_body = committed.get_json()
+        assert committed_body["status"] == "applied"
+        assert committed_body["statement_count"] == 1
+        assert committed_body["segment_count"] == 1
+
+        propagated = json.loads(other_labels_path.read_text())
+        propagated_label = propagated["labels"][0]
+        assert propagated_label["speaker"] == "bob_test"
+        assert propagated_label["method"] == "acoustic"
+        assert propagated_label["method"] not in {
+            "user_corrected",
+            "user_identified",
+            "user_confirmed",
+            "user_assigned",
+        }
+        assert not other_corrections_path.exists()
+
+        user_preserved = json.loads(user_labels_path.read_text())
+        assert user_preserved["labels"][0]["speaker"] == "alice_test"
+        assert user_preserved["labels"][0]["method"] == "user_corrected"
+        assert not user_corrections_path.exists()
+
+        other_after_commit = other_labels_path.read_bytes()
+        user_after_commit = user_labels_path.read_bytes()
+        bob_voiceprints = env.journal / "entities" / "bob_test" / "voiceprints.npz"
+        bob_after_commit = bob_voiceprints.read_bytes()
+
+        second = client.post(
+            "/app/speakers/api/propagate-correction",
+            json={
+                "old_speaker": "alice_test",
+                "new_speaker": "bob_test",
+                "commit": True,
+            },
+        )
+        assert second.status_code == 200
+        second_body = second.get_json()
+        assert second_body["statement_count"] == 0
+        assert other_labels_path.read_bytes() == other_after_commit
+        assert user_labels_path.read_bytes() == user_after_commit
+        assert bob_voiceprints.read_bytes() == bob_after_commit
+        assert not other_corrections_path.exists()
+        assert not user_corrections_path.exists()
+
+
+def test_correcting_back_restores_original_entity_voiceprint(speakers_env):
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.think.entities import load_entity_voiceprints_file
+
+    env = speakers_env()
+    speaker_embedding = _normalized([0.0, 1.0])
+    env.create_segment(
+        "20240101",
+        "143022_300",
+        ["mic_audio"],
+        embeddings=np.vstack([speaker_embedding]),
+    )
+    env.create_entity("Alice Test")
+    _write_voiceprints(
+        env,
+        "alice_test",
+        [
+            (
+                speaker_embedding,
+                "20240101",
+                "143022_300",
+                "mic_audio",
+                1,
+            )
+        ],
+    )
+    env.create_entity("Bob Test")
+    env.create_speaker_labels(
+        "20240101",
+        "143022_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice_test",
+                "confidence": "high",
+                "method": "acoustic",
+            }
+        ],
+    )
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+    with app.test_client() as client:
+        first = client.post(
+            "/app/speakers/api/correct-attribution",
+            json={
+                "day": "20240101",
+                "stream": "test",
+                "segment_key": "143022_300",
+                "source": "mic_audio",
+                "sentence_id": 1,
+                "new_speaker": "bob_test",
+            },
+        )
+        assert first.status_code == 200
+        assert load_entity_voiceprints_file("alice_test") is None
+
+        second = client.post(
+            "/app/speakers/api/correct-attribution",
+            json={
+                "day": "20240101",
+                "stream": "test",
+                "segment_key": "143022_300",
+                "source": "mic_audio",
+                "sentence_id": 1,
+                "new_speaker": "alice_test",
+            },
+        )
+        assert second.status_code == 200
+
+    loaded = load_entity_voiceprints_file("alice_test")
+    assert loaded is not None
+    embeddings, metadata = loaded
+    assert embeddings.shape[0] == 1
+    assert {
+        (row["day"], row["segment_key"], row["source"], row["sentence_id"])
+        for row in metadata
+    } == {("20240101", "143022_300", "mic_audio", 1)}
 
 
 def test_api_assign_attribution(speakers_env):
@@ -2211,6 +2636,8 @@ def test_api_assign_already_has_speaker(speakers_env):
 
 def test_remove_voiceprint(speakers_env):
     """_remove_voiceprint removes matching entry and rewrites NPZ."""
+    from solstone.think.entities import load_entity_voiceprints_file
+
     env = speakers_env()
     env.create_entity(
         "Alice Test",
@@ -2223,16 +2650,23 @@ def test_remove_voiceprint(speakers_env):
     from solstone.apps.speakers.routes import _remove_voiceprint
 
     removed = _remove_voiceprint("alice_test", "20240101", "143022_300", "mic_audio", 1)
-    assert removed is None
+    assert removed.outcome == "rewritten"
+    assert removed.entity_id == "alice_test"
+    assert removed.keys_removed == ["20240101/143022_300/mic_audio#1"]
+    assert removed.file_deleted is False
 
-    vp_path = env.journal / "entities" / "alice_test" / "voiceprints.npz"
-    data = np.load(vp_path, allow_pickle=False)
-    assert data["embeddings"].shape[0] == 1
-    assert data["metadata"].shape[0] == 1
+    loaded = load_entity_voiceprints_file("alice_test")
+    assert loaded is not None
+    embeddings, metadata = loaded
+    assert embeddings.shape[0] == 1
+    assert {
+        (row["day"], row["segment_key"], row["source"], row["sentence_id"])
+        for row in metadata
+    } == {("20240101", "143022_300", "mic_audio", 2)}
 
 
 def test_remove_voiceprint_unlinks_file_when_last_entry_removed(speakers_env):
-    """_remove_voiceprint returns the NPZ path when the final entry is removed."""
+    """_remove_voiceprint reports unlinked when the final entry is removed."""
     env = speakers_env()
     env.create_entity(
         "Alice Test",
@@ -2244,12 +2678,16 @@ def test_remove_voiceprint_unlinks_file_when_last_entry_removed(speakers_env):
     removed = _remove_voiceprint("alice_test", "20240101", "143022_300", "mic_audio", 1)
 
     vp_path = env.journal / "entities" / "alice_test" / "voiceprints.npz"
-    assert removed == vp_path
+    assert removed.outcome == "unlinked"
+    assert removed.entity_id == "alice_test"
+    assert removed.keys_removed == ["20240101/143022_300/mic_audio#1"]
+    assert removed.file_deleted is True
+    assert removed.voiceprints_path == vp_path
     assert not vp_path.exists()
 
 
 def test_remove_voiceprint_not_found(speakers_env):
-    """_remove_voiceprint returns None when no matching entry."""
+    """_remove_voiceprint reports not_found when no matching entry exists."""
     env = speakers_env()
     env.create_entity(
         "Alice Test",
@@ -2261,18 +2699,24 @@ def test_remove_voiceprint_not_found(speakers_env):
     removed = _remove_voiceprint(
         "alice_test", "20240101", "143022_300", "mic_audio", 999
     )
-    assert removed is None
+    assert removed.outcome == "not_found"
+    assert removed.entity_id == "alice_test"
+    assert removed.keys_removed == []
+    assert removed.file_deleted is False
 
 
 def test_remove_voiceprint_no_file(speakers_env):
-    """_remove_voiceprint returns None when entity has no voiceprints."""
+    """_remove_voiceprint reports not_found when entity has no voiceprints."""
     env = speakers_env()
     env.create_entity("Alice Test")
 
     from solstone.apps.speakers.routes import _remove_voiceprint
 
     removed = _remove_voiceprint("alice_test", "20240101", "143022_300", "mic_audio", 1)
-    assert removed is None
+    assert removed.outcome == "not_found"
+    assert removed.entity_id == "alice_test"
+    assert removed.keys_removed == []
+    assert removed.file_deleted is False
 
 
 def test_api_segments_pagination(speakers_env):

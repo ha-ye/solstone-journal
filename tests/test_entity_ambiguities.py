@@ -146,6 +146,28 @@ def test_tier_five_multi_candidate_legacy_none_becomes_ambiguous(
     assert len(row["ranked_candidates"]) == 2
 
 
+def test_record_entity_resolution_can_suppress_ambiguity_observation(
+    journal: Path,
+) -> None:
+    entities = [_entity("Sarah Connor"), _entity("Sarah Lee")]
+
+    resolution = record_entity_resolution(
+        "Sarah",
+        entities,
+        scope=ResolutionScope.journal(),
+        origin=_origin(),
+        record_ambiguities=False,
+    )
+
+    assert resolution.outcome == EntityResolutionOutcome.AMBIGUOUS
+    assert resolution.ambiguity_id == ""
+    assert {candidate.id for candidate in resolution.candidates} == {
+        "sarah_connor",
+        "sarah_lee",
+    }
+    assert not _ambiguity_file(journal).exists()
+
+
 def test_tier_six_multi_candidate_legacy_none_becomes_ambiguous(
     journal: Path,
 ) -> None:

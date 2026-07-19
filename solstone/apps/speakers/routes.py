@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,7 @@ from solstone.apps.speakers.attribution import (
     attribute_segment,
     backfill_last_seen,
     backfill_segments,
+    propagate_speaker_correction,
     save_speaker_labels,
 )
 from solstone.apps.speakers.audio import audio_serve_url, resolve_audio_file
@@ -145,6 +147,17 @@ OWNER_STATUS_ROUTING_TOKENS = {
     "candidate": OWNER_STATUS_CANDIDATE,
     "confirmed": OWNER_STATUS_CONFIRMED,
 }
+PROPAGATION_CLI_VERB = "speakers propagate-correction"
+
+
+@dataclass(frozen=True)
+class VoiceprintRemovalResult:
+    outcome: str
+    entity_id: str
+    keys_removed: list[str]
+    file_deleted: bool
+    voiceprints_path: Path | None
+
 
 speakers_bp = Blueprint(
     "app:speakers",
@@ -303,32 +316,46 @@ def _remove_voiceprint(
     segment_key: str,
     source: str,
     sentence_id: int,
-) -> Path | None:
+) -> VoiceprintRemovalResult:
     """Remove a specific voiceprint entry from an entity's voiceprints.npz.
 
     Matches by (day, segment_key, source, sentence_id) metadata key.
-    Returns the unlinked NPZ path if the file was removed (all entries filtered
-    out), or None if the entry was rewritten or not found.
     """
+    rendered_key = _render_voiceprint_key(day, segment_key, source, sentence_id)
     try:
         folder = journal_entity_memory_path(entity_id)
     except (RuntimeError, ValueError):
-        return None
+        return VoiceprintRemovalResult(
+            outcome="not_found",
+            entity_id=entity_id,
+            keys_removed=[],
+            file_deleted=False,
+            voiceprints_path=None,
+        )
 
     npz_path = folder / "voiceprints.npz"
     if not npz_path.exists():
-        return None
+        return VoiceprintRemovalResult(
+            outcome="not_found",
+            entity_id=entity_id,
+            keys_removed=[],
+            file_deleted=False,
+            voiceprints_path=npz_path,
+        )
 
-    outcome: str | None = None
+    outcome = "not_found"
+    keys_removed: list[str] = []
 
     def transform(current: dict[str, np.ndarray]) -> dict[str, np.ndarray] | None:
-        nonlocal outcome
+        nonlocal outcome, keys_removed
         embeddings = current.get("embeddings")
         metadata_arr = current.get("metadata")
         if embeddings is None or metadata_arr is None:
+            outcome = "not_found"
             return None
 
         keep = []
+        matched = False
         for i, m_str in enumerate(metadata_arr):
             try:
                 m = json.loads(str(m_str))
@@ -338,15 +365,17 @@ def _remove_voiceprint(
                     and m.get("source") == source
                     and m.get("sentence_id") == sentence_id
                 ):
+                    matched = True
                     continue
             except (json.JSONDecodeError, TypeError):
                 pass
             keep.append(i)
 
-        if len(keep) == len(metadata_arr):
+        if not matched:
             outcome = "not_found"
             return None
 
+        keys_removed = [rendered_key]
         if not keep:
             outcome = "unlinked"
             return {}
@@ -358,7 +387,99 @@ def _remove_voiceprint(
         }
 
     update_npz(npz_path, transform, expected_keys=VOICEPRINT_KEYS)
-    return npz_path if outcome == "unlinked" else None
+    return VoiceprintRemovalResult(
+        outcome=outcome,
+        entity_id=entity_id,
+        keys_removed=keys_removed,
+        file_deleted=outcome == "unlinked",
+        voiceprints_path=npz_path,
+    )
+
+
+def _render_voiceprint_key(
+    day: str,
+    segment_key: str,
+    source: str,
+    sentence_id: int,
+) -> str:
+    return f"{day}/{segment_key}/{source}#{sentence_id}"
+
+
+def _voiceprint_removal_payload(result: VoiceprintRemovalResult) -> dict[str, Any]:
+    rel_path = None
+    if result.voiceprints_path is not None:
+        journal_root = Path(get_journal())
+        try:
+            rel_path = str(result.voiceprints_path.relative_to(journal_root))
+        except ValueError:
+            rel_path = str(result.voiceprints_path)
+    return {
+        "outcome": result.outcome,
+        "entity_id": result.entity_id,
+        "keys_removed": result.keys_removed,
+        "file_deleted": result.file_deleted,
+        "path": rel_path,
+    }
+
+
+def _propagation_reversal_payload(old_speaker: str, new_speaker: str) -> dict[str, str]:
+    return {
+        "verb": PROPAGATION_CLI_VERB,
+        "old_speaker": new_speaker,
+        "new_speaker": old_speaker,
+        "bounded_to": "segments where these two appear",
+    }
+
+
+def _propagation_response_payload(result: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(result)
+    payload["reversal"] = _propagation_reversal_payload(
+        str(result["old_speaker"]),
+        str(result["new_speaker"]),
+    )
+    return payload
+
+
+def _propagation_offer(old_speaker: str | None, new_speaker: str) -> dict[str, Any]:
+    if not old_speaker:
+        return {
+            "available": False,
+            "reason": "no_old_speaker",
+            "statement_count": 0,
+            "segment_count": 0,
+        }
+    try:
+        result = propagate_speaker_correction(old_speaker, new_speaker, commit=False)
+    except Exception:
+        logger.exception("Failed to preview speaker correction propagation")
+        return {
+            "available": False,
+            "reason": "preview_failed",
+            "statement_count": 0,
+            "segment_count": 0,
+        }
+
+    statement_count = int(result.get("statement_count") or 0)
+    segment_count = int(result.get("segment_count") or 0)
+    if statement_count == 0:
+        return {
+            "available": False,
+            "reason": "no_changes",
+            "statement_count": 0,
+            "segment_count": 0,
+        }
+
+    return {
+        "available": True,
+        "statement_count": statement_count,
+        "segment_count": segment_count,
+        "route": "/app/speakers/api/propagate-correction",
+        "request": {
+            "old_speaker": old_speaker,
+            "new_speaker": new_speaker,
+            "commit": False,
+        },
+    }
 
 
 def _load_speaker_labels(segment_dir: Path) -> dict | None:
@@ -1581,20 +1702,18 @@ def api_correct_attribution() -> Any:
             detail="Embedding too similar to owner voice — cannot save",
         )
 
-    auto_accumulated_methods = {"acoustic", "context", "contextual"}
-    removed_voiceprint_path = None
+    voiceprint_removal = VoiceprintRemovalResult(
+        outcome="not_found",
+        entity_id=str(old_speaker or ""),
+        keys_removed=[],
+        file_deleted=False,
+        voiceprints_path=None,
+    )
     try:
-        if old_speaker and old_method in auto_accumulated_methods:
-            removed_voiceprint_path = _remove_voiceprint(
+        if old_speaker:
+            voiceprint_removal = _remove_voiceprint(
                 old_speaker, day, segment_key, source, sentence_id
             )
-
-        voiceprints_removed: list[str] = []
-        if removed_voiceprint_path is not None:
-            journal_root = Path(get_journal())
-            voiceprints_removed = [
-                str(removed_voiceprint_path.relative_to(journal_root))
-            ]
 
         _save_voiceprint(
             new_speaker,
@@ -1649,18 +1768,93 @@ def api_correct_attribution() -> Any:
             "sentence_id": sentence_id,
             "old_speaker": old_speaker,
             "new_speaker": new_speaker,
-            "voiceprints_removed": voiceprints_removed,
+            "voiceprint_removal": _voiceprint_removal_payload(voiceprint_removal),
         },
     )
     _maybe_bootstrap_owner_from_attestation(principal_id, new_speaker)
+    propagation_offer = _propagation_offer(old_speaker, new_speaker)
 
     return success_response(
         {
             "status": "corrected",
             "old_speaker": old_speaker,
             "new_speaker": new_speaker,
+            "voiceprint_removal": _voiceprint_removal_payload(voiceprint_removal),
+            "propagation_offer": propagation_offer,
         }
     )
+
+
+@speakers_bp.route("/api/propagate-correction", methods=["POST"])
+def api_propagate_correction() -> Any:
+    """Preview or apply scoped re-attribution after a correction."""
+    data = request.get_json(silent=True) or {}
+    old_speaker = data.get("old_speaker")
+    new_speaker = data.get("new_speaker")
+    commit = bool(data.get("commit", False))
+
+    if not old_speaker or not new_speaker:
+        return error_response(
+            MISSING_REQUIRED_FIELD,
+            detail="Missing required fields",
+        )
+    old_speaker = str(old_speaker)
+    new_speaker = str(new_speaker)
+    if old_speaker == new_speaker:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="Choose two different speakers.",
+        )
+
+    old_entity = _ensure_attribution_target(old_speaker)
+    if not old_entity:
+        return error_response(
+            SPEAKER_NOT_FOUND,
+            detail=f"Entity '{old_speaker}' not found",
+        )
+    if old_entity.get("blocked"):
+        return error_response(
+            ENTITY_BLOCKED,
+            detail=f"Entity '{old_speaker}' is blocked",
+        )
+
+    new_entity = _ensure_attribution_target(new_speaker)
+    if not new_entity:
+        return error_response(
+            SPEAKER_NOT_FOUND,
+            detail=f"Entity '{new_speaker}' not found",
+        )
+    if new_entity.get("blocked"):
+        return error_response(
+            ENTITY_BLOCKED,
+            detail=f"Entity '{new_speaker}' is blocked",
+        )
+
+    try:
+        result = propagate_speaker_correction(
+            old_speaker,
+            new_speaker,
+            commit=commit,
+        )
+    except LockTimeout as exc:
+        if exc.path.name in ("speaker_labels.json", "speaker_corrections.json"):
+            return _labels_busy_response(exc)
+        return _voiceprint_busy_response(exc)
+
+    if commit and result.get("statement_count"):
+        log_app_action(
+            app="speakers",
+            facet=None,
+            action="attribution_propagate_correction",
+            params={
+                "old_speaker": old_speaker,
+                "new_speaker": new_speaker,
+                "statement_count": result["statement_count"],
+                "segment_count": result["segment_count"],
+            },
+        )
+
+    return jsonify(_propagation_response_payload(result))
 
 
 @speakers_bp.route("/api/assign-attribution", methods=["POST"])

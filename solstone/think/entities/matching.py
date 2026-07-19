@@ -807,11 +807,12 @@ def record_entity_resolution(
     scope: ResolutionScope,
     origin: ResolutionOrigin,
     fuzzy_threshold: int = 90,
+    record_ambiguities: bool = True,
 ) -> EntityResolution:
     """Resolve an entity name on a mutation-safe boundary.
 
-    Low-confidence matches record an ambiguity row before returning, so callers
-    can reuse their existing unresolved path without risking a later write.
+    Low-confidence matches record an ambiguity row before returning unless the
+    caller explicitly suppresses that side channel for report-only work.
     """
     if not query or not query.strip():
         return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
@@ -855,19 +856,22 @@ def record_entity_resolution(
             fuzzy_threshold,
         )
         if tier is not None and candidates:
-            row = record_ambiguity_observation(
-                scope=scope,
-                query=query,
-                normalized_query=normalized_query,
-                observed_tier=int(tier),
-                ranked_candidates=[candidate.to_dict() for candidate in candidates],
-                origin=origin,
-            )
+            ambiguity_id = ""
+            if record_ambiguities:
+                row = record_ambiguity_observation(
+                    scope=scope,
+                    query=query,
+                    normalized_query=normalized_query,
+                    observed_tier=int(tier),
+                    ranked_candidates=[candidate.to_dict() for candidate in candidates],
+                    origin=origin,
+                )
+                ambiguity_id = str(row.get("ambiguity_id") or "")
             return EntityResolution(
                 outcome=EntityResolutionOutcome.AMBIGUOUS,
                 tier=tier,
                 candidates=candidates,
-                ambiguity_id=str(row.get("ambiguity_id") or ""),
+                ambiguity_id=ambiguity_id,
             )
 
         return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)

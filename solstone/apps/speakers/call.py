@@ -8,8 +8,8 @@ Every verb reaches the journal only over HTTP via the Convey client; this
 module imports no journal/domain function and performs no filesystem I/O.
 
 Commands with ``--commit`` preview by default and persist only when passed.
-Other write verbs, including ``tag-owner``, ``build-from-tags``, and
-``rebuild-owner``, persist immediately.
+Other write verbs, including ``correct``, ``tag-owner``, ``build-from-tags``,
+and ``rebuild-owner``, persist immediately.
 For ``attribute-segment``, ``--save`` / ``--accumulate`` only take effect
 when ``--commit`` is also passed.
 
@@ -18,6 +18,8 @@ Commands:
     sol call speakers bootstrap [--commit] [--json]
     sol call speakers resolve-names [--commit] [--json]
     sol call speakers attribute-segment <day> <stream> <segment> [--commit] [--json]
+    sol call speakers correct <day> <stream> <segment> <source> <sentence-id> <new-speaker> [--json]
+    sol call speakers propagate-correction <old-speaker> <new-speaker> [--commit] [--json]
     sol call speakers backfill [--commit] [--json]
     sol call speakers backfill-last-seen [--commit] [--json]
     sol call speakers wipe [--commit] [--json]
@@ -318,6 +320,125 @@ def attribute_segment_cmd(
             typer.echo("\nAccumulated voiceprints:")
             for eid, count in saved.items():
                 typer.echo(f"  {eid}: {count} embeddings")
+
+
+@app.command("correct")
+@convey_cli
+def correct_cmd(
+    day: str = typer.Argument(..., help="Day in YYYYMMDD format."),
+    stream: str = typer.Argument(..., help="Stream name."),
+    segment: str = typer.Argument(..., help="Segment key (HHMMSS_LEN)."),
+    source: str = typer.Argument(..., help="Audio source stem."),
+    sentence_id: int = typer.Argument(..., help="Sentence id to correct."),
+    new_speaker: str = typer.Argument(
+        ..., help="Entity ID to assign to this statement."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Output as JSON."),
+) -> None:
+    """Correct one speaker attribution immediately."""
+    result = _request(
+        "POST",
+        "/app/speakers/api/correct-attribution",
+        json_body={
+            "day": day,
+            "stream": stream,
+            "segment_key": segment,
+            "source": source,
+            "sentence_id": sentence_id,
+            "new_speaker": new_speaker,
+        },
+    )
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+
+    if result.get("status") == "already_correct":
+        typer.echo(f"Already correct: {day}/{stream}/{segment} #{sentence_id}")
+        return
+
+    old_speaker = result.get("old_speaker") or "unassigned"
+    typer.echo(
+        f"Corrected {day}/{stream}/{segment} #{sentence_id}: "
+        f"{old_speaker} -> {result.get('new_speaker')}"
+    )
+    removal = result.get("voiceprint_removal") or {}
+    typer.echo(f"Voiceprint removal: {removal.get('outcome', 'unknown')}")
+    offer = result.get("propagation_offer") or {}
+    if offer.get("available") is True:
+        typer.echo(
+            "Propagation available: "
+            f"{offer.get('statement_count', 0)} statements in "
+            f"{offer.get('segment_count', 0)} segments would change"
+        )
+        typer.echo(
+            "Preview with: "
+            f"sol call speakers propagate-correction {result.get('old_speaker')} "
+            f"{result.get('new_speaker')}"
+        )
+    else:
+        typer.echo("Propagation: nothing else would change")
+
+
+@app.command("propagate-correction")
+@convey_cli
+def propagate_correction_cmd(
+    old_speaker: str = typer.Argument(..., help="Entity ID to move away from."),
+    new_speaker: str = typer.Argument(..., help="Entity ID to move toward."),
+    commit: bool = typer.Option(
+        False,
+        "--commit",
+        help="Persist results. Without this flag the command only reports what would happen.",
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Output full result as JSON."
+    ),
+) -> None:
+    """Preview or apply scoped correction propagation.
+
+    Reversal uses the same verb with the two speaker ids swapped.
+    """
+    if not commit and not json_output:
+        typer.echo("REPORT ONLY — pass --commit to persist.\n")
+
+    result = _request(
+        "POST",
+        "/app/speakers/api/propagate-correction",
+        json_body={
+            "old_speaker": old_speaker,
+            "new_speaker": new_speaker,
+            "commit": commit,
+        },
+    )
+
+    if json_output:
+        typer.echo(json.dumps(result, indent=2, default=str))
+        return
+
+    statement_count = int(result.get("statement_count") or 0)
+    segment_count = int(result.get("segment_count") or 0)
+    action = "Applied" if commit else "Would change"
+    if statement_count == 0:
+        typer.echo("Nothing else would change.")
+    else:
+        typer.echo(
+            f"{action}: {statement_count} statements in {segment_count} segments"
+        )
+
+    errors = result.get("errors") or []
+    if errors:
+        typer.echo("\nErrors:", err=True)
+        for error in errors:
+            typer.echo(f"  {error}", err=True)
+
+    if commit:
+        reversal = result.get("reversal") or {}
+        if reversal:
+            typer.echo(
+                "Reverse with: "
+                f"sol call {reversal.get('verb')} "
+                f"{reversal.get('old_speaker')} {reversal.get('new_speaker')} --commit"
+            )
 
 
 @app.command("backfill")

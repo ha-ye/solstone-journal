@@ -73,6 +73,12 @@ if TYPE_CHECKING:
     import numpy as np
 
 logger = logging.getLogger(__name__)
+VOICEPRINT_ACCUMULATION_METHODS = {
+    "structural_single_speaker",
+    "structural_setting",
+    "acoustic",
+    "acoustic_cluster",
+}
 
 
 def _routes_helpers():
@@ -293,6 +299,8 @@ def attribute_segment(
     day: str,
     stream: str,
     segment_key: str,
+    *,
+    record_ambiguities: bool = True,
 ) -> dict[str, Any]:
     """Run Layers 1-3 of speaker attribution for a segment.
 
@@ -496,6 +504,7 @@ def attribute_segment(
             entities_list,
             scope=resolution_scope,
             origin=resolution_origin,
+            record_ambiguities=record_ambiguities,
         )
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             candidate_entities[resolution.entity["id"]] = resolution.entity
@@ -512,6 +521,7 @@ def attribute_segment(
                 segment_id=segment_key,
                 field="structural_single_speaker",
             ),
+            record_ambiguities=record_ambiguities,
         )
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             for sid in non_owner_sids:
@@ -536,6 +546,7 @@ def attribute_segment(
                 segment_id=segment_key,
                 field="structural_setting",
             ),
+            record_ambiguities=record_ambiguities,
         )
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             for sid in non_owner_sids:
@@ -987,6 +998,88 @@ def _is_user_label(label: dict) -> bool:
     return isinstance(method, str) and method.startswith("user_")
 
 
+def _load_corrections_by_sentence(seg_dir: Path) -> dict[int, dict]:
+    corr_path = seg_dir / "talents" / "speaker_corrections.json"
+    corrected: dict[int, dict] = {}
+    if not corr_path.is_file():
+        return corrected
+    try:
+        with open(corr_path, encoding="utf-8") as f:
+            corr_data = json.load(f)
+        for entry in corr_data.get("corrections", []):
+            sid = entry.get("sentence_id")
+            if sid is not None:
+                corrected[int(sid)] = entry
+    except (json.JSONDecodeError, OSError):
+        pass
+    return corrected
+
+
+def _speaker_labels_payload(
+    seg_dir: Path,
+    labels: list[dict],
+    metadata: dict[str, Any],
+    current: dict | None,
+) -> dict:
+    prepared_labels = labels
+
+    corrected = _load_corrections_by_sentence(seg_dir)
+    if corrected:
+        for label in prepared_labels:
+            sid = label.get("sentence_id")
+            if sid is not None and int(sid) in corrected:
+                corr = corrected[int(sid)]
+                speaker = corr.get("corrected_speaker")
+                if speaker is not None:
+                    label["speaker"] = speaker
+                    label["confidence"] = "high"
+                    if corr.get("original_speaker") == speaker:
+                        label["method"] = "user_confirmed"
+                    elif corr.get("original_speaker") is None:
+                        label["method"] = "user_assigned"
+                    else:
+                        label["method"] = "user_corrected"
+        logger.info(
+            "Preserved %d user corrections in %s",
+            len(corrected),
+            seg_dir,
+        )
+
+    user_by_sid: dict[int, dict] = {}
+    if isinstance(current, dict):
+        current_labels = current.get("labels", [])
+        if isinstance(current_labels, list):
+            for current_label in current_labels:
+                if not isinstance(current_label, dict):
+                    continue
+                sid = _label_sentence_id(current_label)
+                if sid is not None and _is_user_label(current_label):
+                    user_by_sid[sid] = current_label
+
+    merged_labels: list[dict] = []
+    fresh_sids: set[int] = set()
+    for label in prepared_labels:
+        sid = _label_sentence_id(label)
+        if sid is None:
+            merged_labels.append(label)
+            continue
+        fresh_sids.add(sid)
+        merged_labels.append(user_by_sid.get(sid, label))
+
+    user_only = [
+        label for sid, label in sorted(user_by_sid.items()) if sid not in fresh_sids
+    ]
+    merged_labels.extend(user_only)
+
+    return {
+        "labels": merged_labels,
+        "owner_centroid_last_refreshed_at": metadata.get(
+            "owner_centroid_last_refreshed_at"
+        ),
+        "voiceprint_versions": metadata.get("voiceprint_versions", {}),
+    }
+
+
 def save_speaker_labels(
     seg_dir: Path,
     labels: list[dict],
@@ -1001,80 +1094,10 @@ def save_speaker_labels(
     agents_dir = seg_dir / "talents"
     agents_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load existing corrections to preserve user overrides
-    corr_path = agents_dir / "speaker_corrections.json"
-    corrected: dict[int, dict] = {}
-    if corr_path.is_file():
-        try:
-            with open(corr_path, encoding="utf-8") as f:
-                corr_data = json.load(f)
-            for entry in corr_data.get("corrections", []):
-                sid = entry.get("sentence_id")
-                if sid is not None:
-                    # Keep the latest correction per sentence
-                    corrected[int(sid)] = entry
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # Apply corrections on top of pipeline labels
-    if corrected:
-        for label in labels:
-            sid = label.get("sentence_id")
-            if sid is not None and int(sid) in corrected:
-                corr = corrected[int(sid)]
-                speaker = corr.get("corrected_speaker")
-                if speaker is not None:
-                    label["speaker"] = speaker
-                    label["confidence"] = "high"
-                    # Determine method from correction type
-                    if corr.get("original_speaker") == speaker:
-                        label["method"] = "user_confirmed"
-                    elif corr.get("original_speaker") is None:
-                        label["method"] = "user_assigned"
-                    else:
-                        label["method"] = "user_corrected"
-        logger.info(
-            "Preserved %d user corrections in %s",
-            len(corrected),
-            seg_dir,
-        )
-
     out_path = agents_dir / "speaker_labels.json"
 
     def transform(current: dict | None) -> dict:
-        user_by_sid: dict[int, dict] = {}
-        if isinstance(current, dict):
-            current_labels = current.get("labels", [])
-            if isinstance(current_labels, list):
-                for current_label in current_labels:
-                    if not isinstance(current_label, dict):
-                        continue
-                    sid = _label_sentence_id(current_label)
-                    if sid is not None and _is_user_label(current_label):
-                        user_by_sid[sid] = current_label
-
-        merged_labels: list[dict] = []
-        fresh_sids: set[int] = set()
-        for label in labels:
-            sid = _label_sentence_id(label)
-            if sid is None:
-                merged_labels.append(label)
-                continue
-            fresh_sids.add(sid)
-            merged_labels.append(user_by_sid.get(sid, label))
-
-        user_only = [
-            label for sid, label in sorted(user_by_sid.items()) if sid not in fresh_sids
-        ]
-        merged_labels.extend(user_only)
-
-        return {
-            "labels": merged_labels,
-            "owner_centroid_last_refreshed_at": metadata.get(
-                "owner_centroid_last_refreshed_at"
-            ),
-            "voiceprint_versions": metadata.get("voiceprint_versions", {}),
-        }
+        return _speaker_labels_payload(seg_dir, labels, metadata, current)
 
     update_speaker_labels(seg_dir, transform)
 
@@ -1088,6 +1111,227 @@ def save_speaker_labels_stub(seg_dir: Path, reason: str) -> None:
         seg_dir,
         lambda _current: {"labels": [], "skipped": True, "reason": reason},
     )
+
+
+def _read_speaker_labels(seg_dir: Path) -> dict | None:
+    path = seg_dir / "talents" / "speaker_labels.json"
+    return read_json(
+        path,
+        on_error=MalformedPolicy.WARN_AND_SKIP,
+        default=None,
+    )
+
+
+def _labels_by_sentence(payload: dict | None) -> dict[int, dict]:
+    if not isinstance(payload, dict):
+        return {}
+    labels = payload.get("labels", [])
+    if not isinstance(labels, list):
+        return {}
+    by_sid: dict[int, dict] = {}
+    for label in labels:
+        if not isinstance(label, dict):
+            continue
+        sid = _label_sentence_id(label)
+        if sid is not None:
+            by_sid[sid] = label
+    return by_sid
+
+
+def _speaker_label_changes(
+    current: dict | None,
+    updated: dict,
+    *,
+    day: str,
+    stream: str,
+    segment_key: str,
+    source: str | None,
+) -> list[dict[str, Any]]:
+    current_by_sid = _labels_by_sentence(current)
+    updated_by_sid = _labels_by_sentence(updated)
+    changes: list[dict[str, Any]] = []
+    for sid in sorted(set(current_by_sid) | set(updated_by_sid)):
+        before = current_by_sid.get(sid, {})
+        after = updated_by_sid.get(sid, {})
+        before_fields = (
+            before.get("speaker"),
+            before.get("method"),
+            before.get("confidence"),
+        )
+        after_fields = (
+            after.get("speaker"),
+            after.get("method"),
+            after.get("confidence"),
+        )
+        if before_fields == after_fields:
+            continue
+        changes.append(
+            {
+                "day": day,
+                "stream": stream,
+                "segment_key": segment_key,
+                "source": source,
+                "sentence_id": sid,
+                "from_speaker": before.get("speaker"),
+                "to_speaker": after.get("speaker"),
+                "from_method": before.get("method"),
+                "to_method": after.get("method"),
+                "from_confidence": before.get("confidence"),
+                "to_confidence": after.get("confidence"),
+            }
+        )
+    return changes
+
+
+def process_attributed_segment(
+    day: str,
+    stream: str,
+    segment_key: str,
+    *,
+    commit: bool,
+    record_ambiguities: bool,
+) -> dict[str, Any]:
+    result = attribute_segment(
+        day,
+        stream,
+        segment_key,
+        record_ambiguities=record_ambiguities,
+    )
+    if result.get("error"):
+        return {
+            "status": "error",
+            "day": day,
+            "stream": stream,
+            "segment_key": segment_key,
+            "source": result.get("source"),
+            "changes": [],
+            "changed_count": 0,
+            "accumulated": {},
+            "error": result["error"],
+        }
+
+    labels = result.get("labels", [])
+    metadata = result.get("metadata", {})
+    source = result.get("source")
+    seg_dir = segment_path(day, segment_key, stream, create=False)
+    current = _read_speaker_labels(seg_dir)
+    updated = _speaker_labels_payload(seg_dir, labels, metadata, current)
+    changes = _speaker_label_changes(
+        current,
+        updated,
+        day=day,
+        stream=stream,
+        segment_key=segment_key,
+        source=source,
+    )
+
+    should_write = commit and (current is None or bool(changes))
+    accumulated: dict[str, int] = {}
+    if should_write:
+        save_speaker_labels(seg_dir, labels, metadata)
+        if source:
+            accumulated = accumulate_voiceprints(
+                day, stream, segment_key, labels, source
+            )
+
+    return {
+        "status": "changed" if changes else "unchanged",
+        "day": day,
+        "stream": stream,
+        "segment_key": segment_key,
+        "source": source,
+        "changes": changes,
+        "changed_count": len(changes),
+        "accumulated": accumulated,
+        "error": None,
+    }
+
+
+def find_labeled_segments_for_speakers(
+    entity_ids: set[str],
+) -> list[tuple[str, str, str, Path]]:
+    """Return existing labeled segments whose current labels reference any entity."""
+    from solstone.think.utils import day_dirs, iter_segments
+
+    if not entity_ids:
+        return []
+
+    entity_id_bytes = [entity_id.encode("utf-8") for entity_id in sorted(entity_ids)]
+    found: list[tuple[str, str, str, Path]] = []
+    for day_name in sorted(day_dirs().keys()):
+        for stream_name, seg_key, seg_path in iter_segments(day_name):
+            labels_path = seg_path / "talents" / "speaker_labels.json"
+            if not labels_path.is_file():
+                continue
+            try:
+                raw = labels_path.read_bytes()
+            except OSError:
+                logger.warning("Failed to read speaker labels %s", labels_path)
+                continue
+            if not any(entity_id in raw for entity_id in entity_id_bytes):
+                continue
+            try:
+                data = json.loads(raw.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                logger.warning("Failed to parse speaker labels %s", labels_path)
+                continue
+            labels = data.get("labels", []) if isinstance(data, dict) else []
+            if any(
+                isinstance(label, dict) and label.get("speaker") in entity_ids
+                for label in labels
+            ):
+                found.append((day_name, stream_name, seg_key, seg_path))
+    return found
+
+
+def propagate_speaker_correction(
+    old_speaker: str,
+    new_speaker: str,
+    *,
+    commit: bool = False,
+) -> dict[str, Any]:
+    """Re-attribute labeled segments mentioning either side of a correction."""
+    segments = find_labeled_segments_for_speakers({old_speaker, new_speaker})
+    segment_results: list[dict[str, Any]] = []
+    changes: list[dict[str, Any]] = []
+    errors: list[str] = []
+
+    for day_name, stream_name, seg_key, _seg_path in segments:
+        try:
+            segment_result = process_attributed_segment(
+                day_name,
+                stream_name,
+                seg_key,
+                commit=commit,
+                record_ambiguities=False,
+            )
+        except Exception as exc:
+            errors.append(f"{day_name}/{stream_name}/{seg_key}: {exc}")
+            continue
+        segment_results.append(segment_result)
+        if segment_result.get("error"):
+            errors.append(
+                f"{day_name}/{stream_name}/{seg_key}: {segment_result['error']}"
+            )
+            continue
+        changes.extend(segment_result.get("changes", []))
+
+    changed_segments = {
+        (change["day"], change["stream"], change["segment_key"]) for change in changes
+    }
+    return {
+        "status": "applied" if commit else "preview",
+        "commit": commit,
+        "old_speaker": old_speaker,
+        "new_speaker": new_speaker,
+        "segments_scanned": len(segments),
+        "segments_considered": len(segment_results),
+        "segment_count": len(changed_segments),
+        "statement_count": len(changes),
+        "changes": changes,
+        "segments": segment_results,
+        "errors": errors,
+    }
 
 
 def apply_label_patches(
@@ -1200,14 +1444,6 @@ def accumulate_voiceprints(
     sid_to_idx = {int(s): i for i, s in enumerate(statement_ids)}
     last_seen_ts = segment_start_ts_ms(day, segment_key)
 
-    # Eligible methods for accumulation
-    eligible_methods = {
-        "structural_single_speaker",
-        "structural_setting",
-        "acoustic",
-        "acoustic_cluster",
-    }
-
     principal = get_journal_principal()
     owner_entity_id = principal["id"] if principal else None
 
@@ -1220,7 +1456,7 @@ def accumulate_voiceprints(
     for label in labels:
         if label.get("confidence") != "high":
             continue
-        if label.get("method") not in eligible_methods:
+        if label.get("method") not in VOICEPRINT_ACCUMULATION_METHODS:
             continue
         speaker = label.get("speaker")
         if not speaker or speaker == owner_entity_id:
@@ -1401,9 +1637,15 @@ def backfill_segments(
     total_to_do = len(to_process)
     speakers_seen: dict[str, int] = {}
 
-    for i, (day_name, stream_name, seg_key, seg_path) in enumerate(to_process, 1):
+    for i, (day_name, stream_name, seg_key, _seg_path) in enumerate(to_process, 1):
         try:
-            result = attribute_segment(day_name, stream_name, seg_key)
+            result = process_attributed_segment(
+                day_name,
+                stream_name,
+                seg_key,
+                commit=True,
+                record_ambiguities=True,
+            )
 
             if result.get("error"):
                 stats["errors"].append(
@@ -1413,20 +1655,9 @@ def backfill_segments(
                     progress_callback(i, total_to_do, day_name, stream_name, seg_key)
                 continue
 
-            labels = result.get("labels", [])
-            metadata = result.get("metadata", {})
-            source = result.get("source")
-
-            # Save labels
-            save_speaker_labels(seg_path, labels, metadata)
-
-            # Accumulate voiceprints
-            if source:
-                accumulate_voiceprints(day_name, stream_name, seg_key, labels, source)
-
             # Track speakers
-            for lab in labels:
-                speaker = lab.get("speaker")
+            for change in result.get("changes", []):
+                speaker = change.get("to_speaker")
                 if speaker:
                     speakers_seen[speaker] = speakers_seen.get(speaker, 0) + 1
 

@@ -47,6 +47,14 @@ SPK_GRID_UNIT_OTHER = "segments to name"
 SPK_GRID_UNIT_NONE = "quiet day"
 SPK_GRID_ACTIVITY_ONE = "segment, all named"
 SPK_GRID_ACTIVITY_OTHER = "segments, all named"
+SPK_IDENTIFY_SCOPE = "Naming this voice applies it everywhere it is heard."
+SPK_CORRECT_SCOPE = "This fixes this one statement."
+SPK_CORRECT_PROPAGATE_OFFER = (
+    "Sol can look through segments where these two appear and show you what else "
+    "would change."
+)
+SPK_CORRECT_PROPAGATE_NONE = "Nothing else would change."
+SPK_CORRECT_PROPAGATE_APPLY = "Apply these changes"
 
 # API payload prose for owner-status/readiness responses; keep un-prefixed so
 # speaker_copy_payload() does not scoop it into template copy.

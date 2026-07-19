@@ -84,6 +84,54 @@ def _attribute_result() -> dict[str, Any]:
     }
 
 
+def _correct_result() -> dict[str, Any]:
+    return {
+        "status": "corrected",
+        "old_speaker": "alice",
+        "new_speaker": "bob",
+        "voiceprint_removal": {
+            "outcome": "rewritten",
+            "entity_id": "alice",
+            "keys_removed": ["20260101/120000_10/mic_audio#2"],
+            "file_deleted": False,
+            "path": "entities/alice/voiceprints.npz",
+        },
+        "propagation_offer": {
+            "available": True,
+            "statement_count": 3,
+            "segment_count": 2,
+            "route": "/app/speakers/api/propagate-correction",
+            "request": {
+                "old_speaker": "alice",
+                "new_speaker": "bob",
+                "commit": False,
+            },
+        },
+    }
+
+
+def _propagate_result(*, commit: bool) -> dict[str, Any]:
+    return {
+        "status": "applied" if commit else "preview",
+        "commit": commit,
+        "old_speaker": "alice",
+        "new_speaker": "bob",
+        "segments_scanned": 4,
+        "segments_considered": 4,
+        "segment_count": 2,
+        "statement_count": 3,
+        "changes": [],
+        "segments": [],
+        "errors": [],
+        "reversal": {
+            "verb": "speakers propagate-correction",
+            "old_speaker": "bob",
+            "new_speaker": "alice",
+            "bounded_to": "segments where these two appear",
+        },
+    }
+
+
 def _backfill_stats() -> dict[str, Any]:
     return {
         "total_segments": 10,
@@ -341,6 +389,150 @@ def test_attribute_segment_text_json_error_and_commit_outputs(
     assert error.exit_code == 1
     assert error.stdout == "REPORT ONLY — pass --commit to persist.\n\n"
     assert error.stderr == "Error: no_owner_centroid\n"
+
+
+def test_correct_text_and_json_use_correction_route(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request(
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        calls.append((method, path, json_body))
+        assert params is None
+        return _correct_result()
+
+    monkeypatch.setattr(speakers_call, "_request", fake_request)
+
+    text = runner.invoke(
+        app,
+        [
+            "correct",
+            "20260101",
+            "mic",
+            "120000_10",
+            "mic_audio",
+            "2",
+            "bob",
+        ],
+    )
+    json_result = runner.invoke(
+        app,
+        [
+            "correct",
+            "20260101",
+            "mic",
+            "120000_10",
+            "mic_audio",
+            "2",
+            "bob",
+            "--json",
+        ],
+    )
+
+    assert text.exit_code == 0
+    assert text.stderr == ""
+    assert text.stdout == (
+        "Corrected 20260101/mic/120000_10 #2: alice -> bob\n"
+        "Voiceprint removal: rewritten\n"
+        "Propagation available: 3 statements in 2 segments would change\n"
+        "Preview with: sol call speakers propagate-correction alice bob\n"
+    )
+    _assert_json_stdout(json_result, _correct_result())
+    assert calls == [
+        (
+            "POST",
+            "/app/speakers/api/correct-attribution",
+            {
+                "day": "20260101",
+                "stream": "mic",
+                "segment_key": "120000_10",
+                "source": "mic_audio",
+                "sentence_id": 2,
+                "new_speaker": "bob",
+            },
+        ),
+        (
+            "POST",
+            "/app/speakers/api/correct-attribution",
+            {
+                "day": "20260101",
+                "stream": "mic",
+                "segment_key": "120000_10",
+                "source": "mic_audio",
+                "sentence_id": 2,
+                "new_speaker": "bob",
+            },
+        ),
+    ]
+
+
+def test_propagate_correction_previews_by_default_and_commits(
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, str, dict[str, Any] | None]] = []
+
+    def fake_request(
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        calls.append((method, path, json_body))
+        assert params is None
+        return _propagate_result(commit=bool(json_body and json_body.get("commit")))
+
+    monkeypatch.setattr(speakers_call, "_request", fake_request)
+
+    preview = runner.invoke(app, ["propagate-correction", "alice", "bob"])
+    commit = runner.invoke(
+        app,
+        ["propagate-correction", "alice", "bob", "--commit"],
+    )
+    json_result = runner.invoke(
+        app,
+        ["propagate-correction", "alice", "bob", "--json"],
+    )
+
+    assert preview.exit_code == 0
+    assert preview.stderr == ""
+    assert preview.stdout == (
+        "REPORT ONLY — pass --commit to persist.\n"
+        "\n"
+        "Would change: 3 statements in 2 segments\n"
+    )
+    assert commit.exit_code == 0
+    assert commit.stderr == ""
+    assert commit.stdout == (
+        "Applied: 3 statements in 2 segments\n"
+        "Reverse with: sol call speakers propagate-correction bob alice --commit\n"
+    )
+    _assert_json_stdout(json_result, _propagate_result(commit=False))
+    assert calls == [
+        (
+            "POST",
+            "/app/speakers/api/propagate-correction",
+            {"old_speaker": "alice", "new_speaker": "bob", "commit": False},
+        ),
+        (
+            "POST",
+            "/app/speakers/api/propagate-correction",
+            {"old_speaker": "alice", "new_speaker": "bob", "commit": True},
+        ),
+        (
+            "POST",
+            "/app/speakers/api/propagate-correction",
+            {"old_speaker": "alice", "new_speaker": "bob", "commit": False},
+        ),
+    ]
 
 
 def test_backfill_text_commit_without_progress_and_json(

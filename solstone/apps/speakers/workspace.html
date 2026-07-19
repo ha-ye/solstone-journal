@@ -1655,6 +1655,7 @@
                 <input type="text" class="spk-discovery-input" aria-label="speaker name" placeholder="enter speaker name..." />
                 <button class="spk-discovery-btn">name</button>
               </form>
+              <p class="spk-card-line">${escapeHtml(SPK_COPY.SPK_IDENTIFY_SCOPE || '')}</p>
               <div class="spk-discovery-status"></div>
             </div>
           `).join('')}
@@ -2023,7 +2024,7 @@
     }
 
     setReviewStatus();
-    window.apiJson(`/app/speakers/api/review/${day}/${seg.stream}/${seg.key}/${source}`)
+    return window.apiJson(`/app/speakers/api/review/${day}/${seg.stream}/${seg.key}/${source}`)
       .then(data => {
         if (data.error) {
           const err = new Error(data.error);
@@ -2334,7 +2335,7 @@
 
   async function correctAttribution(sentenceId, newSpeaker) {
     try {
-      await window.apiJson('/app/speakers/api/correct-attribution', {
+      const result = await window.apiJson('/app/speakers/api/correct-attribution', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2346,9 +2347,31 @@
           new_speaker: newSpeaker,
         }),
       });
-      loadReview(selectedSegment, selectedSource);
+      await loadReview(selectedSegment, selectedSource);
       loadSegments();
+      showPropagationOffer(sentenceId, result.propagation_offer);
       triggerOwnerStatusIfPrincipal(newSpeaker);
+    } catch (err) {
+      showStatusBySentence(
+        sentenceId,
+        err.serverMessage || 'something went wrong — try again',
+        'error'
+      );
+    }
+  }
+
+  async function propagateCorrection(request, sentenceId) {
+    try {
+      const body = {...request, commit: true};
+      const result = await window.apiJson('/app/speakers/api/propagate-correction', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      await loadReview(selectedSegment, selectedSource);
+      loadSegments();
+      const count = result.statement_count || 0;
+      showStatusBySentence(sentenceId, `${count} statement${count === 1 ? '' : 's'} updated`, 'success');
     } catch (err) {
       showStatusBySentence(
         sentenceId,
@@ -2414,6 +2437,37 @@
         delete statusTimers[sentenceId];
       }, 3000);
     }
+  }
+
+  function showPropagationOffer(sentenceId, offer) {
+    const container = document.getElementById(`status-${sentenceId}`);
+    if (!container) return;
+    if (statusTimers[sentenceId]) {
+      clearTimeout(statusTimers[sentenceId]);
+      delete statusTimers[sentenceId];
+    }
+
+    container.setAttribute('aria-live', 'polite');
+    if (!offer || offer.available !== true) {
+      container.innerHTML = `<div class="spk-status spk-status-success">${escapeHtml(SPK_COPY.SPK_CORRECT_SCOPE || '')} ${escapeHtml(SPK_COPY.SPK_CORRECT_PROPAGATE_NONE || '')}</div>`;
+      statusTimers[sentenceId] = setTimeout(() => {
+        const current = document.getElementById(`status-${sentenceId}`);
+        if (current) current.innerHTML = '';
+        delete statusTimers[sentenceId];
+      }, 3000);
+      return;
+    }
+
+    container.innerHTML = `
+      <div class="spk-status spk-status-success">
+        <span>${escapeHtml(SPK_COPY.SPK_CORRECT_SCOPE || '')}</span>
+        <span>${escapeHtml(SPK_COPY.SPK_CORRECT_PROPAGATE_OFFER || '')}</span>
+        <button class="spk-status-action" type="button">${escapeHtml(SPK_COPY.SPK_CORRECT_PROPAGATE_APPLY || '')}</button>
+      </div>
+    `;
+    container.querySelector('.spk-status-action')?.addEventListener('click', () => {
+      propagateCorrection(offer.request || {}, sentenceId);
+    });
   }
 
   function setupAudioListeners() {
@@ -3003,6 +3057,7 @@
       <div class="spk-discovery-card" data-cluster-id="${escapeHtml(cluster.cluster_id)}">
         <h3 class="spk-card-title">${escapeHtml(cluster.suggested_name || cluster.cluster_id)}</h3>
         <p class="spk-card-line">${escapeHtml(String(cluster.size || cluster.count || 0))} ${escapeHtml(COPY.SPK_OVERVIEW_CARD_SAMPLES_LABEL)}</p>
+        <p class="spk-card-line">${escapeHtml(COPY.SPK_IDENTIFY_SCOPE || '')}</p>
         <div class="spk-discovery-actions">
           <input class="spk-discovery-input" type="text" aria-label="speaker name">
           <button class="spk-overview-btn">identify</button>
