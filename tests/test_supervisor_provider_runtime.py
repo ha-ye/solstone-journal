@@ -188,18 +188,47 @@ def _local_plan() -> supervisor.LocalServerLaunchPlan:
     )
 
 
-def _parakeet_plan() -> supervisor.ParakeetServerLaunchPlan:
+def _cuda_plan() -> supervisor.LocalServerLaunchPlan:
+    return supervisor.LocalServerLaunchPlan(
+        backend="cuda",
+        desired_fingerprint_json='{"provider":"local","backend":"cuda"}',
+        desired_fingerprint_sha256="fp-local-cuda",
+        binary_path=Path("/tmp/llama-server"),
+        model_path=Path("/tmp/model.gguf"),
+        lib_dir=Path("/tmp/cuda/lib"),
+        gpu_index=0,
+        gpu_vram_mib=24576,
+        context_tokens=32768,
+        parallel_slots=1,
+        prompt_cache_mib=0,
+        visible_devices_env="CUDA_VISIBLE_DEVICES",
+        visible_devices_value="0",
+        env_updates={"CUDA_VISIBLE_DEVICES": "0", "LD_LIBRARY_PATH": "/tmp/cuda/lib"},
+    )
+
+
+def _mlx_plan() -> supervisor.LocalServerLaunchPlan:
+    return supervisor.LocalServerLaunchPlan(
+        backend="mlx",
+        desired_fingerprint_json='{"provider":"local","backend":"mlx"}',
+        desired_fingerprint_sha256="fp-local-mlx",
+        model_id=supervisor.LOCAL_MODEL,
+        runtime_dir=Path("/tmp/mlx-runtime"),
+    )
+
+
+def _parakeet_plan(backend: str = "cpu") -> supervisor.ParakeetServerLaunchPlan:
     return supervisor.ParakeetServerLaunchPlan(
-        binary_backend="cpu",
-        env_updates={},
-        gpu_index=None,
-        binary_path=Path("/tmp/parakeet-server"),
+        binary_backend=backend,
+        env_updates={"GGML_VK_VISIBLE_DEVICES": "0"} if backend == "vulkan" else {},
+        gpu_index=0 if backend == "vulkan" else None,
+        binary_path=Path(f"/tmp/parakeet-{backend}"),
         model_path=Path("/tmp/parakeet-model.bin"),
         threads=4,
         library_dirs=(),
         desired_fingerprint_json='{"provider":"parakeet"}',
         desired_fingerprint_sha256="fp-parakeet",
-        placement="cpu",
+        placement="gpu" if backend == "vulkan" else "cpu",
     )
 
 
@@ -614,7 +643,7 @@ def test_inactive_local_projection_publishes_not_desired_without_attempt(
     monkeypatch.setattr(
         supervisor,
         "_provider_start_worker",
-        lambda provider, plan_arg, fence: starts.append(fence.attempt),
+        lambda provider, plan_arg, fence, _cancel_event: starts.append(fence.attempt),
     )
 
     asyncio.run(supervisor._reconcile_local_provider_runtime([]))
@@ -839,6 +868,257 @@ def test_retry_token_resets_live_target_without_launching(monkeypatch) -> None:
     assert observations == 1
 
 
+@pytest.mark.parametrize(
+    "observation",
+    [
+        supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="starting",
+            reason_code="launch-requested",
+            detail={},
+            desired_fingerprint_json='{"provider":"local","target":"new"}',
+            desired_fingerprint_sha256="fp-new",
+            plan=_local_plan(),
+            boot_required=True,
+        ),
+        supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="not-desired",
+            reason_code="provider-not-needed",
+            detail={},
+        ),
+        supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="host-blocked",
+            reason_code="gpu-unavailable",
+            detail={},
+            desired_fingerprint_sha256="fp-local",
+            boot_required=True,
+        ),
+    ],
+)
+def test_truth_change_signals_pending_start_cancel_event(
+    observation: supervisor.ProviderTruthObservation,
+) -> None:
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "starting"
+    state.desired_fingerprint = "fp-local"
+    state.retry.desired_fingerprint = "fp-local"
+    state.start_fence = supervisor._provider_fence(state, 0)
+    state.start_future = concurrent.futures.Future()
+    state.start_cancel_event = threading.Event()
+    state.truth_fence = supervisor._provider_fence(state, 0)
+    state.truth_future = _future_with(observation)
+
+    assert supervisor._handle_provider_truth_result(state) is True
+
+    assert state.start_cancel_event is not None
+    assert state.start_cancel_event.is_set()
+
+
+def test_handle_shutdown_signals_pending_provider_start(monkeypatch) -> None:
+    state = supervisor._provider_runtime_states["local"]
+    event = threading.Event()
+    state.start_cancel_event = event
+    state.start_fence = supervisor.ProviderFence(
+        incarnation=supervisor._PROVIDER_INCARNATION,
+        generation=1,
+        fingerprint="fp-local",
+        attempt=1,
+    )
+    monkeypatch.setattr(supervisor, "_managed_procs", [])
+    monkeypatch.setattr(supervisor, "shutdown_requested", False)
+
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            supervisor.handle_shutdown(15, None)
+    finally:
+        supervisor.shutdown_requested = False
+
+    assert event.is_set()
+
+
+def _plan_for_backend(
+    backend: str,
+) -> supervisor.LocalServerLaunchPlan | supervisor.ParakeetServerLaunchPlan:
+    if backend == "vulkan":
+        return _local_plan()
+    if backend == "cuda":
+        return _cuda_plan()
+    if backend == "mlx":
+        return _mlx_plan()
+    if backend == "parakeet-vulkan":
+        return _parakeet_plan("vulkan")
+    return _parakeet_plan("cpu")
+
+
+def _process_name_for_backend(backend: str) -> str:
+    if backend == "mlx":
+        return supervisor.MLX_SERVER_PROCESS_NAME
+    if backend.startswith("parakeet"):
+        return supervisor.PARAKEET_SERVER_PROCESS_NAME
+    return supervisor.LOCAL_SERVER_PROCESS_NAME
+
+
+def _launch_backend_for_test(
+    backend: str,
+    plan: supervisor.LocalServerLaunchPlan | supervisor.ParakeetServerLaunchPlan,
+    reservation: _FakeReservation,
+    cancel_event: threading.Event,
+) -> supervisor.ProviderLaunchOutcome:
+    if backend.startswith("parakeet"):
+        return supervisor.start_parakeet_server(
+            plan,
+            reservation,
+            cancel_event,
+        )
+    return supervisor.start_local_server(plan, reservation, cancel_event)
+
+
+@pytest.mark.parametrize(
+    "backend",
+    ["vulkan", "cuda", "mlx", "parakeet-cpu", "parakeet-vulkan"],
+)
+@pytest.mark.parametrize("cancel_point", ["before-probe", "ready", "wait"])
+def test_start_worker_cancellation_cleans_child_at_warmup_boundaries(
+    monkeypatch,
+    backend: str,
+    cancel_point: str,
+) -> None:
+    from solstone.think.providers import local_server, local_vulkan, parakeet_server
+
+    plan = _plan_for_backend(backend)
+    cancel_event = threading.Event()
+    probe_entered = threading.Event()
+    managed = _FakeManaged(_process_name_for_backend(backend))
+    service_name = managed.name
+    ports: list[tuple[str, int]] = []
+    placements: list[str] = []
+
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(
+        supervisor,
+        "write_service_port",
+        lambda service, port: ports.append((service, port)),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "write_local_context_window",
+        lambda _tokens: None,
+    )
+    monkeypatch.setattr(
+        local_server,
+        "fetch_props",
+        lambda _port: pytest.fail("cancelled launch must not fetch props"),
+    )
+    monkeypatch.setattr(
+        local_vulkan,
+        "device_local_used_mib",
+        lambda _index: pytest.fail("cancelled launch must not inspect post-ready VRAM"),
+    )
+    monkeypatch.setattr(
+        parakeet_server,
+        "write_parakeet_placement",
+        lambda placement: placements.append(placement),
+    )
+
+    def launch_process(name, _cmd, **_kwargs):
+        supervisor._SERVICE_STATE[name] = {
+            "restart": True,
+            "shutdown_timeout": 15,
+        }
+        if cancel_point == "before-probe":
+            cancel_event.set()
+        return managed
+
+    def local_probe(_port):
+        probe_entered.set()
+        if cancel_point == "ready":
+            cancel_event.set()
+            return local_server.STATE_READY, None
+        return local_server.STATE_STARTING, None
+
+    def parakeet_probe(_port):
+        probe_entered.set()
+        if cancel_point == "ready":
+            cancel_event.set()
+            return parakeet_server.STATE_READY, None
+        return parakeet_server.STATE_FAILED, "warming"
+
+    monkeypatch.setattr(supervisor, "_launch_process", launch_process)
+    monkeypatch.setattr(local_server, "_probe_health", local_probe)
+    monkeypatch.setattr(parakeet_server, "_probe_health", parakeet_probe)
+
+    outcome_box: dict[str, supervisor.ProviderLaunchOutcome] = {}
+
+    def run_launch() -> None:
+        outcome_box["outcome"] = _launch_backend_for_test(
+            backend,
+            plan,
+            _FakeReservation(port=45678),
+            cancel_event,
+        )
+
+    if cancel_point == "wait":
+        thread = threading.Thread(target=run_launch)
+        thread.start()
+        assert probe_entered.wait(timeout=1.0)
+        cancel_event.set()
+        thread.join(timeout=1.0)
+        assert not thread.is_alive()
+    else:
+        run_launch()
+
+    outcome = outcome_box["outcome"]
+    assert outcome.status == "launch-failed"
+    assert outcome.detail["cancelled"] is True
+    assert outcome.managed is None
+    managed.terminate.assert_called_once()
+    managed.cleanup.assert_called_once_with()
+    assert service_name not in supervisor._SERVICE_STATE
+    assert ports == []
+    assert placements == []
+    if cancel_point == "before-probe":
+        assert not probe_entered.is_set()
+
+
+def test_cancelled_ready_result_is_cleaned_without_port_publication(monkeypatch):
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "starting"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    fence = supervisor._provider_fence(state, 1)
+    managed = _FakeManaged()
+    cancel_event = threading.Event()
+    cancel_event.set()
+    ports: list[tuple[str, int]] = []
+    state.start_fence = fence
+    state.start_cancel_event = cancel_event
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={"port": 45678},
+            managed=managed,
+        )
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "write_service_port",
+        lambda service, port: ports.append((service, port)),
+    )
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert ports == []
+    managed.terminate.assert_called_once()
+    managed.cleanup.assert_called_once_with()
+    assert state.latest_phase == "backoff"
+
+
 def test_observation_raced_when_target_fingerprint_changes_between_reads(
     monkeypatch,
 ) -> None:
@@ -937,6 +1217,77 @@ def test_observation_raced_when_device_changes_during_plan_construction(
 
     assert observation.phase == "observing"
     assert observation.reason_code == "observation-raced"
+
+
+def test_discarded_truth_result_reobserves_immediately_after_retry_fence_change(
+    monkeypatch,
+) -> None:
+    plan = _local_plan()
+    now = 100.0
+    truth_submits = 0
+    first_truth: concurrent.futures.Future = concurrent.futures.Future()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "ready"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.next_truth_at = 0.0
+
+    class _RaceExecutor:
+        def submit(self, fn, *args, **kwargs):
+            nonlocal truth_submits
+            if fn is supervisor._observe_provider_truth:
+                truth_submits += 1
+                if truth_submits == 1:
+                    return first_truth
+                return _future_with(
+                    supervisor.ProviderTruthObservation(
+                        provider="local",
+                        phase="not-desired",
+                        reason_code="provider-not-needed",
+                        detail={},
+                    )
+                )
+            assert fn is supervisor._provider_start_worker
+            return _future_with(
+                supervisor.ProviderLaunchOutcome(
+                    status="launch-failed",
+                    reason_code="launch-failed",
+                    detail={},
+                )
+            )
+
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _RaceExecutor())
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now)
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert truth_submits == 1
+    assert state.truth_future is first_truth
+    assert state.next_truth_at == (
+        now + supervisor.PROVIDER_TRUTH_OBSERVATION_INTERVAL_SECONDS
+    )
+
+    state.latest_phase = "backoff"
+    state.retry.next_at = now
+    supervisor._submit_provider_start_if_needed(state, [])
+    assert state.retry.attempt_count == 1
+    first_truth.set_result(
+        supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="not-desired",
+            reason_code="provider-not-needed",
+            detail={"active_provider": "cloud"},
+        )
+    )
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert truth_submits == 2
+    assert state.truth_future is not first_truth
+    assert state.next_truth_at == (
+        now + supervisor.PROVIDER_TRUTH_OBSERVATION_INTERVAL_SECONDS
+    )
 
 
 @pytest.mark.parametrize(
@@ -1056,7 +1407,7 @@ def test_continuous_reobservation_converges_from_steady_phases(
     monkeypatch.setattr(
         supervisor,
         "_provider_start_worker",
-        lambda provider, plan_arg, fence: (
+        lambda provider, plan_arg, fence, _cancel_event: (
             starts.append(fence.attempt)
             or supervisor.ProviderLaunchOutcome(
                 status="launch-failed",
@@ -1094,7 +1445,7 @@ def test_retry_cadence_exhausts_after_six_attempts(monkeypatch):
             boot_required=True,
         )
 
-    def start_worker(provider, plan_arg, fence):
+    def start_worker(provider, plan_arg, fence, _cancel_event):
         assert provider == "local"
         assert plan_arg is plan
         launches.append(fence.attempt)
@@ -1148,7 +1499,7 @@ def test_startup_gate_releases_on_window_and_reconciler_keeps_retrying(monkeypat
     monkeypatch.setattr(
         supervisor,
         "_provider_start_worker",
-        lambda provider, plan_arg, fence: (
+        lambda provider, plan_arg, fence, _cancel_event: (
             launches.append(fence.attempt)
             or supervisor.ProviderLaunchOutcome(
                 status="launch-failed",
@@ -1342,7 +1693,7 @@ def test_provider_reconcilers_keep_local_and_parakeet_state_independent(
     parakeet.retry.desired_fingerprint = parakeet_plan.desired_fingerprint_sha256
     parakeet.next_truth_at = 9999.0
 
-    def start_worker(provider, _plan_arg, fence):
+    def start_worker(provider, _plan_arg, fence, _cancel_event):
         launches.append((provider, fence.attempt))
         return supervisor.ProviderLaunchOutcome(
             status="launch-failed",

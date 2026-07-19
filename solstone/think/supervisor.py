@@ -1281,6 +1281,7 @@ class ProviderRuntimeState:
     truth_fence: ProviderFence | None = None
     start_future: concurrent.futures.Future | None = None
     start_fence: ProviderFence | None = None
+    start_cancel_event: threading.Event | None = None
     stop_cleanup_future: concurrent.futures.Future | None = None
     stop_cleanup_fence: ProviderFence | None = None
     probe_future: concurrent.futures.Future | None = None
@@ -1975,9 +1976,49 @@ def _terminate_cleanup_handle(
     managed.cleanup()
 
 
+def _launch_cancel_requested(cancel_event: threading.Event | None) -> bool:
+    return cancel_event is not None and cancel_event.is_set()
+
+
+def _wait_provider_launch_poll(
+    cancel_event: threading.Event | None,
+    interval_s: float,
+) -> bool:
+    if cancel_event is None:
+        time.sleep(interval_s)
+        return False
+    return cancel_event.wait(interval_s)
+
+
+def _cancelled_launch_outcome(
+    provider: ProviderName,
+    *,
+    backend: str,
+    port: int,
+    managed: RunnerManagedProcess | None,
+    reason: str,
+) -> ProviderLaunchOutcome:
+    if managed is not None:
+        if provider == "parakeet":
+            _cleanup_parakeet_launch(managed, reason)
+        else:
+            _terminate_cleanup_handle(managed, reason=reason)
+    return _outcome(
+        "launch-failed",
+        "launch-failed",
+        {
+            "backend": backend,
+            "port": port,
+            "cancelled": True,
+            "cancel_reason": reason,
+        },
+    )
+
+
 def _start_mlx_local_server(
     plan: LocalServerLaunchPlan,
     reservation: ReservedPort | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ProviderLaunchOutcome:
     """Launch the supervisor-owned mlx-vlm server from a captured plan."""
     from solstone.think.providers import local_server
@@ -2003,6 +2044,15 @@ def _start_mlx_local_server(
         raise RuntimeError("Local server may not bind 0.0.0.0.")
 
     logging.info("Starting mlx-vlm server for %s from %s", plan.model_id, runtime_dir)
+    if _launch_cancel_requested(cancel_event):
+        owned_reservation.close()
+        return _cancelled_launch_outcome(
+            "local",
+            backend="mlx",
+            port=port,
+            managed=None,
+            reason="provider launch cancelled before spawn",
+        )
     try:
         owned_reservation.release_for_spawn()
         managed = _launch_process(MLX_SERVER_PROCESS_NAME, cmd, restart=True)
@@ -2018,6 +2068,14 @@ def _start_mlx_local_server(
 
     deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
     while time.monotonic() < deadline:
+        if _launch_cancel_requested(cancel_event):
+            return _cancelled_launch_outcome(
+                "local",
+                backend="mlx",
+                port=port,
+                managed=managed,
+                reason="provider launch cancelled during warmup",
+            )
         if managed.process.poll() is not None:
             logging.warning(
                 "mlx-vlm server exited during warmup with code %s",
@@ -2033,8 +2091,24 @@ def _start_mlx_local_server(
                 },
                 managed,
             )
+        if _launch_cancel_requested(cancel_event):
+            return _cancelled_launch_outcome(
+                "local",
+                backend="mlx",
+                port=port,
+                managed=managed,
+                reason="provider launch cancelled before health probe",
+            )
         state, error = local_server._probe_health(port)
         if state == local_server.STATE_READY:
+            if _launch_cancel_requested(cancel_event):
+                return _cancelled_launch_outcome(
+                    "local",
+                    backend="mlx",
+                    port=port,
+                    managed=managed,
+                    reason="provider launch cancelled before ready acceptance",
+                )
             logging.info("mlx-vlm server ready on port %s", port)
             return _outcome(
                 "ready",
@@ -2044,8 +2118,25 @@ def _start_mlx_local_server(
             )
         if state == local_server.STATE_FAILED and error:
             logging.debug("mlx-vlm server health probe failed during warmup: %s", error)
-        time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
+        if _wait_provider_launch_poll(
+            cancel_event, LOCAL_SERVER_HEALTH_POLL_INTERVAL_S
+        ):
+            return _cancelled_launch_outcome(
+                "local",
+                backend="mlx",
+                port=port,
+                managed=managed,
+                reason="provider launch cancelled during warmup wait",
+            )
 
+    if _launch_cancel_requested(cancel_event):
+        return _cancelled_launch_outcome(
+            "local",
+            backend="mlx",
+            port=port,
+            managed=managed,
+            reason="provider launch cancelled before timeout",
+        )
     logging.warning(
         "mlx-vlm server did not become ready within %.0fs",
         LOCAL_SERVER_READY_TIMEOUT_S,
@@ -3022,6 +3113,7 @@ def _build_local_llama_cmd(plan: LocalServerLaunchPlan, port: int) -> list[str]:
 def _start_llama_local_server(
     plan: LocalServerLaunchPlan,
     reservation: ReservedPort | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ProviderLaunchOutcome:
     """Launch a CUDA/Vulkan llama-server from a captured plan."""
     from solstone.think.providers import local_server, local_vulkan
@@ -3046,6 +3138,15 @@ def _start_llama_local_server(
             _required_plan_int(plan.parallel_slots, "parallel_slots"),
             _required_plan_int(plan.prompt_cache_mib, "prompt_cache_mib"),
         )
+        if _launch_cancel_requested(cancel_event):
+            owned_reservation.close()
+            return _cancelled_launch_outcome(
+                "local",
+                backend=plan.backend,
+                port=port,
+                managed=None,
+                reason="provider launch cancelled before spawn",
+            )
         owned_reservation.release_for_spawn()
         managed = _launch_process(
             LOCAL_SERVER_PROCESS_NAME,
@@ -3065,6 +3166,14 @@ def _start_llama_local_server(
 
     deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
     while time.monotonic() < deadline:
+        if _launch_cancel_requested(cancel_event):
+            return _cancelled_launch_outcome(
+                "local",
+                backend=plan.backend,
+                port=port,
+                managed=managed,
+                reason="provider launch cancelled during warmup",
+            )
         if managed.process.poll() is not None:
             logging.warning(
                 "%s local server exited during warmup with code %s",
@@ -3081,8 +3190,24 @@ def _start_llama_local_server(
                 },
                 managed,
             )
+        if _launch_cancel_requested(cancel_event):
+            return _cancelled_launch_outcome(
+                "local",
+                backend=plan.backend,
+                port=port,
+                managed=managed,
+                reason="provider launch cancelled before health probe",
+            )
         state, error = local_server._probe_health(port)
         if state == local_server.STATE_READY:
+            if _launch_cancel_requested(cancel_event):
+                return _cancelled_launch_outcome(
+                    "local",
+                    backend=plan.backend,
+                    port=port,
+                    managed=managed,
+                    reason="provider launch cancelled before ready acceptance",
+                )
             if plan.backend == "vulkan" and plan.gpu_index is not None:
                 vram_after_mib = local_vulkan.device_local_used_mib(plan.gpu_index)
                 if plan.vram_before_mib is not None and vram_after_mib is not None:
@@ -3106,8 +3231,25 @@ def _start_llama_local_server(
             )
         if state == local_server.STATE_FAILED and error:
             logging.debug("llama-server health probe failed during warmup: %s", error)
-        time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
+        if _wait_provider_launch_poll(
+            cancel_event, LOCAL_SERVER_HEALTH_POLL_INTERVAL_S
+        ):
+            return _cancelled_launch_outcome(
+                "local",
+                backend=plan.backend,
+                port=port,
+                managed=managed,
+                reason="provider launch cancelled during warmup wait",
+            )
 
+    if _launch_cancel_requested(cancel_event):
+        return _cancelled_launch_outcome(
+            "local",
+            backend=plan.backend,
+            port=port,
+            managed=managed,
+            reason="provider launch cancelled before timeout",
+        )
     logging.warning(
         "llama-server did not become ready within %.0fs",
         LOCAL_SERVER_READY_TIMEOUT_S,
@@ -3127,30 +3269,33 @@ def _start_llama_local_server(
 def _start_cuda_local_server(
     plan: LocalServerLaunchPlan,
     reservation: ReservedPort | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ProviderLaunchOutcome:
     """Launch the CUDA llama-server path from a captured plan."""
     if plan.backend != "cuda":
         raise ValueError(f"CUDA launch requires cuda plan, got {plan.backend!r}")
-    return _start_llama_local_server(plan, reservation)
+    return _start_llama_local_server(plan, reservation, cancel_event)
 
 
 def start_local_server(
     plan: LocalServerLaunchPlan,
     reservation: ReservedPort | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ProviderLaunchOutcome:
     """Launch the supervisor-owned bundled local runtime from a captured plan."""
     if plan.backend == "mlx":
-        return _start_mlx_local_server(plan, reservation)
+        return _start_mlx_local_server(plan, reservation, cancel_event)
     if plan.backend == "cuda":
-        return _start_cuda_local_server(plan, reservation)
+        return _start_cuda_local_server(plan, reservation, cancel_event)
     if plan.backend == "vulkan":
-        return _start_llama_local_server(plan, reservation)
+        return _start_llama_local_server(plan, reservation, cancel_event)
     raise ValueError(f"unknown local launch backend {plan.backend!r}")
 
 
 def _launch_and_warm_parakeet(
     plan: ParakeetServerLaunchPlan,
     reservation: ReservedPort | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ProviderLaunchOutcome:
     """Launch one parakeet-server backend from a captured plan and warm it."""
     from solstone.think.providers import parakeet_server
@@ -3172,6 +3317,15 @@ def _launch_and_warm_parakeet(
     )
     try:
         cmd = _build_parakeet_cmd(plan.binary_path, plan.model_path, port, plan.threads)
+        if _launch_cancel_requested(cancel_event):
+            owned_reservation.close()
+            return _cancelled_launch_outcome(
+                "parakeet",
+                backend=plan.binary_backend,
+                port=port,
+                managed=None,
+                reason="provider launch cancelled before spawn",
+            )
         owned_reservation.release_for_spawn()
         managed = _launch_process(
             PARAKEET_SERVER_PROCESS_NAME, cmd, restart=True, env=env
@@ -3187,6 +3341,14 @@ def _launch_and_warm_parakeet(
 
     deadline = time.monotonic() + PARAKEET_SERVER_READY_TIMEOUT_S
     while time.monotonic() < deadline:
+        if _launch_cancel_requested(cancel_event):
+            return _cancelled_launch_outcome(
+                "parakeet",
+                backend=plan.binary_backend,
+                port=port,
+                managed=managed,
+                reason="provider launch cancelled during warmup",
+            )
         if managed.process.poll() is not None:
             logging.warning(
                 "parakeet-server %s exited during warmup with code %s",
@@ -3203,8 +3365,24 @@ def _launch_and_warm_parakeet(
                 },
                 managed,
             )
+        if _launch_cancel_requested(cancel_event):
+            return _cancelled_launch_outcome(
+                "parakeet",
+                backend=plan.binary_backend,
+                port=port,
+                managed=managed,
+                reason="provider launch cancelled before health probe",
+            )
         state, error = parakeet_server._probe_health(port)
         if state == parakeet_server.STATE_READY:
+            if _launch_cancel_requested(cancel_event):
+                return _cancelled_launch_outcome(
+                    "parakeet",
+                    backend=plan.binary_backend,
+                    port=port,
+                    managed=managed,
+                    reason="provider launch cancelled before ready acceptance",
+                )
             logging.info("parakeet-server ready on port %s", port)
             parakeet_server.write_parakeet_placement(plan.placement)
             return _outcome(
@@ -3221,7 +3399,24 @@ def _launch_and_warm_parakeet(
             logging.debug(
                 "parakeet-server health probe failed during warmup: %s", error
             )
-        time.sleep(PARAKEET_SERVER_HEALTH_POLL_INTERVAL_S)
+        if _wait_provider_launch_poll(
+            cancel_event, PARAKEET_SERVER_HEALTH_POLL_INTERVAL_S
+        ):
+            return _cancelled_launch_outcome(
+                "parakeet",
+                backend=plan.binary_backend,
+                port=port,
+                managed=managed,
+                reason="provider launch cancelled during warmup wait",
+            )
+    if _launch_cancel_requested(cancel_event):
+        return _cancelled_launch_outcome(
+            "parakeet",
+            backend=plan.binary_backend,
+            port=port,
+            managed=managed,
+            reason="provider launch cancelled before timeout",
+        )
     logging.warning(
         "parakeet-server %s did not become ready within %.0fs",
         plan.binary_backend,
@@ -3247,9 +3442,10 @@ def _cleanup_parakeet_launch(managed: RunnerManagedProcess, reason: str) -> None
 def start_parakeet_server(
     plan: ParakeetServerLaunchPlan,
     reservation: ReservedPort | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> ProviderLaunchOutcome:
     """Launch supervisor-owned parakeet-server from a captured plan."""
-    return _launch_and_warm_parakeet(plan, reservation)
+    return _launch_and_warm_parakeet(plan, reservation, cancel_event)
 
 
 def start_callosum_in_process() -> CallosumServer:
@@ -3516,6 +3712,18 @@ _PROVIDER_STARTUP_TERMINAL_PHASES: frozenset[RuntimePhase] = frozenset(
         "state-unavailable",
     }
 )
+_PROVIDER_START_CANCEL_PHASES: frozenset[RuntimePhase] = frozenset(
+    {
+        "not-desired",
+        "artifact-not-ready",
+        "host-blocked",
+        "ready",
+        "stopped",
+        "failed",
+        "state-corrupt",
+        "state-unavailable",
+    }
+)
 _PROVIDER_PROCESS_NAMES: dict[ProviderName, frozenset[str]] = {
     "local": frozenset({LOCAL_SERVER_PROCESS_NAME, MLX_SERVER_PROCESS_NAME}),
     "parakeet": frozenset({PARAKEET_SERVER_PROCESS_NAME}),
@@ -3688,6 +3896,33 @@ def _cleanup_late_provider_result(outcome: ProviderLaunchOutcome) -> None:
     )
 
 
+def _signal_provider_start_cancel(
+    state: ProviderRuntimeState,
+    *,
+    reason: str,
+) -> None:
+    event = state.start_cancel_event
+    if event is None or event.is_set():
+        return
+    fence = state.start_fence
+    logger.info(
+        "cancelling %s provider start%s: %s",
+        state.provider,
+        (
+            f" generation={fence.generation} attempt={fence.attempt}"
+            if fence is not None
+            else ""
+        ),
+        reason,
+    )
+    event.set()
+
+
+def _cancel_all_provider_starts(reason: str) -> None:
+    for state in _provider_runtime_states.values():
+        _signal_provider_start_cancel(state, reason=reason)
+
+
 def _cleanup_provider_outcome_handle(
     state: ProviderRuntimeState,
     fence: ProviderFence | None,
@@ -3807,6 +4042,7 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
             detail={"error": str(exc)},
         )
     if fence is not None and not _provider_fence_matches(state, fence):
+        state.next_truth_at = 0.0
         _write_provider_runtime(
             state,
             phase=state.latest_phase,
@@ -3821,7 +4057,21 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
             state.provider,
         )
         return True
-    if observation.desired_fingerprint_sha256 != state.desired_fingerprint:
+    fingerprint_changed = (
+        observation.desired_fingerprint_sha256 != state.desired_fingerprint
+    )
+    if state.start_future is not None:
+        if fingerprint_changed:
+            _signal_provider_start_cancel(
+                state,
+                reason="provider desired fingerprint changed",
+            )
+        elif observation.phase in _PROVIDER_START_CANCEL_PHASES:
+            _signal_provider_start_cancel(
+                state,
+                reason=f"provider became {observation.phase}",
+            )
+    if fingerprint_changed:
         state.generation += 1
         state.desired_fingerprint = observation.desired_fingerprint_sha256
         state.retry = ProviderRetryState(
@@ -3849,6 +4099,7 @@ def _provider_start_worker(
     provider: ProviderName,
     plan: LocalServerLaunchPlan | ParakeetServerLaunchPlan,
     fence: ProviderFence,
+    cancel_event: threading.Event,
 ) -> ProviderLaunchOutcome:
     reservation = ReservedPort.reserve()
     logger.debug(
@@ -3859,8 +4110,16 @@ def _provider_start_worker(
         fence.attempt,
     )
     if provider == "local":
-        return start_local_server(cast(LocalServerLaunchPlan, plan), reservation)
-    return start_parakeet_server(cast(ParakeetServerLaunchPlan, plan), reservation)
+        return start_local_server(
+            cast(LocalServerLaunchPlan, plan),
+            reservation,
+            cancel_event,
+        )
+    return start_parakeet_server(
+        cast(ParakeetServerLaunchPlan, plan),
+        reservation,
+        cancel_event,
+    )
 
 
 def _submit_provider_start_if_needed(
@@ -3898,7 +4157,9 @@ def _submit_provider_start_if_needed(
     attempt = state.retry.attempt_count + 1
     state.retry.attempt_count = attempt
     fence = _provider_fence(state, attempt)
+    cancel_event = threading.Event()
     state.start_fence = fence
+    state.start_cancel_event = cancel_event
     state.latest_phase = "starting"
     _write_provider_runtime(
         state,
@@ -3912,6 +4173,7 @@ def _submit_provider_start_if_needed(
         state.provider,
         state.latest_plan,
         fence,
+        cancel_event,
     )
 
 
@@ -3922,8 +4184,10 @@ def _handle_provider_start_result(
     if future is None or not future.done():
         return False
     fence = state.start_fence
+    cancel_event = state.start_cancel_event
     state.start_future = None
     state.start_fence = None
+    state.start_cancel_event = None
     try:
         outcome = future.result()
     except Exception as exc:
@@ -3942,6 +4206,27 @@ def _handle_provider_start_result(
             detail={"slot": "start", "fence": fence.__dict__},
         )
         return True
+    if (
+        cancel_event is not None
+        and cancel_event.is_set()
+        and outcome.status == "ready"
+        and outcome.managed is not None
+    ):
+        _cleanup_provider_outcome_handle(
+            state,
+            fence,
+            outcome,
+            reason="provider launch cancelled before ready publication",
+        )
+        outcome = _outcome(
+            "launch-failed",
+            "launch-failed",
+            {
+                "last_outcome": outcome.status,
+                "last_detail": outcome.detail,
+                "cancelled": True,
+            },
+        )
 
     if outcome.status == "ready" and outcome.managed is not None:
         port = outcome.detail.get("port")
@@ -4736,7 +5021,8 @@ async def supervise(
             # Sleep 1 second before next iteration (responsive to shutdown)
             await asyncio.sleep(1)
     finally:
-        pass  # Callosum cleanup happens in main()
+        _cancel_all_provider_starts("supervisor shutdown")
+        # Callosum cleanup happens in main().
 
 
 def parse_args() -> argparse.ArgumentParser:
@@ -4795,6 +5081,7 @@ def handle_shutdown(signum, frame):
     if not shutdown_requested:
         shutdown_requested = True
         logger.info("shutdown requested via signal %d", signum)
+        _cancel_all_provider_starts("supervisor shutdown signal")
         live = [managed for managed in _managed_procs if managed.is_running()]
         if live:
             logger.info("shutdown: signaling %d managed child(ren)", len(live))
@@ -5168,6 +5455,7 @@ def main() -> None:
     except KeyboardInterrupt:
         logging.info("Caught KeyboardInterrupt, shutting down...")
     finally:
+        _cancel_all_provider_starts("supervisor shutdown")
         try:
             clear_ready()
         except Exception as exc:
