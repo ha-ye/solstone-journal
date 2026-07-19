@@ -14,7 +14,7 @@ import json
 import sys
 from typing import Any
 
-from solstone.think.providers import local_install, parakeet_install
+from solstone.think.providers import local_install, mlx_install, parakeet_install
 from solstone.think.providers.fit_report import FitReport
 from solstone.think.providers.install_lease import acquire_install_lease
 from solstone.think.providers.install_state import (
@@ -86,6 +86,49 @@ def _status_exit_code(status: dict[str, Any]) -> int:
     return 1 if status.get("install_state") == "failed" else 0
 
 
+def _is_mlx_backend() -> bool:
+    return mlx_install.is_mlx_platform_supported()
+
+
+def _install_mlx_local() -> int:
+    spec = mlx_install.resolve_model_spec()
+    readiness = mlx_install.inspect_readiness(spec.name)
+    if readiness.ready:
+        print("local already installed", file=sys.stderr)
+        print(json.dumps(read_install_status(name="local"), indent=2))
+        return 0
+    fingerprint = mlx_install.target_fingerprint(spec.name)
+    target_sha = _target_sha(fingerprint)
+    lease = acquire_install_lease("local")
+    if lease is None:
+        return _observe_same_target("local", target_sha)
+    try:
+        from solstone.think.providers import fit_report
+
+        _render_fit_report(fit_report.build_mlx_fit_report(spec.name))
+        attempt_status = begin_or_replace_install_attempt(
+            "local",
+            fingerprint,
+            initial_state="resolving",
+            owner={"entry": "install_provider"},
+        )
+        status = mlx_install.install_local_mlx(
+            spec.name,
+            lease=lease,
+            attempt_status=attempt_status,
+        )
+    except (
+        mlx_install.MLXInstallUnavailableError,
+        mlx_install.MLXVerificationError,
+    ) as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    finally:
+        lease.release()
+    print(json.dumps(status, indent=2))
+    return _status_exit_code(status)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         prog="journal install-provider",
@@ -136,6 +179,9 @@ def main() -> int:
             lease.release()
         print(json.dumps(status, indent=2))
         return _status_exit_code(status)
+
+    if _is_mlx_backend():
+        return _install_mlx_local()
 
     readiness = local_install.inspect_readiness()
     if readiness.ready:

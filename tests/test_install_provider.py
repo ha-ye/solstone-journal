@@ -86,6 +86,11 @@ def _patch_lease_and_attempt(
     return lease
 
 
+@pytest.fixture(autouse=True)
+def local_backend_is_llama(monkeypatch):
+    monkeypatch.setattr(install_provider, "_is_mlx_backend", lambda: False)
+
+
 def test_install_provider_local_prints_install_status(monkeypatch, capsys):
     calls = []
     parakeet_calls = []
@@ -117,6 +122,53 @@ def test_install_provider_local_prints_install_status(monkeypatch, capsys):
 
     assert calls == [True]
     assert parakeet_calls == []
+    assert lease.released is True
+    assert json.loads(capsys.readouterr().out) == {
+        "provider": "local",
+        "install_state": "installed",
+    }
+
+
+def test_install_provider_local_uses_mlx_on_apple_silicon(monkeypatch, capsys):
+    calls = []
+    fingerprint = {
+        "provider": "local",
+        "runtime": "mlx",
+        "model_pin": {"model_id": "qwen3.5:9b"},
+    }
+
+    def install_local_mlx(model_id, **_kwargs):
+        calls.append(model_id)
+        return {"provider": "local", "install_state": "installed"}
+
+    monkeypatch.setattr(sys, "argv", ["journal install-provider", "local"])
+    monkeypatch.setattr(install_provider, "_is_mlx_backend", lambda: True)
+    monkeypatch.setattr(
+        install_provider.mlx_install,
+        "inspect_readiness",
+        lambda _model: _readiness("local", ready=False),
+    )
+    monkeypatch.setattr(
+        install_provider.mlx_install,
+        "target_fingerprint",
+        lambda _model: fingerprint,
+    )
+    lease = _patch_lease_and_attempt(monkeypatch, "local")
+    monkeypatch.setattr(fit_report, "build_mlx_fit_report", lambda _model: _fit("ok"))
+    monkeypatch.setattr(
+        install_provider.mlx_install,
+        "install_local_mlx",
+        install_local_mlx,
+    )
+    monkeypatch.setattr(
+        install_provider.local_install,
+        "install_local",
+        lambda **_kwargs: pytest.fail("MLX host must not use llama installer"),
+    )
+
+    assert install_provider.main() == 0
+
+    assert calls == ["qwen3.5:9b"]
     assert lease.released is True
     assert json.loads(capsys.readouterr().out) == {
         "provider": "local",
@@ -165,6 +217,11 @@ def test_install_provider_parakeet_prints_disclosure_and_status(monkeypatch, cap
         "inspect_readiness",
         lambda: _readiness("parakeet", ready=False),
     )
+    monkeypatch.setattr(
+        install_provider.parakeet_install,
+        "target_fingerprint",
+        lambda: {"provider": "parakeet"},
+    )
     lease = _patch_lease_and_attempt(monkeypatch, "parakeet")
     monkeypatch.setattr(fit_report, "build_parakeet_fit_report", lambda: _fit("ok"))
     monkeypatch.setattr(
@@ -202,6 +259,11 @@ def test_install_provider_parakeet_terminal_failed_returns_nonzero(monkeypatch, 
         install_provider.parakeet_install,
         "inspect_readiness",
         lambda: _readiness("parakeet", ready=False),
+    )
+    monkeypatch.setattr(
+        install_provider.parakeet_install,
+        "target_fingerprint",
+        lambda: {"provider": "parakeet"},
     )
     lease = _patch_lease_and_attempt(monkeypatch, "parakeet")
     monkeypatch.setattr(fit_report, "build_parakeet_fit_report", lambda: _fit("ok"))
