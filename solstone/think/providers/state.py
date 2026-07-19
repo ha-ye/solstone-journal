@@ -308,8 +308,8 @@ def local_status_dict() -> dict:
         from solstone.think.providers import local_server, mlx_install
 
         readiness = mlx_install.inspect_readiness()
-        runtime_available = bool(readiness["package_available"])
-        model_installed = bool(readiness["model_installed"])
+        runtime_available = bool(readiness.host["package_available"])
+        model_installed = bool(readiness.artifacts["model_installed"])
         configured = runtime_available and model_installed
 
         if not selected:
@@ -325,7 +325,9 @@ def local_status_dict() -> dict:
         server_healthy = local_server.is_healthy()
         if not runtime_available:
             issues.append("runtime_missing")
-        if not model_installed:
+        if readiness.status == "proof-unavailable":
+            issues.append(readiness.reason_code)
+        elif not model_installed:
             issues.append("model_missing")
         if configured and not server_healthy:
             issues.append("server_unhealthy")
@@ -342,8 +344,8 @@ def local_status_dict() -> dict:
     from solstone.think.providers import local_install, local_server
 
     readiness = local_install.inspect_readiness()
-    binary_installed = bool(readiness["binary_installed"])
-    model_installed = bool(readiness["model_installed"])
+    binary_installed = bool(readiness.artifacts["binary_installed"])
+    model_installed = bool(readiness.artifacts["model_installed"])
     configured = binary_installed and model_installed
 
     if not selected:
@@ -357,14 +359,18 @@ def local_status_dict() -> dict:
 
     issues: list[str] = []
     server_healthy = local_server.is_healthy()
-    if not readiness.get("gpu_available", True):
+    if not readiness.host.get("gpu_available", True):
         issues.append("gpu_unavailable")
-    if not binary_installed:
+    if readiness.status == "proof-unavailable":
+        issues.append(readiness.reason_code)
+    elif readiness.proof["binary"]["status"] == "missing-or-mismatched":
         issues.append("binary_missing")
-    if not model_installed:
+    if readiness.proof["model"]["status"] == "missing-or-mismatched":
         issues.append("model_missing")
     if configured and not server_healthy:
-        runnable, detail = local_install.probe_binary_runnable(readiness["binary_path"])
+        runnable, detail = local_install.probe_binary_runnable(
+            readiness.artifacts["binary_path"]
+        )
         if runnable:
             issues.append("server_unhealthy")
         else:
@@ -500,23 +506,23 @@ def _local_readiness_for_provider(
         from solstone.think.providers.install_state import IN_FLIGHT_STATES
 
         readiness = mlx_install.inspect_readiness()
-        model_id = str(readiness["model_id"])
+        model_id = str(readiness.target["model_id"])
 
-        if readiness["install_state"] in IN_FLIGHT_STATES:
+        if readiness.install["install_state"] in IN_FLIGHT_STATES:
             return _state(
                 provider,
                 interface,
                 "blocked",
                 "local_model_installing",
                 model=model_id,
-                message=str(readiness["install_state"]),
+                message=str(readiness.install["install_state"]),
                 source="local_install",
             )
 
         if not (
-            readiness["platform_supported"]
-            and readiness["package_available"]
-            and readiness["model_installed"]
+            readiness.host["platform_supported"]
+            and readiness.host["package_available"]
+            and readiness.artifacts["model_installed"]
         ):
             return _state(
                 provider,
@@ -524,7 +530,7 @@ def _local_readiness_for_provider(
                 "blocked",
                 "local_model_missing",
                 model=model_id,
-                message=str(readiness.get("install_error") or "") or None,
+                message=str(readiness.install.get("install_error") or "") or None,
                 source="local_install",
             )
 
@@ -562,20 +568,20 @@ def _local_readiness_for_provider(
 
     selected_model = model or LOCAL_MODEL
     readiness = local_install.inspect_readiness(selected_model)
-    model_id = str(readiness.get("model_id") or selected_model)
+    model_id = str(readiness.target.get("model_id") or selected_model)
 
-    if readiness["install_state"] in IN_FLIGHT_STATES:
+    if readiness.install["install_state"] in IN_FLIGHT_STATES:
         return _state(
             provider,
             interface,
             "blocked",
             "local_model_installing",
             model=model_id,
-            message=str(readiness["install_state"]),
+            message=str(readiness.install["install_state"]),
             source="local_install",
         )
 
-    if not readiness.get("gpu_probe_ok", True):
+    if not readiness.host.get("gpu_probe_ok", True):
         return _state(
             provider,
             interface,
@@ -585,7 +591,7 @@ def _local_readiness_for_provider(
             source="local_install",
         )
 
-    if not readiness.get("gpu_available", True):
+    if not readiness.host.get("gpu_available", True):
         return _state(
             provider,
             interface,
@@ -595,14 +601,17 @@ def _local_readiness_for_provider(
             source="local_install",
         )
 
-    if not readiness["binary_installed"] or not readiness["model_installed"]:
+    if (
+        not readiness.artifacts["binary_installed"]
+        or not readiness.artifacts["model_installed"]
+    ):
         return _state(
             provider,
             interface,
             "blocked",
             "local_model_missing",
             model=model_id,
-            message=str(readiness.get("install_error") or "") or None,
+            message=str(readiness.install.get("install_error") or "") or None,
             source="local_install",
         )
 

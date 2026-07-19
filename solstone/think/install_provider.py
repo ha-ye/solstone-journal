@@ -15,6 +15,15 @@ import sys
 
 from solstone.think.providers import local_install, parakeet_install
 from solstone.think.providers.fit_report import FitReport
+from solstone.think.providers.install_lease import acquire_install_lease
+from solstone.think.providers.install_state import (
+    IN_FLIGHT_STATES,
+    begin_or_replace_install_attempt,
+    canonical_fingerprint,
+    fingerprint_sha256,
+    observe_install_attempt,
+    read_install_status,
+)
 from solstone.think.utils import require_solstone
 
 PARAKEET_DOWNLOAD_DISCLOSURE = (
@@ -28,6 +37,48 @@ def _render_fit_report(report: FitReport) -> None:
     from solstone.think.providers import fit_report
 
     print(fit_report.render_fit_report(report), file=sys.stderr)
+
+
+def _target_sha(fingerprint: dict) -> str:
+    return fingerprint_sha256(canonical_fingerprint(fingerprint))
+
+
+def _progress_line(status: dict) -> None:
+    received = status.get("progress_bytes_received")
+    total = status.get("progress_bytes_total")
+    progress = ""
+    if received is not None:
+        progress = f" {received}"
+        if total is not None:
+            progress += f"/{total}"
+    print(
+        f"observing {status['provider']} install: {status['install_state']}{progress}",
+        file=sys.stderr,
+    )
+
+
+def _observe_same_target(provider: str, target_sha: str) -> int:
+    status = read_install_status(name=provider)
+    if (
+        status["install_state"] not in IN_FLIGHT_STATES
+        or status["target_fingerprint_sha256"] != target_sha
+    ):
+        print(
+            f"{provider} install already running for a different target",
+            file=sys.stderr,
+        )
+        return 1
+    final = observe_install_attempt(
+        provider,
+        target_fingerprint_sha256=target_sha,
+        timeout_s=60.0 * 60.0,
+        progress=_progress_line,
+    )
+    if final is None:
+        print(f"timed out observing {provider} install", file=sys.stderr)
+        return 1
+    print(json.dumps(final, indent=2))
+    return 0 if final["install_state"] == "installed" else 1
 
 
 def main() -> int:
@@ -50,34 +101,63 @@ def main() -> int:
     if args.name == "parakeet":
         print(PARAKEET_DOWNLOAD_DISCLOSURE, file=sys.stderr)
         readiness = parakeet_install.inspect_readiness()
-        installed = bool(readiness["binary_installed"] and readiness["model_installed"])
-        if installed:
+        if readiness.ready:
             print("parakeet already installed", file=sys.stderr)
-        else:
+            print(json.dumps(read_install_status(name="parakeet"), indent=2))
+            return 0
+        fingerprint = parakeet_install.target_fingerprint()
+        target_sha = _target_sha(fingerprint)
+        lease = acquire_install_lease("parakeet")
+        if lease is None:
+            return _observe_same_target("parakeet", target_sha)
+        try:
             from solstone.think.providers import fit_report
 
             _render_fit_report(fit_report.build_parakeet_fit_report())
-        try:
-            status = parakeet_install.install_parakeet()
+            attempt_status = begin_or_replace_install_attempt(
+                "parakeet",
+                fingerprint,
+                initial_state="resolving",
+                owner={"entry": "install_provider"},
+            )
+            status = parakeet_install.install_parakeet(
+                lease=lease,
+                attempt_status=attempt_status,
+            )
         except parakeet_install.ParakeetProviderError as exc:
             print(str(exc), file=sys.stderr)
             return 1
+        finally:
+            lease.release()
         print(json.dumps(status, indent=2))
         return 0
 
     readiness = local_install.inspect_readiness()
-    installed = bool(readiness["binary_installed"] and readiness["model_installed"])
-    if installed:
+    if readiness.ready:
         print("local already installed", file=sys.stderr)
-    else:
+        print(json.dumps(read_install_status(name="local"), indent=2))
+        return 0
+    fingerprint = local_install.target_fingerprint()
+    target_sha = _target_sha(fingerprint)
+    lease = acquire_install_lease("local")
+    if lease is None:
+        return _observe_same_target("local", target_sha)
+    try:
         from solstone.think.providers import fit_report
 
         _render_fit_report(fit_report.build_local_fit_report(local_install.LOCAL_MODEL))
-    try:
-        status = local_install.install_local()
+        attempt_status = begin_or_replace_install_attempt(
+            "local",
+            fingerprint,
+            initial_state="resolving",
+            owner={"entry": "install_provider"},
+        )
+        status = local_install.install_local(lease=lease, attempt_status=attempt_status)
     except local_install.LocalProviderError as exc:
         print(str(exc), file=sys.stderr)
         return 1
+    finally:
+        lease.release()
     print(json.dumps(status, indent=2))
     return 0
 

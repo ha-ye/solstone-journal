@@ -236,6 +236,7 @@ def test_migration_api_removes_legacy_status_fields(tmp_path, monkeypatch) -> No
                             "install_state": "failed",
                             "install_error": "old",
                             "model_id": "kept",
+                            "vulkan_device_index": "1",
                         }
                     }
                 }
@@ -248,8 +249,9 @@ def test_migration_api_removes_legacy_status_fields(tmp_path, monkeypatch) -> No
     result = install_state.migrate_legacy_provider_install_state()
 
     data = json.loads(config_path.read_text(encoding="utf-8"))
-    assert result == {"removed": 2}
-    assert data["providers"]["bundled"]["local"] == {"model_id": "kept"}
+    assert result == {"removed": 4, "moved": 1}
+    assert data["providers"]["bundled"]["local"] == {}
+    assert data["providers"]["local"] == {"vulkan_device_index": "1"}
 
 
 def test_two_process_stale_transition_one_writer_wins(tmp_path, monkeypatch) -> None:

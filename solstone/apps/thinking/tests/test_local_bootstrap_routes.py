@@ -15,7 +15,8 @@ import pytest
 from solstone.apps.thinking import local_bootstrap
 from solstone.convey import create_app
 from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
-from solstone.think.providers import fit_report, memory
+from solstone.think.providers import fit_report, local_cuda, local_vulkan, memory
+from solstone.think.providers.artifact_proof import ReadinessOutcome
 from solstone.think.providers.install_state import (
     InstallState,
     InstallStatus,
@@ -64,13 +65,24 @@ class _FakeThread:
     def __init__(self, *args, **kwargs):
         type(self).init_count += 1
         type(self).targets.append(kwargs.get("target"))
+        self.args = kwargs.get("args", ())
         self.alive = True
 
     def start(self):
         type(self).start_count += 1
+        if self.args and hasattr(self.args[-1], "set"):
+            self.args[-1].set()
 
     def is_alive(self):
         return self.alive
+
+
+class _FakeLease:
+    def __init__(self) -> None:
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
 
 
 def _write_local_status(
@@ -86,7 +98,7 @@ def _write_local_status(
     )
     status["last_transition_at"] = "2026-05-23T00:00:00+00:00"
     status["last_progress_at"] = last_progress_at
-    return write_install_status(status, scope="bundled")
+    return write_install_status(status)
 
 
 def _old_progress_iso() -> str:
@@ -98,22 +110,108 @@ def _fresh_progress_iso() -> str:
 
 
 def _mlx_readiness(**overrides):
-    readiness = {
-        "install_state": "idle",
-        "model_installed": True,
-        "snapshot_installed": True,
-        "variant_installed": True,
-        "ram_sufficient": True,
-        "platform_supported": True,
-        "package_available": True,
-        "model_id": QWEN_35_9B,
-        "snapshot_dir": "/tmp/qwen-snapshot",
-        "variant_dir": None,
-        "runtime_dir": "/tmp/qwen-snapshot",
-        "install_error": None,
-    }
-    readiness.update(overrides)
-    return readiness
+    install_state = overrides.pop("install_state", "idle")
+    model_installed = overrides.pop("model_installed", True)
+    snapshot_installed = overrides.pop("snapshot_installed", model_installed)
+    variant_installed = overrides.pop("variant_installed", True)
+    platform_supported = overrides.pop("platform_supported", True)
+    package_available = overrides.pop("package_available", True)
+    status = (
+        "ready"
+        if model_installed and platform_supported and package_available
+        else "missing-or-mismatched"
+    )
+    return ReadinessOutcome(
+        provider="local",
+        status=status,
+        reason_code="ready" if status == "ready" else "manifest_missing",
+        target={"model_id": overrides.pop("model_id", QWEN_35_9B)},
+        install={
+            "install_state": install_state,
+            "install_error": overrides.pop("install_error", None),
+            "error_code": None,
+            "attempt_id": None,
+            "progress_bytes_received": None,
+            "progress_bytes_total": None,
+            "last_transition_at": None,
+            "last_progress_at": None,
+        },
+        host={
+            "ram_sufficient": overrides.pop("ram_sufficient", True),
+            "platform_supported": platform_supported,
+            "package_available": package_available,
+        },
+        artifacts={
+            "model_installed": model_installed,
+            "snapshot_installed": snapshot_installed,
+            "variant_installed": variant_installed,
+            "snapshot_dir": overrides.pop("snapshot_dir", "/tmp/qwen-snapshot"),
+            "variant_dir": overrides.pop("variant_dir", None),
+            "runtime_dir": overrides.pop("runtime_dir", "/tmp/qwen-snapshot"),
+        },
+        proof={
+            "snapshot": {
+                "status": "ready" if snapshot_installed else "missing-or-mismatched",
+                "reason_code": "ready" if snapshot_installed else "manifest_missing",
+                "cache_hit": False,
+            },
+            "variant": {
+                "status": "ready" if variant_installed else "missing-or-mismatched",
+                "reason_code": "ready" if variant_installed else "manifest_missing",
+                "cache_hit": False,
+            },
+        },
+    )
+
+
+def _local_readiness(**overrides) -> ReadinessOutcome:
+    binary_installed = overrides.pop("binary_installed", True)
+    model_installed = overrides.pop("model_installed", True)
+    status = (
+        "ready" if binary_installed and model_installed else "missing-or-mismatched"
+    )
+    return ReadinessOutcome(
+        provider="local",
+        status=status,
+        reason_code="ready" if status == "ready" else "manifest_missing",
+        target={"model_id": overrides.pop("model_id", LOCAL_MODEL)},
+        install={
+            "install_state": overrides.pop("install_state", "idle"),
+            "install_error": overrides.pop("install_error", None),
+            "error_code": None,
+            "attempt_id": None,
+            "progress_bytes_received": None,
+            "progress_bytes_total": None,
+            "last_transition_at": None,
+            "last_progress_at": None,
+        },
+        host={
+            "ram_sufficient": overrides.pop("ram_sufficient", True),
+            "gpu_available": overrides.pop("gpu_available", True),
+            "gpu_probe_ok": overrides.pop("gpu_probe_ok", True),
+            "backend": "vulkan",
+            "backend_reason": "test vulkan",
+        },
+        artifacts={
+            "binary_installed": binary_installed,
+            "model_installed": model_installed,
+            "binary_path": overrides.pop("binary_path", "/tmp/llama-server"),
+            "model_path": overrides.pop("model_path", "/tmp/model.gguf"),
+            "mmproj_path": None,
+        },
+        proof={
+            "binary": {
+                "status": "ready" if binary_installed else "missing-or-mismatched",
+                "reason_code": "ready" if binary_installed else "manifest_missing",
+                "cache_hit": False,
+            },
+            "model": {
+                "status": "ready" if model_installed else "missing-or-mismatched",
+                "reason_code": "ready" if model_installed else "manifest_missing",
+                "cache_hit": False,
+            },
+        },
+    )
 
 
 def _fit(
@@ -153,8 +251,11 @@ def test_local_bootstrap_linux_contract_for_model_helpers():
 
 def test_local_availability_payload_exact_shape(settings_env, monkeypatch):
     journal_path, _config = settings_env(_settings_config())
-    monkeypatch.setattr(local_bootstrap, "check_binary_present", lambda: True)
-    monkeypatch.setattr(local_bootstrap, "check_model_present", lambda _model: True)
+    monkeypatch.setattr(
+        local_bootstrap.local_install,
+        "inspect_readiness",
+        lambda _model: _local_readiness(),
+    )
     monkeypatch.setattr(local_bootstrap, "_platform_supported", lambda: (True, ""))
     monkeypatch.setattr(
         memory.psutil,
@@ -325,8 +426,11 @@ def test_local_availability_warns_but_does_not_block_on_low_memory(
     settings_env, monkeypatch
 ):
     journal_path, _config = settings_env(_settings_config())
-    monkeypatch.setattr(local_bootstrap, "check_binary_present", lambda: True)
-    monkeypatch.setattr(local_bootstrap, "check_model_present", lambda _model: True)
+    monkeypatch.setattr(
+        local_bootstrap.local_install,
+        "inspect_readiness",
+        lambda _model: _local_readiness(),
+    )
     monkeypatch.setattr(local_bootstrap, "_platform_supported", lambda: (True, ""))
     monkeypatch.setattr(
         memory.psutil,
@@ -405,9 +509,9 @@ def test_local_bootstrap_post_rejects_byo_endpoint(settings_env):
 @pytest.mark.parametrize(
     ("state", "expected_payload", "expected_status"),
     [
-        ("installed", {"install_state": "installed"}, 200),
-        ("downloading", {"install_state": "downloading"}, 200),
-        ("verifying", {"install_state": "verifying"}, 200),
+        ("installed", {"install_state": "downloading"}, 202),
+        ("downloading", {"install_state": "downloading"}, 202),
+        ("verifying", {"install_state": "downloading"}, 202),
         ("idle", {"install_state": "downloading"}, 202),
         ("failed", {"install_state": "downloading"}, 202),
     ],
@@ -453,6 +557,59 @@ def test_start_bootstrap_payload_for_canonical_states(
         expected_payload,
         expected_status,
     )
+
+
+def test_start_bootstrap_repairs_stale_installed_without_manifest(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    _write_local_status("installed")
+    binary = local_bootstrap.local_install.binary_path_for_pin()
+    binary.parent.mkdir(parents=True, exist_ok=True)
+    binary.write_bytes(b"stale binary")
+    binary.chmod(0o755)
+    spec = LOCAL_MODEL_SPECS[LOCAL_MODEL]
+    model = local_bootstrap.local_install.model_path(LOCAL_MODEL)
+    model.parent.mkdir(parents=True, exist_ok=True)
+    model.write_bytes(b"stale model")
+    if spec.mmproj_filename:
+        mmproj = local_bootstrap.local_install.mmproj_path(LOCAL_MODEL)
+        assert mmproj is not None
+        mmproj.write_bytes(b"stale projector")
+    monkeypatch.setattr(
+        local_cuda,
+        "resolve_local_backend",
+        lambda _pin: local_cuda.BackendChoice("vulkan", "test vulkan"),
+    )
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: True)
+    monkeypatch.setattr(
+        memory.psutil,
+        "virtual_memory",
+        lambda: SimpleNamespace(available=32 * 1024**3, total=32 * 1024**3),
+    )
+    monkeypatch.setattr(
+        memory.shutil,
+        "disk_usage",
+        lambda _path: SimpleNamespace(free=100 * 1024**3),
+    )
+    monkeypatch.setattr(
+        local_bootstrap, "_fit_report_for_model", lambda _model: _fit("ok")
+    )
+    _FakeThread.init_count = 0
+    _FakeThread.start_count = 0
+    monkeypatch.setattr(local_bootstrap.threading, "Thread", _FakeThread)
+
+    assert local_bootstrap.start_bootstrap(LOCAL_MODEL) == (
+        {"install_state": "downloading"},
+        202,
+    )
+
+    assert _FakeThread.start_count == 1
+    status = read_install_status(name="local")
+    assert status["install_state"] == "downloading"
+    assert binary.read_bytes() == b"stale binary"
+    assert model.read_bytes() == b"stale model"
 
 
 def test_start_bootstrap_low_memory_warning_does_not_block(settings_env, monkeypatch):
@@ -525,20 +682,25 @@ def test_start_bootstrap_insufficient_disk_blocks_before_worker(
         local_bootstrap.start_bootstrap(LOCAL_MODEL)
 
     assert _FakeThread.init_count == 0
-    status = read_install_status(scope="bundled", name="local")
+    status = read_install_status(name="local")
     assert status["install_state"] == "idle"
 
 
 def test_local_bootstrap_status_returns_canonical_shape(settings_env):
     journal_path, _config = settings_env(_settings_config())
     _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
-    status = read_install_status(scope="bundled", name="local")
+    status = read_install_status(name="local")
     status["progress_bytes_received"] = 12
     status["progress_bytes_total"] = 24
-    write_install_status(status, scope="bundled")
+    write_install_status(status)
     client = _client(journal_path)
+    lease = local_bootstrap.acquire_install_lease("local")
+    assert lease is not None
 
-    response = client.get("/app/thinking/api/local/bootstrap/status")
+    try:
+        response = client.get("/app/thinking/api/local/bootstrap/status")
+    finally:
+        lease.release()
 
     assert response.status_code == 200
     payload = response.get_json()
@@ -562,20 +724,23 @@ def test_local_bootstrap_lazy_stall_without_live_thread_stays_read_only(settings
 
     payload = local_bootstrap.get_state(LOCAL_MODEL)
 
-    assert payload["install_state"] == "downloading"
-    assert payload["install_error"] is None
-    persisted = read_install_status(scope="bundled", name="local")
+    assert payload["install_state"] == "failed"
+    assert payload["install_error"] == "install_interrupted"
+    persisted = read_install_status(name="local")
     assert persisted["install_state"] == "downloading"
     assert persisted["install_error"] is None
 
 
-def test_local_bootstrap_lazy_stall_with_live_thread_stays_in_flight(settings_env):
+def test_local_bootstrap_in_flight_with_held_lease_stays_in_flight(settings_env):
     settings_env(_settings_config())
     _write_local_status("verifying", last_progress_at=_old_progress_iso())
-    with local_bootstrap._INSTALL_LOCK:
-        local_bootstrap._INSTALL_THREADS[LOCAL_MODEL] = _FakeThread()
+    lease = local_bootstrap.acquire_install_lease("local")
+    assert lease is not None
 
-    payload = local_bootstrap.get_state(LOCAL_MODEL)
+    try:
+        payload = local_bootstrap.get_state(LOCAL_MODEL)
+    finally:
+        lease.release()
 
     assert payload["install_state"] == "verifying"
     assert payload["install_error"] is None
@@ -609,16 +774,19 @@ def test_mlx_availability_ignores_install_state_when_snapshot_missing(
     assert payload["reason"] == "local model files are not installed"
 
 
-def test_mlx_bootstrap_lazy_stall_with_live_thread_stays_in_flight(
+def test_mlx_bootstrap_in_flight_with_held_lease_stays_in_flight(
     settings_env, monkeypatch
 ):
     settings_env(_settings_config())
     _write_local_status("downloading", last_progress_at=_old_progress_iso())
     monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
-    with local_bootstrap._INSTALL_LOCK:
-        local_bootstrap._INSTALL_THREADS[QWEN_35_9B] = _FakeThread()
+    lease = local_bootstrap.acquire_install_lease("local")
+    assert lease is not None
 
-    payload = local_bootstrap.get_state(QWEN_35_9B)
+    try:
+        payload = local_bootstrap.get_state(QWEN_35_9B)
+    finally:
+        lease.release()
 
     assert payload["install_state"] == "downloading"
     assert payload["install_error"] is None
@@ -633,8 +801,8 @@ def test_mlx_bootstrap_lazy_stall_without_live_thread_stays_read_only(
 
     payload = local_bootstrap.get_state(QWEN_35_9B)
 
-    assert payload["install_state"] == "downloading"
-    assert payload["install_error"] is None
+    assert payload["install_state"] == "failed"
+    assert payload["install_error"] == "install_interrupted"
 
 
 @pytest.mark.parametrize("state", ["installed", "failed"])
@@ -649,20 +817,14 @@ def test_local_bootstrap_restart_terminal_states_have_no_bytes(settings_env, sta
     assert payload["progress_bytes_total"] is None
 
 
-def test_local_bootstrap_migrates_preexisting_install_without_worker(
+def test_local_bootstrap_ready_short_circuit_does_not_publish_terminal(
     settings_env, monkeypatch
 ):
     settings_env(_settings_config())
     monkeypatch.setattr(
         local_bootstrap.local_install,
         "inspect_readiness",
-        lambda _model=None: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "binary_path": "/tmp/llama-server",
-            "model_path": "/tmp/model.gguf",
-        },
+        lambda _model=None: _local_readiness(),
     )
     monkeypatch.setattr(local_bootstrap, "_platform_supported", lambda: (True, ""))
     monkeypatch.setattr(
@@ -687,8 +849,8 @@ def test_local_bootstrap_migrates_preexisting_install_without_worker(
         {"install_state": "installed"},
         200,
     )
-    status = read_install_status(scope="bundled", name="local")
-    assert status["install_state"] == "installed"
+    status = read_install_status(name="local")
+    assert status["install_state"] == "idle"
 
 
 def test_mlx_start_bootstrap_dispatches_to_mlx_worker(settings_env, monkeypatch):
@@ -733,41 +895,45 @@ def test_mlx_start_bootstrap_dispatches_to_mlx_worker(settings_env, monkeypatch)
     assert _FakeThread.targets == [local_bootstrap._mlx_bootstrap_worker]
 
 
-def test_local_worker_resets_progress_between_binary_and_model(
+def test_local_worker_delegates_to_top_level_installer_with_lease_and_attempt(
     settings_env, monkeypatch
 ):
     settings_env(_settings_config())
-    observed = {}
-    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
-
-    def fake_llama_server():
-        status = read_install_status(scope="bundled", name="local")
-        write_install_status(
-            transition_state(status, new_state="installed"),
-            scope="bundled",
-        )
-
-    def fake_install_model(model):
-        observed.update(local_bootstrap.get_state(model))
-        status = read_install_status(scope="bundled", name="local")
-        write_install_status(
-            transition_state(status, new_state="installed"),
-            scope="bundled",
-        )
-
-    monkeypatch.setattr(
-        local_bootstrap.local_install, "install_llama_server", fake_llama_server
+    attempt_status = _write_local_status(
+        "downloading", last_progress_at=_fresh_progress_iso()
     )
+    lease = _FakeLease()
+    ack = threading.Event()
+    observed = {}
+
+    def fake_install_local(model, *, lease, attempt_status):
+        observed.update(
+            {
+                "model": model,
+                "lease": lease,
+                "attempt_status": attempt_status,
+                "ack_set": ack.is_set(),
+            }
+        )
+        status = read_install_status(name="local")
+        write_install_status(
+            transition_state(status, new_state="installed"),
+        )
+
     monkeypatch.setattr(
-        local_bootstrap.local_install, "install_model", fake_install_model
+        local_bootstrap.local_install, "install_local", fake_install_local
     )
     monkeypatch.setattr(local_bootstrap, "callosum_send", Mock(return_value=True))
 
-    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL)
+    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
 
-    assert observed["install_state"] == "downloading"
-    assert observed["progress_bytes_total"] is None
-    assert observed["progress_bytes_received"] is None
+    assert observed == {
+        "model": LOCAL_MODEL,
+        "lease": lease,
+        "attempt_status": attempt_status,
+        "ack_set": True,
+    }
+    assert lease.released is True
 
 
 @pytest.mark.parametrize(
@@ -778,14 +944,17 @@ def test_local_worker_success_requests_local_server_start(
     settings_env, monkeypatch, send_behavior
 ):
     settings_env(_settings_config())
-    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+    attempt_status = _write_local_status(
+        "downloading", last_progress_at=_fresh_progress_iso()
+    )
+    lease = _FakeLease()
+    ack = threading.Event()
 
-    def fake_install_model(model):
+    def fake_install_local(model, *, lease, attempt_status):
         assert model == LOCAL_MODEL
-        status = read_install_status(scope="bundled", name="local")
+        status = read_install_status(name="local")
         write_install_status(
             transition_state(status, new_state="installed"),
-            scope="bundled",
         )
 
     if send_behavior == "raise":
@@ -794,17 +963,16 @@ def test_local_worker_success_requests_local_server_start(
         callosum_send = Mock(return_value=send_behavior == "success")
 
     monkeypatch.setattr(
-        local_bootstrap.local_install, "install_llama_server", lambda: None
-    )
-    monkeypatch.setattr(
-        local_bootstrap.local_install, "install_model", fake_install_model
+        local_bootstrap.local_install, "install_local", fake_install_local
     )
     monkeypatch.setattr(local_bootstrap, "callosum_send", callosum_send)
 
-    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL)
+    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
 
     callosum_send.assert_called_once_with("supervisor", "start_local")
-    status = read_install_status(scope="bundled", name="local")
+    assert ack.is_set()
+    assert lease.released is True
+    status = read_install_status(name="local")
     assert status["install_state"] == "installed"
     assert status["install_error"] is None
 
@@ -813,23 +981,26 @@ def test_local_worker_install_model_failure_does_not_request_local_server_start(
     settings_env, monkeypatch
 ):
     settings_env(_settings_config())
-    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+    attempt_status = _write_local_status(
+        "downloading", last_progress_at=_fresh_progress_iso()
+    )
+    lease = _FakeLease()
+    ack = threading.Event()
     callosum_send = Mock(return_value=True)
 
     monkeypatch.setattr(
-        local_bootstrap.local_install, "install_llama_server", lambda: None
-    )
-    monkeypatch.setattr(
         local_bootstrap.local_install,
-        "install_model",
+        "install_local",
         Mock(side_effect=RuntimeError("model download broke")),
     )
     monkeypatch.setattr(local_bootstrap, "callosum_send", callosum_send)
 
-    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL)
+    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
 
     callosum_send.assert_not_called()
-    status = read_install_status(scope="bundled", name="local")
+    assert ack.is_set()
+    assert lease.released is True
+    status = read_install_status(name="local")
     assert status["install_state"] == "failed"
     assert status["install_error"] == "model download broke"
 
@@ -839,24 +1010,24 @@ def test_local_worker_cleans_registered_thread(settings_env, monkeypatch):
     current = threading.current_thread()
     with local_bootstrap._INSTALL_LOCK:
         local_bootstrap._INSTALL_THREADS[LOCAL_MODEL] = current
-    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+    attempt_status = _write_local_status(
+        "downloading", last_progress_at=_fresh_progress_iso()
+    )
+    lease = _FakeLease()
+    ack = threading.Event()
 
-    def fake_install_model(_model):
-        status = read_install_status(scope="bundled", name="local")
+    def fake_install_local(_model, *, lease, attempt_status):
+        status = read_install_status(name="local")
         write_install_status(
             transition_state(status, new_state="installed"),
-            scope="bundled",
         )
 
     monkeypatch.setattr(
-        local_bootstrap.local_install, "install_llama_server", lambda: None
-    )
-    monkeypatch.setattr(
-        local_bootstrap.local_install, "install_model", fake_install_model
+        local_bootstrap.local_install, "install_local", fake_install_local
     )
     monkeypatch.setattr(local_bootstrap, "callosum_send", Mock(return_value=True))
 
-    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL)
+    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
 
     with local_bootstrap._INSTALL_LOCK:
         assert LOCAL_MODEL not in local_bootstrap._INSTALL_THREADS
@@ -867,20 +1038,25 @@ def test_local_worker_cleans_registered_thread_after_failure(settings_env, monke
     current = threading.current_thread()
     with local_bootstrap._INSTALL_LOCK:
         local_bootstrap._INSTALL_THREADS[LOCAL_MODEL] = current
-    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+    attempt_status = _write_local_status(
+        "downloading", last_progress_at=_fresh_progress_iso()
+    )
+    lease = _FakeLease()
+    ack = threading.Event()
 
     monkeypatch.setattr(
         local_bootstrap.local_install,
-        "install_llama_server",
-        lambda: (_ for _ in ()).throw(RuntimeError("binary download broke")),
+        "install_local",
+        Mock(side_effect=RuntimeError("binary download broke")),
     )
 
-    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL)
+    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
 
     with local_bootstrap._INSTALL_LOCK:
         thread = local_bootstrap._INSTALL_THREADS.get(LOCAL_MODEL)
     assert thread is None or not thread.is_alive()
-    status = read_install_status(scope="bundled", name="local")
+    assert lease.released is True
+    status = read_install_status(name="local")
     assert status["install_state"] == "failed"
     assert status["install_error"] == "binary download broke"
 
@@ -892,14 +1068,17 @@ def test_mlx_worker_preserves_install_error_and_cleans_thread(
     current = threading.current_thread()
     with local_bootstrap._INSTALL_LOCK:
         local_bootstrap._INSTALL_THREADS[QWEN_35_9B] = current
-    _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
+    attempt_status = _write_local_status(
+        "downloading", last_progress_at=_fresh_progress_iso()
+    )
+    lease = _FakeLease()
+    ack = threading.Event()
     monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
 
-    def fake_install_mlx(_model):
-        status = read_install_status(scope="bundled", name="local")
+    def fake_install_mlx(_model, *, lease, attempt_status):
+        status = read_install_status(name="local")
         write_install_status(
             transition_state(status, new_state="failed", error="verify broke"),
-            scope="bundled",
         )
         raise local_bootstrap.mlx_install.MLXVerificationError("verify broke")
 
@@ -909,11 +1088,13 @@ def test_mlx_worker_preserves_install_error_and_cleans_thread(
         fake_install_mlx,
     )
 
-    local_bootstrap._mlx_bootstrap_worker(QWEN_35_9B)
+    local_bootstrap._mlx_bootstrap_worker(QWEN_35_9B, lease, attempt_status, ack)
 
     with local_bootstrap._INSTALL_LOCK:
         assert QWEN_35_9B not in local_bootstrap._INSTALL_THREADS
-    status = read_install_status(scope="bundled", name="local")
+    assert ack.is_set()
+    assert lease.released is True
+    status = read_install_status(name="local")
     assert status["install_state"] == "failed"
     assert status["install_error"] == "verify broke"
     payload = local_bootstrap.get_state(QWEN_35_9B)

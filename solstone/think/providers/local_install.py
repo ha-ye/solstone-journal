@@ -3,34 +3,41 @@
 
 """Install and inspect bundled local provider artifacts.
 
-This module is the sole writer for ``providers.bundled.local`` install state.
-It performs no network access at import time.
+This module owns local provider artifact acquisition. It performs no network
+access at import time.
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import os
 import platform
 import shutil
 import stat
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from solstone.think.journal_config import (
-    JournalConfigMutation,
-    mutate_journal_config,
-    read_journal_config,
-)
+from solstone.think.journal_config import read_journal_config
 from solstone.think.models import LOCAL_MODEL
+from solstone.think.providers.artifact_proof import (
+    ReadinessOutcome,
+    artifact_manifest_path,
+    build_manifest,
+    prove_cuda_sidecar,
+    prove_manifest,
+    write_manifest,
+)
+from solstone.think.providers.install_lease import InstallLease, acquire_install_lease
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     InstallStatus,
+    assert_install_attempt_current,
+    begin_or_replace_install_attempt,
     bump_progress,
+    canonical_fingerprint,
+    fingerprint_sha256,
     read_install_status,
     transition_state,
     write_install_status,
@@ -51,20 +58,6 @@ from solstone.think.utils import get_journal
 LOG = logging.getLogger(__name__)
 LOCAL_PROVIDER_NAME = "local"
 _PROBE_TIMEOUT_SECONDS = 10
-_PROGRESS_MIN_INTERVAL_SECONDS = 1.0  # rate-limit durable install-progress writes to ~1/sec (download throughput fix)
-_LOCAL_METADATA_KEYS = frozenset(
-    {
-        "binary_artifact",
-        "binary_sha256",
-        "binary_path",
-        "model_id",
-        "model_path",
-        "model_sha256",
-        "mmproj_path",
-        "mmproj_sha256",
-        "vulkan_device_index",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -280,36 +273,17 @@ def install_hint() -> str:
 
 
 def _read_local_status() -> InstallStatus:
-    return read_install_status(scope="bundled", name=LOCAL_PROVIDER_NAME)
+    return read_install_status(name=LOCAL_PROVIDER_NAME)
 
 
 def _write_local_status(status: InstallStatus) -> InstallStatus:
-    write_install_status(status, scope="bundled")
+    write_install_status(status)
     return status
-
-
-def _write_local_metadata(updates: dict[str, str]) -> None:
-    unknown_keys = sorted(set(updates) - _LOCAL_METADATA_KEYS)
-    if unknown_keys:
-        raise ValueError(f"unknown local install metadata key: {unknown_keys[0]}")
-
-    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
-        slot = (
-            config.setdefault("providers", {})
-            .setdefault("bundled", {})
-            .setdefault(LOCAL_PROVIDER_NAME, {})
-        )
-        changed = any(slot.get(key) != value for key, value in updates.items())
-        for key, value in updates.items():
-            slot[key] = value
-        return JournalConfigMutation(changed=changed, value=None)
-
-    mutate_journal_config(apply)
 
 
 def gpu_device_override() -> int | None:
     config = read_journal_config()
-    record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
+    record = config.get("providers", {}).get(LOCAL_PROVIDER_NAME, {})
     if not isinstance(record, dict):
         return None
     value = record.get("vulkan_device_index")
@@ -327,6 +301,148 @@ def _record_local_progress(received: int, total: int | None) -> None:
     if status["install_state"] not in IN_FLIGHT_STATES:
         return
     _write_local_status(bump_progress(status, received=received, total=total))
+
+
+def _model_pin_identity(model_id: str) -> dict[str, Any]:
+    spec = LOCAL_MODEL_SPECS[normalize_model_id(model_id)]
+    return {
+        "unit": "local-model",
+        "model_id": spec.model_id,
+        "repo": spec.repo,
+        "revision": spec.revision,
+        "filename": spec.filename,
+        "sha256": spec.sha256,
+        "mmproj_filename": spec.mmproj_filename,
+        "mmproj_sha256": spec.mmproj_sha256,
+    }
+
+
+def _vulkan_pin_identity(
+    artifact_key: str | None = None,
+    pin: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    artifact_key = artifact_key or llama_server_artifact_key()
+    pin = pin or pin_for_current_platform()
+    return {
+        "unit": "llama-server-vulkan",
+        "artifact_key": artifact_key,
+        "release_tag": pin["release_tag"],
+        "filename": pin["filename"],
+        "sha256": pin["sha256"],
+        "binary_name": pin["binary_name"],
+    }
+
+
+def _cuda_pin_identity(
+    arch: str | None = None,
+    wanted_files: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    arch = arch or _oci_arch()
+    wanted_files = wanted_files or CUDA_SERVER_PIN.wanted_files_for_arch(arch)
+    return {
+        "unit": "llama-server-cuda",
+        "artifact_key": llama_server_artifact_key(),
+        "image_ref": CUDA_SERVER_PIN.image_ref,
+        "arch": arch,
+        "binary_name": CUDA_SERVER_PIN.binary_name,
+        "wanted_files": list(wanted_files),
+    }
+
+
+def target_fingerprint(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
+    from solstone.think.providers import local_cuda
+
+    selected_model = normalize_model_id(model_id)
+    choice = local_cuda.resolve_local_backend(CUDA_SERVER_PIN)
+    runtime_pin = (
+        _cuda_pin_identity() if choice.backend == "cuda" else _vulkan_pin_identity()
+    )
+    return {
+        "provider": LOCAL_PROVIDER_NAME,
+        "runtime": "llama.cpp",
+        "backend": choice.backend,
+        "backend_reason": choice.reason,
+        "runtime_pin": runtime_pin,
+        "model_pin": _model_pin_identity(selected_model),
+    }
+
+
+def _fingerprint_sha_for_target(fingerprint: dict[str, Any]) -> str:
+    return fingerprint_sha256(canonical_fingerprint(fingerprint))
+
+
+def _manifest_target_sha(
+    attempt_status: InstallStatus | None,
+    fingerprint: dict[str, Any],
+) -> str:
+    if attempt_status is not None and attempt_status["target_fingerprint_sha256"]:
+        return str(attempt_status["target_fingerprint_sha256"])
+    return _fingerprint_sha_for_target(fingerprint)
+
+
+def _manifest_entry(path: Path, root: Path, role: str) -> dict[str, Any]:
+    return {
+        "relative_path": path.relative_to(root).as_posix(),
+        "role": role,
+        "size": path.stat().st_size,
+        "sha256": _sha256_file(path),
+    }
+
+
+def _runtime_inventory(root: Path, *, exclude_names: set[str]) -> list[dict[str, Any]]:
+    inventory: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file() or path.name == artifact_manifest_path(root).name:
+            continue
+        if path.name in exclude_names:
+            continue
+        role = "runtime_binary" if path.name == "llama-server" else "runtime_support"
+        inventory.append(_manifest_entry(path, root, role))
+    return inventory
+
+
+def _write_vulkan_manifest(
+    *,
+    artifact_key: str,
+    pin: dict[str, str],
+    attempt_status: InstallStatus | None,
+    fingerprint: dict[str, Any] | None = None,
+) -> None:
+    install_dir = binary_install_dir(artifact_key, pin)
+    fingerprint = fingerprint or target_fingerprint()
+    manifest = build_manifest(
+        provider=LOCAL_PROVIDER_NAME,
+        unit="llama-server-vulkan",
+        target_fingerprint_sha256=_manifest_target_sha(attempt_status, fingerprint),
+        source={"pin_identity": _vulkan_pin_identity(artifact_key, pin)},
+        inventory=_runtime_inventory(install_dir, exclude_names={pin["filename"]}),
+        attempt_id=attempt_status["attempt_id"] if attempt_status else None,
+    )
+    write_manifest(artifact_manifest_path(install_dir), manifest)
+
+
+def _write_model_manifest(
+    *,
+    model_id: str,
+    attempt_status: InstallStatus | None,
+    fingerprint: dict[str, Any] | None = None,
+) -> None:
+    spec = LOCAL_MODEL_SPECS[normalize_model_id(model_id)]
+    root = model_dir(spec.model_id)
+    inventory = [_manifest_entry(model_path(spec.model_id), root, "model")]
+    projector = mmproj_path(spec.model_id)
+    if projector is not None:
+        inventory.append(_manifest_entry(projector, root, "projector"))
+    fingerprint = fingerprint or target_fingerprint(spec.model_id)
+    manifest = build_manifest(
+        provider=LOCAL_PROVIDER_NAME,
+        unit="local-model",
+        target_fingerprint_sha256=_manifest_target_sha(attempt_status, fingerprint),
+        source={"pin_identity": _model_pin_identity(spec.model_id)},
+        inventory=inventory,
+        attempt_id=attempt_status["attempt_id"] if attempt_status else None,
+    )
+    write_manifest(artifact_manifest_path(root), manifest)
 
 
 def _sha256_file(path: Path) -> str:
@@ -362,25 +478,14 @@ def _download_file(
         total_header = response.headers.get("content-length")
         total = int(total_header) if total_header and total_header.isdigit() else None
         received = 0
-        last_emit = time.monotonic()
-        last_emitted_received = -1
-        first_chunk = True
         with tmp.open("wb") as handle:
             for chunk in response.iter_bytes():
                 if not chunk:
                     continue
                 handle.write(chunk)
                 received += len(chunk)
-                if on_progress is None:
-                    continue
-                now = time.monotonic()
-                if first_chunk or now - last_emit >= _PROGRESS_MIN_INTERVAL_SECONDS:
+                if on_progress is not None:
                     on_progress(received, total)
-                    last_emit = now
-                    last_emitted_received = received
-                    first_chunk = False
-    if on_progress is not None and received != last_emitted_received:
-        on_progress(received, total)
     tmp.replace(dest)
 
 
@@ -480,12 +585,16 @@ def probe_binary_runnable(binary_path: str | Path) -> tuple[bool, str | None]:
     return False, detail
 
 
-def install_llama_server() -> dict[str, Any]:
+def install_llama_server(
+    *,
+    attempt_status: InstallStatus | None = None,
+    fingerprint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     from solstone.think.providers import local_cuda
 
     choice = local_cuda.resolve_local_backend(CUDA_SERVER_PIN)
     if choice.backend == "cuda":
-        return _install_cuda_llama_server()
+        return _install_cuda_llama_server(attempt_status=attempt_status)
 
     artifact_key = llama_server_artifact_key()
     pin = pin_for_current_platform()
@@ -500,7 +609,6 @@ def install_llama_server() -> dict[str, Any]:
         _write_local_status(
             transition_state(_read_local_status(), new_state="downloading")
         )
-        _write_local_metadata({"binary_artifact": pin["filename"]})
         _download_file(url, tarball, on_progress=_record_local_progress)
         _write_local_status(
             transition_state(_read_local_status(), new_state="verifying")
@@ -516,6 +624,8 @@ def install_llama_server() -> dict[str, Any]:
         _safe_extract_tarball(tarball, install_dir)
         extracted = _find_extracted_binary(install_dir, pin["binary_name"])
         final_path = binary_path_for_pin(artifact_key, pin)
+        if attempt_status is not None:
+            assert_install_attempt_current(attempt_status)
         inner_dir = extracted.parent
         if inner_dir != install_dir:
             for item in inner_dir.iterdir():
@@ -523,16 +633,13 @@ def install_llama_server() -> dict[str, Any]:
             inner_dir.rmdir()
         _chmod_executable(final_path)
         _clear_macos_quarantine(install_dir)
-        _write_local_metadata(
-            {
-                "binary_artifact": pin["filename"],
-                "binary_sha256": pin["sha256"],
-                "binary_path": str(final_path),
-            }
+        _write_vulkan_manifest(
+            artifact_key=artifact_key,
+            pin=pin,
+            attempt_status=attempt_status,
+            fingerprint=fingerprint,
         )
-        return _write_local_status(
-            transition_state(_read_local_status(), new_state="installed")
-        )
+        return _read_local_status()
     except Exception as exc:
         _write_local_status(
             transition_state(_read_local_status(), new_state="failed", error=str(exc))
@@ -540,7 +647,10 @@ def install_llama_server() -> dict[str, Any]:
         raise
 
 
-def _install_cuda_llama_server() -> dict[str, Any]:
+def _install_cuda_llama_server(
+    *,
+    attempt_status: InstallStatus | None = None,
+) -> dict[str, Any]:
     from solstone.think.providers import oci_image
 
     try:
@@ -559,10 +669,10 @@ def _install_cuda_llama_server() -> dict[str, Any]:
         _write_local_status(
             transition_state(_read_local_status(), new_state="verifying")
         )
+        if attempt_status is not None:
+            assert_install_attempt_current(attempt_status)
         _chmod_executable(cuda_binary_path())
-        return _write_local_status(
-            transition_state(_read_local_status(), new_state="installed")
-        )
+        return _read_local_status()
     except Exception as exc:
         _write_local_status(
             transition_state(_read_local_status(), new_state="failed", error=str(exc))
@@ -570,7 +680,12 @@ def _install_cuda_llama_server() -> dict[str, Any]:
         raise
 
 
-def install_model(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
+def install_model(
+    model_id: str = LOCAL_MODEL,
+    *,
+    attempt_status: InstallStatus | None = None,
+    fingerprint: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     spec = LOCAL_MODEL_SPECS[normalize_model_id(model_id)]
     url = f"https://huggingface.co/{spec.repo}/resolve/{spec.revision}/{spec.filename}"
     dest = model_path(spec.model_id)
@@ -580,7 +695,6 @@ def install_model(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
         _write_local_status(
             transition_state(_read_local_status(), new_state="downloading")
         )
-        _write_local_metadata({"model_id": spec.model_id})
         _download_file(url, dest, on_progress=_record_local_progress)
         if spec.mmproj_filename and mmproj_dest is not None:
             mmproj_url = (
@@ -592,19 +706,16 @@ def install_model(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
             transition_state(_read_local_status(), new_state="verifying")
         )
         _verify_sha256(dest, spec.sha256)
-        metadata = {
-            "model_id": spec.model_id,
-            "model_path": str(dest),
-            "model_sha256": spec.sha256,
-        }
         if spec.mmproj_sha256 and mmproj_dest is not None:
             _verify_sha256(mmproj_dest, spec.mmproj_sha256)
-            metadata["mmproj_path"] = str(mmproj_dest)
-            metadata["mmproj_sha256"] = spec.mmproj_sha256
-        _write_local_metadata(metadata)
-        return _write_local_status(
-            transition_state(_read_local_status(), new_state="installed")
+        if attempt_status is not None:
+            assert_install_attempt_current(attempt_status)
+        _write_model_manifest(
+            model_id=spec.model_id,
+            attempt_status=attempt_status,
+            fingerprint=fingerprint,
         )
+        return _read_local_status()
     except Exception as exc:
         _write_local_status(
             transition_state(_read_local_status(), new_state="failed", error=str(exc))
@@ -612,94 +723,165 @@ def install_model(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
         raise
 
 
-def install_local(model_id: str = LOCAL_MODEL) -> dict[str, Any]:
+def install_local(
+    model_id: str = LOCAL_MODEL,
+    *,
+    lease: InstallLease | None = None,
+    attempt_status: InstallStatus | None = None,
+) -> dict[str, Any]:
     from solstone.think.providers import fit_report
 
     selected_model = normalize_model_id(model_id)
-    readiness = inspect_readiness(selected_model)
-    if readiness["binary_installed"] and readiness["model_installed"]:
+    fingerprint = target_fingerprint(selected_model)
+    owned_lease = lease is None
+    if lease is None:
+        lease = acquire_install_lease(LOCAL_PROVIDER_NAME)
+        if lease is None:
+            raise LocalProviderError(
+                "install_busy", "Local provider install is already running."
+            )
+
+    try:
+        if attempt_status is None:
+            attempt_status = begin_or_replace_install_attempt(
+                LOCAL_PROVIDER_NAME,
+                fingerprint,
+                initial_state="resolving",
+                owner={"entry": "install_local"},
+            )
+        readiness = inspect_readiness(selected_model)
+        if readiness.status in {"proof-unavailable", "host-ineligible"}:
+            current = assert_install_attempt_current(attempt_status)
+            return _write_local_status(
+                transition_state(
+                    current,
+                    new_state="failed",
+                    error=readiness.reason_code,
+                    error_code=readiness.reason_code,
+                )
+            )
+
+        if not readiness.ready:
+            report = fit_report.build_local_fit_report(selected_model)
+            rendered = fit_report.render_fit_report(report)
+            if report.overall == "blocked":
+                raise LocalProviderError("host_unfit", rendered)
+            if report.overall == "warning":
+                LOG.warning("local provider host fit warning:\n%s", rendered)
+
+            if readiness.proof["binary"]["status"] == "missing-or-mismatched":
+                install_llama_server(
+                    attempt_status=attempt_status,
+                    fingerprint=fingerprint,
+                )
+            if readiness.proof["model"]["status"] == "missing-or-mismatched":
+                install_model(
+                    selected_model,
+                    attempt_status=attempt_status,
+                    fingerprint=fingerprint,
+                )
+
+        final_readiness = inspect_readiness(selected_model)
+        current = assert_install_attempt_current(attempt_status)
+        if final_readiness.ready:
+            return _write_local_status(transition_state(current, new_state="installed"))
         return _write_local_status(
-            transition_state(_read_local_status(), new_state="installed")
+            transition_state(
+                current,
+                new_state="failed",
+                error=final_readiness.reason_code,
+                error_code=final_readiness.reason_code,
+            )
         )
+    except Exception as exc:
+        try:
+            current = assert_install_attempt_current(attempt_status)
+            _write_local_status(
+                transition_state(
+                    current,
+                    new_state="failed",
+                    error=str(exc),
+                    error_code=getattr(exc, "reason_code", None),
+                )
+            )
+        except Exception:
+            pass
+        raise
+    finally:
+        if owned_lease:
+            lease.release()
 
-    report = fit_report.build_local_fit_report(selected_model)
-    rendered = fit_report.render_fit_report(report)
-    if report.overall == "blocked":
-        raise LocalProviderError("host_unfit", rendered)
-    if report.overall == "warning":
-        LOG.warning("local provider host fit warning:\n%s", rendered)
 
-    install_llama_server()
-    return install_model(selected_model)
+def _proof_payload(
+    status: str, reason_code: str, *, cache_hit: bool = False
+) -> dict[str, Any]:
+    return {"status": status, "reason_code": reason_code, "cache_hit": cache_hit}
+
+
+def _proof_result_payload(result: Any) -> dict[str, Any]:
+    return _proof_payload(
+        result.status,
+        result.reason_code,
+        cache_hit=bool(getattr(result, "cache_hit", False)),
+    )
+
+
+def _combined_artifact_status(
+    *proofs: dict[str, Any],
+) -> tuple[str, str]:
+    for proof in proofs:
+        if proof["status"] == "proof-unavailable":
+            return "proof-unavailable", str(proof["reason_code"])
+    for proof in proofs:
+        if proof["status"] == "missing-or-mismatched":
+            return "missing-or-mismatched", str(proof["reason_code"])
+    return "ready", "ready"
 
 
 def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
     from solstone.think.providers import oci_image
 
-    config = read_journal_config()
-    record = config.get("providers", {}).get("bundled", {}).get(LOCAL_PROVIDER_NAME, {})
-    if not isinstance(record, dict):
-        record = {}
-    selected_model = normalize_model_id(
-        model_id or record.get("model_id") or LOCAL_MODEL
-    )
+    selected_model = normalize_model_id(model_id or LOCAL_MODEL)
     spec = LOCAL_MODEL_SPECS[selected_model]
-
-    # The persisted record is a cache keyed by model_id. Trust a recorded
-    # artifact path only when the record is for the selected model AND the path
-    # lives under that model's directory; otherwise it is stale (e.g. left by a
-    # prior model's install before a LOCAL_MODEL change) and must be ignored so
-    # we recompute from the spec. Never pair a recorded path from one model with
-    # a freshly-recomputed path from another — a mixed gguf/mmproj pair aborts
-    # llama-server at spawn with an n_embd text/projector mismatch.
-    expected_dir = model_dir(selected_model)
-
-    def _trusted_record_path(value: str | None) -> Path | None:
-        if not value or record.get("model_id") != selected_model:
-            return None
-        candidate = Path(value)
-        return candidate if candidate.parent == expected_dir else None
-
-    gguf_path = _trusted_record_path(record.get("model_path")) or model_path(
-        selected_model
-    )
-    resolved_mmproj = _trusted_record_path(record.get("mmproj_path")) or mmproj_path(
-        selected_model
-    )
-    mmproj_installed = resolved_mmproj is None or resolved_mmproj.exists()
+    gguf_path = model_path(selected_model)
+    resolved_mmproj = mmproj_path(selected_model)
 
     pin = pin_for_current_platform()
     vulkan_binary_path = binary_path_for_pin(pin=pin)
-    recorded_binary_path = record.get("binary_path")
-    vulkan_binary_installed = (
-        record.get("binary_artifact") == pin["filename"]
-        and record.get("binary_sha256") == pin["sha256"]
-        and recorded_binary_path is not None
-        and Path(recorded_binary_path) == vulkan_binary_path
-        and vulkan_binary_path.exists()
-        and os.access(vulkan_binary_path, os.X_OK)
+    vulkan_proof = prove_manifest(
+        artifact_manifest_path(binary_install_dir(pin=pin)),
+        provider=LOCAL_PROVIDER_NAME,
+        pin_identity=_vulkan_pin_identity(pin=pin),
     )
+    vulkan_payload = _proof_result_payload(vulkan_proof)
 
     arch = _oci_arch()
     cuda_binary = cuda_binary_path()
-    cuda_binary_installed = (
-        oci_image.verify_sidecar_install(
-            CUDA_SERVER_PIN.image_ref,
-            arch,
-            CUDA_SERVER_PIN.wanted_files_for_arch(arch),
-            cuda_binary_dir(),
-        )
-        and cuda_binary.exists()
-        and os.access(cuda_binary, os.X_OK)
+    cuda_wanted_files = CUDA_SERVER_PIN.wanted_files_for_arch(arch)
+    cuda_proof = prove_cuda_sidecar(
+        provider=LOCAL_PROVIDER_NAME,
+        image_ref=CUDA_SERVER_PIN.image_ref,
+        arch=arch,
+        wanted_files=cuda_wanted_files,
+        target_dir=cuda_binary_dir(),
+        pin_identity=_cuda_pin_identity(arch, cuda_wanted_files),
+        verifier=oci_image.verify_sidecar_install,
     )
+    cuda_payload = _proof_result_payload(cuda_proof)
+    model_proof = prove_manifest(
+        artifact_manifest_path(model_dir(selected_model)),
+        provider=LOCAL_PROVIDER_NAME,
+        pin_identity=_model_pin_identity(selected_model),
+    )
+    model_payload = _proof_result_payload(model_proof)
 
     return {
-        "binary_installed": vulkan_binary_installed or cuda_binary_installed,
-        "model_installed": gguf_path.exists() and mmproj_installed,
-        "gguf_installed": gguf_path.exists(),
-        "mmproj_installed": mmproj_installed,
-        "vulkan_binary_installed": vulkan_binary_installed,
-        "cuda_binary_installed": cuda_binary_installed,
+        "binary_installed": vulkan_proof.ready or cuda_proof.ready,
+        "model_installed": model_proof.ready,
+        "gguf_installed": model_proof.ready,
+        "mmproj_installed": model_proof.ready,
+        "vulkan_binary_installed": vulkan_proof.ready,
+        "cuda_binary_installed": cuda_proof.ready,
         "vulkan_binary_path": str(vulkan_binary_path),
         "cuda_binary_path": str(cuda_binary),
         "binary_path": str(vulkan_binary_path),
@@ -707,10 +889,13 @@ def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
         "mmproj_path": str(resolved_mmproj) if resolved_mmproj is not None else None,
         "model_id": selected_model,
         "min_ram_bytes": spec.min_ram_bytes,
+        "vulkan_proof": vulkan_payload,
+        "cuda_proof": cuda_payload,
+        "model_proof": model_payload,
     }
 
 
-def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
+def inspect_readiness(model_id: str | None = None) -> ReadinessOutcome:
     from solstone.think.providers import local_cuda
 
     choice = local_cuda.resolve_local_backend(CUDA_SERVER_PIN)
@@ -736,41 +921,88 @@ def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
         gpu_available = selected_gpu is not None
         gpu_probe_ok = local_vulkan.gpu_probe_ok()
 
-    return {
-        "install_state": status["install_state"],
-        "binary_installed": binary_installed,
-        "model_installed": artifacts["model_installed"],
-        "gguf_installed": artifacts["gguf_installed"],
-        "mmproj_installed": artifacts["mmproj_installed"],
-        "ram_sufficient": memory_verdict.severity != "blocked",
-        "gpu_available": gpu_available,
-        "gpu_probe_ok": gpu_probe_ok,
-        "binary_path": str(binary_path),
-        "model_path": artifacts["model_path"],
-        "mmproj_path": artifacts["mmproj_path"],
-        "model_id": artifacts["model_id"],
-        "install_error": status["install_error"],
-        "backend": choice.backend,
-        "backend_reason": choice.reason,
-    }
+    binary_proof = (
+        artifacts["cuda_proof"]
+        if choice.backend == "cuda"
+        else artifacts["vulkan_proof"]
+    )
+    artifact_status, artifact_reason = _combined_artifact_status(
+        binary_proof,
+        artifacts["model_proof"],
+    )
+    ram_sufficient = memory_verdict.severity != "blocked"
+    if artifact_status != "ready":
+        readiness_status = artifact_status
+        reason_code = artifact_reason
+    elif not ram_sufficient:
+        readiness_status = "host-ineligible"
+        reason_code = "ram_insufficient"
+    elif not gpu_probe_ok:
+        readiness_status = "host-ineligible"
+        reason_code = "gpu_probe_failed"
+    elif not gpu_available:
+        readiness_status = "host-ineligible"
+        reason_code = "gpu_unavailable"
+    else:
+        readiness_status = "ready"
+        reason_code = "ready"
+
+    return ReadinessOutcome(
+        provider=LOCAL_PROVIDER_NAME,
+        status=readiness_status,  # type: ignore[arg-type]
+        reason_code=reason_code,
+        target={
+            "model_id": artifacts["model_id"],
+            "target_fingerprint_json": status["target_fingerprint_json"],
+            "target_fingerprint_sha256": status["target_fingerprint_sha256"],
+        },
+        install={
+            "install_state": status["install_state"],
+            "install_error": status["install_error"],
+            "error_code": status["error_code"],
+            "attempt_id": status["attempt_id"],
+            "progress_bytes_received": status["progress_bytes_received"],
+            "progress_bytes_total": status["progress_bytes_total"],
+            "last_transition_at": status["last_transition_at"],
+            "last_progress_at": status["last_progress_at"],
+        },
+        host={
+            "ram_sufficient": ram_sufficient,
+            "gpu_available": gpu_available,
+            "gpu_probe_ok": gpu_probe_ok,
+            "backend": choice.backend,
+            "backend_reason": choice.reason,
+        },
+        artifacts={
+            **artifacts,
+            "binary_installed": binary_installed,
+            "binary_path": str(binary_path),
+        },
+        proof={
+            "binary": binary_proof,
+            "model": artifacts["model_proof"],
+            "vulkan": artifacts["vulkan_proof"],
+            "cuda": artifacts["cuda_proof"],
+        },
+    )
 
 
 def ensure_artifacts_installed(model_id: str) -> LocalArtifacts:
     selected_model = normalize_model_id(model_id)
     readiness = inspect_readiness(selected_model)
-    if not readiness["binary_installed"]:
+    if not readiness.artifacts["binary_installed"]:
         raise LocalProviderError("binary_missing", "Local runtime is not installed.")
-    if not readiness["model_installed"]:
+    if not readiness.artifacts["model_installed"]:
         raise LocalProviderError(
             "model_missing", "Local model files are not installed."
         )
-    mmproj = readiness.get("mmproj_path")
+    mmproj = readiness.artifacts.get("mmproj_path")
     return LocalArtifacts(
-        backend=str(readiness["backend"]),
-        backend_reason=str(readiness["backend_reason"]),
-        binary_path=Path(readiness["binary_path"]),
-        lib_dir=cuda_binary_dir() if readiness["backend"] == "cuda" else None,
-        gguf_path=Path(readiness["model_path"]),
+        backend=str(readiness.host["backend"]),
+        backend_reason=str(readiness.host["backend_reason"]),
+        binary_path=Path(readiness.artifacts["binary_path"]),
+        lib_dir=cuda_binary_dir() if readiness.host["backend"] == "cuda" else None,
+        gguf_path=Path(readiness.artifacts["model_path"]),
         mmproj_path=Path(mmproj) if mmproj else None,
     )
 
@@ -795,4 +1027,5 @@ __all__ = [
     "gpu_device_override",
     "inspect_readiness",
     "ensure_artifacts_installed",
+    "target_fingerprint",
 ]

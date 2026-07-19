@@ -22,6 +22,7 @@ from solstone.think.models import (
     LOCAL_MODEL,
     get_model_provider,
 )
+from solstone.think.providers.artifact_proof import ReadinessOutcome
 from solstone.think.talents import TalentHookError
 
 
@@ -2474,6 +2475,61 @@ def _select_local_provider(monkeypatch) -> None:
     )
 
 
+def _provider_local_readiness(
+    *,
+    binary_installed: bool = True,
+    model_installed: bool = True,
+    ram_sufficient: bool = True,
+    gpu_available: bool = True,
+    gpu_probe_ok: bool = True,
+    binary_path: str = "/fake/llama-server",
+) -> ReadinessOutcome:
+    ready = binary_installed and model_installed
+    return ReadinessOutcome(
+        provider="local",
+        status="ready" if ready else "missing-or-mismatched",
+        reason_code="ready" if ready else "manifest_missing",
+        target={"model_id": LOCAL_MODEL},
+        install={
+            "install_state": "idle",
+            "install_error": None,
+            "error_code": None,
+            "attempt_id": None,
+            "progress_bytes_received": None,
+            "progress_bytes_total": None,
+            "last_transition_at": None,
+            "last_progress_at": None,
+        },
+        host={
+            "ram_sufficient": ram_sufficient,
+            "gpu_available": gpu_available,
+            "gpu_probe_ok": gpu_probe_ok,
+            "backend": "vulkan",
+            "backend_reason": "test vulkan",
+        },
+        artifacts={
+            "binary_installed": binary_installed,
+            "model_installed": model_installed,
+            "binary_path": binary_path,
+            "model_path": "/tmp/model.gguf",
+            "mmproj_path": None,
+            "model_id": LOCAL_MODEL,
+        },
+        proof={
+            "binary": {
+                "status": "ready" if binary_installed else "missing-or-mismatched",
+                "reason_code": "ready" if binary_installed else "manifest_missing",
+                "cache_hit": False,
+            },
+            "model": {
+                "status": "ready" if model_installed else "missing-or-mismatched",
+                "reason_code": "ready" if model_installed else "manifest_missing",
+                "cache_hit": False,
+            },
+        },
+    )
+
+
 def test_build_provider_status_local_not_selected_is_inert(monkeypatch):
     from solstone.think.providers import build_provider_status
 
@@ -2488,13 +2544,7 @@ def test_build_provider_status_local_not_selected_is_inert(monkeypatch):
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",
-        lambda: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "gpu_available": True,
-            "binary_path": "/fake/llama-server",
-        },
+        lambda: _provider_local_readiness(),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.is_healthy",
@@ -2519,12 +2569,7 @@ def test_build_provider_status_local_readiness(monkeypatch):
     _select_local_provider(monkeypatch)
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",
-        lambda: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "gpu_available": True,
-        },
+        lambda: _provider_local_readiness(),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.is_healthy", lambda: True
@@ -2549,13 +2594,7 @@ def test_build_provider_status_local_launch_failure_adds_probe_detail_and_hint(
     detail = "dyld: Library not loaded: @rpath/libllama.dylib"
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",
-        lambda: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "gpu_available": True,
-            "binary_path": "/fake/llama-server",
-        },
+        lambda: _provider_local_readiness(),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.is_healthy", lambda: False
@@ -2584,13 +2623,7 @@ def test_build_provider_status_local_server_unhealthy_when_probe_runnable(
     _select_local_provider(monkeypatch)
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",
-        lambda: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "gpu_available": True,
-            "binary_path": "/fake/llama-server",
-        },
+        lambda: _provider_local_readiness(),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.is_healthy", lambda: False
@@ -2619,13 +2652,7 @@ def test_build_provider_status_local_healthy_skips_probe(monkeypatch):
 
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",
-        lambda: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "gpu_available": True,
-            "binary_path": "/fake/llama-server",
-        },
+        lambda: _provider_local_readiness(),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.is_healthy", lambda: True
@@ -2648,12 +2675,11 @@ def test_local_provider_status_carries_install_hint_substring(monkeypatch):
     _select_local_provider(monkeypatch)
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",
-        lambda: {
-            "binary_installed": False,
-            "model_installed": False,
-            "ram_sufficient": False,
-            "gpu_available": True,
-        },
+        lambda: _provider_local_readiness(
+            binary_installed=False,
+            model_installed=False,
+            ram_sufficient=False,
+        ),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.is_healthy", lambda: False
@@ -2680,13 +2706,7 @@ def test_local_provider_status_reports_gpu_unavailable_issue(monkeypatch):
     _select_local_provider(monkeypatch)
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",
-        lambda: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "gpu_available": False,
-            "binary_path": "/fake/llama-server",
-        },
+        lambda: _provider_local_readiness(gpu_available=False),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.is_healthy", lambda: True
@@ -2705,13 +2725,7 @@ def test_build_provider_status_local_configured_ignores_ram_flag(monkeypatch):
     _select_local_provider(monkeypatch)
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",
-        lambda: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": False,
-            "gpu_available": True,
-            "binary_path": "/fake/llama-server",
-        },
+        lambda: _provider_local_readiness(ram_sufficient=False),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.is_healthy", lambda: True

@@ -13,6 +13,7 @@ from solstone.apps.thinking import routes
 from solstone.apps.thinking.local_bootstrap import LOCAL_MODEL_SPECS
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.think.models import LOCAL_MODEL, NO_BRAIN_PROVIDER, resolve_provider
+from solstone.think.providers.artifact_proof import ReadinessOutcome
 from solstone.think.providers.install_state import InstallState
 from solstone.think.providers.state import ProviderState
 
@@ -63,6 +64,43 @@ def _write_config(journal_path, config: dict) -> None:
 def _assert_install_status(payload: dict) -> None:
     assert INSTALL_STATUS_FIELDS <= set(payload)
     assert payload["install_state"] in CANONICAL_INSTALL_STATES
+
+
+def _local_readiness_gpu_probe_failed() -> ReadinessOutcome:
+    return ReadinessOutcome(
+        provider="local",
+        status="ready",
+        reason_code="ready",
+        target={"model_id": LOCAL_MODEL},
+        install={
+            "install_state": "installed",
+            "install_error": None,
+            "error_code": None,
+            "attempt_id": None,
+            "progress_bytes_received": None,
+            "progress_bytes_total": None,
+            "last_transition_at": None,
+            "last_progress_at": None,
+        },
+        host={
+            "ram_sufficient": True,
+            "gpu_available": True,
+            "gpu_probe_ok": False,
+            "backend": "vulkan",
+            "backend_reason": "test vulkan",
+        },
+        artifacts={
+            "binary_installed": True,
+            "model_installed": True,
+            "binary_path": "/tmp/llama-server",
+            "model_path": "/tmp/model.gguf",
+            "model_id": LOCAL_MODEL,
+        },
+        proof={
+            "binary": {"status": "ready", "reason_code": "ready", "cache_hit": False},
+            "model": {"status": "ready", "reason_code": "ready", "cache_hit": False},
+        },
+    )
 
 
 def _patch_selected_providers(monkeypatch, *, provider: str = "google") -> None:
@@ -1158,18 +1196,7 @@ def test_get_providers_ai_readiness_surfaces_gpu_probe_failed_from_inspect(
 ):
     monkeypatch.setattr(
         "solstone.think.providers.local_install.inspect_readiness",
-        lambda _model=None: {
-            "install_state": "installed",
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "gpu_available": True,
-            "gpu_probe_ok": False,
-            "binary_path": "/tmp/llama-server",
-            "model_path": "/tmp/model.gguf",
-            "model_id": LOCAL_MODEL,
-            "install_error": None,
-        },
+        lambda _model=None: _local_readiness_gpu_probe_failed(),
     )
     monkeypatch.setattr(
         "solstone.think.providers.local_server.probe_state",

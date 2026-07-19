@@ -139,6 +139,12 @@ _ENTRIES: dict[str, _Entry] = {
         detail=_LOCAL_SETUP_DETAIL,
         recovery_action=_LOCAL_SETUP_ACTION,
     ),
+    "install_busy": _Entry(
+        klass="setup",
+        summary="local model setup is already running",
+        detail="A local provider install is already in progress. Try again shortly.",
+        recovery_action=None,
+    ),
     "local_model_installing": _Entry(
         klass="setup",
         summary="local model setup is finishing",

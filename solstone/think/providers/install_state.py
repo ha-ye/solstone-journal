@@ -11,7 +11,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, NotRequired, TypedDict, cast, get_args
+from typing import Any, Callable, Literal, TypedDict, cast, get_args
 
 from solstone.think.journal_config import JournalConfigMutation, mutate_journal_config
 from solstone.think.journal_io.atomic import atomic_replace
@@ -47,7 +47,6 @@ class InstallStatus(TypedDict):
     install_error: str | None
     error_code: str | None
     owner: dict[str, Any] | None
-    name: NotRequired[str]
 
 
 class InstallStateError(RuntimeError):
@@ -71,7 +70,7 @@ IN_FLIGHT_STATES: frozenset[InstallState] = frozenset(
 TERMINAL_STATES: frozenset[InstallState] = frozenset({"idle", "installed", "failed"})
 _INSTALL_STATES = frozenset(get_args(InstallState))
 _STATUS_MODE = 0o600
-_LEGACY_STATUS_KEYS = frozenset(
+_LEGACY_OPERATIONAL_KEYS = frozenset(
     {
         "install_state",
         "last_transition_at",
@@ -79,6 +78,29 @@ _LEGACY_STATUS_KEYS = frozenset(
         "progress_bytes_received",
         "progress_bytes_total",
         "install_error",
+        "binary_artifact",
+        "binary_sha256",
+        "binary_path",
+        "model_id",
+        "model_path",
+        "model_sha256",
+        "mmproj_path",
+        "mmproj_sha256",
+        "mlx_model_id",
+        "mlx_revision",
+        "mlx_snapshot_dir",
+        "mlx_variant_dir",
+        "binary_artifact_cpu",
+        "binary_sha256_cpu",
+        "binary_path_cpu",
+        "binary_artifact_vulkan",
+        "binary_sha256_vulkan",
+        "binary_path_vulkan",
+        "model_repo",
+        "model_filename",
+        "model_revision",
+        "model_path",
+        "model_sha256",
     }
 )
 _LAST_PROGRESS_WRITE_MONOTONIC: dict[tuple[str, str], float] = {}
@@ -115,26 +137,24 @@ def provider_status_path(
 
 def make_idle_status(name: str) -> InstallStatus:
     provider = _validate_provider(name)
-    return _with_legacy_name(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "provider": provider,
-            "revision": 0,
-            "install_state": "idle",
-            "attempt_id": None,
-            "target_fingerprint_json": None,
-            "target_fingerprint_sha256": None,
-            "started_at": None,
-            "last_transition_at": None,
-            "last_progress_at": None,
-            "completed_at": None,
-            "progress_bytes_received": None,
-            "progress_bytes_total": None,
-            "install_error": None,
-            "error_code": None,
-            "owner": None,
-        }
-    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "provider": provider,
+        "revision": 0,
+        "install_state": "idle",
+        "attempt_id": None,
+        "target_fingerprint_json": None,
+        "target_fingerprint_sha256": None,
+        "started_at": None,
+        "last_transition_at": None,
+        "last_progress_at": None,
+        "completed_at": None,
+        "progress_bytes_received": None,
+        "progress_bytes_total": None,
+        "install_error": None,
+        "error_code": None,
+        "owner": None,
+    }
 
 
 def begin_install_attempt(
@@ -160,6 +180,91 @@ def begin_install_attempt(
     )
 
 
+def begin_or_replace_install_attempt(
+    provider: str,
+    fingerprint: dict[str, Any],
+    *,
+    initial_state: InstallState = "resolving",
+    owner: dict[str, Any] | None = None,
+    journal_path: str | Path | None = None,
+) -> InstallStatus:
+    """Begin an attempt after the caller owns the provider lease."""
+    current = read_install_status(name=provider, journal_path=journal_path)
+    if current["install_state"] in IN_FLIGHT_STATES:
+        record_interrupted_install(
+            provider,
+            attempt_id=str(current["attempt_id"]),
+            target_fingerprint_sha256=current["target_fingerprint_sha256"],
+            journal_path=journal_path,
+        )
+    return begin_install_attempt(
+        provider,
+        fingerprint,
+        initial_state=initial_state,
+        owner=owner,
+        journal_path=journal_path,
+    )
+
+
+def assert_install_attempt_current(
+    status: InstallStatus,
+    *,
+    journal_path: str | Path | None = None,
+) -> InstallStatus:
+    """Return current status if the same in-flight attempt still owns the slot."""
+    attempt = _coerce_status(status)
+    current = read_install_status(name=attempt["provider"], journal_path=journal_path)
+    if current["install_state"] not in IN_FLIGHT_STATES:
+        raise InstallStatusConflictError("install attempt is no longer in-flight")
+    if current["attempt_id"] != attempt["attempt_id"]:
+        raise InstallStatusConflictError("install attempt id changed")
+    if current["target_fingerprint_sha256"] != attempt["target_fingerprint_sha256"]:
+        raise InstallStatusConflictError("install target fingerprint changed")
+    return current
+
+
+def observe_install_attempt(
+    provider: str,
+    *,
+    target_fingerprint_sha256: str,
+    timeout_s: float,
+    poll_interval_s: float = 1.0,
+    progress_interval_s: float = 10.0,
+    progress: Callable[[InstallStatus], None] | None = None,
+    journal_path: str | Path | None = None,
+) -> InstallStatus | None:
+    """Poll the status record for a same-target in-flight attempt to finish."""
+    deadline = time.monotonic() + timeout_s
+    last_progress_emit = 0.0
+    last_progress_key: tuple[Any, ...] | None = None
+    while True:
+        status = read_install_status(name=provider, journal_path=journal_path)
+        if status["target_fingerprint_sha256"] != target_fingerprint_sha256:
+            return status
+        if progress is not None:
+            progress_key = (
+                status["install_state"],
+                status["progress_bytes_received"],
+                status["progress_bytes_total"],
+                status["install_error"],
+                status["error_code"],
+            )
+            now = time.monotonic()
+            if (
+                last_progress_key is None
+                or progress_key != last_progress_key
+                or now - last_progress_emit >= progress_interval_s
+            ):
+                progress(status)
+                last_progress_key = progress_key
+                last_progress_emit = now
+        if status["install_state"] in TERMINAL_STATES:
+            return status
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(poll_interval_s)
+
+
 def transition_state(
     status: InstallStatus,
     *,
@@ -178,35 +283,33 @@ def transition_state(
         next_attempt_id = uuid.uuid4().hex
 
     is_terminal = new_state in TERMINAL_STATES
-    return _with_legacy_name(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "provider": current["provider"],
-            "revision": current["revision"],
-            "install_state": new_state,
-            "attempt_id": None if new_state == "idle" else next_attempt_id,
-            "target_fingerprint_json": current["target_fingerprint_json"],
-            "target_fingerprint_sha256": current["target_fingerprint_sha256"],
-            "started_at": (
-                timestamp
-                if current["install_state"] in TERMINAL_STATES
-                and new_state in IN_FLIGHT_STATES
-                else current["started_at"]
-            ),
-            "last_transition_at": timestamp,
-            "last_progress_at": timestamp if new_state in IN_FLIGHT_STATES else None,
-            "completed_at": timestamp if is_terminal and new_state != "idle" else None,
-            "progress_bytes_received": (
-                None if is_terminal else current["progress_bytes_received"]
-            ),
-            "progress_bytes_total": (
-                None if is_terminal else current["progress_bytes_total"]
-            ),
-            "install_error": error if new_state == "failed" else None,
-            "error_code": error_code if new_state == "failed" else None,
-            "owner": current["owner"],
-        }
-    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "provider": current["provider"],
+        "revision": current["revision"],
+        "install_state": new_state,
+        "attempt_id": None if new_state == "idle" else next_attempt_id,
+        "target_fingerprint_json": current["target_fingerprint_json"],
+        "target_fingerprint_sha256": current["target_fingerprint_sha256"],
+        "started_at": (
+            timestamp
+            if current["install_state"] in TERMINAL_STATES
+            and new_state in IN_FLIGHT_STATES
+            else current["started_at"]
+        ),
+        "last_transition_at": timestamp,
+        "last_progress_at": timestamp if new_state in IN_FLIGHT_STATES else None,
+        "completed_at": timestamp if is_terminal and new_state != "idle" else None,
+        "progress_bytes_received": (
+            None if is_terminal else current["progress_bytes_received"]
+        ),
+        "progress_bytes_total": None
+        if is_terminal
+        else current["progress_bytes_total"],
+        "install_error": error if new_state == "failed" else None,
+        "error_code": error_code if new_state == "failed" else None,
+        "owner": current["owner"],
+    }
 
 
 def bump_progress(
@@ -218,32 +321,28 @@ def bump_progress(
     current = _coerce_status(status)
     if current["install_state"] not in IN_FLIGHT_STATES:
         raise ValueError("install progress can only be bumped for in-flight states")
-    return _with_legacy_name(
-        {
-            **current,
-            "last_progress_at": now_iso(),
-            "progress_bytes_received": (
-                _nonnegative_int(received)
-                if received is not None
-                else current["progress_bytes_received"]
-            ),
-            "progress_bytes_total": (
-                _nonnegative_int(total)
-                if total is not None
-                else current["progress_bytes_total"]
-            ),
-        }
-    )
+    return {
+        **current,
+        "last_progress_at": now_iso(),
+        "progress_bytes_received": (
+            _nonnegative_int(received)
+            if received is not None
+            else current["progress_bytes_received"]
+        ),
+        "progress_bytes_total": (
+            _nonnegative_int(total)
+            if total is not None
+            else current["progress_bytes_total"]
+        ),
+    }
 
 
 def read_install_status(
     *,
-    scope: str = "bundled",
     name: str,
     journal_path: str | Path | None = None,
 ) -> InstallStatus:
     """Read provider install status; absent status is synthetic idle."""
-    _validate_scope(scope)
     provider = _validate_provider(name)
     path = provider_status_path(provider, journal_path=journal_path)
     if not path.exists():
@@ -254,24 +353,22 @@ def read_install_status(
         raise InstallStatusMalformedError(f"malformed install status: {path}") from exc
     if not isinstance(data, dict):
         raise InstallStatusMalformedError(f"install status must be an object: {path}")
-    return _with_legacy_name(_coerce_status(data, provider=provider))
+    return _coerce_status(data, provider=provider)
 
 
 def write_install_status(
     status: InstallStatus,
     *,
-    scope: str = "bundled",
     journal_path: str | Path | None = None,
 ) -> InstallStatus:
     """Write provider install status under a sidecar flock."""
-    _validate_scope(scope)
     incoming = _coerce_status(status)
     path = provider_status_path(incoming["provider"], journal_path=journal_path)
     with hold_lock(path, mode=_STATUS_MODE):
         current = _read_current_unlocked(path, incoming["provider"])
         accepted = _accept_transition(current, incoming)
         if accepted is current:
-            return _with_legacy_name(current)
+            return current
         stored = {**accepted, "revision": current["revision"] + 1}
         atomic_replace(
             path,
@@ -279,7 +376,7 @@ def write_install_status(
             mode=_STATUS_MODE,
         )
         _record_progress_write(stored)
-        return _with_legacy_name(stored)
+        return stored
 
 
 def record_interrupted_install(
@@ -315,21 +412,35 @@ def migrate_legacy_provider_install_state(
     *,
     journal_path: str | Path | None = None,
 ) -> dict[str, int]:
-    """Remove legacy provider install status fields from journal config."""
+    """Remove legacy provider install operational fields from journal config."""
 
     def apply(config: dict[str, Any]) -> JournalConfigMutation[dict[str, int]]:
         removed = 0
+        moved = 0
         bundled = config.get("providers", {}).get("bundled")
         if isinstance(bundled, dict):
+            local_record = bundled.get("local")
+            if isinstance(local_record, dict) and "vulkan_device_index" in local_record:
+                providers = config.setdefault("providers", {})
+                owner_config = providers.setdefault("local", {})
+                if isinstance(owner_config, dict):
+                    value = local_record.pop("vulkan_device_index")
+                    if owner_config.get("vulkan_device_index") != value:
+                        owner_config["vulkan_device_index"] = value
+                        moved += 1
+                    removed += 1
             for provider in PROVIDERS:
                 record = bundled.get(provider)
                 if not isinstance(record, dict):
                     continue
-                for key in _LEGACY_STATUS_KEYS:
+                for key in _LEGACY_OPERATIONAL_KEYS:
                     if key in record:
                         record.pop(key, None)
                         removed += 1
-        return JournalConfigMutation(changed=removed > 0, value={"removed": removed})
+        return JournalConfigMutation(
+            changed=removed > 0 or moved > 0,
+            value={"removed": removed, "moved": moved},
+        )
 
     return mutate_journal_config(apply, journal_path=journal_path).value
 
@@ -343,7 +454,7 @@ def _read_current_unlocked(path: Path, provider: ProviderName) -> InstallStatus:
         raise InstallStatusMalformedError(f"malformed install status: {path}") from exc
     if not isinstance(data, dict):
         raise InstallStatusMalformedError(f"install status must be an object: {path}")
-    return _with_legacy_name(_coerce_status(data, provider=provider))
+    return _coerce_status(data, provider=provider)
 
 
 def _accept_transition(
@@ -429,7 +540,7 @@ def _coerce_status(
     *,
     provider: ProviderName | None = None,
 ) -> InstallStatus:
-    raw_provider = provider or data.get("provider") or data.get("name")
+    raw_provider = provider or data.get("provider")
     validated_provider = _validate_provider(raw_provider)
     state = data.get("install_state")
     if state not in _INSTALL_STATES:
@@ -458,37 +569,28 @@ def _coerce_status(
     owner = data.get("owner")
     if owner is not None and not isinstance(owner, dict):
         raise InstallStatusMalformedError("owner must be an object or null")
-    return _with_legacy_name(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "provider": validated_provider,
-            "revision": revision,
-            "install_state": cast(InstallState, state),
-            "attempt_id": attempt_id,
-            "target_fingerprint_json": fingerprint_json,
-            "target_fingerprint_sha256": fingerprint_sha,
-            "started_at": _optional_str(data.get("started_at")),
-            "last_transition_at": _optional_str(data.get("last_transition_at")),
-            "last_progress_at": _optional_str(data.get("last_progress_at")),
-            "completed_at": _optional_str(data.get("completed_at")),
-            "progress_bytes_received": _optional_int(
-                data.get("progress_bytes_received")
-            ),
-            "progress_bytes_total": _optional_int(data.get("progress_bytes_total")),
-            "install_error": _optional_str(data.get("install_error")),
-            "error_code": _optional_str(data.get("error_code")),
-            "owner": owner,
-        }
-    )
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "provider": validated_provider,
+        "revision": revision,
+        "install_state": cast(InstallState, state),
+        "attempt_id": attempt_id,
+        "target_fingerprint_json": fingerprint_json,
+        "target_fingerprint_sha256": fingerprint_sha,
+        "started_at": _optional_str(data.get("started_at")),
+        "last_transition_at": _optional_str(data.get("last_transition_at")),
+        "last_progress_at": _optional_str(data.get("last_progress_at")),
+        "completed_at": _optional_str(data.get("completed_at")),
+        "progress_bytes_received": _optional_int(data.get("progress_bytes_received")),
+        "progress_bytes_total": _optional_int(data.get("progress_bytes_total")),
+        "install_error": _optional_str(data.get("install_error")),
+        "error_code": _optional_str(data.get("error_code")),
+        "owner": owner,
+    }
 
 
 def _persistable_status(status: InstallStatus) -> dict[str, Any]:
-    return {key: value for key, value in status.items() if key != "name"}
-
-
-def _with_legacy_name(status: dict[str, Any]) -> InstallStatus:
-    status["name"] = status["provider"]
-    return cast(InstallStatus, status)
+    return dict(status)
 
 
 def _optional_str(value: Any) -> str | None:
@@ -518,11 +620,6 @@ def _validate_provider(value: object) -> ProviderName:
     if value not in PROVIDERS:
         raise ValueError(f"provider install status must be one of: {sorted(PROVIDERS)}")
     return cast(ProviderName, value)
-
-
-def _validate_scope(scope: str) -> None:
-    if scope != "bundled":
-        raise ValueError("install status scope must be 'bundled'")
 
 
 def _normalize_fingerprint_value(value: Any) -> Any:
@@ -559,13 +656,16 @@ __all__ = [
     "ProviderName",
     "SCHEMA_VERSION",
     "TERMINAL_STATES",
+    "assert_install_attempt_current",
     "begin_install_attempt",
+    "begin_or_replace_install_attempt",
     "bump_progress",
     "canonical_fingerprint",
     "fingerprint_sha256",
     "make_idle_status",
     "migrate_legacy_provider_install_state",
     "now_iso",
+    "observe_install_attempt",
     "provider_status_path",
     "read_install_status",
     "record_interrupted_install",

@@ -17,12 +17,52 @@ from solstone.think.providers import (
     parakeet_install,
     parakeet_server,
 )
+from solstone.think.providers.artifact_proof import ReadinessOutcome
 from solstone.think.providers.parakeet_placement import (
     PARAKEET_ATT_CONTEXT_ENV,
     PARAKEET_ATT_CONTEXT_FRAMES,
 )
 
 _LaunchRecord = dict[str, Any]
+
+
+class _FakeLease:
+    def __init__(self) -> None:
+        self.released = False
+
+    def release(self) -> None:
+        self.released = True
+
+
+def _parakeet_readiness(
+    *,
+    install_state: str = "idle",
+    binary_installed: bool = False,
+    model_installed: bool = False,
+) -> ReadinessOutcome:
+    ready = binary_installed and model_installed
+    return ReadinessOutcome(
+        provider="parakeet",
+        status="ready" if ready else "missing-or-mismatched",
+        reason_code="ready" if ready else "manifest_missing",
+        target={},
+        install={
+            "install_state": install_state,
+            "install_error": None,
+            "error_code": None,
+            "attempt_id": None,
+            "progress_bytes_received": None,
+            "progress_bytes_total": None,
+            "last_transition_at": None,
+            "last_progress_at": None,
+        },
+        host={},
+        artifacts={
+            "binary_installed": binary_installed,
+            "model_installed": model_installed,
+        },
+        proof={},
+    )
 
 
 def _assert_att_context(launch: _LaunchRecord) -> None:
@@ -627,7 +667,15 @@ def test_start_parakeet_server_starts_background_install_when_missing(
         def start(self):
             started.append(self.name)
 
+    class _Event:
+        def set(self):
+            return None
+
+        def wait(self, timeout=None):
+            return True
+
     monkeypatch.setattr(supervisor.threading, "Thread", _Thread)
+    monkeypatch.setattr(supervisor.threading, "Event", _Event)
     monkeypatch.setattr(
         parakeet_install,
         "ensure_artifacts_installed",
@@ -640,13 +688,8 @@ def test_start_parakeet_server_starts_background_install_when_missing(
     monkeypatch.setattr(
         parakeet_install,
         "inspect_readiness",
-        lambda: {
-            "install_state": "idle",
-            "binary_installed": False,
-            "model_installed": False,
-        },
+        lambda: _parakeet_readiness(),
     )
-    monkeypatch.setattr(supervisor, "_parakeet_bootstrap_thread", None)
 
     assert supervisor.start_parakeet_server() is None
     assert started == ["parakeet-cpp-provider-bootstrap"]
@@ -654,49 +697,67 @@ def test_start_parakeet_server_starts_background_install_when_missing(
 
 
 def test_parakeet_bootstrap_worker_requests_start_after_install(monkeypatch) -> None:
-    calls: list[str] = []
+    calls: list[dict[str, Any]] = []
     requests: list[str] = []
+    lease = _FakeLease()
+    attempt_status = {"attempt_id": "attempt"}
+    ack = supervisor.threading.Event()
 
     monkeypatch.setattr(
-        parakeet_install, "install_parakeet", lambda: calls.append("install")
+        parakeet_install,
+        "install_parakeet",
+        lambda **kwargs: calls.append(kwargs),
     )
     monkeypatch.setattr(
         supervisor, "_request_parakeet_server_start", lambda: requests.append("start")
     )
-    monkeypatch.setattr(
-        supervisor,
-        "_parakeet_bootstrap_thread",
-        supervisor.threading.current_thread(),
+
+    supervisor._run_parakeet_bootstrap_worker(
+        lease=lease,
+        attempt_status=attempt_status,
+        ack=ack,
     )
 
-    supervisor._run_parakeet_bootstrap_worker()
-
-    assert calls == ["install"]
+    assert calls == [
+        {"journal_path": None, "lease": lease, "attempt_status": attempt_status}
+    ]
     assert requests == ["start"]
-    assert supervisor._parakeet_bootstrap_thread is None
+    assert ack.is_set()
+    assert lease.released is True
 
 
 def test_parakeet_bootstrap_worker_uses_captured_journal_path(
     monkeypatch, tmp_path
 ) -> None:
-    calls: list[Path] = []
+    calls: list[dict[str, Any]] = []
     requests: list[str] = []
     journal_path = tmp_path / "original"
+    lease = _FakeLease()
+    attempt_status = {"attempt_id": "attempt"}
+    ack = supervisor.threading.Event()
 
-    def fake_install_parakeet(*, journal_path=None):
-        calls.append(journal_path)
+    def fake_install_parakeet(**kwargs):
+        calls.append(kwargs)
 
     monkeypatch.setattr(parakeet_install, "install_parakeet", fake_install_parakeet)
     monkeypatch.setattr(
         supervisor, "_request_parakeet_server_start", lambda: requests.append("start")
     )
-    monkeypatch.setattr(
-        supervisor,
-        "_parakeet_bootstrap_thread",
-        supervisor.threading.current_thread(),
+
+    supervisor._run_parakeet_bootstrap_worker(
+        journal_path,
+        lease,
+        attempt_status,
+        ack,
     )
 
-    supervisor._run_parakeet_bootstrap_worker(journal_path)
-
-    assert calls == [journal_path]
+    assert calls == [
+        {
+            "journal_path": journal_path,
+            "lease": lease,
+            "attempt_status": attempt_status,
+        }
+    ]
     assert requests == ["start"]
+    assert ack.is_set()
+    assert lease.released is True

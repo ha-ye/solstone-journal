@@ -251,8 +251,6 @@ _sync_conflict_shutdown: bool = False
 _supervisor_ref: str | None = None
 _supervisor_start: float | None = None
 _parent_death_sigterm_sent = threading.Event()
-_parakeet_bootstrap_lock = threading.Lock()
-_parakeet_bootstrap_thread: threading.Thread | None = None
 
 
 def app_supervised_graceful_budget_s() -> float:
@@ -1780,21 +1778,21 @@ def _start_mlx_local_server() -> RunnerManagedProcess | None:
     from solstone.think.providers import local_server, mlx_install
 
     readiness = mlx_install.inspect_readiness()
-    readiness_keys = (
-        "platform_supported",
-        "package_available",
-        "ram_sufficient",
-        "model_installed",
-    )
-    if not all(readiness.get(key) for key in readiness_keys):
+    readiness_values = {
+        "platform_supported": readiness.host["platform_supported"],
+        "package_available": readiness.host["package_available"],
+        "ram_sufficient": readiness.host["ram_sufficient"],
+        "model_installed": readiness.artifacts["model_installed"],
+    }
+    if not all(readiness_values.values()):
         logging.info(
             "MLX local model not ready; skipping mlx-vlm server startup: %s",
-            {key: readiness.get(key) for key in readiness_keys},
+            readiness_values,
         )
         return None
 
-    runtime_dir = readiness["runtime_dir"]
-    model_id = readiness["model_id"]
+    runtime_dir = readiness.artifacts["runtime_dir"]
+    model_id = readiness.target["model_id"]
     port = find_available_port()
     write_service_port("local", port)
     script_path = str(Path(sys.executable).with_name(MLX_SERVER_PROCESS_NAME))
@@ -1938,33 +1936,38 @@ def _request_parakeet_server_start() -> None:
         logging.exception("could not request parakeet-server start")
 
 
-def _run_parakeet_bootstrap_worker(journal_path: Path | None = None) -> None:
+def _run_parakeet_bootstrap_worker(
+    journal_path: Path | None = None,
+    lease: Any | None = None,
+    attempt_status: Any | None = None,
+    ack: threading.Event | None = None,
+) -> None:
     """Install parakeet.cpp artifacts in the background, then retry startup."""
-    current_thread = threading.current_thread()
+    if ack is not None:
+        ack.set()
     try:
         from solstone.think.providers import parakeet_install
 
-        if journal_path is None:
-            parakeet_install.install_parakeet()
-        else:
-            parakeet_install.install_parakeet(journal_path=journal_path)
+        parakeet_install.install_parakeet(
+            journal_path=journal_path,
+            lease=lease,
+            attempt_status=attempt_status,
+        )
     except Exception:
         logging.exception("parakeet.cpp provider bootstrap failed")
     else:
         logging.info("parakeet.cpp provider bootstrap complete; requesting startup")
         _request_parakeet_server_start()
     finally:
-        global _parakeet_bootstrap_thread
-        with _parakeet_bootstrap_lock:
-            if _parakeet_bootstrap_thread is current_thread:
-                _parakeet_bootstrap_thread = None
+        if lease is not None:
+            lease.release()
 
 
 def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
     """Start one non-blocking parakeet.cpp install worker when artifacts are absent."""
-    global _parakeet_bootstrap_thread
     from solstone.think.providers import parakeet_install
-    from solstone.think.providers.install_state import IN_FLIGHT_STATES
+    from solstone.think.providers.install_lease import acquire_install_lease
+    from solstone.think.providers.install_state import begin_or_replace_install_attempt
 
     try:
         readiness = parakeet_install.inspect_readiness()
@@ -1972,31 +1975,40 @@ def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
         logging.info(
             "could not inspect parakeet.cpp readiness before bootstrap: %s", exc
         )
-        readiness = {}
+        readiness = None
 
-    if readiness.get("binary_installed") and readiness.get("model_installed"):
+    if readiness is not None and readiness.ready:
         return
-    if readiness.get("install_state") in IN_FLIGHT_STATES:
-        logging.info(
-            "parakeet.cpp provider install already %s; not starting another worker",
-            readiness.get("install_state"),
+
+    journal_path = Path(get_journal())
+    lease = acquire_install_lease("parakeet", journal_path=journal_path)
+    if lease is None:
+        logging.info("parakeet.cpp provider bootstrap already running")
+        return
+    try:
+        fingerprint = parakeet_install.target_fingerprint(journal_path=journal_path)
+        attempt_status = begin_or_replace_install_attempt(
+            "parakeet",
+            fingerprint,
+            initial_state="downloading",
+            owner={"entry": "supervisor_parakeet_bootstrap"},
+            journal_path=journal_path,
         )
-        return
-
-    with _parakeet_bootstrap_lock:
-        if (
-            _parakeet_bootstrap_thread is not None
-            and _parakeet_bootstrap_thread.is_alive()
-        ):
-            logging.info("parakeet.cpp provider bootstrap already running")
-            return
-        journal_path = Path(get_journal())
+        ack = threading.Event()
         thread = threading.Thread(
-            target=lambda: _run_parakeet_bootstrap_worker(journal_path),
+            target=lambda: _run_parakeet_bootstrap_worker(
+                journal_path,
+                lease,
+                attempt_status,
+                ack,
+            ),
             name="parakeet-cpp-provider-bootstrap",
             daemon=True,
         )
-        _parakeet_bootstrap_thread = thread
+    except Exception:
+        lease.release()
+        logging.exception("could not prepare parakeet.cpp provider bootstrap worker")
+        return
 
     logging.info(
         "Parakeet artifacts not ready; starting background provider install: %s",
@@ -2005,10 +2017,12 @@ def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
     try:
         thread.start()
     except Exception:
-        with _parakeet_bootstrap_lock:
-            if _parakeet_bootstrap_thread is thread:
-                _parakeet_bootstrap_thread = None
+        lease.release()
         logging.exception("could not start parakeet.cpp provider bootstrap worker")
+        return
+    if not ack.wait(timeout=5.0):
+        lease.release()
+        logging.error("parakeet.cpp provider bootstrap worker did not acknowledge")
 
 
 def _build_parakeet_cmd(

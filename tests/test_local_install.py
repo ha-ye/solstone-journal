@@ -13,7 +13,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from solstone.think.journal_config import read_journal_config
 from solstone.think.models import LOCAL_MODEL
 from solstone.think.providers import (
     fit_report,
@@ -23,8 +22,14 @@ from solstone.think.providers import (
     memory,
     oci_image,
 )
+from solstone.think.providers.artifact_proof import (
+    ReadinessOutcome,
+    artifact_manifest_path,
+    prove_manifest,
+)
 from solstone.think.providers.install_state import read_install_status
 from solstone.think.providers.local import LOCAL_MODEL_SPECS
+from solstone.think.providers.local_endpoint import resolve_local_endpoint
 
 
 def _init_journal(tmp_path, monkeypatch) -> None:
@@ -38,11 +43,107 @@ def _init_journal(tmp_path, monkeypatch) -> None:
 
 
 def _local_status() -> dict:
-    return read_install_status(scope="bundled", name="local")
+    return read_install_status(name="local")
 
 
-def _local_slot() -> dict:
-    return read_journal_config()["providers"]["bundled"]["local"]
+def _write_provider_local_config(tmp_path: Path, updates: dict[str, object]) -> None:
+    path = tmp_path / "config" / "journal.json"
+    config = json.loads(path.read_text(encoding="utf-8"))
+    provider_config = config.setdefault("providers", {}).setdefault("local", {})
+    provider_config.update(updates)
+    path.write_text(json.dumps(config) + "\n", encoding="utf-8")
+
+
+def _fake_local_readiness(
+    *,
+    binary_installed: bool,
+    model_installed: bool,
+    binary_path: Path,
+    model_path: Path,
+    mmproj_path: Path | None = None,
+    ram_sufficient: bool = True,
+    backend: str = "vulkan",
+    backend_reason: str = "test vulkan",
+) -> ReadinessOutcome:
+    missing_binary = not binary_installed
+    missing_model = not model_installed
+    status = (
+        "ready" if not missing_binary and not missing_model else "missing-or-mismatched"
+    )
+    reason_code = (
+        "ready"
+        if status == "ready"
+        else "binary_missing"
+        if missing_binary
+        else "model_missing"
+    )
+    binary_status = "ready" if binary_installed else "missing-or-mismatched"
+    model_status = "ready" if model_installed else "missing-or-mismatched"
+    return ReadinessOutcome(
+        provider=local_install.LOCAL_PROVIDER_NAME,
+        status=status,
+        reason_code=reason_code,
+        target={"model_id": LOCAL_MODEL},
+        install={
+            "install_state": "idle",
+            "install_error": None,
+            "error_code": None,
+            "attempt_id": None,
+            "progress_bytes_received": None,
+            "progress_bytes_total": None,
+            "last_transition_at": None,
+            "last_progress_at": None,
+        },
+        host={
+            "ram_sufficient": ram_sufficient,
+            "gpu_available": True,
+            "gpu_probe_ok": True,
+            "backend": backend,
+            "backend_reason": backend_reason,
+        },
+        artifacts={
+            "binary_installed": binary_installed,
+            "model_installed": model_installed,
+            "binary_path": str(binary_path),
+            "model_path": str(model_path),
+            "mmproj_path": str(mmproj_path) if mmproj_path is not None else None,
+        },
+        proof={
+            "binary": {
+                "status": binary_status,
+                "reason_code": "ready" if binary_installed else "manifest_missing",
+                "cache_hit": False,
+            },
+            "model": {
+                "status": model_status,
+                "reason_code": "ready" if model_installed else "manifest_missing",
+                "cache_hit": False,
+            },
+        },
+    )
+
+
+def _write_ready_vulkan_manifest(
+    *,
+    artifact_key: str | None = None,
+    pin: dict[str, str] | None = None,
+) -> None:
+    resolved_pin = pin or local_install.pin_for_current_platform()
+    resolved_key = artifact_key or local_install.llama_server_artifact_key()
+    local_install._write_vulkan_manifest(
+        artifact_key=resolved_key,
+        pin=resolved_pin,
+        attempt_status=None,
+        fingerprint=local_install.target_fingerprint(LOCAL_MODEL),
+    )
+
+
+def _write_ready_model_manifest(model_id: str = LOCAL_MODEL) -> None:
+    local_install._write_model_manifest(
+        model_id=model_id,
+        attempt_status=None,
+        fingerprint=local_install.target_fingerprint(model_id),
+    )
 
 
 def _fit(severity: fit_report.FitSeverity) -> fit_report.FitReport:
@@ -102,15 +203,13 @@ def _download_with_fake_stream(
     chunks: list[bytes],
     chunk_times: list[float],
 ) -> tuple[Path, list[tuple[int, int | None]]]:
-    clock = [0.0]
     total = sum(len(chunk) for chunk in chunks)
     calls: list[tuple[int, int | None]] = []
-    monkeypatch.setattr(local_install.time, "monotonic", lambda: clock[0])
 
     def fake_stream(method, url, **_kwargs):
         assert method == "GET"
         assert url == "https://example.test/artifact"
-        return _FakeStream(chunks, chunk_times, total, clock)
+        return _FakeStream(chunks, chunk_times, total, [0.0])
 
     def record_progress(received: int, reported_total: int | None) -> None:
         calls.append((received, reported_total))
@@ -129,7 +228,7 @@ def test_install_hint_literal() -> None:
     assert local_install.install_hint() == "journal install-provider local"
 
 
-def test_download_file_rate_limits_many_progress_chunks(tmp_path, monkeypatch):
+def test_download_file_reports_each_progress_chunk(tmp_path, monkeypatch):
     chunks = [b"x"] * 20
     chunk_times = [index * 0.01 for index in range(len(chunks))]
 
@@ -138,8 +237,7 @@ def test_download_file_rate_limits_many_progress_chunks(tmp_path, monkeypatch):
     )
 
     total = sum(len(chunk) for chunk in chunks)
-    assert calls == [(1, total), (total, total)]
-    assert len(calls) < len(chunks)
+    assert calls == [(index, total) for index in range(1, len(chunks) + 1)]
 
 
 def test_download_file_emits_first_progress_promptly(tmp_path, monkeypatch):
@@ -162,11 +260,15 @@ def test_download_file_emits_interval_crossing_progress(tmp_path, monkeypatch):
     )
 
     total = sum(len(chunk) for chunk in chunks)
-    boundary_received = sum(len(chunk) for chunk in chunks[:4])
-    assert calls == [(1, total), (boundary_received, total), (total, total)]
+    expected = []
+    received = 0
+    for chunk in chunks:
+        received += len(chunk)
+        expected.append((received, total))
+    assert calls == expected
 
 
-def test_download_file_emits_final_progress_once_with_dedupe(tmp_path, monkeypatch):
+def test_download_file_emits_each_final_chunk_once(tmp_path, monkeypatch):
     chunks = [b"aa", b"bbb"]
 
     _dest, inside_window_calls = _download_with_fake_stream(
@@ -350,13 +452,18 @@ def test_install_llama_server_relocates_binary_and_libraries(tmp_path, monkeypat
 
     result = local_install.install_llama_server()
 
-    assert result["install_state"] == "installed"
+    assert result["install_state"] == "verifying"
+    assert prove_manifest(
+        artifact_manifest_path(install_dir),
+        provider="local",
+        pin_identity=local_install._vulkan_pin_identity(artifact_key, pin),
+    ).ready
     assert_flat_layout()
     assert quarantine_calls == [install_dir]
 
     result = local_install.install_llama_server()
 
-    assert result["install_state"] == "installed"
+    assert result["install_state"] == "verifying"
     assert_flat_layout()
     assert quarantine_calls == [install_dir, install_dir]
 
@@ -408,10 +515,7 @@ def test_install_llama_server_sha256_mismatch_fails_closed_before_extract(
     assert status["install_state"] == "failed"
     assert status["install_error"] is not None
     assert "sha256 mismatch" in status["install_error"]
-    slot = _local_slot()
-    assert slot["binary_artifact"] == pin["filename"]
-    assert "binary_sha256" not in slot
-    assert "binary_path" not in slot
+    assert not artifact_manifest_path(install_dir).exists()
     assert not binary_path.exists()
     assert not (install_dir / inner_name).exists()
     assert sorted(child.name for child in install_dir.iterdir()) == [pin["filename"]]
@@ -428,7 +532,7 @@ def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):
     final_path = local_install.binary_path_for_pin("test-platform", pin)
     final_path.parent.mkdir(parents=True)
     final_path.write_text("binary", encoding="utf-8")
-    observed: list[tuple[str, str, dict]] = []
+    observed: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
         local_install, "llama_server_artifact_key", lambda: "test-platform"
@@ -436,14 +540,14 @@ def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):
     monkeypatch.setattr(local_install, "pin_for_current_platform", lambda: pin)
 
     def fake_download(_url, _dest, **_kwargs):
-        observed.append(
-            ("download", _local_status()["install_state"], dict(_local_slot()))
-        )
+        observed.append(("download", _local_status()["install_state"]))
+        _dest.parent.mkdir(parents=True, exist_ok=True)
+        _dest.write_bytes(b"artifact")
+        _dest.parent.mkdir(parents=True, exist_ok=True)
+        _dest.write_bytes(b"artifact")
 
     def fake_verify(_path, _expected):
-        observed.append(
-            ("verify", _local_status()["install_state"], dict(_local_slot()))
-        )
+        observed.append(("verify", _local_status()["install_state"]))
 
     monkeypatch.setattr(local_install, "_download_file", fake_download)
     monkeypatch.setattr(local_install, "_verify_sha256", fake_verify)
@@ -460,14 +564,13 @@ def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):
 
     assert [entry[0] for entry in observed] == ["download", "verify"]
     assert observed[0][1] == "downloading"
-    assert observed[0][2]["binary_artifact"] == "llama.tar.gz"
     assert observed[1][1] == "verifying"
-    assert result["install_state"] == "installed"
-    slot = _local_slot()
-    assert slot["binary_artifact"] == "llama.tar.gz"
-    assert slot["binary_sha256"] == "abc123"
-    assert slot["binary_path"] == str(final_path)
-    assert "state" not in slot
+    assert result["install_state"] == "verifying"
+    assert prove_manifest(
+        artifact_manifest_path(final_path.parent),
+        provider=local_install.LOCAL_PROVIDER_NAME,
+        pin_identity=local_install._vulkan_pin_identity("test-platform", pin),
+    ).ready
 
 
 @pytest.mark.parametrize(
@@ -492,7 +595,6 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
         "resolve_local_backend",
         lambda _pin: local_cuda.BackendChoice("cuda", "test cuda"),
     )
-    metadata_calls: list[dict[str, str]] = []
     pull_calls: list[tuple[str, str, tuple[str, ...], Path]] = []
 
     def fake_pull_and_install(
@@ -515,16 +617,10 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
         )
 
     monkeypatch.setattr(oci_image, "pull_and_install", fake_pull_and_install)
-    monkeypatch.setattr(
-        local_install,
-        "_write_local_metadata",
-        lambda updates: metadata_calls.append(updates),
-    )
-
     result = local_install.install_llama_server()
 
     wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(arch)
-    assert result["install_state"] == "installed"
+    assert result["install_state"] == "verifying"
     assert pull_calls == [
         (
             local_install.CUDA_SERVER_PIN.image_ref,
@@ -535,7 +631,6 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
     ]
     assert expected_cpu in pull_calls[0][2]
     assert unexpected_cpu not in pull_calls[0][2]
-    assert metadata_calls == []
     assert local_install.cuda_binary_path().stat().st_mode & 0o111
 
 
@@ -575,8 +670,12 @@ def test_install_llama_server_vulkan_choice_does_not_pull_oci(tmp_path, monkeypa
 
     result = local_install.install_llama_server()
 
-    assert result["install_state"] == "installed"
-    assert _local_slot()["binary_path"] == str(final_path)
+    assert result["install_state"] == "verifying"
+    assert prove_manifest(
+        artifact_manifest_path(final_path.parent),
+        provider=local_install.LOCAL_PROVIDER_NAME,
+        pin_identity=local_install._vulkan_pin_identity("test-platform", pin),
+    ).ready
 
 
 def test_probe_binary_runnable_returns_true_for_zero_exit(tmp_path):
@@ -638,17 +737,15 @@ def test_probe_binary_runnable_handles_missing_path(tmp_path):
 def test_install_model_writes_canonical_sequence(tmp_path, monkeypatch):
     _init_journal(tmp_path, monkeypatch)
     spec = LOCAL_MODEL_SPECS[LOCAL_MODEL]
-    observed: list[tuple[str, str, dict]] = []
+    observed: list[tuple[str, str]] = []
 
     def fake_download(_url, _dest, **_kwargs):
-        observed.append(
-            ("download", _local_status()["install_state"], dict(_local_slot()))
-        )
+        observed.append(("download", _local_status()["install_state"]))
+        _dest.parent.mkdir(parents=True, exist_ok=True)
+        _dest.write_bytes(b"artifact")
 
     def fake_verify(_path, _expected):
-        observed.append(
-            ("verify", _local_status()["install_state"], dict(_local_slot()))
-        )
+        observed.append(("verify", _local_status()["install_state"]))
 
     monkeypatch.setattr(local_install, "_download_file", fake_download)
     monkeypatch.setattr(local_install, "_verify_sha256", fake_verify)
@@ -662,16 +759,13 @@ def test_install_model_writes_canonical_sequence(tmp_path, monkeypatch):
         "verify",
     ]
     assert observed[0][1] == "downloading"
-    assert observed[0][2]["model_id"] == LOCAL_MODEL
     assert observed[2][1] == "verifying"
-    assert result["install_state"] == "installed"
-    slot = _local_slot()
-    assert slot["model_id"] == LOCAL_MODEL
-    assert slot["model_path"] == str(local_install.model_path(spec.model_id))
-    assert slot["model_sha256"] == spec.sha256
-    assert slot["mmproj_path"] == str(local_install.mmproj_path(spec.model_id))
-    assert slot["mmproj_sha256"] == spec.mmproj_sha256
-    assert "state" not in slot
+    assert result["install_state"] == "verifying"
+    assert prove_manifest(
+        artifact_manifest_path(local_install.model_dir(spec.model_id)),
+        provider=local_install.LOCAL_PROVIDER_NAME,
+        pin_identity=local_install._model_pin_identity(spec.model_id),
+    ).ready
 
 
 def test_install_model_threads_optional_mmproj_artifact(tmp_path, monkeypatch):
@@ -704,9 +798,11 @@ def test_install_model_threads_optional_mmproj_artifact(tmp_path, monkeypatch):
     assert mmproj_path is not None
     assert downloads == [gguf_path, mmproj_path]
     assert verifies == [(gguf_path, spec.sha256), (mmproj_path, "mmproj-sha")]
-    slot = _local_slot()
-    assert slot["mmproj_path"] == str(mmproj_path)
-    assert slot["mmproj_sha256"] == "mmproj-sha"
+    assert prove_manifest(
+        artifact_manifest_path(local_install.model_dir(LOCAL_MODEL)),
+        provider=local_install.LOCAL_PROVIDER_NAME,
+        pin_identity=local_install._model_pin_identity(LOCAL_MODEL),
+    ).ready
 
 
 def test_install_local_blocks_before_downloads(tmp_path, monkeypatch):
@@ -714,7 +810,12 @@ def test_install_local_blocks_before_downloads(tmp_path, monkeypatch):
     monkeypatch.setattr(
         local_install,
         "inspect_readiness",
-        lambda model_id: {"binary_installed": False, "model_installed": False},
+        lambda model_id: _fake_local_readiness(
+            binary_installed=False,
+            model_installed=False,
+            binary_path=tmp_path / "llama-server",
+            model_path=tmp_path / "model.gguf",
+        ),
     )
     monkeypatch.setattr(
         fit_report, "build_local_fit_report", lambda model_id: _fit("blocked")
@@ -748,12 +849,20 @@ def test_install_local_warning_continues_to_download(tmp_path, monkeypatch):
     final_path.parent.mkdir(parents=True)
     final_path.write_text("binary", encoding="utf-8")
     downloads: list[Path] = []
+    readiness_calls = 0
 
-    monkeypatch.setattr(
-        local_install,
-        "inspect_readiness",
-        lambda model_id: {"binary_installed": False, "model_installed": False},
-    )
+    def fake_readiness(model_id: str) -> ReadinessOutcome:
+        nonlocal readiness_calls
+        readiness_calls += 1
+        return _fake_local_readiness(
+            binary_installed=readiness_calls > 1,
+            model_installed=readiness_calls > 1,
+            binary_path=final_path,
+            model_path=local_install.model_path(model_id),
+            mmproj_path=local_install.mmproj_path(model_id),
+        )
+
+    monkeypatch.setattr(local_install, "inspect_readiness", fake_readiness)
     monkeypatch.setattr(
         fit_report, "build_local_fit_report", lambda model_id: _fit("warning")
     )
@@ -793,7 +902,12 @@ def test_install_local_ready_short_circuits_before_fit_report(tmp_path, monkeypa
     monkeypatch.setattr(
         local_install,
         "inspect_readiness",
-        lambda model_id: {"binary_installed": True, "model_installed": True},
+        lambda model_id: _fake_local_readiness(
+            binary_installed=True,
+            model_installed=True,
+            binary_path=tmp_path / "llama-server",
+            model_path=tmp_path / "model.gguf",
+        ),
     )
     monkeypatch.setattr(
         fit_report,
@@ -813,7 +927,7 @@ def test_install_local_ready_short_circuits_before_fit_report(tmp_path, monkeypa
 
     result = local_install.install_local(LOCAL_MODEL)
 
-    assert result["name"] == local_install.LOCAL_PROVIDER_NAME
+    assert result["provider"] == local_install.LOCAL_PROVIDER_NAME
     assert result["install_state"] == "installed"
 
 
@@ -827,31 +941,33 @@ def test_install_local_reinstalls_runtime_when_binary_record_stale(
     mmproj = local_install.mmproj_path(LOCAL_MODEL)
     assert mmproj is not None
     mmproj.write_text("mmproj", encoding="utf-8")
-    canonical = local_install.binary_path_for_pin()
-    canonical.parent.mkdir(parents=True, exist_ok=True)
-    canonical.write_bytes(b"llama-server")
-    canonical.chmod(0o755)
-    local_install._write_local_metadata(
-        {
-            "binary_artifact": "llama-stale-bin-ubuntu-x64.tar.gz",
-            "binary_sha256": "deadbeef" * 8,
-            "binary_path": str(canonical),
-        }
-    )
     monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
     monkeypatch.setattr(
         fit_report, "build_local_fit_report", lambda model_id: _fit("ok")
     )
     calls: list[str] = []
+    readiness_calls = 0
 
-    def fake_install_llama_server():
+    def fake_readiness(model_id: str) -> ReadinessOutcome:
+        nonlocal readiness_calls
+        readiness_calls += 1
+        return _fake_local_readiness(
+            binary_installed=readiness_calls > 1,
+            model_installed=readiness_calls > 1,
+            binary_path=local_install.binary_path_for_pin(),
+            model_path=local_install.model_path(model_id),
+            mmproj_path=local_install.mmproj_path(model_id),
+        )
+
+    def fake_install_llama_server(**_kwargs):
         calls.append("llama_server")
-        return {"install_state": "installed"}
+        return {"install_state": "verifying"}
 
-    def fake_install_model(model_id: str):
+    def fake_install_model(model_id: str, **_kwargs):
         calls.append("model")
-        return {"install_state": "installed", "model_id": model_id}
+        return {"install_state": "verifying", "model_id": model_id}
 
+    monkeypatch.setattr(local_install, "inspect_readiness", fake_readiness)
     monkeypatch.setattr(
         local_install, "install_llama_server", fake_install_llama_server
     )
@@ -859,7 +975,7 @@ def test_install_local_reinstalls_runtime_when_binary_record_stale(
 
     result = local_install.install_local(LOCAL_MODEL)
 
-    assert result == {"install_state": "installed", "model_id": LOCAL_MODEL}
+    assert result["install_state"] == "installed"
     assert calls == ["llama_server", "model"]
 
 
@@ -872,16 +988,15 @@ def test_ensure_artifacts_installed_returns_binary_gguf_and_optional_mmproj(
     monkeypatch.setattr(
         local_install,
         "inspect_readiness",
-        lambda model_id: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "binary_path": str(binary),
-            "model_path": str(gguf),
-            "mmproj_path": str(mmproj),
-            "backend": "vulkan",
-            "backend_reason": "test vulkan",
-        },
+        lambda model_id: _fake_local_readiness(
+            binary_installed=True,
+            model_installed=True,
+            binary_path=binary,
+            model_path=gguf,
+            mmproj_path=mmproj,
+            backend="vulkan",
+            backend_reason="test vulkan",
+        ),
     )
 
     assert local_install.ensure_artifacts_installed(
@@ -904,16 +1019,15 @@ def test_ensure_artifacts_installed_ignores_low_memory_when_artifacts_exist(
     monkeypatch.setattr(
         local_install,
         "inspect_readiness",
-        lambda model_id: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": False,
-            "binary_path": str(binary),
-            "model_path": str(gguf),
-            "mmproj_path": None,
-            "backend": "vulkan",
-            "backend_reason": "test vulkan",
-        },
+        lambda model_id: _fake_local_readiness(
+            binary_installed=True,
+            model_installed=True,
+            binary_path=binary,
+            model_path=gguf,
+            ram_sufficient=False,
+            backend="vulkan",
+            backend_reason="test vulkan",
+        ),
     )
 
     assert local_install.ensure_artifacts_installed(
@@ -935,16 +1049,14 @@ def test_ensure_artifacts_installed_returns_cuda_lib_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(
         local_install,
         "inspect_readiness",
-        lambda model_id: {
-            "binary_installed": True,
-            "model_installed": True,
-            "ram_sufficient": True,
-            "binary_path": str(binary),
-            "model_path": str(gguf),
-            "mmproj_path": None,
-            "backend": "cuda",
-            "backend_reason": "test cuda",
-        },
+        lambda model_id: _fake_local_readiness(
+            binary_installed=True,
+            model_installed=True,
+            binary_path=binary,
+            model_path=gguf,
+            backend="cuda",
+            backend_reason="test cuda",
+        ),
     )
 
     assert local_install.ensure_artifacts_installed(
@@ -975,16 +1087,12 @@ def test_ensure_artifacts_installed_raises_for_missing_artifacts(
     monkeypatch.setattr(
         local_install,
         "inspect_readiness",
-        lambda model_id: {
-            "binary_installed": binary_installed,
-            "model_installed": model_installed,
-            "ram_sufficient": True,
-            "binary_path": str(binary),
-            "model_path": str(gguf),
-            "mmproj_path": None,
-            "backend": "vulkan",
-            "backend_reason": "test vulkan",
-        },
+        lambda model_id: _fake_local_readiness(
+            binary_installed=binary_installed,
+            model_installed=model_installed,
+            binary_path=binary,
+            model_path=gguf,
+        ),
     )
 
     with pytest.raises(local_install.LocalProviderError) as exc_info:
@@ -1005,7 +1113,7 @@ def test_inspect_readiness_reports_ram_sufficient_for_low_or_unknown_memory(
 
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
-    assert readiness["ram_sufficient"] is True
+    assert readiness.host["ram_sufficient"] is True
 
 
 @pytest.mark.parametrize("sidecar_ok", [True, False])
@@ -1024,8 +1132,24 @@ def test_inspect_readiness_cuda_uses_sidecar_full_set(
     )
     binary = local_install.cuda_binary_path()
     binary.parent.mkdir(parents=True, exist_ok=True)
-    binary.write_text("binary", encoding="utf-8")
-    binary.chmod(0o755)
+    wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(
+        local_install._oci_arch()
+    )
+    for name in wanted_files:
+        member = binary.parent / name
+        member.write_text(name, encoding="utf-8")
+        member.chmod(0o755)
+    (binary.parent / ".oci-install.json").write_text(
+        json.dumps(
+            {
+                "image_ref": local_install.CUDA_SERVER_PIN.image_ref,
+                "arch": local_install._oci_arch(),
+                "files": {name: "0" * 64 for name in wanted_files},
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     verify_calls: list[tuple[str, str, tuple[str, ...], Path]] = []
 
     def fake_verify(
@@ -1048,15 +1172,12 @@ def test_inspect_readiness_cuda_uses_sidecar_full_set(
 
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
-    wanted_files = local_install.CUDA_SERVER_PIN.wanted_files_for_arch(
-        local_install._oci_arch()
-    )
-    assert readiness["backend"] == "cuda"
-    assert readiness["backend_reason"] == "test cuda"
-    assert readiness["binary_path"] == str(binary)
-    assert readiness["binary_installed"] is sidecar_ok
-    assert readiness["gpu_available"] is True
-    assert readiness["gpu_probe_ok"] is True
+    assert readiness.host["backend"] == "cuda"
+    assert readiness.host["backend_reason"] == "test cuda"
+    assert readiness.artifacts["binary_path"] == str(binary)
+    assert readiness.artifacts["binary_installed"] is sidecar_ok
+    assert readiness.host["gpu_available"] is True
+    assert readiness.host["gpu_probe_ok"] is True
     assert verify_calls == [
         (
             local_install.CUDA_SERVER_PIN.image_ref,
@@ -1084,9 +1205,9 @@ def test_inspect_readiness_reports_gpu_available_with_hardware(tmp_path, monkeyp
 
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
-    assert readiness["gpu_available"] is True
-    assert readiness["backend"] == "vulkan"
-    assert readiness["backend_reason"] == "test vulkan"
+    assert readiness.host["gpu_available"] is True
+    assert readiness.host["backend"] == "vulkan"
+    assert readiness.host["backend_reason"] == "test vulkan"
 
 
 def test_inspect_readiness_reports_gpu_unavailable_without_hardware(
@@ -1097,7 +1218,7 @@ def test_inspect_readiness_reports_gpu_unavailable_without_hardware(
 
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
-    assert readiness["gpu_available"] is False
+    assert readiness.host["gpu_available"] is False
 
 
 def test_inspect_readiness_stale_non_cuda_binary_record_reports_not_installed(
@@ -1109,18 +1230,12 @@ def test_inspect_readiness_stale_non_cuda_binary_record_reports_not_installed(
     canonical.parent.mkdir(parents=True, exist_ok=True)
     canonical.write_bytes(b"llama-server")
     canonical.chmod(0o755)
-    local_install._write_local_metadata(
-        {
-            "binary_artifact": "llama-stale-bin-ubuntu-x64.tar.gz",
-            "binary_sha256": "deadbeef" * 8,
-            "binary_path": str(canonical),
-        }
-    )
 
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
-    assert readiness["binary_installed"] is False
-    assert readiness["binary_path"] == str(canonical)
+    assert readiness.artifacts["binary_installed"] is False
+    assert readiness.artifacts["binary_path"] == str(canonical)
+    assert readiness.proof["binary"]["status"] == "missing-or-mismatched"
 
 
 def test_inspect_readiness_matching_non_cuda_binary_record_reports_installed(
@@ -1133,17 +1248,11 @@ def test_inspect_readiness_matching_non_cuda_binary_record_reports_installed(
     canonical.parent.mkdir(parents=True, exist_ok=True)
     canonical.write_bytes(b"llama-server")
     canonical.chmod(0o755)
-    local_install._write_local_metadata(
-        {
-            "binary_artifact": pin["filename"],
-            "binary_sha256": pin["sha256"],
-            "binary_path": str(canonical),
-        }
-    )
+    _write_ready_vulkan_manifest(pin=pin)
 
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
-    assert readiness["binary_installed"] is True
+    assert readiness.artifacts["binary_installed"] is True
 
 
 def test_inspect_readiness_honors_vulkan_device_override(tmp_path, monkeypatch):
@@ -1163,14 +1272,15 @@ def test_inspect_readiness_honors_vulkan_device_override(tmp_path, monkeypatch):
         ),
     ]
     monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: devices)
-    local_install._write_local_metadata({"vulkan_device_index": "0"})
+    _write_provider_local_config(tmp_path, {"vulkan_device_index": "0"})
 
     assert local_install.gpu_device_override() == 0
-    assert local_install.inspect_readiness(LOCAL_MODEL)["gpu_available"] is True
+    assert resolve_local_endpoint().is_bundled is True
+    assert local_install.inspect_readiness(LOCAL_MODEL).host["gpu_available"] is True
 
-    local_install._write_local_metadata({"vulkan_device_index": "1"})
+    _write_provider_local_config(tmp_path, {"vulkan_device_index": "1"})
 
-    assert local_install.inspect_readiness(LOCAL_MODEL)["gpu_available"] is False
+    assert local_install.inspect_readiness(LOCAL_MODEL).host["gpu_available"] is False
 
 
 def test_inspect_readiness_ignores_stale_model_path_after_model_change(
@@ -1186,9 +1296,6 @@ def test_inspect_readiness_ignores_stale_model_path_after_model_change(
     stale_dir.mkdir(parents=True, exist_ok=True)
     stale_gguf = stale_dir / "coder-7b-Q4_K_M.gguf"
     stale_gguf.write_text("stale", encoding="utf-8")
-    local_install._write_local_metadata(
-        {"model_id": "local/old-coder-7b", "model_path": str(stale_gguf)}
-    )
 
     # Stage the selected model's artifacts in its own directory.
     gguf = local_install.model_path(LOCAL_MODEL)
@@ -1197,15 +1304,18 @@ def test_inspect_readiness_ignores_stale_model_path_after_model_change(
     mmproj = local_install.mmproj_path(LOCAL_MODEL)
     assert mmproj is not None
     mmproj.write_text("mmproj", encoding="utf-8")
+    _write_ready_model_manifest(LOCAL_MODEL)
 
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
-    assert readiness["model_id"] == LOCAL_MODEL
-    assert readiness["model_path"] == str(gguf)
-    assert readiness["mmproj_path"] == str(mmproj)
-    assert Path(readiness["model_path"]).parent == local_install.model_dir(LOCAL_MODEL)
-    assert readiness["model_path"] != str(stale_gguf)
-    assert readiness["model_installed"] is True
+    assert readiness.artifacts["model_id"] == LOCAL_MODEL
+    assert readiness.artifacts["model_path"] == str(gguf)
+    assert readiness.artifacts["mmproj_path"] == str(mmproj)
+    assert Path(readiness.artifacts["model_path"]).parent == local_install.model_dir(
+        LOCAL_MODEL
+    )
+    assert readiness.artifacts["model_path"] != str(stale_gguf)
+    assert readiness.artifacts["model_installed"] is True
 
 
 def test_inspect_readiness_not_installed_off_stale_record(tmp_path, monkeypatch):
@@ -1217,15 +1327,14 @@ def test_inspect_readiness_not_installed_off_stale_record(tmp_path, monkeypatch)
     stale_dir.mkdir(parents=True, exist_ok=True)
     stale_gguf = stale_dir / "coder-7b-Q4_K_M.gguf"
     stale_gguf.write_text("stale", encoding="utf-8")
-    local_install._write_local_metadata(
-        {"model_id": "local/old-coder-7b", "model_path": str(stale_gguf)}
-    )
 
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
 
-    assert readiness["model_installed"] is False
-    assert readiness["gguf_installed"] is False
-    assert readiness["model_path"] == str(local_install.model_path(LOCAL_MODEL))
+    assert readiness.artifacts["model_installed"] is False
+    assert readiness.artifacts["gguf_installed"] is False
+    assert readiness.artifacts["model_path"] == str(
+        local_install.model_path(LOCAL_MODEL)
+    )
 
 
 def test_install_llama_server_failure_writes_canonical_failed(tmp_path, monkeypatch):
@@ -1252,5 +1361,3 @@ def test_install_llama_server_failure_writes_canonical_failed(tmp_path, monkeypa
     status = _local_status()
     assert status["install_state"] == "failed"
     assert status["install_error"] == "network broke"
-    slot = _local_slot()
-    assert "state" not in slot

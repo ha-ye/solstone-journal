@@ -16,6 +16,7 @@ from solstone.think.providers import (
     mlx_install,
     state,
 )
+from solstone.think.providers.artifact_proof import ReadinessOutcome
 from solstone.think.providers.shared import (
     RUNTIME_REASON_CODES,
     classify_provider_error,
@@ -45,23 +46,62 @@ def _readiness(
     gpu_probe_ok: bool | None = None,
     install_state: str = "installed",
     backend: str = "vulkan",
-) -> dict:
-    payload = {
-        "install_state": install_state,
-        "binary_installed": binary,
-        "model_installed": model,
-        "ram_sufficient": ram,
-        "gpu_available": gpu,
-        "binary_path": "/tmp/llama-server",
-        "model_path": "/tmp/model.gguf",
-        "model_id": LOCAL_MODEL,
-        "install_error": None,
-        "backend": backend,
-        "backend_reason": f"test {backend}",
-    }
-    if gpu_probe_ok is not None:
-        payload["gpu_probe_ok"] = gpu_probe_ok
-    return payload
+) -> ReadinessOutcome:
+    missing_binary = not binary
+    missing_model = not model
+    status = "ready" if binary and model and ram and gpu else "missing-or-mismatched"
+    reason_code = (
+        "ready"
+        if status == "ready"
+        else "binary_missing"
+        if missing_binary
+        else "model_missing"
+        if missing_model
+        else "host_unfit"
+    )
+    return ReadinessOutcome(
+        provider="local",
+        status=status,
+        reason_code=reason_code,
+        target={"model_id": LOCAL_MODEL},
+        install={
+            "install_state": install_state,
+            "install_error": None,
+            "error_code": None,
+            "attempt_id": None,
+            "progress_bytes_received": None,
+            "progress_bytes_total": None,
+            "last_transition_at": None,
+            "last_progress_at": None,
+        },
+        host={
+            "ram_sufficient": ram,
+            "gpu_available": gpu,
+            "gpu_probe_ok": True if gpu_probe_ok is None else gpu_probe_ok,
+            "backend": backend,
+            "backend_reason": f"test {backend}",
+        },
+        artifacts={
+            "binary_installed": binary,
+            "model_installed": model,
+            "binary_path": "/tmp/llama-server",
+            "model_path": "/tmp/model.gguf",
+            "model_id": LOCAL_MODEL,
+            "mmproj_path": None,
+        },
+        proof={
+            "binary": {
+                "status": "ready" if binary else "missing-or-mismatched",
+                "reason_code": "ready" if binary else "manifest_missing",
+                "cache_hit": False,
+            },
+            "model": {
+                "status": "ready" if model else "missing-or-mismatched",
+                "reason_code": "ready" if model else "manifest_missing",
+                "cache_hit": False,
+            },
+        },
+    )
 
 
 def _mlx_readiness(
@@ -70,21 +110,49 @@ def _mlx_readiness(
     model_installed: bool = True,
     platform_supported: bool = True,
     package_available: bool = True,
-) -> dict:
-    return {
-        "install_state": install_state,
-        "model_installed": model_installed,
-        "snapshot_installed": model_installed,
-        "variant_installed": True,
-        "ram_sufficient": True,
-        "platform_supported": platform_supported,
-        "package_available": package_available,
-        "model_id": QWEN_35_9B,
-        "snapshot_dir": "/tmp/snap",
-        "variant_dir": None,
-        "runtime_dir": "/tmp/snap",
-        "install_error": None,
-    }
+) -> ReadinessOutcome:
+    return ReadinessOutcome(
+        provider="local",
+        status=(
+            "ready"
+            if model_installed and platform_supported and package_available
+            else "missing-or-mismatched"
+        ),
+        reason_code="ready" if model_installed else "manifest_missing",
+        target={"model_id": QWEN_35_9B},
+        install={
+            "install_state": install_state,
+            "install_error": None,
+            "error_code": None,
+            "attempt_id": None,
+            "progress_bytes_received": None,
+            "progress_bytes_total": None,
+            "last_transition_at": None,
+            "last_progress_at": None,
+        },
+        host={
+            "ram_sufficient": True,
+            "platform_supported": platform_supported,
+            "package_available": package_available,
+        },
+        artifacts={
+            "model_installed": model_installed,
+            "snapshot_installed": model_installed,
+            "variant_installed": True,
+            "model_id": QWEN_35_9B,
+            "snapshot_dir": "/tmp/snap",
+            "variant_dir": None,
+            "runtime_dir": "/tmp/snap",
+        },
+        proof={
+            "snapshot": {
+                "status": "ready" if model_installed else "missing-or-mismatched",
+                "reason_code": "ready" if model_installed else "manifest_missing",
+                "cache_hit": False,
+            },
+            "variant": None,
+        },
+    )
 
 
 def _block_linux_local_path(monkeypatch) -> None:
@@ -461,12 +529,17 @@ def test_local_readiness_gpu_unavailable_flows_from_inspect_without_launch(
     if mmproj is not None:
         mmproj.write_text("mmproj", encoding="utf-8")
     pin = local_install.pin_for_current_platform()
-    local_install._write_local_metadata(
-        {
-            "binary_artifact": pin["filename"],
-            "binary_sha256": pin["sha256"],
-            "binary_path": str(binary),
-        }
+    fingerprint = local_install.target_fingerprint(LOCAL_MODEL)
+    local_install._write_vulkan_manifest(
+        artifact_key=local_install.llama_server_artifact_key(),
+        pin=pin,
+        attempt_status=None,
+        fingerprint=fingerprint,
+    )
+    local_install._write_model_manifest(
+        model_id=LOCAL_MODEL,
+        attempt_status=None,
+        fingerprint=fingerprint,
     )
 
     monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
@@ -479,9 +552,9 @@ def test_local_readiness_gpu_unavailable_flows_from_inspect_without_launch(
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
     provider_state = state.readiness_for_provider("local", "generate")
 
-    assert readiness["binary_installed"] is True
-    assert readiness["model_installed"] is True
-    assert readiness["gpu_available"] is False
+    assert readiness.artifacts["binary_installed"] is True
+    assert readiness.artifacts["model_installed"] is True
+    assert readiness.host["gpu_available"] is False
     assert provider_state.status == "blocked"
     assert provider_state.reason_code == "gpu_unavailable"
     assert provider_state.source == "local_install"
@@ -509,12 +582,17 @@ def test_local_readiness_gpu_probe_failed_flows_from_inspect_without_launch(
     if mmproj is not None:
         mmproj.write_text("mmproj", encoding="utf-8")
     pin = local_install.pin_for_current_platform()
-    local_install._write_local_metadata(
-        {
-            "binary_artifact": pin["filename"],
-            "binary_sha256": pin["sha256"],
-            "binary_path": str(binary),
-        }
+    fingerprint = local_install.target_fingerprint(LOCAL_MODEL)
+    local_install._write_vulkan_manifest(
+        artifact_key=local_install.llama_server_artifact_key(),
+        pin=pin,
+        attempt_status=None,
+        fingerprint=fingerprint,
+    )
+    local_install._write_model_manifest(
+        model_id=LOCAL_MODEL,
+        attempt_status=None,
+        fingerprint=fingerprint,
     )
 
     monkeypatch.setattr(
@@ -539,10 +617,10 @@ def test_local_readiness_gpu_probe_failed_flows_from_inspect_without_launch(
     readiness = local_install.inspect_readiness(LOCAL_MODEL)
     provider_state = state.readiness_for_provider("local", "generate")
 
-    assert readiness["binary_installed"] is True
-    assert readiness["model_installed"] is True
-    assert readiness["gpu_available"] is True
-    assert readiness["gpu_probe_ok"] is False
+    assert readiness.artifacts["binary_installed"] is True
+    assert readiness.artifacts["model_installed"] is True
+    assert readiness.host["gpu_available"] is True
+    assert readiness.host["gpu_probe_ok"] is False
     assert provider_state.status == "blocked"
     assert provider_state.reason_code == "gpu_probe_failed"
     assert provider_state.source == "local_install"

@@ -11,13 +11,13 @@ from pathlib import Path
 import pytest
 
 from solstone.apps.thinking import copy as thinking_copy
-from solstone.apps.thinking.install_copy import INSTALL_FAILED_NO_PROGRESS
 from solstone.apps.thinking.tests.js_extract import (
     extract_js_const,
     extract_js_function,
 )
 
 STATIC = Path(__file__).resolve().parents[1] / "static" / "thinking.js"
+SERVER_INSTALL_ERROR = "install_interrupted"
 
 
 def _node_script(body: str) -> str:
@@ -35,7 +35,7 @@ def _node_script(body: str) -> str:
         extract_js_function(source, "startInstallPoll"),
         "function assert(condition, message) { if (!condition) throw new Error(message); }",
         f"const text = {json.dumps(thinking_copy.LOCAL_INSTALL)};",
-        f"const installFailedNoProgress = {json.dumps(INSTALL_FAILED_NO_PROGRESS)};",
+        f"const serverInstallError = {json.dumps(SERVER_INSTALL_ERROR)};",
         body,
     ]
     return "\n".join(parts)
@@ -309,7 +309,7 @@ async function main() {
       install_state: 'failed',
       progress_bytes_received: null,
       progress_bytes_total: null,
-      install_error: installFailedNoProgress,
+      install_error: serverInstallError,
     },
   ];
   let fetchCalls = 0;
@@ -342,7 +342,7 @@ async function main() {
   assert(result.install_state === 'failed', 'failed status should be terminal');
   assert(fetchCalls === 2, 'poll should stop after failed');
   assert(sleeps.length === 1, 'poll should sleep only before failed');
-  assert(failed.message === installFailedNoProgress, 'server install_error should render verbatim');
+  assert(failed.message === serverInstallError, 'server install_error should render verbatim');
   assert(failed.bootstrap === true, 'failed install should offer retry');
   assert(failed.bootstrapLabel === text.retry, 'retry label should come from copy');
   assert(failed.tone === 'bad', 'failed install should render as an error');

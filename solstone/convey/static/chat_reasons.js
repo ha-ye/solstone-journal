@@ -42,6 +42,10 @@
       "template": "local model setup is not finished",
       "action": {"label": "Open Local Model Setup", "href": "/app/thinking/#local-setup"}
     },
+    "install_busy": {
+      "template": "local model setup is already running",
+      "action": null
+    },
     "local_model_installing": {
       "template": "local model setup is finishing",
       "action": null

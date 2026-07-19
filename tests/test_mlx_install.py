@@ -18,6 +18,11 @@ from huggingface_hub import constants as hf_constants
 from solstone.think.journal_config import read_journal_config
 from solstone.think.models import GEMMA4_26B_A4B_4BIT, QWEN_35_9B
 from solstone.think.providers import fit_report, memory, mlx_install
+from solstone.think.providers.artifact_proof import (
+    mlx_snapshot_manifest_path,
+    mlx_variant_manifest_path,
+    prove_manifest,
+)
 from solstone.think.providers.install_state import read_install_status
 
 
@@ -33,15 +38,12 @@ def _init_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _local_status() -> dict:
-    return read_install_status(scope="bundled", name="local")
-
-
-def _local_slot() -> dict:
-    return read_journal_config()["providers"]["bundled"]["local"]
+    return read_install_status(name="local")
 
 
 def _allow_install(monkeypatch: pytest.MonkeyPatch, *, ram_gb: int = 64) -> None:
     monkeypatch.setattr(mlx_install, "_check_platform_and_package", lambda: (True, ""))
+    monkeypatch.setattr(mlx_install, "is_mlx_platform_supported", lambda: True)
     monkeypatch.setattr(
         memory.psutil,
         "virtual_memory",
@@ -104,6 +106,15 @@ def _write_snapshot(
     return snapshot_dir, hashlib.sha256(weight_bytes).hexdigest()
 
 
+def _metadata_for_snapshot(snapshot_dir: Path) -> dict[str, tuple[str, int]]:
+    metadata: dict[str, tuple[str, int]] = {}
+    for path in snapshot_dir.rglob("*.safetensors"):
+        rel_path = path.relative_to(snapshot_dir).as_posix()
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        metadata[rel_path] = (digest, path.stat().st_size)
+    return metadata
+
+
 def test_module_import_is_mlx_vlm_free(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "mlx_vlm", None)
 
@@ -143,7 +154,7 @@ def test_inspect_readiness_ram_sufficient_matches_available_floor(
         ),
     )
 
-    assert mlx_install.inspect_readiness(QWEN_35_9B)["ram_sufficient"] is True
+    assert mlx_install.inspect_readiness(QWEN_35_9B).host["ram_sufficient"] is True
 
     monkeypatch.setattr(
         memory.psutil,
@@ -155,7 +166,7 @@ def test_inspect_readiness_ram_sufficient_matches_available_floor(
     )
 
     readiness = mlx_install.inspect_readiness(QWEN_35_9B)
-    assert readiness["ram_sufficient"] is False
+    assert readiness.host["ram_sufficient"] is False
 
 
 def test_install_local_mlx_writes_canonical_sequence(
@@ -180,6 +191,7 @@ def test_install_local_mlx_writes_canonical_sequence(
 
     def fake_verify(_spec, _snapshot_dir):
         observed.append(("verify", _local_status()["install_state"], {}))
+        return _metadata_for_snapshot(_snapshot_dir)
 
     def fake_create(_snapshot_dir):
         observed.append(("install", _local_status()["install_state"], {}))
@@ -206,11 +218,16 @@ def test_install_local_mlx_writes_canonical_sequence(
         "installing",
     ]
     assert result["install_state"] == "installed"
-    slot = _local_slot()
-    assert slot["mlx_model_id"] == GEMMA4_26B_A4B_4BIT
-    assert slot["mlx_revision"] == spec.revision
-    assert slot["mlx_snapshot_dir"] == str(snapshot_dir)
-    assert slot["mlx_variant_dir"] == str(variant_dir)
+    assert prove_manifest(
+        mlx_snapshot_manifest_path(spec.repo, spec.revision),
+        provider="local",
+        pin_identity=mlx_install._pin_identity(spec),
+    ).ready
+    assert prove_manifest(
+        mlx_variant_manifest_path(spec.repo, spec.revision),
+        provider="local",
+        pin_identity=mlx_install._variant_pin_identity(spec),
+    ).ready
     assert "mlx" not in read_journal_config()["providers"]
 
 
@@ -277,7 +294,11 @@ def test_install_local_mlx_warning_continues_to_download(
         return str(snapshot_dir)
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
-    monkeypatch.setattr(mlx_install, "validate_snapshot_sha256", lambda *_args: None)
+    monkeypatch.setattr(
+        mlx_install,
+        "validate_snapshot_sha256",
+        lambda _spec, snapshot_dir: _metadata_for_snapshot(snapshot_dir),
+    )
 
     assert mlx_install.install_local_mlx()["install_state"] == "installed"
     assert calls == {"download": 1}
@@ -346,7 +367,11 @@ def test_installing_failure_transitions_failed(
     monkeypatch.setattr(
         huggingface_hub, "snapshot_download", lambda **_kwargs: str(snapshot_dir)
     )
-    monkeypatch.setattr(mlx_install, "validate_snapshot_sha256", lambda *_args: None)
+    monkeypatch.setattr(
+        mlx_install,
+        "validate_snapshot_sha256",
+        lambda _spec, snapshot_dir: _metadata_for_snapshot(snapshot_dir),
+    )
 
     with pytest.raises(FileNotFoundError):
         mlx_install.install_local_mlx(GEMMA4_26B_A4B_4BIT)
@@ -374,6 +399,7 @@ def test_idempotent_rerun_skips_network(
 
     def fake_verify(_spec, _snapshot_dir):
         calls["verify"] += 1
+        return _metadata_for_snapshot(_snapshot_dir)
 
     monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
     monkeypatch.setattr(mlx_install, "validate_snapshot_sha256", fake_verify)
@@ -388,7 +414,11 @@ def test_idempotent_rerun_skips_network(
     )
     assert mlx_install.install_local_mlx()["install_state"] == "installed"
     assert calls == {"download": 1, "verify": 1}
-    assert _local_slot()["mlx_model_id"] == QWEN_35_9B
+    assert prove_manifest(
+        mlx_snapshot_manifest_path(spec.repo, spec.revision),
+        provider="local",
+        pin_identity=mlx_install._pin_identity(spec),
+    ).ready
 
 
 def test_validate_snapshot_sha256_uses_lfs_metadata(

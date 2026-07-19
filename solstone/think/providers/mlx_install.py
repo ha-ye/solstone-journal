@@ -16,14 +16,22 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from solstone.think.journal_config import (
-    JournalConfigMutation,
-    mutate_journal_config,
-    read_journal_config,
-)
 from solstone.think.models import GEMMA4_26B_A4B_4BIT, QWEN_35_9B
+from solstone.think.providers.artifact_proof import (
+    ReadinessOutcome,
+    build_manifest,
+    mlx_snapshot_manifest_path,
+    mlx_variant_manifest_path,
+    prove_manifest,
+    write_manifest,
+)
+from solstone.think.providers.install_lease import InstallLease, acquire_install_lease
 from solstone.think.providers.install_state import (
     InstallStatus,
+    assert_install_attempt_current,
+    begin_or_replace_install_attempt,
+    canonical_fingerprint,
+    fingerprint_sha256,
     read_install_status,
     transition_state,
     write_install_status,
@@ -39,14 +47,6 @@ _GEMMA4_MIN_POSITION_EMBEDDING_SIZE = 10240
 _LOCAL_NAME = "local"
 _HASH_CHUNK_SIZE = 1024 * 1024
 _REWRITTEN_VARIANT_FILES = frozenset({"config.json", "processor_config.json"})
-_MLX_METADATA_KEYS = frozenset(
-    {
-        "mlx_model_id",
-        "mlx_revision",
-        "mlx_snapshot_dir",
-        "mlx_variant_dir",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -84,11 +84,11 @@ class MLXVerificationError(RuntimeError):
 
 
 def _read_status() -> InstallStatus:
-    return read_install_status(scope="bundled", name=_LOCAL_NAME)
+    return read_install_status(name=_LOCAL_NAME)
 
 
 def _write_status(status: InstallStatus) -> InstallStatus:
-    write_install_status(status, scope="bundled")
+    write_install_status(status)
     return status
 
 
@@ -126,6 +126,40 @@ def resolve_model_spec(model_id: str | None = None) -> MLXModelSpec:
             f"unknown MLX model: {selected!r}; known: {sorted(_MLX_MODEL_REGISTRY)}"
         )
     return spec
+
+
+def _pin_identity(spec: MLXModelSpec) -> dict[str, Any]:
+    return {
+        "unit": "mlx-snapshot",
+        "model_id": spec.name,
+        "repo": spec.repo,
+        "revision": spec.revision,
+        "soft_token_budget": (
+            MLX_SOFT_TOKEN_BUDGET if spec.name == GEMMA4_26B_A4B_4BIT else None
+        ),
+    }
+
+
+def target_fingerprint(model_id: str | None = None) -> dict[str, Any]:
+    spec = resolve_model_spec(model_id)
+    return {
+        "provider": _LOCAL_NAME,
+        "runtime": "mlx",
+        "model_pin": _pin_identity(spec),
+    }
+
+
+def _fingerprint_sha_for_target(fingerprint: dict[str, Any]) -> str:
+    return fingerprint_sha256(canonical_fingerprint(fingerprint))
+
+
+def _manifest_target_sha(
+    attempt_status: InstallStatus | None,
+    fingerprint: dict[str, Any],
+) -> str:
+    if attempt_status is not None and attempt_status["target_fingerprint_sha256"]:
+        return str(attempt_status["target_fingerprint_sha256"])
+    return _fingerprint_sha_for_target(fingerprint)
 
 
 def snapshot_dir_for_spec(spec: MLXModelSpec) -> Path:
@@ -194,7 +228,9 @@ def _remote_safetensors_metadata(
     return found
 
 
-def validate_snapshot_sha256(spec: MLXModelSpec, snapshot_dir: Path) -> None:
+def validate_snapshot_sha256(
+    spec: MLXModelSpec, snapshot_dir: Path
+) -> dict[str, tuple[str, int]]:
     safetensors_paths = _safetensors_paths(snapshot_dir)
     metadata = _remote_safetensors_metadata(spec, safetensors_paths)
 
@@ -208,6 +244,7 @@ def validate_snapshot_sha256(spec: MLXModelSpec, snapshot_dir: Path) -> None:
         actual_sha = digest.hexdigest()
         if actual_sha != expected_sha:
             raise MLXVerificationError(f"sha256 mismatch for {rel_path}")
+    return metadata
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -216,6 +253,90 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _variant_pin_identity(spec: MLXModelSpec) -> dict[str, Any]:
+    identity = dict(_pin_identity(spec))
+    identity["unit"] = "mlx-variant"
+    identity["variant"] = f"solstone-budget{MLX_SOFT_TOKEN_BUDGET}"
+    return identity
+
+
+def _manifest_inventory_for_tree(
+    root: Path,
+    *,
+    role_prefix: str,
+    known_hashes: dict[str, tuple[str, int]] | None = None,
+) -> list[dict[str, Any]]:
+    inventory: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel_path = path.relative_to(root).as_posix()
+        known = known_hashes.get(rel_path) if known_hashes is not None else None
+        if known is None:
+            digest = _sha256_file(path)
+            size = path.stat().st_size
+        else:
+            digest, size = known
+        inventory.append(
+            {
+                "relative_path": rel_path,
+                "role": role_prefix,
+                "size": size,
+                "sha256": digest,
+            }
+        )
+    return inventory
+
+
+def _write_snapshot_manifest(
+    spec: MLXModelSpec,
+    snapshot_dir: Path,
+    *,
+    metadata: dict[str, tuple[str, int]],
+    attempt_status: InstallStatus | None,
+    fingerprint: dict[str, Any],
+) -> None:
+    manifest = build_manifest(
+        provider=_LOCAL_NAME,
+        unit="mlx-snapshot",
+        target_fingerprint_sha256=_manifest_target_sha(attempt_status, fingerprint),
+        source={"pin_identity": _pin_identity(spec)},
+        inventory=_manifest_inventory_for_tree(
+            snapshot_dir, role_prefix="snapshot_file", known_hashes=metadata
+        ),
+        external_root=snapshot_dir,
+        attempt_id=attempt_status["attempt_id"] if attempt_status else None,
+    )
+    write_manifest(mlx_snapshot_manifest_path(spec.repo, spec.revision), manifest)
+
+
+def _write_variant_manifest(
+    spec: MLXModelSpec,
+    variant_dir: Path,
+    *,
+    attempt_status: InstallStatus | None,
+    fingerprint: dict[str, Any],
+) -> None:
+    manifest = build_manifest(
+        provider=_LOCAL_NAME,
+        unit="mlx-variant",
+        target_fingerprint_sha256=_manifest_target_sha(attempt_status, fingerprint),
+        source={"pin_identity": _variant_pin_identity(spec)},
+        inventory=_manifest_inventory_for_tree(variant_dir, role_prefix="variant_file"),
+        external_root=variant_dir,
+        attempt_id=attempt_status["attempt_id"] if attempt_status else None,
+    )
+    write_manifest(mlx_variant_manifest_path(spec.repo, spec.revision), manifest)
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(_HASH_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _validate_gemma4_position_embedding(config: dict[str, Any]) -> None:
@@ -347,43 +468,8 @@ def _artifact_presence(spec: MLXModelSpec) -> dict[str, Any]:
     }
 
 
-def _write_mlx_metadata(
-    spec: MLXModelSpec,
-    *,
-    snapshot_dir: Path,
-    variant_dir: Path | None,
-) -> None:
-    def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
-        slot = (
-            config.setdefault("providers", {})
-            .setdefault("bundled", {})
-            .setdefault(_LOCAL_NAME, {})
-        )
-        next_values = {
-            "mlx_model_id": spec.name,
-            "mlx_revision": spec.revision,
-            "mlx_snapshot_dir": str(snapshot_dir),
-        }
-        if variant_dir is not None:
-            next_values["mlx_variant_dir"] = str(variant_dir)
-        changed = any(
-            slot.get(key) != next_values.get(key) for key in _MLX_METADATA_KEYS
-        )
-        for key in _MLX_METADATA_KEYS:
-            slot.pop(key, None)
-        slot.update(next_values)
-        return JournalConfigMutation(changed=changed, value=None)
-
-    mutate_journal_config(apply)
-
-
 def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
-    config = read_journal_config()
-    record = config.get("providers", {}).get("bundled", {}).get(_LOCAL_NAME, {})
-    if not isinstance(record, dict):
-        record = {}
-    selected_model = model_id or record.get("mlx_model_id") or QWEN_35_9B
-    spec = resolve_model_spec(str(selected_model))
+    spec = resolve_model_spec(model_id)
     presence = _artifact_presence(spec)
     return {
         "model_installed": presence["model_installed"],
@@ -400,75 +486,215 @@ def inspect_artifacts(model_id: str | None = None) -> dict[str, Any]:
     }
 
 
-def inspect_readiness(model_id: str | None = None) -> dict[str, Any]:
+def inspect_readiness(model_id: str | None = None) -> ReadinessOutcome:
     status = _read_status()
     artifacts = inspect_artifacts(model_id)
+    spec = resolve_model_spec(str(artifacts["model_id"]))
     verdict = assess_memory(MLX_AVAILABLE_FLOOR_BYTES, block_below_floor=True)
-    return {
-        "install_state": status["install_state"],
-        "model_installed": artifacts["model_installed"],
-        "snapshot_installed": artifacts["snapshot_installed"],
-        "variant_installed": artifacts["variant_installed"],
-        "ram_sufficient": verdict.severity != "blocked",
-        "platform_supported": is_mlx_platform_supported(),
-        "package_available": _check_platform_and_package()[0],
-        "model_id": artifacts["model_id"],
-        "snapshot_dir": artifacts["snapshot_dir"],
-        "variant_dir": artifacts["variant_dir"],
-        "runtime_dir": artifacts["runtime_dir"],
-        "install_error": status["install_error"],
-    }
+    snapshot_proof = prove_manifest(
+        mlx_snapshot_manifest_path(spec.repo, spec.revision),
+        provider=_LOCAL_NAME,
+        pin_identity=_pin_identity(spec),
+    )
+    if spec.name == GEMMA4_26B_A4B_4BIT:
+        variant_proof = prove_manifest(
+            mlx_variant_manifest_path(spec.repo, spec.revision),
+            provider=_LOCAL_NAME,
+            pin_identity=_variant_pin_identity(spec),
+        )
+    else:
+        variant_proof = None
+    platform_supported = is_mlx_platform_supported()
+    package_available = _check_platform_and_package()[0]
+    ram_sufficient = verdict.severity != "blocked"
+    proof_payloads = [
+        {
+            "status": snapshot_proof.status,
+            "reason_code": snapshot_proof.reason_code,
+            "cache_hit": snapshot_proof.cache_hit,
+        }
+    ]
+    if variant_proof is not None:
+        proof_payloads.append(
+            {
+                "status": variant_proof.status,
+                "reason_code": variant_proof.reason_code,
+                "cache_hit": variant_proof.cache_hit,
+            }
+        )
+    if any(proof["status"] == "proof-unavailable" for proof in proof_payloads):
+        readiness_status = "proof-unavailable"
+        reason_code = next(
+            str(proof["reason_code"])
+            for proof in proof_payloads
+            if proof["status"] == "proof-unavailable"
+        )
+    elif any(proof["status"] == "missing-or-mismatched" for proof in proof_payloads):
+        readiness_status = "missing-or-mismatched"
+        reason_code = next(
+            str(proof["reason_code"])
+            for proof in proof_payloads
+            if proof["status"] == "missing-or-mismatched"
+        )
+    elif not platform_supported:
+        readiness_status = "host-ineligible"
+        reason_code = "platform_unsupported"
+    elif not package_available:
+        readiness_status = "host-ineligible"
+        reason_code = "package_unavailable"
+    elif not ram_sufficient:
+        readiness_status = "host-ineligible"
+        reason_code = "ram_insufficient"
+    else:
+        readiness_status = "ready"
+        reason_code = "ready"
+
+    model_installed = snapshot_proof.ready and (
+        variant_proof is None or variant_proof.ready
+    )
+    return ReadinessOutcome(
+        provider=_LOCAL_NAME,
+        status=readiness_status,  # type: ignore[arg-type]
+        reason_code=reason_code,
+        target={
+            "model_id": artifacts["model_id"],
+            "target_fingerprint_json": status["target_fingerprint_json"],
+            "target_fingerprint_sha256": status["target_fingerprint_sha256"],
+        },
+        install={
+            "install_state": status["install_state"],
+            "install_error": status["install_error"],
+            "error_code": status["error_code"],
+            "attempt_id": status["attempt_id"],
+            "progress_bytes_received": status["progress_bytes_received"],
+            "progress_bytes_total": status["progress_bytes_total"],
+            "last_transition_at": status["last_transition_at"],
+            "last_progress_at": status["last_progress_at"],
+        },
+        host={
+            "ram_sufficient": ram_sufficient,
+            "platform_supported": platform_supported,
+            "package_available": package_available,
+        },
+        artifacts={
+            **artifacts,
+            "model_installed": model_installed,
+            "snapshot_installed": snapshot_proof.ready,
+            "variant_installed": variant_proof is None or variant_proof.ready,
+        },
+        proof={
+            "snapshot": proof_payloads[0],
+            "variant": proof_payloads[1] if len(proof_payloads) > 1 else None,
+        },
+    )
 
 
-def install_local_mlx(model_id: str = QWEN_35_9B) -> InstallStatus:
+def install_local_mlx(
+    model_id: str = QWEN_35_9B,
+    *,
+    lease: InstallLease | None = None,
+    attempt_status: InstallStatus | None = None,
+) -> InstallStatus:
     import huggingface_hub
 
-    try:
-        _write_status(transition_state(_read_status(), new_state="resolving"))
-        spec = resolve_model_spec(model_id)
-        presence = _artifact_presence(spec)
-        if presence["model_installed"]:
-            _write_mlx_metadata(
-                spec,
-                snapshot_dir=presence["snapshot_dir"],
-                variant_dir=presence["variant_dir"],
+    fingerprint = target_fingerprint(model_id)
+    owned_lease = lease is None
+    if lease is None:
+        lease = acquire_install_lease(_LOCAL_NAME)
+        if lease is None:
+            raise MLXInstallUnavailableError(
+                "Local provider install is already running."
             )
+    try:
+        if attempt_status is None:
+            attempt_status = begin_or_replace_install_attempt(
+                _LOCAL_NAME,
+                fingerprint,
+                initial_state="resolving",
+                owner={"entry": "install_local_mlx"},
+            )
+        spec = resolve_model_spec(model_id)
+        readiness = inspect_readiness(model_id)
+        if readiness.status in {"proof-unavailable", "host-ineligible"}:
+            current = assert_install_attempt_current(attempt_status)
             return _write_status(
-                transition_state(_read_status(), new_state="installed")
+                transition_state(
+                    current,
+                    new_state="failed",
+                    error=readiness.reason_code,
+                    error_code=readiness.reason_code,
+                )
             )
 
         from solstone.think.providers import fit_report
 
-        report = fit_report.build_mlx_fit_report(spec.name)
-        rendered = fit_report.render_fit_report(report)
-        if report.overall == "blocked":
-            raise MLXInstallUnavailableError(rendered)
-        if report.overall == "warning":
-            LOG.warning("MLX provider host fit warning:\n%s", rendered)
+        if not readiness.ready:
+            report = fit_report.build_mlx_fit_report(spec.name)
+            rendered = fit_report.render_fit_report(report)
+            if report.overall == "blocked":
+                raise MLXInstallUnavailableError(rendered)
+            if report.overall == "warning":
+                LOG.warning("MLX provider host fit warning:\n%s", rendered)
 
-        _write_status(transition_state(_read_status(), new_state="downloading"))
-        snapshot_dir = Path(
-            huggingface_hub.snapshot_download(
-                repo_id=spec.repo,
-                revision=spec.revision,
+            _write_status(transition_state(_read_status(), new_state="downloading"))
+            snapshot_dir = Path(
+                huggingface_hub.snapshot_download(
+                    repo_id=spec.repo,
+                    revision=spec.revision,
+                )
+            )
+
+            _write_status(transition_state(_read_status(), new_state="verifying"))
+            metadata = validate_snapshot_sha256(spec, snapshot_dir)
+            assert_install_attempt_current(attempt_status)
+            _write_snapshot_manifest(
+                spec,
+                snapshot_dir,
+                metadata=metadata,
+                attempt_status=attempt_status,
+                fingerprint=fingerprint,
+            )
+
+            _write_status(transition_state(_read_status(), new_state="installing"))
+            if spec.name == GEMMA4_26B_A4B_4BIT:
+                variant_dir = create_gemma4_variant(snapshot_dir)
+                assert_install_attempt_current(attempt_status)
+                _write_variant_manifest(
+                    spec,
+                    variant_dir,
+                    attempt_status=attempt_status,
+                    fingerprint=fingerprint,
+                )
+
+        final_readiness = inspect_readiness(model_id)
+        current = assert_install_attempt_current(attempt_status)
+        if final_readiness.ready:
+            return _write_status(transition_state(current, new_state="installed"))
+        return _write_status(
+            transition_state(
+                current,
+                new_state="failed",
+                error=final_readiness.reason_code,
+                error_code=final_readiness.reason_code,
             )
         )
-
-        _write_status(transition_state(_read_status(), new_state="verifying"))
-        validate_snapshot_sha256(spec, snapshot_dir)
-
-        _write_status(transition_state(_read_status(), new_state="installing"))
-        variant_dir = None
-        if spec.name == GEMMA4_26B_A4B_4BIT:
-            variant_dir = create_gemma4_variant(snapshot_dir)
-
-        _write_mlx_metadata(spec, snapshot_dir=snapshot_dir, variant_dir=variant_dir)
-        return _write_status(transition_state(_read_status(), new_state="installed"))
     except Exception as exc:
-        _write_status(
-            transition_state(_read_status(), new_state="failed", error=str(exc))
-        )
+        try:
+            current = assert_install_attempt_current(attempt_status)
+            _write_status(
+                transition_state(
+                    current,
+                    new_state="failed",
+                    error=str(exc),
+                    error_code=getattr(exc, "reason_code", None),
+                )
+            )
+        except Exception:
+            pass
         raise
+    finally:
+        if owned_lease:
+            lease.release()
 
 
 __all__ = [
@@ -486,6 +712,7 @@ __all__ = [
     "is_mlx_platform_supported",
     "resolve_model_spec",
     "snapshot_dir_for_spec",
+    "target_fingerprint",
     "validate_snapshot_sha256",
     "variant_dir_for_snapshot",
 ]

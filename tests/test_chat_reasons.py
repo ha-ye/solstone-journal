@@ -19,6 +19,7 @@ EXPECTED_CODES = {
     "local_model_missing",
     "model_missing",
     "binary_missing",
+    "install_busy",
     "local_model_installing",
     "local_model_loading",
     "local_model_not_ready",

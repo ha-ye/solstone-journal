@@ -28,6 +28,47 @@ from solstone.think.processing import (
     ProcessingSettings,
     TimeWindowSettings,
 )
+from solstone.think.providers.artifact_proof import ReadinessOutcome
+
+
+def _mlx_readiness(
+    *,
+    model_installed: bool = True,
+    ram_sufficient: bool = True,
+    platform_supported: bool = True,
+    package_available: bool = True,
+    runtime_dir: str = "/tmp/snap",
+    model_id: str = "mlx-model",
+) -> ReadinessOutcome:
+    ready = (
+        model_installed and ram_sufficient and platform_supported and package_available
+    )
+    return ReadinessOutcome(
+        provider="local",
+        status="ready" if ready else "missing-or-mismatched",
+        reason_code="ready" if ready else "manifest_missing",
+        target={"model_id": model_id},
+        install={
+            "install_state": "idle",
+            "install_error": None,
+            "error_code": None,
+            "attempt_id": None,
+            "progress_bytes_received": None,
+            "progress_bytes_total": None,
+            "last_transition_at": None,
+            "last_progress_at": None,
+        },
+        host={
+            "platform_supported": platform_supported,
+            "package_available": package_available,
+            "ram_sufficient": ram_sufficient,
+        },
+        artifacts={
+            "model_installed": model_installed,
+            "runtime_dir": runtime_dir,
+        },
+        proof={},
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -3139,14 +3180,10 @@ def test_start_local_server_launches_mlx_server_on_darwin(
     monkeypatch.setattr(
         mlx_install,
         "inspect_readiness",
-        lambda: {
-            "platform_supported": True,
-            "package_available": True,
-            "ram_sufficient": True,
-            "model_installed": True,
-            "runtime_dir": str(runtime_dir),
-            "model_id": "gemma-4-26b-a4b-it-mlx-4bit",
-        },
+        lambda: _mlx_readiness(
+            runtime_dir=str(runtime_dir),
+            model_id="gemma-4-26b-a4b-it-mlx-4bit",
+        ),
     )
     monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
     monkeypatch.setattr(
@@ -3201,12 +3238,7 @@ def test_start_local_server_skips_when_mlx_not_installed_on_darwin(monkeypatch):
     monkeypatch.setattr(
         mlx_install,
         "inspect_readiness",
-        lambda: {
-            "platform_supported": True,
-            "package_available": True,
-            "ram_sufficient": True,
-            "model_installed": False,
-        },
+        lambda: _mlx_readiness(model_installed=False),
     )
     launch = MagicMock()
     monkeypatch.setattr(mod, "_launch_process", launch)
@@ -3223,12 +3255,7 @@ def test_start_local_server_skips_when_mlx_memory_blocked_on_darwin(monkeypatch)
     monkeypatch.setattr(
         mlx_install,
         "inspect_readiness",
-        lambda: {
-            "platform_supported": True,
-            "package_available": True,
-            "ram_sufficient": False,
-            "model_installed": True,
-        },
+        lambda: _mlx_readiness(ram_sufficient=False),
     )
     launch = MagicMock()
     monkeypatch.setattr(mod, "_launch_process", launch)

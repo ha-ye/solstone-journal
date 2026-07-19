@@ -7,19 +7,17 @@ import io
 import os
 import shutil
 import tarfile
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from solstone.think import parakeet_readiness
-from solstone.think.journal_config import (
-    JournalConfigTransaction,
-    read_journal_config,
-)
-from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.providers import fit_report, parakeet_install
+from solstone.think.providers.artifact_proof import (
+    artifact_manifest_path,
+    prove_manifest,
+)
 from solstone.think.providers.install_state import read_install_status
 from tests.helpers.journal_config import seed_journal_config
 
@@ -51,11 +49,7 @@ def _init_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _parakeet_status() -> dict:
-    return read_install_status(scope="bundled", name="parakeet")
-
-
-def _parakeet_slot() -> dict:
-    return read_journal_config()["providers"]["bundled"]["parakeet"]
+    return read_install_status(name="parakeet")
 
 
 def _fit(severity: fit_report.FitSeverity) -> fit_report.FitReport:
@@ -94,7 +88,31 @@ def _stage_ready_files() -> tuple[Path, Path, Path]:
         path.chmod(0o755)
     model.parent.mkdir(parents=True, exist_ok=True)
     model.write_text("model\n", encoding="utf-8")
+    fingerprint = parakeet_install.target_fingerprint()
+    for backend in parakeet_readiness.PARAKEET_CPP_BINARY_BACKENDS:
+        parakeet_install._write_binary_manifest(
+            backend=backend,
+            attempt_status=None,
+            fingerprint=fingerprint,
+            journal_path=None,
+        )
+    parakeet_install._write_model_manifest(
+        attempt_status=None,
+        fingerprint=fingerprint,
+        journal_path=None,
+    )
     return cpu, vulkan, model
+
+
+def _write_ready_binary_manifests() -> None:
+    fingerprint = parakeet_install.target_fingerprint()
+    for backend in parakeet_readiness.PARAKEET_CPP_BINARY_BACKENDS:
+        parakeet_install._write_binary_manifest(
+            backend=backend,
+            attempt_status=None,
+            fingerprint=fingerprint,
+            journal_path=None,
+        )
 
 
 def test_install_hint_literal() -> None:
@@ -169,7 +187,7 @@ def test_install_parakeet_server_relocates_and_chmods_binary(
 
     install_dir = parakeet_install.binary_install_dir("cpu")
     final_path = parakeet_install.binary_path("cpu")
-    assert result["install_state"] == "installed"
+    assert result["install_state"] == "verifying"
     assert final_path.exists()
     assert (
         final_path.read_bytes()
@@ -182,6 +200,13 @@ def test_install_parakeet_server_relocates_and_chmods_binary(
         install_dir
         / f"parakeet-{parakeet_readiness.PARAKEET_CPP_RELEASE_TAG}-bin-linux-cpu-x64"
     ).exists()
+    assert prove_manifest(
+        artifact_manifest_path(install_dir),
+        provider=parakeet_install.PARAKEET_PROVIDER_NAME,
+        pin_identity=parakeet_install._binary_pin_identity(
+            parakeet_install.parakeet_server_artifact_key(), "cpu"
+        ),
+    ).ready
 
 
 def test_sha256_mismatch_fails_closed_and_records_failed_state(
@@ -205,7 +230,7 @@ def test_sha256_mismatch_fails_closed_and_records_failed_state(
     assert "sha256 mismatch" in status["install_error"]
 
 
-def test_install_parakeet_writes_distinct_binary_and_model_metadata(
+def test_install_parakeet_writes_distinct_binary_and_model_manifests(
     tmp_path, monkeypatch
 ) -> None:
     _init_journal(tmp_path, monkeypatch)
@@ -230,105 +255,39 @@ def test_install_parakeet_writes_distinct_binary_and_model_metadata(
     result = parakeet_install.install_parakeet()
 
     assert result["install_state"] == "installed"
-    slot = _parakeet_slot()
+    artifact_key = parakeet_install.parakeet_server_artifact_key()
+    cpu_manifest = artifact_manifest_path(parakeet_install.binary_install_dir("cpu"))
+    vulkan_manifest = artifact_manifest_path(
+        parakeet_install.binary_install_dir("vulkan")
+    )
+    assert parakeet_install.binary_path("cpu") != parakeet_install.binary_path("vulkan")
+    assert parakeet_install.binary_path("cpu").is_file()
+    assert parakeet_install.binary_path("vulkan").is_file()
+    assert parakeet_install.model_path().is_file()
     assert (
-        slot["binary_artifact_cpu"]
-        == parakeet_install.PARAKEET_SERVER_PINS[
-            (parakeet_install.parakeet_server_artifact_key(), "cpu")
-        ]["filename"]
+        prove_manifest(
+            cpu_manifest,
+            provider=parakeet_install.PARAKEET_PROVIDER_NAME,
+            pin_identity=parakeet_install._binary_pin_identity(artifact_key, "cpu"),
+        ).ready
+        is True
     )
     assert (
-        slot["binary_artifact_vulkan"]
-        == parakeet_install.PARAKEET_SERVER_PINS[
-            (parakeet_install.parakeet_server_artifact_key(), "vulkan")
-        ]["filename"]
+        prove_manifest(
+            vulkan_manifest,
+            provider=parakeet_install.PARAKEET_PROVIDER_NAME,
+            pin_identity=parakeet_install._binary_pin_identity(artifact_key, "vulkan"),
+        ).ready
+        is True
     )
-    assert slot["binary_path_cpu"] != slot["binary_path_vulkan"]
-    assert Path(slot["binary_path_cpu"]).is_file()
-    assert Path(slot["binary_path_vulkan"]).is_file()
-    assert slot["model_repo"] == parakeet_readiness.PARAKEET_CPP_MODEL_REPO
-    assert slot["model_filename"] == parakeet_readiness.PARAKEET_CPP_MODEL_FILENAME
-    assert slot["model_revision"] == parakeet_readiness.PARAKEET_CPP_MODEL_REVISION
-    assert slot["model_path"] == str(parakeet_install.model_path())
-    assert Path(slot["model_path"]).is_file()
-
-
-def test_write_parakeet_metadata_waits_for_config_lock_and_preserves_commits(
-    tmp_path,
-    monkeypatch,
-) -> None:
-    _init_journal(tmp_path, monkeypatch)
-    journal_path = tmp_path
-    config = {
-        "setup": {
-            "completed_at": "2026-07-01T00:00:00+00:00",
-            "completed_by": "setup-writer",
-        },
-        "service": {"port": 5015, "host": "127.0.0.1"},
-        "providers": {"bundled": {}},
-    }
-    calls: list[tuple[str, object]] = []
-
-    def recording_mutate(mutator, *, journal_path=None):
-        calls.append(("mutate", journal_path))
-        mutation = mutator(config)
-        return JournalConfigTransaction(
-            value=mutation.value,
-            changed=mutation.changed,
-            written=mutation.changed,
-        )
-
-    monkeypatch.setattr(parakeet_install, "mutate_journal_config", recording_mutate)
-
-    parakeet_install._write_parakeet_metadata(
-        {"model_repo": "openai/parakeet-test"},
-        journal_path=journal_path,
-    )
-
-    assert calls == [("mutate", journal_path)]
-    persisted = config
-    assert persisted["setup"]["completed_at"] == "2026-07-01T00:00:00+00:00"
-    assert persisted["setup"]["completed_by"] == "setup-writer"
-    assert persisted["service"]["port"] == 5015
-    assert persisted["service"]["host"] == "127.0.0.1"
     assert (
-        persisted["providers"]["bundled"]["parakeet"]["model_repo"]
-        == "openai/parakeet-test"
+        prove_manifest(
+            artifact_manifest_path(parakeet_install.model_dir()),
+            provider=parakeet_install.PARAKEET_PROVIDER_NAME,
+            pin_identity=parakeet_install._model_pin_identity(),
+        ).ready
+        is True
     )
-
-
-def test_write_parakeet_metadata_rejects_unknown_key_without_lock(
-    monkeypatch,
-) -> None:
-    mutate_calls: list[object] = []
-
-    def recording_mutate(mutator, *, journal_path=None):
-        mutate_calls.append(journal_path)
-        pytest.fail("metadata validation must happen before transaction entry")
-
-    monkeypatch.setattr(parakeet_install, "mutate_journal_config", recording_mutate)
-
-    with pytest.raises(ValueError) as exc_info:
-        parakeet_install._write_parakeet_metadata({"unexpected": "value"})
-
-    assert str(exc_info.value) == "unknown parakeet install metadata key: unexpected"
-    assert mutate_calls == []
-
-
-def test_write_parakeet_metadata_propagates_config_lock_timeout_without_config_io(
-    monkeypatch,
-) -> None:
-    timeout = LockTimeout(path=Path("busy.lock"), timeout=0.01)
-
-    def busy_mutate(mutator, *, journal_path=None):
-        raise timeout
-
-    monkeypatch.setattr(parakeet_install, "mutate_journal_config", busy_mutate)
-
-    with pytest.raises(LockTimeout) as exc_info:
-        parakeet_install._write_parakeet_metadata({"model_repo": "openai/test"})
-
-    assert exc_info.value is timeout
 
 
 def test_install_parakeet_blocks_before_downloads(tmp_path, monkeypatch) -> None:
@@ -385,34 +344,25 @@ def test_install_parakeet_warning_continues_to_download(
     assert downloads
 
 
-def test_install_parakeet_rechecks_readiness_under_provider_lock(
+def test_install_parakeet_ready_short_circuits_before_component_installs(
     tmp_path, monkeypatch
 ) -> None:
     _init_journal(tmp_path, monkeypatch)
     _stage_ready_files()
-    lock_calls = []
-
-    @contextmanager
-    def fake_hold_install_lock(journal_path=None):
-        lock_calls.append(parakeet_install._install_lock_path(journal_path))
-        yield
-
-    monkeypatch.setattr(parakeet_install, "_hold_install_lock", fake_hold_install_lock)
     monkeypatch.setattr(
         parakeet_install,
         "_install_parakeet_server_unlocked",
-        lambda *_args: pytest.fail("ready artifacts should not reinstall"),
+        lambda *_args, **_kwargs: pytest.fail("ready artifacts should not reinstall"),
     )
     monkeypatch.setattr(
         parakeet_install,
         "_install_model_unlocked",
-        lambda: pytest.fail("ready model should not reinstall"),
+        lambda *_args, **_kwargs: pytest.fail("ready model should not reinstall"),
     )
 
     result = parakeet_install.install_parakeet()
 
     assert result["install_state"] == "installed"
-    assert lock_calls == [parakeet_install.cache_root() / "install"]
 
 
 def test_ensure_artifacts_installed_resolves_requested_backend(
@@ -440,6 +390,7 @@ def test_ensure_artifacts_installed_reports_missing_binary_and_model(
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("server\n", encoding="utf-8")
         path.chmod(0o755)
+    _write_ready_binary_manifests()
 
     with pytest.raises(parakeet_install.ParakeetProviderError) as model_exc:
         parakeet_install.ensure_artifacts_installed("cpu")

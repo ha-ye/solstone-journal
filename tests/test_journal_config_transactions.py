@@ -82,7 +82,7 @@ def _provider_progress_worker(journal_path: str, barrier: Any, errors: Any) -> N
         )
 
         status = transition_state(make_idle_status("parakeet"), new_state="downloading")
-        write_install_status(status, scope="bundled")
+        write_install_status(status)
     except BaseException:
         errors.put(traceback.format_exc())
         raise

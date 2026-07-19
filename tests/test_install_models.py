@@ -559,9 +559,21 @@ def test_install_models_linux_routes_through_parakeet_provider(
 
     calls = []
     paths = _ready_paths(tmp_path)
+    journal = tmp_path / "journal"
+    (journal / "config").mkdir(parents=True)
+    (journal / "config" / "journal.json").write_text(
+        '{"providers": {}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    import solstone.think.utils as think_utils
+
+    think_utils._journal_path_cache = None
 
     monkeypatch.setattr(
-        parakeet_install, "install_parakeet", lambda: calls.append("install")
+        parakeet_install,
+        "install_parakeet",
+        lambda **_kwargs: calls.append("install"),
     )
     monkeypatch.setattr(install_models, "_check_linux_cpp_ready", lambda: paths)
 

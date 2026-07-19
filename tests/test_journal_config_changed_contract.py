@@ -581,46 +581,33 @@ def test_backup_state_mutation_paths_report_changed_and_noop(
         assert changes[-1] is False
 
 
-def test_provider_install_mutation_paths_report_changed_and_noop(
+def test_provider_install_migration_reports_changed_and_noop(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    cases: list[tuple[Any, Callable[[], None]]] = []
-    parakeet_install = importlib.import_module(
-        "solstone.think.providers.parakeet_install"
+    install_state = importlib.import_module("solstone.think.providers.install_state")
+    changes = _spy_changed(monkeypatch, install_state)
+    seed_journal_config(
+        {
+            "providers": {
+                "bundled": {
+                    "local": {
+                        "install_state": "installed",
+                        "model_id": "local/model",
+                        "vulkan_device_index": "1",
+                    },
+                    "parakeet": {"model_repo": "repo"},
+                },
+                "local": {},
+            }
+        },
+        tmp_path,
     )
-    local_install = importlib.import_module("solstone.think.providers.local_install")
-    mlx_install = importlib.import_module("solstone.think.providers.mlx_install")
-    spec = mlx_install.MLXModelSpec("mlx-model", "repo", "rev", 1)
-    cases.extend(
-        [
-            (
-                parakeet_install,
-                lambda: parakeet_install._write_parakeet_metadata(
-                    {"model_repo": "repo"}
-                ),
-            ),
-            (
-                local_install,
-                lambda: local_install._write_local_metadata({"model_id": "model"}),
-            ),
-            (
-                mlx_install,
-                lambda: mlx_install._write_mlx_metadata(
-                    spec,
-                    snapshot_dir=tmp_path / "snapshot",
-                    variant_dir=tmp_path / "variant",
-                ),
-            ),
-        ]
-    )
-    for module, invoke in cases:
-        seed_journal_config({"providers": {"bundled": {}}}, tmp_path)
-        changes = _spy_changed(monkeypatch, module)
-        invoke()
-        assert changes[-1] is True
-        invoke()
-        assert changes[-1] is False
+
+    install_state.migrate_legacy_provider_install_state(journal_path=tmp_path)
+    assert changes[-1] is True
+    install_state.migrate_legacy_provider_install_state(journal_path=tmp_path)
+    assert changes[-1] is False
 
 
 def test_pairing_oura_and_sol_voice_paths_report_changed_and_noop(

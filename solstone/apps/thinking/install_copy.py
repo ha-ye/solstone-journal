@@ -12,7 +12,6 @@ INSTALL_PHASE_INSTALLED = "Installed"
 INSTALL_PHASE_FAILED_PREFIX = "Install failed — "
 
 INSTALL_FAILED_FALLBACK = "try again"
-INSTALL_FAILED_NO_PROGRESS = "no progress for 60 seconds — try again"
 INSTALL_FAILED_UV_MISSING = (
     "uv not found — install uv (https://github.com/astral-sh/uv) and retry"
 )
@@ -64,7 +63,6 @@ __all__ = [
     "INSTALL_PHASE_INSTALLED",
     "INSTALL_PHASE_FAILED_PREFIX",
     "INSTALL_FAILED_FALLBACK",
-    "INSTALL_FAILED_NO_PROGRESS",
     "INSTALL_FAILED_UV_MISSING",
     "INSTALL_BUTTON_INSTALL",
     "INSTALL_BUTTON_INSTALLING",

@@ -51,6 +51,10 @@ class ReadinessOutcome:
     artifacts: dict[str, Any]
     proof: dict[str, Any]
 
+    @property
+    def ready(self) -> bool:
+        return self.status == "ready"
+
 
 @dataclass(frozen=True)
 class ProofResult:

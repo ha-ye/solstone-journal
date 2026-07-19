@@ -386,12 +386,62 @@ def _install_rfdetr_model(*, check: bool, force: bool) -> int:
 
 def _install_linux_cpp(*, force: bool = False) -> int:
     from solstone.think.providers import parakeet_install
+    from solstone.think.providers.install_lease import acquire_install_lease
+    from solstone.think.providers.install_state import (
+        IN_FLIGHT_STATES,
+        begin_or_replace_install_attempt,
+        canonical_fingerprint,
+        fingerprint_sha256,
+        observe_install_attempt,
+        read_install_status,
+    )
+
+    def progress_line(status: dict[str, Any]) -> None:
+        received = status.get("progress_bytes_received")
+        total = status.get("progress_bytes_total")
+        suffix = ""
+        if received is not None:
+            suffix = f" {received}"
+            if total is not None:
+                suffix += f"/{total}"
+        print(f"observing parakeet install: {status['install_state']}{suffix}")
 
     try:
-        if force:
-            parakeet_install.install_parakeet(force=True)
+        fingerprint = parakeet_install.target_fingerprint()
+        target_sha = fingerprint_sha256(canonical_fingerprint(fingerprint))
+        lease = acquire_install_lease("parakeet")
+        if lease is None:
+            status = read_install_status(name="parakeet")
+            if (
+                status["install_state"] not in IN_FLIGHT_STATES
+                or status["target_fingerprint_sha256"] != target_sha
+            ):
+                return _fail("parakeet install already running for a different target")
+            final = observe_install_attempt(
+                "parakeet",
+                target_fingerprint_sha256=target_sha,
+                timeout_s=60.0 * 60.0,
+                progress=progress_line,
+            )
+            if final is None:
+                return _fail("timed out observing parakeet install")
+            if final["install_state"] != "installed":
+                return _fail(final.get("install_error") or "parakeet install failed")
         else:
-            parakeet_install.install_parakeet()
+            try:
+                attempt_status = begin_or_replace_install_attempt(
+                    "parakeet",
+                    fingerprint,
+                    initial_state="resolving",
+                    owner={"entry": "install_models"},
+                )
+                parakeet_install.install_parakeet(
+                    force=force,
+                    lease=lease,
+                    attempt_status=attempt_status,
+                )
+            finally:
+                lease.release()
         paths = _check_linux_cpp_ready()
     except Exception as exc:
         return _fail(f"parakeet install failed: {exc}")

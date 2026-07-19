@@ -18,10 +18,15 @@ from solstone.think.callosum import callosum_send
 from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
 from solstone.think.providers import local_install, mlx_install
 from solstone.think.providers.fit_report import FitReport
+from solstone.think.providers.install_lease import (
+    InstallLease,
+    acquire_install_lease,
+    probe_install_lease_free,
+)
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     InstallStatus,
-    make_idle_status,
+    begin_or_replace_install_attempt,
     read_install_status,
     transition_state,
     write_install_status,
@@ -107,7 +112,9 @@ def list_local_models() -> list[dict[str, object]]:
 def check_binary_present() -> bool:
     """Return whether the pinned llama-server binary is installed."""
     try:
-        return bool(local_install.inspect_readiness(LOCAL_MODEL)["binary_installed"])
+        return bool(
+            local_install.inspect_readiness(LOCAL_MODEL).artifacts["binary_installed"]
+        )
     except Exception:
         return False
 
@@ -116,7 +123,9 @@ def check_model_present(model: str) -> bool:
     """Return whether the pinned GGUF model is installed."""
     try:
         model_id = normalize_model_id(model)
-        return bool(local_install.inspect_readiness(model_id)["model_installed"])
+        return bool(
+            local_install.inspect_readiness(model_id).artifacts["model_installed"]
+        )
     except Exception:
         return False
 
@@ -146,17 +155,17 @@ def get_availability_payload(model: str) -> dict[str, bool | float | int | str |
         min_ram_gb = MLX_AVAILABLE_FLOOR_BYTES // 1024**3
         memory_blocked = memory_verdict.severity == "blocked"
         available = bool(
-            readiness["platform_supported"]
-            and readiness["package_available"]
+            readiness.host["platform_supported"]
+            and readiness.host["package_available"]
             and not memory_blocked
-            and readiness["model_installed"]
+            and readiness.artifacts["model_installed"]
         )
         warning = (
             LOCAL_MLX_MEMORY_WARNING_UNKNOWN
             if memory_verdict.severity == "warning"
             else ""
         )
-        if not readiness["platform_supported"]:
+        if not readiness.host["platform_supported"]:
             reason = "requires Apple Silicon macOS"
         elif memory_blocked:
             assert memory_verdict.available_bytes is not None
@@ -165,20 +174,20 @@ def get_availability_payload(model: str) -> dict[str, bool | float | int | str |
                 f"(need {gb_label(memory_verdict.required_bytes)} GB available, "
                 f"have {gb_label(memory_verdict.available_bytes)} GB available)"
             )
-        elif not readiness["package_available"]:
+        elif not readiness.host["package_available"]:
             reason = "mlx-vlm runtime is not installed"
-        elif not readiness["model_installed"]:
+        elif not readiness.artifacts["model_installed"]:
             reason = "local model files are not installed"
         else:
             reason = ""
         return {
-            "model": readiness["model_id"],
-            "platform_supported": readiness["platform_supported"],
+            "model": readiness.target["model_id"],
+            "platform_supported": readiness.host["platform_supported"],
             "total_memory_gb": gb(total_memory_bytes),
             "available_memory_gb": gb(memory_verdict.available_bytes),
             "min_ram_gb": min_ram_gb,
-            "binary_present": readiness["package_available"],
-            "model_present": readiness["model_installed"],
+            "binary_present": readiness.host["package_available"],
+            "model_present": readiness.artifacts["model_installed"],
             "available": available,
             "reason": reason,
             "warning": warning,
@@ -186,8 +195,9 @@ def get_availability_payload(model: str) -> dict[str, bool | float | int | str |
         }
 
     spec = LOCAL_MODEL_SPECS[model_id]
-    binary_present = check_binary_present()
-    model_present = check_model_present(model_id)
+    readiness = local_install.inspect_readiness(model_id)
+    binary_present = bool(readiness.artifacts["binary_installed"])
+    model_present = bool(readiness.artifacts["model_installed"])
     platform_supported, reason = _platform_supported()
     total_memory_gb = gb(read_total_bytes())
     memory_verdict = assess_memory(spec.min_ram_bytes, block_below_floor=False)
@@ -227,18 +237,12 @@ def get_availability_payload(model: str) -> dict[str, bool | float | int | str |
 
 
 def _read_status() -> InstallStatus:
-    return read_install_status(scope="bundled", name=local_install.LOCAL_PROVIDER_NAME)
+    return read_install_status(name=local_install.LOCAL_PROVIDER_NAME)
 
 
 def _write_status(status: InstallStatus) -> InstallStatus:
-    write_install_status(status, scope="bundled")
+    write_install_status(status)
     return status
-
-
-def _has_live_thread(model: str) -> bool:
-    with _INSTALL_LOCK:
-        thread = _INSTALL_THREADS.get(model)
-    return thread is not None and thread.is_alive()
 
 
 def _payload_for_status(
@@ -263,15 +267,24 @@ def _payload_for_status(
     }
 
 
-def _normalize_stalled_status(_model: str, status: InstallStatus) -> InstallStatus:
-    return status
+def _payload_for_read_status(
+    model: str,
+    status: InstallStatus,
+) -> dict[str, int | str | None]:
+    if status["install_state"] in IN_FLIGHT_STATES and probe_install_lease_free(
+        local_install.LOCAL_PROVIDER_NAME
+    ):
+        payload = _payload_for_status(model, status)
+        payload["install_state"] = "failed"
+        payload["install_error"] = "install_interrupted"
+        return payload
+    return _payload_for_status(model, status)
 
 
 def get_state(model: str) -> dict[str, int | str | None]:
-    """Return the serialized bootstrap state, applying stall detection."""
+    """Return the serialized bootstrap state without mutating on-disk state."""
     model_id = _resolve_model_id(model)
-    status = _normalize_stalled_status(model_id, _read_status())
-    return _payload_for_status(model_id, status)
+    return _payload_for_read_status(model_id, _read_status())
 
 
 def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
@@ -281,28 +294,57 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         raise LocalBootstrapUnavailableError("BYO local endpoint is active")
 
     model_id = _resolve_model_id(model)
-    get_state(model_id)
-    status = _read_status()
-    if status["install_state"] == "installed":
+    readiness = (
+        mlx_install.inspect_readiness(model_id)
+        if _is_mlx_backend()
+        else local_install.inspect_readiness(model_id)
+    )
+    if readiness.ready:
         return {"install_state": "installed"}, 200
+    if readiness.status in {"proof-unavailable", "host-ineligible"}:
+        raise LocalBootstrapUnavailableError(readiness.reason_code)
 
     availability = get_availability_payload(model_id)
     installed = bool(availability["binary_present"] and availability["model_present"])
+    fingerprint = (
+        mlx_install.target_fingerprint(model_id)
+        if _is_mlx_backend()
+        else local_install.target_fingerprint(model_id)
+    )
+    from solstone.think.providers.install_state import (
+        canonical_fingerprint,
+        fingerprint_sha256,
+    )
+
+    target_sha = fingerprint_sha256(canonical_fingerprint(fingerprint))
+    lease = acquire_install_lease(local_install.LOCAL_PROVIDER_NAME)
+    if lease is None:
+        status = _read_status()
+        if (
+            status["install_state"] in IN_FLIGHT_STATES
+            and status["target_fingerprint_sha256"] == target_sha
+        ):
+            return {"install_state": status["install_state"]}, 200
+        return {
+            "install_state": status["install_state"],
+            "reason_code": "install_busy",
+        }, 409
+
     with _INSTALL_LOCK:
         status = _read_status()
-        if status["install_state"] == "installed":
+        if readiness.ready:
+            lease.release()
             return {"install_state": "installed"}, 200
 
         if status["install_state"] == "idle" and installed:
-            _write_status(
-                transition_state(
-                    make_idle_status(local_install.LOCAL_PROVIDER_NAME),
-                    new_state="installed",
-                )
-            )
+            lease.release()
             return {"install_state": "installed"}, 200
 
-        if status["install_state"] in IN_FLIGHT_STATES:
+        if (
+            status["install_state"] in IN_FLIGHT_STATES
+            and status["target_fingerprint_sha256"] == target_sha
+        ):
+            lease.release()
             return {"install_state": status["install_state"]}, 200
 
         # Only genuinely-missing artifacts reach here: build the host-fit report
@@ -311,27 +353,36 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         report = _fit_report_for_model(model_id)
         blocked_reason = _blocked_reason(report)
         if blocked_reason:
+            lease.release()
             raise LocalBootstrapUnavailableError(blocked_reason)
 
         disk_reason = _disk_blocked_reason(report)
         if disk_reason:
+            lease.release()
             raise LocalBootstrapUnavailableError(disk_reason)
 
         try:
             worker = (
                 _mlx_bootstrap_worker if _is_mlx_backend() else _run_bootstrap_worker
             )
+            attempt_status = begin_or_replace_install_attempt(
+                local_install.LOCAL_PROVIDER_NAME,
+                fingerprint,
+                initial_state="downloading",
+                owner={"entry": "thinking_bootstrap"},
+            )
+            ack = threading.Event()
             thread = threading.Thread(
                 target=worker,
-                args=(model_id,),
+                args=(model_id, lease, attempt_status, ack),
                 name=f"local-provider-bootstrap-{model_id}",
                 daemon=True,
             )
         except Exception as exc:
+            lease.release()
             _write_status(transition_state(status, new_state="failed", error=str(exc)))
             raise LocalBootstrapStartError(str(exc)) from exc
 
-        _write_status(transition_state(status, new_state="downloading"))
         _INSTALL_THREADS[model_id] = thread
 
     try:
@@ -340,10 +391,17 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         with _INSTALL_LOCK:
             if _INSTALL_THREADS.get(model_id) is thread:
                 _INSTALL_THREADS.pop(model_id, None)
+        lease.release()
         _write_status(
             transition_state(_read_status(), new_state="failed", error=str(exc))
         )
         raise LocalBootstrapStartError(str(exc)) from exc
+    if not ack.wait(timeout=5.0):
+        with _INSTALL_LOCK:
+            if _INSTALL_THREADS.get(model_id) is thread:
+                _INSTALL_THREADS.pop(model_id, None)
+        lease.release()
+        raise LocalBootstrapStartError("local bootstrap worker did not acknowledge")
     return {"install_state": "downloading"}, 202
 
 
@@ -371,13 +429,24 @@ def _disk_blocked_reason(report: FitReport) -> str:
     return ""
 
 
-def _mlx_bootstrap_worker(model: str) -> None:
+def _mlx_bootstrap_worker(
+    model: str,
+    lease: InstallLease,
+    attempt_status: InstallStatus,
+    ack: threading.Event,
+) -> None:
     current_thread = threading.current_thread()
+    ack.set()
     try:
-        mlx_install.install_local_mlx(model)
+        mlx_install.install_local_mlx(
+            model,
+            lease=lease,
+            attempt_status=attempt_status,
+        )
     except Exception:
         logger.exception("local MLX provider bootstrap failed")
     finally:
+        lease.release()
         with _INSTALL_LOCK:
             if _INSTALL_THREADS.get(model) is current_thread:
                 _INSTALL_THREADS.pop(model, None)
@@ -392,12 +461,20 @@ def _request_local_server_start() -> None:
         logger.exception("could not request local server start")
 
 
-def _run_bootstrap_worker(model: str) -> None:
+def _run_bootstrap_worker(
+    model: str,
+    lease: InstallLease,
+    attempt_status: InstallStatus,
+    ack: threading.Event,
+) -> None:
     current_thread = threading.current_thread()
+    ack.set()
     try:
-        local_install.install_llama_server()
-        _write_status(transition_state(_read_status(), new_state="downloading"))
-        local_install.install_model(model)
+        local_install.install_local(
+            model,
+            lease=lease,
+            attempt_status=attempt_status,
+        )
     except Exception as exc:
         logger.exception("local provider bootstrap failed")
         _write_status(
@@ -407,6 +484,7 @@ def _run_bootstrap_worker(model: str) -> None:
         logger.info("local provider bootstrap complete; requesting local server start")
         _request_local_server_start()
     finally:
+        lease.release()
         with _INSTALL_LOCK:
             if _INSTALL_THREADS.get(model) is current_thread:
                 _INSTALL_THREADS.pop(model, None)
