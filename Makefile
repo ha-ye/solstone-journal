@@ -339,7 +339,7 @@ wheel-macos: parakeet-helper
 	CORE_TMP=$$(mktemp -d); \
 	trap 'rm -rf "$$CORE_TMP"' EXIT; \
 	python3 -m zipfile -e "$$CORE_MAC_WHEEL" "$$CORE_TMP"; \
-	CORE_BINARY=$$(find "$$CORE_TMP" -path '*/.data/scripts/solstone-core' -type f -print -quit); \
+	CORE_BINARY=$$(find "$$CORE_TMP" -path '*.data/scripts/solstone-core' -type f -print -quit); \
 	test -n "$$CORE_BINARY" || { echo "missing solstone-core binary in $$CORE_MAC_WHEEL" >&2; exit 1; }; \
 	./scripts/sign-and-notarize-helper.sh "$$CORE_BINARY"; \
 	python3 scripts/repack_wheel_record.py "$$CORE_TMP" "$$CORE_MAC_WHEEL"
