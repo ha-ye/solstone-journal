@@ -17,6 +17,7 @@ from .journal import (
     search_counts,
     search_journal,
 )
+from .native_seam import maybe_run_native_indexer
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ def _display_search_results(
         print(f"{idx}. {meta.get('day')} {label}{facet_str}: {snippet}")
 
 
-def main() -> None:
+def main() -> int | None:
     """Main CLI entry point for the indexer."""
     parser = argparse.ArgumentParser(
         description="Index journal content (insights, transcripts, events, entities)"
@@ -177,6 +178,10 @@ def main() -> None:
     ):
         parser.print_help()
         return
+
+    native_exit = maybe_run_native_indexer(args, journal)
+    if native_exit is not None:
+        return native_exit
 
     if args.reset:
         reset_journal_index(journal)
