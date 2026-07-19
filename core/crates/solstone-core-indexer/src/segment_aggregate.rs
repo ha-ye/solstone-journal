@@ -27,6 +27,7 @@ pub struct SegmentAggregateRow {
 pub struct SegmentAggregate {
     pub rows: Vec<SegmentAggregateRow>,
     pub warnings: Vec<String>,
+    pub complete: bool,
 }
 
 pub fn build_segment_aggregate(journal: &Path, rel_segment: &str) -> SegmentAggregate {
@@ -44,6 +45,7 @@ pub fn build_segment_aggregate(journal: &Path, rel_segment: &str) -> SegmentAggr
             return SegmentAggregate {
                 rows: Vec::new(),
                 warnings,
+                complete: true,
             };
         }
     };
@@ -64,13 +66,17 @@ pub fn build_segment_aggregate(journal: &Path, rel_segment: &str) -> SegmentAggr
     talent_files.sort_by_key(|path| path.to_string_lossy().into_owned());
 
     let mut contents = Vec::new();
+    let mut complete = true;
     for path in talent_files {
         match fs::read_to_string(&path) {
             Ok(text) => contents.push(text),
-            Err(error) => warnings.push(format!(
-                "segment aggregate read failed for {}: {error}",
-                path.display()
-            )),
+            Err(error) => {
+                complete = false;
+                warnings.push(format!(
+                    "segment aggregate read failed for {}: {error}",
+                    path.display()
+                ));
+            }
         }
     }
 
@@ -99,7 +105,11 @@ pub fn build_segment_aggregate(journal: &Path, rel_segment: &str) -> SegmentAggr
         });
     }
 
-    SegmentAggregate { rows, warnings }
+    SegmentAggregate {
+        rows,
+        warnings,
+        complete,
+    }
 }
 
 fn collect_globbed_paths(
