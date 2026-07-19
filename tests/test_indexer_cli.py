@@ -63,6 +63,60 @@ def test_rebuild_edges_does_not_create_root_task_log(tmp_path, monkeypatch):
     assert not (journal / "task_log.txt").exists()
 
 
+def test_rescan_file_with_rescan_errors_after_reset_and_rebuild(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    journal = tmp_path / "journal"
+    (journal / "config").mkdir(parents=True)
+    (journal / "config" / "journal.json").write_text(
+        '{"core": {"indexer": "rust"}}\n',
+        encoding="utf-8",
+    )
+    calls: list[tuple[str, str]] = []
+
+    def reset_journal_index(journal_arg: str) -> None:
+        calls.append(("reset", journal_arg))
+
+    def rebuild_edges(journal_arg: str) -> dict[str, int]:
+        calls.append(("rebuild_edges", journal_arg))
+        return {"files": 1, "rows": 2, "drops": 0, "failed": 0}
+
+    monkeypatch.setattr(indexer_cli, "reset_journal_index", reset_journal_index)
+    monkeypatch.setattr(indexer_cli, "rebuild_edges", rebuild_edges)
+    monkeypatch.setattr(
+        indexer_cli,
+        "index_file",
+        lambda *args, **kwargs: pytest.fail("index_file should not run"),
+    )
+    monkeypatch.setattr(
+        indexer_cli,
+        "scan_journal",
+        lambda *args, **kwargs: pytest.fail("scan_journal should not run"),
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        _run_indexer_cli(
+            monkeypatch,
+            journal,
+            [
+                "--reset",
+                "--rebuild-edges",
+                "--rescan",
+                "--rescan-file",
+                "chronicle/today.md",
+            ],
+        )
+
+    assert exc_info.value.code == 2
+    assert calls == [("reset", str(journal)), ("rebuild_edges", str(journal))]
+    assert (
+        "--rescan-file cannot be used with --rescan or --rescan-full"
+        in capsys.readouterr().err
+    )
+
+
 @pytest.mark.parametrize(
     ("args", "full"),
     [
