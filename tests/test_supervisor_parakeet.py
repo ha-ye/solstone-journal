@@ -373,7 +373,7 @@ def test_start_parakeet_server_vulkan_crash_returns_exited_cleanup_handle(
     assert result.managed is launches[0]["managed"]
     assert len(launches) == 1
     assert launches[0]["name"] == supervisor.PARAKEET_SERVER_PROCESS_NAME
-    assert launches[0]["restart"] is True
+    assert launches[0]["restart"] is False
     assert launches[0]["cmd"][0] == "/tmp/vulkan/parakeet-server"
     assert launches[0]["env"]["GGML_VK_VISIBLE_DEVICES"] == "2"
     assert launches[0]["env"]["LD_LIBRARY_PATH"] == "/parakeet/lib"

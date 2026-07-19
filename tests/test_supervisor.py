@@ -3319,7 +3319,7 @@ def test_start_local_server_launches_mlx_server_on_darwin(
     assert spawned_envs == [None]
     assert "--draft-model" not in spawned[0]
     assert "--draft-kind" not in spawned[0]
-    assert mod._SERVICE_STATE["mlx-vlm-server"]["restart"] is True
+    assert mod._SERVICE_STATE["mlx-vlm-server"]["restart"] is False
     assert mod.LOCAL_MODEL_WARMING_UP_COPY in capsys.readouterr().out
     gpu_gate.assert_not_called()
 
@@ -3478,7 +3478,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     ]
     assert spawned_envs[0]["GGML_VK_VISIBLE_DEVICES"] == "1"
     assert "0.0.0.0" not in spawned[0]
-    assert mod._SERVICE_STATE["llama-server"]["restart"] is True
+    assert mod._SERVICE_STATE["llama-server"]["restart"] is False
     assert mod.LOCAL_MODEL_WARMING_UP_COPY in capsys.readouterr().out
 
 
@@ -3981,7 +3981,7 @@ def test_handle_start_local_request_noops_when_local_server_running(monkeypatch)
     assert mod._managed_procs == [running]
 
 
-def test_handle_runner_exits_restarts_llama_server_by_managed_name(monkeypatch):
+def test_handle_runner_exits_reports_llama_server_to_reconciler(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     mod._SERVICE_STATE.clear()
     mod._RESTART_POLICIES.clear()
@@ -3992,18 +3992,47 @@ def test_handle_runner_exits_restarts_llama_server_by_managed_name(monkeypatch):
     managed.name = "llama-server"
     managed.process.poll.return_value = 1
     managed.process.returncode = 1
-    replacement = _TaskManagedStub(cmd=managed.cmd)
-    replacement.name = "llama-server"
-    launched = []
+    state = mod.ProviderRuntimeState("local")
+    state.generation = 2
+    state.desired_fingerprint = "fp-local"
+    state.latest_phase = "ready"
+    state.latest_plan = _vulkan_launch_plan(
+        mod,
+        Path("/tmp/llama-server"),
+        Path("/tmp/model.gguf"),
+        None,
+        vram_mib=8000,
+    )
+    writes = []
 
     mod._SERVICE_STATE["llama-server"] = {
         "restart": True,
         "shutdown_timeout": 12,
     }
+    monkeypatch.setattr(
+        mod,
+        "_provider_runtime_states",
+        {
+            "local": state,
+            "parakeet": mod.ProviderRuntimeState("parakeet"),
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_recovery_state",
+        {
+            "local": mod.ProviderRecoveryState(),
+            "parakeet": mod.ProviderRecoveryState(),
+        },
+    )
+    monkeypatch.setattr(
+        mod,
+        "_write_provider_runtime",
+        lambda state_arg, **kwargs: writes.append((state_arg, kwargs)),
+    )
 
     def fake_launch(name, cmd, *, restart=False, shutdown_timeout=15, ref=None):
-        launched.append((name, cmd, restart, shutdown_timeout))
-        return replacement
+        raise AssertionError("provider-owned exits must not use generic restart")
 
     monkeypatch.setattr(mod, "_launch_process", fake_launch)
     monkeypatch.setattr(mod, "_supervisor_callosum", None)
@@ -4011,10 +4040,18 @@ def test_handle_runner_exits_restarts_llama_server_by_managed_name(monkeypatch):
     procs = [managed]
     asyncio.run(mod.handle_runner_exits(procs))
 
-    assert launched == [
-        ("llama-server", managed.cmd, True, 12),
-    ]
-    assert procs == [replacement]
+    assert procs == []
+    assert state.generation == 3
+    assert state.latest_phase == "stopped"
+    assert state.latest_plan is None
+    assert state.next_truth_at == 0.0
+    assert mod._recovery_state["local"].down_generation == 3
+    assert mod._SERVICE_STATE["llama-server"] == {
+        "restart": True,
+        "shutdown_timeout": 12,
+    }
+    assert writes[-1][1]["phase"] == "stopped"
+    assert writes[-1][1]["reason_code"] == "process-exited"
 
 
 def test_supervisor_singleton_lock_acquired(tmp_path, monkeypatch):

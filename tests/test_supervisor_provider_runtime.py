@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
@@ -25,6 +26,7 @@ from solstone.think.providers.runtime_health import (
     ReasonCode,
     RuntimeHealthRecord,
     RuntimePhase,
+    read_retry_token,
     read_runtime_health,
     request_retry_token,
     write_runtime_health,
@@ -57,7 +59,25 @@ def runtime_state_reset(
         "parakeet": supervisor.ProviderRuntimeState("parakeet"),
     }
     monkeypatch.setattr(supervisor, "_provider_runtime_states", states)
+    monkeypatch.setattr(
+        supervisor,
+        "_recovery_state",
+        {
+            "local": supervisor.ProviderRecoveryState(),
+            "parakeet": supervisor.ProviderRecoveryState(),
+        },
+    )
     monkeypatch.setattr(supervisor, "_provider_runtime_executor", None)
+    monkeypatch.setattr(
+        supervisor,
+        "_wedge_state",
+        {
+            "providers": OrderedDict(),
+            "failures": set(),
+            "cooldown_until": 0.0,
+            "awaiting_recovery": False,
+        },
+    )
     monkeypatch.setattr(supervisor, "_provider_startup_gate", None)
     monkeypatch.setattr(supervisor, "_parakeet_admission_retry_epoch", 0)
     supervisor._SERVICE_STATE.clear()
@@ -1077,6 +1097,190 @@ def test_handle_shutdown_signals_pending_provider_start(monkeypatch) -> None:
         supervisor.shutdown_requested = False
 
     assert event.is_set()
+
+
+def test_local_probe_worker_reports_loading_without_opening_socket(monkeypatch) -> None:
+    from solstone.think.providers import local_server
+
+    calls: list[int] = []
+
+    def fake_probe(port: int):
+        calls.append(port)
+        return local_server.STATE_LOADING, None
+
+    monkeypatch.setattr(local_server, "_probe_health", fake_probe)
+
+    outcome = supervisor._provider_probe_worker(
+        "local",
+        45678,
+        supervisor.ProviderFence(
+            incarnation=supervisor._PROVIDER_INCARNATION,
+            generation=1,
+            fingerprint="fp-local",
+            attempt=1,
+        ),
+    )
+
+    assert calls == [45678]
+    assert outcome.status == "not-ready"
+    assert outcome.reason_code == "proof-observation-unavailable"
+    assert outcome.detail["health_state"] == local_server.STATE_LOADING
+
+
+def test_parakeet_probe_worker_has_no_loading_state(monkeypatch) -> None:
+    from solstone.think.providers import parakeet_server
+
+    calls: list[int] = []
+
+    def fake_probe(port: int):
+        calls.append(port)
+        return parakeet_server.STATE_FAILED, "warming"
+
+    monkeypatch.setattr(parakeet_server, "_probe_health", fake_probe)
+
+    outcome = supervisor._provider_probe_worker(
+        "parakeet",
+        45679,
+        supervisor.ProviderFence(
+            incarnation=supervisor._PROVIDER_INCARNATION,
+            generation=1,
+            fingerprint="fp-parakeet",
+            attempt=1,
+        ),
+    )
+
+    assert calls == [45679]
+    assert outcome.status == "unavailable"
+    assert outcome.reason_code == "proof-observation-unavailable"
+    assert outcome.detail["health_state"] == parakeet_server.STATE_FAILED
+
+
+def test_probe_slot_transitions_ready_and_proof_unavailable_with_fakes(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import local_server
+
+    managed = _FakeManaged()
+    state = supervisor._provider_runtime_states["local"]
+    plan = _local_plan()
+    _set_provider_ready("local", state, plan)
+    state.next_truth_at = 10**12
+    state.next_probe_at = 0.0
+    supervisor.write_service_port("local", 45678)
+    write_runtime_health(
+        _runtime_record(
+            "local",
+            phase="ready",
+            fingerprint=plan.desired_fingerprint_sha256,
+            generation=1,
+            attempt=1,
+            process={
+                "name": managed.name,
+                "pid": managed.process.pid,
+                "ref": managed.ref,
+                "port": 45678,
+            },
+        )
+    )
+    observations = [
+        (local_server.STATE_LOADING, None),
+        (local_server.STATE_READY, None),
+    ]
+    calls: list[int] = []
+
+    def fake_probe(port: int):
+        calls.append(port)
+        return observations.pop(0)
+
+    monkeypatch.setattr(local_server, "_probe_health", fake_probe)
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([managed]))
+    asyncio.run(supervisor._reconcile_local_provider_runtime([managed]))
+
+    assert state.latest_phase == "ready-proof-unavailable"
+    assert calls == [45678]
+    assert read_runtime_health("local")["process"]["ref"] == managed.ref
+
+    state.next_probe_at = 0.0
+    asyncio.run(supervisor._reconcile_local_provider_runtime([managed]))
+    asyncio.run(supervisor._reconcile_local_provider_runtime([managed]))
+
+    assert state.latest_phase == "ready"
+    assert calls == [45678, 45678]
+
+
+def test_wedge_threshold_records_recycle_token_without_sync_termination(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import local_endpoint, local_server
+    from solstone.think.providers.local_endpoint import LocalEndpoint
+
+    state = supervisor._provider_runtime_states["local"]
+    plan = _local_plan()
+    _set_provider_ready("local", state, plan)
+    state.generation = 4
+    state.next_truth_at = 9999.0
+    managed = _FakeManaged()
+    supervisor._managed_procs = [managed]
+    supervisor._SERVICE_STATE[managed.name] = {
+        "restart": False,
+        "shutdown_timeout": 15,
+    }
+    monkeypatch.setattr(
+        local_endpoint,
+        "resolve_local_endpoint",
+        lambda: LocalEndpoint("", "", None, True),
+    )
+    monkeypatch.setattr(supervisor, "read_service_port", lambda service: 45678)
+    monkeypatch.setattr(
+        local_server,
+        "_probe_health",
+        lambda port: (local_server.STATE_READY, None),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_restart_service",
+        lambda *_args, **_kwargs: pytest.fail("wedge must not restart synchronously"),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_start_termination_thread",
+        lambda *_args, **_kwargs: pytest.fail("wedge must not terminate synchronously"),
+    )
+
+    for idx in range(supervisor.LOCAL_WEDGE_THRESHOLD):
+        use_id = f"wedge-{idx}"
+        supervisor._handle_cortex_outcome(
+            {
+                "tract": "cortex",
+                "event": "start",
+                "use_id": use_id,
+                "provider": "local",
+            }
+        )
+        supervisor._handle_cortex_outcome(
+            {
+                "tract": "cortex",
+                "event": "error",
+                "use_id": use_id,
+                "reason_code": "provider_unavailable",
+            }
+        )
+
+    token = read_retry_token("local")
+    assert token["reason_code"] == "local-wedge-provider-unavailable"
+    assert token["desired_fingerprint_sha256"] == plan.desired_fingerprint_sha256
+    assert state.generation == 5
+    assert state.latest_phase == "retry-requested"
+    assert state.next_truth_at == 0.0
+    assert supervisor._recovery_state["local"].down_generation == 5
+    assert supervisor._SERVICE_STATE[managed.name] == {
+        "restart": False,
+        "shutdown_timeout": 15,
+    }
+    managed.terminate.assert_not_called()
 
 
 def _plan_for_backend(

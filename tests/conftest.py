@@ -345,7 +345,10 @@ def reset_supervisor_state():
 
         # Reset before test
         mod._daily_state["last_day"] = None
-        mod._recovery_state["local_server_down"] = False
+        mod._recovery_state = {
+            "local": mod.ProviderRecoveryState(),
+            "parakeet": mod.ProviderRecoveryState(),
+        }
         mod._is_remote_mode = False
         # Create fresh task queue
         mod._task_queue = mod.TaskQueue(on_queue_change=None)
@@ -357,7 +360,10 @@ def reset_supervisor_state():
 
         # Reset after test
         mod._daily_state["last_day"] = None
-        mod._recovery_state["local_server_down"] = False
+        mod._recovery_state = {
+            "local": mod.ProviderRecoveryState(),
+            "parakeet": mod.ProviderRecoveryState(),
+        }
         mod._is_remote_mode = False
         mod._observer_health = {}
         mod._enabled_observers = set()

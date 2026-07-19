@@ -26,7 +26,14 @@ def isolate_supervisor_wedge_state(monkeypatch):
             "awaiting_recovery": False,
         },
     )
-    monkeypatch.setattr(mod, "_recovery_state", {"local_server_down": False})
+    monkeypatch.setattr(
+        mod,
+        "_recovery_state",
+        {
+            "local": mod.ProviderRecoveryState(),
+            "parakeet": mod.ProviderRecoveryState(),
+        },
+    )
     monkeypatch.setattr(mod, "_managed_procs", [])
     monkeypatch.setattr(mod, "_SERVICE_STATE", {})
     monkeypatch.setattr(mod, "_RESTART_POLICIES", {})
@@ -113,8 +120,8 @@ def test_remote_mode_ignores_cortex_events_without_state_or_io(monkeypatch):
     )
     monkeypatch.setattr(
         mod,
-        "_restart_service",
-        Mock(side_effect=AssertionError("should not restart service")),
+        "_request_provider_runtime_recycle",
+        Mock(side_effect=AssertionError("should not request recycle")),
     )
 
     mod._handle_cortex_outcome(_start("u1"))
@@ -193,61 +200,65 @@ def test_only_real_500_provider_unavailable_counts(monkeypatch):
         ("linux", mod.LOCAL_SERVER_PROCESS_NAME),
     ],
 )
-def test_recycles_through_existing_restart_machinery_by_platform(
+def test_recycles_through_provider_reconciler_by_platform(
     monkeypatch, platform, proctitle
 ):
     monkeypatch.setattr(mod.sys, "platform", platform)
     _ready_local_server(monkeypatch)
     managed = _ManagedStub(proctitle, ["/tmp/server"])
     mod._managed_procs.append(managed)
-    monkeypatch.setattr(mod, "_start_termination_thread", Mock())
+    recycle = Mock(return_value=True)
+    monkeypatch.setattr(mod, "_request_provider_runtime_recycle", recycle)
+    monkeypatch.setattr(
+        mod,
+        "_restart_service",
+        Mock(side_effect=AssertionError("wedge must not use generic restart")),
+    )
 
     _drive_wedge()
 
-    assert mod._SERVICE_STATE[proctitle]["restart"] is True
+    recycle.assert_called_once()
+    assert recycle.call_args.args == ("local",)
+    assert recycle.call_args.kwargs["reason_code"] == (
+        "local-wedge-provider-unavailable"
+    )
+    assert (
+        recycle.call_args.kwargs["detail"]["health_state"] == local_server.STATE_READY
+    )
+    assert recycle.call_args.kwargs["detail"]["port"] == 9999
+    assert mod._SERVICE_STATE == {}
 
     managed.process.returncode = 1
-    launches = []
-    replacement = _ManagedStub(proctitle, managed.cmd)
+    states = {
+        "local": mod.ProviderRuntimeState("local"),
+        "parakeet": mod.ProviderRuntimeState("parakeet"),
+    }
+    monkeypatch.setattr(mod, "_provider_runtime_states", states)
+    monkeypatch.setattr(mod, "_write_provider_runtime", lambda _state, **_kwargs: None)
+    monkeypatch.setattr(
+        mod,
+        "_launch_process",
+        Mock(side_effect=AssertionError("provider exit must not relaunch")),
+    )
 
-    def fake_launch(name, cmd, *, restart=False, shutdown_timeout=15, ref=None):
-        launches.append(
-            {
-                "name": name,
-                "cmd": cmd,
-                "restart": restart,
-                "shutdown_timeout": shutdown_timeout,
-                "ref": ref,
-            }
-        )
-        return replacement
+    procs = [managed]
+    asyncio.run(mod.handle_runner_exits(procs))
 
-    monkeypatch.setattr(mod, "_launch_process", fake_launch)
-
-    asyncio.run(mod.handle_runner_exits([managed]))
-
-    assert launches == [
-        {
-            "name": proctitle,
-            "cmd": managed.cmd,
-            "restart": True,
-            "shutdown_timeout": 15,
-            "ref": None,
-        }
-    ]
-    assert mod._recovery_state["local_server_down"] is True
+    assert procs == []
+    assert states["local"].latest_phase == "stopped"
+    assert mod._recovery_state["local"].down_generation == states["local"].generation
 
 
 def test_cooldown_ignores_terminal_events_and_prevents_rerecycle(monkeypatch):
     now = [1000.0]
     monkeypatch.setattr(mod.time, "monotonic", lambda: now[0])
     _ready_local_server(monkeypatch)
-    restart_service = Mock(return_value=True)
-    monkeypatch.setattr(mod, "_restart_service", restart_service)
+    recycle = Mock(return_value=True)
+    monkeypatch.setattr(mod, "_request_provider_runtime_recycle", recycle)
 
     _drive_wedge()
 
-    assert restart_service.call_count == 1
+    assert recycle.call_count == 1
     assert mod._wedge_state["cooldown_until"] == 1120.0
     assert mod._wedge_state["awaiting_recovery"] is True
 
@@ -259,7 +270,7 @@ def test_cooldown_ignores_terminal_events_and_prevents_rerecycle(monkeypatch):
     mod._handle_cortex_outcome(_start("cooldown-finish"))
     mod._handle_cortex_outcome(_finish("cooldown-finish"))
 
-    assert restart_service.call_count == 1
+    assert recycle.call_count == 1
     assert mod._wedge_state["failures"] == set()
     assert mod._wedge_state["awaiting_recovery"] is True
 
@@ -268,7 +279,9 @@ def test_wedge_logs_declared_recycling_and_recovered(monkeypatch, caplog):
     now = [2000.0]
     monkeypatch.setattr(mod.time, "monotonic", lambda: now[0])
     _ready_local_server(monkeypatch)
-    monkeypatch.setattr(mod, "_restart_service", Mock(return_value=True))
+    monkeypatch.setattr(
+        mod, "_request_provider_runtime_recycle", Mock(return_value=True)
+    )
     caplog.set_level(logging.INFO)
 
     _drive_wedge()
@@ -277,7 +290,7 @@ def test_wedge_logs_declared_recycling_and_recovered(monkeypatch, caplog):
     mod._handle_cortex_outcome(_finish("recovered"))
 
     assert "local server wedge: declared" in caplog.text
-    assert "local server wedge: recycling" in caplog.text
+    assert "local server wedge: requested local provider recycle" in caplog.text
     assert "local server wedge: recovered after recycle" in caplog.text
 
 
@@ -285,8 +298,8 @@ def test_dispatch_routes_cortex_events_and_duplicate_errors_are_idempotent(
     monkeypatch, mock_callosum
 ):
     _ready_local_server(monkeypatch)
-    restart_service = Mock(return_value=True)
-    monkeypatch.setattr(mod, "_restart_service", restart_service)
+    recycle = Mock(return_value=True)
+    monkeypatch.setattr(mod, "_request_provider_runtime_recycle", recycle)
 
     mod._handle_callosum_message(_start("dupe"))
     mod._handle_callosum_message(_error("dupe"))
@@ -296,7 +309,11 @@ def test_dispatch_routes_cortex_events_and_duplicate_errors_are_idempotent(
     mod._handle_callosum_message(_start("u3"))
     mod._handle_callosum_message(_error("u3"))
 
-    restart_service.assert_called_once_with(mod.LOCAL_SERVER_PROCESS_NAME)
+    recycle.assert_called_once()
+    assert recycle.call_args.args == ("local",)
+    assert recycle.call_args.kwargs["reason_code"] == (
+        "local-wedge-provider-unavailable"
+    )
 
 
 def test_provider_map_cap_evicts_oldest_and_evicted_terminal_is_ignored(monkeypatch):
@@ -324,8 +341,8 @@ def test_probe_deferral_clears_failures_without_cooldown(
     monkeypatch.setattr(mod, "read_service_port", Mock(return_value=port))
     probe_health = Mock(return_value=(health_state, None))
     monkeypatch.setattr(local_server, "_probe_health", probe_health)
-    restart_service = Mock()
-    monkeypatch.setattr(mod, "_restart_service", restart_service)
+    recycle = Mock()
+    monkeypatch.setattr(mod, "_request_provider_runtime_recycle", recycle)
     caplog.set_level(logging.WARNING)
 
     _drive_wedge()
@@ -334,18 +351,18 @@ def test_probe_deferral_clears_failures_without_cooldown(
     assert mod._wedge_state["failures"] == set()
     assert mod._wedge_state["cooldown_until"] == 0.0
     assert mod._wedge_state["awaiting_recovery"] is False
-    restart_service.assert_not_called()
+    recycle.assert_not_called()
 
 
-def test_restart_service_false_defers_without_cooldown(monkeypatch, caplog):
+def test_recycle_request_false_defers_without_cooldown(monkeypatch, caplog):
     _ready_local_server(monkeypatch)
-    restart_service = Mock(return_value=False)
-    monkeypatch.setattr(mod, "_restart_service", restart_service)
+    recycle = Mock(return_value=False)
+    monkeypatch.setattr(mod, "_request_provider_runtime_recycle", recycle)
     caplog.set_level(logging.WARNING)
 
     _drive_wedge()
 
-    assert "local server wedge: recycle deferred; service not running" in caplog.text
+    assert "local server wedge: recycle request failed" in caplog.text
     assert mod._wedge_state["failures"] == set()
     assert mod._wedge_state["cooldown_until"] == 0.0
     assert mod._wedge_state["awaiting_recovery"] is False

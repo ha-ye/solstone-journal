@@ -84,6 +84,7 @@ from solstone.think.providers.runtime_health import (
     consume_retry_token,
     read_retry_token,
     read_runtime_health,
+    request_retry_token,
     write_runtime_health,
 )
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
@@ -150,6 +151,7 @@ PROVIDER_CLEANUP_RETRY_SCHEDULE_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)
 PROVIDER_ADMISSION_STOP_TIMEOUT_S = 5.0
 PROVIDER_STABLE_READY_REFRESH_SECONDS = 60.0
 PROVIDER_TRUTH_OBSERVATION_INTERVAL_SECONDS = GATE_TICK_INTERVAL_S
+PROVIDER_PROBE_INTERVAL_SECONDS = GATE_TICK_INTERVAL_S
 # supervisor.log is size-rotated with a bounded on-disk footprint.
 # Hard ceiling = SUPERVISOR_LOG_MAX_BYTES * (SUPERVISOR_LOG_BACKUP_COUNT + 1)
 #   = 16 MiB * 6 = 96 MiB. Older lines drop; the most-recent tail is kept.
@@ -1178,11 +1180,6 @@ _daily_state = {
     "last_day": None,  # Track which day we last processed
 }
 
-# State for local provider recovery nudges
-_recovery_state = {
-    "local_server_down": False,
-}
-
 # State for local provider wedge detection
 _wedge_state: dict[str, Any] = {
     "providers": OrderedDict(),
@@ -1201,6 +1198,7 @@ LaunchOutcomeStatus = Literal[
     "launch-failed",
 ]
 StopCleanupStatus = Literal["stopped", "stop-deferred", "cleanup-failed", "cancelled"]
+ProbeStatus = Literal["ready", "not-ready", "unavailable"]
 LocalPlanBackend = Literal["mlx", "cuda", "vulkan"]
 
 
@@ -1230,6 +1228,13 @@ class ProviderStopCleanupOutcome:
     reason_code: ReasonCode
     detail: dict[str, Any]
     managed: RunnerManagedProcess | None = None
+
+
+@dataclass(frozen=True)
+class ProviderProbeOutcome:
+    status: ProbeStatus
+    reason_code: ReasonCode
+    detail: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -1298,6 +1303,12 @@ class ProviderRetryState:
 
 
 @dataclass
+class ProviderRecoveryState:
+    down_generation: int | None = None
+    nudged_generation: int | None = None
+
+
+@dataclass
 class ProviderRuntimeState:
     provider: ProviderName
     truth_future: concurrent.futures.Future | None = None
@@ -1325,6 +1336,7 @@ class ProviderRuntimeState:
     boot_required: bool = False
     startup_terminal: bool = False
     next_truth_at: float = 0.0
+    next_probe_at: float = 0.0
 
 
 @dataclass
@@ -1333,6 +1345,13 @@ class ProviderStartupGate:
     required: set[ProviderName]
     terminal: set[ProviderName] = field(default_factory=set)
     released: bool = False
+
+
+# State for provider recovery nudges. Only local consumes this to nudge catchup.
+_recovery_state: dict[ProviderName, ProviderRecoveryState] = {
+    "local": ProviderRecoveryState(),
+    "parakeet": ProviderRecoveryState(),
+}
 
 
 class ReservedPort:
@@ -1887,18 +1906,21 @@ def _handle_cortex_outcome(message: dict) -> None:
         failures.clear()
         return
 
-    proctitle = (
-        MLX_SERVER_PROCESS_NAME
-        if sys.platform == "darwin"
-        else LOCAL_SERVER_PROCESS_NAME
-    )
-    if _restart_service(proctitle):
-        logging.warning("local server wedge: recycling %s", proctitle)
+    if _request_provider_runtime_recycle(
+        "local",
+        reason_code="local-wedge-provider-unavailable",
+        detail={
+            "use_ids": sorted(failures),
+            "port": port,
+            "health_state": state,
+        },
+    ):
+        logging.warning("local server wedge: requested local provider recycle")
         failures.clear()
         _wedge_state["awaiting_recovery"] = True
         _wedge_state["cooldown_until"] = time.monotonic() + LOCAL_WEDGE_RECYCLE_GRACE_S
     else:
-        logging.warning("local server wedge: recycle deferred; service not running")
+        logging.warning("local server wedge: recycle request failed")
         failures.clear()
 
 
@@ -2102,7 +2124,7 @@ def _start_mlx_local_server(
         )
     try:
         owned_reservation.release_for_spawn()
-        managed = _launch_process(MLX_SERVER_PROCESS_NAME, cmd, restart=True)
+        managed = _launch_process(MLX_SERVER_PROCESS_NAME, cmd)
     except Exception as exc:
         owned_reservation.close()
         logging.exception("MLX local server launch failed")
@@ -3198,7 +3220,6 @@ def _start_llama_local_server(
         managed = _launch_process(
             LOCAL_SERVER_PROCESS_NAME,
             cmd,
-            restart=True,
             env=os.environ | plan.env_updates,
         )
     except Exception as exc:
@@ -3374,9 +3395,7 @@ def _launch_and_warm_parakeet(
                 reason="provider launch cancelled before spawn",
             )
         owned_reservation.release_for_spawn()
-        managed = _launch_process(
-            PARAKEET_SERVER_PROCESS_NAME, cmd, restart=True, env=env
-        )
+        managed = _launch_process(PARAKEET_SERVER_PROCESS_NAME, cmd, env=env)
     except Exception as exc:
         owned_reservation.close()
         logging.exception("parakeet-server launch failed")
@@ -3619,6 +3638,34 @@ def check_runner_exits(
     return exited
 
 
+def _record_provider_exit_for_reconciler(
+    provider: ProviderName,
+    managed: RunnerManagedProcess,
+    *,
+    returncode: int | None,
+) -> None:
+    state = _provider_runtime_states[provider]
+    state.generation += 1
+    state.retry = ProviderRetryState(desired_fingerprint=state.desired_fingerprint)
+    state.latest_plan = None
+    state.latest_phase = "stopped"
+    state.next_truth_at = 0.0
+    state.next_probe_at = 0.0
+    _mark_provider_recovery_down(provider)
+    _write_provider_runtime(
+        state,
+        phase="stopped",
+        reason_code="process-exited",
+        detail={
+            "process_name": managed.name,
+            "pid": managed.process.pid,
+            "ref": managed.ref,
+            "returncode": returncode,
+        },
+        process=None,
+    )
+
+
 async def handle_runner_exits(procs: list[RunnerManagedProcess]) -> None:
     """Check for and handle exited processes with restart policy."""
     exited = check_runner_exits(procs)
@@ -3668,6 +3715,19 @@ async def handle_runner_exits(procs: list[RunnerManagedProcess]) -> None:
 
         managed.cleanup()
 
+        provider = _provider_for_process_name(managed.name)
+        if provider is not None:
+            _record_provider_exit_for_reconciler(
+                provider,
+                managed,
+                returncode=returncode,
+            )
+            logging.info(
+                "%s provider process exit reported to runtime reconciler",
+                managed.name,
+            )
+            continue
+
         # Handle restart if needed
         restart = _SERVICE_STATE.get(managed.name, {}).get("restart", False)
         if restart and not shutdown_requested:
@@ -3702,8 +3762,6 @@ async def handle_runner_exits(procs: list[RunnerManagedProcess]) -> None:
                 continue
 
             procs.append(new_proc)
-            if managed.name in _LOCAL_SERVER_PROCTITLES:
-                _recovery_state["local_server_down"] = True
             logging.info("Restarted %s after exit code %s", managed.name, returncode)
         else:
             logging.info("Not restarting %s", managed.name)
@@ -3722,29 +3780,6 @@ def _nudge_catchup_drain(exclude_today: bool = False) -> None:
             _supervisor_callosum.emit("supervisor", "drain")
     except Exception as exc:
         logging.warning("Cannot nudge catchup drain: %s", exc)
-
-
-async def _check_local_server_recovery() -> None:
-    """Detect a recovered local server after supervisor-managed relaunch."""
-    if _is_remote_mode or not _recovery_state["local_server_down"]:
-        return
-    from solstone.think.providers.local_endpoint import resolve_local_endpoint
-
-    if not resolve_local_endpoint().is_bundled:
-        return
-
-    port = read_service_port("local")
-    if port is None:
-        return
-
-    from solstone.think.providers import local_server
-
-    state, _ = await asyncio.to_thread(local_server._probe_health, port)
-    if state != local_server.STATE_READY:
-        return
-
-    _recovery_state["local_server_down"] = False
-    _nudge_catchup_drain()
 
 
 _PROVIDER_STARTUP_TERMINAL_PHASES: frozenset[RuntimePhase] = frozenset(
@@ -3834,6 +3869,13 @@ def _provider_processes(
     ]
 
 
+def _provider_for_process_name(name: str) -> ProviderName | None:
+    for provider, names in _PROVIDER_PROCESS_NAMES.items():
+        if name in names:
+            return provider
+    return None
+
+
 def _remove_provider_process(
     procs: list[RunnerManagedProcess], managed: RunnerManagedProcess | None
 ) -> None:
@@ -3866,6 +3908,30 @@ def _local_stop_capacity(state: ProviderRuntimeState) -> int:
     return 1
 
 
+def _mark_provider_recovery_down(
+    provider: ProviderName,
+    *,
+    generation: int | None = None,
+) -> None:
+    state = _provider_runtime_states[provider]
+    recovery = _recovery_state[provider]
+    recovery.down_generation = state.generation if generation is None else generation
+
+
+def _consume_local_recovery_nudge(state: ProviderRuntimeState) -> None:
+    if state.provider != "local":
+        return
+    if _is_remote_mode:
+        return
+    recovery = _recovery_state["local"]
+    if recovery.down_generation != state.generation:
+        return
+    if recovery.nudged_generation == state.generation:
+        return
+    recovery.nudged_generation = state.generation
+    _nudge_catchup_drain()
+
+
 def _provider_process_record(
     managed: RunnerManagedProcess | None,
     *,
@@ -3879,6 +3945,15 @@ def _provider_process_record(
         "ref": managed.ref,
         "port": port,
     }
+
+
+def _current_provider_process_record(provider: ProviderName) -> dict[str, Any] | None:
+    try:
+        current = read_runtime_health(provider)
+    except (RuntimeHealthMalformedError, RuntimeHealthUnavailableError):
+        return None
+    process = current["process"]
+    return process if isinstance(process, dict) else None
 
 
 def _provider_port_path(provider: ProviderName) -> Path:
@@ -4266,6 +4341,8 @@ def _stop_before_replace_request(
     managed = _provider_running_process(state.provider, procs)
     if managed is None:
         return None
+    if state.provider == "local":
+        _mark_provider_recovery_down("local")
     return _make_stop_request(
         state,
         managed,
@@ -4440,6 +4517,11 @@ def _handle_provider_stop_cleanup_result(
 def _finish_provider_startup_condition(
     state: ProviderRuntimeState, phase: RuntimePhase
 ) -> None:
+    if phase == "ready":
+        now = time.monotonic()
+        if state.next_probe_at <= now:
+            state.next_probe_at = now + PROVIDER_PROBE_INTERVAL_SECONDS
+        _consume_local_recovery_nudge(state)
     if phase in _PROVIDER_STARTUP_TERMINAL_PHASES:
         state.startup_terminal = True
         gate = _provider_startup_gate
@@ -4512,6 +4594,8 @@ def _defer_provider_stop_for_observation(
     state.cleanup_next_at = 0.0
     state.latest_phase = "stop-deferred"
     state.boot_required = observation.boot_required
+    if state.provider == "local" and reason_code == "target-changed":
+        _mark_provider_recovery_down("local")
     _write_provider_runtime(
         state,
         phase="stop-deferred",
@@ -4944,6 +5028,150 @@ def _handle_provider_start_result(
     return True
 
 
+def _probe_outcome(
+    status: ProbeStatus,
+    reason_code: ReasonCode,
+    detail: dict[str, Any],
+) -> ProviderProbeOutcome:
+    return ProviderProbeOutcome(
+        status=status,
+        reason_code=reason_code,
+        detail=detail,
+    )
+
+
+def _provider_probe_worker(
+    provider: ProviderName,
+    port: int,
+    fence: ProviderFence,
+) -> ProviderProbeOutcome:
+    del fence
+    try:
+        if provider == "local":
+            from solstone.think.providers import local_server
+
+            state, error = local_server._probe_health(port)
+            if state == local_server.STATE_READY:
+                return _probe_outcome(
+                    "ready",
+                    "probe-ready",
+                    {"port": port, "health_state": state},
+                )
+            status: ProbeStatus = (
+                "not-ready" if state == local_server.STATE_LOADING else "unavailable"
+            )
+            return _probe_outcome(
+                status,
+                "proof-observation-unavailable",
+                {"port": port, "health_state": state, "error": error},
+            )
+
+        from solstone.think.providers import parakeet_server
+
+        state, error = parakeet_server._probe_health(port)
+        if state == parakeet_server.STATE_READY:
+            return _probe_outcome(
+                "ready",
+                "probe-ready",
+                {"port": port, "health_state": state},
+            )
+        return _probe_outcome(
+            "unavailable",
+            "proof-observation-unavailable",
+            {"port": port, "health_state": state, "error": error},
+        )
+    except Exception as exc:
+        logger.exception("%s provider probe worker failed", provider)
+        return _probe_outcome(
+            "unavailable",
+            "proof-observation-unavailable",
+            {"port": port, "error": str(exc)},
+        )
+
+
+def _handle_provider_probe_result(state: ProviderRuntimeState) -> bool:
+    future = state.probe_future
+    if future is None or not future.done():
+        return False
+    fence = state.probe_fence
+    state.probe_future = None
+    state.probe_fence = None
+    try:
+        outcome = future.result()
+    except Exception as exc:
+        logger.exception("%s provider probe future failed", state.provider)
+        outcome = _probe_outcome(
+            "unavailable",
+            "proof-observation-unavailable",
+            {"error": str(exc)},
+        )
+    if fence is not None and not _provider_fence_matches(state, fence):
+        _write_provider_runtime(
+            state,
+            phase=state.latest_phase,
+            reason_code="stale-result-ignored",
+            detail={"slot": "probe", "fence": fence.__dict__},
+            process=_current_provider_process_record(state.provider),
+        )
+        return True
+
+    process = _current_provider_process_record(state.provider)
+    state.next_probe_at = time.monotonic() + PROVIDER_PROBE_INTERVAL_SECONDS
+    if outcome.status == "ready":
+        state.latest_phase = "ready"
+        _write_provider_runtime(
+            state,
+            phase="ready",
+            reason_code=outcome.reason_code,
+            detail=outcome.detail,
+            process=process,
+        )
+        _finish_provider_startup_condition(state, "ready")
+        return True
+
+    state.latest_phase = "ready-proof-unavailable"
+    _write_provider_runtime(
+        state,
+        phase="ready-proof-unavailable",
+        reason_code=outcome.reason_code,
+        detail=outcome.detail,
+        process=process,
+    )
+    _finish_provider_startup_condition(state, "ready-proof-unavailable")
+    return True
+
+
+def _submit_provider_probe_if_needed(state: ProviderRuntimeState) -> None:
+    if state.probe_future is not None:
+        return
+    if state.latest_phase not in {"ready", "ready-proof-unavailable"}:
+        return
+    now = time.monotonic()
+    if now < state.next_probe_at:
+        return
+    port = read_service_port(_PROVIDER_PORT_SERVICES[state.provider])
+    if port is None:
+        state.latest_phase = "ready-proof-unavailable"
+        state.next_probe_at = now + PROVIDER_PROBE_INTERVAL_SECONDS
+        _write_provider_runtime(
+            state,
+            phase="ready-proof-unavailable",
+            reason_code="proof-observation-unavailable",
+            detail={"error": "service port unavailable"},
+            process=_current_provider_process_record(state.provider),
+        )
+        _finish_provider_startup_condition(state, "ready-proof-unavailable")
+        return
+    fence = _provider_fence(state, state.retry.attempt_count)
+    state.probe_fence = fence
+    state.probe_future = _provider_executor().submit(
+        _provider_probe_worker,
+        state.provider,
+        port,
+        fence,
+    )
+
+
 def _handle_provider_retry_token(state: ProviderRuntimeState) -> None:
     global _parakeet_admission_retry_epoch
     try:
@@ -5006,9 +5234,11 @@ async def _reconcile_provider_runtime(
     _handle_provider_truth_result(state)
     _handle_provider_start_result(state, procs)
     stop_result_handled = _handle_provider_stop_cleanup_result(state, procs)
+    _handle_provider_probe_result(state)
     if not stop_result_handled:
         _submit_provider_stop_cleanup_if_needed(state, procs)
         _submit_provider_start_if_needed(state, procs)
+    _submit_provider_probe_if_needed(state)
     _submit_provider_truth_if_needed(state)
     _release_provider_startup_gate_if_ready()
 
@@ -5035,6 +5265,52 @@ def _request_provider_runtime_retry(provider: ProviderName) -> None:
         reason_code="retry-token-requested",
         detail={"source": "supervisor-lifecycle"},
     )
+
+
+def _request_provider_runtime_recycle(
+    provider: ProviderName,
+    *,
+    reason_code: ReasonCode,
+    detail: dict[str, Any],
+) -> bool:
+    state = _provider_runtime_states[provider]
+    try:
+        token = request_retry_token(
+            provider,
+            desired_fingerprint_sha256=state.desired_fingerprint,
+            reason_code=reason_code,
+            owner={
+                "module": "solstone.think.supervisor",
+                "source": "provider-runtime-recycle",
+            },
+        )
+    except RuntimeHealthMalformedError as exc:
+        state.latest_phase = "state-corrupt"
+        logger.error("%s recycle retry-token record is corrupt: %s", provider, exc)
+        return False
+    except RuntimeHealthUnavailableError as exc:
+        state.latest_phase = "state-unavailable"
+        logger.error("%s recycle retry-token record is unavailable: %s", provider, exc)
+        return False
+
+    state.generation += 1
+    state.retry = ProviderRetryState(desired_fingerprint=state.desired_fingerprint)
+    state.latest_phase = "retry-requested"
+    state.next_truth_at = 0.0
+    state.next_probe_at = 0.0
+    if provider == "local":
+        _mark_provider_recovery_down("local")
+    _signal_provider_start_cancel(
+        state,
+        reason=f"{provider} provider recycle requested",
+    )
+    _write_provider_runtime(
+        state,
+        phase="retry-requested",
+        reason_code=reason_code,
+        detail={**detail, "token_revision": token["revision"]},
+    )
+    return True
 
 
 def run_catchup_drain(
@@ -5607,9 +5883,6 @@ async def supervise(
                 await _guarded_tick_step_async(
                     "reconcile_parakeet_provider_runtime",
                     lambda: _reconcile_parakeet_provider_runtime(procs),
-                )
-                await _guarded_tick_step_async(
-                    "check_local_server_recovery", _check_local_server_recovery
                 )
 
             # Emit status every 5 seconds
