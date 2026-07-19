@@ -146,6 +146,8 @@ runs the sibling `solstone-core indexer` binary for write-only invocations,
 passing `--journal <path>` explicitly and constructing operation flags from the
 parsed argparse namespace. Query-only and mixed write+query invocations stay on
 Python for the whole invocation and do not read selection config.
+When 69 fallback is selected, the wrapper reruns the full operation set in
+Python; any native operations that succeeded before the decline are repeated.
 
 The seam normalizes `--rescan-file` to an absolute path with the same Python
 journal-path resolver used by `index_file()` before passing it to native. This
