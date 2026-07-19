@@ -30,6 +30,7 @@ from solstone.think.providers.runtime_health import (
     read_retry_token,
     read_runtime_health,
     request_retry_token,
+    request_runtime_retry,
     write_runtime_health,
 )
 
@@ -921,6 +922,55 @@ def test_retry_token_resets_live_target_without_launching(monkeypatch) -> None:
     assert state.retry.attempt_count == 0
     assert state.latest_phase == "stopped"
     assert observations == 1
+
+
+def test_owner_retry_is_nonterminal_before_token_is_cleared(monkeypatch) -> None:
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "failed"
+    state.desired_fingerprint = "fp-local"
+    state.retry = supervisor.ProviderRetryState(
+        attempt_count=len(supervisor.PROVIDER_RETRY_SCHEDULE_SECONDS),
+        desired_fingerprint="fp-local",
+    )
+    failed = supervisor._write_provider_runtime(
+        state,
+        phase="failed",
+        reason_code="launch-budget-exhausted",
+        detail={},
+    )
+    assert failed is not None
+    token = request_runtime_retry(
+        "local",
+        expected_health_revision=failed["revision"],
+        expected_retry_revision=0,
+        desired_fingerprint_sha256="fp-local",
+    )
+
+    real_consume = supervisor.consume_retry_token
+
+    def assert_nonterminal_before_consume(*args, **kwargs):
+        health = read_runtime_health("local")
+        assert health["phase"] == "observing"
+        with pytest.raises(
+            supervisor.RuntimeHealthConflictError,
+            match="terminal failure",
+        ):
+            request_runtime_retry(
+                "local",
+                expected_health_revision=health["revision"],
+                expected_retry_revision=token["revision"],
+                desired_fingerprint_sha256="fp-local",
+            )
+        return real_consume(*args, **kwargs)
+
+    monkeypatch.setattr(
+        supervisor, "consume_retry_token", assert_nonterminal_before_consume
+    )
+
+    supervisor._handle_provider_retry_token(state)
+
+    assert read_retry_token("local")["token_id"] is None
+    assert state.retry.attempt_count == 0
 
 
 @pytest.mark.parametrize(

@@ -27,6 +27,7 @@ from solstone.think.providers.runtime_health import (
     read_runtime_health,
     repair_corrupt_record,
     request_retry_token,
+    request_runtime_retry,
     runtime_directory,
     runtime_health_path,
     runtime_operation_lock_path,
@@ -417,6 +418,123 @@ def test_retry_token_lifecycle_coalesces_consumes_and_survives_restart(
     assert consumed["token_id"] is None
     assert consumed["revision"] == second["revision"] + 1
     assert read_retry_token("local", journal_path=tmp_path) == consumed
+
+
+def test_owner_runtime_retry_requires_current_terminal_failure(tmp_path: Path) -> None:
+    failed = _health(phase="failed")
+    failed["reason_code"] = "launch-budget-exhausted"
+    stored = write_runtime_health(failed, journal_path=tmp_path)
+
+    requested = request_runtime_retry(
+        "local",
+        expected_health_revision=stored["revision"],
+        expected_retry_revision=0,
+        desired_fingerprint_sha256="fp-1",
+        owner={"source": "owner-recovery"},
+        journal_path=tmp_path,
+    )
+
+    assert requested["revision"] == 1
+    assert requested["token_id"] is not None
+    assert requested["desired_fingerprint_sha256"] == "fp-1"
+    assert requested["reason_code"] == "retry-token-requested"
+    assert requested["owner"] == {"source": "owner-recovery"}
+    assert read_runtime_health("local", journal_path=tmp_path) == stored
+
+
+@pytest.mark.parametrize("phase", ["ready", "starting", "backoff", "host-blocked"])
+def test_owner_runtime_retry_rejects_nonterminal_state(
+    tmp_path: Path,
+    phase: str,
+) -> None:
+    health = _health(phase=phase)
+    stored = write_runtime_health(health, journal_path=tmp_path)
+
+    with pytest.raises(
+        RuntimeHealthConflictError,
+        match="terminal failure",
+    ):
+        request_runtime_retry(
+            "local",
+            expected_health_revision=stored["revision"],
+            expected_retry_revision=0,
+            desired_fingerprint_sha256="fp-1",
+            journal_path=tmp_path,
+        )
+
+    assert read_retry_token("local", journal_path=tmp_path)["token_id"] is None
+
+
+def test_owner_runtime_retry_rejects_stale_and_outstanding_requests(
+    tmp_path: Path,
+) -> None:
+    failed = _health(phase="failed")
+    failed["reason_code"] = "launch-budget-exhausted"
+    stored = write_runtime_health(failed, journal_path=tmp_path)
+
+    with pytest.raises(RuntimeHealthConflictError, match="health revision"):
+        request_runtime_retry(
+            "local",
+            expected_health_revision=stored["revision"] - 1,
+            expected_retry_revision=0,
+            desired_fingerprint_sha256="fp-1",
+            journal_path=tmp_path,
+        )
+    with pytest.raises(RuntimeHealthConflictError, match="fingerprint"):
+        request_runtime_retry(
+            "local",
+            expected_health_revision=stored["revision"],
+            expected_retry_revision=0,
+            desired_fingerprint_sha256="fp-stale",
+            journal_path=tmp_path,
+        )
+
+    requested = request_runtime_retry(
+        "local",
+        expected_health_revision=stored["revision"],
+        expected_retry_revision=0,
+        desired_fingerprint_sha256="fp-1",
+        journal_path=tmp_path,
+    )
+    with pytest.raises(RuntimeHealthConflictError, match="retry-token revision"):
+        request_runtime_retry(
+            "local",
+            expected_health_revision=stored["revision"],
+            expected_retry_revision=0,
+            desired_fingerprint_sha256="fp-1",
+            journal_path=tmp_path,
+        )
+    with pytest.raises(RuntimeHealthConflictError, match="already requested"):
+        request_runtime_retry(
+            "local",
+            expected_health_revision=stored["revision"],
+            expected_retry_revision=requested["revision"],
+            desired_fingerprint_sha256="fp-1",
+            journal_path=tmp_path,
+        )
+
+
+def test_owner_runtime_retry_replaces_an_old_target_token(tmp_path: Path) -> None:
+    stale = request_retry_token(
+        "local",
+        desired_fingerprint_sha256="fp-old",
+        journal_path=tmp_path,
+    )
+    failed = _health(phase="failed")
+    failed["reason_code"] = "launch-budget-exhausted"
+    stored = write_runtime_health(failed, journal_path=tmp_path)
+
+    requested = request_runtime_retry(
+        "local",
+        expected_health_revision=stored["revision"],
+        expected_retry_revision=stale["revision"],
+        desired_fingerprint_sha256="fp-1",
+        journal_path=tmp_path,
+    )
+
+    assert requested["token_id"] != stale["token_id"]
+    assert requested["desired_fingerprint_sha256"] == "fp-1"
+    assert requested["revision"] == stale["revision"] + 1
 
 
 def test_repair_handle_allows_repair_without_parseable_token(tmp_path: Path) -> None:

@@ -88,6 +88,8 @@ def test_workspace_renders_each_lane(settings_env):
     assert 'id="lane-detail-confidential"' in html
     assert 'data-open-view="byo-setup"' in html
     assert 'data-open-view="local-setup"' in html
+    assert 'id="localSetupCard" aria-live="polite" aria-atomic="true"' in html
+    assert 'id="localRuntimeRetry"' in html
     assert "data-switch-lane" in html
     assert html.count('id="byoLaneStatus"') == 1
     assert 'id="byoKeyStatus"' in html
@@ -379,7 +381,9 @@ def test_thinking_deck_copy_constants() -> None:
         },
         "pill_inflight": "setting up",
         "pill_failed": "couldn't finish",
-        "retry": "try again",
+        "failed_verdict": "local setup didn't finish",
+        "failed_reason": "local setup stopped before it finished.",
+        "retry": "try setup again",
         "install": "install local model",
         "notice_inflight": (
             "local thinking will stay in your journal once setup finishes."
@@ -505,6 +509,13 @@ def test_thinking_copy_payload_shape_carries_deck_blocks() -> None:
     assert payload["local_install"] == {
         **thinking_copy.LOCAL_INSTALL,
         "phases": dict(thinking_copy.LOCAL_INSTALL["phases"]),
+    }
+    assert payload["local_recovery"] == {
+        "retry": thinking_copy.LOCAL_RECOVERY["retry"],
+        "states": {
+            key: dict(value)
+            for key, value in thinking_copy.LOCAL_RECOVERY["states"].items()
+        },
     }
     assert "byo" not in payload
 

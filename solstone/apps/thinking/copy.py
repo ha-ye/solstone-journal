@@ -278,9 +278,87 @@ LOCAL_INSTALL = {
     },
     "pill_inflight": "setting up",
     "pill_failed": STATE_LABELS["failed"],
-    "retry": "try again",
+    "failed_verdict": "local setup didn't finish",
+    "failed_reason": "local setup stopped before it finished.",
+    "retry": "try setup again",
     "install": "install local model",
     "notice_inflight": "local thinking will stay in your journal once setup finishes.",
+}
+LOCAL_RECOVERY = {
+    "retry": "try starting local again",
+    "states": {
+        "checking": {
+            "pill": "checking",
+            "verdict": "checking local setup",
+            "reason": "sol is checking the selected model and this computer.",
+        },
+        "starting": {
+            "pill": "starting",
+            "verdict": "starting local thinking",
+            "reason": "sol is checking the model before it uses it.",
+        },
+        "recovering": {
+            "pill": "recovering",
+            "verdict": "local thinking is recovering",
+            "reason": "sol will try starting it again shortly.",
+        },
+        "retrying": {
+            "pill": "retrying",
+            "verdict": "trying local thinking again",
+            "reason": "sol is starting a new recovery attempt.",
+        },
+        "waiting": {
+            "pill": "waiting",
+            "verdict": "local thinking is waiting",
+            "reason": "it will start when this computer is ready.",
+        },
+        "unsupported": {
+            "pill": "unavailable",
+            "verdict": "this computer can't run this local model",
+            "reason": "local thinking needs supported hardware on this computer.",
+        },
+        "failed": {
+            "pill": "needs attention",
+            "verdict": "local thinking couldn't start",
+            "reason": "the local model stopped before it became ready.",
+        },
+        "changing": {
+            "pill": "changing",
+            "verdict": "finishing the local change",
+            "reason": "sol is waiting for current local work to finish.",
+        },
+        "cleanup_failed": {
+            "pill": "needs attention",
+            "verdict": "local couldn't finish changing state",
+            "reason": (
+                "sol couldn't confirm that local thinking stopped. "
+                "it will keep checking safely."
+            ),
+        },
+        "corrupt": {
+            "pill": "can't verify",
+            "verdict": "local status can't be confirmed",
+            "reason": "check again before changing local setup.",
+        },
+        "unavailable": {
+            "pill": "can't verify",
+            "verdict": "local status can't be read",
+            "reason": "correct the local file-access problem, then check again.",
+        },
+        "ready": {
+            "pill": "on",
+            "verdict": "local thinking is ready",
+            "reason": "sol is thinking on this computer.",
+        },
+        "ready_proof_unavailable": {
+            "pill": "on, needs a check",
+            "verdict": "local thinking is still running",
+            "reason": (
+                "sol couldn't refresh the local file check. "
+                "it won't start a replacement until the check returns."
+            ),
+        },
+    },
 }
 CONFIDENTIAL_MORE_LABEL = "how it works →"
 SCOUT_STATE_OFF = "off"
@@ -341,6 +419,12 @@ def thinking_copy_payload() -> dict[str, Any]:
         "local_install": {
             **LOCAL_INSTALL,
             "phases": dict(LOCAL_INSTALL["phases"]),
+        },
+        "local_recovery": {
+            "retry": LOCAL_RECOVERY["retry"],
+            "states": {
+                key: dict(value) for key, value in LOCAL_RECOVERY["states"].items()
+            },
         },
         "scout": {
             "state_labels": dict(SCOUT_STATE_LABELS),

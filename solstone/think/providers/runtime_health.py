@@ -487,6 +487,68 @@ def request_retry_token(
         ) from exc
 
 
+def request_runtime_retry(
+    provider: str,
+    *,
+    expected_health_revision: int,
+    expected_retry_revision: int,
+    desired_fingerprint_sha256: str,
+    owner: dict[str, Any] | None = None,
+    journal_path: str | Path | None = None,
+) -> RuntimeRetryTokenRecord:
+    """Request one retry for a current terminal runtime failure.
+
+    This is the owner-facing compare-and-set operation. Internal supervisor
+    recovery may still use ``request_retry_token`` directly, but routes must
+    not compose health and token reads around that lower-level primitive.
+    """
+    validated = _validate_provider(provider)
+    _validate_owner(owner)
+    health_path = runtime_health_path(validated, journal_path=journal_path)
+    retry_path = runtime_retry_token_path(validated, journal_path=journal_path)
+    lock_target = runtime_operation_path(validated, journal_path=journal_path)
+    try:
+        with hold_lock(lock_target, mode=RUNTIME_RECORD_MODE):
+            health = _read_health_unlocked(health_path, validated)
+            retry = _read_retry_unlocked(retry_path, validated)
+            if health["revision"] != expected_health_revision:
+                raise RuntimeHealthConflictError("stale runtime health revision")
+            if retry["revision"] != expected_retry_revision:
+                raise RuntimeHealthConflictError("stale retry-token revision")
+            if health["desired_fingerprint_sha256"] != desired_fingerprint_sha256:
+                raise RuntimeHealthConflictError("runtime desired fingerprint changed")
+            if health["phase"] != "failed":
+                raise RuntimeHealthConflictError(
+                    "runtime retry requires a terminal failure"
+                )
+            if (
+                retry["token_id"] is not None
+                and retry["desired_fingerprint_sha256"] == desired_fingerprint_sha256
+            ):
+                raise RuntimeHealthConflictError("runtime retry already requested")
+
+            stored: RuntimeRetryTokenRecord = {
+                "schema_version": SCHEMA_VERSION,
+                "provider": validated,
+                "revision": retry["revision"] + 1,
+                "token_id": uuid.uuid4().hex,
+                "desired_fingerprint_sha256": desired_fingerprint_sha256,
+                "requested_at": now_iso(),
+                "reason_code": "retry-token-requested",
+                "owner": owner,
+            }
+            _write_json_unlocked(retry_path, _persistable_retry(stored))
+            return stored
+    except LockTimeout as exc:
+        raise RuntimeHealthUnavailableError(
+            f"runtime retry lock unavailable: {lock_target}"
+        ) from exc
+    except OSError as exc:
+        raise RuntimeHealthUnavailableError(
+            f"runtime retry write unavailable: {retry_path}"
+        ) from exc
+
+
 def consume_retry_token(
     provider: str,
     *,
@@ -987,6 +1049,7 @@ __all__ = [
     "read_runtime_health",
     "repair_corrupt_record",
     "request_retry_token",
+    "request_runtime_retry",
     "runtime_directory",
     "runtime_health_path",
     "runtime_operation_lock_path",

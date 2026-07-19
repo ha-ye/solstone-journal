@@ -803,7 +803,7 @@
         <p class="intro">run a thinking model right in your journal — nothing leaves this computer.</p>
       </div>
 
-      <div class="app-onoff" id="localSetupCard">
+      <div class="app-onoff" id="localSetupCard" aria-live="polite" aria-atomic="true">
         <div class="cardtop">
           <h3 id="localSetupTitle">local</h3>
           <span class="pill" id="localSetupPill">checking</span>
@@ -825,6 +825,7 @@
       <div class="actions">
         <button type="button" class="btn" id="localRefresh">check again</button>
         <button type="button" class="btn" id="localBootstrap"></button>
+        <button type="button" class="btn" id="localRuntimeRetry">try starting local again</button>
         <button type="button" class="btn primary" id="localActivate">turn on local</button>
       </div>
       <p class="micro" id="localSetupLinks"></p>

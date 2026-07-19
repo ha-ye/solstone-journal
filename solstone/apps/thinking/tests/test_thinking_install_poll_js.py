@@ -342,7 +342,8 @@ async function main() {
   assert(result.install_state === 'failed', 'failed status should be terminal');
   assert(fetchCalls === 2, 'poll should stop after failed');
   assert(sleeps.length === 1, 'poll should sleep only before failed');
-  assert(failed.message === serverInstallError, 'server install_error should render verbatim');
+  assert(failed.message === '', 'raw backend install_error must stay out of owner copy');
+  assert(failed.notice === text.failed_reason, 'failed install should use stable copy');
   assert(failed.bootstrap === true, 'failed install should offer retry');
   assert(failed.bootstrapLabel === text.retry, 'retry label should come from copy');
   assert(failed.tone === 'bad', 'failed install should render as an error');

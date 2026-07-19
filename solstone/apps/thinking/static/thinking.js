@@ -10,6 +10,7 @@
     scout: null,
     install: null,
     installPollGeneration: 0,
+    runtimePollGeneration: 0,
     confidentialPollGeneration: 0,
     confidentialDetailOpen: false,
     selectedByoProvider: '',
@@ -131,9 +132,9 @@
       return {
         pill: text?.pill_failed || '',
         title: 'local',
-        sub: text?.pill_failed || '',
-        message: status?.install_error || '',
-        notice: '',
+        sub: text?.failed_verdict || '',
+        message: '',
+        notice: text?.failed_reason || '',
         activate: false,
         bootstrap: true,
         bootstrapLabel: text?.retry || '',
@@ -141,6 +142,68 @@
       };
     }
     return null;
+  }
+
+  function localRuntimeCopy(runtime, active, text) {
+    if (!runtime) return null;
+    const states = text?.states || {};
+    const view = (key, options = {}) => {
+      const value = states[key] || {};
+      return {
+        pill: value.pill || '',
+        title: 'local',
+        sub: value.verdict || '',
+        message: '',
+        notice: value.reason || '',
+        activate: false,
+        bootstrap: false,
+        retryRuntime: !!options.retryRuntime,
+        retryRuntimeLabel: text?.retry || '',
+        tone: options.tone || '',
+      };
+    };
+
+    if (runtime.status === 'corrupt' || runtime.phase === 'state-corrupt') {
+      return view('corrupt', {tone: 'bad'});
+    }
+    if (runtime.status === 'unavailable' || runtime.phase === 'state-unavailable') {
+      return view('unavailable', {tone: 'bad'});
+    }
+    if (!active) {
+      return runtime.phase === 'cleanup-failed'
+        ? view('cleanup_failed', {tone: 'bad'})
+        : null;
+    }
+
+    if (runtime.phase === 'ready') return view('ready');
+    if (runtime.phase === 'ready-proof-unavailable') {
+      return view('ready_proof_unavailable');
+    }
+    if (runtime.phase === 'starting' || runtime.phase === 'warming') {
+      return view('starting');
+    }
+    if (runtime.phase === 'backoff') return view('recovering');
+    if (runtime.phase === 'retry-requested') return view('retrying');
+    if (runtime.phase === 'host-blocked') {
+      if (runtime.reason_code === 'platform-unsupported' || runtime.reason_code === 'package-unavailable') {
+        return view('unsupported', {tone: 'bad'});
+      }
+      return view('waiting');
+    }
+    if (runtime.phase === 'failed') {
+      return view('failed', {
+        retryRuntime: runtime.can_retry === true,
+        tone: 'bad',
+      });
+    }
+    if (runtime.phase === 'stop-deferred' || runtime.phase === 'stopping') {
+      return view('changing');
+    }
+    if (runtime.phase === 'cleanup-failed') {
+      return view('cleanup_failed', {tone: 'bad'});
+    }
+    if (runtime.phase === 'artifact-not-ready') return null;
+    return view('checking');
   }
 
   async function pollLocalInstallUntilTerminal({
@@ -163,6 +226,24 @@
       await sleepFn(intervalMs);
     }
     return null;
+  }
+
+  async function pollLocalRuntimeUntilStable({
+    fetchStatus,
+    sleepFn,
+    applyStatus,
+    isCurrent,
+    intervalMs,
+    initialStatus = null,
+  }) {
+    let status = initialStatus;
+    while (isCurrent() && status?.poll === true) {
+      await sleepFn(intervalMs);
+      if (!isCurrent()) return null;
+      status = await fetchStatus();
+      applyStatus(status);
+    }
+    return status;
   }
 
   function handleInstallPollError({
@@ -724,8 +805,12 @@
     }
     if (target !== 'local-setup') {
       stopInstallPoll();
+      stopRuntimePoll();
     } else if (state.localModels.length > 0) {
       refreshInstallStatus({autoResume: true}).catch((err) => {
+        setMessage('localSetupMessage', err.message, 'error');
+      });
+      refreshLocalRuntime({autoResume: true}).catch((err) => {
         setMessage('localSetupMessage', err.message, 'error');
       });
     }
@@ -1565,10 +1650,6 @@
   }
 
   function localCopy() {
-    const installOverride = installCopyForStatus(state.install, copy.local_install || {});
-    if (installOverride) return installOverride;
-    const local = localReadiness();
-    const reason = local.reason;
     if (localEndpointConfigured()) {
       return {
         pill: 'endpoint',
@@ -1582,6 +1663,23 @@
         endpointOverride: true,
       };
     }
+    const installOverride = installCopyForStatus(state.install, copy.local_install || {});
+    const runtimeOverride = localRuntimeCopy(
+      state.providers.local_runtime,
+      state.providers.active_lane?.lane === 'local',
+      copy.local_recovery || {},
+    );
+    if (installIsInFlight(state.install)) return installOverride;
+    if (
+      runtimeOverride
+      && ['ready', 'ready-proof-unavailable'].includes(state.providers.local_runtime?.phase)
+    ) {
+      return runtimeOverride;
+    }
+    if (installOverride) return installOverride;
+    if (runtimeOverride) return runtimeOverride;
+    const local = localReadiness();
+    const reason = local.reason;
     if (local.status === 'ready' || reason === 'ready') {
       return {
         pill: 'off',
@@ -1713,6 +1811,8 @@
     setHidden('localOverrideNotice', !local.endpointOverride);
     setButtonState('localBootstrap', local.bootstrap, !local.bootstrap);
     setButtonText('localBootstrap', local.bootstrapLabel || copy.local_install?.install || '');
+    setButtonState('localRuntimeRetry', local.retryRuntime, !local.retryRuntime);
+    setButtonText('localRuntimeRetry', local.retryRuntimeLabel || copy.local_recovery?.retry || '');
     setButtonState('localActivate', local.activate, !local.activate);
     setButtonState('localRefresh', true, false);
     const links = $('localSetupLinks');
@@ -1875,6 +1975,10 @@
     state.installPollGeneration += 1;
   }
 
+  function stopRuntimePoll() {
+    state.runtimePollGeneration += 1;
+  }
+
   function stopConfidentialPoll(options = {}) {
     state.confidentialPollGeneration += 1;
     if (options.clearOperation && clearConfidentialInProgressOperation(state.providers.active_lane)) {
@@ -1932,6 +2036,67 @@
     return api(`api/local/bootstrap/status?model=${encodeURIComponent(model)}`);
   }
 
+  async function fetchLocalRuntime() {
+    return api('api/local/runtime');
+  }
+
+  function applyLocalRuntime(status, generation) {
+    if (generation !== undefined && generation !== state.runtimePollGeneration) return false;
+    const currentRevision = state.providers.local_runtime?.health_revision;
+    const nextRevision = status?.health_revision;
+    const currentRetryRevision = state.providers.local_runtime?.retry_revision;
+    const nextRetryRevision = status?.retry_revision;
+    if (
+      (
+        Number.isInteger(currentRevision)
+        && Number.isInteger(nextRevision)
+        && nextRevision < currentRevision
+      )
+      || (
+        Number.isInteger(currentRetryRevision)
+        && Number.isInteger(nextRetryRevision)
+        && nextRetryRevision < currentRetryRevision
+      )
+    ) {
+      return false;
+    }
+    state.providers.local_runtime = status || null;
+    renderAll();
+    return true;
+  }
+
+  function startRuntimePoll(initialStatus = state.providers.local_runtime) {
+    stopRuntimePoll();
+    const generation = state.runtimePollGeneration;
+    return pollLocalRuntimeUntilStable({
+      fetchStatus: fetchLocalRuntime,
+      sleepFn: sleep,
+      applyStatus: (status) => applyLocalRuntime(status, generation),
+      isCurrent: () => generation === state.runtimePollGeneration,
+      intervalMs: pollIntervalMs,
+      initialStatus,
+    })
+      .then(() => {
+        if (generation === state.runtimePollGeneration) stopRuntimePoll();
+      })
+      .catch((err) => {
+        if (generation !== state.runtimePollGeneration) return;
+        stopRuntimePoll();
+        setMessage('localSetupMessage', err.message, 'error');
+      });
+  }
+
+  async function refreshLocalRuntime({autoResume = false} = {}) {
+    const status = await fetchLocalRuntime();
+    applyLocalRuntime(status);
+    if (status?.poll === true && autoResume) {
+      startRuntimePoll(status);
+    } else {
+      stopRuntimePoll();
+    }
+    return status;
+  }
+
   function applyLocalInstallStatus(status, generation) {
     if (generation !== undefined && generation !== state.installPollGeneration) return false;
     state.install = status || null;
@@ -1957,7 +2122,11 @@
         if (installIsTerminal(status)) {
           stopInstallPoll();
           if (status?.install_state === 'installed') {
-            Promise.all([refreshProviders(), refreshLocalAvailability()]).catch((err) => {
+            Promise.all([
+              refreshProviders(),
+              refreshLocalAvailability(),
+              refreshLocalRuntime({autoResume: true}),
+            ]).catch((err) => {
               setMessage('localSetupMessage', err.message, 'error');
             });
           }
@@ -2007,6 +2176,11 @@
       return;
     }
     await switchLane(target);
+    if (target === 'local') {
+      await refreshLocalRuntime({autoResume: true});
+      showView('local-setup');
+      return;
+    }
     showView('main');
   }
 
@@ -2283,7 +2457,32 @@
     } else {
       await refreshInstallStatus({autoResume: true});
     }
-    await Promise.all([refreshProviders(), refreshLocalAvailability()]);
+    await Promise.all([
+      refreshProviders(),
+      refreshLocalAvailability(),
+      refreshLocalRuntime({autoResume: true}),
+    ]);
+  }
+
+  async function retryLocalRuntime() {
+    const runtime = state.providers.local_runtime;
+    if (!runtime?.can_retry) return;
+    const button = $('localRuntimeRetry');
+    if (button) button.disabled = true;
+    try {
+      const status = await api('api/local/runtime/retry', {
+        method: 'POST',
+        body: JSON.stringify({
+          health_revision: runtime.health_revision,
+          retry_revision: runtime.retry_revision,
+          desired_fingerprint_sha256: runtime.desired_fingerprint_sha256,
+        }),
+      });
+      applyLocalRuntime(status);
+      startRuntimePoll(status);
+    } catch (_err) {
+      await refreshLocalRuntime({autoResume: true});
+    }
   }
 
   function openLane(lane) {
@@ -2408,17 +2607,21 @@
     $('confidentialAudioToggle')?.addEventListener('change', (event) => setConfidentialAudio(event.target.checked));
     $('localRefresh')?.addEventListener('click', () => {
       stopInstallPoll();
+      stopRuntimePoll();
       stopConfidentialPoll();
       Promise.all([
         refreshProviders(),
         refreshLocalAvailability(),
         refreshInstallStatus({autoResume: true}),
+        refreshLocalRuntime({autoResume: true}),
       ]).catch((err) => setMessage('localSetupMessage', err.message, 'error'));
     });
     $('localBootstrap')?.addEventListener('click', () => startLocalBootstrap().catch((err) => setMessage('localSetupMessage', err.message, 'error')));
+    $('localRuntimeRetry')?.addEventListener('click', () => retryLocalRuntime().catch((err) => setMessage('localSetupMessage', err.message, 'error')));
     $('localActivate')?.addEventListener('click', () => activateLane('local').catch((err) => setMessage('localSetupMessage', err.message, 'error')));
     $('localModelSelect')?.addEventListener('change', () => {
       stopInstallPoll();
+      stopRuntimePoll();
       stopConfidentialPoll();
       state.install = null;
       renderAll();
@@ -2426,6 +2629,7 @@
         refreshLocalAvailability(),
         refreshProviders(),
         refreshInstallStatus({autoResume: true}),
+        refreshLocalRuntime({autoResume: true}),
       ]).catch((err) => setMessage('localSetupMessage', err.message, 'error'));
     });
     $('localEndpointSave')?.addEventListener('click', () => saveLocalEndpoint().catch((err) => setMessage('localEndpointStatus', err.message, 'error')));
@@ -2444,6 +2648,7 @@
     try {
       await refreshLocalModels();
       await refreshInstallStatus({autoResume: true});
+      await refreshLocalRuntime({autoResume: viewFromHash() === 'local-setup'});
       await refreshLocalAvailability();
       await Promise.all([refreshProviders(), refreshKeys(), refreshScout()]);
     } catch (err) {

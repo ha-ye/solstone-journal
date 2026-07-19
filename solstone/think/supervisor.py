@@ -5404,6 +5404,34 @@ def _handle_provider_retry_token(state: ProviderRuntimeState) -> None:
         return
     if token["desired_fingerprint_sha256"] not in {None, state.desired_fingerprint}:
         return
+    if state.latest_phase in {
+        "not-desired",
+        "artifact-not-ready",
+        "host-blocked",
+        "stopped",
+        "failed",
+        "backoff",
+        "observing",
+    }:
+        retry_phase: RuntimePhase = "observing"
+    else:
+        retry_phase = "retry-requested"
+
+    # Publish the nonterminal transition before clearing the token. Both writes
+    # use the provider operation lock, so an owner retry can never observe a
+    # cleared token while the durable health record still accepts another
+    # terminal-failure request.
+    state.latest_phase = retry_phase
+    if (
+        _write_provider_runtime(
+            state,
+            phase=retry_phase,
+            reason_code="retry-token-requested",
+            detail={"token_revision": token["revision"]},
+        )
+        is None
+    ):
+        return
     try:
         consume_retry_token(
             state.provider,
@@ -5420,25 +5448,8 @@ def _handle_provider_retry_token(state: ProviderRuntimeState) -> None:
     if state.provider == "parakeet":
         _parakeet_admission_retry_epoch += 1
     state.retry = ProviderRetryState(desired_fingerprint=state.desired_fingerprint)
-    if state.latest_phase in {
-        "not-desired",
-        "artifact-not-ready",
-        "host-blocked",
-        "stopped",
-        "failed",
-        "backoff",
-        "observing",
-    }:
-        state.latest_phase = "observing"
-    else:
-        state.latest_phase = "retry-requested"
+    state.latest_phase = retry_phase
     state.next_truth_at = 0.0
-    _write_provider_runtime(
-        state,
-        phase=state.latest_phase,
-        reason_code="retry-token-requested",
-        detail={"token_revision": token["revision"]},
-    )
 
 
 async def _reconcile_provider_runtime(

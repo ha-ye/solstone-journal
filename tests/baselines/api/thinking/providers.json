@@ -125,6 +125,18 @@
     "endpoint_url": "",
     "served_model_id": ""
   },
+  "local_runtime": {
+    "can_retry": false,
+    "desired_fingerprint_sha256": null,
+    "health_revision": 0,
+    "phase": "stopped",
+    "poll": false,
+    "reason_code": null,
+    "retry_pending": false,
+    "retry_revision": 0,
+    "status": "ok",
+    "updated_at": null
+  },
   "model_tiers": {
     "anthropic": [
       {

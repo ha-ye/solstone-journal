@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from flask import Blueprint, current_app, jsonify, request
 
 from solstone.apps.thinking import copy as thinking_copy
-from solstone.apps.thinking import local_bootstrap, scout_lane
+from solstone.apps.thinking import local_bootstrap, local_recovery, scout_lane
 from solstone.apps.thinking.copy import thinking_copy_payload
 from solstone.apps.thinking.model_tiers import MODEL_TIERS
 from solstone.apps.utils import log_app_action
@@ -54,6 +54,11 @@ from solstone.think.providers import (
 from solstone.think.providers.local_endpoint import (
     normalize_local_endpoint_url,
     resolve_local_endpoint,
+)
+from solstone.think.providers.runtime_health import (
+    RuntimeHealthConflictError,
+    RuntimeHealthMalformedError,
+    RuntimeHealthUnavailableError,
 )
 from solstone.think.services import (
     operations,
@@ -517,6 +522,7 @@ def _provider_payload(config: dict[str, Any], local_model_id: str) -> dict[str, 
         "api_keys": _api_key_status(config),
         "key_validation": _filtered_ai_key_validation(config),
         "local": local_status,
+        "local_runtime": local_recovery.runtime_view(),
         "local_override": _local_override_payload(config),
         "local_backend": "mlx" if local_bootstrap._is_mlx_backend() else "local",
         "scout_enabled": scout.is_scout_enabled(),
@@ -1000,6 +1006,70 @@ def get_local_bootstrap_status() -> Any:
         return jsonify(local_bootstrap.get_state(model))
     except Exception:
         logger.exception("error loading local provider bootstrap status")
+        return _thinking_operation_failed()
+
+
+@thinking_bp.route("/api/local/runtime")
+def get_local_runtime() -> Any:
+    try:
+        return jsonify(local_recovery.runtime_view())
+    except Exception:
+        logger.exception("error loading local runtime recovery state")
+        return _thinking_operation_failed()
+
+
+@thinking_bp.route("/api/local/runtime/retry", methods=["POST"])
+def retry_local_runtime() -> Any:
+    request_data = request.get_json(silent=True)
+    if not isinstance(request_data, dict):
+        return error_response(MISSING_REQUEST_BODY, detail="No data provided")
+    expected_fields = {
+        "health_revision",
+        "retry_revision",
+        "desired_fingerprint_sha256",
+    }
+    if set(request_data) != expected_fields:
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="runtime retry requires the current recovery state",
+        )
+    health_revision = request_data["health_revision"]
+    retry_revision = request_data["retry_revision"]
+    desired_fingerprint = request_data["desired_fingerprint_sha256"]
+    if (
+        isinstance(health_revision, bool)
+        or not isinstance(health_revision, int)
+        or health_revision < 0
+        or isinstance(retry_revision, bool)
+        or not isinstance(retry_revision, int)
+        or retry_revision < 0
+        or not isinstance(desired_fingerprint, str)
+        or not desired_fingerprint
+    ):
+        return error_response(
+            INVALID_REQUEST_VALUE,
+            detail="runtime retry requires the current recovery state",
+        )
+    try:
+        return jsonify(
+            local_recovery.request_retry(
+                health_revision=health_revision,
+                retry_revision=retry_revision,
+                desired_fingerprint_sha256=desired_fingerprint,
+            )
+        )
+    except RuntimeHealthConflictError:
+        return error_response(
+            INVALID_OPERATION_FOR_STATE,
+            detail="local status changed; check again",
+        )
+    except (RuntimeHealthMalformedError, RuntimeHealthUnavailableError):
+        logger.exception("local runtime retry state is unavailable")
+        return _thinking_operation_failed(
+            "local status can't be changed right now; check again"
+        )
+    except Exception:
+        logger.exception("error requesting local runtime retry")
         return _thinking_operation_failed()
 
 
