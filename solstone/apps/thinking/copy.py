@@ -345,6 +345,11 @@ LOCAL_RECOVERY = {
             "verdict": "local status can't be read",
             "reason": "correct the local file-access problem, then check again.",
         },
+        "stale": {
+            "pill": "can't verify",
+            "verdict": "local status couldn't be refreshed",
+            "reason": "check again before changing local setup.",
+        },
         "ready": {
             "pill": "on",
             "verdict": "local thinking is ready",

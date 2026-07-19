@@ -169,6 +169,9 @@
     if (runtime.status === 'unavailable' || runtime.phase === 'state-unavailable') {
       return view('unavailable', {tone: 'bad'});
     }
+    if (runtime.status === 'stale' || runtime.phase === 'state-stale') {
+      return view('stale', {tone: 'bad'});
+    }
     if (!active) {
       return runtime.phase === 'cleanup-failed'
         ? view('cleanup_failed', {tone: 'bad'})
@@ -2081,13 +2084,36 @@
       })
       .catch((err) => {
         if (generation !== state.runtimePollGeneration) return;
-        stopRuntimePoll();
+        markLocalRuntimeStale();
         setMessage('localSetupMessage', err.message, 'error');
       });
   }
 
+  function markLocalRuntimeStale() {
+    stopRuntimePoll();
+    state.providers.local_runtime = {
+      status: 'stale',
+      phase: 'state-stale',
+      reason_code: 'refresh-failed',
+      health_revision: null,
+      desired_fingerprint_sha256: null,
+      retry_revision: null,
+      retry_pending: false,
+      can_retry: false,
+      poll: false,
+      updated_at: null,
+    };
+    renderAll();
+  }
+
   async function refreshLocalRuntime({autoResume = false} = {}) {
-    const status = await fetchLocalRuntime();
+    let status;
+    try {
+      status = await fetchLocalRuntime();
+    } catch (err) {
+      markLocalRuntimeStale();
+      throw err;
+    }
     applyLocalRuntime(status);
     if (status?.poll === true && autoResume) {
       startRuntimePoll(status);

@@ -26,6 +26,8 @@ def _run_node(body: str) -> None:
             extract_js_function(source, "localRuntimeCopy"),
             extract_js_function(source, "pollLocalRuntimeUntilStable"),
             extract_js_function(source, "applyLocalRuntime"),
+            extract_js_function(source, "stopRuntimePoll"),
+            extract_js_function(source, "markLocalRuntimeStale"),
             "function assert(condition, message) { if (!condition) throw new Error(message); }",
             f"const text = {json.dumps(thinking_copy.LOCAL_RECOVERY)};",
             body,
@@ -103,6 +105,13 @@ const corrupt = localRuntimeCopy({
 }, true, text);
 assert(corrupt.pill === "can't verify", 'corrupt state fails closed');
 assert(corrupt.retryRuntime === false, 'corrupt state cannot retry');
+
+const stale = localRuntimeCopy({
+  status: 'stale',
+  phase: 'state-stale',
+}, true, text);
+assert(stale.sub === "local status couldn't be refreshed", 'stale read is explicit');
+assert(stale.retryRuntime === false, 'stale read must hide mutation');
 """
     )
 
@@ -213,5 +222,34 @@ assert(
 );
 assert(state.providers.local_runtime.phase === 'starting', 'fresh truth applied');
 assert(renders === 1, 'fresh truth renders once');
+"""
+    )
+
+
+def test_runtime_refresh_failure_marks_prior_truth_stale_and_fail_closed() -> None:
+    _run_node(
+        """
+const state = {
+  providers: {
+    local_runtime: {
+      status: 'ok',
+      phase: 'failed',
+      health_revision: 8,
+      retry_revision: 4,
+      can_retry: true,
+    },
+  },
+  runtimePollGeneration: 3,
+};
+let renders = 0;
+function renderAll() { renders += 1; }
+
+markLocalRuntimeStale();
+
+assert(state.runtimePollGeneration === 4, 'stale transition cancels polling');
+assert(state.providers.local_runtime.status === 'stale', 'prior truth marked stale');
+assert(state.providers.local_runtime.can_retry === false, 'stale truth disables retry');
+assert(state.providers.local_runtime.health_revision === null, 'stale CAS is discarded');
+assert(renders === 1, 'stale state renders immediately');
 """
     )
