@@ -1338,6 +1338,8 @@ class ProviderRuntimeState:
     next_truth_at: float = 0.0
     next_probe_at: float = 0.0
     parakeet_bootstrap_requested_fingerprint: str | None = None
+    parakeet_bootstrap_future: concurrent.futures.Future | None = None
+    parakeet_bootstrap_fingerprint: str | None = None
 
 
 @dataclass
@@ -2942,7 +2944,27 @@ def _run_parakeet_bootstrap_worker(
             lease.release()
 
 
-def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
+def _parakeet_bootstrap_target_still_current(
+    fence: ProviderFence | None,
+    desired_fingerprint_sha256: str | None,
+) -> bool:
+    if fence is None:
+        return True
+    state = _provider_runtime_states["parakeet"]
+    return (
+        fence.incarnation == _PROVIDER_INCARNATION
+        and fence.generation == state.generation
+        and fence.fingerprint == state.desired_fingerprint
+        and state.desired_fingerprint == desired_fingerprint_sha256
+        and state.latest_phase in {"artifact-not-ready", "observing"}
+    )
+
+
+def _start_parakeet_bootstrap_if_needed(
+    reason: str,
+    fence: ProviderFence | None = None,
+    desired_fingerprint_sha256: str | None = None,
+) -> bool:
     """Start one non-blocking parakeet.cpp install worker when artifacts are absent."""
     from solstone.think.providers import parakeet_install
     from solstone.think.providers.install_lease import acquire_install_lease
@@ -2957,13 +2979,17 @@ def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
         readiness = None
 
     if readiness is not None and readiness.ready:
-        return
+        return False
 
     journal_path = Path(get_journal())
+    if not _parakeet_bootstrap_target_still_current(fence, desired_fingerprint_sha256):
+        logging.info("parakeet.cpp provider bootstrap abandoned: target changed")
+        return False
+
     lease = acquire_install_lease("parakeet", journal_path=journal_path)
     if lease is None:
         logging.info("parakeet.cpp provider bootstrap already running")
-        return
+        return False
     try:
         fingerprint = parakeet_install.target_fingerprint(journal_path=journal_path)
         attempt_status = begin_or_replace_install_attempt(
@@ -2991,7 +3017,7 @@ def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
     except Exception:
         lease.release()
         logging.exception("could not prepare parakeet.cpp provider bootstrap worker")
-        return
+        return False
 
     logging.info(
         "Parakeet artifacts not ready; starting background provider install: %s",
@@ -3002,7 +3028,7 @@ def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
     except Exception:
         lease.release()
         logging.exception("could not start parakeet.cpp provider bootstrap worker")
-        return
+        return False
     if not ack.wait(timeout=5.0):
         cancelled = False
         with transfer_lock:
@@ -3012,6 +3038,8 @@ def _start_parakeet_bootstrap_if_needed(reason: str) -> None:
         if cancelled:
             lease.release()
             logging.error("parakeet.cpp provider bootstrap worker did not acknowledge")
+        return False
+    return True
 
 
 def _build_parakeet_cmd(
@@ -3922,13 +3950,15 @@ def _write_provider_ready_side_effects(
     if state.provider == "local":
         if not isinstance(plan, LocalServerLaunchPlan):
             return
-        if plan.backend not in {"cuda", "vulkan"}:
-            return
         from solstone.think.providers import local_server
 
-        local_server.write_local_context_window(
-            _required_plan_int(plan.context_tokens, "context_tokens")
-        )
+        local_server.reset_parallel_slots_cache()
+        if plan.backend in {"cuda", "vulkan"}:
+            local_server.write_local_context_window(
+                _required_plan_int(plan.context_tokens, "context_tokens")
+            )
+        elif plan.backend == "mlx":
+            local_server.clear_local_context_window()
         return
 
     if state.provider == "parakeet":
@@ -4381,8 +4411,11 @@ def _submit_provider_stop_cleanup_if_needed(
         return True
     now = time.monotonic()
     request = state.pending_stop_request
-    if state.latest_phase == "stop-deferred":
-        request = request or _deferred_stop_request(state, procs)
+    if request is not None:
+        if state.cleanup_attempt_count > 0 and now < state.cleanup_next_at:
+            return True
+    elif state.latest_phase == "stop-deferred":
+        request = _deferred_stop_request(state, procs)
         if request is None:
             state.latest_phase = state.pending_stop_target_phase
             _write_provider_runtime(
@@ -4396,8 +4429,7 @@ def _submit_provider_stop_cleanup_if_needed(
     elif state.latest_phase == "cleanup-failed":
         if now < state.cleanup_next_at:
             return True
-        if request is None:
-            return False
+        return False
     else:
         request = _duplicate_cleanup_request(
             state, procs
@@ -4651,6 +4683,20 @@ def _maybe_start_parakeet_bootstrap(
 ) -> None:
     if state.provider != "parakeet":
         return
+    if state.parakeet_bootstrap_future is not None:
+        if not state.parakeet_bootstrap_future.done():
+            return
+        fingerprint = state.parakeet_bootstrap_fingerprint
+        future = state.parakeet_bootstrap_future
+        state.parakeet_bootstrap_future = None
+        state.parakeet_bootstrap_fingerprint = None
+        try:
+            started = bool(future.result())
+        except Exception as exc:
+            logging.warning("parakeet.cpp provider bootstrap helper failed: %s", exc)
+            started = False
+        if started:
+            state.parakeet_bootstrap_requested_fingerprint = fingerprint
     if observation.phase != "artifact-not-ready":
         state.parakeet_bootstrap_requested_fingerprint = None
         return
@@ -4659,11 +4705,23 @@ def _maybe_start_parakeet_bootstrap(
     fingerprint = observation.desired_fingerprint_sha256
     if state.parakeet_bootstrap_requested_fingerprint == fingerprint:
         return
-    state.parakeet_bootstrap_requested_fingerprint = fingerprint
-    _provider_executor().submit(
+    fence = _provider_fence(state, state.retry.attempt_count)
+    future = _provider_executor().submit(
         _start_parakeet_bootstrap_if_needed,
         str(observation.reason_code or "artifact-not-ready"),
+        fence,
+        fingerprint,
     )
+    state.parakeet_bootstrap_future = future
+    state.parakeet_bootstrap_fingerprint = fingerprint
+    if future.done():
+        state.parakeet_bootstrap_future = None
+        state.parakeet_bootstrap_fingerprint = None
+        try:
+            if bool(future.result()):
+                state.parakeet_bootstrap_requested_fingerprint = fingerprint
+        except Exception as exc:
+            logging.warning("parakeet.cpp provider bootstrap helper failed: %s", exc)
 
 
 def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
@@ -4834,11 +4892,16 @@ def _provider_start_worker(
 def _submit_provider_start_if_needed(
     state: ProviderRuntimeState, procs: list[RunnerManagedProcess]
 ) -> None:
-    if state.stop_cleanup_future is not None or state.latest_phase in {
-        "stop-deferred",
-        "stopping",
-        "cleanup-failed",
-    }:
+    if (
+        state.pending_stop_request is not None
+        or state.stop_cleanup_future is not None
+        or state.latest_phase
+        in {
+            "stop-deferred",
+            "stopping",
+            "cleanup-failed",
+        }
+    ):
         return
     if state.start_future is not None:
         return

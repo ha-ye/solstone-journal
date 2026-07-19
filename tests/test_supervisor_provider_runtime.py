@@ -1601,6 +1601,72 @@ def test_superseded_start_cleanup_failure_is_adopted(monkeypatch) -> None:
     assert state.pending_stop_request.managed is old_managed
 
 
+def test_pending_cleanup_survives_truth_phase_change_and_blocks_start(
+    monkeypatch,
+) -> None:
+    plan = _local_plan()
+    managed = _FakeManaged()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "cleanup-failed"
+    state.latest_plan = None
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    state.pending_stop_request = supervisor._make_stop_request(
+        state,
+        managed,
+        reason_code="cleanup-attempt-failed",
+        detail={"source": "preserved-handle"},
+        target_phase="stopped",
+        target_reason_code="cleanup-succeeded",
+    )
+    state.cleanup_attempt_count = 1
+    state.cleanup_next_at = 50.0
+    state.truth_fence = supervisor._provider_fence(state, 1)
+    state.truth_future = _future_with(
+        supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="starting",
+            reason_code="launch-requested",
+            detail={"backend": plan.backend},
+            desired_fingerprint_json=plan.desired_fingerprint_json,
+            desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+            plan=plan,
+            boot_required=True,
+        )
+    )
+    start_submits: list[str] = []
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_start_worker",
+        lambda *_args: start_submits.append("start"),
+    )
+
+    assert supervisor._handle_provider_truth_result(state) is True
+    assert state.latest_phase == "starting"
+    assert state.pending_stop_request is not None
+    assert state.pending_stop_request.managed is managed
+
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 10.0)
+    assert supervisor._submit_provider_stop_cleanup_if_needed(state, []) is True
+    assert state.stop_cleanup_future is None
+    supervisor._submit_provider_start_if_needed(state, [])
+    assert state.start_future is None
+    assert start_submits == []
+
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 50.0)
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    assert supervisor._submit_provider_stop_cleanup_if_needed(state, []) is True
+    assert supervisor._handle_provider_stop_cleanup_result(state, []) is True
+
+    managed.terminate.assert_called_once()
+    managed.cleanup.assert_called_once_with()
+    assert state.pending_stop_request is None
+    assert state.latest_phase == "stopped"
+    assert start_submits == []
+
+
 def test_cancelled_ready_cleanup_failure_is_adopted(monkeypatch) -> None:
     plan = _local_plan()
     state = supervisor._provider_runtime_states["local"]
@@ -2297,6 +2363,39 @@ def test_cleanup_failed_rechecks_dead_child_and_recovers(monkeypatch) -> None:
     dead.cleanup.assert_called_once_with()
 
 
+def test_pending_cleanup_dead_child_converges_after_truth_changed_phase(
+    monkeypatch,
+) -> None:
+    plan = _local_plan()
+    dead = _DeadManaged()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "starting"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    state.pending_stop_request = supervisor._make_stop_request(
+        state,
+        dead,
+        reason_code="cleanup-attempt-failed",
+        detail={"source": "preserved-handle"},
+        target_phase="stopped",
+        target_reason_code="cleanup-succeeded",
+    )
+    state.cleanup_attempt_count = 1
+    state.cleanup_next_at = 0.0
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 10.0)
+
+    assert supervisor._submit_provider_stop_cleanup_if_needed(state, []) is True
+    assert supervisor._handle_provider_stop_cleanup_result(state, [dead]) is True
+
+    assert state.pending_stop_request is None
+    assert state.latest_phase == "stopped"
+    dead.cleanup.assert_called_once_with()
+
+
 def test_preserved_cancel_cleanup_handle_is_adopted_not_orphaned() -> None:
     plan = _local_plan()
     managed = _FakeManaged()
@@ -2712,6 +2811,81 @@ def test_ready_ownership_write_failure_does_not_publish_port_or_ready(
     assert supervisor.read_service_port("local") is None
     managed.terminate.assert_called_once()
     managed.cleanup.assert_called_once_with()
+
+
+def test_mlx_ready_clears_stale_local_context_and_capacity_cache(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import local_server
+
+    journal = Path(supervisor.get_journal())
+    health = journal / "health"
+    health.mkdir(parents=True, exist_ok=True)
+    (health / "local.ctx").write_text("32768", encoding="utf-8")
+    supervisor.write_service_port("local", 11111)
+    monkeypatch.setattr(local_server, "fetch_props", lambda _port: None)
+    local_server.reset_parallel_slots_cache()
+    assert local_server.read_server_capacity().parallel_slots == 2
+
+    plan = _mlx_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_plan = plan
+    state.latest_phase = "starting"
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    managed = _FakeManaged(supervisor.MLX_SERVER_PROCESS_NAME)
+    state.start_fence = supervisor._provider_fence(state, 1)
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={"port": 45678},
+            managed=managed,
+        )
+    )
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert not (health / "local.ctx").exists()
+    assert supervisor.read_service_port("local") == 45678
+    assert local_server.read_server_capacity().parallel_slots == 1
+    assert local_server.read_server_capacity().source == "default"
+
+
+def test_local_capacity_observed_before_ready_is_reset_on_ready(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import local_server
+
+    monkeypatch.setattr(local_server, "fetch_props", lambda _port: None)
+    local_server.reset_parallel_slots_cache()
+    assert local_server.read_server_capacity().parallel_slots == 1
+
+    plan = _cuda_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_plan = plan
+    state.latest_phase = "starting"
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    managed = _FakeManaged()
+    state.start_fence = supervisor._provider_fence(state, 1)
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={"port": 45678},
+            managed=managed,
+        )
+    )
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert supervisor.read_service_port("local") == 45678
+    assert local_server.read_local_context_window() == plan.context_tokens
+    assert local_server.read_server_capacity().parallel_slots == 2
+    assert local_server.read_server_capacity().source == "local_ctx"
 
 
 def test_fenced_parakeet_ready_result_writes_placement_after_ownership(

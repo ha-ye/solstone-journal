@@ -173,6 +173,10 @@ def write_local_context_window(tokens: int) -> None:
     (health_dir / "local.ctx").write_text(str(tokens))
 
 
+def clear_local_context_window() -> None:
+    (Path(get_journal()) / "health" / "local.ctx").unlink(missing_ok=True)
+
+
 def read_local_context_window() -> int | None:
     context_file = Path(get_journal()) / "health" / "local.ctx"
     try:
@@ -323,6 +327,7 @@ __all__ = [
     "STATE_READY",
     "STATE_FAILED",
     "STATE_STOPPED",
+    "clear_local_context_window",
     "connect",
     "fetch_props",
     "is_healthy",

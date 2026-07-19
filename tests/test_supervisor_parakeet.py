@@ -737,7 +737,7 @@ def test_parakeet_bootstrap_ack_timeout_cancels_late_worker(
         lambda **kwargs: install_parakeet.append(kwargs),
     )
 
-    supervisor._start_parakeet_bootstrap_if_needed("missing")
+    assert supervisor._start_parakeet_bootstrap_if_needed("missing") is False
 
     reacquired = acquire_install_lease("parakeet", journal_path=journal)
     assert reacquired is not None
@@ -745,6 +745,233 @@ def test_parakeet_bootstrap_ack_timeout_cancels_late_worker(
     assert _LateThread.instances
     _LateThread.instances[0].target()
     assert install_parakeet == []
+
+
+def test_parakeet_bootstrap_lease_held_is_retryable_noop(monkeypatch, tmp_path) -> None:
+    from solstone.think.providers.install_lease import acquire_install_lease
+
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(
+        parakeet_install, "inspect_readiness", lambda: _parakeet_readiness()
+    )
+    lease = acquire_install_lease("parakeet", journal_path=journal)
+    assert lease is not None
+    try:
+        assert supervisor._start_parakeet_bootstrap_if_needed("missing") is False
+    finally:
+        lease.release()
+
+
+def test_parakeet_bootstrap_prepare_failure_is_retryable_noop(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(
+        parakeet_install, "inspect_readiness", lambda: _parakeet_readiness()
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "target_fingerprint",
+        lambda journal_path=None: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+
+    assert supervisor._start_parakeet_bootstrap_if_needed("missing") is False
+
+
+def test_parakeet_bootstrap_thread_start_failure_is_retryable_noop(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(
+        parakeet_install, "inspect_readiness", lambda: _parakeet_readiness()
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "target_fingerprint",
+        lambda journal_path=None: {"provider": "parakeet", "unit": "test"},
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.install_state.begin_or_replace_install_attempt",
+        lambda *_args, **_kwargs: {
+            "provider": "parakeet",
+            "install_state": "downloading",
+            "attempt_id": "attempt",
+        },
+    )
+
+    class _BrokenThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            raise RuntimeError("thread failed")
+
+    monkeypatch.setattr(supervisor.threading, "Thread", _BrokenThread)
+
+    assert supervisor._start_parakeet_bootstrap_if_needed("missing") is False
+
+
+def test_parakeet_bootstrap_abandons_before_lease_when_target_changed(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(
+        parakeet_install, "inspect_readiness", lambda: _parakeet_readiness()
+    )
+    state = supervisor.ProviderRuntimeState("parakeet")
+    state.latest_phase = "artifact-not-ready"
+    state.desired_fingerprint = "fp-old"
+    state.generation = 1
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_runtime_states",
+        {
+            "local": supervisor.ProviderRuntimeState("local"),
+            "parakeet": state,
+        },
+    )
+    fence = supervisor._provider_fence(state, 0)
+    state.latest_phase = "not-desired"
+    state.desired_fingerprint = None
+    state.generation = 2
+    monkeypatch.setattr(
+        "solstone.think.providers.install_lease.acquire_install_lease",
+        lambda *_args, **_kwargs: pytest.fail("lease must not be acquired"),
+    )
+
+    assert (
+        supervisor._start_parakeet_bootstrap_if_needed("missing", fence, "fp-old")
+        is False
+    )
+
+
+def test_parakeet_bootstrap_abandons_before_lease_when_fingerprint_changed(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(
+        parakeet_install, "inspect_readiness", lambda: _parakeet_readiness()
+    )
+    state = supervisor.ProviderRuntimeState("parakeet")
+    state.latest_phase = "artifact-not-ready"
+    state.desired_fingerprint = "fp-old"
+    state.generation = 1
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_runtime_states",
+        {
+            "local": supervisor.ProviderRuntimeState("local"),
+            "parakeet": state,
+        },
+    )
+    fence = supervisor._provider_fence(state, 0)
+    state.desired_fingerprint = "fp-new"
+    state.generation = 2
+    monkeypatch.setattr(
+        "solstone.think.providers.install_lease.acquire_install_lease",
+        lambda *_args, **_kwargs: pytest.fail("lease must not be acquired"),
+    )
+
+    assert (
+        supervisor._start_parakeet_bootstrap_if_needed("missing", fence, "fp-old")
+        is False
+    )
+
+
+def test_parakeet_bootstrap_rechecks_matching_target_before_lease(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    journal = tmp_path / "journal"
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
+    monkeypatch.setattr(
+        parakeet_install, "inspect_readiness", lambda: _parakeet_readiness()
+    )
+    state = supervisor.ProviderRuntimeState("parakeet")
+    state.latest_phase = "artifact-not-ready"
+    state.desired_fingerprint = "fp-parakeet"
+    state.generation = 1
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_runtime_states",
+        {
+            "local": supervisor.ProviderRuntimeState("local"),
+            "parakeet": state,
+        },
+    )
+    fence = supervisor._provider_fence(state, 0)
+    lease_calls = []
+    monkeypatch.setattr(
+        "solstone.think.providers.install_lease.acquire_install_lease",
+        lambda *_args, **_kwargs: lease_calls.append("lease") or None,
+    )
+
+    assert (
+        supervisor._start_parakeet_bootstrap_if_needed(
+            "missing",
+            fence,
+            "fp-parakeet",
+        )
+        is False
+    )
+    assert lease_calls == ["lease"]
+
+
+def test_parakeet_bootstrap_noop_result_retries_on_later_observation(
+    monkeypatch,
+) -> None:
+    calls: list[str] = []
+    state = supervisor.ProviderRuntimeState("parakeet")
+    plan = _parakeet_plan("cpu")
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_runtime_states",
+        {
+            "local": supervisor.ProviderRuntimeState("local"),
+            "parakeet": state,
+        },
+    )
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(
+        supervisor, "_write_provider_runtime", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_start_parakeet_bootstrap_if_needed",
+        lambda reason, *_args: calls.append(reason) and False,
+    )
+
+    for _ in range(2):
+        state.truth_fence = supervisor._provider_fence(state, 0)
+        state.truth_future = _InlineExecutor().submit(
+            lambda: supervisor.ProviderTruthObservation(
+                provider="parakeet",
+                phase="artifact-not-ready",
+                reason_code="artifact-missing",
+                detail={
+                    "install_state": "idle",
+                    "install_acquisition_allowed": True,
+                },
+                desired_fingerprint_json=plan.desired_fingerprint_json,
+                desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+                boot_required=True,
+            )
+        )
+        assert supervisor._handle_provider_truth_result(state) is True
+
+    assert calls == ["artifact-missing", "artifact-missing"]
+    assert state.parakeet_bootstrap_requested_fingerprint is None
 
 
 def test_parakeet_bootstrap_worker_publishes_install_fact_without_direct_start(
@@ -858,7 +1085,7 @@ def test_parakeet_bootstrap_launches_only_via_reconciliation(monkeypatch) -> Non
     monkeypatch.setattr(
         supervisor,
         "_start_parakeet_bootstrap_if_needed",
-        lambda reason: bootstrap_reasons.append(reason),
+        lambda reason, *_args: bootstrap_reasons.append(reason) or True,
     )
 
     def start_worker(provider, plan_arg, _fence, _cancel_event):
