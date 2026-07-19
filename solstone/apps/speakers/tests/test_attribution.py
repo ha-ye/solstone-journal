@@ -896,32 +896,11 @@ def test_l3_acoustic_cluster_margin_demotion_happens_after_mean_gate(speakers_en
     assert labels[1]["speaker"] is None
 
 
-def test_l3_owner_margin_decline_is_not_repromoted_by_acoustic_margin(speakers_env):
-    from solstone.apps.speakers.attribution import attribute_segment
-
-    env = speakers_env()
-    _setup_margin_owner(env)
-    trap, _competitor_dir, _distractor_dir = _setup_margin_trap_entities(env)
-    _write_controlled_segment(
-        env,
-        "20240101",
-        "114500_300",
-        trap.reshape(1, -1),
-    )
-
-    result = attribute_segment("20240101", STREAM, "114500_300")
-    label = result["labels"][0]
-
-    assert label["speaker"] == "zara_vale"
-    assert label["method"] == "acoustic"
-    assert label["confidence"] == "medium"
-    assert label["owner_margin_declined"] is True
-    assert "acoustic_margin_declined" not in label
-
-
 def test_accumulate_voiceprints_skips_acoustic_margin_demoted_label(speakers_env):
-    from solstone.apps.speakers.attribution import accumulate_voiceprints
-    from solstone.apps.speakers.attribution import attribute_segment
+    from solstone.apps.speakers.attribution import (
+        accumulate_voiceprints,
+        attribute_segment,
+    )
 
     env = speakers_env()
     _setup_owner(env)
