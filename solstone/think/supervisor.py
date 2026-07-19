@@ -3774,6 +3774,15 @@ _PROVIDER_START_CANCEL_PHASES: frozenset[RuntimePhase] = frozenset(
         "state-unavailable",
     }
 )
+_PROVIDER_TRUTH_PRESERVED_PHASES: frozenset[RuntimePhase] = frozenset(
+    {
+        "ready",
+        "ready-proof-unavailable",
+        "stop-deferred",
+        "stopping",
+        "cleanup-failed",
+    }
+)
 _PROVIDER_PROCESS_NAMES: dict[ProviderName, frozenset[str]] = {
     "local": frozenset({LOCAL_SERVER_PROCESS_NAME, MLX_SERVER_PROCESS_NAME}),
     "parakeet": frozenset({PARAKEET_SERVER_PROCESS_NAME}),
@@ -4362,6 +4371,7 @@ def _schedule_cleanup_failed_retry(
             "cleanup_attempt": state.cleanup_attempt_count,
             "next_cleanup_attempt": state.cleanup_attempt_count + 1,
         },
+        process=_current_provider_process_record(state.provider),
         display_deadline_delay_s=delay,
     )
 
@@ -4513,6 +4523,7 @@ def _submit_provider_stop_cleanup_if_needed(
         phase="stopping",
         reason_code=request.reason_code,
         detail={**request.detail, "fence": fence.__dict__},
+        process=_current_provider_process_record(state.provider),
     )
     state.stop_cleanup_future = _provider_executor().submit(
         _provider_stop_cleanup_worker,
@@ -4592,6 +4603,7 @@ def _handle_provider_stop_cleanup_result(
             phase="stop-deferred",
             reason_code=outcome.reason_code,
             detail=outcome.detail,
+            process=_current_provider_process_record(state.provider),
         )
         return True
     if outcome.status == "cleanup-failed":
@@ -4736,6 +4748,7 @@ def _defer_provider_stop_for_observation(
         phase="stop-deferred",
         reason_code=reason_code,
         detail=target_detail,
+        process=_current_provider_process_record(state.provider),
     )
 
 
@@ -4755,13 +4768,23 @@ def _submit_provider_truth_if_needed(state: ProviderRuntimeState) -> None:
     state.next_truth_at = now + PROVIDER_TRUTH_OBSERVATION_INTERVAL_SECONDS
     fence = _provider_fence(state, state.retry.attempt_count)
     state.truth_fence = fence
-    state.latest_phase = "observing"
-    _write_provider_runtime(
-        state,
-        phase="observing",
-        reason_code="truth-observation-started",
-        detail={"fence": fence.__dict__},
-    )
+    # A truth refresh is speculative until its fenced result is accepted. Keep
+    # an already-established live or cleanup transition authoritative while the
+    # observation runs; replacing it with ``observing`` loses the context used
+    # to distinguish a stable target from a replacement and can hide ownership
+    # of a process that still needs cleanup.
+    if (
+        state.latest_phase not in _PROVIDER_TRUTH_PRESERVED_PHASES
+        and state.pending_stop_request is None
+        and state.stop_cleanup_future is None
+    ):
+        state.latest_phase = "observing"
+        _write_provider_runtime(
+            state,
+            phase="observing",
+            reason_code="truth-observation-started",
+            detail={"fence": fence.__dict__},
+        )
     state.truth_future = _provider_executor().submit(
         _observe_provider_truth,
         state.provider,
@@ -4839,6 +4862,7 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
             phase=state.latest_phase,
             reason_code="stale-result-ignored",
             detail={"slot": "truth", "fence": fence.__dict__},
+            process=_current_provider_process_record(state.provider),
         )
         return True
     if observation.provider != state.provider:
@@ -4851,12 +4875,36 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
     fingerprint_changed = (
         observation.desired_fingerprint_sha256 != state.desired_fingerprint
     )
+    pending_stop_target_phase = (
+        state.pending_stop_request.target_phase
+        if state.pending_stop_request is not None
+        else state.pending_stop_target_phase
+    )
+    if (
+        not fingerprint_changed
+        and state.latest_phase in {"stop-deferred", "stopping", "cleanup-failed"}
+        and observation.phase == pending_stop_target_phase
+    ):
+        _write_provider_runtime(
+            state,
+            phase=state.latest_phase,
+            reason_code="stale-result-ignored",
+            detail={
+                "slot": "truth",
+                "pending_cleanup": True,
+                "latched_phase": observation.phase,
+                "latched_reason_code": observation.reason_code,
+            },
+            process=_current_provider_process_record(state.provider),
+        )
+        return True
     if (
         not fingerprint_changed
         and (
             (
                 observation.phase == "starting"
-                and state.latest_phase in {"starting", "ready"}
+                and state.latest_phase
+                in {"starting", "ready", "ready-proof-unavailable"}
             )
             or (
                 observation.phase == "host-blocked" and state.latest_phase == "starting"
@@ -4873,6 +4921,7 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
                 "latched_phase": observation.phase,
                 "latched_reason_code": observation.reason_code,
             },
+            process=_current_provider_process_record(state.provider),
         )
         return True
     if state.stop_cleanup_future is not None and (

@@ -876,6 +876,149 @@ def test_ready_episode_reobserves_on_sixty_second_cadence(monkeypatch) -> None:
     assert state.latest_phase == "ready"
 
 
+@pytest.mark.parametrize(
+    ("provider", "plan", "managed_name"),
+    [
+        ("local", _local_plan(), supervisor.LOCAL_SERVER_PROCESS_NAME),
+        ("parakeet", _parakeet_plan("vulkan"), supervisor.PARAKEET_SERVER_PROCESS_NAME),
+    ],
+)
+def test_ready_truth_refresh_keeps_same_target_process_authoritative(
+    monkeypatch,
+    provider: str,
+    plan: supervisor.LocalServerLaunchPlan | supervisor.ParakeetServerLaunchPlan,
+    managed_name: str,
+) -> None:
+    state = supervisor._provider_runtime_states[provider]
+    managed = _FakeManaged(managed_name)
+    process = {
+        "name": managed.name,
+        "pid": managed.process.pid,
+        "ref": managed.ref,
+        "port": 45678,
+    }
+    _set_provider_ready(provider, state, plan)
+    state.next_truth_at = 0.0
+    state.next_probe_at = 10**12
+    write_runtime_health(
+        _runtime_record(
+            provider,
+            phase="ready",
+            fingerprint=plan.desired_fingerprint_sha256,
+            generation=state.generation,
+            attempt=state.retry.attempt_count,
+            process=process,
+        )
+    )
+    observation = supervisor.ProviderTruthObservation(
+        provider=provider,
+        phase="starting",
+        reason_code="launch-requested",
+        detail={"source": "stable-refresh"},
+        desired_fingerprint_json=plan.desired_fingerprint_json,
+        desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+        plan=plan,
+        boot_required=True,
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(
+        supervisor,
+        "_observe_provider_truth",
+        lambda provider_arg: observation,
+    )
+
+    asyncio.run(supervisor._reconcile_provider_runtime(provider, [managed]))
+    submitted_health = read_runtime_health(provider)
+    assert state.latest_phase == "ready"
+    assert submitted_health["phase"] == "ready"
+    assert submitted_health["process"] == process
+
+    asyncio.run(supervisor._reconcile_provider_runtime(provider, [managed]))
+    refreshed_health = read_runtime_health(provider)
+    assert state.latest_phase == "ready"
+    assert state.latest_plan is plan
+    assert state.pending_stop_request is None
+    assert state.stop_cleanup_future is None
+    assert refreshed_health["phase"] == "ready"
+    assert refreshed_health["process"] == process
+    managed.terminate.assert_not_called()
+    managed.cleanup.assert_not_called()
+
+    state.truth_fence = supervisor._provider_fence(state, state.retry.attempt_count)
+    state.truth_future = _future_with(observation)
+    state.generation += 1
+    assert supervisor._handle_provider_truth_result(state) is True
+    fenced_health = read_runtime_health(provider)
+    assert fenced_health["reason_code"] == "stale-result-ignored"
+    assert fenced_health["process"] == process
+
+
+def test_ready_truth_refresh_to_not_desired_retains_stop_ownership(
+    monkeypatch,
+) -> None:
+    plan = _local_plan()
+    managed = _FakeManaged()
+    state = supervisor._provider_runtime_states["local"]
+    process = {
+        "name": managed.name,
+        "pid": managed.process.pid,
+        "ref": managed.ref,
+        "port": 45678,
+    }
+    _set_provider_ready("local", state, plan)
+    state.next_truth_at = 0.0
+    state.next_probe_at = 10**12
+    write_runtime_health(
+        _runtime_record(
+            "local",
+            phase="ready",
+            fingerprint=plan.desired_fingerprint_sha256,
+            generation=state.generation,
+            attempt=state.retry.attempt_count,
+            process=process,
+        )
+    )
+    observation = supervisor.ProviderTruthObservation(
+        provider="local",
+        phase="not-desired",
+        reason_code="provider-not-needed",
+        detail={"active_provider": "openai"},
+        boot_required=False,
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(
+        supervisor,
+        "_observe_provider_truth",
+        lambda _provider: observation,
+    )
+
+    supervisor._submit_provider_truth_if_needed(state)
+    assert state.latest_phase == "ready"
+    assert read_runtime_health("local")["process"] == process
+
+    assert supervisor._handle_provider_truth_result(state) is True
+    assert state.latest_phase == "stop-deferred"
+    assert state.pending_stop_target_phase == "not-desired"
+    assert state.pending_stop_admission_exclusive is True
+
+    request = supervisor._deferred_stop_request(state, [managed])
+    assert request is not None
+    supervisor._set_provider_pending_stop_request(state, request)
+    state.next_truth_at = 0.0
+    supervisor._submit_provider_truth_if_needed(state)
+    assert state.latest_phase == "stop-deferred"
+    assert supervisor._handle_provider_truth_result(state) is True
+
+    health = read_runtime_health("local")
+    assert state.latest_phase == "stop-deferred"
+    assert state.pending_stop_request is request
+    assert state.pending_stop_request.managed is managed
+    assert health["phase"] == "stop-deferred"
+    assert health["process"] == process
+
+
 def test_retry_token_resets_live_target_without_launching(monkeypatch) -> None:
     plan = _local_plan()
     observations = 0
