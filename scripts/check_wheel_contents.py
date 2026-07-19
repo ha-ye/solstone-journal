@@ -10,15 +10,19 @@ import argparse
 import base64
 import hashlib
 import re
+import struct
 import sys
 import tarfile
+import tomllib
 import zipfile
 from pathlib import Path
+from typing import Literal
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from solstone.think.probe import (
+    SOLSTONE_CORE_COVERED_PLATFORMS,
     SOLSTONE_CORE_PLATFORM_TAGS,
     CorePlatform,
     current_solstone_core_platform,
@@ -40,6 +44,28 @@ EXPECTED_MODEL_SHA256 = {
 MAX_BASE_WHEEL_BYTES = 4 * 1024 * 1024
 MAX_BASE_PLATFORM_WHEEL_BYTES = 6 * 1024 * 1024
 MAX_CORE_WHEEL_BYTES = 30 * 1024 * 1024
+ELF_MAGIC = b"\x7fELF"
+ELF_CLASS_64 = 2
+ELF_DATA_LITTLE_ENDIAN = 1
+ELF_MACHINE = {
+    "x86_64": 0x003E,
+    "aarch64": 0x00B7,
+}
+PT_DYNAMIC = 2
+PT_INTERP = 3
+DT_NULL = 0
+DT_NEEDED = 1
+MH_MAGIC_64 = 0xFEEDFACF
+MH_CIGAM_64 = 0xCFFAEDFE
+FAT_MAGIC = 0xCAFEBABE
+FAT_CIGAM = 0xBEBAFECA
+FAT_MAGIC_64 = 0xCAFEBABF
+FAT_CIGAM_64 = 0xBFBAFECA
+FAT_ARCH_SIZE = 20
+FAT_ARCH_64_SIZE = 32
+CPU_TYPE_ARM64 = 0x0100000C
+ReleaseScope = Literal["linux", "all-hosts"]
+ModelsDecision = Literal["publish", "skip"]
 CORE_REQUIRED_SDIST_MEMBERS = {
     "core/Cargo.lock",
     "core/Cargo.toml",
@@ -49,6 +75,9 @@ CORE_REQUIRED_SDIST_MEMBERS = {
     "core/crates/solstone-core-cli/src/lib.rs",
     "core/crates/solstone-core-journal/Cargo.toml",
     "core/crates/solstone-core-journal/src/lib.rs",
+}
+CORE_TAG_PLATFORMS = {
+    tag: platform for platform, tag in SOLSTONE_CORE_PLATFORM_TAGS.items()
 }
 
 
@@ -66,6 +95,24 @@ def _is_core_wheel(path: Path) -> bool:
 
 def _is_core_sdist(path: Path) -> bool:
     return path.name.startswith("solstone_core-") and path.name.endswith(".tar.gz")
+
+
+def _project_version(path: Path) -> str:
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    version = data.get("project", {}).get("version")
+    if not isinstance(version, str) or not version:
+        raise ValueError(f"{path}: missing [project].version")
+    return version
+
+
+def _release_version() -> str:
+    return _project_version(ROOT / "pyproject.toml")
+
+
+def _models_version() -> str:
+    return _project_version(
+        ROOT / "packages" / "solstone-journal-models" / "pyproject.toml"
+    )
 
 
 def _core_wheel_tag(path: Path) -> str:
@@ -97,6 +144,26 @@ def _parse_core_platform(value: str) -> CorePlatform:
 def _onnx_members(path: Path) -> list[str]:
     with zipfile.ZipFile(path) as wheel:
         return [name for name in wheel.namelist() if name.endswith(".onnx")]
+
+
+def _failure(
+    subject: str,
+    error: str,
+    *,
+    expected: str,
+    actual: str,
+    repair: str,
+) -> str:
+    return (
+        f"{subject}: {error}; expected: {expected}; actual: {actual}; "
+        f"repair command: {repair}"
+    )
+
+
+def _core_rebuild_command(platform_tuple: CorePlatform) -> str:
+    if platform_tuple[0] == "linux":
+        return "bash scripts/release.sh --dry-run-linux"
+    return "bash scripts/release.sh --dry-run-all-hosts"
 
 
 def check_base_wheel(path: Path, max_bytes: int) -> list[str]:
@@ -186,6 +253,246 @@ def _check_record(path: Path, wheel: zipfile.ZipFile) -> list[str]:
     return errors
 
 
+def _check_elf_dynamic_entries(
+    wheel_name: str,
+    content: bytes,
+    *,
+    program_offset: int,
+    program_size: int,
+    repair: str,
+) -> list[str]:
+    errors: list[str] = []
+    offset = program_offset
+    end = program_offset + program_size
+    while offset + 16 <= end and offset + 16 <= len(content):
+        tag = struct.unpack_from("<q", content, offset)[0]
+        if tag == DT_NULL:
+            break
+        if tag == DT_NEEDED:
+            errors.append(
+                _failure(
+                    wheel_name,
+                    "solstone-core ELF binary has DT_NEEDED",
+                    expected="no DT_NEEDED entries",
+                    actual="DT_NEEDED present",
+                    repair=repair,
+                )
+            )
+            break
+        offset += 16
+    return errors
+
+
+def _check_elf_binary(
+    wheel_name: str,
+    content: bytes,
+    platform_tuple: CorePlatform,
+) -> list[str]:
+    errors: list[str] = []
+    repair = _core_rebuild_command(platform_tuple)
+    machine_name = platform_tuple[1]
+    expected_machine = ELF_MACHINE[machine_name]
+    if len(content) < 64:
+        return [
+            _failure(
+                wheel_name,
+                "solstone-core ELF binary is too short",
+                expected="at least 64-byte ELF64 header",
+                actual=f"{len(content)} bytes",
+                repair=repair,
+            )
+        ]
+    if content[:4] != ELF_MAGIC:
+        return [
+            _failure(
+                wheel_name,
+                "solstone-core binary is not ELF",
+                expected="ELF magic 7f454c46",
+                actual=content[:4].hex(),
+                repair=repair,
+            )
+        ]
+    if content[4] != ELF_CLASS_64:
+        errors.append(
+            _failure(
+                wheel_name,
+                "solstone-core ELF binary is not ELF64",
+                expected=str(ELF_CLASS_64),
+                actual=str(content[4]),
+                repair=repair,
+            )
+        )
+    if content[5] != ELF_DATA_LITTLE_ENDIAN:
+        errors.append(
+            _failure(
+                wheel_name,
+                "solstone-core ELF binary is not little-endian",
+                expected=str(ELF_DATA_LITTLE_ENDIAN),
+                actual=str(content[5]),
+                repair=repair,
+            )
+        )
+    actual_machine = struct.unpack_from("<H", content, 18)[0]
+    if actual_machine != expected_machine:
+        errors.append(
+            _failure(
+                wheel_name,
+                "solstone-core ELF machine does not match wheel tag",
+                expected=f"{machine_name} ({expected_machine:#06x})",
+                actual=f"{actual_machine:#06x}",
+                repair=repair,
+            )
+        )
+    phoff = struct.unpack_from("<Q", content, 32)[0]
+    phentsize = struct.unpack_from("<H", content, 54)[0]
+    phnum = struct.unpack_from("<H", content, 56)[0]
+    if phentsize < 56:
+        return errors + [
+            _failure(
+                wheel_name,
+                "solstone-core ELF program header size is invalid",
+                expected="at least 56 bytes",
+                actual=str(phentsize),
+                repair=repair,
+            )
+        ]
+    if phoff + phentsize * phnum > len(content):
+        return errors + [
+            _failure(
+                wheel_name,
+                "solstone-core ELF program headers exceed binary length",
+                expected="program headers inside file",
+                actual=f"offset {phoff}, size {phentsize}, count {phnum}, file {len(content)}",
+                repair=repair,
+            )
+        ]
+    for index in range(phnum):
+        offset = phoff + phentsize * index
+        p_type = struct.unpack_from("<I", content, offset)[0]
+        if p_type == PT_INTERP:
+            errors.append(
+                _failure(
+                    wheel_name,
+                    "solstone-core ELF binary has PT_INTERP",
+                    expected="no PT_INTERP program header",
+                    actual="PT_INTERP present",
+                    repair=repair,
+                )
+            )
+        if p_type == PT_DYNAMIC:
+            p_offset = struct.unpack_from("<Q", content, offset + 8)[0]
+            p_filesz = struct.unpack_from("<Q", content, offset + 32)[0]
+            errors.extend(
+                _check_elf_dynamic_entries(
+                    wheel_name,
+                    content,
+                    program_offset=p_offset,
+                    program_size=p_filesz,
+                    repair=repair,
+                )
+            )
+    return errors
+
+
+def _check_macho_binary(
+    wheel_name: str,
+    content: bytes,
+    platform_tuple: CorePlatform,
+) -> list[str]:
+    repair = _core_rebuild_command(platform_tuple)
+    if len(content) < 8:
+        return [
+            _failure(
+                wheel_name,
+                "solstone-core Mach-O binary is too short",
+                expected="at least 8 bytes",
+                actual=f"{len(content)} bytes",
+                repair=repair,
+            )
+        ]
+    magic_be = struct.unpack_from(">I", content, 0)[0]
+    magic_le = struct.unpack_from("<I", content, 0)[0]
+    if magic_le == MH_MAGIC_64:
+        cputype = struct.unpack_from("<I", content, 4)[0]
+        if cputype == CPU_TYPE_ARM64:
+            return []
+        return [
+            _failure(
+                wheel_name,
+                "solstone-core Mach-O cputype does not match wheel tag",
+                expected=f"arm64 ({CPU_TYPE_ARM64:#010x})",
+                actual=f"{cputype:#010x}",
+                repair=repair,
+            )
+        ]
+    if magic_be == MH_MAGIC_64:
+        cputype = struct.unpack_from(">I", content, 4)[0]
+        if cputype == CPU_TYPE_ARM64:
+            return []
+        return [
+            _failure(
+                wheel_name,
+                "solstone-core Mach-O cputype does not match wheel tag",
+                expected=f"arm64 ({CPU_TYPE_ARM64:#010x})",
+                actual=f"{cputype:#010x}",
+                repair=repair,
+            )
+        ]
+    if magic_be in (FAT_MAGIC, FAT_MAGIC_64, FAT_CIGAM, FAT_CIGAM_64):
+        endian = ">" if magic_be in (FAT_MAGIC, FAT_MAGIC_64) else "<"
+        arch_size = (
+            FAT_ARCH_64_SIZE
+            if magic_be in (FAT_MAGIC_64, FAT_CIGAM_64)
+            else FAT_ARCH_SIZE
+        )
+        nfat_arch = struct.unpack_from(f"{endian}I", content, 4)[0]
+        header_size = 8 + nfat_arch * arch_size
+        if header_size > len(content):
+            return [
+                _failure(
+                    wheel_name,
+                    "solstone-core fat Mach-O header exceeds binary length",
+                    expected="all fat architecture records inside file",
+                    actual=f"{nfat_arch} records require {header_size} bytes; file {len(content)}",
+                    repair=repair,
+                )
+            ]
+        for index in range(nfat_arch):
+            cputype = struct.unpack_from(f"{endian}I", content, 8 + arch_size * index)[
+                0
+            ]
+            if cputype == CPU_TYPE_ARM64:
+                return []
+        return [
+            _failure(
+                wheel_name,
+                "solstone-core fat Mach-O has no arm64 slice",
+                expected=f"at least one cputype {CPU_TYPE_ARM64:#010x}",
+                actual=f"{nfat_arch} slice(s), none arm64",
+                repair=repair,
+            )
+        ]
+    return [
+        _failure(
+            wheel_name,
+            "solstone-core binary is not recognized as Mach-O",
+            expected="Mach-O 64-bit or fat Mach-O magic",
+            actual=content[:4].hex(),
+            repair=repair,
+        )
+    ]
+
+
+def _check_core_binary(
+    wheel_name: str,
+    content: bytes,
+    platform_tuple: CorePlatform,
+) -> list[str]:
+    if platform_tuple[0] == "linux":
+        return _check_elf_binary(wheel_name, content, platform_tuple)
+    return _check_macho_binary(wheel_name, content, platform_tuple)
+
+
 def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
     errors: list[str] = []
     size = path.stat().st_size
@@ -199,6 +506,7 @@ def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
     if "-linux_" in path.name:
         errors.append(f"{path.name}: bare linux tag is not publishable")
 
+    platform_tuple = CORE_TAG_PLATFORMS.get(tag)
     with zipfile.ZipFile(path) as wheel:
         scripts = [
             info
@@ -207,11 +515,28 @@ def check_core_wheel(path: Path, max_bytes: int) -> list[str]:
         ]
         if len(scripts) != 1:
             errors.append(
-                f"{path.name}: expected exactly one .data/scripts/solstone-core; "
-                f"found {len(scripts)}"
+                _failure(
+                    path.name,
+                    "wrong solstone-core script member count",
+                    expected="exactly one .data/scripts/solstone-core",
+                    actual=str(len(scripts)),
+                    repair="bash scripts/release.sh --dry-run-linux",
+                )
             )
         elif ((scripts[0].external_attr >> 16) & 0o111) == 0:
-            errors.append(f"{path.name}: solstone-core script is not executable")
+            errors.append(
+                _failure(
+                    path.name,
+                    "solstone-core script is not executable",
+                    expected="executable mode bit set",
+                    actual=oct((scripts[0].external_attr >> 16) & 0o777),
+                    repair="bash scripts/release.sh --dry-run-linux",
+                )
+            )
+        elif platform_tuple is not None:
+            errors.extend(
+                _check_core_binary(path.name, wheel.read(scripts[0]), platform_tuple)
+            )
         errors.extend(_check_record(path, wheel))
 
     return errors
@@ -240,12 +565,128 @@ def check_core_sdist(path: Path) -> list[str]:
     return errors
 
 
+def _core_platforms_for_scope(scope: ReleaseScope) -> tuple[CorePlatform, ...]:
+    if scope == "all-hosts":
+        return SOLSTONE_CORE_COVERED_PLATFORMS
+    return tuple(
+        platform_tuple
+        for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS
+        if platform_tuple[0] == "linux"
+    )
+
+
+def _release_artifact_members(
+    dist_dir: Path,
+    *,
+    release_scope: ReleaseScope,
+    models_decision: ModelsDecision,
+) -> list[tuple[Path, str]]:
+    version = _release_version()
+    models_version = _models_version()
+    artifacts = [
+        (dist_dir / f"solstone-{version}.tar.gz", "root sdist"),
+        (dist_dir / f"solstone-{version}-py3-none-any.whl", "root any wheel"),
+        (dist_dir / f"solstone_core-{version}.tar.gz", "core sdist"),
+        (dist_dir / f"solstone_journal-{version}.tar.gz", "journal CPU sdist"),
+        (
+            dist_dir / f"solstone_journal-{version}-py3-none-any.whl",
+            "journal CPU wheel",
+        ),
+        (dist_dir / f"solstone_journal_cuda-{version}.tar.gz", "journal CUDA sdist"),
+        (
+            dist_dir / f"solstone_journal_cuda-{version}-py3-none-any.whl",
+            "journal CUDA wheel",
+        ),
+    ]
+    for platform_tuple in _core_platforms_for_scope(release_scope):
+        tag = SOLSTONE_CORE_PLATFORM_TAGS[platform_tuple]
+        artifacts.append(
+            (
+                dist_dir / f"solstone_core-{version}-py3-none-{tag}.whl",
+                f"core wheel for {platform_tuple[0]}/{platform_tuple[1]}",
+            )
+        )
+    if release_scope == "all-hosts":
+        for platform_tuple in SOLSTONE_CORE_COVERED_PLATFORMS:
+            if platform_tuple[0] != "darwin":
+                continue
+            tag = SOLSTONE_CORE_PLATFORM_TAGS[platform_tuple]
+            artifacts.append(
+                (
+                    dist_dir / f"solstone-{version}-py3-none-{tag}.whl",
+                    f"root platform wheel for {platform_tuple[0]}/{platform_tuple[1]}",
+                )
+            )
+    # release_models_gate.py is the only owner of whether the independently
+    # versioned model package should publish for this run; release.sh passes that
+    # decision in rather than re-deriving it here.
+    if models_decision == "publish":
+        artifacts.extend(
+            [
+                (
+                    dist_dir / f"solstone_journal_models-{models_version}.tar.gz",
+                    "models sdist",
+                ),
+                (
+                    dist_dir
+                    / f"solstone_journal_models-{models_version}-py3-none-any.whl",
+                    "models wheel",
+                ),
+            ]
+        )
+    return artifacts
+
+
+def release_artifacts(
+    dist_dir: Path,
+    *,
+    release_scope: ReleaseScope,
+    models_decision: ModelsDecision,
+) -> list[Path]:
+    return [
+        path
+        for path, _label in _release_artifact_members(
+            dist_dir,
+            release_scope=release_scope,
+            models_decision=models_decision,
+        )
+    ]
+
+
+def check_release_artifacts(
+    dist_dir: Path,
+    *,
+    release_scope: ReleaseScope,
+    models_decision: ModelsDecision,
+) -> list[str]:
+    errors: list[str] = []
+    for path, label in _release_artifact_members(
+        dist_dir,
+        release_scope=release_scope,
+        models_decision=models_decision,
+    ):
+        if path.exists():
+            continue
+        errors.append(
+            _failure(
+                str(dist_dir),
+                f"missing release artifact for {label}",
+                expected=str(path),
+                actual="missing",
+                repair=f"bash scripts/release.sh --dry-run-{release_scope}",
+            )
+        )
+    return errors
+
+
 def check_dist(
     dist_dir: Path,
     expected: dict[str, str],
     max_bytes: int,
     *,
     required_core_platforms: tuple[CorePlatform, ...] = (),
+    release_scope: ReleaseScope | None = None,
+    models_decision: ModelsDecision | None = None,
 ) -> list[str]:
     errors: list[str] = []
     wheels = sorted(dist_dir.glob("*.whl"))
@@ -258,7 +699,8 @@ def check_dist(
 
     if not base_wheels:
         errors.append(f"{dist_dir}: no solstone base wheel found")
-    if not models_wheels:
+    require_models_wheel = release_scope is None or models_decision == "publish"
+    if require_models_wheel and not models_wheels:
         errors.append(f"{dist_dir}: no solstone_journal_models wheel found")
     system, machine = current_solstone_core_platform()
     required_tags: dict[str, str] = {}
@@ -287,6 +729,16 @@ def check_dist(
         errors.extend(check_core_wheel(path, MAX_CORE_WHEEL_BYTES))
     for path in core_sdists:
         errors.extend(check_core_sdist(path))
+    if release_scope is not None:
+        if models_decision is None:
+            raise ValueError("models_decision is required with release_scope")
+        errors.extend(
+            check_release_artifacts(
+                dist_dir,
+                release_scope=release_scope,
+                models_decision=models_decision,
+            )
+        )
 
     return errors
 
@@ -300,20 +752,49 @@ def main(argv: list[str] | None = None) -> int:
         type=_parse_core_platform,
         help="require a solstone-core wheel for system/machine, e.g. darwin/arm64",
     )
+    parser.add_argument(
+        "--release-scope",
+        choices=("linux", "all-hosts"),
+        help="require the exact release artifact manifest for this scope",
+    )
+    parser.add_argument(
+        "--models-decision",
+        choices=("publish", "skip"),
+        help="release_models_gate.py decision for solstone-journal-models",
+    )
+    parser.add_argument(
+        "--print-artifacts",
+        action="store_true",
+        help="print the release artifact list after validation",
+    )
     parser.add_argument("dist_dir", type=Path)
     args = parser.parse_args(argv)
+    if (args.release_scope is None) != (args.models_decision is None):
+        parser.error("--release-scope and --models-decision must be used together")
+    if args.print_artifacts and args.release_scope is None:
+        parser.error("--print-artifacts requires --release-scope")
 
     errors = check_dist(
         args.dist_dir,
         EXPECTED_MODEL_SHA256,
         MAX_BASE_WHEEL_BYTES,
         required_core_platforms=tuple(args.require_core_platform),
+        release_scope=args.release_scope,
+        models_decision=args.models_decision,
     )
     if errors:
         print("ERROR: wheel content check failed", file=sys.stderr)
         for error in errors:
             print(f"  {error}", file=sys.stderr)
         return 1
+    if args.print_artifacts:
+        for path in release_artifacts(
+            args.dist_dir,
+            release_scope=args.release_scope,
+            models_decision=args.models_decision,
+        ):
+            print(path)
+        return 0
     print("wheel contents ok")
     return 0
 
