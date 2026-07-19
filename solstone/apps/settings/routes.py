@@ -465,19 +465,19 @@ def update_config() -> Any:
                                     }
                                 config[section][backend_key][nested_key] = new_value
 
-            if section == "env" and changed_fields:
+            validation_changed = False
+            if section == "env" and "PLAUD_ACCESS_TOKEN" in data:
                 key_validation = config.setdefault("service_key_validation", {})
-
-                for env_var in changed_fields:
-                    if env_var == "PLAUD_ACCESS_TOKEN":
-                        result = service_validation.get("plaud")
-                        if result is None:
-                            key_validation.pop("plaud", None)
-                        else:
-                            key_validation["plaud"] = result
+                prior_validation = key_validation.get("plaud")
+                result = service_validation.get("plaud")
+                if result is None:
+                    key_validation.pop("plaud", None)
+                else:
+                    key_validation["plaud"] = result
+                validation_changed = prior_validation != key_validation.get("plaud")
 
             return JournalConfigMutation(
-                changed=bool(changed_fields),
+                changed=bool(changed_fields) or validation_changed,
                 value={
                     "config": config,
                     "changed_fields": changed_fields,

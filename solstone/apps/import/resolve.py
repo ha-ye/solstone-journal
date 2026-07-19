@@ -68,6 +68,15 @@ def _set_nested(cfg: dict, dotted_key: str, value: Any) -> None:
     current[parts[-1]] = value
 
 
+def _get_nested(cfg: dict, dotted_key: str) -> Any:
+    current: Any = cfg
+    for part in dotted_key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
 def merge_entity_fields(
     target: EntityDict, source: EntityDict
 ) -> tuple[EntityDict, list[str]]:
@@ -223,8 +232,10 @@ def _resolve_config_field(state_dir: Path, field: str, action: str) -> None:
     if action == "apply":
 
         def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
-            _set_nested(config, field, diff_entry.get("source"))
-            return JournalConfigMutation(changed=True, value=None)
+            next_value = diff_entry.get("source")
+            changed = _get_nested(config, field) != next_value
+            _set_nested(config, field, next_value)
+            return JournalConfigMutation(changed=changed, value=None)
 
         mutate_journal_config(apply)
         log_action = "config_field_applied"

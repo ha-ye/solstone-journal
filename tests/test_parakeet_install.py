@@ -21,6 +21,7 @@ from solstone.think.journal_config import (
 from solstone.think.journal_io.errors import LockTimeout
 from solstone.think.providers import fit_report, parakeet_install
 from solstone.think.providers.install_state import read_install_status
+from tests.helpers.journal_config import seed_journal_config
 
 
 class _SysShim:
@@ -42,9 +43,7 @@ class _PlatformShim:
 
 
 def _init_journal(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config_dir = tmp_path / "config"
-    config_dir.mkdir(parents=True)
-    (config_dir / "journal.json").write_text('{"providers": {}}\n', encoding="utf-8")
+    seed_journal_config({"providers": {}}, tmp_path)
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     import solstone.think.utils as think_utils
 

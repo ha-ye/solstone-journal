@@ -13,6 +13,7 @@ import pytest
 from solstone.think.backup import state
 from solstone.think.backup.destination import Destination
 from solstone.think.backup.hosted import HostedBinding, save_hosted_binding
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _config_path(journal: Path) -> Path:
@@ -20,9 +21,7 @@ def _config_path(journal: Path) -> Path:
 
 
 def _write_config(journal: Path, payload: dict) -> None:
-    config_path = _config_path(journal)
-    config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    seed_journal_config(payload, journal)
 
 
 def _read_config(journal: Path) -> dict:

@@ -40,16 +40,14 @@ from solstone.think.providers.install_state import (
     transition_state,
     write_install_status,
 )
+from tests.helpers.journal_config import seed_journal_config
 
 
 @pytest.fixture
 def journal_config(tmp_path, monkeypatch):
     def _write(config: dict) -> Path:
-        config_path = tmp_path / "config" / "journal.json"
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
         monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-        return config_path
+        return seed_journal_config(config, tmp_path)
 
     return _write
 

@@ -137,7 +137,7 @@ def provision_scout_handoff(payload: dict[str, Any]) -> None:
     _require_journal_config()
 
     def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
-        config.setdefault("env", {})["GOOGLE_API_KEY"] = values["google_api_key"]
+        env = config.setdefault("env", {})
         next_block = {
             "enabled_at": datetime.now(timezone.utc).isoformat(),
             "account_id": values["account_id"],
@@ -146,7 +146,11 @@ def provision_scout_handoff(payload: dict[str, Any]) -> None:
             KEY_FINGERPRINT_FIELD: _fingerprint_key(values["google_api_key"]),
         }
         services = config.setdefault("services", {})
-        changed = services.get("scout") != next_block
+        changed = (
+            env.get("GOOGLE_API_KEY") != values["google_api_key"]
+            or services.get("scout") != next_block
+        )
+        env["GOOGLE_API_KEY"] = values["google_api_key"]
         services["scout"] = next_block
         return JournalConfigMutation(changed=changed, value=None)
 

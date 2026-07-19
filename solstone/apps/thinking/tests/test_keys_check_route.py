@@ -11,6 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from solstone.convey import create_app
+from tests.helpers.journal_config import seed_journal_config
 
 
 @pytest.fixture
@@ -164,3 +165,42 @@ def test_keys_check_invalid_candidate_does_not_change_active_lane(
         == before_config["providers"]["key_validation"]
     )
     assert after_providers["active_lane"] == before_providers["active_lane"]
+
+
+def test_keys_same_value_validation_refresh_persists(tmp_path, monkeypatch):
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
+    seed_journal_config(
+        {
+            "setup": {"completed_at": 1700000000000},
+            "env": {"GOOGLE_API_KEY": "same-key"},
+            "providers": {
+                "active": {"provider": "google", "model": "gemini-flash-latest"},
+                "key_validation": {
+                    "google": {
+                        "valid": False,
+                        "error": "old",
+                        "timestamp": "2026-07-01T00:00:00+00:00",
+                    }
+                },
+            },
+        },
+        tmp_path,
+    )
+    monkeypatch.setattr(
+        "solstone.apps.thinking.routes.validate_key",
+        lambda provider, key: {"valid": True, "provider": provider, "key": key},
+    )
+    app = create_app(str(tmp_path))
+    app.config["TESTING"] = True
+
+    response = app.test_client().put(
+        "/app/thinking/api/keys",
+        json={"env_var": "GOOGLE_API_KEY", "value": "same-key"},
+    )
+
+    assert response.status_code == 200
+    persisted = _read_config(tmp_path)["providers"]["key_validation"]["google"]
+    assert persisted["valid"] is True
+    assert persisted["provider"] == "google"
+    assert persisted["key"] == "same-key"
+    assert persisted["timestamp"] != "2026-07-01T00:00:00+00:00"

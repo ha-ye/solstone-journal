@@ -27,7 +27,10 @@ from solstone.think.journal_io import LockTimeout
 from solstone.think.journal_io.locking import hold_lock
 from solstone.think.utils import CorruptConfigError
 from tests.helpers.journal_config import seed_journal_config
-from tests.journal_config_transaction_effects import JOURNAL_CONFIG_TRANSACTION_EFFECTS
+from tests.journal_config_transaction_effects import (
+    JOURNAL_CONFIG_TRANSACTION_EFFECTS,
+    JournalConfigEffectHarness,
+)
 
 
 def _config_path(journal: Path) -> Path:
@@ -321,7 +324,7 @@ def test_effect_inventory_entries_are_commit_failure_observables(case) -> None:
     assert case.path_id
     assert case.site.startswith("solstone/")
     assert case.effect_kind
-    assert case.trigger
+    assert callable(case.trigger)
     assert case.commit_failure_observable
 
 
@@ -331,27 +334,39 @@ def test_effect_inventory_entries_are_commit_failure_observables(case) -> None:
     ids=lambda case: case.path_id,
 )
 def test_effect_inventory_forced_commit_failure_runs_no_secondary_effect(
-    case, tmp_path, monkeypatch
+    case, tmp_path, monkeypatch, caplog, capsys
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    seed_journal_config({"identity": {"name": "Before"}}, tmp_path)
-    effects: list[str] = []
+    original_replace = os.replace
 
     def fail_replace(_src, _dst) -> None:
         raise OSError(f"forced commit failure for {case.path_id}")
 
-    monkeypatch.setattr("solstone.think.journal_io.atomic.os.replace", fail_replace)
+    harness = JournalConfigEffectHarness(
+        journal_path=tmp_path,
+        monkeypatch=monkeypatch,
+        caplog=caplog,
+        capsys=capsys,
+        fail_replace=fail_replace,
+    )
 
-    def apply(draft: dict) -> JournalConfigMutation[object]:
-        draft["forced_case"] = case.path_id
-        return JournalConfigMutation(
-            changed=True,
-            value=lambda: effects.append(case.path_id),
+    case.trigger(harness)
+
+    assert harness.before_bytes is not None
+    assert harness.config_path.read_bytes() == harness.before_bytes
+    harness.assert_watched_env_unchanged()
+    assert harness.effects == []
+
+    monkeypatch.setattr(
+        "solstone.think.journal_io.atomic.os.replace",
+        original_replace,
+    )
+    mutate_journal_config(
+        lambda draft: (
+            (draft.setdefault("effect_probe", {}) or draft["effect_probe"]).update(
+                {case.path_id: True}
+            )
+            or JournalConfigMutation(changed=True, value=None)
         )
-
-    with pytest.raises(OSError, match="forced commit failure"):
-        result = mutate_journal_config(apply)
-        result.value()
-
-    assert effects == []
-    assert "forced_case" not in read_journal_config(tmp_path)
+    )
+    assert read_journal_config(tmp_path)["effect_probe"][case.path_id] is True

@@ -13,6 +13,7 @@ from solstone.apps.observer.utils import save_observer
 from solstone.apps.thinking.copy import CONFIDENTIAL_LANE_DETAIL, LANES
 from solstone.convey import create_app
 from solstone.think.utils import get_journal, now_ms
+from tests.helpers.journal_config import seed_journal_config
 
 
 def _read_config(journal_dir):
@@ -51,7 +52,7 @@ def _commit_journal_identity() -> None:
 def _clear_setup(journal_dir):
     config = _read_config(journal_dir)
     config.pop("setup", None)
-    (journal_dir / "config" / "journal.json").write_text(json.dumps(config, indent=2))
+    seed_journal_config(config, journal_dir)
 
 
 def _save_test_observer(
@@ -270,9 +271,7 @@ class TestInitDetection:
         config = _read_config(journal_copy)
         config.pop("setup", None)
         config["retention"] = {"raw_media": "days", "raw_media_days": 14}
-        (journal_copy / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2)
-        )
+        seed_journal_config(config, journal_copy)
         app = create_app(str(journal_copy))
         app.config["TESTING"] = True
 
@@ -331,9 +330,7 @@ class TestInitDetection:
         config = _read_config(journal_copy)
         config.pop("setup", None)
         config["identity"]["name"] = "<script>alert(1)</script>"
-        (journal_copy / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2)
-        )
+        seed_journal_config(config, journal_copy)
         app = create_app(str(journal_copy))
         app.config["TESTING"] = True
 
@@ -349,9 +346,7 @@ class TestInitDetection:
         config["identity"]["name"] = "Existing User"
         config["identity"]["preferred"] = "Existing"
         config["identity"]["timezone"] = "UTC"
-        (journal_copy / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2)
-        )
+        seed_journal_config(config, journal_copy)
         before = _read_config(journal_copy)
         app = create_app(str(journal_copy))
         app.config["TESTING"] = True
@@ -649,10 +644,7 @@ class TestInitObservers:
         )
         config = _read_config(journal_copy)
         config["setup"] = {"completed_at": current_now}
-        (journal_copy / "config" / "journal.json").write_text(
-            json.dumps(config, indent=2),
-            encoding="utf-8",
-        )
+        seed_journal_config(config, journal_copy)
 
         api_resp = fresh_client.get("/app/observer/api/list")
         init_resp = fresh_client.get("/init/observers")

@@ -185,3 +185,38 @@ def test_settings_config_projection_treats_malformed_env_as_empty(settings_env):
 
     assert response.status_code == 200
     assert response.get_json()["env"] == {"PLAUD_ACCESS_TOKEN": False}
+
+
+def test_plaud_same_token_validation_refresh_persists(settings_env, monkeypatch):
+    journal_path, _config = settings_env(
+        {
+            **_base_config(),
+            "env": {"PLAUD_ACCESS_TOKEN": "same-token"},
+            "service_key_validation": {
+                "plaud": {
+                    "valid": False,
+                    "error": "old",
+                    "timestamp": "2026-07-01T00:00:00+00:00",
+                }
+            },
+        }
+    )
+    monkeypatch.setattr(
+        "solstone.think.importers.plaud.validate_token",
+        lambda token: {"valid": True, "account": token},
+    )
+    client = _client(journal_path)
+
+    response = client.put(
+        "/app/settings/api/config",
+        json={
+            "section": "env",
+            "data": {"PLAUD_ACCESS_TOKEN": "same-token"},
+        },
+    )
+
+    assert response.status_code == 200
+    persisted = get_config()["service_key_validation"]["plaud"]
+    assert persisted["valid"] is True
+    assert persisted["account"] == "same-token"
+    assert persisted["timestamp"] != "2026-07-01T00:00:00+00:00"

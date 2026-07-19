@@ -803,14 +803,19 @@ def keys() -> Any:
             if new_value:
                 env[env_var] = new_value
                 assert validation is not None
+                prior_validation = key_validation.get(provider)
                 key_validation[provider] = validation
             else:
+                prior_validation = key_validation.get(provider)
                 env.pop(env_var, None)
                 key_validation.pop(provider, None)
                 byo_models = providers_config.get("byo_models")
                 if isinstance(byo_models, dict):
                     byo_models.pop(provider, None)
-            changed = old_value != (new_value or None)
+            next_validation = key_validation.get(provider)
+            changed = (
+                old_value != (new_value or None) or prior_validation != next_validation
+            )
             return JournalConfigMutation(
                 changed=changed,
                 value={

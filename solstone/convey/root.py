@@ -431,26 +431,36 @@ def init_finalize() -> Any:
         )
 
     def apply(config: dict[str, Any]) -> JournalConfigMutation[None]:
-        config.setdefault("convey", {}).pop("allow_network_access", None)
-        config.setdefault("identity", {}).update(
-            {
-                k: v
-                for k, v in {
-                    "name": data.get("name"),
-                    "preferred": data.get("preferred"),
-                    "timezone": data.get("timezone"),
-                }.items()
-                if v
-            }
-        )
-        config.setdefault("setup", {})["completed_at"] = now_ms()
-        config.setdefault("retention", {}).update(
-            {
-                "raw_media": retention_mode,
-                "raw_media_days": retention_days if retention_mode == "days" else None,
-            }
-        )
-        return JournalConfigMutation(changed=True, value=None)
+        changed = False
+        convey = config.setdefault("convey", {})
+        if "allow_network_access" in convey:
+            convey.pop("allow_network_access", None)
+            changed = True
+        identity = config.setdefault("identity", {})
+        for key, value in {
+            "name": data.get("name"),
+            "preferred": data.get("preferred"),
+            "timezone": data.get("timezone"),
+        }.items():
+            if value and identity.get(key) != value:
+                identity[key] = value
+                changed = True
+        completed_at = now_ms()
+        setup = config.setdefault("setup", {})
+        if setup.get("completed_at") != completed_at:
+            setup["completed_at"] = completed_at
+            changed = True
+        retention = config.setdefault("retention", {})
+        next_retention = {
+            "raw_media": retention_mode,
+            "raw_media_days": retention_days if retention_mode == "days" else None,
+        }
+        missing = object()
+        for key, value in next_retention.items():
+            if retention.get(key, missing) != value:
+                retention[key] = value
+                changed = True
+        return JournalConfigMutation(changed=changed, value=None)
 
     try:
         mutate_journal_config(apply)

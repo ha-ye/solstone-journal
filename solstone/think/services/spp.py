@@ -192,13 +192,15 @@ def provision_confidential_handoff(payload: dict[str, Any]) -> None:
         active = providers.get("active")
         prior_active = dict(active) if isinstance(active, dict) and active else None
 
-        local["endpoint_url"] = values["endpoint_url"]
-        local["served_model_id"] = values["served_model_id"]
-        local["credential"] = values["credential"]
         from solstone.think.models import LOCAL_MODEL
 
-        providers["active"] = {"provider": "local", "model": LOCAL_MODEL}
-        config.setdefault("services", {})["confidential"] = {
+        next_local = {
+            "endpoint_url": values["endpoint_url"],
+            "served_model_id": values["served_model_id"],
+            "credential": values["credential"],
+        }
+        next_active = {"provider": "local", "model": LOCAL_MODEL}
+        next_service = {
             "enabled_at": _now_iso(),
             "account_id": values["account_id"],
             "endpoint_url": values["endpoint_url"],
@@ -208,7 +210,18 @@ def provision_confidential_handoff(payload: dict[str, Any]) -> None:
             "prior_active": prior_active,
             "prior_local_endpoint": prior_local,
         }
-        return JournalConfigMutation(changed=True, value=None)
+        services = config.setdefault("services", {})
+        changed = (
+            local != next_local
+            or providers.get("active") != next_active
+            or services.get("confidential") != next_service
+        )
+        local["endpoint_url"] = values["endpoint_url"]
+        local["served_model_id"] = values["served_model_id"]
+        local["credential"] = values["credential"]
+        providers["active"] = next_active
+        services["confidential"] = next_service
+        return JournalConfigMutation(changed=changed, value=None)
 
     mutate_journal_config(apply)
     log.debug("provisioned confidential service")

@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from solstone.think.call import call_app
+from tests.helpers.journal_config import seed_journal_config
 
 runner = CliRunner()
 
@@ -19,11 +20,7 @@ def journal_env(tmp_path, monkeypatch):
 
 
 def _write_config(journal_path: Path, config: dict) -> None:
-    config_dir = journal_path / "config"
-    config_dir.mkdir(parents=True, exist_ok=True)
-    (config_dir / "journal.json").write_text(
-        json.dumps(config, indent=2) + "\n", encoding="utf-8"
-    )
+    seed_journal_config(config, journal_path)
 
 
 def _load_json(path: Path) -> dict:

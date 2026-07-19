@@ -16,6 +16,7 @@ from urllib.request import Request
 import pytest
 
 from solstone.think.journal_config import read_journal_config
+from solstone.think.journal_io import LockTimeout
 from solstone.think.link import ca as ca_module
 from solstone.think.link.ca import load_or_generate_ca
 from solstone.think.link.paths import LinkState, ca_dir
@@ -442,3 +443,34 @@ def test_reach_token_secrets_not_logged(
     failure_body = captured["failure_body"]
     assert failure_body["assertion"] not in caplog.text
     assert failure_body["ca_pubkey"] not in caplog.text
+
+
+def test_ensure_reach_token_lock_timeout_returns_previous_unexpired_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    link_state = _setup_journal(tmp_path, monkeypatch)
+    assert link_state is not None
+    monkeypatch.setattr(reach.time, "time", lambda: NOW)
+    _write_reach_state(
+        {
+            "token": "stored-token",
+            "instance_id": link_state.instance_id,
+            "expires_at": EXPIRES_AT,
+            "expires_epoch": NOW + 1800,
+        }
+    )
+    _capture_success_urlopen(
+        monkeypatch, _response_payload(link_state.instance_id, token="new-token")
+    )
+    timeout = LockTimeout(path=Path("busy.lock"), timeout=0.01)
+    monkeypatch.setattr(
+        reach,
+        "mutate_journal_config",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(timeout),
+    )
+
+    with caplog.at_level("WARNING"):
+        assert reach.ensure_reach_token() == "stored-token"
+
+    assert "persistence busy" in caplog.text
+    assert _stored_reach_state()["token"] == "stored-token"  # type: ignore[index]
