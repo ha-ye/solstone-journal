@@ -32,6 +32,11 @@ CC_CONFIDENCE_GATE: float = 0.28
 OWNER_BOOTSTRAP_MIN_STMTS: int = 30
 OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S: float = 1.5
 OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25: float = 0.30
+# Operator-derived and locked for owner-bootstrap evidence tiering.
+OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS: int = 100
+OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG: float = 0.15
+OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD: str = "standard"
+OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG: str = "strong"
 # Smallest manual-tag set that meaningfully constrains the contamination centroid; below this the no-op default holds.
 OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS: int = 5
 # Owner centroid rebuild guards governed by the owner-rebuild spec.

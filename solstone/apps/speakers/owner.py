@@ -20,10 +20,14 @@ from solstone.apps.speakers.audio import resolve_audio_url
 from solstone.apps.speakers.copy import OWNER_CANDIDATE_CONFIRM_GUIDANCE
 from solstone.apps.speakers.encoder_config import (
     NOISY_FLYWHEEL_OVERLAP_MAX,
+    OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
+    OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG,
     OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
+    OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG,
     OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S,
     OWNER_BOOTSTRAP_MIN_STMTS,
     OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS,
+    OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS,
     OWNER_MARGIN_MIN,
     OWNER_REBUILD_MAX_COHESION_DROP,
     OWNER_REBUILD_MIN_CENTROID_AGREEMENT,
@@ -76,6 +80,7 @@ OWNER_REBUILD_EXPECTED_KEYS = (
     "created_at",
     "evidence_hash",
     "evidence_intra_cosine_p25",
+    "evidence_tier",
 )
 VOICEPRINT_BUSY_ERROR_KIND = "voiceprint_busy"
 VOICEPRINT_BUSY_ERROR = "voiceprint storage is busy; try again"
@@ -96,6 +101,7 @@ class OwnerCentroid:
     evidence_hash: str | None = None
     evidence_intra_cosine_p25: float | None = None
     margin: float | None = None
+    evidence_tier: str = OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
 
 
 @dataclass(frozen=True)
@@ -107,6 +113,8 @@ class OwnerQualityEvaluation:
     threshold_value: float | None
     median_duration_s: float
     intra_cosine_p25: float
+    evidence_tier: str
+    intra_cosine_p25_bound: float
 
 
 @dataclass(frozen=True)
@@ -141,6 +149,8 @@ def _mark_low_quality(
     segment_count: int,
     *,
     source: str,
+    evidence_tier: str,
+    intra_cosine_p25_bound: float,
 ) -> None:
     """Record that detection found a cluster, but it failed quality gates."""
     update_state(
@@ -151,6 +161,8 @@ def _mark_low_quality(
             "low_quality_reason": reason,
             "observed_value": float(observed),
             "threshold_value": float(threshold),
+            "evidence_tier": evidence_tier,
+            "intra_cosine_p25_bound": float(intra_cosine_p25_bound),
             "segments_checked": int(segment_count),
             "attempted_at": _iso_now(),
         },
@@ -165,6 +177,8 @@ def _bail_low_quality(
     embeddings_count: int,
     *,
     source: str,
+    evidence_tier: str,
+    intra_cosine_p25_bound: float,
 ) -> dict[str, Any]:
     """Record and return a locked low-quality owner detection result."""
     manual_guidance = load_owner_manual_bootstrap_guidance(_principal_id_or_none())
@@ -174,6 +188,8 @@ def _bail_low_quality(
         threshold,
         segment_count,
         source=source,
+        evidence_tier=evidence_tier,
+        intra_cosine_p25_bound=intra_cosine_p25_bound,
     )
     return {
         "status": "low_quality",
@@ -184,6 +200,8 @@ def _bail_low_quality(
         "low_quality_reason": reason,
         "observed_value": float(observed),
         "threshold_value": float(threshold),
+        "evidence_tier": evidence_tier,
+        "intra_cosine_p25_bound": float(intra_cosine_p25_bound),
         "manual_tags_count": int(manual_guidance["manual_tags_count"]),
         "can_build_from_tags": bool(manual_guidance["can_build_from_tags"]),
         "next_step": str(manual_guidance["next_step"]),
@@ -660,9 +678,16 @@ def clear_owner_provisional_cache(principal_id: str | None = None) -> None:
 
 
 def _write_owner_centroid(
-    principal_id: str, centroid: np.ndarray, cluster_size: int
+    principal_id: str,
+    centroid: np.ndarray,
+    cluster_size: int,
+    evidence_tier: str,
 ) -> Path:
-    """Write owner_centroid.npz with the canonical schema."""
+    """Write owner_centroid.npz with the canonical schema.
+
+    Strong-tier builds carry the margin snapshot exactly like any other build;
+    evidence tiering does not touch margin writing.
+    """
     import numpy as np
 
     owner_path = ensure_journal_entity_memory(principal_id) / "owner_centroid.npz"
@@ -674,6 +699,7 @@ def _write_owner_centroid(
             "threshold": np.array(OWNER_THRESHOLD, dtype=np.float32),
             "margin": np.array(OWNER_MARGIN_MIN, dtype=np.float32),
             "last_refreshed_at": np.array(_iso_now()),
+            "evidence_tier": np.array(evidence_tier),
         },
         expected_keys=(
             "centroid",
@@ -681,6 +707,7 @@ def _write_owner_centroid(
             "threshold",
             "margin",
             "last_refreshed_at",
+            "evidence_tier",
         ),
     )
     return owner_path
@@ -694,6 +721,11 @@ def _evaluate_owner_quality_gates(
     import numpy as np
 
     cluster_size = int(cluster_embeddings.shape[0])
+    evidence_tier = OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+    intra_cosine_p25_bound = float(OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25)
+    if cluster_size >= OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS:
+        evidence_tier = OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+        intra_cosine_p25_bound = float(OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG)
     median_duration = (
         0.0 if not cluster_durations else float(np.median(cluster_durations))
     )
@@ -709,6 +741,8 @@ def _evaluate_owner_quality_gates(
             threshold_value=float(OWNER_BOOTSTRAP_MIN_STMTS),
             median_duration_s=median_duration,
             intra_cosine_p25=intra_p25,
+            evidence_tier=evidence_tier,
+            intra_cosine_p25_bound=intra_cosine_p25_bound,
         )
 
     if median_duration < OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S:
@@ -718,15 +752,19 @@ def _evaluate_owner_quality_gates(
             threshold_value=float(OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S),
             median_duration_s=median_duration,
             intra_cosine_p25=intra_p25,
+            evidence_tier=evidence_tier,
+            intra_cosine_p25_bound=intra_cosine_p25_bound,
         )
 
-    if intra_p25 < OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25:
+    if intra_p25 < intra_cosine_p25_bound:
         return OwnerQualityEvaluation(
             reason=LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE,
             observed_value=intra_p25,
-            threshold_value=float(OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25),
+            threshold_value=intra_cosine_p25_bound,
             median_duration_s=median_duration,
             intra_cosine_p25=intra_p25,
+            evidence_tier=evidence_tier,
+            intra_cosine_p25_bound=intra_cosine_p25_bound,
         )
 
     return OwnerQualityEvaluation(
@@ -735,31 +773,22 @@ def _evaluate_owner_quality_gates(
         threshold_value=None,
         median_duration_s=median_duration,
         intra_cosine_p25=intra_p25,
+        evidence_tier=evidence_tier,
+        intra_cosine_p25_bound=intra_cosine_p25_bound,
     )
 
 
 def _apply_owner_quality_gates(
-    cluster_embeddings: np.ndarray,
-    cluster_durations: list[float],
+    evaluation: OwnerQualityEvaluation,
     segment_count: int,
     embeddings_count: int,
     source: str,
 ) -> dict[str, Any] | None:
-    """Return a low-quality payload when a gate fails, or None when all pass."""
-    evaluation = _evaluate_owner_quality_gates(cluster_embeddings, cluster_durations)
+    """Return a low-quality payload when an evaluated gate fails, or None."""
     if evaluation.reason is None:
         return None
     if evaluation.observed_value is None or evaluation.threshold_value is None:
         return None
-    if evaluation.reason == LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE:
-        return _bail_low_quality(
-            LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE,
-            observed=evaluation.observed_value,
-            threshold=evaluation.threshold_value,
-            segment_count=segment_count,
-            embeddings_count=embeddings_count,
-            source=source,
-        )
     return _bail_low_quality(
         evaluation.reason,
         observed=evaluation.observed_value,
@@ -767,6 +796,8 @@ def _apply_owner_quality_gates(
         segment_count=segment_count,
         embeddings_count=embeddings_count,
         source=source,
+        evidence_tier=evaluation.evidence_tier,
+        intra_cosine_p25_bound=evaluation.intra_cosine_p25_bound,
     )
 
 
@@ -896,6 +927,7 @@ def _confirmed_owner_payload(centroid: OwnerCentroid) -> dict[str, Any]:
         "cluster_size": centroid.cluster_size,
         "streams_represented": len(centroid.streams),
         "samples": [],
+        "evidence_tier": centroid.evidence_tier,
     }
 
 
@@ -907,6 +939,9 @@ def _candidate_payload_from_awareness(voiceprint: dict[str, Any]) -> dict[str, A
         "streams_represented": int(voiceprint.get("streams_represented") or 0),
         "recommendation": str(voiceprint.get("recommendation") or "single_stream"),
         "samples": samples if isinstance(samples, list) else [],
+        "evidence_tier": str(
+            voiceprint.get("evidence_tier") or OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+        ),
     }
 
 
@@ -1002,7 +1037,10 @@ def _expand_owner_candidate(
     import numpy as np
 
     from solstone.apps.speakers.attribution import _load_integer_speaker_labels
-    from solstone.apps.speakers.candidate_tracker import SOLO_CLUSTER_LABEL
+    from solstone.apps.speakers.candidate_tracker import (
+        SOLO_CLUSTER_LABEL,
+        trim_solo_cluster_rows,
+    )
 
     load_embeddings_file, normalize_embedding = _routes_helpers()
 
@@ -1088,9 +1126,8 @@ def _expand_owner_candidate(
             )
         )
 
+        segment_rows: list[tuple[int, np.ndarray, float | None]] = []
         for sentence_id in sentence_ids:
-            if len(embedding_rows) >= max_embeddings:
-                break
             matched_index = statement_index.get(int(sentence_id))
             if matched_index is None:
                 skip("sentence_id_absent")
@@ -1109,10 +1146,29 @@ def _expand_owner_candidate(
                 duration_s = float(durations_data[matched_index])
             else:
                 duration_s = fallback_durations.get(int(sentence_id))
+
+            segment_rows.append(
+                (
+                    int(sentence_id),
+                    np.asarray(normalized, dtype=np.float32),
+                    duration_s,
+                )
+            )
+
+        if cluster_label == SOLO_CLUSTER_LABEL:
+            segment_rows, _trimmed_centroid, _trimmed_count = trim_solo_cluster_rows(
+                segment_rows,
+                embedding_for_row=lambda row: row[1],
+                normalize_embedding=normalize_embedding,
+            )
+
+        for sentence_id, normalized, duration_s in segment_rows:
+            if len(embedding_rows) >= max_embeddings:
+                break
             if duration_s is not None:
                 durations.append(float(duration_s))
 
-            embedding_rows.append(np.asarray(normalized, dtype=np.float32))
+            embedding_rows.append(normalized)
             provenance.append(
                 {
                     "day": day,
@@ -1211,6 +1267,7 @@ def detect_owner_candidate() -> dict[str, Any]:
                     "status": "confirmed",
                     "cluster_size": confirmed.cluster_size,
                     "confirmed_at": _iso_now(),
+                    "evidence_tier": confirmed.evidence_tier,
                 },
             )
         return _confirmed_owner_payload(confirmed)
@@ -1238,6 +1295,8 @@ def detect_owner_candidate() -> dict[str, Any]:
             candidate.n_segments,
             candidate.n_intervals,
             source=OWNER_CANDIDATE_SOURCE,
+            evidence_tier=OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
+            intra_cosine_p25_bound=OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
         )
 
     expansion = _expand_owner_candidate(
@@ -1252,9 +1311,12 @@ def detect_owner_candidate() -> dict[str, Any]:
             embeddings_available=0,
         )
 
-    low_quality = _apply_owner_quality_gates(
+    quality = _evaluate_owner_quality_gates(
         expansion.embeddings,
         expansion.durations,
+    )
+    low_quality = _apply_owner_quality_gates(
+        quality,
         expansion.segments_checked,
         expansion.embeddings_available,
         source=OWNER_CANDIDATE_SOURCE,
@@ -1289,8 +1351,15 @@ def detect_owner_candidate() -> dict[str, Any]:
                 "cluster_size": np.array(cluster_size, dtype=np.int32),
                 "threshold": np.array(OWNER_THRESHOLD, dtype=np.float32),
                 "version": np.array(version),
+                "evidence_tier": np.array(quality.evidence_tier),
             },
-            expected_keys=("centroid", "cluster_size", "threshold", "version"),
+            expected_keys=(
+                "centroid",
+                "cluster_size",
+                "threshold",
+                "version",
+                "evidence_tier",
+            ),
         )
     except LockTimeout as exc:
         return _voiceprint_busy_result(exc)
@@ -1304,6 +1373,7 @@ def detect_owner_candidate() -> dict[str, Any]:
             "recommendation": recommendation,
             "samples": samples,
             "detected_at": version,
+            "evidence_tier": quality.evidence_tier,
         },
     )
 
@@ -1313,6 +1383,7 @@ def detect_owner_candidate() -> dict[str, Any]:
         "streams_represented": streams_represented,
         "recommendation": recommendation,
         "samples": samples,
+        "evidence_tier": quality.evidence_tier,
     }
 
 
@@ -1350,6 +1421,9 @@ def _owner_candidate_ready_payload(
         "streams_represented": voiceprint.get("streams_represented"),
         "samples": voiceprint.get("samples", []),
         "recommendation": voiceprint.get("recommendation"),
+        "evidence_tier": str(
+            voiceprint.get("evidence_tier") or OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+        ),
         "next_step": "confirm_candidate",
         "guidance": OWNER_CANDIDATE_CONFIRM_GUIDANCE,
     }
@@ -1425,6 +1499,7 @@ def load_owner_centroid() -> OwnerCentroid | None:
         evidence_hash = data.get("evidence_hash")
         evidence_intra_p25 = data.get("evidence_intra_cosine_p25")
         margin = data.get("margin")
+        evidence_tier_data = data.get("evidence_tier")
         if centroid is None or threshold is None or cluster_size is None:
             return None
 
@@ -1436,6 +1511,10 @@ def load_owner_centroid() -> OwnerCentroid | None:
         refreshed = _array_string(last_refreshed_at) or ""
         size = int(np.asarray(cluster_size).item())
         thresh = float(np.asarray(threshold).item())
+        # Centroids written before evidence tiering passed the 0.30 bound by construction, so "standard" is what they are.
+        evidence_tier = (
+            _array_string(evidence_tier_data) or OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+        )
 
         intra_p25, streams = _load_owner_voiceprint_summary(principal_id)
         return OwnerCentroid(
@@ -1449,6 +1528,7 @@ def load_owner_centroid() -> OwnerCentroid | None:
             evidence_hash=_array_string(evidence_hash),
             evidence_intra_cosine_p25=_array_float(evidence_intra_p25),
             margin=_array_float(margin),
+            evidence_tier=evidence_tier,
         )
     except Exception as exc:
         logger.warning("Failed to load owner centroid %s: %s", centroid_path, exc)
@@ -1641,6 +1721,8 @@ def _rebuild_low_quality_payload(
         "low_quality_reason": reason,
         "observed_value": float(evaluation.observed_value or 0.0),
         "threshold_value": float(evaluation.threshold_value or 0.0),
+        "evidence_tier": evaluation.evidence_tier,
+        "intra_cosine_p25_bound": float(evaluation.intra_cosine_p25_bound),
         "manual_tags_count": int(evidence_counts["eligible"]),
         "can_build_from_tags": bool(
             evidence_counts["used"] >= OWNER_BOOTSTRAP_MIN_STMTS
@@ -1704,6 +1786,9 @@ def _incumbent_guard_payload(
     incumbent_rebuild_sourced: bool,
     incumbent_cluster_size: int,
     incumbent_evidence_intra_p25: float | None,
+    incumbent_evidence_tier: str,
+    candidate_evidence_tier: str,
+    same_evidence_tier: bool,
     reason: str,
 ) -> dict[str, Any]:
     return {
@@ -1711,9 +1796,13 @@ def _incumbent_guard_payload(
         "centroid_agreement_threshold": OWNER_REBUILD_MIN_CENTROID_AGREEMENT,
         "cluster_size_compared": incumbent_rebuild_sourced,
         "cohesion_compared": incumbent_rebuild_sourced
+        and same_evidence_tier
         and incumbent_evidence_intra_p25 is not None,
         "incumbent_cluster_size": incumbent_cluster_size,
         "incumbent_evidence_intra_cosine_p25": incumbent_evidence_intra_p25,
+        "incumbent_evidence_tier": incumbent_evidence_tier,
+        "candidate_evidence_tier": candidate_evidence_tier,
+        "same_evidence_tier": same_evidence_tier,
         "reason": reason,
     }
 
@@ -1763,9 +1852,11 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
         diffuse = OwnerQualityEvaluation(
             reason=LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE,
             observed_value=0.0,
-            threshold_value=float(OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25),
+            threshold_value=quality.intra_cosine_p25_bound,
             median_duration_s=quality.median_duration_s,
             intra_cosine_p25=0.0,
+            evidence_tier=quality.evidence_tier,
+            intra_cosine_p25_bound=quality.intra_cosine_p25_bound,
         )
         return _rebuild_low_quality_payload(
             diffuse,
@@ -1804,8 +1895,14 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
         incumbent_evidence_intra_p25 = _array_float(
             current.get("evidence_intra_cosine_p25")
         )
+        # Centroids written before evidence tiering passed the 0.30 bound by construction, so "standard" is what they are.
+        incumbent_evidence_tier = (
+            _array_string(current.get("evidence_tier"))
+            or OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+        )
         created_at = _array_string(current.get("created_at")) or incumbent_refreshed
         centroid_agreement = float(np.dot(incumbent_centroid, candidate_centroid))
+        same_evidence_tier = incumbent_evidence_tier == quality.evidence_tier
         guard_reason = (
             "compared" if incumbent_rebuild_sourced else "incumbent_not_rebuild_sourced"
         )
@@ -1814,6 +1911,9 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
             incumbent_rebuild_sourced=incumbent_rebuild_sourced,
             incumbent_cluster_size=incumbent_cluster_size,
             incumbent_evidence_intra_p25=incumbent_evidence_intra_p25,
+            incumbent_evidence_tier=incumbent_evidence_tier,
+            candidate_evidence_tier=quality.evidence_tier,
+            same_evidence_tier=same_evidence_tier,
             reason=guard_reason,
         )
 
@@ -1826,6 +1926,8 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
             "threshold": OWNER_THRESHOLD,
             "margin": incumbent_margin,
             "evidence_hash": candidate_hash,
+            "evidence_tier": quality.evidence_tier,
+            "intra_cosine_p25_bound": quality.intra_cosine_p25_bound,
             "evidence_counts": dict(evidence_counts),
             "evidence_quality": {
                 "median_duration_s": quality.median_duration_s,
@@ -1860,6 +1962,7 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
         elif (
             incumbent_rebuild_sourced
             and incumbent_evidence_intra_p25 is not None
+            and same_evidence_tier
             and quality.intra_cosine_p25
             < incumbent_evidence_intra_p25 - OWNER_REBUILD_MAX_COHESION_DROP
         ):
@@ -1886,6 +1989,8 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
             "next_step": "none",
             "guidance": "",
         }
+        # Strong-tier builds carry the margin snapshot exactly like any other build;
+        # evidence tiering does not touch margin writing.
         return {
             "centroid": candidate_centroid.astype(np.float32),
             "cluster_size": np.array(embeddings_count, dtype=np.int32),
@@ -1897,6 +2002,7 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
             "evidence_intra_cosine_p25": np.array(
                 quality.intra_cosine_p25, dtype=np.float32
             ),
+            "evidence_tier": np.array(quality.evidence_tier),
         }
 
     update_npz(owner_path, transform, expected_keys=OWNER_REBUILD_EXPECTED_KEYS)
@@ -1908,6 +2014,15 @@ def rebuild_owner_centroid(*, override: bool = False) -> dict[str, Any]:
             decision["next_step"] = "backfill_attribution"
         elif decision.get("status") == "rebuilt":
             decision["next_step"] = "none"
+    if decision.get("status") == "rebuilt":
+        update_state(
+            "voiceprint",
+            {
+                "status": "confirmed",
+                "cluster_size": embeddings_count,
+                "evidence_tier": quality.evidence_tier,
+            },
+        )
     return decision
 
 
@@ -1932,6 +2047,10 @@ def confirm_owner_candidate() -> dict[str, Any]:
             return {"error": "No candidate available"}
         centroid = data["centroid"]
         cluster_size = int(np.asarray(data["cluster_size"]).item())
+        evidence_tier = (
+            _array_string(data.get("evidence_tier"))
+            or OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+        )
     except Exception as e:
         logger.warning("Failed to load owner candidate %s: %s", candidate_path, e)
         return {"error": "No candidate available"}
@@ -1941,7 +2060,12 @@ def confirm_owner_candidate() -> dict[str, Any]:
         return {"error": "No principal entity found"}
 
     try:
-        _write_owner_centroid(principal["id"], np.asarray(centroid), cluster_size)
+        _write_owner_centroid(
+            principal["id"],
+            np.asarray(centroid),
+            cluster_size,
+            evidence_tier,
+        )
     except LockTimeout as exc:
         return _voiceprint_busy_result(exc)
     clear_owner_provisional_cache(principal["id"])
@@ -1953,6 +2077,7 @@ def confirm_owner_candidate() -> dict[str, Any]:
             "status": "confirmed",
             "cluster_size": cluster_size,
             "confirmed_at": _iso_now(),
+            "evidence_tier": evidence_tier,
         },
     )
 
@@ -1960,6 +2085,7 @@ def confirm_owner_candidate() -> dict[str, Any]:
         "status": "confirmed",
         "principal_id": principal["id"],
         "cluster_size": cluster_size,
+        "evidence_tier": evidence_tier,
     }
 
 
@@ -1977,10 +2103,15 @@ def bootstrap_owner_from_manual_tags() -> dict[str, Any]:
     if centroid_path.exists():
         clear_owner_provisional_cache(principal_id)
         cluster_size = None
+        evidence_tier = OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
         try:
             data = load_npz(centroid_path)
             if data is not None:
                 cluster_size = int(np.asarray(data["cluster_size"]).item())
+                evidence_tier = (
+                    _array_string(data.get("evidence_tier"))
+                    or OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+                )
         except Exception as exc:
             logger.warning(
                 "Failed to read owner centroid metadata %s: %s",
@@ -1991,6 +2122,7 @@ def bootstrap_owner_from_manual_tags() -> dict[str, Any]:
             "status": "confirmed",
             "principal_id": principal_id,
             "cluster_size": cluster_size,
+            "evidence_tier": evidence_tier,
             "next_step": "rebuild_owner",
             "guidance": (
                 "Owner centroid already exists. Run sol call speakers rebuild-owner "
@@ -2012,9 +2144,12 @@ def bootstrap_owner_from_manual_tags() -> dict[str, Any]:
         for record in provenance
         if record.get("duration_s") is not None
     ]
-    low_quality = _apply_owner_quality_gates(
+    quality = _evaluate_owner_quality_gates(
         embeddings,
         durations,
+    )
+    low_quality = _apply_owner_quality_gates(
+        quality,
         segment_count,
         embeddings_count,
         source="manual_tags",
@@ -2027,14 +2162,21 @@ def bootstrap_owner_from_manual_tags() -> dict[str, Any]:
         return _bail_low_quality(
             LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE,
             observed=0.0,
-            threshold=OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
+            threshold=quality.intra_cosine_p25_bound,
             segment_count=segment_count,
             embeddings_count=embeddings_count,
             source="manual_tags",
+            evidence_tier=quality.evidence_tier,
+            intra_cosine_p25_bound=quality.intra_cosine_p25_bound,
         )
 
     try:
-        _write_owner_centroid(principal_id, centroid, embeddings_count)
+        _write_owner_centroid(
+            principal_id,
+            centroid,
+            embeddings_count,
+            quality.evidence_tier,
+        )
     except LockTimeout as exc:
         return _voiceprint_busy_result(exc)
     clear_owner_provisional_cache(principal_id)
@@ -2044,12 +2186,14 @@ def bootstrap_owner_from_manual_tags() -> dict[str, Any]:
             "status": "confirmed",
             "cluster_size": embeddings_count,
             "confirmed_at": _iso_now(),
+            "evidence_tier": quality.evidence_tier,
         },
     )
     return {
         "status": "confirmed",
         "principal_id": principal_id,
         "cluster_size": embeddings_count,
+        "evidence_tier": quality.evidence_tier,
     }
 
 

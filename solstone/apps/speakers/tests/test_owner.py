@@ -22,6 +22,10 @@ from flask import Flask
 from solstone.apps.speakers.encoder_config import (
     ENCODER_ID,
     OVERLAP_DETECTOR_ID,
+    OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
+    OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG,
+    OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
+    OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG,
     OWNER_MARGIN_MIN,
     SPEAKER_EVIDENCE_VERSION,
 )
@@ -155,6 +159,26 @@ def _other_cluster_embeddings(count: int) -> np.ndarray:
     base = np.zeros(256, dtype=np.float32)
     base[1] = 1.0
     return np.repeat(base.reshape(1, -1), count, axis=0)
+
+
+def _two_lobe_embeddings(count: int, cosine: float) -> np.ndarray:
+    first = count // 2
+    second = count - first
+    a = np.zeros(256, dtype=np.float32)
+    a[0] = 1.0
+    b = np.zeros(256, dtype=np.float32)
+    b[0] = cosine
+    b[1] = np.sqrt(1.0 - cosine**2)
+    return np.vstack(
+        [
+            np.repeat(a.reshape(1, -1), first, axis=0),
+            np.repeat(b.reshape(1, -1), second, axis=0),
+        ]
+    ).astype(np.float32)
+
+
+def _centroid_for_embeddings(embeddings: np.ndarray) -> np.ndarray:
+    return _normalized(np.mean(embeddings, axis=0).astype(np.float32))
 
 
 def _candidate_path(journal: Path) -> Path:
@@ -384,6 +408,7 @@ def _write_rebuild_owner_centroid(
     created_at: str | None = "2026-03-14T12:00:00Z",
     evidence_hash: str | None = "previous-hash",
     evidence_intra_cosine_p25: float | None = 1.0,
+    evidence_tier: str | None = OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
 ) -> Path:
     from solstone.apps.speakers.encoder_config import OWNER_MARGIN_MIN, OWNER_THRESHOLD
 
@@ -411,6 +436,8 @@ def _write_rebuild_owner_centroid(
         arrays["evidence_intra_cosine_p25"] = np.array(
             evidence_intra_cosine_p25, dtype=np.float32
         )
+    if evidence_tier is not None:
+        arrays["evidence_tier"] = np.array(evidence_tier)
     path = principal_dir / "owner_centroid.npz"
     np.savez_compressed(path, **arrays)
     return path
@@ -683,6 +710,53 @@ def test_expand_owner_candidate_solo_uses_npz_statement_ids(speakers_env, tmp_pa
     assert "missing_integer_labels" not in expansion.skipped
 
 
+def test_expand_owner_candidate_solo_reapplies_admission_trim_before_cap(
+    speakers_env,
+):
+    from solstone.apps.speakers.candidate_tracker import CandidateTracker
+    from solstone.apps.speakers.owner import (
+        _expand_owner_candidate,
+        confirm_owner_candidate,
+        detect_owner_candidate,
+    )
+
+    env = speakers_env()
+    env.create_entity("Self Person", is_principal=True)
+    owner_rows = _owner_embeddings(100, np.random.default_rng(1))
+    off_voice = _other_cluster_embeddings(20)
+    embeddings = np.vstack([owner_rows, off_voice]).astype(np.float32)
+    seg_dir = _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: embeddings},
+        stream="mic",
+        speaker_evidence="single",
+        write_speaker_labels=False,
+    )
+    tracker = CandidateTracker()
+    tracker.process_segment("20240101", "090000_300", "mic", "mic_audio", seg_dir)
+    candidates = tracker.load_all_candidates()
+
+    assert len(candidates) == 1
+    assert candidates[0].n_intervals == 100
+    expansion = _expand_owner_candidate(candidates[0], max_embeddings=105)
+    assert len(expansion.provenance) == 100
+    assert max(record["sentence_id"] for record in expansion.provenance) == 100
+
+    detected = detect_owner_candidate()
+    confirmed = confirm_owner_candidate()
+
+    assert detected["status"] == "candidate"
+    assert detected["cluster_size"] == 100
+    assert confirmed["status"] == "confirmed"
+    with np.load(
+        env.journal / "entities" / "self_person" / "owner_centroid.npz",
+        allow_pickle=False,
+    ) as data:
+        assert int(np.asarray(data["cluster_size"]).item()) == 100
+
+
 def test_expand_owner_candidate_mixes_solo_and_diarizer_sources(speakers_env, tmp_path):
     from solstone.apps.speakers.candidate_tracker import CandidateTracker
     from solstone.apps.speakers.owner import _expand_owner_candidate
@@ -882,6 +956,11 @@ def test_detect_owner_candidate_prefilter_avoids_npz_load(speakers_env, monkeypa
     assert result["low_quality_reason"] == "too_few_stmts"
     assert result["observed_value"] == 1.0
     assert result["threshold_value"] == float(OWNER_BOOTSTRAP_MIN_STMTS)
+    assert result["evidence_tier"] == OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+    assert np.isclose(
+        result["intra_cosine_p25_bound"],
+        OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
+    )
     assert result["segments_available"] == 1
     assert result["embeddings_available"] == 1
 
@@ -1028,7 +1107,143 @@ def test_low_quality_cluster_too_diffuse_from_candidate_pool(speakers_env):
     assert result["status"] == "low_quality"
     assert result["source"] == "candidate_pool"
     assert result["low_quality_reason"] == "cluster_too_diffuse"
+    assert result["evidence_tier"] == OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+    assert np.isclose(result["threshold_value"], OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25)
+    assert np.isclose(
+        result["intra_cosine_p25_bound"],
+        OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
+    )
+    assert get_current()["voiceprint"]["evidence_tier"] == (
+        OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+    )
+    assert np.isclose(
+        get_current()["voiceprint"]["intra_cosine_p25_bound"],
+        OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25,
+    )
     assert get_current()["voiceprint"]["source"] == "candidate_pool"
+
+
+def test_owner_quality_gates_report_tier_boundaries():
+    from solstone.apps.speakers.owner import (
+        LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE,
+        LOW_QUALITY_REASON_MEDIAN_DURATION_TOO_SHORT,
+        LOW_QUALITY_REASON_TOO_FEW_STMTS,
+        _evaluate_owner_quality_gates,
+    )
+
+    too_few = _evaluate_owner_quality_gates(
+        _two_lobe_embeddings(29, 1.0),
+        [2.0] * 29,
+    )
+    short_duration = _evaluate_owner_quality_gates(
+        _two_lobe_embeddings(100, 1.0),
+        [0.5] * 100,
+    )
+    strong_boundary = _evaluate_owner_quality_gates(
+        _two_lobe_embeddings(100, OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG),
+        [2.0] * 100,
+    )
+    strong_under = _evaluate_owner_quality_gates(
+        _two_lobe_embeddings(104, 0.149),
+        [2.0] * 104,
+    )
+    standard_boundary = _evaluate_owner_quality_gates(
+        _two_lobe_embeddings(98, OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25),
+        [2.0] * 98,
+    )
+    standard_under = _evaluate_owner_quality_gates(
+        _two_lobe_embeddings(99, 0.20),
+        [2.0] * 99,
+    )
+
+    assert too_few.reason == LOW_QUALITY_REASON_TOO_FEW_STMTS
+    assert too_few.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+    assert np.isclose(too_few.intra_cosine_p25_bound, 0.30)
+    assert short_duration.reason == LOW_QUALITY_REASON_MEDIAN_DURATION_TOO_SHORT
+    assert short_duration.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert np.isclose(short_duration.intra_cosine_p25_bound, 0.15)
+    assert strong_boundary.reason is None
+    assert strong_boundary.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert np.isclose(strong_boundary.intra_cosine_p25_bound, 0.15)
+    assert strong_under.reason == LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE
+    assert strong_under.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert np.isclose(strong_under.threshold_value, 0.15)
+    assert np.isclose(strong_under.intra_cosine_p25_bound, 0.15)
+    assert standard_boundary.reason is None
+    assert standard_boundary.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+    assert np.isclose(standard_boundary.intra_cosine_p25_bound, 0.30)
+    assert standard_under.reason == LOW_QUALITY_REASON_CLUSTER_TOO_DIFFUSE
+    assert standard_under.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+    assert np.isclose(standard_under.threshold_value, 0.30)
+    assert np.isclose(standard_under.intra_cosine_p25_bound, 0.30)
+
+
+def test_detect_owner_candidate_strong_tier_writes_candidate_and_confirm_metadata(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import (
+        confirm_owner_candidate,
+        detect_owner_candidate,
+        load_owner_centroid,
+    )
+
+    env = speakers_env()
+    env.create_entity("Self Person", is_principal=True)
+    embeddings = _two_lobe_embeddings(120, 0.16)
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "090000_300",
+        {1: embeddings[:60]},
+        stream="mic",
+        duration_s=2.0,
+    )
+    _write_labeled_segment(
+        env,
+        "20240101",
+        "091000_300",
+        {1: embeddings[60:]},
+        stream="sys",
+        duration_s=2.0,
+    )
+    _write_candidate_pool(
+        env.journal,
+        [
+            _candidate_record(
+                1,
+                [
+                    _source_segment("20240101", "090000_300", stream="mic"),
+                    _source_segment("20240101", "091000_300", stream="sys"),
+                ],
+                n_intervals=120,
+                total_duration_s=240.0,
+            )
+        ],
+    )
+
+    detected = detect_owner_candidate()
+
+    assert detected["status"] == "candidate"
+    assert detected["cluster_size"] == 120
+    assert detected["evidence_tier"] == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    with np.load(_candidate_path(env.journal), allow_pickle=False) as data:
+        assert str(np.asarray(data["evidence_tier"]).item()) == (
+            OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+        )
+    assert get_current()["voiceprint"]["evidence_tier"] == (
+        OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    )
+
+    confirmed = confirm_owner_candidate()
+    loaded = load_owner_centroid()
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["evidence_tier"] == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert loaded is not None
+    assert loaded.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert get_current()["voiceprint"]["evidence_tier"] == (
+        OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    )
 
 
 def test_detect_owner_candidate_skips_noisy_source_segments(speakers_env):
@@ -1235,6 +1450,8 @@ def test_owner_guidance_is_read_time_only(speakers_env, monkeypatch):
             "low_quality_reason",
             "observed_value",
             "threshold_value",
+            "evidence_tier",
+            "intra_cosine_p25_bound",
             "segments_checked",
             "attempted_at",
         },
@@ -1281,6 +1498,7 @@ def test_detect_owner_candidate_reuses_persisted_candidate(speakers_env, monkeyp
         "streams_represented": 2,
         "recommendation": "ready",
         "samples": [{"day": "20240101"}],
+        "evidence_tier": OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
     }
     with np.load(candidate_path, allow_pickle=False) as data:
         assert str(np.asarray(data["version"]).item()) == str(version.item())
@@ -1374,6 +1592,7 @@ def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
             "threshold",
             "margin",
             "last_refreshed_at",
+            "evidence_tier",
         }
         centroid = data["centroid"]
         cluster_size = int(np.asarray(data["cluster_size"]).item())
@@ -1386,6 +1605,46 @@ def test_bootstrap_owner_from_manual_tags_confirms(speakers_env):
     assert np.isclose(margin, OWNER_MARGIN_MIN)
     assert last_refreshed_at.endswith("Z")
     assert get_current()["voiceprint"]["status"] == "confirmed"
+    assert get_current()["voiceprint"]["evidence_tier"] == (
+        OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+    )
+
+
+def test_bootstrap_owner_from_manual_tags_strong_boundary_writes_tier(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import (
+        bootstrap_owner_from_manual_tags,
+        load_owner_centroid,
+    )
+
+    env = speakers_env()
+    principal_dir = env.create_entity("Self Person", is_principal=True)
+    embeddings = _two_lobe_embeddings(100, OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG)
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "090000_300",
+        embeddings,
+        durations_s=np.full(100, 2.0, dtype=np.float32),
+    )
+
+    result = bootstrap_owner_from_manual_tags()
+    loaded = load_owner_centroid()
+
+    assert result["status"] == "confirmed"
+    assert result["cluster_size"] == 100
+    assert result["evidence_tier"] == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    with np.load(principal_dir / "owner_centroid.npz", allow_pickle=False) as data:
+        assert str(np.asarray(data["evidence_tier"]).item()) == (
+            OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+        )
+    assert loaded is not None
+    assert loaded.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert get_current()["voiceprint"]["evidence_tier"] == (
+        OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    )
 
 
 def test_bootstrap_owner_from_manual_tags_too_few_stmts(speakers_env):
@@ -1594,6 +1853,7 @@ def test_owner_centroid_schema_parity_between_confirm_and_manual_build(speakers_
             "threshold",
             "margin",
             "last_refreshed_at",
+            "evidence_tier",
         }
     )
     assert np.isclose(confirmed_margin, OWNER_MARGIN_MIN)
@@ -1657,11 +1917,16 @@ def test_confirm_owner_candidate_writes_margin_schema(speakers_env):
             "threshold",
             "margin",
             "last_refreshed_at",
+            "evidence_tier",
         }
         assert np.isclose(float(np.asarray(data["margin"]).item()), OWNER_MARGIN_MIN)
+        assert str(np.asarray(data["evidence_tier"]).item()) == (
+            OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+        )
     loaded = load_owner_centroid()
     assert loaded is not None
     assert np.isclose(loaded.margin, OWNER_MARGIN_MIN)
+    assert loaded.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
 
 
 def test_confirm_owner_candidate_pre_first_centroid_flow_unchanged(speakers_env):
@@ -1686,6 +1951,7 @@ def test_confirm_owner_candidate_pre_first_centroid_flow_unchanged(speakers_env)
         "status": "confirmed",
         "principal_id": "self_person",
         "cluster_size": 88,
+        "evidence_tier": OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
     }
     assert not candidate_path.exists()
     assert (principal_dir / "owner_centroid.npz").exists()
@@ -1713,11 +1979,16 @@ def test_bootstrap_owner_from_manual_tags_writes_margin_schema(speakers_env):
             "threshold",
             "margin",
             "last_refreshed_at",
+            "evidence_tier",
         }
         assert np.isclose(float(np.asarray(data["margin"]).item()), OWNER_MARGIN_MIN)
+        assert str(np.asarray(data["evidence_tier"]).item()) == (
+            OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+        )
     loaded = load_owner_centroid()
     assert loaded is not None
     assert np.isclose(loaded.margin, OWNER_MARGIN_MIN)
+    assert loaded.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
 
 
 def test_rebuild_npz_key_set_includes_only_rebuild_metadata(speakers_env):
@@ -1741,10 +2012,14 @@ def test_rebuild_npz_key_set_includes_only_rebuild_metadata(speakers_env):
         assert set(data.files) == set(OWNER_REBUILD_EXPECTED_KEYS)
         assert np.isclose(float(np.asarray(data["threshold"]).item()), OWNER_THRESHOLD)
         assert np.isclose(float(np.asarray(data["margin"]).item()), OWNER_MARGIN_MIN)
+        assert str(np.asarray(data["evidence_tier"]).item()) == (
+            OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+        )
 
     loaded = load_owner_centroid()
     assert loaded is not None
     assert np.isclose(loaded.margin, OWNER_MARGIN_MIN)
+    assert loaded.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
 
 
 def test_load_owner_centroid_old_file_missing_rebuild_keys(speakers_env):
@@ -1759,6 +2034,7 @@ def test_load_owner_centroid_old_file_missing_rebuild_keys(speakers_env):
     assert centroid.created_at is None
     assert centroid.evidence_hash is None
     assert centroid.evidence_intra_cosine_p25 is None
+    assert centroid.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
 
 
 def test_rebuild_uses_load_manual_tag_rows_label_authority(speakers_env):
@@ -1931,6 +2207,159 @@ def test_rebuild_to_rebuild_applies_cluster_size_and_cohesion_guards(speakers_en
     assert result["status"] == "rejected_regression"
     assert result["reason"] == "cluster_size_regression"
     assert result["incumbent_guard"]["cluster_size_compared"] is True
+    assert result["incumbent_guard"]["cohesion_compared"] is True
+
+
+def test_rebuild_owner_centroid_strong_far_field_accepts_lower_floor(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import load_owner_centroid, rebuild_owner_centroid
+
+    env = speakers_env()
+    embeddings = _two_lobe_embeddings(102, 0.16)
+    _write_rebuild_owner_centroid(
+        env,
+        centroid=_centroid_for_embeddings(embeddings),
+        evidence_hash=None,
+    )
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "090000_300",
+        embeddings,
+        durations_s=np.full(102, 2.0, dtype=np.float32),
+    )
+
+    result = rebuild_owner_centroid()
+    loaded = load_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["cluster_size"] == 102
+    assert result["evidence_tier"] == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert np.isclose(result["intra_cosine_p25_bound"], 0.15)
+    assert np.isclose(result["evidence_quality"]["intra_cosine_p25"], 0.16)
+    assert loaded is not None
+    assert loaded.evidence_tier == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert get_current()["voiceprint"]["evidence_tier"] == (
+        OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    )
+
+
+def test_rebuild_owner_centroid_strong_floor_refuses_just_under_bound(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    _write_rebuild_owner_centroid(env, evidence_hash=None)
+    embeddings = _two_lobe_embeddings(100, 0.149)
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "090000_300",
+        embeddings,
+        durations_s=np.full(100, 2.0, dtype=np.float32),
+    )
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "low_quality"
+    assert result["low_quality_reason"] == "cluster_too_diffuse"
+    assert result["evidence_tier"] == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert np.isclose(result["threshold_value"], 0.15)
+    assert np.isclose(result["intra_cosine_p25_bound"], 0.15)
+    assert result["observed_value"] < 0.15
+
+
+def test_rebuild_cross_tier_skips_cohesion_drop_guard_when_agreement_and_size_pass(
+    speakers_env,
+):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    embeddings = _two_lobe_embeddings(100, 0.16)
+    _write_rebuild_owner_centroid(
+        env,
+        centroid=_centroid_for_embeddings(embeddings),
+        cluster_size=100,
+        evidence_intra_cosine_p25=0.35,
+        evidence_tier=OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
+    )
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "090000_300",
+        embeddings,
+        durations_s=np.full(100, 2.0, dtype=np.float32),
+    )
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rebuilt"
+    assert result["evidence_tier"] == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert result["incumbent_guard"]["cluster_size_compared"] is True
+    assert result["incumbent_guard"]["same_evidence_tier"] is False
+    assert result["incumbent_guard"]["cohesion_compared"] is False
+
+
+def test_rebuild_cross_tier_still_refuses_low_centroid_agreement(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    embeddings = _two_lobe_embeddings(100, 0.16)
+    _write_rebuild_owner_centroid(
+        env,
+        centroid=np.array([0.0, 0.0, 1.0] + [0.0] * 253, dtype=np.float32),
+        cluster_size=100,
+        evidence_intra_cosine_p25=0.35,
+        evidence_tier=OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD,
+    )
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "090000_300",
+        embeddings,
+        durations_s=np.full(100, 2.0, dtype=np.float32),
+    )
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rejected_regression"
+    assert result["reason"] == "centroid_agreement_too_low"
+    assert result["evidence_tier"] == OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+    assert result["incumbent_guard"]["cohesion_compared"] is False
+
+
+def test_rebuild_same_tier_cohesion_regression_still_refuses(speakers_env):
+    from solstone.apps.speakers.owner import rebuild_owner_centroid
+
+    env = speakers_env()
+    embeddings = _two_lobe_embeddings(100, 0.16)
+    _write_rebuild_owner_centroid(
+        env,
+        centroid=_centroid_for_embeddings(embeddings),
+        cluster_size=100,
+        evidence_intra_cosine_p25=0.35,
+        evidence_tier=OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG,
+    )
+    _save_manual_owner_tags(
+        env,
+        "self_person",
+        "20240101",
+        "090000_300",
+        embeddings,
+        durations_s=np.full(100, 2.0, dtype=np.float32),
+    )
+
+    result = rebuild_owner_centroid()
+
+    assert result["status"] == "rejected_regression"
+    assert result["reason"] == "cohesion_regression"
+    assert result["incumbent_guard"]["same_evidence_tier"] is True
     assert result["incumbent_guard"]["cohesion_compared"] is True
 
 
@@ -2889,6 +3318,8 @@ def test_api_owner_status_low_quality(speakers_env):
         "low_quality_reason": "too_few_stmts",
         "observed_value": 5,
         "threshold_value": OWNER_BOOTSTRAP_MIN_STMTS,
+        "evidence_tier": None,
+        "intra_cosine_p25_bound": None,
         "manual_tags_count": 0,
         "segments_available": 0,
         "segments_with_embeddings": 0,
@@ -3100,6 +3531,7 @@ def test_api_owner_status_confirmed(speakers_env):
             "intra_cosine_p25": None,
             "evidence_hash": None,
             "evidence_intra_cosine_p25": None,
+            "evidence_tier": None,
         },
     }
 

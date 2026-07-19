@@ -29,6 +29,10 @@ def test_locked_constants():
     assert encoder_config.OWNER_BOOTSTRAP_MIN_STMTS == 30
     assert encoder_config.OWNER_BOOTSTRAP_MIN_MEDIAN_DURATION_S == 1.5
     assert encoder_config.OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25 == 0.30
+    assert encoder_config.OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS == 100
+    assert encoder_config.OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG == 0.15
+    assert encoder_config.OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD == "standard"
+    assert encoder_config.OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG == "strong"
     assert encoder_config.OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS == 5
     assert encoder_config.NOISY_FLYWHEEL_OVERLAP_MAX == 0.10
     assert encoder_config.SLOT_ACTIVE_MIN_SHARE == 0.10
@@ -111,6 +115,22 @@ def test_owner_imports_constants():
     assert (
         owner.OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25
         is encoder_config.OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25
+    )
+    assert (
+        owner.OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS
+        is encoder_config.OWNER_BOOTSTRAP_STRONG_EVIDENCE_MIN_STMTS
+    )
+    assert (
+        owner.OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG
+        is encoder_config.OWNER_BOOTSTRAP_MIN_INTRA_COSINE_P25_STRONG
+    )
+    assert (
+        owner.OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+        is encoder_config.OWNER_BOOTSTRAP_EVIDENCE_TIER_STANDARD
+    )
+    assert (
+        owner.OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
+        is encoder_config.OWNER_BOOTSTRAP_EVIDENCE_TIER_STRONG
     )
     assert (
         owner.OWNER_BOOTSTRAP_PROVISIONAL_GUARD_MIN_TAGS

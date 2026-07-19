@@ -944,6 +944,7 @@ def test_api_owner_bootstrap_full_loop_from_stubbed_labels(speakers_env):
                 "threshold",
                 "margin",
                 "last_refreshed_at",
+                "evidence_tier",
             }
             assert int(np.asarray(centroid["cluster_size"]).item()) == (
                 OWNER_BOOTSTRAP_MIN_STMTS
@@ -952,6 +953,7 @@ def test_api_owner_bootstrap_full_loop_from_stubbed_labels(speakers_env):
                 float(np.asarray(centroid["margin"]).item()),
                 OWNER_MARGIN_MIN,
             )
+            assert str(np.asarray(centroid["evidence_tier"]).item()) == "standard"
 
         build_resp = client.post("/app/speakers/api/owner/build-from-tags")
         build = build_resp.get_json()
@@ -3108,6 +3110,7 @@ def test_api_owner_status_confirmed_has_centroid_metadata(speakers_env):
     assert metadata["intra_cosine_p25"] == 1.0
     assert metadata["evidence_hash"] is None
     assert metadata["evidence_intra_cosine_p25"] is None
+    assert metadata["evidence_tier"] == "standard"
 
 
 def test_owner_rebuild_route_response_matches_status_metadata(speakers_env):
@@ -3136,6 +3139,7 @@ def test_owner_rebuild_route_response_matches_status_metadata(speakers_env):
     assert np.isclose(metadata["threshold"], rebuild["threshold"])
     assert np.isclose(metadata["margin"], rebuild["margin"])
     assert metadata["evidence_hash"] == rebuild["evidence_hash"]
+    assert metadata["evidence_tier"] == rebuild["evidence_tier"]
 
 
 def test_index_serves_spa_shell(speakers_env):

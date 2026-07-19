@@ -1900,6 +1900,7 @@ def api_owner_status() -> Any:
             "evidence_intra_cosine_p25": (
                 centroid.evidence_intra_cosine_p25 if centroid is not None else None
             ),
+            "evidence_tier": centroid.evidence_tier if centroid is not None else None,
         }
         return jsonify(
             {"status": OWNER_STATUS_CONFIRMED, "centroid_metadata": metadata}
@@ -1911,6 +1912,7 @@ def api_owner_status() -> Any:
                 "status": OWNER_STATUS_CANDIDATE,
                 "cluster_size": voiceprint.get("cluster_size"),
                 "samples": voiceprint.get("samples", []),
+                "evidence_tier": voiceprint.get("evidence_tier"),
             }
         )
 
@@ -1923,6 +1925,8 @@ def api_owner_status() -> Any:
                 "low_quality_reason": voiceprint.get("low_quality_reason", ""),
                 "observed_value": voiceprint.get("observed_value", 0.0),
                 "threshold_value": voiceprint.get("threshold_value", 0.0),
+                "evidence_tier": voiceprint.get("evidence_tier"),
+                "intra_cosine_p25_bound": voiceprint.get("intra_cosine_p25_bound"),
                 **diagnostics,
                 "next_step": guidance["next_step"],
                 "guidance": guidance["guidance"],

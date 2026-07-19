@@ -102,6 +102,7 @@ def _owner_section() -> dict[str, Any]:
         result["detected_at"] = voiceprint.get("detected_at")
         result["streams_represented"] = voiceprint.get("streams_represented")
         result["recommendation"] = voiceprint.get("recommendation")
+        result["evidence_tier"] = voiceprint.get("evidence_tier")
         result["candidate_available"] = True
         result["next_step"] = "confirm_candidate"
         result["guidance"] = OWNER_CANDIDATE_CONFIRM_GUIDANCE
@@ -111,6 +112,8 @@ def _owner_section() -> dict[str, Any]:
         result["low_quality_reason"] = voiceprint.get("low_quality_reason", "")
         result["observed_value"] = voiceprint.get("observed_value", 0.0)
         result["threshold_value"] = voiceprint.get("threshold_value", 0.0)
+        result["evidence_tier"] = voiceprint.get("evidence_tier")
+        result["intra_cosine_p25_bound"] = voiceprint.get("intra_cosine_p25_bound")
         result["segments_checked"] = voiceprint.get("segments_checked", 0)
         result["attempted_at"] = voiceprint.get("attempted_at", "")
         result.update(diagnostics)
@@ -135,6 +138,7 @@ def _owner_section() -> dict[str, Any]:
             "intra_cosine_p25": centroid.intra_cosine_p25,
             "evidence_hash": centroid.evidence_hash,
             "evidence_intra_cosine_p25": centroid.evidence_intra_cosine_p25,
+            "evidence_tier": centroid.evidence_tier,
         }
     return result
 

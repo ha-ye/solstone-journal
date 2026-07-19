@@ -8,10 +8,11 @@ from __future__ import annotations
 import json
 import logging
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import numpy as np
 
@@ -44,6 +45,39 @@ from solstone.think.utils import get_journal
 # Synthetic cluster label for producer-proven solo speaker segments.
 SOLO_CLUSTER_LABEL: int = -1
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+def trim_solo_cluster_rows(
+    cluster_rows: list[T],
+    *,
+    embedding_for_row: Callable[[T], np.ndarray],
+    normalize_embedding: Callable[[np.ndarray], np.ndarray | None],
+) -> tuple[list[T], np.ndarray | None, int]:
+    """Trim solo-cluster rows against their first all-row centroid."""
+    if not cluster_rows:
+        return [], None, 0
+
+    stacked = np.stack([embedding_for_row(row) for row in cluster_rows])
+    centroid = normalize_embedding(np.mean(stacked, axis=0))
+    if centroid is None:
+        return [], None, 0
+
+    similarities = stacked @ centroid
+    survivors = [
+        row
+        for row, similarity in zip(cluster_rows, similarities)
+        if float(similarity) >= SOLO_CLUSTER_MIN_COSINE
+    ]
+    trimmed_count = len(cluster_rows) - len(survivors)
+    if not survivors:
+        return [], None, trimmed_count
+
+    stacked = np.stack([embedding_for_row(row) for row in survivors])
+    centroid = normalize_embedding(np.mean(stacked, axis=0))
+    if centroid is None:
+        return [], None, trimmed_count
+    return survivors, centroid, trimmed_count
 
 
 @dataclass
@@ -529,28 +563,21 @@ class CandidateTracker:
             if not cluster_rows:
                 continue
 
-            stacked = np.stack([embedding for embedding, _ in cluster_rows])
-            centroid = normalize_embedding(np.mean(stacked, axis=0))
-            if centroid is None:
-                continue
-
-            trimmed_count = 0
             if cluster_label == SOLO_CLUSTER_LABEL:
-                similarities = stacked @ centroid
-                survivors = [
-                    row
-                    for row, similarity in zip(cluster_rows, similarities)
-                    if float(similarity) >= SOLO_CLUSTER_MIN_COSINE
-                ]
-                trimmed_count = len(cluster_rows) - len(survivors)
-                if not survivors:
+                cluster_rows, centroid, trimmed_count = trim_solo_cluster_rows(
+                    cluster_rows,
+                    embedding_for_row=lambda row: row[0],
+                    normalize_embedding=normalize_embedding,
+                )
+                if centroid is None or not cluster_rows:
                     continue
-                cluster_rows = survivors
+                stacked = np.stack([embedding for embedding, _ in cluster_rows])
+                source_segment["trimmed_count"] = trimmed_count
+            else:
                 stacked = np.stack([embedding for embedding, _ in cluster_rows])
                 centroid = normalize_embedding(np.mean(stacked, axis=0))
                 if centroid is None:
                     continue
-                source_segment["trimmed_count"] = trimmed_count
 
             spread = float(np.mean(1.0 - stacked @ centroid))
             if spread >= STABILITY_THRESHOLD:
