@@ -75,11 +75,14 @@ def _collect_bindings(tree: ast.AST) -> _Bindings:
                 if alias.name == "solstone.think.callosum":
                     bindings.callosum_modules.add(alias.asname or alias.name)
         elif isinstance(node, ast.ImportFrom):
-            if node.module != "solstone.think.callosum":
-                continue
-            for alias in node.names:
-                if alias.name == "callosum_send":
-                    bindings.callosum_send_names.add(alias.asname or alias.name)
+            if node.module == "solstone.think.callosum":
+                for alias in node.names:
+                    if alias.name == "callosum_send":
+                        bindings.callosum_send_names.add(alias.asname or alias.name)
+            elif node.module == "solstone.think":
+                for alias in node.names:
+                    if alias.name == "callosum":
+                        bindings.callosum_modules.add(alias.asname or alias.name)
     return bindings
 
 

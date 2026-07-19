@@ -3447,7 +3447,7 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     assert result.reason_code == "probe-ready"
     assert result.managed is managed
     assert written_ports == []
-    assert written_context_windows == [expected_context_tokens]
+    assert written_context_windows == []
     assert spawned == [
         [
             str(binary),
@@ -3785,7 +3785,7 @@ def test_start_local_server_cuda_launches_llama_server_cmd_and_env(
     assert result.status == "ready"
     assert result.managed is managed
     assert written_ports == []
-    assert written_context_windows == [32768]
+    assert written_context_windows == []
     assert len(spawned) == 1
     cmd = spawned[0]
     assert cmd[cmd.index("--device") + 1] == "CUDA0"
@@ -3828,7 +3828,7 @@ def test_start_local_server_cuda_missing_vram_uses_floor_tier(
 
     assert result.status == "ready"
     assert result.managed is managed
-    assert written_context_windows == [local_server.LOCAL_MIN_CONTEXT_TOKENS]
+    assert written_context_windows == []
     assert spawned[0][spawned[0].index("-c") + 1] == str(
         local_server.LOCAL_MIN_CONTEXT_TOKENS
     )
@@ -3867,7 +3867,7 @@ def test_start_local_server_cuda_unified_memory_uses_capable_tier(
 
     assert result.status == "ready"
     assert result.managed is managed
-    assert written_context_windows == [32768]
+    assert written_context_windows == []
     assert spawned[0][spawned[0].index("-c") + 1] == "32768"
     assert any(
         "local server backend=cuda" in record.message for record in caplog.records
@@ -3901,7 +3901,7 @@ def test_start_local_server_cuda_low_unified_memory_uses_floor_tier(
 
     mod.start_local_server(plan, _FakeReservation())
 
-    assert written_context_windows == [local_server.LOCAL_MIN_CONTEXT_TOKENS]
+    assert written_context_windows == []
     assert spawned[0][spawned[0].index("-c") + 1] == str(
         local_server.LOCAL_MIN_CONTEXT_TOKENS
     )
@@ -3948,17 +3948,13 @@ def test_start_local_server_cuda_warmup_timeout_fails_closed(tmp_path, monkeypat
     managed.cleanup.assert_not_called()
 
 
-def test_supervisor_provider_start_lifecycle_events_are_ignored(monkeypatch):
+def test_supervisor_provider_start_lifecycle_events_are_ignored():
     mod = importlib.import_module("solstone.think.supervisor")
-    request_retry = MagicMock(
-        side_effect=AssertionError("deleted lifecycle event must not request retry")
-    )
-    monkeypatch.setattr(mod, "_request_provider_runtime_retry", request_retry)
 
     mod._handle_callosum_message({"tract": "supervisor", "event": "start_local"})
     mod._handle_callosum_message({"tract": "supervisor", "event": "start_parakeet"})
 
-    request_retry.assert_not_called()
+    assert not hasattr(mod, "_request_provider_runtime_retry")
 
 
 def test_supervisor_provider_start_lifecycle_handlers_are_absent():

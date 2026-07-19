@@ -211,7 +211,8 @@ def _patch_ready_parakeet_launch(
 
 def test_parakeet_server_is_sweepable_orphan_name() -> None:
     assert (
-        supervisor.PARAKEET_SERVER_PROCESS_NAME in supervisor._LOCAL_SERVER_PROCTITLES
+        supervisor.PARAKEET_SERVER_PROCESS_NAME
+        in supervisor._SWEEPABLE_PROVIDER_PROCTITLES
     )
     assert supervisor._is_sweepable_orphan_name("parakeet-server") is True
 
@@ -417,7 +418,8 @@ def test_start_parakeet_server_forces_cpu_on_small_single_discrete_bundled_brain
     assert "GGML_VK_VISIBLE_DEVICES" not in launches[0]["env"]
     _assert_att_context(launches[0])
     assert ports == []
-    assert parakeet_server.read_parakeet_placement() == "cpu"
+    assert result.detail["placement"] == "cpu"
+    assert parakeet_server.read_parakeet_placement() is None
     assert _launch_log("cpu") in caplog.text
 
 
@@ -442,7 +444,8 @@ def test_start_parakeet_server_brain_lane_inactive_keeps_auto_vulkan(
     assert launches[0]["cmd"][0] == "/tmp/vulkan/parakeet-server"
     assert launches[0]["env"]["GGML_VK_VISIBLE_DEVICES"] == "2"
     _assert_att_context(launches[0])
-    assert parakeet_server.read_parakeet_placement() == "gpu"
+    assert result.detail["placement"] == "gpu"
+    assert parakeet_server.read_parakeet_placement() is None
 
 
 def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
@@ -470,7 +473,8 @@ def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
     assert result.managed is launches[0]["managed"]
     assert launches[0]["cmd"][0] == "/tmp/cpu/parakeet-server"
     _assert_att_context(launches[0])
-    assert parakeet_server.read_parakeet_placement() == "cpu"
+    assert result.detail["placement"] == "cpu"
+    assert parakeet_server.read_parakeet_placement() is None
 
 
 def test_parakeet_attention_context_overrides_ambient_env(
@@ -499,7 +503,8 @@ def test_parakeet_attention_context_overrides_ambient_env(
     assert result.managed is launches[0]["managed"]
     assert launches[0]["cmd"][0] == "/tmp/cpu/parakeet-server"
     _assert_att_context(launches[0])
-    assert parakeet_server.read_parakeet_placement() == "cpu"
+    assert result.detail["placement"] == "cpu"
+    assert parakeet_server.read_parakeet_placement() is None
 
 
 @pytest.mark.parametrize(
@@ -833,19 +838,11 @@ def test_parakeet_bootstrap_worker_uses_captured_journal_path(
 
 
 def test_parakeet_bootstrap_launches_only_via_reconciliation(monkeypatch) -> None:
-    install_calls: list[dict[str, Any]] = []
+    bootstrap_reasons: list[str] = []
     launches: list[supervisor.ParakeetServerLaunchPlan] = []
-    lease = _FakeLease()
-    attempt_status = {"attempt_id": "attempt"}
-    ack = supervisor.threading.Event()
     state = supervisor.ProviderRuntimeState("parakeet")
     plan = _parakeet_plan("cpu")
 
-    monkeypatch.setattr(
-        parakeet_install,
-        "install_parakeet",
-        lambda **kwargs: install_calls.append(kwargs),
-    )
     monkeypatch.setattr(
         supervisor,
         "_provider_runtime_states",
@@ -857,6 +854,11 @@ def test_parakeet_bootstrap_launches_only_via_reconciliation(monkeypatch) -> Non
     monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
     monkeypatch.setattr(
         supervisor, "_write_provider_runtime", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_start_parakeet_bootstrap_if_needed",
+        lambda reason: bootstrap_reasons.append(reason),
     )
 
     def start_worker(provider, plan_arg, _fence, _cancel_event):
@@ -870,21 +872,49 @@ def test_parakeet_bootstrap_launches_only_via_reconciliation(monkeypatch) -> Non
 
     monkeypatch.setattr(supervisor, "_provider_start_worker", start_worker)
 
-    supervisor._run_parakeet_bootstrap_worker(
-        lease=lease,
-        attempt_status=attempt_status,
-        ack=ack,
+    state.truth_fence = supervisor._provider_fence(state, 0)
+    state.truth_future = _InlineExecutor().submit(
+        lambda: supervisor.ProviderTruthObservation(
+            provider="parakeet",
+            phase="artifact-not-ready",
+            reason_code="artifact-missing",
+            detail={
+                "install_state": "idle",
+                "install_acquisition_allowed": True,
+            },
+            desired_fingerprint_json=plan.desired_fingerprint_json,
+            desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+            boot_required=True,
+        )
     )
 
-    assert install_calls == [
-        {"journal_path": None, "lease": lease, "attempt_status": attempt_status}
-    ]
+    assert supervisor._handle_provider_truth_result(state) is True
+    assert bootstrap_reasons == ["artifact-missing"]
     assert launches == []
 
     state.truth_fence = supervisor._provider_fence(state, 0)
-    truth: concurrent.futures.Future = concurrent.futures.Future()
-    truth.set_result(
-        supervisor.ProviderTruthObservation(
+    state.truth_future = _InlineExecutor().submit(
+        lambda: supervisor.ProviderTruthObservation(
+            provider="parakeet",
+            phase="artifact-not-ready",
+            reason_code="artifact-missing",
+            detail={
+                "install_state": "idle",
+                "install_acquisition_allowed": True,
+            },
+            desired_fingerprint_json=plan.desired_fingerprint_json,
+            desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+            boot_required=True,
+        )
+    )
+
+    assert supervisor._handle_provider_truth_result(state) is True
+    assert bootstrap_reasons == ["artifact-missing"]
+    assert launches == []
+
+    state.truth_fence = supervisor._provider_fence(state, 0)
+    state.truth_future = _InlineExecutor().submit(
+        lambda: supervisor.ProviderTruthObservation(
             provider="parakeet",
             phase="starting",
             reason_code="launch-requested",
@@ -895,7 +925,6 @@ def test_parakeet_bootstrap_launches_only_via_reconciliation(monkeypatch) -> Non
             boot_required=True,
         )
     )
-    state.truth_future = truth
 
     assert supervisor._handle_provider_truth_result(state) is True
     supervisor._submit_provider_start_if_needed(state, [])

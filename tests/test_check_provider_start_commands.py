@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 SCRIPT = (
     Path(__file__).resolve().parents[1] / "scripts" / "check_provider_start_commands.py"
 )
@@ -61,6 +63,23 @@ def test_scan_flags_provider_start_commands() -> None:
     kinds = _kinds(findings)
     assert "provider_start_command" in kinds
     assert "provider_start_message" in kinds
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from solstone.think import callosum\n"
+        "callosum.callosum_send('supervisor', 'start_local')\n",
+        "from solstone.think import callosum as bus\n"
+        "bus.callosum_send('supervisor', 'start_parakeet')\n",
+        "import solstone.think.callosum as callosum\n"
+        "callosum.callosum_send('supervisor', 'start_local')\n",
+    ],
+)
+def test_scan_flags_reasonable_callosum_import_spellings(source: str) -> None:
+    findings = checker.scan_source(source)
+
+    assert _kinds(findings) == {"provider_start_command"}
 
 
 def test_scan_flags_restored_handler_names() -> None:

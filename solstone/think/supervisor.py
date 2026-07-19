@@ -485,11 +485,11 @@ def _candidate_journal(proc: "psutil.Process") -> Path | None:
 # (f"{binary}:{cmd}"). setproctitle is in-process and persists until the
 # process exits, so an orphaned service or task child still reports its title
 # via proc.name() after the supervisor dies, which is what lets the sweep find
-# it. Supervisor-owned local provider servers report their own bare binary names
+# it. Supervisor-owned provider servers report their own bare binary names
 # (no colon prefix) and are included here so the sweep reaps them too.
 # The mlx-vlm server is a Python process, but our launcher sets the same
 # managed proctitle so proc.name() is stable for orphan sweeping.
-_LOCAL_SERVER_PROCTITLES = frozenset(
+_SWEEPABLE_PROVIDER_PROCTITLES = frozenset(
     {
         LOCAL_SERVER_PROCESS_NAME,
         PARAKEET_SERVER_PROCESS_NAME,
@@ -502,12 +502,12 @@ def _is_sweepable_orphan_name(name: str) -> bool:
     """True if proc.name() identifies a sweepable orphan of this install.
 
     Any `journal:*` proctitle - managed service or task-queue child - plus the
-    bare local-server binary names. A PPID-1, same-journal `journal:*` process
+    bare provider-server binary names. A PPID-1, same-journal `journal:*` process
     is by definition an orphan of a dead supervisor. `solstone:*`/`sol:*` and a
     bare `journal` (no colon) are deliberately not matched because they cannot
     be positively classified as a sub-command of this install.
     """
-    return name.startswith("journal:") or name in _LOCAL_SERVER_PROCTITLES
+    return name.startswith("journal:") or name in _SWEEPABLE_PROVIDER_PROCTITLES
 
 
 def _sweep_orphaned_sol_processes(journal: Path, grace: float = 5.0) -> int:
@@ -1337,6 +1337,7 @@ class ProviderRuntimeState:
     startup_terminal: bool = False
     next_truth_at: float = 0.0
     next_probe_at: float = 0.0
+    parakeet_bootstrap_requested_fingerprint: str | None = None
 
 
 @dataclass
@@ -2196,14 +2197,6 @@ def _format_vulkan_devices(devices: list[Any], local_vulkan: Any) -> str:
         )
         for device in devices
     )
-
-
-def _gpu_unavailable_reason(devices: list[Any], override: int | None) -> str:
-    if not devices:
-        return "no Vulkan devices enumerated"
-    if override is not None:
-        return f"Vulkan override raw index {override} is not an available hardware GPU"
-    return "only non-hardware or software Vulkan devices were enumerated"
 
 
 def _log_context_assertion(
@@ -3153,9 +3146,6 @@ def _start_llama_local_server(
     port = owned_reservation.port
     try:
         cmd = _build_local_llama_cmd(plan, port)
-        local_server.write_local_context_window(
-            _required_plan_int(plan.context_tokens, "context_tokens")
-        )
         logging.info(
             "local server backend=%s context=%d parallel=%d cache=%d MiB",
             plan.backend,
@@ -3406,7 +3396,6 @@ def _launch_and_warm_parakeet(
                     reason="provider launch cancelled before ready acceptance",
                 )
             logging.info("parakeet-server ready on port %s", port)
-            parakeet_server.write_parakeet_placement(plan.placement)
             return _outcome(
                 "ready",
                 "probe-ready",
@@ -3925,6 +3914,51 @@ def _publish_provider_port(
     write_service_port(_PROVIDER_PORT_SERVICES[provider], port)
 
 
+def _write_provider_ready_side_effects(
+    state: ProviderRuntimeState,
+    outcome: ProviderLaunchOutcome,
+) -> None:
+    plan = state.latest_plan
+    if state.provider == "local":
+        if not isinstance(plan, LocalServerLaunchPlan):
+            return
+        if plan.backend not in {"cuda", "vulkan"}:
+            return
+        from solstone.think.providers import local_server
+
+        local_server.write_local_context_window(
+            _required_plan_int(plan.context_tokens, "context_tokens")
+        )
+        return
+
+    if state.provider == "parakeet":
+        if not isinstance(plan, ParakeetServerLaunchPlan):
+            return
+        from solstone.think.providers import parakeet_server
+
+        placement = outcome.detail.get("placement")
+        parakeet_server.write_parakeet_placement(
+            placement if placement in {"cpu", "gpu"} else plan.placement
+        )
+
+
+def _runtime_detail_with_preserved_latch(
+    state: ProviderRuntimeState,
+    current: RuntimeHealthRecord,
+    detail: dict[str, Any],
+) -> dict[str, Any]:
+    if state.provider != "parakeet":
+        return detail
+    if current["desired_fingerprint_sha256"] != state.desired_fingerprint:
+        return detail
+    if "stt_admission_latch" in detail:
+        return detail
+    existing = current["detail"].get("stt_admission_latch")
+    if not isinstance(existing, dict):
+        return detail
+    return {**detail, "stt_admission_latch": existing}
+
+
 def _clear_provider_port_if_owner_matches(
     state: ProviderRuntimeState,
     fence: ProviderFence | None,
@@ -3975,6 +4009,7 @@ def _write_provider_runtime(
 ) -> RuntimeHealthRecord | None:
     try:
         current = read_runtime_health(state.provider)
+        detail = _runtime_detail_with_preserved_latch(state, current, detail)
         record: RuntimeHealthRecord = {
             **current,
             "phase": phase,
@@ -3999,15 +4034,6 @@ def _write_provider_runtime(
     except RuntimeHealthConflictError as exc:
         logger.info("%s runtime health write lost race: %s", state.provider, exc)
     return None
-
-
-def _cleanup_late_provider_result(outcome: ProviderLaunchOutcome) -> None:
-    if outcome.managed is None:
-        return
-    _terminate_cleanup_handle(
-        outcome.managed,
-        reason="provider launch result superseded",
-    )
 
 
 def _signal_provider_start_cancel(
@@ -4070,11 +4096,26 @@ def _cleanup_provider_outcome_handle(
     outcome: ProviderLaunchOutcome,
     *,
     reason: str,
-) -> None:
+) -> bool:
     if outcome.managed is None:
-        return
-    _clear_provider_port_if_owner_matches(state, fence, outcome)
-    _terminate_cleanup_handle(outcome.managed, reason=reason)
+        return True
+    try:
+        _clear_provider_port_if_owner_matches(state, fence, outcome)
+        _terminate_cleanup_handle(outcome.managed, reason=reason)
+    except Exception as exc:
+        logger.exception("%s provider cleanup failed: %s", state.provider, reason)
+        _adopt_provider_cleanup_failed_handle(
+            state,
+            outcome.managed,
+            detail={
+                **outcome.detail,
+                "error": str(exc),
+                "cleanup_reason": reason,
+                "cleanup_deferred_to": "cleanup-failed-reconciler",
+            },
+        )
+        return False
+    return True
 
 
 def _stop_cleanup_outcome(
@@ -4412,6 +4453,16 @@ def _handle_provider_stop_cleanup_result(
     if request is None:
         return True
     if fence is not None and not _provider_fence_matches(state, fence):
+        if outcome.status == "cleanup-failed" and outcome.managed is not None:
+            _adopt_provider_cleanup_failed_handle(
+                state,
+                outcome.managed,
+                detail={
+                    **outcome.detail,
+                    "stale_stop_fence": fence.__dict__,
+                    "cleanup_deferred_to": "cleanup-failed-reconciler",
+                },
+            )
         return True
     if outcome.status == "cancelled":
         state.latest_phase = "observing"
@@ -4594,6 +4645,27 @@ def _submit_provider_truth_if_needed(state: ProviderRuntimeState) -> None:
     )
 
 
+def _maybe_start_parakeet_bootstrap(
+    state: ProviderRuntimeState,
+    observation: ProviderTruthObservation,
+) -> None:
+    if state.provider != "parakeet":
+        return
+    if observation.phase != "artifact-not-ready":
+        state.parakeet_bootstrap_requested_fingerprint = None
+        return
+    if observation.detail.get("install_acquisition_allowed") is not True:
+        return
+    fingerprint = observation.desired_fingerprint_sha256
+    if state.parakeet_bootstrap_requested_fingerprint == fingerprint:
+        return
+    state.parakeet_bootstrap_requested_fingerprint = fingerprint
+    _provider_executor().submit(
+        _start_parakeet_bootstrap_if_needed,
+        str(observation.reason_code or "artifact-not-ready"),
+    )
+
+
 def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
     future = state.truth_future
     if future is None or not future.done():
@@ -4722,6 +4794,7 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
         reason_code=observation.reason_code,
         detail=observation.detail,
     )
+    _maybe_start_parakeet_bootstrap(state, observation)
     if (
         observation.phase == "observing"
         and observation.reason_code == "observation-raced"
@@ -4840,7 +4913,13 @@ def _handle_provider_start_result(
             {"error": str(exc)},
         )
     if fence is not None and not _provider_fence_matches(state, fence):
-        _cleanup_late_provider_result(outcome)
+        if not _cleanup_provider_outcome_handle(
+            state,
+            fence,
+            outcome,
+            reason="provider launch result superseded",
+        ):
+            return True
         _write_provider_runtime(
             state,
             phase=state.latest_phase,
@@ -4854,12 +4933,13 @@ def _handle_provider_start_result(
         and outcome.status == "ready"
         and outcome.managed is not None
     ):
-        _cleanup_provider_outcome_handle(
+        if not _cleanup_provider_outcome_handle(
             state,
             fence,
             outcome,
             reason="provider launch cancelled before ready publication",
-        )
+        ):
+            return True
         outcome = _outcome(
             "launch-failed",
             "launch-failed",
@@ -4873,12 +4953,13 @@ def _handle_provider_start_result(
     if outcome.status == "ready" and outcome.managed is not None:
         port = outcome.detail.get("port")
         if not isinstance(port, int):
-            _cleanup_provider_outcome_handle(
+            if not _cleanup_provider_outcome_handle(
                 state,
                 fence,
                 outcome,
                 reason="provider ready outcome missing port",
-            )
+            ):
+                return True
             outcome = _outcome(
                 "launch-failed",
                 "launch-failed",
@@ -4889,35 +4970,56 @@ def _handle_provider_start_result(
                 },
             )
         else:
-            try:
-                _publish_provider_port(state.provider, port=port)
-            except OSError as exc:
-                _cleanup_provider_outcome_handle(
-                    state,
-                    fence,
-                    outcome,
-                    reason="provider ready port publication failed",
-                )
-                state.latest_phase = "state-unavailable"
-                _write_provider_runtime(
-                    state,
-                    phase="state-unavailable",
-                    reason_code="record-unavailable",
-                    detail={"error": str(exc), "port": port},
-                )
-                _finish_provider_startup_condition(state, "state-unavailable")
-                return True
-            if outcome.managed not in procs:
-                procs.append(outcome.managed)
-            state.latest_phase = "ready"
             process = _provider_process_record(outcome.managed, port=port)
-            _write_provider_runtime(
+            ownership = _write_provider_runtime(
                 state,
                 phase="ready",
                 reason_code=outcome.reason_code,
                 detail=outcome.detail,
                 process=process,
             )
+            if ownership is None:
+                state.latest_phase = "state-unavailable"
+                if not _cleanup_provider_outcome_handle(
+                    state,
+                    fence,
+                    outcome,
+                    reason="provider ready ownership publication failed",
+                ):
+                    return True
+                _write_provider_runtime(
+                    state,
+                    phase="state-unavailable",
+                    reason_code="record-unavailable",
+                    detail={"error": "runtime ownership write failed", "port": port},
+                    process=None,
+                )
+                _finish_provider_startup_condition(state, "state-unavailable")
+                return True
+            try:
+                _write_provider_ready_side_effects(state, outcome)
+                _publish_provider_port(state.provider, port=port)
+            except Exception as exc:
+                if not _cleanup_provider_outcome_handle(
+                    state,
+                    fence,
+                    outcome,
+                    reason="provider ready port publication failed",
+                ):
+                    return True
+                state.latest_phase = "state-unavailable"
+                _write_provider_runtime(
+                    state,
+                    phase="state-unavailable",
+                    reason_code="record-unavailable",
+                    detail={"error": str(exc), "port": port},
+                    process=None,
+                )
+                _finish_provider_startup_condition(state, "state-unavailable")
+                return True
+            if outcome.managed not in procs:
+                procs.append(outcome.managed)
+            state.latest_phase = "ready"
             _finish_provider_startup_condition(state, "ready")
             return True
 
@@ -4929,23 +5031,12 @@ def _handle_provider_start_result(
                 detail=outcome.detail,
             )
             return True
-        try:
-            _cleanup_provider_outcome_handle(
-                state,
-                fence,
-                outcome,
-                reason=f"provider launch outcome {outcome.status}",
-            )
-        except Exception as exc:
-            _adopt_provider_cleanup_failed_handle(
-                state,
-                outcome.managed,
-                detail={
-                    **outcome.detail,
-                    "error": str(exc),
-                    "cleanup_deferred_to": "cleanup-failed-reconciler",
-                },
-            )
+        if not _cleanup_provider_outcome_handle(
+            state,
+            fence,
+            outcome,
+            reason=f"provider launch outcome {outcome.status}",
+        ):
             return True
 
     if state.retry.attempt_count >= len(PROVIDER_RETRY_SCHEDULE_SECONDS):
@@ -5209,18 +5300,6 @@ async def _reconcile_parakeet_provider_runtime(
     procs: list[RunnerManagedProcess],
 ) -> None:
     await _reconcile_provider_runtime("parakeet", procs)
-
-
-def _request_provider_runtime_retry(provider: ProviderName) -> None:
-    state = _provider_runtime_states[provider]
-    state.retry = ProviderRetryState(desired_fingerprint=state.desired_fingerprint)
-    state.latest_phase = "retry-requested"
-    _write_provider_runtime(
-        state,
-        phase="retry-requested",
-        reason_code="retry-token-requested",
-        detail={"source": "supervisor-lifecycle"},
-    )
 
 
 def _request_provider_runtime_recycle(
