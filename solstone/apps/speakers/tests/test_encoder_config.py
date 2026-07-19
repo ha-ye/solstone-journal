@@ -19,6 +19,7 @@ def test_locked_constants():
     assert encoder_config.OWNER_MARGIN_MIN == 0.05
     assert encoder_config.SOLO_CLUSTER_MIN_COSINE == 0.43
     assert encoder_config.ACOUSTIC_HIGH == 0.36
+    assert encoder_config.ACOUSTIC_MARGIN_MIN == 0.05
     assert encoder_config.ACOUSTIC_MEDIUM == 0.22
     assert encoder_config.VP_DECAY_LAMBDA == math.log(2) / 120
     assert encoder_config.VP_OUTLIER_MIN_SIMILARITY == 0.18
@@ -87,6 +88,7 @@ def test_solo_cluster_min_cosine_is_independently_assigned():
 
 def test_attribution_imports_acoustic_constants():
     assert attribution.ACOUSTIC_HIGH is encoder_config.ACOUSTIC_HIGH
+    assert attribution.ACOUSTIC_MARGIN_MIN is encoder_config.ACOUSTIC_MARGIN_MIN
     assert attribution.ACOUSTIC_MEDIUM is encoder_config.ACOUSTIC_MEDIUM
     assert attribution.VP_DECAY_LAMBDA is encoder_config.VP_DECAY_LAMBDA
     assert (

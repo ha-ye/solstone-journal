@@ -12,6 +12,11 @@ OWNER_THRESHOLD: float = 0.43
 OWNER_MARGIN_MIN: float = 0.05
 ACOUSTIC_HIGH: float = 0.36
 ACOUSTIC_MEDIUM: float = 0.22
+# Benchmark sweep: 0.05 raises HIGH-tier named precision from 78.6% to 90.0%
+# while retaining 76.7% of high-volume matches. The cluster path applies this
+# per-statement margin to cluster centroids by assumption, not measurement; a
+# cluster-specific constant can follow if data justifies it.
+ACOUSTIC_MARGIN_MIN: float = 0.05
 # Solo-cluster trim currently shares the owner threshold value because it asks
 # the same encoder question against a provisional cluster centroid. Keep it
 # independently tunable from owner identity decisions.

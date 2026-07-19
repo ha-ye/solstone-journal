@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any
 from solstone.apps.speakers._overlap import _read_segment_overlap_fraction
 from solstone.apps.speakers.encoder_config import (
     ACOUSTIC_HIGH,
+    ACOUSTIC_MARGIN_MIN,
     ACOUSTIC_MEDIUM,
     CC_CONFIDENCE_GATE,
     CC_COVERAGE_GATE,
@@ -130,6 +131,11 @@ def _decay_weighted_centroid(
     if total_weight <= 0:
         return None
     return normalize_embedding(weighted_sum / total_weight)
+
+
+def _passes_acoustic_margin(matched_score: float, other_scores: list[float]) -> bool:
+    runner_up = max(0.0, max(other_scores, default=0.0))
+    return matched_score - runner_up >= ACOUSTIC_MARGIN_MIN
 
 
 def _load_integer_speaker_labels(seg_dir: Path, source: str) -> dict[int, int]:
@@ -414,6 +420,8 @@ def attribute_segment(
         speaker: str,
         confidence: str,
         method: str,
+        *,
+        acoustic_margin_declined: bool = False,
     ) -> dict[str, Any]:
         label: dict[str, Any] = {
             "sentence_id": sid,
@@ -423,6 +431,8 @@ def attribute_segment(
         }
         if sid in margin_declined_sids:
             label["owner_margin_declined"] = True
+        if acoustic_margin_declined:
+            label["acoustic_margin_declined"] = True
         return label
 
     for emb, sid in zip(embeddings, statement_ids):
@@ -620,6 +630,19 @@ def attribute_segment(
                         if score < ACOUSTIC_MEDIUM:
                             continue
                         confidence = "high" if score >= ACOUSTIC_HIGH else "medium"
+                        acoustic_margin_declined = False
+                        if confidence == "high":
+                            other_scores = [
+                                pair_score
+                                for pair_score, pair_cluster_id, pair_eid in pairs
+                                if pair_cluster_id == cluster_id and pair_eid != eid
+                            ]
+                            acoustic_margin_declined = not _passes_acoustic_margin(
+                                score,
+                                other_scores,
+                            )
+                            if acoustic_margin_declined:
+                                confidence = "medium"
                         for sid in cluster_members[cluster_id]:
                             label_confidence = confidence
                             if (
@@ -632,6 +655,7 @@ def attribute_segment(
                                 eid,
                                 label_confidence,
                                 "acoustic_cluster",
+                                acoustic_margin_declined=acoustic_margin_declined,
                             )
 
         for sid in unresolved:
@@ -646,20 +670,34 @@ def attribute_segment(
 
             best_eid: str | None = None
             best_score = 0.0
+            runner_up_scores: list[float] = []
             for eid, centroid in voiceprint_centroids.items():
                 score = float(np.dot(normalized, centroid))
                 if score > best_score:
+                    if best_eid is not None:
+                        runner_up_scores.append(best_score)
                     best_score = score
                     best_eid = eid
+                else:
+                    runner_up_scores.append(score)
 
             if best_eid is not None:
                 if best_score >= ACOUSTIC_HIGH:
-                    confidence = "medium" if sid in margin_declined_sids else "high"
+                    acoustic_margin_declined = not _passes_acoustic_margin(
+                        best_score,
+                        runner_up_scores,
+                    )
+                    confidence = (
+                        "medium"
+                        if sid in margin_declined_sids or acoustic_margin_declined
+                        else "high"
+                    )
                     labels[sid] = _replacement_label(
                         sid,
                         best_eid,
                         confidence,
                         "acoustic",
+                        acoustic_margin_declined=acoustic_margin_declined,
                     )
                 elif best_score >= ACOUSTIC_MEDIUM:
                     labels[sid] = _replacement_label(

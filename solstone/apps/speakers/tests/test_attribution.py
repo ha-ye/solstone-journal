@@ -42,6 +42,15 @@ def _embedding_with_cosine_to(target: np.ndarray, cosine: float) -> np.ndarray:
     )
 
 
+def _embedding_with_orthogonal_entity_cosines(
+    first_cosine: float,
+    second_cosine: float,
+) -> np.ndarray:
+    remaining = 1.0 - first_cosine * first_cosine - second_cosine * second_cosine
+    assert remaining >= 0.0
+    return _normalized([0.0, first_cosine, second_cosine, math.sqrt(remaining)])
+
+
 def _setup_owner(env, name: str = "Self Person") -> tuple[Path, np.ndarray]:
     """Create a principal entity with confirmed owner centroid."""
     principal_dir = env.create_entity(name, is_principal=True)
@@ -742,6 +751,210 @@ def test_layer3_acoustic_matching(speakers_env):
     )
 
 
+def test_l3_per_statement_demotes_inside_acoustic_margin_band(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    distractor_dir = env.create_entity("Aaron Distractor")
+    match_dir = env.create_entity("Mona Match")
+    runner_dir = env.create_entity("Zara Runner")
+    _write_entity_voiceprints(
+        distractor_dir,
+        [_normalized([0.0, 0.0, 0.0, 0.0, 1.0])] * 5,
+    )
+    _write_entity_voiceprints(match_dir, [_normalized([0.0, 1.0])] * 5)
+    _write_entity_voiceprints(runner_dir, [_normalized([0.0, 0.0, 1.0])] * 5)
+    embedding = _embedding_with_orthogonal_entity_cosines(0.40, 0.37)
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "105500_300",
+        embedding.reshape(1, -1),
+    )
+
+    result = attribute_segment("20240101", STREAM, "105500_300")
+    label = result["labels"][0]
+
+    assert label["speaker"] == "mona_match"
+    assert label["method"] == "acoustic"
+    assert label["confidence"] == "medium"
+    assert label["acoustic_margin_declined"] is True
+    assert "owner_margin_declined" not in label
+
+
+def test_l3_per_statement_preserves_high_outside_acoustic_margin_band(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    match_dir = env.create_entity("Mona Match")
+    runner_dir = env.create_entity("Zara Runner")
+    _write_entity_voiceprints(match_dir, [_normalized([0.0, 1.0])] * 5)
+    _write_entity_voiceprints(runner_dir, [_normalized([0.0, 0.0, 1.0])] * 5)
+    embedding = _embedding_with_orthogonal_entity_cosines(0.42, 0.34)
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "110500_300",
+        embedding.reshape(1, -1),
+    )
+
+    result = attribute_segment("20240101", STREAM, "110500_300")
+    label = result["labels"][0]
+
+    assert label["speaker"] == "mona_match"
+    assert label["method"] == "acoustic"
+    assert label["confidence"] == "high"
+    assert "acoustic_margin_declined" not in label
+
+
+def test_l3_per_statement_single_usable_centroid_preserves_high(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    match_dir = env.create_entity("Mona Match")
+    _write_entity_voiceprints(match_dir, [_normalized([0.0, 1.0])] * 5)
+    embedding = _embedding_with_orthogonal_entity_cosines(0.40, 0.37)
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "111500_300",
+        embedding.reshape(1, -1),
+    )
+
+    result = attribute_segment("20240101", STREAM, "111500_300")
+    label = result["labels"][0]
+
+    assert label["speaker"] == "mona_match"
+    assert label["method"] == "acoustic"
+    assert label["confidence"] == "high"
+    assert "acoustic_margin_declined" not in label
+
+
+def test_l3_acoustic_cluster_demotes_contested_consumed_entity(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    x_dir = env.create_entity("Xavier Rawmax")
+    y_dir = env.create_entity("Yara Assigned")
+    _write_entity_voiceprints(x_dir, [_normalized([0.0, 1.0])] * 5)
+    _write_entity_voiceprints(y_dir, [_normalized([0.0, 0.0, 1.0])] * 5)
+    cluster_a = _embedding_with_orthogonal_entity_cosines(0.90, 0.10)
+    cluster_b = _embedding_with_orthogonal_entity_cosines(0.40, 0.37)
+    _write_labeled_controlled_segment(
+        env,
+        "20240101",
+        "112500_300",
+        np.vstack([cluster_a, cluster_b]),
+        [1, 2],
+    )
+
+    result = attribute_segment("20240101", STREAM, "112500_300")
+    labels = result["labels"]
+
+    assert labels[0]["speaker"] == "xavier_rawmax"
+    assert labels[0]["method"] == "acoustic_cluster"
+    assert labels[0]["confidence"] == "high"
+    assert "acoustic_margin_declined" not in labels[0]
+    assert labels[1]["speaker"] == "yara_assigned"
+    assert labels[1]["method"] == "acoustic_cluster"
+    assert labels[1]["confidence"] == "medium"
+    assert labels[1]["acoustic_margin_declined"] is True
+
+
+def test_l3_acoustic_cluster_margin_demotion_happens_after_mean_gate(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    x_dir = env.create_entity("Xavier Rawmax")
+    y_dir = env.create_entity("Yara Assigned")
+    _write_entity_voiceprints(x_dir, [_normalized([0.0, 1.0])] * 5)
+    _write_entity_voiceprints(y_dir, [_normalized([0.0, 0.0, 1.0])] * 5)
+    cluster_a = _embedding_with_orthogonal_entity_cosines(0.38, 0.35)
+    cluster_b = _embedding_with_orthogonal_entity_cosines(0.20, 0.19)
+    _write_labeled_controlled_segment(
+        env,
+        "20240101",
+        "113500_300",
+        np.vstack([cluster_a, cluster_b]),
+        [1, 2],
+    )
+
+    result = attribute_segment("20240101", STREAM, "113500_300")
+    labels = result["labels"]
+
+    # The assigned mean is (0.38 + 0.19) / 2 = 0.285; pruning A first
+    # would leave 0.19 and fail the gate.
+    assert labels[0]["speaker"] == "xavier_rawmax"
+    assert labels[0]["method"] == "acoustic_cluster"
+    assert labels[0]["confidence"] == "medium"
+    assert labels[0]["acoustic_margin_declined"] is True
+    assert labels[1]["speaker"] is None
+
+
+def test_l3_owner_margin_decline_is_not_repromoted_by_acoustic_margin(speakers_env):
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_margin_owner(env)
+    trap, _competitor_dir, _distractor_dir = _setup_margin_trap_entities(env)
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "114500_300",
+        trap.reshape(1, -1),
+    )
+
+    result = attribute_segment("20240101", STREAM, "114500_300")
+    label = result["labels"][0]
+
+    assert label["speaker"] == "zara_vale"
+    assert label["method"] == "acoustic"
+    assert label["confidence"] == "medium"
+    assert label["owner_margin_declined"] is True
+    assert "acoustic_margin_declined" not in label
+
+
+def test_accumulate_voiceprints_skips_acoustic_margin_demoted_label(speakers_env):
+    from solstone.apps.speakers.attribution import accumulate_voiceprints
+    from solstone.apps.speakers.attribution import attribute_segment
+
+    env = speakers_env()
+    _setup_owner(env)
+    match_dir = env.create_entity("Mona Match")
+    runner_dir = env.create_entity("Zara Runner")
+    _write_entity_voiceprints(match_dir, [_normalized([0.0, 1.0])] * 5)
+    _write_entity_voiceprints(runner_dir, [_normalized([0.0, 0.0, 1.0])] * 5)
+    demoted = _embedding_with_orthogonal_entity_cosines(0.40, 0.37)
+    control = _embedding_with_orthogonal_entity_cosines(0.42, 0.34)
+    _write_controlled_segment(
+        env,
+        "20240101",
+        "115500_300",
+        np.vstack([demoted, control]),
+    )
+
+    result = attribute_segment("20240101", STREAM, "115500_300")
+    labels = result["labels"]
+    saved = accumulate_voiceprints(
+        "20240101",
+        STREAM,
+        "115500_300",
+        labels,
+        result["source"],
+    )
+
+    assert labels[0]["confidence"] == "medium"
+    assert labels[0]["acoustic_margin_declined"] is True
+    assert labels[1]["confidence"] == "high"
+    assert "acoustic_margin_declined" not in labels[1]
+    assert saved == {"mona_match": 1}
+
+
 def test_l3_per_statement_downgrades_margin_declined_high_match_to_medium(
     speakers_env,
 ):
@@ -764,6 +977,7 @@ def test_l3_per_statement_downgrades_margin_declined_high_match_to_medium(
     assert label["method"] == "acoustic"
     assert label["confidence"] == "medium"
     assert label["owner_margin_declined"] is True
+    assert "acoustic_margin_declined" not in label
     assert result["unmatched"] == []
 
 
