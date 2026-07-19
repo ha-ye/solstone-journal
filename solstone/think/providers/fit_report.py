@@ -121,6 +121,7 @@ def build_local_fit_report(model_id: str) -> FitReport:
                 devices,
                 local_vulkan,
                 brain_lane_active=brain_lane_active,
+                override_index=local_install.gpu_device_override(),
             )
         )
 
@@ -408,21 +409,15 @@ def _local_gpu_check(
     local_vulkan: Any,
     *,
     brain_lane_active: bool,
+    override_index: int | None = None,
 ) -> FitCheck:
     from solstone.think.providers import local_cuda
     from solstone.think.providers.parakeet_placement import cpu_placement_suffix
 
     backend = getattr(choice, "backend")
     reason = getattr(choice, "reason")
-    if not getattr(probe, "detected"):
-        return FitCheck(
-            "gpu",
-            "unknown",
-            f"NVIDIA GPU probe unavailable; resolved backend is {backend}: {reason}",
-        )
-
     memory_source = getattr(probe, "memory_source")
-    selected = local_vulkan.select_device(devices)
+    selected = local_vulkan.select_device(devices, override_index=override_index)
     placement_suffix = cpu_placement_suffix(
         devices=devices,
         selected=selected,
@@ -430,14 +425,19 @@ def _local_gpu_check(
         unified_memory=memory_source == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE,
         brain_lane_active=brain_lane_active,
     )
-    if memory_source == local_cuda.MEMORY_SOURCE_UNAVAILABLE:
-        return FitCheck(
-            "gpu",
-            "unknown",
-            f"resolved backend is {backend}: {reason}; GPU memory is unknown",
-        )
-
     if backend == "cuda":
+        if not getattr(probe, "detected"):
+            return FitCheck(
+                "gpu",
+                "unknown",
+                f"NVIDIA GPU probe unavailable; resolved backend is {backend}: {reason}",
+            )
+        if memory_source == local_cuda.MEMORY_SOURCE_UNAVAILABLE:
+            return FitCheck(
+                "gpu",
+                "unknown",
+                f"resolved backend is {backend}: {reason}; GPU memory is unknown",
+            )
         detail = f"CUDA backend selected: {reason}"
         if memory_source == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE:
             detail = f"{detail}; GPU tiering memory uses system MemAvailable"

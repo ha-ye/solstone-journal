@@ -653,7 +653,12 @@ def install_llama_server(
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
         _write_local_status(
-            transition_state(_read_local_status(), new_state="failed", error=str(exc))
+            transition_state(
+                _read_local_status(),
+                new_state="failed",
+                error=str(exc),
+                error_code=getattr(exc, "reason_code", None),
+            )
         )
         raise
 
@@ -686,7 +691,12 @@ def _install_cuda_llama_server(
         return _read_local_status()
     except Exception as exc:
         _write_local_status(
-            transition_state(_read_local_status(), new_state="failed", error=str(exc))
+            transition_state(
+                _read_local_status(),
+                new_state="failed",
+                error=str(exc),
+                error_code=getattr(exc, "reason_code", None),
+            )
         )
         raise
 
@@ -729,7 +739,12 @@ def install_model(
         return _read_local_status()
     except Exception as exc:
         _write_local_status(
-            transition_state(_read_local_status(), new_state="failed", error=str(exc))
+            transition_state(
+                _read_local_status(),
+                new_state="failed",
+                error=str(exc),
+                error_code=getattr(exc, "reason_code", None),
+            )
         )
         raise
 

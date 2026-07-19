@@ -403,7 +403,12 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         if "attempt_status" in locals():
             try:
                 _write_status(
-                    transition_state(attempt_status, new_state="failed", error=str(exc))
+                    transition_state(
+                        attempt_status,
+                        new_state="failed",
+                        error=str(exc),
+                        error_code=getattr(exc, "reason_code", None),
+                    )
                 )
             except Exception:
                 logger.exception("could not mark failed local bootstrap construction")
@@ -417,7 +422,12 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
                 _INSTALL_THREADS.pop(model_id, None)
         lease.release()
         _write_status(
-            transition_state(_read_status(), new_state="failed", error=str(exc))
+            transition_state(
+                _read_status(),
+                new_state="failed",
+                error=str(exc),
+                error_code=getattr(exc, "reason_code", None),
+            )
         )
         raise LocalBootstrapStartError(str(exc)) from exc
     if not ack.wait(timeout=5.0):
@@ -511,7 +521,12 @@ def _run_bootstrap_worker(
     except Exception as exc:
         logger.exception("local provider bootstrap failed")
         _write_status(
-            transition_state(_read_status(), new_state="failed", error=str(exc))
+            transition_state(
+                _read_status(),
+                new_state="failed",
+                error=str(exc),
+                error_code=getattr(exc, "reason_code", None),
+            )
         )
     else:
         logger.info("local provider bootstrap complete")

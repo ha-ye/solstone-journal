@@ -310,6 +310,7 @@ def test_sha256_mismatch_fails_closed_and_records_failed_state(
     status = _parakeet_status()
     assert status["install_state"] == "failed"
     assert status["install_error"] is not None
+    assert status["error_code"] == "sha256_mismatch"
     assert "sha256 mismatch" in status["install_error"]
 
 

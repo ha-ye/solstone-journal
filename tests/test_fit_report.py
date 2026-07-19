@@ -56,6 +56,18 @@ def _choice(backend: str = "cuda") -> local_cuda.BackendChoice:
     return local_cuda.BackendChoice(backend=backend, reason="test choice")
 
 
+def _undetected_nvidia_probe() -> local_cuda.NvidiaProbe:
+    return local_cuda.NvidiaProbe(
+        index=None,
+        compute_cap=None,
+        driver_cuda_version=None,
+        vram_mib=None,
+        tiering_memory_mib=None,
+        memory_source=local_cuda.MEMORY_SOURCE_UNAVAILABLE,
+        detected=False,
+    )
+
+
 def test_overall_collapses_unknown_to_warning() -> None:
     report = fit_report.FitReport(
         artifact="artifact",
@@ -132,6 +144,30 @@ def test_local_gpu_check_omits_cpu_transcription_line_outside_predicate(
 
     assert check.severity == "ok"
     assert PLACEMENT_LINE not in check.detail
+
+
+def test_local_gpu_check_uses_vulkan_when_nvidia_probe_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    devices = [
+        _vulkan_device(index=0, vram_mib=8176),
+        _vulkan_device(index=1, vram_mib=2048),
+    ]
+    monkeypatch.setattr(local_vulkan, "gpu_probe_ok", lambda: True)
+
+    check = fit_report._local_gpu_check(
+        _undetected_nvidia_probe(),
+        _choice("vulkan"),
+        devices,
+        local_vulkan,
+        brain_lane_active=False,
+        override_index=1,
+    )
+
+    assert check.severity == "ok"
+    assert check.detail == (
+        "Vulkan GPU selected: Test GPU 1; resolved backend is vulkan: test choice"
+    )
 
 
 def test_disk_unknown_size_warns_when_known_size_fits(

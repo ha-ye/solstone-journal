@@ -512,6 +512,7 @@ def _install_parakeet_server_unlocked(
                 _read_parakeet_status(journal_path),
                 new_state="failed",
                 error=str(exc),
+                error_code=getattr(exc, "reason_code", None),
             ),
             journal_path,
         )
@@ -571,6 +572,7 @@ def _install_model_unlocked(
                 _read_parakeet_status(journal_path),
                 new_state="failed",
                 error=str(exc),
+                error_code=getattr(exc, "reason_code", None),
             ),
             journal_path,
         )

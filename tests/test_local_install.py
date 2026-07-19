@@ -516,6 +516,7 @@ def test_install_llama_server_sha256_mismatch_fails_closed_before_extract(
     status = _local_status()
     assert status["install_state"] == "failed"
     assert status["install_error"] is not None
+    assert status["error_code"] == "sha256_mismatch"
     assert "sha256 mismatch" in status["install_error"]
     assert not artifact_manifest_path(install_dir).exists()
     assert not binary_path.exists()
@@ -753,6 +754,31 @@ def test_install_llama_server_cuda_uses_arch_specific_oci_wanted_files(
     assert expected_cpu in pull_calls[0][2]
     assert unexpected_cpu not in pull_calls[0][2]
     assert local_install.cuda_binary_path().stat().st_mode & 0o111
+
+
+def test_install_llama_server_cuda_preserves_oci_failure_reason(tmp_path, monkeypatch):
+    _init_journal(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        local_cuda,
+        "resolve_local_backend",
+        lambda _pin: local_cuda.BackendChoice("cuda", "test cuda"),
+    )
+
+    def fail_pull(*_args, **_kwargs):
+        raise oci_image.OciImageError(
+            "signature_verify_failed",
+            "the pinned image has no matching signature",
+        )
+
+    monkeypatch.setattr(oci_image, "pull_and_install", fail_pull)
+
+    with pytest.raises(oci_image.OciImageError, match="no matching signature"):
+        local_install.install_llama_server()
+
+    status = _local_status()
+    assert status["install_state"] == "failed"
+    assert status["install_error"] == "the pinned image has no matching signature"
+    assert status["error_code"] == "signature_verify_failed"
 
 
 def test_install_llama_server_vulkan_choice_does_not_pull_oci(tmp_path, monkeypatch):

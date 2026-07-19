@@ -1138,6 +1138,37 @@ def test_local_worker_install_model_failure_records_failed_install_state(
     assert status["install_error"] == "model download broke"
 
 
+def test_local_worker_preserves_structured_install_error_code(
+    settings_env, monkeypatch
+):
+    settings_env(_settings_config())
+    attempt_status = _write_local_status(
+        "downloading", last_progress_at=_fresh_progress_iso()
+    )
+    lease = _FakeLease()
+    ack = threading.Event()
+
+    monkeypatch.setattr(
+        local_bootstrap.local_install,
+        "install_local",
+        Mock(
+            side_effect=local_bootstrap.LocalProviderError(
+                "signature_verify_failed",
+                "image signature did not verify",
+            )
+        ),
+    )
+
+    local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
+
+    assert ack.is_set()
+    assert lease.released is True
+    status = read_install_status(name="local")
+    assert status["install_state"] == "failed"
+    assert status["install_error"] == "image signature did not verify"
+    assert status["error_code"] == "signature_verify_failed"
+
+
 def test_local_worker_cleans_registered_thread(settings_env, monkeypatch):
     settings_env(_settings_config())
     current = threading.current_thread()
