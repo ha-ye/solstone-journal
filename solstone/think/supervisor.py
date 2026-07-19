@@ -146,6 +146,8 @@ PARAKEET_SERVER_READY_TIMEOUT_S = 300.0
 PARAKEET_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
 LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
 PROVIDER_RETRY_SCHEDULE_SECONDS = (0.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+PROVIDER_CLEANUP_RETRY_SCHEDULE_SECONDS = (2.0, 4.0, 8.0, 16.0, 30.0)
+PROVIDER_ADMISSION_STOP_TIMEOUT_S = 5.0
 PROVIDER_STABLE_READY_REFRESH_SECONDS = 60.0
 PROVIDER_TRUTH_OBSERVATION_INTERVAL_SECONDS = GATE_TICK_INTERVAL_S
 # supervisor.log is size-rotated with a bounded on-disk footprint.
@@ -1198,12 +1200,33 @@ LaunchOutcomeStatus = Literal[
     "warmup-timeout",
     "launch-failed",
 ]
+StopCleanupStatus = Literal["stopped", "stop-deferred", "cleanup-failed", "cancelled"]
 LocalPlanBackend = Literal["mlx", "cuda", "vulkan"]
 
 
 @dataclass(frozen=True)
 class ProviderLaunchOutcome:
     status: LaunchOutcomeStatus
+    reason_code: ReasonCode
+    detail: dict[str, Any]
+    managed: RunnerManagedProcess | None = None
+
+
+@dataclass(frozen=True)
+class ProviderStopCleanupRequest:
+    managed: RunnerManagedProcess
+    reason_code: ReasonCode
+    detail: dict[str, Any]
+    target_phase: RuntimePhase
+    target_reason_code: ReasonCode | None
+    target_detail: dict[str, Any]
+    admission_exclusive: bool = False
+    local_capacity: int | None = None
+
+
+@dataclass(frozen=True)
+class ProviderStopCleanupOutcome:
+    status: StopCleanupStatus
     reason_code: ReasonCode
     detail: dict[str, Any]
     managed: RunnerManagedProcess | None = None
@@ -1284,6 +1307,14 @@ class ProviderRuntimeState:
     start_cancel_event: threading.Event | None = None
     stop_cleanup_future: concurrent.futures.Future | None = None
     stop_cleanup_fence: ProviderFence | None = None
+    stop_cleanup_cancel_event: threading.Event | None = None
+    pending_stop_request: ProviderStopCleanupRequest | None = None
+    pending_stop_target_phase: RuntimePhase = "stopped"
+    pending_stop_target_reason_code: ReasonCode | None = "cleanup-succeeded"
+    pending_stop_target_detail: dict[str, Any] = field(default_factory=dict)
+    pending_stop_admission_exclusive: bool = False
+    cleanup_attempt_count: int = 0
+    cleanup_next_at: float = 0.0
     probe_future: concurrent.futures.Future | None = None
     probe_fence: ProviderFence | None = None
     retry: ProviderRetryState = field(default_factory=ProviderRetryState)
@@ -3794,6 +3825,47 @@ def _provider_running_process(
     return None
 
 
+def _provider_processes(
+    provider: ProviderName, procs: list[RunnerManagedProcess]
+) -> list[RunnerManagedProcess]:
+    names = _PROVIDER_PROCESS_NAMES[provider]
+    return [
+        managed for managed in procs if managed.name in names and managed.is_running()
+    ]
+
+
+def _remove_provider_process(
+    procs: list[RunnerManagedProcess], managed: RunnerManagedProcess | None
+) -> None:
+    if managed is None:
+        return
+    try:
+        procs.remove(managed)
+    except ValueError:
+        pass
+
+
+def _runtime_record_matches_managed(
+    record: RuntimeHealthRecord,
+    managed: RunnerManagedProcess,
+) -> bool:
+    process = record["process"]
+    if not isinstance(process, dict):
+        return False
+    return (
+        process.get("name") == managed.name
+        and process.get("pid") == managed.process.pid
+        and process.get("ref") == managed.ref
+    )
+
+
+def _local_stop_capacity(state: ProviderRuntimeState) -> int:
+    plan = state.latest_plan
+    if isinstance(plan, LocalServerLaunchPlan) and plan.parallel_slots is not None:
+        return max(1, int(plan.parallel_slots))
+    return 1
+
+
 def _provider_process_record(
     managed: RunnerManagedProcess | None,
     *,
@@ -3934,6 +4006,33 @@ def _cancel_all_provider_starts(reason: str) -> None:
         _signal_provider_start_cancel(state, reason=reason)
 
 
+def _signal_provider_stop_cancel(
+    state: ProviderRuntimeState,
+    *,
+    reason: str,
+) -> None:
+    event = state.stop_cleanup_cancel_event
+    if event is None or event.is_set():
+        return
+    fence = state.stop_cleanup_fence
+    logger.info(
+        "cancelling %s provider stop%s: %s",
+        state.provider,
+        (
+            f" generation={fence.generation} attempt={fence.attempt}"
+            if fence is not None
+            else ""
+        ),
+        reason,
+    )
+    event.set()
+
+
+def _cancel_all_provider_stops(reason: str) -> None:
+    for state in _provider_runtime_states.values():
+        _signal_provider_stop_cancel(state, reason=reason)
+
+
 def _cleanup_provider_outcome_handle(
     state: ProviderRuntimeState,
     fence: ProviderFence | None,
@@ -3945,6 +4044,397 @@ def _cleanup_provider_outcome_handle(
         return
     _clear_provider_port_if_owner_matches(state, fence, outcome)
     _terminate_cleanup_handle(outcome.managed, reason=reason)
+
+
+def _stop_cleanup_outcome(
+    status: StopCleanupStatus,
+    reason_code: ReasonCode,
+    detail: dict[str, Any],
+    managed: RunnerManagedProcess | None = None,
+) -> ProviderStopCleanupOutcome:
+    return ProviderStopCleanupOutcome(
+        status=status,
+        reason_code=reason_code,
+        detail=detail,
+        managed=managed,
+    )
+
+
+def _make_stop_request(
+    state: ProviderRuntimeState,
+    managed: RunnerManagedProcess,
+    *,
+    reason_code: ReasonCode,
+    detail: dict[str, Any],
+    target_phase: RuntimePhase = "stopped",
+    target_reason_code: ReasonCode | None = "cleanup-succeeded",
+    target_detail: dict[str, Any] | None = None,
+    admission_exclusive: bool = False,
+) -> ProviderStopCleanupRequest:
+    return ProviderStopCleanupRequest(
+        managed=managed,
+        reason_code=reason_code,
+        detail=detail,
+        target_phase=target_phase,
+        target_reason_code=target_reason_code,
+        target_detail=target_detail or {},
+        admission_exclusive=admission_exclusive,
+        local_capacity=_local_stop_capacity(state) if admission_exclusive else None,
+    )
+
+
+def _provider_stop_cleanup_worker(
+    provider: ProviderName,
+    request: ProviderStopCleanupRequest,
+    fence: ProviderFence,
+    cancel_event: threading.Event,
+) -> ProviderStopCleanupOutcome:
+    del fence
+    managed = request.managed
+    permit = None
+    try:
+        if cancel_event.is_set():
+            return _stop_cleanup_outcome(
+                "cancelled",
+                "stale-result-ignored",
+                {"cancelled": True, "reason_code": request.reason_code},
+                managed,
+            )
+        if request.admission_exclusive and provider == "local":
+            from solstone.think.providers import local_admission
+
+            try:
+                permit = local_admission.acquire_local_slot(
+                    request.local_capacity or 1,
+                    PROVIDER_ADMISSION_STOP_TIMEOUT_S,
+                    exclusive=True,
+                    cancel_event=cancel_event,
+                )
+            except local_admission.LocalAdmissionTimeout as exc:
+                return _stop_cleanup_outcome(
+                    "stop-deferred",
+                    "admission-exclusive-stop",
+                    {
+                        **request.detail,
+                        "error": str(exc),
+                        "capacity": request.local_capacity or 1,
+                    },
+                    managed,
+                )
+            except local_admission.LocalAdmissionCancelled:
+                return _stop_cleanup_outcome(
+                    "cancelled",
+                    "stale-result-ignored",
+                    {"cancelled": True, "reason_code": request.reason_code},
+                    managed,
+                )
+        if cancel_event.is_set():
+            return _stop_cleanup_outcome(
+                "cancelled",
+                "stale-result-ignored",
+                {"cancelled": True, "reason_code": request.reason_code},
+                managed,
+            )
+        if not managed.is_running():
+            managed.cleanup()
+            return _stop_cleanup_outcome(
+                "stopped",
+                "cleanup-succeeded",
+                {**request.detail, "already_dead": True},
+            )
+        _terminate_cleanup_handle(managed, reason=str(request.reason_code))
+        return _stop_cleanup_outcome(
+            "stopped",
+            "cleanup-succeeded",
+            request.detail,
+        )
+    except Exception as exc:
+        logger.exception("%s provider stop cleanup failed", provider)
+        return _stop_cleanup_outcome(
+            "cleanup-failed",
+            "cleanup-attempt-failed",
+            {**request.detail, "error": str(exc)},
+            managed,
+        )
+    finally:
+        if permit is not None:
+            permit.release()
+
+
+def _schedule_cleanup_failed_retry(
+    state: ProviderRuntimeState,
+    request: ProviderStopCleanupRequest,
+    outcome: ProviderStopCleanupOutcome,
+) -> None:
+    state.pending_stop_request = ProviderStopCleanupRequest(
+        managed=outcome.managed or request.managed,
+        reason_code=request.reason_code,
+        detail={**request.detail, "last_cleanup_detail": outcome.detail},
+        target_phase=request.target_phase,
+        target_reason_code=request.target_reason_code,
+        target_detail=request.target_detail,
+        admission_exclusive=request.admission_exclusive,
+        local_capacity=request.local_capacity,
+    )
+    state.cleanup_attempt_count += 1
+    delay = PROVIDER_CLEANUP_RETRY_SCHEDULE_SECONDS[
+        min(
+            state.cleanup_attempt_count - 1,
+            len(PROVIDER_CLEANUP_RETRY_SCHEDULE_SECONDS) - 1,
+        )
+    ]
+    state.cleanup_next_at = time.monotonic() + delay
+    state.latest_phase = "cleanup-failed"
+    _write_provider_runtime(
+        state,
+        phase="cleanup-failed",
+        reason_code="cleanup-attempt-failed",
+        detail={
+            **outcome.detail,
+            "cleanup_attempt": state.cleanup_attempt_count,
+            "next_cleanup_attempt": state.cleanup_attempt_count + 1,
+        },
+        display_deadline_delay_s=delay,
+    )
+
+
+def _adopt_provider_cleanup_failed_handle(
+    state: ProviderRuntimeState,
+    managed: RunnerManagedProcess,
+    *,
+    detail: dict[str, Any],
+) -> None:
+    request = _make_stop_request(
+        state,
+        managed,
+        reason_code="cleanup-attempt-failed",
+        detail=detail,
+        target_phase="stopped",
+        target_reason_code="cleanup-succeeded",
+    )
+    outcome = _stop_cleanup_outcome(
+        "cleanup-failed",
+        "cleanup-attempt-failed",
+        detail,
+        managed,
+    )
+    _schedule_cleanup_failed_retry(state, request, outcome)
+
+
+def _duplicate_cleanup_request(
+    state: ProviderRuntimeState,
+    procs: list[RunnerManagedProcess],
+) -> ProviderStopCleanupRequest | None:
+    candidates = _provider_processes(state.provider, procs)
+    if len(candidates) <= 1:
+        return None
+    keep: RunnerManagedProcess | None = None
+    try:
+        current = read_runtime_health(state.provider)
+    except (RuntimeHealthMalformedError, RuntimeHealthUnavailableError):
+        current = None
+    if current is not None:
+        matches = [
+            managed
+            for managed in candidates
+            if _runtime_record_matches_managed(current, managed)
+        ]
+        if len(matches) == 1:
+            keep = matches[0]
+    stale = next((managed for managed in candidates if managed is not keep), None)
+    if stale is None:
+        return None
+    return _make_stop_request(
+        state,
+        stale,
+        reason_code="duplicate-owned-process",
+        detail={"duplicates": len(candidates), "kept_ref": keep.ref if keep else None},
+        target_phase=state.latest_phase,
+        target_reason_code="duplicate-owned-process",
+        target_detail={"duplicates": len(candidates)},
+    )
+
+
+def _stop_before_replace_request(
+    state: ProviderRuntimeState,
+    procs: list[RunnerManagedProcess],
+) -> ProviderStopCleanupRequest | None:
+    if state.latest_plan is None:
+        return None
+    if state.latest_phase not in {"starting", "backoff", "retry-requested", "stopped"}:
+        return None
+    managed = _provider_running_process(state.provider, procs)
+    if managed is None:
+        return None
+    return _make_stop_request(
+        state,
+        managed,
+        reason_code="target-changed",
+        detail={"replacement_fingerprint": state.desired_fingerprint},
+        target_phase="stopped",
+        target_reason_code="cleanup-succeeded",
+    )
+
+
+def _deferred_stop_request(
+    state: ProviderRuntimeState,
+    procs: list[RunnerManagedProcess],
+) -> ProviderStopCleanupRequest | None:
+    managed = _provider_running_process(state.provider, procs)
+    if managed is None:
+        return None
+    return _make_stop_request(
+        state,
+        managed,
+        reason_code=(
+            "admission-exclusive-stop"
+            if state.pending_stop_admission_exclusive
+            else "target-changed"
+        ),
+        detail={"target_phase": state.pending_stop_target_phase},
+        target_phase=state.pending_stop_target_phase,
+        target_reason_code=state.pending_stop_target_reason_code,
+        target_detail=state.pending_stop_target_detail,
+        admission_exclusive=state.pending_stop_admission_exclusive,
+    )
+
+
+def _submit_provider_stop_cleanup_if_needed(
+    state: ProviderRuntimeState,
+    procs: list[RunnerManagedProcess],
+) -> bool:
+    if state.stop_cleanup_future is not None:
+        return True
+    now = time.monotonic()
+    request = state.pending_stop_request
+    if state.latest_phase == "stop-deferred":
+        request = request or _deferred_stop_request(state, procs)
+        if request is None:
+            state.latest_phase = state.pending_stop_target_phase
+            _write_provider_runtime(
+                state,
+                phase=state.pending_stop_target_phase,
+                reason_code=state.pending_stop_target_reason_code,
+                detail=state.pending_stop_target_detail,
+                process=None,
+            )
+            return False
+    elif state.latest_phase == "cleanup-failed":
+        if now < state.cleanup_next_at:
+            return True
+        if request is None:
+            return False
+    else:
+        request = _duplicate_cleanup_request(
+            state, procs
+        ) or _stop_before_replace_request(state, procs)
+        if request is None:
+            return False
+    state.pending_stop_request = request
+    state.latest_phase = "stopping"
+    fence = _provider_fence(state, state.retry.attempt_count)
+    cancel_event = threading.Event()
+    state.stop_cleanup_fence = fence
+    state.stop_cleanup_cancel_event = cancel_event
+    _write_provider_runtime(
+        state,
+        phase="stopping",
+        reason_code=request.reason_code,
+        detail={**request.detail, "fence": fence.__dict__},
+    )
+    state.stop_cleanup_future = _provider_executor().submit(
+        _provider_stop_cleanup_worker,
+        state.provider,
+        request,
+        fence,
+        cancel_event,
+    )
+    return True
+
+
+def _handle_provider_stop_cleanup_result(
+    state: ProviderRuntimeState,
+    procs: list[RunnerManagedProcess],
+) -> bool:
+    future = state.stop_cleanup_future
+    if future is None or not future.done():
+        return False
+    fence = state.stop_cleanup_fence
+    request = state.pending_stop_request
+    state.stop_cleanup_future = None
+    state.stop_cleanup_fence = None
+    state.stop_cleanup_cancel_event = None
+    try:
+        outcome = future.result()
+    except Exception as exc:
+        logger.exception("%s provider stop cleanup worker failed", state.provider)
+        if request is None:
+            return True
+        outcome = _stop_cleanup_outcome(
+            "cleanup-failed",
+            "cleanup-attempt-failed",
+            {"error": str(exc)},
+            request.managed,
+        )
+    if request is None:
+        return True
+    if fence is not None and not _provider_fence_matches(state, fence):
+        return True
+    if outcome.status == "cancelled":
+        state.latest_phase = "observing"
+        state.pending_stop_request = None
+        state.cleanup_attempt_count = 0
+        state.cleanup_next_at = 0.0
+        state.next_truth_at = 0.0
+        return True
+    if outcome.status == "stop-deferred":
+        state.pending_stop_request = ProviderStopCleanupRequest(
+            managed=outcome.managed or request.managed,
+            reason_code=request.reason_code,
+            detail=outcome.detail,
+            target_phase=request.target_phase,
+            target_reason_code=request.target_reason_code,
+            target_detail=request.target_detail,
+            admission_exclusive=request.admission_exclusive,
+            local_capacity=request.local_capacity,
+        )
+        state.latest_phase = "stop-deferred"
+        _write_provider_runtime(
+            state,
+            phase="stop-deferred",
+            reason_code=outcome.reason_code,
+            detail=outcome.detail,
+        )
+        return True
+    if outcome.status == "cleanup-failed":
+        _schedule_cleanup_failed_retry(state, request, outcome)
+        return True
+    cleanup_outcome = _outcome(
+        "launch-failed",
+        "cleanup-succeeded",
+        outcome.detail,
+        outcome.managed,
+    )
+    _clear_provider_port_if_owner_matches(state, fence, cleanup_outcome)
+    _remove_provider_process(procs, request.managed)
+    state.pending_stop_request = None
+    state.cleanup_attempt_count = 0
+    state.cleanup_next_at = 0.0
+    state.latest_phase = request.target_phase
+    process = None
+    if request.target_phase in {"ready", "ready-proof-unavailable"}:
+        try:
+            process = read_runtime_health(state.provider)["process"]
+        except (RuntimeHealthMalformedError, RuntimeHealthUnavailableError):
+            process = None
+    _write_provider_runtime(
+        state,
+        phase=request.target_phase,
+        reason_code=request.target_reason_code,
+        detail=request.target_detail,
+        process=process,
+    )
+    return True
 
 
 def _finish_provider_startup_condition(
@@ -4004,6 +4494,35 @@ def _observe_provider_truth(provider: ProviderName) -> ProviderTruthObservation:
     if provider == "local":
         return _observe_local_provider_truth()
     return _observe_parakeet_provider_truth()
+
+
+def _defer_provider_stop_for_observation(
+    state: ProviderRuntimeState,
+    observation: ProviderTruthObservation,
+    *,
+    reason_code: ReasonCode,
+    admission_exclusive: bool,
+) -> None:
+    state.pending_stop_request = None
+    state.pending_stop_target_phase = observation.phase
+    state.pending_stop_target_reason_code = observation.reason_code
+    state.pending_stop_target_detail = observation.detail
+    state.pending_stop_admission_exclusive = admission_exclusive
+    state.cleanup_attempt_count = 0
+    state.cleanup_next_at = 0.0
+    state.latest_phase = "stop-deferred"
+    state.boot_required = observation.boot_required
+    _write_provider_runtime(
+        state,
+        phase="stop-deferred",
+        reason_code=reason_code,
+        detail={
+            "target_phase": observation.phase,
+            "target_reason_code": observation.reason_code,
+            "target_detail": observation.detail,
+            "admission_exclusive": admission_exclusive,
+        },
+    )
 
 
 def _submit_provider_truth_if_needed(state: ProviderRuntimeState) -> None:
@@ -4073,8 +4592,15 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
     )
     if (
         not fingerprint_changed
-        and observation.phase in {"starting", "host-blocked"}
-        and state.latest_phase in {"starting", "ready"}
+        and (
+            (
+                observation.phase == "starting"
+                and state.latest_phase in {"starting", "ready"}
+            )
+            or (
+                observation.phase == "host-blocked" and state.latest_phase == "starting"
+            )
+        )
         and state.latest_plan is not None
     ):
         _write_provider_runtime(
@@ -4088,6 +4614,13 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
             },
         )
         return True
+    if state.stop_cleanup_future is not None and (
+        fingerprint_changed or observation.phase == "starting"
+    ):
+        _signal_provider_stop_cancel(
+            state,
+            reason="provider desired state changed during stop",
+        )
     if state.start_future is not None:
         if fingerprint_changed:
             _signal_provider_start_cancel(
@@ -4099,6 +4632,41 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
                 state,
                 reason=f"provider became {observation.phase}",
             )
+    if (
+        fingerprint_changed
+        and observation.phase == "starting"
+        and state.latest_phase in {"ready", "ready-proof-unavailable"}
+    ):
+        state.generation += 1
+        state.desired_fingerprint = observation.desired_fingerprint_sha256
+        state.retry = ProviderRetryState(
+            desired_fingerprint=observation.desired_fingerprint_sha256
+        )
+        state.latest_plan = observation.plan
+        _defer_provider_stop_for_observation(
+            state,
+            observation,
+            reason_code="target-changed",
+            admission_exclusive=False,
+        )
+        return True
+    if observation.phase in {"not-desired", "host-blocked"} and state.latest_phase in {
+        "ready",
+        "ready-proof-unavailable",
+    }:
+        if fingerprint_changed:
+            state.generation += 1
+            state.desired_fingerprint = observation.desired_fingerprint_sha256
+            state.retry = ProviderRetryState(
+                desired_fingerprint=observation.desired_fingerprint_sha256
+            )
+        _defer_provider_stop_for_observation(
+            state,
+            observation,
+            reason_code="admission-exclusive-stop",
+            admission_exclusive=True,
+        )
+        return True
     if fingerprint_changed:
         state.generation += 1
         state.desired_fingerprint = observation.desired_fingerprint_sha256
@@ -4153,9 +4721,15 @@ def _provider_start_worker(
 def _submit_provider_start_if_needed(
     state: ProviderRuntimeState, procs: list[RunnerManagedProcess]
 ) -> None:
+    if state.stop_cleanup_future is not None or state.latest_phase in {
+        "stop-deferred",
+        "stopping",
+        "cleanup-failed",
+    }:
+        return
     if state.start_future is not None:
         return
-    if state.latest_phase not in {"starting", "backoff", "retry-requested"}:
+    if state.latest_phase not in {"starting", "backoff", "retry-requested", "stopped"}:
         return
     if state.latest_plan is None:
         return
@@ -4308,12 +4882,31 @@ def _handle_provider_start_result(
             return True
 
     if outcome.managed is not None:
-        _cleanup_provider_outcome_handle(
-            state,
-            fence,
-            outcome,
-            reason=f"provider launch outcome {outcome.status}",
-        )
+        if outcome.detail.get("cleanup_deferred_to") == "cleanup-failed-reconciler":
+            _adopt_provider_cleanup_failed_handle(
+                state,
+                outcome.managed,
+                detail=outcome.detail,
+            )
+            return True
+        try:
+            _cleanup_provider_outcome_handle(
+                state,
+                fence,
+                outcome,
+                reason=f"provider launch outcome {outcome.status}",
+            )
+        except Exception as exc:
+            _adopt_provider_cleanup_failed_handle(
+                state,
+                outcome.managed,
+                detail={
+                    **outcome.detail,
+                    "error": str(exc),
+                    "cleanup_deferred_to": "cleanup-failed-reconciler",
+                },
+            )
+            return True
 
     if state.retry.attempt_count >= len(PROVIDER_RETRY_SCHEDULE_SECONDS):
         state.latest_phase = "failed"
@@ -4412,7 +5005,10 @@ async def _reconcile_provider_runtime(
     _handle_provider_retry_token(state)
     _handle_provider_truth_result(state)
     _handle_provider_start_result(state, procs)
-    _submit_provider_start_if_needed(state, procs)
+    stop_result_handled = _handle_provider_stop_cleanup_result(state, procs)
+    if not stop_result_handled:
+        _submit_provider_stop_cleanup_if_needed(state, procs)
+        _submit_provider_start_if_needed(state, procs)
     _submit_provider_truth_if_needed(state)
     _release_provider_startup_gate_if_ready()
 
@@ -5050,6 +5646,7 @@ async def supervise(
             await asyncio.sleep(1)
     finally:
         _cancel_all_provider_starts("supervisor shutdown")
+        _cancel_all_provider_stops("supervisor shutdown")
         # Callosum cleanup happens in main().
 
 
@@ -5110,6 +5707,7 @@ def handle_shutdown(signum, frame):
         shutdown_requested = True
         logger.info("shutdown requested via signal %d", signum)
         _cancel_all_provider_starts("supervisor shutdown signal")
+        _cancel_all_provider_stops("supervisor shutdown signal")
         live = [managed for managed in _managed_procs if managed.is_running()]
         if live:
             logger.info("shutdown: signaling %d managed child(ren)", len(live))
@@ -5484,6 +6082,7 @@ def main() -> None:
         logging.info("Caught KeyboardInterrupt, shutting down...")
     finally:
         _cancel_all_provider_starts("supervisor shutdown")
+        _cancel_all_provider_stops("supervisor shutdown")
         try:
             clear_ready()
         except Exception as exc:
