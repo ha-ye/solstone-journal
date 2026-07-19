@@ -1528,21 +1528,18 @@
     showOwnerGuideToast();
   }
 
-  function renderOwnerNotReady(data) {
-    ownerBanner.style.display = 'block';
-    ownerBanner.innerHTML = `
-      <div class="spk-owner-panel">
-        <div class="spk-owner-title">sol is still learning your voice</div>
-        <div class="spk-owner-copy">
-          we're tagging audio segments to recognize you. help sol learn faster by tagging your own statements.
-        </div>
-        <div class="spk-owner-actions">
-          <button class="spk-owner-btn spk-owner-btn-confirm" id="spkOwnerHelp">
-            ${escapeHtml(SPK_COPY.SPK_OVERVIEW_OWNER_HELP_LABEL || '')}
-          </button>
-        </div>
-        <div class="spk-owner-toast" id="spkOwnerGuideToast"></div>
-        <details class="spk-owner-diagnostics">
+  function renderOwnerBuildFromTagsAction(data) {
+    return data.can_build_from_tags === true ? `
+              <div class="spk-owner-actions">
+                <button class="spk-owner-btn spk-owner-btn-reject" id="spkOwnerBuildFromTags">
+                  ${escapeHtml(SPK_COPY.SPK_OVERVIEW_OWNER_BUILD_FROM_TAGS_LABEL || '')}
+                </button>
+              </div>
+            ` : '';
+  }
+
+  function renderOwnerColdStartDiagnostics(data) {
+    return `<details class="spk-owner-diagnostics">
           <summary class="spk-owner-diagnostics-summary">why not yet?</summary>
           <div class="spk-owner-diagnostics-body">
             <div class="spk-owner-diagnostics-line">source: ${escapeHtml(data.source || 'auto')}</div>
@@ -1554,17 +1551,39 @@
             <div class="spk-owner-diagnostics-line">Manual tags: ${escapeHtml(String(data.manual_tags_count || 0))}</div>
             <div class="spk-owner-diagnostics-line">Segments with audio: ${escapeHtml(String(data.segments_available || 0))}</div>
             <div class="spk-owner-diagnostics-line">Embeddings: ${escapeHtml(String(data.embeddings_available || 0))}</div>
-            ${data.can_build_from_tags === true ? `
-              <div class="spk-owner-actions">
-                <button class="spk-owner-btn spk-owner-btn-reject" id="spkOwnerBuildFromTags">
-                  ${escapeHtml(SPK_COPY.SPK_OVERVIEW_OWNER_BUILD_FROM_TAGS_LABEL || '')}
-                </button>
-              </div>
-            ` : ''}
+            ${renderOwnerBuildFromTagsAction(data)}
           </div>
-        </details>
+        </details>`;
+  }
+
+  function renderOwnerGateDiagnostics(data) {
+    return window.GateDrawer.render(data, {
+      actionHtml: renderOwnerBuildFromTagsAction(data),
+    });
+  }
+
+  function renderOwnerNotReady(data) {
+    window.Drawer.preserveOpen(ownerBanner, () => {
+      const diagnostics = data.status === 'low_quality'
+        ? renderOwnerGateDiagnostics(data)
+        : renderOwnerColdStartDiagnostics(data);
+      ownerBanner.style.display = 'block';
+      ownerBanner.innerHTML = `
+      <div class="spk-owner-panel">
+        <div class="spk-owner-title">sol is still learning your voice</div>
+        <div class="spk-owner-copy">
+          we're tagging audio segments to recognize you. help sol learn faster by tagging your own statements.
+        </div>
+        <div class="spk-owner-actions">
+          <button class="spk-owner-btn spk-owner-btn-confirm" id="spkOwnerHelp">
+            ${escapeHtml(SPK_COPY.SPK_OVERVIEW_OWNER_HELP_LABEL || '')}
+          </button>
+        </div>
+        <div class="spk-owner-toast" id="spkOwnerGuideToast"></div>
+        ${diagnostics}
       </div>
     `;
+    });
 
     document.getElementById('spkOwnerHelp')?.addEventListener('click', navigateToOwnerHelp);
     document.getElementById('spkOwnerBuildFromTags')?.addEventListener('click', event => {

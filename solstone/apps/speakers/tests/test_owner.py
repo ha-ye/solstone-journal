@@ -24,6 +24,8 @@ from solstone.apps.speakers.encoder_config import (
 )
 from solstone.think.awareness import get_current, update_state
 
+SPEAKERS_WORKSPACE = Path(__file__).resolve().parents[1] / "workspace.html"
+
 
 def _drain_queue(queue: Any) -> list[Any]:
     found = []
@@ -2883,6 +2885,49 @@ def test_api_owner_status_low_quality(speakers_env):
             "sol call speakers build-from-tags."
         ),
     }
+
+
+def test_owner_not_ready_low_quality_uses_gate_drawer_workspace_source():
+    source = SPEAKERS_WORKSPACE.read_text(encoding="utf-8")
+
+    assert "function renderOwnerGateDiagnostics(data)" in source
+    assert "return window.GateDrawer.render(data, {" in source
+    assert "actionHtml: renderOwnerBuildFromTagsAction(data)" in source
+    assert "window.Drawer.preserveOpen(ownerBanner" in source
+    assert "data.status === 'low_quality'" in source
+    assert "? renderOwnerGateDiagnostics(data)" in source
+    assert ": renderOwnerColdStartDiagnostics(data)" in source
+    assert "spkOwnerBuildFromTags" in source
+    assert (
+        "document.getElementById('spkOwnerBuildFromTags')?.addEventListener" in source
+    )
+
+
+def test_owner_not_ready_cold_start_diagnostics_retained_workspace_source():
+    source = SPEAKERS_WORKSPACE.read_text(encoding="utf-8")
+
+    assert "function renderOwnerColdStartDiagnostics(data)" in source
+    assert '<details class="spk-owner-diagnostics">' in source
+    assert (
+        '<summary class="spk-owner-diagnostics-summary">why not yet?</summary>'
+        in source
+    )
+    assert (
+        '<div class="spk-owner-diagnostics-line">source: ${escapeHtml(data.source || '
+        "'auto')}</div>"
+    ) in source
+    assert (
+        '<div class="spk-owner-diagnostics-line">Manual tags: '
+        "${escapeHtml(String(data.manual_tags_count || 0))}</div>"
+    ) in source
+    assert (
+        '<div class="spk-owner-diagnostics-line">Segments with audio: '
+        "${escapeHtml(String(data.segments_available || 0))}</div>"
+    ) in source
+    assert (
+        '<div class="spk-owner-diagnostics-line">Embeddings: '
+        "${escapeHtml(String(data.embeddings_available || 0))}</div>"
+    ) in source
 
 
 def test_api_owner_status_no_cluster(speakers_env):

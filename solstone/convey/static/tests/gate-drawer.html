@@ -1,0 +1,136 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!-- Copyright (c) 2026 sol pbc -->
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>gate-drawer.js smoke</title>
+<style>
+  body { font: 14px/1.4 sans-serif; padding: 16px; }
+  .pass { color: var(--success-ink); }
+  .fail { color: var(--danger); }
+  #fixture { max-width: 720px; }
+</style>
+<link rel="stylesheet" href="../tokens.css">
+<link rel="stylesheet" href="../drawer.css">
+<h1>gate-drawer.js smoke</h1>
+<div id="results"></div>
+<div id="fixture"></div>
+<script src="../drawer.js"></script>
+<script src="../gate-drawer.js"></script>
+<script>
+  const results = document.getElementById('results');
+  const fixture = document.getElementById('fixture');
+  let failures = 0;
+
+  function assert(name, condition, detail) {
+    const row = document.createElement('div');
+    row.className = condition ? 'pass' : 'fail';
+    row.textContent = `${condition ? 'PASS' : 'FAIL'} ${name}${detail ? ` - ${detail}` : ''}`;
+    results.appendChild(row);
+    if (!condition) failures += 1;
+  }
+
+  function equal(name, actual, expected) {
+    assert(name, actual === expected, `expected "${expected}", got "${actual}"`);
+  }
+
+  function payload(overrides) {
+    return {
+      status: 'low_quality',
+      source: 'candidate_pool',
+      low_quality_reason: 'too_few_stmts',
+      observed_value: 5,
+      threshold_value: 30,
+      manual_tags_count: 2,
+      segments_available: 4,
+      embeddings_available: 20,
+      can_build_from_tags: false,
+      ...overrides
+    };
+  }
+
+  function renderToFixture(data, options = {}) {
+    fixture.innerHTML = window.GateDrawer.render(data, options);
+    return fixture.querySelector('.drawer');
+  }
+
+  function lineEl(drawer) {
+    return drawer.querySelector('.drawer-line');
+  }
+
+  function run() {
+    equal('public keys', Object.keys(window.GateDrawer).join(','), 'render');
+
+    let drawer = renderToFixture(payload(), { actionHtml: '<button id="spkOwnerBuildFromTags">build</button>' });
+    equal('data id', drawer.getAttribute('data-drawer-id'), 'speakers-owner-gate-diagnostics');
+    equal('label text', drawer.querySelector('.drawer-label').textContent, 'why not yet?');
+    assert('no drawer chip', drawer.querySelector('.drawer-chip') === null);
+    equal('too few line text', lineEl(drawer).textContent, 'heard in 5 longer statements — needs 30');
+    assert('too few line emphasizes observed first', Array.from(lineEl(drawer).querySelectorAll('b')).map((node) => node.textContent).join('|') === '5|30');
+    equal('statements row label', drawer.querySelector('.gate-row > span:first-child').textContent, 'statements');
+    assert('gate need renders', drawer.querySelector('.gate-need') !== null);
+    assert('gate next renders', drawer.querySelector('.gate-next') !== null);
+    assert('legacy body lines render', drawer.textContent.includes('source: candidate_pool') && drawer.textContent.includes('Manual tags: 2') && drawer.textContent.includes('Segments with audio: 4') && drawer.textContent.includes('Embeddings: 20'));
+    assert('action html renders', drawer.querySelector('#spkOwnerBuildFromTags') !== null);
+
+    drawer = renderToFixture(payload({
+      low_quality_reason: 'median_duration_too_short',
+      observed_value: 1.5,
+      threshold_value: 2,
+    }));
+    equal('median line text', lineEl(drawer).textContent, 'median statement length 1.50s — needs 2s');
+    assert('median line emphasizes seconds', Array.from(lineEl(drawer).querySelectorAll('b')).map((node) => node.textContent).join('|') === '1.50s|2s');
+    equal('median row label', drawer.querySelector('.gate-row > span:first-child').textContent, 'median length');
+
+    drawer = renderToFixture(payload({
+      low_quality_reason: 'cluster_too_diffuse',
+      observed_value: 0.2,
+      threshold_value: 0.3,
+    }));
+    equal('cohesion line text', lineEl(drawer).textContent, 'voice pattern is still too spread out');
+    assert('cohesion line has no digits', !/\d/.test(lineEl(drawer).textContent));
+    assert('cohesion line has no emphasis', lineEl(drawer).querySelector('b') === null);
+    equal('consistency row label', drawer.querySelector('.gate-row > span:first-child').textContent, 'consistency');
+
+    drawer = renderToFixture(payload({
+      low_quality_reason: 'median_duration_too_short',
+      observed_value: 0,
+      threshold_value: 1.5,
+    }));
+    assert('zero observed renders', lineEl(drawer).textContent.includes('0s'));
+
+    drawer = renderToFixture(payload({ threshold_value: 0 }));
+    assert('missing threshold omits needs', !lineEl(drawer).textContent.includes('needs'));
+    assert('incomplete triple omits bar', drawer.querySelector('.gate-bar') === null);
+
+    drawer = renderToFixture(payload({ observed_value: Number.NaN }));
+    assert('observed nan renders n/a', lineEl(drawer).textContent.includes('n/a'));
+    assert('nan never reaches output', !drawer.textContent.includes('NaN') && !drawer.innerHTML.includes('NaN'));
+    assert('undefined never reaches output', !drawer.textContent.includes('undefined') && !drawer.innerHTML.includes('undefined'));
+
+    drawer = renderToFixture(payload({ observed_value: 60, threshold_value: 30 }));
+    assert('bar caps at one hundred', drawer.querySelector('.gate-bar > span').getAttribute('style').includes('100.00%'));
+
+    fixture.innerHTML = window.GateDrawer.render(payload()) + window.GateDrawer.render(payload({ observed_value: 6 }));
+    fixture.querySelector('[data-drawer-id="speakers-owner-gate-diagnostics"]').open = true;
+    window.Drawer.preserveOpen(fixture, () => {
+      fixture.innerHTML = window.GateDrawer.render(payload({ observed_value: 7 }));
+    });
+    assert('preserve restores gate drawer', fixture.querySelector('[data-drawer-id="speakers-owner-gate-diagnostics"]').open === true);
+
+    if (failures > 0) {
+      throw new Error(`${failures} gate drawer smoke assertion(s) failed`);
+    }
+  }
+
+  try {
+    run();
+  } catch (error) {
+    const row = document.createElement('div');
+    row.className = 'fail';
+    row.textContent = `FAIL unhandled error - ${error.message}`;
+    results.appendChild(row);
+    throw error;
+  }
+</script>
+</html>
