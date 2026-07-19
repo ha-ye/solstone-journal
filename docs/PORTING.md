@@ -154,6 +154,26 @@ journal-path resolver used by `index_file()` before passing it to native. This
 keeps `chronicle/`-prefixed relative paths from being interpreted differently by
 the Rust relative-path resolver.
 
+Native indexer compound writes are atomic at the logical replacement-unit
+boundary. A content file replacement deletes old chunks, inserts new chunks,
+writes its `files` mtime, and co-commits its segment aggregate rebuild. An edge
+file replacement deletes old edge rows and `edge_files` state, extracts and
+inserts replacement rows, and writes the `edge_files` mtime as one unit.
+Entity search deletes stale entity-search chunks, inserts replacement chunks,
+and writes both watermarks as one unit. Reset is SQLite-native: it drops and
+recreates index objects transactionally and does not unlink the database, WAL,
+or SHM files.
+
+During the Python/native dual window, journals containing edge source files
+whose extraction fails can show differing `edge_files` rows between Python and
+native. Python may delete prior edge rows and advance `edge_files` for the
+failed source; native preserves the prior rows and mtime so the unchanged file
+retries on the next scan. Journals with no failing edge sources must remain
+byte-identical between Python and native index output.
+
+The detailed native atomicity design is in
+`docs/design/indexer-native-atomicity.md`.
+
 The selection keys are intentionally absent from `journal_default.json`. They
 are a two-release-lifetime migration control: release N keeps Python as the
 absent-key default and allows opt-in Rust; release N+1 flips the absent-key
