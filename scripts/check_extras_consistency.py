@@ -235,8 +235,10 @@ def _check_core_leaf(
     if build_system.get("build-backend") != "maturin":
         errors.append("core leaf [build-system].build-backend must be 'maturin'")
     requires = build_system.get("requires", [])
-    if not any(str(req).startswith("maturin") for req in requires):
-        errors.append("core leaf [build-system].requires must include maturin")
+    if requires != ["maturin==1.14.1"]:
+        errors.append(
+            "core leaf [build-system].requires must be exactly ['maturin==1.14.1']"
+        )
     if maturin.get("bindings") != "bin":
         errors.append("core leaf [tool.maturin].bindings must be 'bin'")
     if maturin.get("manifest-path") != "../../core/crates/solstone-core/Cargo.toml":
