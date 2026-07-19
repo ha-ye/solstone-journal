@@ -1041,7 +1041,6 @@ def test_local_worker_delegates_to_top_level_installer_with_lease_and_attempt(
     monkeypatch.setattr(
         local_bootstrap.local_install, "install_local", fake_install_local
     )
-    monkeypatch.setattr(local_bootstrap, "callosum_send", Mock(return_value=True))
 
     local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
 
@@ -1083,12 +1082,8 @@ def test_local_worker_cancel_before_ack_does_not_install_or_release(
     assert lease.released is False
 
 
-@pytest.mark.parametrize(
-    "send_behavior",
-    ["success", "false", "raise"],
-)
-def test_local_worker_success_requests_local_server_start(
-    settings_env, monkeypatch, send_behavior
+def test_local_worker_success_publishes_install_fact_without_start_request(
+    settings_env, monkeypatch
 ):
     settings_env(_settings_config())
     attempt_status = _write_local_status(
@@ -1104,19 +1099,13 @@ def test_local_worker_success_requests_local_server_start(
             transition_state(status, new_state="installed"),
         )
 
-    if send_behavior == "raise":
-        callosum_send = Mock(side_effect=RuntimeError("callosum broke"))
-    else:
-        callosum_send = Mock(return_value=send_behavior == "success")
-
     monkeypatch.setattr(
         local_bootstrap.local_install, "install_local", fake_install_local
     )
-    monkeypatch.setattr(local_bootstrap, "callosum_send", callosum_send)
 
     local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
 
-    callosum_send.assert_called_once_with("supervisor", "start_local")
+    assert not hasattr(local_bootstrap, "_request_local_server_start")
     assert ack.is_set()
     assert lease.released is True
     status = read_install_status(name="local")
@@ -1124,7 +1113,7 @@ def test_local_worker_success_requests_local_server_start(
     assert status["install_error"] is None
 
 
-def test_local_worker_install_model_failure_does_not_request_local_server_start(
+def test_local_worker_install_model_failure_records_failed_install_state(
     settings_env, monkeypatch
 ):
     settings_env(_settings_config())
@@ -1133,18 +1122,15 @@ def test_local_worker_install_model_failure_does_not_request_local_server_start(
     )
     lease = _FakeLease()
     ack = threading.Event()
-    callosum_send = Mock(return_value=True)
 
     monkeypatch.setattr(
         local_bootstrap.local_install,
         "install_local",
         Mock(side_effect=RuntimeError("model download broke")),
     )
-    monkeypatch.setattr(local_bootstrap, "callosum_send", callosum_send)
 
     local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
 
-    callosum_send.assert_not_called()
     assert ack.is_set()
     assert lease.released is True
     status = read_install_status(name="local")
@@ -1172,7 +1158,6 @@ def test_local_worker_cleans_registered_thread(settings_env, monkeypatch):
     monkeypatch.setattr(
         local_bootstrap.local_install, "install_local", fake_install_local
     )
-    monkeypatch.setattr(local_bootstrap, "callosum_send", Mock(return_value=True))
 
     local_bootstrap._run_bootstrap_worker(LOCAL_MODEL, lease, attempt_status, ack)
 

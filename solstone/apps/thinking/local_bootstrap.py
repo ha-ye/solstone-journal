@@ -14,7 +14,6 @@ from solstone.apps.thinking.install_copy import (
     LOCAL_MEMORY_WARNING_UNKNOWN,
     LOCAL_MLX_MEMORY_WARNING_UNKNOWN,
 )
-from solstone.think.callosum import callosum_send
 from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
 from solstone.think.providers import local_install, mlx_install
 from solstone.think.providers.fit_report import FitReport
@@ -489,15 +488,6 @@ def _mlx_bootstrap_worker(
                 _INSTALL_THREADS.pop(model, None)
 
 
-def _request_local_server_start() -> None:
-    """Best-effort: ask the supervisor to start the local server. Never raises."""
-    try:
-        if not callosum_send("supervisor", "start_local"):
-            logger.warning("could not request local server start: callosum send failed")
-    except Exception:
-        logger.exception("could not request local server start")
-
-
 def _run_bootstrap_worker(
     model: str,
     lease: InstallLease,
@@ -524,8 +514,7 @@ def _run_bootstrap_worker(
             transition_state(_read_status(), new_state="failed", error=str(exc))
         )
     else:
-        logger.info("local provider bootstrap complete; requesting local server start")
-        _request_local_server_start()
+        logger.info("local provider bootstrap complete")
     finally:
         lease.release()
         with _INSTALL_LOCK:

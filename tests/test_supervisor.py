@@ -3948,37 +3948,26 @@ def test_start_local_server_cuda_warmup_timeout_fails_closed(tmp_path, monkeypat
     managed.cleanup.assert_not_called()
 
 
-class _LocalManagedStub:
-    def __init__(self, *, name="llama-server", running=True):
-        self.name = name
-        self.is_running = MagicMock(return_value=running)
-
-
-def test_handle_start_local_request_requests_reconciliation(monkeypatch):
+def test_supervisor_provider_start_lifecycle_events_are_ignored(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
-    request_retry = MagicMock()
-    monkeypatch.setattr(mod, "_managed_procs", [])
-    monkeypatch.setattr(mod, "_is_remote_mode", False)
+    request_retry = MagicMock(
+        side_effect=AssertionError("deleted lifecycle event must not request retry")
+    )
     monkeypatch.setattr(mod, "_request_provider_runtime_retry", request_retry)
 
     mod._handle_callosum_message({"tract": "supervisor", "event": "start_local"})
+    mod._handle_callosum_message({"tract": "supervisor", "event": "start_parakeet"})
 
-    request_retry.assert_called_once_with("local")
-    assert mod._managed_procs == []
+    request_retry.assert_not_called()
 
 
-def test_handle_start_local_request_noops_when_local_server_running(monkeypatch):
+def test_supervisor_provider_start_lifecycle_handlers_are_absent():
     mod = importlib.import_module("solstone.think.supervisor")
-    running = _LocalManagedStub()
-    start_local_server = MagicMock()
-    monkeypatch.setattr(mod, "_managed_procs", [running])
-    monkeypatch.setattr(mod, "_is_remote_mode", False)
-    monkeypatch.setattr(mod, "start_local_server", start_local_server)
 
-    mod._handle_callosum_message({"tract": "supervisor", "event": "start_local"})
-
-    start_local_server.assert_not_called()
-    assert mod._managed_procs == [running]
+    assert not hasattr(mod, "_handle_supervisor_start_local")
+    assert not hasattr(mod, "_handle_supervisor_start_parakeet")
+    assert not hasattr(mod, "_request_local_server_start")
+    assert not hasattr(mod, "_request_parakeet_server_start")
 
 
 def test_handle_runner_exits_reports_llama_server_to_reconciler(monkeypatch):

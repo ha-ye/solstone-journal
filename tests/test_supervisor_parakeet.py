@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,16 @@ from solstone.think.providers.parakeet_placement import (
 )
 
 _LaunchRecord = dict[str, Any]
+
+
+class _InlineExecutor:
+    def submit(self, fn, *args, **kwargs):
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
 
 
 class _FakeLease:
@@ -731,9 +742,10 @@ def test_parakeet_bootstrap_ack_timeout_cancels_late_worker(
     assert install_parakeet == []
 
 
-def test_parakeet_bootstrap_worker_requests_start_after_install(monkeypatch) -> None:
+def test_parakeet_bootstrap_worker_publishes_install_fact_without_direct_start(
+    monkeypatch,
+) -> None:
     calls: list[dict[str, Any]] = []
-    requests: list[str] = []
     lease = _FakeLease()
     attempt_status = {"attempt_id": "attempt"}
     ack = supervisor.threading.Event()
@@ -742,9 +754,6 @@ def test_parakeet_bootstrap_worker_requests_start_after_install(monkeypatch) -> 
         parakeet_install,
         "install_parakeet",
         lambda **kwargs: calls.append(kwargs),
-    )
-    monkeypatch.setattr(
-        supervisor, "_request_parakeet_server_start", lambda: requests.append("start")
     )
 
     supervisor._run_parakeet_bootstrap_worker(
@@ -756,7 +765,7 @@ def test_parakeet_bootstrap_worker_requests_start_after_install(monkeypatch) -> 
     assert calls == [
         {"journal_path": None, "lease": lease, "attempt_status": attempt_status}
     ]
-    assert requests == ["start"]
+    assert not hasattr(supervisor, "_request_parakeet_server_start")
     assert ack.is_set()
     assert lease.released is True
 
@@ -794,7 +803,6 @@ def test_parakeet_bootstrap_worker_uses_captured_journal_path(
     monkeypatch, tmp_path
 ) -> None:
     calls: list[dict[str, Any]] = []
-    requests: list[str] = []
     journal_path = tmp_path / "original"
     lease = _FakeLease()
     attempt_status = {"attempt_id": "attempt"}
@@ -804,9 +812,6 @@ def test_parakeet_bootstrap_worker_uses_captured_journal_path(
         calls.append(kwargs)
 
     monkeypatch.setattr(parakeet_install, "install_parakeet", fake_install_parakeet)
-    monkeypatch.setattr(
-        supervisor, "_request_parakeet_server_start", lambda: requests.append("start")
-    )
 
     supervisor._run_parakeet_bootstrap_worker(
         journal_path,
@@ -822,6 +827,77 @@ def test_parakeet_bootstrap_worker_uses_captured_journal_path(
             "attempt_status": attempt_status,
         }
     ]
-    assert requests == ["start"]
+    assert not hasattr(supervisor, "_request_parakeet_server_start")
     assert ack.is_set()
     assert lease.released is True
+
+
+def test_parakeet_bootstrap_launches_only_via_reconciliation(monkeypatch) -> None:
+    install_calls: list[dict[str, Any]] = []
+    launches: list[supervisor.ParakeetServerLaunchPlan] = []
+    lease = _FakeLease()
+    attempt_status = {"attempt_id": "attempt"}
+    ack = supervisor.threading.Event()
+    state = supervisor.ProviderRuntimeState("parakeet")
+    plan = _parakeet_plan("cpu")
+
+    monkeypatch.setattr(
+        parakeet_install,
+        "install_parakeet",
+        lambda **kwargs: install_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_runtime_states",
+        {
+            "local": supervisor.ProviderRuntimeState("local"),
+            "parakeet": state,
+        },
+    )
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(
+        supervisor, "_write_provider_runtime", lambda *_args, **_kwargs: None
+    )
+
+    def start_worker(provider, plan_arg, _fence, _cancel_event):
+        assert provider == "parakeet"
+        launches.append(plan_arg)
+        return supervisor.ProviderLaunchOutcome(
+            status="launch-failed",
+            reason_code="launch-failed",
+            detail={},
+        )
+
+    monkeypatch.setattr(supervisor, "_provider_start_worker", start_worker)
+
+    supervisor._run_parakeet_bootstrap_worker(
+        lease=lease,
+        attempt_status=attempt_status,
+        ack=ack,
+    )
+
+    assert install_calls == [
+        {"journal_path": None, "lease": lease, "attempt_status": attempt_status}
+    ]
+    assert launches == []
+
+    state.truth_fence = supervisor._provider_fence(state, 0)
+    truth: concurrent.futures.Future = concurrent.futures.Future()
+    truth.set_result(
+        supervisor.ProviderTruthObservation(
+            provider="parakeet",
+            phase="starting",
+            reason_code="launch-requested",
+            detail={},
+            desired_fingerprint_json=plan.desired_fingerprint_json,
+            desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+            plan=plan,
+            boot_required=True,
+        )
+    )
+    state.truth_future = truth
+
+    assert supervisor._handle_provider_truth_result(state) is True
+    supervisor._submit_provider_start_if_needed(state, [])
+
+    assert launches == [plan]

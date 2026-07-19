@@ -403,7 +403,7 @@ test-app: .installed
 		echo "Example: make test-app APP=todos"; \
 		exit 1; \
 	fi
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) solstone/apps/$(APP)/tests/ -v
+	$(PYTEST_BASETEMP_INIT) PYTHONPATH=$(CURDIR) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) solstone/apps/$(APP)/tests/ -v
 
 # Run specific test file or pattern
 test-only: .installed
@@ -485,6 +485,9 @@ install-checks: .installed
 	@echo ""
 	@echo "=== Running provider-install owner check ==="
 	@$(MAKE) check-provider-install-owner
+	@echo ""
+	@echo "=== Running provider-start-command check ==="
+	@$(MAKE) check-provider-start-commands
 	@echo ""
 	@echo "=== Running call-http-only check ==="
 	@$(MAKE) check-call-http-only
@@ -618,6 +621,10 @@ check-journal-config-owner: .installed
 # Provider install ownership boundary gate
 check-provider-install-owner: .installed
 	$(VENV_BIN)/python scripts/check_provider_install_owner.py
+
+# Provider runtime start-command boundary gate
+check-provider-start-commands: .installed
+	$(VENV_BIN)/python scripts/check_provider_start_commands.py
 
 # sol call HTTP-only gate (call.py reaches the journal only over HTTP)
 check-call-http-only: .installed

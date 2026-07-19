@@ -40,7 +40,7 @@ from solstone.observe.transcribe.resource import (
 from solstone.think import core_handshake, maintenance, scheduler
 from solstone.think.app_supervised import FLAG, is_app_supervised, resolve_parent_fd
 from solstone.think.backup.engine import BACKUP_MAX_RUNTIME, BACKUP_RUN_CMD
-from solstone.think.callosum import CallosumConnection, CallosumServer, callosum_send
+from solstone.think.callosum import CallosumConnection, CallosumServer
 from solstone.think.catchup_state import (
     KIND_DAILY_CATCHUP,
     KIND_SEGMENT_REPAIR,
@@ -1802,38 +1802,6 @@ def _handle_supervisor_drain(message: dict) -> None:
         run_catchup_drain()
 
 
-def _handle_supervisor_start_local(message: dict) -> None:
-    """Handle incoming local server start requests."""
-    if message.get("tract") != "supervisor" or message.get("event") != "start_local":
-        return
-    if _is_remote_mode:
-        return
-
-    for proc in _managed_procs:
-        if proc.name in _LOCAL_SERVER_PROCTITLES and proc.is_running():
-            logging.info("local server already running; ignoring start_local request")
-            return
-
-    _request_provider_runtime_retry("local")
-    logging.info("requested local provider reconciliation from start_local request")
-
-
-def _handle_supervisor_start_parakeet(message: dict) -> None:
-    """Handle incoming parakeet-server start requests after provider install."""
-    if message.get("tract") != "supervisor" or message.get("event") != "start_parakeet":
-        return
-    if _is_remote_mode:
-        return
-
-    for proc in _managed_procs:
-        if proc.name == PARAKEET_SERVER_PROCESS_NAME and proc.is_running():
-            logging.info("parakeet-server already running; ignoring start_parakeet")
-            return
-
-    _request_provider_runtime_retry("parakeet")
-    logging.info("requested parakeet provider reconciliation from start_parakeet")
-
-
 def _handle_cortex_outcome(message: dict) -> None:
     """Recycle a wedged local model server after sustained generation failures."""
     if message.get("tract") != "cortex":
@@ -2947,17 +2915,6 @@ def resolve_parakeet_server_launch_plan(
     )
 
 
-def _request_parakeet_server_start() -> None:
-    """Best-effort: ask this supervisor to retry parakeet-server startup."""
-    try:
-        if not callosum_send("supervisor", "start_parakeet"):
-            logging.warning(
-                "could not request parakeet-server start: callosum send failed"
-            )
-    except Exception:
-        logging.exception("could not request parakeet-server start")
-
-
 def _run_parakeet_bootstrap_worker(
     journal_path: Path | None = None,
     lease: Any | None = None,
@@ -2966,7 +2923,7 @@ def _run_parakeet_bootstrap_worker(
     cancel: threading.Event | None = None,
     transfer_lock: threading.Lock | None = None,
 ) -> None:
-    """Install parakeet.cpp artifacts in the background, then retry startup."""
+    """Install parakeet.cpp artifacts in the background."""
     if ack is not None:
         if cancel is not None and transfer_lock is not None:
             with transfer_lock:
@@ -2986,8 +2943,7 @@ def _run_parakeet_bootstrap_worker(
     except Exception:
         logging.exception("parakeet.cpp provider bootstrap failed")
     else:
-        logging.info("parakeet.cpp provider bootstrap complete; requesting startup")
-        _request_parakeet_server_start()
+        logging.info("parakeet.cpp provider bootstrap complete")
     finally:
         if lease is not None:
             lease.release()
@@ -5643,8 +5599,6 @@ def _handle_callosum_message(message: dict) -> None:
     _handle_task_request(message)
     _handle_supervisor_request(message)
     _handle_supervisor_drain(message)
-    _handle_supervisor_start_local(message)
-    _handle_supervisor_start_parakeet(message)
     _handle_segment_observed(message)
     _handle_activity_recorded(message)
     _handle_think_daily_complete(message)
