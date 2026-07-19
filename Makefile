@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit openapi check-openapi contract check-contract journal-resolution-vectors check-journal-resolution-vectors dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit openapi check-openapi contract check-contract journal-resolution-vectors check-journal-resolution-vectors dev all sandbox sandbox-stop install-models parakeet-helper parakeet-helper-clean wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-cogitate-prompts smoke-cogitate release release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -58,7 +58,7 @@ JOURNAL_GROUP := $(if $(filter cuda,$(JOURNAL_VARIANT)),journal-cuda,journal-cpu
 # pre-step, so neither should abort at parse time when uv is absent — they
 # report uv-absence themselves. test/ci/etc. still abort early.
 UV := $(shell command -v uv 2>/dev/null)
-UV_OPTIONAL_GOALS := preflight install render-packaging check-rust-fmt check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit
+UV_OPTIONAL_GOALS := preflight install render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit
 ifndef UV
 ifneq ($(filter-out $(UV_OPTIONAL_GOALS),$(MAKECMDGOALS)),)
 $(error uv is not installed. Install it: curl -LsSf https://astral.sh/uv/install.sh | sh)
@@ -147,6 +147,11 @@ render-packaging:
 check-rust-fmt:
 	@$(REQUIRE_CARGO)
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
+
+check-rust-msrv:
+	@$(REQUIRE_CARGO)
+	@python3 scripts/check_release_preflight.py msrv --toolchain 1.95.0
+	RUSTUP_TOOLCHAIN=1.95.0 cargo check --manifest-path $(RUST_MANIFEST) --workspace --locked
 
 check-rust-clippy:
 	@$(REQUIRE_CARGO)
@@ -530,6 +535,9 @@ install-checks: .installed
 	@echo ""
 	@echo "=== Running rust format check ==="
 	@$(MAKE) check-rust-fmt
+	@echo ""
+	@echo "=== Running rust MSRV check ==="
+	@$(MAKE) check-rust-msrv
 	@echo ""
 	@echo "=== Running rust clippy check ==="
 	@$(MAKE) check-rust-clippy

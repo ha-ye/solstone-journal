@@ -25,10 +25,10 @@ pub fn extract_path_metadata(rel_path: &str) -> PathMetadata {
         day = parts[0].to_string();
     }
 
-    if let Some(talents_idx) = parts.iter().position(|part| *part == "talents") {
-        if talents_idx + 2 < parts.len() {
-            facet = parts[talents_idx + 1].to_string();
-        }
+    if let Some(talents_idx) = parts.iter().position(|part| *part == "talents")
+        && talents_idx + 2 < parts.len()
+    {
+        facet = parts[talents_idx + 1].to_string();
     }
 
     if parts.first() == Some(&"facets") && parts.len() >= 3 {
