@@ -889,8 +889,16 @@ def test_retry_token_resets_live_target_without_launching(monkeypatch) -> None:
         ),
         supervisor.ProviderTruthObservation(
             provider="local",
-            phase="host-blocked",
-            reason_code="gpu-unavailable",
+            phase="state-corrupt",
+            reason_code="record-malformed",
+            detail={},
+            desired_fingerprint_sha256="fp-local",
+            boot_required=True,
+        ),
+        supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="state-unavailable",
+            reason_code="record-unavailable",
             detail={},
             desired_fingerprint_sha256="fp-local",
             boot_required=True,
@@ -914,6 +922,91 @@ def test_truth_change_signals_pending_start_cancel_event(
 
     assert state.start_cancel_event is not None
     assert state.start_cancel_event.is_set()
+
+
+@pytest.mark.parametrize(
+    ("provider", "phase", "plan", "observation"),
+    [
+        (
+            "local",
+            "starting",
+            _cuda_plan(),
+            supervisor.ProviderTruthObservation(
+                provider="local",
+                phase="host-blocked",
+                reason_code="gpu-unavailable",
+                detail={"host": {"reason": "transient cuda pressure"}},
+                desired_fingerprint_sha256="fp-local-cuda",
+                boot_required=True,
+            ),
+        ),
+        (
+            "local",
+            "ready",
+            _cuda_plan(),
+            supervisor.ProviderTruthObservation(
+                provider="local",
+                phase="host-blocked",
+                reason_code="gpu-unavailable",
+                detail={"host": {"reason": "transient cuda pressure"}},
+                desired_fingerprint_sha256="fp-local-cuda",
+                boot_required=True,
+            ),
+        ),
+        (
+            "parakeet",
+            "starting",
+            _parakeet_plan("cpu"),
+            supervisor.ProviderTruthObservation(
+                provider="parakeet",
+                phase="starting",
+                reason_code="launch-requested",
+                detail={"placement": "gpu"},
+                desired_fingerprint_sha256="fp-parakeet",
+                plan=_parakeet_plan("vulkan"),
+                boot_required=True,
+            ),
+        ),
+        (
+            "parakeet",
+            "ready",
+            _parakeet_plan("cpu"),
+            supervisor.ProviderTruthObservation(
+                provider="parakeet",
+                phase="starting",
+                reason_code="launch-requested",
+                detail={"placement": "gpu"},
+                desired_fingerprint_sha256="fp-parakeet",
+                plan=_parakeet_plan("vulkan"),
+                boot_required=True,
+            ),
+        ),
+    ],
+)
+def test_same_target_transient_observation_keeps_captured_plan_authoritative(
+    provider: str,
+    phase: RuntimePhase,
+    plan: supervisor.LocalServerLaunchPlan | supervisor.ParakeetServerLaunchPlan,
+    observation: supervisor.ProviderTruthObservation,
+) -> None:
+    state = supervisor._provider_runtime_states[provider]
+    state.latest_phase = phase
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.truth_fence = supervisor._provider_fence(state, 0)
+    state.truth_future = _future_with(observation)
+    if phase == "starting":
+        state.start_fence = supervisor._provider_fence(state, 0)
+        state.start_future = concurrent.futures.Future()
+        state.start_cancel_event = threading.Event()
+
+    assert supervisor._handle_provider_truth_result(state) is True
+
+    if state.start_cancel_event is not None:
+        assert not state.start_cancel_event.is_set()
+    assert state.latest_plan is plan
+    assert state.latest_phase == phase
 
 
 def test_handle_shutdown_signals_pending_provider_start(monkeypatch) -> None:
@@ -1080,6 +1173,31 @@ def test_start_worker_cancellation_cleans_child_at_warmup_boundaries(
     assert placements == []
     if cancel_point == "before-probe":
         assert not probe_entered.is_set()
+
+
+def test_cancelled_launch_outcome_preserves_handle_when_cleanup_raises(
+    monkeypatch,
+) -> None:
+    managed = _FakeManaged()
+    monkeypatch.setattr(
+        supervisor,
+        "_terminate_cleanup_handle",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("cleanup failed")),
+    )
+
+    outcome = supervisor._cancelled_launch_outcome(
+        "local",
+        backend="cuda",
+        port=45678,
+        managed=managed,
+        reason="test cancellation",
+    )
+
+    assert outcome.status == "launch-failed"
+    assert outcome.managed is managed
+    assert outcome.detail["cancelled"] is True
+    assert outcome.detail["cleanup_failed"] is True
+    assert outcome.detail["cleanup_deferred_to"] == "cleanup-failed-reconciler"
 
 
 def test_cancelled_ready_result_is_cleaned_without_port_publication(monkeypatch):

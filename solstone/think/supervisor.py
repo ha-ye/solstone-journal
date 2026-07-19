@@ -1998,20 +1998,36 @@ def _cancelled_launch_outcome(
     managed: RunnerManagedProcess | None,
     reason: str,
 ) -> ProviderLaunchOutcome:
+    cleanup_error: str | None = None
     if managed is not None:
-        if provider == "parakeet":
-            _cleanup_parakeet_launch(managed, reason)
-        else:
-            _terminate_cleanup_handle(managed, reason=reason)
+        try:
+            if provider == "parakeet":
+                _cleanup_parakeet_launch(managed, reason)
+            else:
+                _terminate_cleanup_handle(managed, reason=reason)
+        except Exception as exc:
+            cleanup_error = str(exc)
+            logger.exception(
+                "%s provider launch cancellation cleanup failed; preserving handle",
+                provider,
+            )
+    detail = {
+        "backend": backend,
+        "port": port,
+        "cancelled": True,
+        "cancel_reason": reason,
+    }
+    if cleanup_error is not None:
+        detail |= {
+            "cleanup_failed": True,
+            "cleanup_error": cleanup_error,
+            "cleanup_deferred_to": "cleanup-failed-reconciler",
+        }
     return _outcome(
         "launch-failed",
         "launch-failed",
-        {
-            "backend": backend,
-            "port": port,
-            "cancelled": True,
-            "cancel_reason": reason,
-        },
+        detail,
+        managed if cleanup_error is not None else None,
     )
 
 
@@ -3715,11 +3731,6 @@ _PROVIDER_STARTUP_TERMINAL_PHASES: frozenset[RuntimePhase] = frozenset(
 _PROVIDER_START_CANCEL_PHASES: frozenset[RuntimePhase] = frozenset(
     {
         "not-desired",
-        "artifact-not-ready",
-        "host-blocked",
-        "ready",
-        "stopped",
-        "failed",
         "state-corrupt",
         "state-unavailable",
     }
@@ -4060,6 +4071,23 @@ def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
     fingerprint_changed = (
         observation.desired_fingerprint_sha256 != state.desired_fingerprint
     )
+    if (
+        not fingerprint_changed
+        and observation.phase in {"starting", "host-blocked"}
+        and state.latest_phase in {"starting", "ready"}
+        and state.latest_plan is not None
+    ):
+        _write_provider_runtime(
+            state,
+            phase=state.latest_phase,
+            reason_code="stale-result-ignored",
+            detail={
+                "slot": "truth",
+                "latched_phase": observation.phase,
+                "latched_reason_code": observation.reason_code,
+            },
+        )
+        return True
     if state.start_future is not None:
         if fingerprint_changed:
             _signal_provider_start_cancel(
