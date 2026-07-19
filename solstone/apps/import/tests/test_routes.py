@@ -180,20 +180,11 @@ def test_owner_collision_copy_preserves_placeholders_and_entity():
     source_text = IMPORT_DETAIL_JS.read_text(encoding="utf-8")
     target = "${escapeHtml(principalCollision.target_name || '')}"
     source = "${escapeHtml(principalCollision.source_name || '')}"
-    expected = (
-        "<p>this journal belongs to "
-        + target
-        + ", and the imported journal marks "
-        + source
-        + " as its owner. this journal&#39;s owner is unchanged; the other person "
-        "came in as a regular entity.</p>"
-    )
 
     assert "importedJson?.principal_collision" in source_text
     assert target in source_text
     assert source in source_text
     assert "journal&#39;s" in source_text
-    assert expected in source_text
     assert 'href="/app/settings#profile"' in source_text
     assert 'href="/app/settings#identity"' not in source_text
 
@@ -220,6 +211,23 @@ def test_import_detail_owner_facing_strings_are_pinned():
         assert f"{singular}: '{singular}'" in region
         assert f"'{singular}', strings." not in source
         assert f"'{singular}'" not in source[end:]
+    for key in (
+        "collision_body_before_target",
+        "collision_body_between_names",
+        "collision_body_after_source",
+        "collision_body_journal_entity",
+        "collision_body_after_entity",
+        "file_size_units",
+        "drawer_unavailable",
+    ):
+        assert key in region
+    for leak in (
+        "this journal belongs to",
+        "drawer renderer unavailable",
+        "const units = ['b'",
+        "return '0 b'",
+    ):
+        assert leak not in source[end:]
 
 
 def test_import_detail_module_runs_with_real_drawer_under_node():
@@ -407,9 +415,17 @@ assert(window.ImportDetail.resolveDay({imported_json: {date_range: ["20260101", 
 assert(window.ImportDetail.resolveDay({imported_json: {date_range: ["20260101", "20260103"]}}) === "20260101", "date_range first day is fallback");
 assert(window.ImportDetail.createdFileHref("20260101/import.ics/090000_300/event_transcript.md") === null, "actual fixture path has no chronicle anchor");
 assert(window.ImportDetail.createdFileHref("chronicle/20260101/import.ics/090000_300/event_transcript.md") === "/app/timeline/20260101", "chronicle path anchors to timeline day");
+const oddDay = "2026/01/01?#x";
+const encodedOddDay = encodeURIComponent(oddDay);
+const oddDayDetail = window.ImportDetail.renderDetail({
+  ...clean,
+  imported_json: {...clean.imported_json, target_day: oddDay, date_range: ["20260101", "20260101"]}
+});
+assert(oddDayDetail.includes(`/app/activities/${encodedOddDay}`), "activities day href is url encoded");
+assert(oddDayDetail.includes(`/app/timeline/${encodedOddDay}`), "timeline day href is url encoded");
 
 const meta = window.ImportDetail.renderMeta(clean);
-assert(meta.includes("calendar-export.zip"), "meta includes escaped filename");
+assert(meta.includes(clean.import_json.original_filename), "meta includes escaped filename");
 assert(meta.includes("status-badge success"), "meta keeps status badge");
 const detail = window.ImportDetail.renderDetail(collision);
 assert(detail.includes('<details class="drawer"'), "detail renders drawer");
@@ -420,13 +436,28 @@ assert(detail.includes("/tmp/staging/&lt;entity&gt;/entity.json"), "staging path
 assert(detail.includes("bad &lt;segment&gt;"), "segment reason is escaped");
 assert(detail.includes("summary &lt;error&gt;"), "summary error is escaped");
 assert(detail.includes("processed 2026-01-01 09:00:30 · ics importer · nothing left this machine"), "provenance line is exact");
+const sparseSummaryDetail = window.ImportDetail.renderDetail({
+  ...clean,
+  imported_json: {...clean.imported_json, merge_summary: {segments_copied: 1}}
+});
+const sparseSummaryMatch = sparseSummaryDetail.match(/<section class="import-drawer-section"><h3>merge summary<\\/h3><dl class="drawer-kv">([\\s\\S]*?)<\\/dl><\\/section>/);
+assert(sparseSummaryMatch, "sparse merge summary section renders");
+assert(sparseSummaryMatch[1].includes("<dt>segments</dt><dd>1 copied</dd>"), "sparse merge summary renders present counter");
+assert(!sparseSummaryMatch[1].includes("0 skipped"), "sparse merge summary omits absent skipped counter");
+assert(!sparseSummaryMatch[1].includes("0 errored"), "sparse merge summary omits absent errored counter");
+assert(!sparseSummaryMatch[1].includes("<dt>entities</dt>"), "sparse merge summary omits fully absent rows");
+const emptySummaryDetail = window.ImportDetail.renderDetail({
+  ...clean,
+  imported_json: {...clean.imported_json, merge_summary: {}}
+});
+assert(!emptySummaryDetail.includes("<h3>merge summary</h3>"), "empty merge summary section is omitted");
 const rawMatches = detail.match(/<details class="drawer-raw">/g) || [];
 assert(rawMatches.length === 1, "detail renders one combined raw disclosure");
 const rawMatch = detail.match(/<details class="drawer-raw">[\\s\\S]*?<pre>([\\s\\S]*?)<\\/pre>/);
 const parsedRaw = JSON.parse(htmlUnescape(rawMatch[1]));
 assert(Object.prototype.hasOwnProperty.call(parsedRaw, "import_json"), "raw payload includes import_json key");
 assert(Object.prototype.hasOwnProperty.call(parsedRaw, "imported_json"), "raw payload includes imported_json key");
-assert(parsedRaw.import_json.original_filename === "calendar-export.zip", "raw payload import filename round-trips");
+assert(parsedRaw.import_json.original_filename === collision.import_json.original_filename, "raw payload import filename round-trips");
 assert(!window.ImportDetail.renderDetail({import_json: null, imported_json: null}).includes('details class="drawer-raw"'), "raw disclosure is omitted when both payloads are null");
 assert(window.ImportDetail.renderDetail(errorPayload).includes("bad &lt;archive&gt;"), "processing error is escaped");
 """,

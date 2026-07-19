@@ -57,8 +57,8 @@
       processing_completed: '2026-01-01T09:10:00',
       total_files_created: 2,
       all_created_files: [
-        '20260101/import.ics/090000_300/event_transcript.md',
-        'chronicle/20260101/import.ics/093000_300/event_transcript.md'
+        '20260101/import.ics/090000_300/plain_event_transcript.md',
+        'chronicle/20260101/import.ics/093000_300/anchored_event_transcript.md'
       ],
       source_type: 'ics',
       source_display: 'calendar',
@@ -137,7 +137,11 @@
     equal('clean line', root.querySelector('.drawer-line').textContent, '2 files created · 5 entries · completed in 10 minutes');
     assert('clean leads has activities link', root.querySelector('a[href="/app/activities/20260101"]'));
     assert('clean leads has timeline link', root.querySelector('a[href="/app/timeline/20260101"]'));
-    assert('plain created fixture path is text', !root.querySelector('.drawer-evidence-row a[href^="/app/timeline/"]') || root.querySelector('.drawer-evidence-row a[href="/app/timeline/20260101"]'));
+    const plainFileName = clean.imported_json.all_created_files[0].split('/').pop();
+    const plainFileRow = Array.from(root.querySelectorAll('.drawer-evidence-row')).find((row) => row.textContent.includes(plainFileName));
+    assert('plain created fixture path row exists', plainFileRow);
+    assert('plain created fixture path is text', plainFileRow && !plainFileRow.querySelector('a'));
+    assert('chronicle created fixture path links timeline', root.querySelector('.drawer-evidence-row a[href="/app/timeline/20260101"]'));
     const rawBlocks = root.querySelectorAll('details.drawer-raw');
     equal('single raw disclosure', rawBlocks.length, 1);
     const rawPayload = JSON.parse(rawBlocks[0].querySelector('pre').textContent);

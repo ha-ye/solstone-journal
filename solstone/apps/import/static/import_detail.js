@@ -48,6 +48,7 @@
     errored_segments: 'errored segments',
     summary_errors: 'summary errors',
     raw_payload: 'raw payload',
+    drawer_unavailable: 'drawer renderer unavailable',
     completed: 'completed',
     failed: 'failed',
     pending: 'pending',
@@ -74,7 +75,13 @@
     processed: 'processed',
     nothing_left: 'nothing left this machine',
     profile_link: 'review profile settings',
-    collision_title: 'owner identity differs between journals'
+    collision_title: 'owner identity differs between journals',
+    collision_body_before_target: 'this journal belongs to ',
+    collision_body_between_names: ', and the imported journal marks ',
+    collision_body_after_source: ' as its owner. this ',
+    collision_body_journal_entity: 'journal&#39;s',
+    collision_body_after_entity: ' owner is unchanged; the other person came in as a regular entity.',
+    file_size_units: Object.freeze(['b', 'kb', 'mb', 'gb'])
   });
   // --- end owner-facing strings ---
 
@@ -117,8 +124,8 @@
   function formatFileSize(bytes) {
     const size = numberValue(bytes);
     if (size === null) return null;
-    if (size === 0) return '0 b';
-    const units = ['b', 'kb', 'mb', 'gb'];
+    const units = strings.file_size_units;
+    if (size === 0) return `0 ${units[0]}`;
     const index = Math.min(units.length - 1, Math.floor(Math.log(size) / Math.log(1024)));
     return `${Number((size / Math.pow(1024, index)).toFixed(1))} ${units[index]}`;
   }
@@ -264,7 +271,7 @@
 
   function createdFileHref(path) {
     const match = String(path ?? '').match(/(?:^|\/)chronicle\/(\d{8})\//);
-    return match ? `/app/timeline/${match[1]}` : null;
+    return match ? `/app/timeline/${encodeURIComponent(match[1])}` : null;
   }
 
   function kvRow(label, value) {
@@ -307,8 +314,9 @@
       formatCount(importedJson.entities_seeded, strings.entity, strings.entities),
       formatCount(importedJson.total_files_created, strings.file, strings.files)
     ].filter(hasValue);
+    const encodedDay = day ? encodeURIComponent(day) : '';
     const links = day
-      ? `<div class="import-leads-links"><a href="/app/activities/${escapeHtml(day)}">${escapeHtml(strings.activities)}</a><a href="/app/timeline/${escapeHtml(day)}">${escapeHtml(strings.timeline)}</a></div>`
+      ? `<div class="import-leads-links"><a href="/app/activities/${escapeHtml(encodedDay)}">${escapeHtml(strings.activities)}</a><a href="/app/timeline/${escapeHtml(encodedDay)}">${escapeHtml(strings.timeline)}</a></div>`
       : '';
 
     return `<section class="import-leads-card"><h2>${escapeHtml(strings.leads_title)}</h2><div class="import-leads-facts">${facts.map((fact) => `<span>${escapeHtml(fact)}</span>`).join('')}</div>${links}</section>`;
@@ -349,22 +357,44 @@
   function renderMergeSummary(importedJson) {
     const summary = asObject(importedJson?.merge_summary);
     if (!summary) return '';
+    const counter = (key, label) => {
+      const value = numberValue(summary[key]);
+      return value === null ? '' : `${value} ${label}`;
+    };
+    const row = (label, clauses) => {
+      const kept = clauses.filter(Boolean);
+      return kept.length ? kvRow(label, kept.join(' · ')) : '';
+    };
     return sectionHtml(strings.merge_summary, [
-      kvRow(
+      row(
         strings.segments,
-        `${numberValue(summary.segments_copied) ?? 0} ${strings.copied} · ${numberValue(summary.segments_skipped) ?? 0} ${strings.skipped} · ${numberValue(summary.segments_errored) ?? 0} ${strings.errored}`
+        [
+          counter('segments_copied', strings.copied),
+          counter('segments_skipped', strings.skipped),
+          counter('segments_errored', strings.errored)
+        ]
       ),
-      kvRow(
+      row(
         strings.entities,
-        `${numberValue(summary.entities_created) ?? 0} ${strings.created} · ${numberValue(summary.entities_merged) ?? 0} ${strings.merged} · ${numberValue(summary.entities_staged) ?? 0} ${strings.staged}`
+        [
+          counter('entities_created', strings.created),
+          counter('entities_merged', strings.merged),
+          counter('entities_staged', strings.staged)
+        ]
       ),
-      kvRow(
+      row(
         strings.facets,
-        `${numberValue(summary.facets_created) ?? 0} ${strings.created} · ${numberValue(summary.facets_merged) ?? 0} ${strings.merged}`
+        [
+          counter('facets_created', strings.created),
+          counter('facets_merged', strings.merged)
+        ]
       ),
-      kvRow(
+      row(
         strings.imports,
-        `${numberValue(summary.imports_copied) ?? 0} ${strings.copied} · ${numberValue(summary.imports_skipped) ?? 0} ${strings.skipped}`
+        [
+          counter('imports_copied', strings.copied),
+          counter('imports_skipped', strings.skipped)
+        ]
       )
     ]);
   }
@@ -375,7 +405,7 @@
     return `
       <div class="import-collision-callout">
         <h3>${escapeHtml(strings.collision_title)}</h3>
-        <p>this journal belongs to ${escapeHtml(principalCollision.target_name || '')}, and the imported journal marks ${escapeHtml(principalCollision.source_name || '')} as its owner. this journal&#39;s owner is unchanged; the other person came in as a regular entity.</p>
+        <p>${escapeHtml(strings.collision_body_before_target)}${escapeHtml(principalCollision.target_name || '')}${escapeHtml(strings.collision_body_between_names)}${escapeHtml(principalCollision.source_name || '')}${escapeHtml(strings.collision_body_after_source)}${strings.collision_body_journal_entity}${escapeHtml(strings.collision_body_after_entity)}</p>
         <a href="/app/settings#profile">${escapeHtml(strings.profile_link)}</a>
       </div>
     `;
@@ -472,7 +502,7 @@
 
   function renderDetail(data) {
     if (!window.Drawer || typeof window.Drawer.render !== 'function') {
-      throw new Error('drawer renderer unavailable');
+      throw new Error(strings.drawer_unavailable);
     }
     const derived = deriveStatus(data);
     const drawer = window.Drawer.render({
