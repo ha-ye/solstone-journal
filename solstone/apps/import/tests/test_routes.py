@@ -4,12 +4,20 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
+import subprocess
 import sys
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
+
+IMPORT_APP_ROOT = Path(__file__).resolve().parents[1]
+IMPORT_DETAIL_JS = IMPORT_APP_ROOT / "static" / "import_detail.js"
+REPO_ROOT = Path(__file__).resolve().parents[4]
+DRAWER_JS = REPO_ROOT / "solstone" / "convey" / "static" / "drawer.js"
 
 
 def _pdf_literal(value: str) -> bytes:
@@ -24,6 +32,13 @@ def _pdf_literal(value: str) -> bytes:
         else:
             out += char.encode("ascii")
     return b"(" + bytes(out) + b")"
+
+
+def _node_or_skip() -> str:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is not available")
+    return node
 
 
 def _write_text_pdf(path: Path, text: str) -> Path:
@@ -103,6 +118,46 @@ def test_import_detail_api_path_resolves(client):
     assert endpoint == "app:import.import_detail_api"
 
 
+def test_import_detail_static_module_serves(client):
+    response = client.get("/app/import/static/import_detail.js")
+
+    assert response.status_code == 200
+    assert b"window.ImportDetail" in response.data
+    assert b"renderDetail" in response.data
+
+
+def test_import_workspace_detail_static_wiring_and_deleted_tabs():
+    workspace = (IMPORT_APP_ROOT / "workspace.html").read_text(encoding="utf-8")
+
+    assert '<script src="/app/import/static/import_detail.js"></script>' in workspace
+    assert 'data-target="overview"' in workspace
+    assert 'data-target="content"' in workspace
+    for deleted in (
+        'data-target="import-json"',
+        'data-target="imported-json"',
+        'id="import-json"',
+        'id="imported-json"',
+        "importJsonContent",
+        "importedJsonContent",
+        "formatJson",
+        ".json-viewer",
+        ".json-key",
+        ".json-string",
+        ".json-number",
+        ".json-boolean",
+        ".json-null",
+        ".info-grid",
+        ".merge-summary-card",
+        ".links-section",
+        ".files-list",
+    ):
+        assert deleted not in workspace
+    assert ".status-badge" in workspace
+    assert ".no-data" in workspace
+    assert ".drawer-raw" in workspace
+    assert ".import-collision-callout" in workspace
+
+
 def test_source_metadata_descriptions_are_pinned_byte_for_byte():
     import importlib
 
@@ -122,9 +177,7 @@ def test_source_metadata_descriptions_are_pinned_byte_for_byte():
 
 
 def test_owner_collision_copy_preserves_placeholders_and_entity():
-    workspace = (Path(__file__).resolve().parents[1] / "workspace.html").read_text(
-        encoding="utf-8"
-    )
+    source_text = IMPORT_DETAIL_JS.read_text(encoding="utf-8")
     target = "${escapeHtml(principalCollision.target_name || '')}"
     source = "${escapeHtml(principalCollision.source_name || '')}"
     expected = (
@@ -136,11 +189,250 @@ def test_owner_collision_copy_preserves_placeholders_and_entity():
         "came in as a regular entity.</p>"
     )
 
-    assert "if (data.imported_json.principal_collision)" in workspace
-    assert target in workspace
-    assert source in workspace
-    assert "journal&#39;s" in workspace
-    assert expected in workspace
+    assert "importedJson?.principal_collision" in source_text
+    assert target in source_text
+    assert source in source_text
+    assert "journal&#39;s" in source_text
+    assert expected in source_text
+    assert 'href="/app/settings#profile"' in source_text
+    assert 'href="/app/settings#identity"' not in source_text
+
+
+def test_import_detail_owner_facing_strings_are_pinned():
+    source = IMPORT_DETAIL_JS.read_text(encoding="utf-8")
+    start = source.index("// --- owner-facing strings ---")
+    end = source.index("// --- end owner-facing strings ---")
+    region = source[start:end]
+    values = re.findall(r"'([^']*)'", region)
+    banned = {"capture", "record", "monitor", "track", "user"}
+
+    assert "object.freeze" in region.lower()
+    assert values
+    for value in values:
+        lowered = value.lower()
+        assert value == lowered
+        assert {word for word in banned if word in lowered} == set()
+    assert "localStorage" not in source
+    assert "sessionStorage" not in source
+    assert "preserveOpen" not in source
+    assert "<b>" not in source
+    for singular in ("entry", "entity", "file"):
+        assert f"{singular}: '{singular}'" in region
+        assert f"'{singular}', strings." not in source
+        assert f"'{singular}'" not in source[end:]
+
+
+def test_import_detail_module_runs_with_real_drawer_under_node():
+    node = _node_or_skip()
+    clean = {
+        "timestamp": "20260101_090000",
+        "import_json": {
+            "original_filename": "calendar-export.zip",
+            "upload_datetime": "2026-01-01T09:00:00",
+            "user_timestamp": "20260101_090000",
+            "file_size": 45678,
+            "mime_type": "application/zip",
+            "facet": "work",
+            "setting": "calendar",
+        },
+        "imported_json": {
+            "processing_completed": "2026-01-01T09:10:00",
+            "total_files_created": 2,
+            "all_created_files": [
+                "20260101/import.ics/090000_300/event_transcript.md",
+                "20260101/import.ics/093000_300/event_transcript.md",
+            ],
+            "source_type": "ics",
+            "source_display": "calendar",
+            "entries_written": 5,
+            "entities_seeded": 0,
+            "date_range": ["20260101", "20260101"],
+            "target_day": "20260101",
+        },
+    }
+    collision = {
+        **clean,
+        "imported_json": {
+            **clean["imported_json"],
+            "processing_completed": "2026-01-01T09:00:30",
+            "entries_written": 1,
+            "total_files_created": 0,
+            "principal_collision": {
+                "source_name": "source <person>",
+                "target_name": "target <person>",
+            },
+            "merge_summary": {
+                "segments_copied": 1,
+                "segments_skipped": 0,
+                "segments_errored": 0,
+                "entities_created": 0,
+                "entities_merged": 0,
+                "entities_staged": 1,
+                "facets_created": 0,
+                "facets_merged": 0,
+                "imports_copied": 0,
+                "imports_skipped": 0,
+            },
+        },
+        "decision_highlights": {
+            "staged_entities": [
+                {
+                    "source_name": "source <person>",
+                    "target_name": "target <person>",
+                    "staging_path": "/tmp/staging/<entity>/entity.json",
+                }
+            ],
+            "errored_segments": [
+                {
+                    "item_id": "20260101/default/090000_300",
+                    "reason": "bad <segment>",
+                }
+            ],
+        },
+        "summary_errors": ["summary <error>"],
+        "merge_artifact_paths": {
+            "decisions": "/tmp/decisions.jsonl",
+            "staging": "/tmp/staging",
+        },
+    }
+    error_payload = {
+        **clean,
+        "imported_json": {
+            "processing_started": "2026-01-01T09:00:00",
+            "processing_failed": "2026-01-01T09:02:00",
+            "source_type": "generic",
+            "source_display": "calendar-export.zip",
+            "entries_written": 0,
+            "entities_seeded": 0,
+            "date_range": None,
+            "error": "bad <archive>",
+            "error_stage": "writing",
+            "total_files_created": 0,
+            "all_created_files": [],
+        },
+    }
+    pending = {
+        "timestamp": "20260101_090000",
+        "import_json": {
+            "original_filename": "pending.txt",
+            "upload_datetime": "2026-01-01T09:00:00",
+        },
+        "imported_json": None,
+    }
+    started_without_result = {
+        "timestamp": "20260101_090000",
+        "import_json": {
+            "original_filename": "stalled.txt",
+            "upload_datetime": "2026-01-01T09:00:00",
+            "task_id": "123",
+        },
+        "imported_json": None,
+    }
+    partial = {
+        **clean,
+        "imported_json": {
+            "source_type": "chatgpt",
+            "total_files_created": 2,
+        },
+    }
+
+    script = "\n".join(
+        [
+            "global.window = global;",
+            DRAWER_JS.read_text(encoding="utf-8"),
+            IMPORT_DETAIL_JS.read_text(encoding="utf-8"),
+            "function assert(condition, message) { if (!condition) throw new Error(message); }",
+            f"const clean = {json.dumps(clean)};",
+            f"const collision = {json.dumps(collision)};",
+            f"const errorPayload = {json.dumps(error_payload)};",
+            f"const pending = {json.dumps(pending)};",
+            f"const startedWithoutResult = {json.dumps(started_without_result)};",
+            f"const partial = {json.dumps(partial)};",
+            """
+function drawerLineHtml(line) {
+  const rendered = window.Drawer.render({ id: "probe", label: "probe", line, bodyHtml: "" });
+  const match = rendered.match(/<span class="drawer-line">([\\s\\S]*?)<\\/span>/);
+  return match ? match[1] : "";
+}
+
+function htmlUnescape(value) {
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+assert(Object.keys(window.ImportDetail).join(",") === "renderDetail,renderMeta,deriveStatus,formatDuration,composeDrawerLine,resolveDay,createdFileHref,hasValue,kvRow", "public export surface is pinned");
+assert(window.ImportDetail.composeDrawerLine(clean) === "2 files created · 5 entries · completed in 10 minutes", "clean line follows grammar");
+assert(window.ImportDetail.composeDrawerLine(collision) === "0 files created · 1 entry · completed in under a minute · owner identity differs", "collision line follows grammar");
+assert(window.ImportDetail.composeDrawerLine(errorPayload) === "failed while processing", "error line hides counts and duration");
+assert(window.ImportDetail.composeDrawerLine(startedWithoutResult) === "failed while processing", "task id without result derives failed line");
+assert(window.ImportDetail.composeDrawerLine(pending) === "processing…", "pending line is processing ellipsis");
+assert(window.ImportDetail.composeDrawerLine(partial) === "2 files created", "partial line omits missing clauses");
+
+const cleanLine = drawerLineHtml(window.ImportDetail.composeDrawerLine(clean));
+assert(cleanLine.includes("<b>2</b> files created"), "drawer emphasizes file count");
+assert(cleanLine.includes("<b>5</b> entries"), "drawer emphasizes entry count");
+assert(cleanLine.includes("<b>10</b> minutes"), "drawer emphasizes minute count");
+const underMinuteLine = drawerLineHtml(window.ImportDetail.composeDrawerLine(collision));
+assert(underMinuteLine.includes("under a minute"), "under-minute duration is prose");
+assert(!underMinuteLine.includes("second"), "drawer line never emits second");
+assert(!underMinuteLine.includes("<b>1 s</b>econd"), "duration avoids drawer regex second split");
+
+assert(window.ImportDetail.formatDuration("2026-01-01T00:00:00", "2026-01-01T00:01:00") === "1 minute", "one minute singular");
+assert(window.ImportDetail.formatDuration("2026-01-01T00:00:00", "2026-01-01T01:05:00") === "65 minutes", "minutes ladder");
+assert(window.ImportDetail.formatDuration("2026-01-01T00:00:00", "2026-01-01T02:00:00") === "2 hours", "hours ladder");
+assert(window.ImportDetail.formatDuration("2026-01-01T00:00:00", "2026-01-03T00:00:00") === "2 days", "days ladder");
+assert(drawerLineHtml("completed in 65 minutes").includes("<b>65</b> minutes"), "minutes are drawer-regex safe");
+assert(drawerLineHtml("completed in 2 hours").includes("<b>2</b> hours"), "hours are drawer-regex safe");
+assert(drawerLineHtml("completed in 2 days").includes("<b>2</b> days"), "days are drawer-regex safe");
+
+assert(window.ImportDetail.hasValue(0) === true, "zero survives empty rule");
+assert(window.ImportDetail.hasValue("") === false, "empty string is omitted");
+assert(window.ImportDetail.hasValue(null) === false, "null is omitted");
+assert(window.ImportDetail.kvRow("entries", 0).includes(">0<"), "kv row renders numeric zero");
+assert(window.ImportDetail.kvRow("entries", "").length === 0, "kv row omits empty value");
+
+assert(window.ImportDetail.deriveStatus(clean).status === "completed", "completed status");
+assert(window.ImportDetail.deriveStatus(errorPayload).chipTone === "danger", "error danger chip");
+assert(window.ImportDetail.deriveStatus(collision).chipTone === "warn", "collision warn chip");
+assert(window.ImportDetail.deriveStatus({...collision, imported_json: {...collision.imported_json, error: "bad"}}).chipTone === "danger", "error wins over collision");
+assert(window.ImportDetail.deriveStatus(pending).status === "pending", "pending status");
+assert(window.ImportDetail.deriveStatus(startedWithoutResult).status === "failed", "task id no result status failed");
+
+assert(window.ImportDetail.resolveDay(clean) === "20260101", "resolveDay follows fixture day");
+assert(window.ImportDetail.resolveDay({imported_json: {date_range: ["20260101", "20260101"], target_day: "20260102"}}) === "20260102", "target_day wins over date_range");
+assert(window.ImportDetail.resolveDay({imported_json: {date_range: ["20260101", "20260103"]}}) === "20260101", "date_range first day is fallback");
+assert(window.ImportDetail.createdFileHref("20260101/import.ics/090000_300/event_transcript.md") === null, "actual fixture path has no chronicle anchor");
+assert(window.ImportDetail.createdFileHref("chronicle/20260101/import.ics/090000_300/event_transcript.md") === "/app/timeline/20260101", "chronicle path anchors to timeline day");
+
+const meta = window.ImportDetail.renderMeta(clean);
+assert(meta.includes("calendar-export.zip"), "meta includes escaped filename");
+assert(meta.includes("status-badge success"), "meta keeps status badge");
+const detail = window.ImportDetail.renderDetail(collision);
+assert(detail.includes('<details class="drawer"'), "detail renders drawer");
+assert(detail.includes('drawer-chip--warn'), "detail renders warn chip");
+assert(detail.includes('href="/app/settings#profile"'), "collision links profile section");
+assert(detail.includes("source &lt;person&gt;"), "collision source is escaped");
+assert(detail.includes("/tmp/staging/&lt;entity&gt;/entity.json"), "staging path is escaped");
+assert(detail.includes("bad &lt;segment&gt;"), "segment reason is escaped");
+assert(detail.includes("summary &lt;error&gt;"), "summary error is escaped");
+assert(detail.includes("processed 2026-01-01 09:00:30 · ics importer · nothing left this machine"), "provenance line is exact");
+const rawMatches = detail.match(/<details class="drawer-raw">/g) || [];
+assert(rawMatches.length === 1, "detail renders one combined raw disclosure");
+const rawMatch = detail.match(/<details class="drawer-raw">[\\s\\S]*?<pre>([\\s\\S]*?)<\\/pre>/);
+const parsedRaw = JSON.parse(htmlUnescape(rawMatch[1]));
+assert(Object.prototype.hasOwnProperty.call(parsedRaw, "import_json"), "raw payload includes import_json key");
+assert(Object.prototype.hasOwnProperty.call(parsedRaw, "imported_json"), "raw payload includes imported_json key");
+assert(parsedRaw.import_json.original_filename === "calendar-export.zip", "raw payload import filename round-trips");
+assert(!window.ImportDetail.renderDetail({import_json: null, imported_json: null}).includes('details class="drawer-raw"'), "raw disclosure is omitted when both payloads are null");
+assert(window.ImportDetail.renderDetail(errorPayload).includes("bad &lt;archive&gt;"), "processing error is escaped");
+""",
+        ]
+    )
+    subprocess.run([node, "-e", script], check=True, text=True)
 
 
 def test_document_upload_stages_emits_command_and_imports_new_shape_segment(

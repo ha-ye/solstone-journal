@@ -2145,28 +2145,6 @@ if (document.readyState === 'loading') {
 .tab-content { display: none; }
 .tab-content.active { display: block; }
 
-/* JSON viewer */
-.json-viewer { background: #f5f7fa; border: 1px solid var(--facet-border, #e5e0db); border-radius: 8px; padding: 1em; overflow-x: auto; }
-.json-viewer pre { margin: 0; font-family: monospace; font-size: 0.9em; }
-.json-key { color: #881391; }
-.json-string { color: #1a1aa6; }
-.json-number { color: #098658; }
-.json-boolean { color: #d73a49; }
-.json-null { color: #666; }
-
-/* Links section */
-.links-section { margin-top: 2em; padding: 1em; background: #f9f9f9; border-radius: 4px; }
-.links-section h3 { margin-top: 0; }
-.link-item { margin: 0.5em 0; }
-.link-item a { color: var(--facet-color, #0f4c81); text-decoration: none; }
-.link-item a:hover { text-decoration: underline; }
-
-/* Files list */
-.files-list { margin-top: 1em; }
-.files-list h4 { margin-bottom: 0.5em; }
-.files-list ul { margin: 0; padding-left: 1.5em; }
-.files-list li { margin: 0.25em 0; font-family: monospace; font-size: 0.9em; color: #666; }
-
 /* Status badge */
 .status-badge { display: inline-block; padding: 4px 10px; border-radius: 6px; font-size: 0.85em; margin-left: 1em; }
 .status-badge.success { background: #edf8ef; color: #1a5c2a; }
@@ -2174,28 +2152,22 @@ if (document.readyState === 'loading') {
 .status-badge.failed { background: #fff0f0; color: #9b2c2c; }
 .status-badge.running { background: #cfe2ff; color: #084298; }
 
-/* Info grid */
-.info-grid { display: grid; grid-template-columns: auto 1fr; gap: 0.5em 1em; margin: 1em 0; }
-.info-label { font-weight: bold; color: #666; }
-.info-value { color: #333; }
-
-.merge-summary-card { grid-column: 1 / -1; margin-top: 1rem; padding: 1rem; background: #f7f9fc; border: 1px solid var(--facet-border, #e5e0db); border-radius: 8px; }
-.merge-summary-card h3 { margin: 0 0 0.75rem; font-size: 1rem; }
-.merge-summary-grid { display: grid; gap: 0.65rem; }
-.merge-summary-row { display: grid; grid-template-columns: minmax(7rem, auto) 1fr; gap: 0.75rem; align-items: baseline; }
-.merge-summary-label { font-weight: 600; color: #555; }
-.merge-summary-value { color: #222; }
-.merge-collision-callout { grid-column: 1 / -1; margin-top: 1rem; padding: 0.9rem 1rem; border-left: 4px solid #d97706; background: #fff7ed; border-radius: 6px; }
-.merge-collision-callout h3 { margin: 0 0 0.35rem; font-size: 0.98rem; color: #9a3412; }
-.merge-collision-callout p { margin: 0; color: #7c2d12; }
-.merge-highlights { grid-column: 1 / -1; margin-top: 1rem; padding: 1rem; border: 1px solid var(--facet-border, #e5e0db); border-radius: 8px; background: #fff; }
-.merge-highlights h3 { margin: 0 0 0.75rem; font-size: 1rem; }
-.merge-highlights-section + .merge-highlights-section { margin-top: 0.9rem; }
-.merge-highlights-section h4 { margin: 0 0 0.4rem; font-size: 0.92rem; color: #555; }
-.merge-highlights-list { margin: 0; padding-left: 1.25rem; color: #333; }
-.merge-highlights-list li + li { margin-top: 0.35rem; }
-.merge-artifact-paths { margin-top: 0.9rem; font-size: 0.9rem; color: #555; }
-.merge-artifact-paths code { display: inline-block; margin-top: 0.15rem; background: #f3f4f6; border-radius: 4px; padding: 0.1rem 0.35rem; color: #222; }
+.import-leads-card { border: 1px solid var(--facet-border, #e5e0db); border-radius: 6px; padding: 1rem; margin-bottom: 1rem; background: #fff; }
+.import-leads-card h2 { margin: 0 0 0.6rem; font-size: 1rem; }
+.import-leads-facts { display: flex; flex-wrap: wrap; gap: 0.4rem 0.75rem; color: #555; font-size: 0.92rem; }
+.import-leads-links { display: flex; flex-wrap: wrap; gap: 0.75rem; margin-top: 0.75rem; }
+.import-leads-links a { color: var(--facet-color, #0f4c81); text-decoration: none; font-weight: 600; }
+.import-leads-links a:hover { text-decoration: underline; }
+.import-drawer-section { margin-top: 1rem; }
+.import-drawer-section h3 { margin: 0 0 0.45rem; font-size: 0.95rem; }
+.import-collision-callout { margin-bottom: 1rem; padding: 0.9rem 1rem; border-left: 4px solid #d97706; background: #fff7ed; border-radius: 6px; }
+.import-collision-callout h3 { margin: 0 0 0.35rem; font-size: 0.98rem; color: #9a3412; }
+.import-collision-callout p { margin: 0 0 0.5rem; color: #7c2d12; }
+.import-collision-callout a { color: #9a3412; font-weight: 600; text-decoration: none; }
+.import-collision-callout a:hover { text-decoration: underline; }
+.drawer-raw { margin-top: 0.75rem; border: 1px solid var(--facet-border, #e5e0db); border-radius: 6px; background: #fff; }
+.drawer-raw summary { cursor: pointer; padding: 0.55rem 0.75rem; font-weight: 600; }
+.drawer-raw pre { margin: 0; padding: 0.75rem; border-top: 1px solid var(--facet-border, #e5e0db); overflow-x: auto; font-family: monospace; font-size: 0.86rem; white-space: pre-wrap; }
 
 .no-data { color: #999; font-style: italic; padding: 2em; text-align: center; }
 
@@ -2263,24 +2235,10 @@ if (document.readyState === 'loading') {
   <div class="tabs" role="tablist">
     <div class="tab active" data-target="overview" tabindex="0" role="tab">overview</div>
     <div class="tab" data-target="content" tabindex="0" role="tab">content</div>
-    <div class="tab" data-target="import-json" tabindex="0" role="tab">upload metadata</div>
-    <div class="tab" data-target="imported-json" tabindex="0" role="tab">processing results</div>
   </div>
 
   <div class="tab-content active" id="overview">
-    <div class="info-grid" id="overviewContent">
-      <div class="info-label">loading...</div>
-    </div>
-
-    <div class="links-section" id="linksSection" style="display:none;">
-      <h3>quick links</h3>
-      <div id="quickLinks"></div>
-    </div>
-
-    <div class="files-list" id="filesList" style="display:none;">
-      <h4>created files</h4>
-      <ul id="filesListContent"></ul>
-    </div>
+    <div id="overviewContent">loading...</div>
   </div>
 
   <div class="tab-content" id="content">
@@ -2298,20 +2256,9 @@ if (document.readyState === 'loading') {
     </div>
   </div>
 
-  <div class="tab-content" id="import-json">
-    <div class="json-viewer">
-      <pre id="importJsonContent">Loading...</pre>
-    </div>
-  </div>
-
-  <div class="tab-content" id="imported-json">
-    <div class="json-viewer">
-      <pre id="importedJsonContent">Loading...</pre>
-    </div>
-  </div>
-
 </div>
 
+<script src="/app/import/static/import_detail.js"></script>
 <script>
 (function() {
 const importDetailTimestamp = window.solPathContext().segment;
@@ -2327,16 +2274,6 @@ let contentPage = 1;
 let contentSearch = '';
 let contentMonth = '';
 let searchDebounce = null;
-
-function escapeHtml(str) {
-  if (!str) return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
 
 tabs.forEach(tab => {
   tab.addEventListener('click', () => {
@@ -2552,239 +2489,18 @@ document.getElementById('contentMonth').addEventListener('change', function() {
   loadContent(1);
 });
 
-// Format JSON with syntax highlighting
-function formatJson(obj) {
-  if (!obj) return '<span class="json-null">No data available</span>';
-
-  const json = JSON.stringify(obj, null, 2);
-  return json.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g, function (match) {
-    let cls = 'json-number';
-    if (/^"/.test(match)) {
-      if (/:$/.test(match)) {
-        cls = 'json-key';
-      } else {
-        cls = 'json-string';
-      }
-    } else if (/true|false/.test(match)) {
-      cls = 'json-boolean';
-    } else if (/null/.test(match)) {
-      cls = 'json-null';
-    }
-    return '<span class="' + cls + '">' + match + '</span>';
-  });
-}
-
-// Format file size
-function formatFileSize(bytes) {
-  if (!bytes || bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i];
-}
-
-// Format timestamp
-function formatTimestamp(timestamp) {
-  if (!timestamp) return '-';
-  // Convert YYYYMMDD_HHMMSS to readable format
-  const match = timestamp.match(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/);
-  if (match) {
-    const [_, year, month, day, hour, min, sec] = match;
-    return `${year}-${month}-${day} ${hour}:${min}:${sec}`;
-  }
-  return timestamp;
-}
-
 // Load import details
 function loadImportDetail() {
   window.apiJson(`/app/import/api/${importDetailPathSegment}`)
     .then(data => {
-    // Update header metadata
-    const metaDiv = document.getElementById('importMeta');
-    if (data.import_json) {
-      const uploadTime = new Date(data.import_json.upload_datetime).toLocaleString();
-      const fileName = data.import_json.original_filename || 'Unknown';
-      const fileSize = formatFileSize(data.import_json.file_size);
-
-      // Determine status based on task_id and imported_json
-      let statusClass, statusText;
-      if (data.imported_json && data.imported_json.error) {
-        statusClass = 'failed';
-        statusText = 'Failed';
-      } else if (data.imported_json) {
-        statusClass = 'success';
-        statusText = 'Completed';
-      } else if (data.import_json.task_id) {
-        // Task was started but no imported.json
-        statusClass = 'failed';
-        statusText = 'Failed';
-      } else {
-        statusClass = 'pending';
-        statusText = 'Pending';
-      }
-
-      metaDiv.innerHTML = `
-        <span>${fileName} (${fileSize})</span> •
-        <span>Uploaded: ${uploadTime}</span>
-        <span class="status-badge ${statusClass}">${statusText}</span>
-      `;
-    }
-
-    // Update overview tab
-    const overviewContent = document.getElementById('overviewContent');
-    let overviewHtml = '';
-
-    if (data.import_json) {
-      overviewHtml += `<div class="info-label">Original File:</div><div class="info-value">${data.import_json.original_filename || '-'}</div>`;
-      overviewHtml += `<div class="info-label">File Size:</div><div class="info-value">${formatFileSize(data.import_json.file_size)}</div>`;
-      overviewHtml += `<div class="info-label">MIME Type:</div><div class="info-value">${data.import_json.mime_type || '-'}</div>`;
-      overviewHtml += `<div class="info-label">Upload Time:</div><div class="info-value">${new Date(data.import_json.upload_datetime).toLocaleString()}</div>`;
-      overviewHtml += `<div class="info-label">Detected Timestamp:</div><div class="info-value">${formatTimestamp(data.import_json.detected_timestamp) || 'Not detected'}</div>`;
-      overviewHtml += `<div class="info-label">Import Timestamp:</div><div class="info-value">${formatTimestamp(data.import_json.user_timestamp)}</div>`;
-      if (data.import_json.facet) {
-        overviewHtml += `<div class="info-label">Facet:</div><div class="info-value">${data.import_json.facet}</div>`;
-      }
-      if (data.import_json.setting) {
-        overviewHtml += `<div class="info-label">Setting:</div><div class="info-value">${data.import_json.setting}</div>`;
-      }
-    }
-
-    if (data.imported_json && data.imported_json.error) {
-      // Error state
-      overviewHtml += `<div class="info-label">Processing Status:</div><div class="info-value status-badge failed">Failed</div>`;
-      overviewHtml += `<div class="info-label">Error:</div><div class="info-value">${data.imported_json.error}</div>`;
-      if (data.imported_json.error_stage) {
-        overviewHtml += `<div class="info-label">Failed At:</div><div class="info-value">${data.imported_json.error_stage}</div>`;
-      }
-      if (data.imported_json.processing_failed) {
-        overviewHtml += `<div class="info-label">Processing Time:</div><div class="info-value">${new Date(data.imported_json.processing_failed).toLocaleString()}</div>`;
-      }
-    } else if (data.imported_json) {
-      overviewHtml += `<div class="info-label">Processing Status:</div><div class="info-value">Completed</div>`;
-      overviewHtml += `<div class="info-label">Target Day:</div><div class="info-value">${data.imported_json.target_day || '-'}</div>`;
-      overviewHtml += `<div class="info-label">files created:</div><div class="info-value">${data.imported_json.total_files_created || 0}</div>`;
-      overviewHtml += `<div class="info-label">processing time:</div><div class="info-value">${new Date(data.imported_json.processing_completed).toLocaleString()}</div>`;
-
-      if (data.imported_json.merge_summary) {
-        const mergeSummary = data.imported_json.merge_summary;
-        overviewHtml += `
-          <div class="merge-summary-card">
-            <h3>merge summary</h3>
-            <div class="merge-summary-grid">
-              <div class="merge-summary-row">
-                <div class="merge-summary-label">segments</div>
-                <div class="merge-summary-value">${mergeSummary.segments_copied || 0} copied · ${mergeSummary.segments_skipped || 0} skipped · ${mergeSummary.segments_errored || 0} errored</div>
-              </div>
-              <div class="merge-summary-row">
-                <div class="merge-summary-label">entities</div>
-                <div class="merge-summary-value">${mergeSummary.entities_created || 0} created · ${mergeSummary.entities_merged || 0} merged · ${mergeSummary.entities_staged || 0} staged</div>
-              </div>
-              <div class="merge-summary-row">
-                <div class="merge-summary-label">facets</div>
-                <div class="merge-summary-value">${mergeSummary.facets_created || 0} created · ${mergeSummary.facets_merged || 0} merged</div>
-              </div>
-              <div class="merge-summary-row">
-                <div class="merge-summary-label">imports</div>
-                <div class="merge-summary-value">${mergeSummary.imports_copied || 0} copied · ${mergeSummary.imports_skipped || 0} skipped</div>
-              </div>
-            </div>
-          </div>
-        `;
-
-        if (data.imported_json.principal_collision) {
-          const principalCollision = data.imported_json.principal_collision;
-          overviewHtml += `
-            <div class="merge-collision-callout">
-              <h3>owner identity differs between journals</h3>
-              <p>this journal belongs to ${escapeHtml(principalCollision.target_name || '')}, and the imported journal marks ${escapeHtml(principalCollision.source_name || '')} as its owner. this journal&#39;s owner is unchanged; the other person came in as a regular entity.</p>
-            </div>
-          `;
-        }
-
-        const stagedEntities = data.decision_highlights?.staged_entities || [];
-        const erroredSegments = data.decision_highlights?.errored_segments || [];
-        const summaryErrors = data.summary_errors || [];
-        const artifactPaths = data.merge_artifact_paths || null;
-        if (stagedEntities.length || erroredSegments.length || summaryErrors.length || artifactPaths) {
-          let highlightsHtml = '<div class="merge-highlights"><h3>merge highlights</h3>';
-          if (stagedEntities.length) {
-            highlightsHtml += '<div class="merge-highlights-section"><h4>staged entities</h4><ul class="merge-highlights-list">';
-            stagedEntities.forEach(item => {
-              highlightsHtml += `<li>${escapeHtml(item.source_name || '')} → ${escapeHtml(item.target_name || '')}<br><code>${escapeHtml(item.staging_path || '')}</code></li>`;
-            });
-            highlightsHtml += '</ul></div>';
-          }
-          if (erroredSegments.length) {
-            highlightsHtml += '<div class="merge-highlights-section"><h4>errored segments</h4><ul class="merge-highlights-list">';
-            erroredSegments.forEach(item => {
-              highlightsHtml += `<li><strong>${escapeHtml(item.item_id || '')}</strong>: ${escapeHtml(item.reason || '')}</li>`;
-            });
-            highlightsHtml += '</ul></div>';
-          }
-          if (summaryErrors.length) {
-            highlightsHtml += '<div class="merge-highlights-section"><h4>summary errors</h4><ul class="merge-highlights-list">';
-            summaryErrors.forEach(item => {
-              highlightsHtml += `<li>${escapeHtml(item || '')}</li>`;
-            });
-            highlightsHtml += '</ul></div>';
-          }
-          if (artifactPaths) {
-            highlightsHtml += `
-              <div class="merge-artifact-paths">
-                <div>Decisions log: <code>${escapeHtml(artifactPaths.decisions || '')}</code></div>
-                <div>Staging: <code>${escapeHtml(artifactPaths.staging || '')}</code></div>
-              </div>
-            `;
-          }
-          highlightsHtml += '</div>';
-          overviewHtml += highlightsHtml;
-        }
-      }
-
-      // Show quick links
-      if (data.imported_json.target_day) {
-        const linksSection = document.getElementById('linksSection');
-        const quickLinks = document.getElementById('quickLinks');
-        linksSection.style.display = 'block';
-
-        let linksHtml = '';
-        linksHtml += `<div class="link-item">📅 <a href="/app/activities/${data.imported_json.target_day}">view day in activities</a></div>`;
-        linksHtml += `<div class="link-item">💬 <a href="/app/transcripts/${data.imported_json.target_day}">view transcript</a></div>`;
-        quickLinks.innerHTML = linksHtml;
-      }
-
-      // Show created files
-      if (data.imported_json.all_created_files && data.imported_json.all_created_files.length > 0) {
-        const filesList = document.getElementById('filesList');
-        const filesListContent = document.getElementById('filesListContent');
-        filesList.style.display = 'block';
-
-        let filesHtml = '';
-        data.imported_json.all_created_files.forEach(file => {
-          const basename = file.split('/').pop();
-          filesHtml += `<li>${basename}</li>`;
-        });
-        filesListContent.innerHTML = filesHtml;
-      }
-    } else {
-      overviewHtml += `<div class="info-label">Processing Status:</div><div class="info-value">Pending</div>`;
-    }
-
-    overviewContent.innerHTML = overviewHtml;
-
-    // Update JSON tabs
-    document.getElementById('importJsonContent').innerHTML = formatJson(data.import_json);
-    document.getElementById('importedJsonContent').innerHTML = data.imported_json ? formatJson(data.imported_json) : '<span class="no-data">Processing not yet completed</span>';
-
+      document.getElementById('importMeta').innerHTML = window.ImportDetail.renderMeta(data);
+      document.getElementById('overviewContent').innerHTML = window.ImportDetail.renderDetail(data);
     })
     .catch(err => {
       const serverMessage = err?.serverMessage || err?.message || '';
-      document.getElementById('importMeta').innerHTML = `<div class="surface-state-refresh-error">Couldn&#39;t load import details.${serverMessage ? ` ${escapeHtml(serverMessage)}` : ''}</div>`;
+      const escapedMessage = window.AppServices.escapeHtml(serverMessage);
+      document.getElementById('importMeta').innerHTML = `<div class="surface-state-refresh-error">Couldn&#39;t load import details.${escapedMessage ? ` ${escapedMessage}` : ''}</div>`;
       document.getElementById('overviewContent').innerHTML = '<div class="no-data">overview unavailable</div>';
-      document.getElementById('importJsonContent').textContent = 'upload metadata unavailable';
-      document.getElementById('importedJsonContent').textContent = 'processing results unavailable';
-      document.getElementById('linksSection').style.display = 'none';
-      document.getElementById('filesList').style.display = 'none';
     });
 }
 

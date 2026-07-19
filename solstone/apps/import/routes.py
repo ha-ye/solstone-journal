@@ -81,6 +81,8 @@ import_bp = Blueprint(
     "app:import",
     __name__,
     url_prefix="/app/import",
+    static_folder="static",
+    static_url_path="/static",
 )
 
 SOURCE_METADATA = [
