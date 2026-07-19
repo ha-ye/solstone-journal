@@ -20,17 +20,19 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from collections import OrderedDict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Callable, Iterable, NoReturn
+from typing import Any, Callable, Iterable, Literal, NoReturn, cast
 
 import psutil
 
 from solstone.observe.transcribe.config import confidential_audio_enabled
 from solstone.observe.transcribe.resource import (
+    STT_SURFACE,
     local_stt_backend,
     resolve_stt_backend_choice,
     stt_local_floor_bytes,
@@ -65,9 +67,25 @@ from solstone.think.processing import (
     evaluate_drain_gate,
     load_processing_settings,
 )
-from solstone.think.providers import parakeet_server
+from solstone.think.providers.install_state import (
+    InstallStatusMalformedError,
+    canonical_fingerprint,
+    fingerprint_sha256,
+)
 from solstone.think.providers.memory import read_available_bytes
 from solstone.think.providers.mlx_server import MLX_SERVER_PROCESS_NAME
+from solstone.think.providers.runtime_health import (
+    ReasonCode,
+    RuntimeHealthConflictError,
+    RuntimeHealthMalformedError,
+    RuntimeHealthRecord,
+    RuntimeHealthUnavailableError,
+    RuntimePhase,
+    consume_retry_token,
+    read_retry_token,
+    read_runtime_health,
+    write_runtime_health,
+)
 from solstone.think.readiness import START_TIME_TOLERANCE_S, clear_ready, signal_ready
 from solstone.think.runner import DEFAULT_TASK_MAX_RUNTIME, _command_partition
 from solstone.think.runner import ManagedProcess as RunnerManagedProcess
@@ -108,6 +126,7 @@ CATCHUP_RETRY_TICK_INTERVAL_S = 60
 MAX_UPDATED_CATCHUP = 4
 TEMPFAIL_DELAY = 15  # seconds to wait before retrying a tempfail exit
 CONVEY_READY_WINDOW_SECONDS = 60.0
+PROVIDER_STARTUP_GATE_WINDOW_SECONDS = CONVEY_READY_WINDOW_SECONDS
 REALISTIC_COLD_BIND_SECONDS = 40.0
 HANDLE_SHUTDOWN_REAP_S = 3.0
 APP_SUPERVISED_SHUTDOWN_CEILING_S = 10.0
@@ -126,6 +145,9 @@ PARAKEET_SERVER_PROCESS_NAME = "parakeet-server"
 PARAKEET_SERVER_READY_TIMEOUT_S = 300.0
 PARAKEET_SERVER_HEALTH_POLL_INTERVAL_S = 1.0
 LOCAL_MODEL_WARMING_UP_COPY = "Local model is warming up..."
+PROVIDER_RETRY_SCHEDULE_SECONDS = (0.0, 2.0, 4.0, 8.0, 16.0, 30.0)
+PROVIDER_STABLE_READY_REFRESH_SECONDS = 60.0
+PROVIDER_TRUTH_OBSERVATION_INTERVAL_SECONDS = GATE_TICK_INTERVAL_S
 # supervisor.log is size-rotated with a bounded on-disk footprint.
 # Hard ceiling = SUPERVISOR_LOG_MAX_BYTES * (SUPERVISOR_LOG_BACKUP_COUNT + 1)
 #   = 16 MiB * 6 = 96 MiB. Older lines drop; the most-recent tail is kept.
@@ -1167,6 +1189,158 @@ _wedge_state: dict[str, Any] = {
     "awaiting_recovery": False,
 }
 
+ProviderName = Literal["local", "parakeet"]
+LaunchOutcomeStatus = Literal[
+    "ready",
+    "not-ready",
+    "host-blocked",
+    "exited",
+    "warmup-timeout",
+    "launch-failed",
+]
+LocalPlanBackend = Literal["mlx", "cuda", "vulkan"]
+
+
+@dataclass(frozen=True)
+class ProviderLaunchOutcome:
+    status: LaunchOutcomeStatus
+    reason_code: ReasonCode
+    detail: dict[str, Any]
+    managed: RunnerManagedProcess | None = None
+
+
+@dataclass(frozen=True)
+class LocalServerLaunchPlan:
+    backend: LocalPlanBackend
+    desired_fingerprint_json: str
+    desired_fingerprint_sha256: str
+    binary_path: Path | None = None
+    model_path: Path | None = None
+    mmproj_path: Path | None = None
+    lib_dir: Path | None = None
+    model_id: str = LOCAL_MODEL
+    runtime_dir: Path | None = None
+    gpu_index: int | None = None
+    gpu_name: str | None = None
+    gpu_vram_mib: int | None = None
+    vram_before_mib: int | None = None
+    context_tokens: int | None = None
+    parallel_slots: int | None = None
+    prompt_cache_mib: int | None = None
+    visible_devices_env: str | None = None
+    visible_devices_value: str | None = None
+    env_updates: dict[str, str] = field(default_factory=dict)
+    backend_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class ParakeetServerLaunchPlan:
+    binary_backend: str
+    env_updates: dict[str, str]
+    gpu_index: int | None
+    binary_path: Path
+    model_path: Path
+    threads: int
+    library_dirs: tuple[Path, ...]
+    desired_fingerprint_json: str
+    desired_fingerprint_sha256: str
+    placement: Literal["cpu", "gpu"]
+
+
+@dataclass(frozen=True)
+class ProviderTruthObservation:
+    provider: ProviderName
+    phase: RuntimePhase
+    reason_code: ReasonCode | None
+    detail: dict[str, Any]
+    desired_fingerprint_json: str | None = None
+    desired_fingerprint_sha256: str | None = None
+    plan: LocalServerLaunchPlan | ParakeetServerLaunchPlan | None = None
+    boot_required: bool = False
+
+
+@dataclass(frozen=True)
+class ProviderFence:
+    incarnation: str
+    generation: int
+    fingerprint: str | None
+    attempt: int
+
+
+@dataclass
+class ProviderRetryState:
+    attempt_count: int = 0
+    next_at: float = 0.0
+    desired_fingerprint: str | None = None
+
+
+@dataclass
+class ProviderRuntimeState:
+    provider: ProviderName
+    truth_future: concurrent.futures.Future | None = None
+    truth_fence: ProviderFence | None = None
+    start_future: concurrent.futures.Future | None = None
+    start_fence: ProviderFence | None = None
+    stop_cleanup_future: concurrent.futures.Future | None = None
+    stop_cleanup_fence: ProviderFence | None = None
+    probe_future: concurrent.futures.Future | None = None
+    probe_fence: ProviderFence | None = None
+    retry: ProviderRetryState = field(default_factory=ProviderRetryState)
+    generation: int = 0
+    desired_fingerprint: str | None = None
+    latest_plan: LocalServerLaunchPlan | ParakeetServerLaunchPlan | None = None
+    latest_phase: RuntimePhase = "stopped"
+    boot_required: bool = False
+    startup_terminal: bool = False
+    next_truth_at: float = 0.0
+
+
+@dataclass
+class ProviderStartupGate:
+    started_at: float
+    required: set[ProviderName]
+    terminal: set[ProviderName] = field(default_factory=set)
+    released: bool = False
+
+
+class ReservedPort:
+    """Supervisor-local port reservation held until immediate pre-spawn."""
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._sock: socket.socket | None = sock
+        self.port = int(sock.getsockname()[1])
+
+    @classmethod
+    def reserve(cls) -> "ReservedPort":
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(("127.0.0.1", 0))
+            return cls(sock)
+        except BaseException:
+            sock.close()
+            raise
+
+    def release_for_spawn(self) -> int:
+        port = self.port
+        self.close()
+        return port
+
+    def close(self) -> None:
+        sock = self._sock
+        self._sock = None
+        if sock is not None:
+            sock.close()
+
+
+_PROVIDER_INCARNATION = uuid.uuid4().hex
+_provider_runtime_states: dict[ProviderName, ProviderRuntimeState] = {
+    "local": ProviderRuntimeState("local"),
+    "parakeet": ProviderRuntimeState("parakeet"),
+}
+_provider_runtime_executor: concurrent.futures.ThreadPoolExecutor | None = None
+_provider_startup_gate: ProviderStartupGate | None = None
+_parakeet_admission_retry_epoch = 0
+
 # Timeout before flushing stale segments (seconds)
 FLUSH_TIMEOUT = 3600
 
@@ -1583,20 +1757,14 @@ def _handle_supervisor_start_local(message: dict) -> None:
         return
     if _is_remote_mode:
         return
-    from solstone.think.providers.local_endpoint import resolve_local_endpoint
-
-    if not resolve_local_endpoint().is_bundled:
-        return
 
     for proc in _managed_procs:
         if proc.name in _LOCAL_SERVER_PROCTITLES and proc.is_running():
             logging.info("local server already running; ignoring start_local request")
             return
 
-    proc = start_local_server()
-    if proc is not None:
-        _managed_procs.append(proc)
-        logging.info("started local server from start_local request")
+    _request_provider_runtime_retry("local")
+    logging.info("requested local provider reconciliation from start_local request")
 
 
 def _handle_supervisor_start_parakeet(message: dict) -> None:
@@ -1611,10 +1779,8 @@ def _handle_supervisor_start_parakeet(message: dict) -> None:
             logging.info("parakeet-server already running; ignoring start_parakeet")
             return
 
-    proc = start_parakeet_server()
-    if proc is not None:
-        _managed_procs.append(proc)
-        logging.info("started parakeet-server from start_parakeet request")
+    _request_provider_runtime_retry("parakeet")
+    logging.info("requested parakeet provider reconciliation from start_parakeet")
 
 
 def _handle_cortex_outcome(message: dict) -> None:
@@ -1773,28 +1939,56 @@ def start_sense() -> RunnerManagedProcess:
     return _launch_process("sense", ["journal", "sense", "-v"], restart=True)
 
 
-def _start_mlx_local_server() -> RunnerManagedProcess | None:
-    """Launch the supervisor-owned mlx-vlm server when artifacts are present."""
-    from solstone.think.providers import local_server, mlx_install
+def _required_plan_path(path: Path | None, field_name: str) -> Path:
+    if path is None:
+        raise ValueError(f"launch plan is missing {field_name}")
+    return path
 
-    readiness = mlx_install.inspect_readiness()
-    readiness_values = {
-        "platform_supported": readiness.host["platform_supported"],
-        "package_available": readiness.host["package_available"],
-        "ram_sufficient": readiness.host["ram_sufficient"],
-        "model_installed": readiness.artifacts["model_installed"],
-    }
-    if not all(readiness_values.values()):
-        logging.info(
-            "MLX local model not ready; skipping mlx-vlm server startup: %s",
-            readiness_values,
-        )
-        return None
 
-    runtime_dir = readiness.artifacts["runtime_dir"]
-    model_id = readiness.target["model_id"]
-    port = find_available_port()
-    write_service_port("local", port)
+def _required_plan_int(value: int | None, field_name: str) -> int:
+    if value is None:
+        raise ValueError(f"launch plan is missing {field_name}")
+    return value
+
+
+def _outcome(
+    status: LaunchOutcomeStatus,
+    reason_code: ReasonCode,
+    detail: dict[str, Any],
+    managed: RunnerManagedProcess | None = None,
+) -> ProviderLaunchOutcome:
+    return ProviderLaunchOutcome(
+        status=status,
+        reason_code=reason_code,
+        detail=detail,
+        managed=managed,
+    )
+
+
+def _terminate_cleanup_handle(
+    managed: RunnerManagedProcess, *, reason: str, state_name: str | None = None
+) -> None:
+    service_name = state_name or managed.name
+    timeout = _SERVICE_STATE.get(service_name, {}).get("shutdown_timeout", 15)
+    _SERVICE_STATE.pop(service_name, None)
+    _terminate_managed(managed, timeout, reason=reason)
+    managed.cleanup()
+
+
+def _start_mlx_local_server(
+    plan: LocalServerLaunchPlan,
+    reservation: ReservedPort | None = None,
+) -> ProviderLaunchOutcome:
+    """Launch the supervisor-owned mlx-vlm server from a captured plan."""
+    from solstone.think.providers import local_server
+
+    if plan.backend != "mlx":
+        raise ValueError(f"MLX launch requires mlx plan, got {plan.backend!r}")
+    runtime_dir = _required_plan_path(plan.runtime_dir, "runtime_dir")
+    owned_reservation = (
+        reservation if reservation is not None else ReservedPort.reserve()
+    )
+    port = owned_reservation.port
     script_path = str(Path(sys.executable).with_name(MLX_SERVER_PROCESS_NAME))
     cmd = [
         script_path,
@@ -1808,8 +2002,18 @@ def _start_mlx_local_server() -> RunnerManagedProcess | None:
     if "0.0.0.0" in cmd:
         raise RuntimeError("Local server may not bind 0.0.0.0.")
 
-    logging.info("Starting mlx-vlm server for %s from %s", model_id, runtime_dir)
-    managed = _launch_process(MLX_SERVER_PROCESS_NAME, cmd, restart=True)
+    logging.info("Starting mlx-vlm server for %s from %s", plan.model_id, runtime_dir)
+    try:
+        owned_reservation.release_for_spawn()
+        managed = _launch_process(MLX_SERVER_PROCESS_NAME, cmd, restart=True)
+    except Exception as exc:
+        owned_reservation.close()
+        logging.exception("MLX local server launch failed")
+        return _outcome(
+            "launch-failed",
+            "launch-failed",
+            {"backend": "mlx", "error": str(exc)},
+        )
     print(f"  {LOCAL_MODEL_WARMING_UP_COPY}", flush=True)
 
     deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
@@ -1819,20 +2023,39 @@ def _start_mlx_local_server() -> RunnerManagedProcess | None:
                 "mlx-vlm server exited during warmup with code %s",
                 managed.process.returncode,
             )
-            return managed
+            return _outcome(
+                "exited",
+                "process-exited",
+                {
+                    "backend": "mlx",
+                    "returncode": managed.process.returncode,
+                    "port": port,
+                },
+                managed,
+            )
         state, error = local_server._probe_health(port)
         if state == local_server.STATE_READY:
             logging.info("mlx-vlm server ready on port %s", port)
-            return managed
+            return _outcome(
+                "ready",
+                "probe-ready",
+                {"backend": "mlx", "port": port},
+                managed,
+            )
         if state == local_server.STATE_FAILED and error:
             logging.debug("mlx-vlm server health probe failed during warmup: %s", error)
         time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
 
     logging.warning(
-        "mlx-vlm server did not become ready within %.0fs; continuing startup",
+        "mlx-vlm server did not become ready within %.0fs",
         LOCAL_SERVER_READY_TIMEOUT_S,
     )
-    return managed
+    return _outcome(
+        "warmup-timeout",
+        "warmup-timeout",
+        {"backend": "mlx", "port": port, "timeout_s": LOCAL_SERVER_READY_TIMEOUT_S},
+        managed,
+    )
 
 
 def _format_vulkan_devices(devices: list[Any], local_vulkan: Any) -> str:
@@ -1900,29 +2123,668 @@ def parakeet_physical_thread_count() -> int:
     return max(1, (os.cpu_count() or 2) // 2)
 
 
-@dataclass(frozen=True)
-class ParakeetServerLaunchPlan:
-    binary_backend: str
-    env_updates: dict[str, str]
-    gpu_index: int | None
+_HOST_READINESS_REASON_MAP: dict[str, ReasonCode] = {
+    "platform_unsupported": "platform-unsupported",
+    "package_unavailable": "package-unavailable",
+    "ram_insufficient": "ram-insufficient",
+    "gpu_probe_failed": "gpu-probe-failed",
+    "gpu_unavailable": "gpu-unavailable",
+}
 
 
-def resolve_parakeet_server_launch_plan(
+def _target_fingerprint_pair(fingerprint: dict[str, Any]) -> tuple[str, str]:
+    fingerprint_json = canonical_fingerprint(fingerprint)
+    return fingerprint_json, fingerprint_sha256(fingerprint_json)
+
+
+def _readiness_block_observation(
+    *,
+    provider: ProviderName,
+    readiness: Any,
+    fingerprint_json: str | None,
+    fingerprint_sha256_value: str | None,
+    boot_required: bool,
+) -> ProviderTruthObservation | None:
+    if readiness.status == "ready":
+        return None
+    if readiness.status == "missing-or-mismatched":
+        install_state = readiness.install.get("install_state")
+        return ProviderTruthObservation(
+            provider=provider,
+            phase="artifact-not-ready",
+            reason_code="artifact-missing",
+            desired_fingerprint_json=fingerprint_json,
+            desired_fingerprint_sha256=fingerprint_sha256_value,
+            boot_required=boot_required,
+            detail={
+                "readiness_status": readiness.status,
+                "readiness_reason_code": readiness.reason_code,
+                "install_state": install_state,
+                "install_acquisition_allowed": install_state == "idle",
+            },
+        )
+    if readiness.status == "proof-unavailable":
+        return ProviderTruthObservation(
+            provider=provider,
+            phase="state-unavailable",
+            reason_code="proof-observation-unavailable",
+            desired_fingerprint_json=fingerprint_json,
+            desired_fingerprint_sha256=fingerprint_sha256_value,
+            boot_required=boot_required,
+            detail={
+                "readiness_status": readiness.status,
+                "readiness_reason_code": readiness.reason_code,
+            },
+        )
+    if readiness.status == "host-ineligible":
+        reason = _HOST_READINESS_REASON_MAP.get(
+            str(readiness.reason_code), "host-admission-blocked"
+        )
+        return ProviderTruthObservation(
+            provider=provider,
+            phase="host-blocked",
+            reason_code=reason,
+            desired_fingerprint_json=fingerprint_json,
+            desired_fingerprint_sha256=fingerprint_sha256_value,
+            boot_required=boot_required,
+            detail={
+                "readiness_status": readiness.status,
+                "readiness_reason_code": readiness.reason_code,
+                "host": readiness.host,
+            },
+        )
+    return ProviderTruthObservation(
+        provider=provider,
+        phase="state-unavailable",
+        reason_code="truth-observation-failed",
+        desired_fingerprint_json=fingerprint_json,
+        desired_fingerprint_sha256=fingerprint_sha256_value,
+        boot_required=boot_required,
+        detail={"readiness_status": readiness.status},
+    )
+
+
+def _observation_raced(
+    provider: ProviderName,
+    before: str,
+    after: str,
+    *,
+    boot_required: bool,
+) -> ProviderTruthObservation:
+    return ProviderTruthObservation(
+        provider=provider,
+        phase="observing",
+        reason_code="observation-raced",
+        boot_required=boot_required,
+        detail={"before": before, "after": after},
+    )
+
+
+def _local_plan_race_identity(plan: LocalServerLaunchPlan) -> dict[str, Any]:
+    if plan.backend == "mlx":
+        return {
+            "backend": plan.backend,
+            "runtime_dir": str(plan.runtime_dir),
+            "model_id": plan.model_id,
+        }
+    if plan.backend == "cuda":
+        from solstone.think.providers import local_cuda
+
+        probe = local_cuda.probe_nvidia_gpu()
+        return {
+            "backend": plan.backend,
+            "binary_path": str(plan.binary_path),
+            "model_path": str(plan.model_path),
+            "mmproj_path": str(plan.mmproj_path) if plan.mmproj_path else None,
+            "gpu_index": probe.index if probe.index is not None else 0,
+            "gpu_vram_mib": probe.vram_mib,
+            "visible_devices_env": plan.visible_devices_env,
+        }
+
+    from solstone.think.providers import local_install, local_vulkan
+
+    devices = local_vulkan.detect_gpus()
+    selected = local_vulkan.select_device(
+        devices, override_index=local_install.gpu_device_override()
+    )
+    return {
+        "backend": plan.backend,
+        "binary_path": str(plan.binary_path),
+        "model_path": str(plan.model_path),
+        "mmproj_path": str(plan.mmproj_path) if plan.mmproj_path else None,
+        "gpu_index": selected.index if selected is not None else None,
+        "gpu_name": selected.name if selected is not None else None,
+        "gpu_vram_mib": selected.vram_mib if selected is not None else None,
+        "visible_devices_env": plan.visible_devices_env,
+    }
+
+
+def _not_desired_observation(
+    provider: ProviderName,
+    reason: ReasonCode,
+    *,
+    detail: dict[str, Any] | None = None,
+) -> ProviderTruthObservation:
+    return ProviderTruthObservation(
+        provider=provider,
+        phase="not-desired",
+        reason_code=reason,
+        detail=detail or {},
+        boot_required=False,
+    )
+
+
+def _parakeet_platform_can_host() -> bool:
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        from solstone.think import parakeet_readiness
+
+        parakeet_readiness.parakeet_cpp_artifact_key(
+            "linux", platform.machine().lower()
+        )
+    except RuntimeError:
+        return False
+    return True
+
+
+def _parakeet_stt_admission_input(
+    transcribe: dict[str, Any], confidential: bool
+) -> dict[str, Any]:
+    backend = transcribe.get("backend") if isinstance(transcribe, dict) else None
+    return {
+        "platform": sys.platform,
+        "machine": platform.machine().lower(),
+        "backend": backend if isinstance(backend, str) else None,
+        "local_backend": local_stt_backend(),
+        "floor_bytes": stt_local_floor_bytes(),
+        "confidential_lane_active": confidential,
+        "confidential_audio_enabled": confidential_audio_enabled(transcribe),
+    }
+
+
+def _parakeet_stt_admission_latch(
+    transcribe: dict[str, Any],
+    confidential: bool,
+) -> dict[str, Any]:
+    global _parakeet_admission_retry_epoch
+
+    admission_input = _parakeet_stt_admission_input(transcribe, confidential)
+    input_json, input_sha = _target_fingerprint_pair(admission_input)
+    try:
+        current = read_runtime_health("parakeet")
+    except (RuntimeHealthMalformedError, RuntimeHealthUnavailableError):
+        raise
+    existing = current["detail"].get("stt_admission_latch")
+    if (
+        isinstance(existing, dict)
+        and existing.get("input_sha256") == input_sha
+        and existing.get("retry_epoch") == _parakeet_admission_retry_epoch
+        and isinstance(existing.get("desired"), bool)
+        and isinstance(existing.get("blocked"), bool)
+    ):
+        return existing
+
+    explicit_backend = admission_input["backend"]
+    local_backend = admission_input["local_backend"]
+    floor_bytes = admission_input["floor_bytes"]
+    available_bytes = (
+        None
+        if explicit_backend in {"parakeet", "parakeet-cpp", "confidential"}
+        or confidential
+        else read_available_bytes()
+    )
+    choice = resolve_stt_backend_choice(
+        explicit_backend if isinstance(explicit_backend, str) else None,
+        available_bytes,
+        floor_bytes=floor_bytes if isinstance(floor_bytes, int) else None,
+        local_backend=local_backend if isinstance(local_backend, str) else None,
+        confidential_lane_active=confidential,
+        confidential_audio_enabled=bool(admission_input["confidential_audio_enabled"]),
+    )
+    desired = choice in {"parakeet", "parakeet-cpp"}
+    ram_blocked = (
+        choice == STT_SURFACE
+        and explicit_backend is None
+        and not confidential
+        and local_backend in {"parakeet", "parakeet-cpp"}
+        and floor_bytes is not None
+    )
+    return {
+        "input_json": input_json,
+        "input_sha256": input_sha,
+        "retry_epoch": _parakeet_admission_retry_epoch,
+        "choice": choice,
+        "desired": desired,
+        "blocked": ram_blocked,
+        "reason_code": (
+            "host-admission-blocked"
+            if ram_blocked
+            else (
+                "confidential-backend-selected"
+                if choice == "confidential"
+                else "provider-not-needed"
+            )
+        ),
+    }
+
+
+def _observe_local_provider_truth() -> ProviderTruthObservation:
+    if _is_remote_mode:
+        return _not_desired_observation(
+            "local", "provider-not-needed", detail={"remote_mode": True}
+        )
+
+    config = read_journal_config()
+    active_local = is_local_provider_needed(config)
+    from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+    endpoint = resolve_local_endpoint()
+    if not active_local:
+        return _not_desired_observation(
+            "local",
+            "provider-not-needed",
+            detail={
+                "active_provider": config.get("providers", {})
+                .get("active", {})
+                .get("provider"),
+                "projection": {"status": "reconciling"},
+            },
+        )
+    if not endpoint.is_bundled:
+        return _not_desired_observation(
+            "local",
+            "provider-not-needed",
+            detail={"endpoint_mode": "byo", "projection": {"status": "reconciling"}},
+        )
+
+    try:
+        if sys.platform == "darwin":
+            return _observe_mlx_local_provider_truth()
+        return _observe_linux_local_provider_truth()
+    except InstallStatusMalformedError as exc:
+        return ProviderTruthObservation(
+            provider="local",
+            phase="state-corrupt",
+            reason_code="record-malformed",
+            detail={"error": str(exc)},
+            boot_required=True,
+        )
+    except OSError as exc:
+        return ProviderTruthObservation(
+            provider="local",
+            phase="state-unavailable",
+            reason_code="record-unavailable",
+            detail={"error": str(exc)},
+            boot_required=True,
+        )
+    except Exception as exc:
+        logger.exception("local provider truth observation failed")
+        return ProviderTruthObservation(
+            provider="local",
+            phase="state-unavailable",
+            reason_code="truth-observation-failed",
+            detail={"error": str(exc)},
+            boot_required=True,
+        )
+
+
+def _observe_mlx_local_provider_truth() -> ProviderTruthObservation:
+    from solstone.think.providers import mlx_install
+
+    before_json, before_sha = _target_fingerprint_pair(mlx_install.target_fingerprint())
+    readiness = mlx_install.inspect_readiness()
+    blocked = _readiness_block_observation(
+        provider="local",
+        readiness=readiness,
+        fingerprint_json=before_json,
+        fingerprint_sha256_value=before_sha,
+        boot_required=True,
+    )
+    if blocked is not None:
+        return blocked
+    runtime_dir = Path(str(readiness.artifacts["runtime_dir"]))
+    plan = LocalServerLaunchPlan(
+        backend="mlx",
+        desired_fingerprint_json=before_json,
+        desired_fingerprint_sha256=before_sha,
+        model_id=str(readiness.target["model_id"]),
+        runtime_dir=runtime_dir,
+    )
+    after_json, after_sha = _target_fingerprint_pair(mlx_install.target_fingerprint())
+    if before_sha != after_sha:
+        return _observation_raced("local", before_sha, after_sha, boot_required=True)
+    return ProviderTruthObservation(
+        provider="local",
+        phase="starting",
+        reason_code="launch-requested",
+        desired_fingerprint_json=after_json,
+        desired_fingerprint_sha256=after_sha,
+        plan=plan,
+        boot_required=True,
+        detail={"backend": "mlx", "model_id": plan.model_id},
+    )
+
+
+def _observe_linux_local_provider_truth() -> ProviderTruthObservation:
+    from solstone.think.providers import local_cuda, local_install, local_server
+
+    before_json, before_sha = _target_fingerprint_pair(
+        local_install.target_fingerprint(LOCAL_MODEL)
+    )
+    readiness = local_install.inspect_readiness(LOCAL_MODEL)
+    blocked = _readiness_block_observation(
+        provider="local",
+        readiness=readiness,
+        fingerprint_json=before_json,
+        fingerprint_sha256_value=before_sha,
+        boot_required=True,
+    )
+    if blocked is not None:
+        return blocked
+    backend = str(readiness.host["backend"])
+    binary_path = Path(str(readiness.artifacts["binary_path"]))
+    model_path = Path(str(readiness.artifacts["model_path"]))
+    mmproj = readiness.artifacts.get("mmproj_path")
+    mmproj_path = Path(str(mmproj)) if mmproj else None
+    if backend == "cuda":
+        probe = local_cuda.probe_nvidia_gpu()
+        gpu_index = probe.index if probe.index is not None else 0
+        if probe.tiering_memory_mib is None:
+            tier = local_server.select_server_tier(0)
+        else:
+            tier = local_server.select_server_tier(probe.tiering_memory_mib)
+        lib_dir = local_install.cuda_binary_dir()
+        existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
+        ld_library_path = f"{lib_dir}:{existing_ld}" if existing_ld else str(lib_dir)
+        plan = LocalServerLaunchPlan(
+            backend="cuda",
+            desired_fingerprint_json=before_json,
+            desired_fingerprint_sha256=before_sha,
+            binary_path=binary_path,
+            model_path=model_path,
+            mmproj_path=mmproj_path,
+            lib_dir=lib_dir,
+            gpu_index=gpu_index,
+            gpu_vram_mib=probe.vram_mib,
+            context_tokens=tier.context_tokens,
+            parallel_slots=tier.parallel_slots,
+            prompt_cache_mib=tier.prompt_cache_mib,
+            visible_devices_env=local_install.CUDA_SERVER_PIN.visible_devices_env,
+            visible_devices_value=str(gpu_index),
+            env_updates={
+                local_install.CUDA_SERVER_PIN.visible_devices_env: str(gpu_index),
+                "LD_LIBRARY_PATH": ld_library_path,
+            },
+            backend_reason=str(readiness.host["backend_reason"]),
+        )
+    else:
+        from solstone.think.providers import local_vulkan
+
+        devices = local_vulkan.detect_gpus()
+        override = local_install.gpu_device_override()
+        selected = local_vulkan.select_device(devices, override_index=override)
+        if selected is None:
+            return ProviderTruthObservation(
+                provider="local",
+                phase="host-blocked",
+                reason_code="gpu-unavailable",
+                desired_fingerprint_json=before_json,
+                desired_fingerprint_sha256=before_sha,
+                boot_required=True,
+                detail={
+                    "readiness_status": "host-ineligible",
+                    "readiness_reason_code": "gpu_unavailable",
+                    "devices": _format_vulkan_devices(devices, local_vulkan),
+                },
+            )
+        tier = local_server.select_server_tier(selected.vram_mib)
+        plan = LocalServerLaunchPlan(
+            backend="vulkan",
+            desired_fingerprint_json=before_json,
+            desired_fingerprint_sha256=before_sha,
+            binary_path=binary_path,
+            model_path=model_path,
+            mmproj_path=mmproj_path,
+            gpu_index=selected.index,
+            gpu_name=selected.name,
+            gpu_vram_mib=selected.vram_mib,
+            vram_before_mib=local_vulkan.device_local_used_mib(selected.index),
+            context_tokens=tier.context_tokens,
+            parallel_slots=tier.parallel_slots,
+            prompt_cache_mib=tier.prompt_cache_mib,
+            visible_devices_env="GGML_VK_VISIBLE_DEVICES",
+            visible_devices_value=str(selected.index),
+            env_updates={"GGML_VK_VISIBLE_DEVICES": str(selected.index)},
+            backend_reason=str(readiness.host["backend_reason"]),
+        )
+    before_identity_json, before_identity_sha = _target_fingerprint_pair(
+        _local_plan_race_identity(plan)
+    )
+    after_json, after_sha = _target_fingerprint_pair(
+        local_install.target_fingerprint(LOCAL_MODEL)
+    )
+    if before_sha != after_sha:
+        return _observation_raced("local", before_sha, after_sha, boot_required=True)
+    after_identity_json, after_identity_sha = _target_fingerprint_pair(
+        _local_plan_race_identity(plan)
+    )
+    if before_identity_sha != after_identity_sha:
+        return _observation_raced(
+            "local",
+            before_identity_json,
+            after_identity_json,
+            boot_required=True,
+        )
+    return ProviderTruthObservation(
+        provider="local",
+        phase="starting",
+        reason_code="launch-requested",
+        desired_fingerprint_json=after_json,
+        desired_fingerprint_sha256=after_sha,
+        plan=plan,
+        boot_required=True,
+        detail={"backend": plan.backend},
+    )
+
+
+def _observe_parakeet_provider_truth() -> ProviderTruthObservation:
+    if _is_remote_mode:
+        return _not_desired_observation(
+            "parakeet", "provider-not-needed", detail={"remote_mode": True}
+        )
+    if not _parakeet_platform_can_host():
+        return _not_desired_observation(
+            "parakeet", "provider-not-needed", detail={"platform": sys.platform}
+        )
+
+    journal_path = Path(get_journal())
+    try:
+        from solstone.think.providers import local_vulkan, parakeet_install
+        from solstone.think.providers.parakeet_placement import (
+            decide_parakeet_auto_placement,
+            discrete_hardware_gpu_count,
+            is_discrete,
+        )
+
+        config = read_journal_config()
+        transcribe = config.get("transcribe", {})
+        if not isinstance(transcribe, dict):
+            transcribe = {}
+        from solstone.think.services import spp
+
+        confidential = spp.confidential_provenance() is not None
+        admission_latch = _parakeet_stt_admission_latch(transcribe, confidential)
+        if admission_latch["blocked"]:
+            return ProviderTruthObservation(
+                provider="parakeet",
+                phase="host-blocked",
+                reason_code="host-admission-blocked",
+                detail={"stt_admission_latch": admission_latch},
+                boot_required=True,
+            )
+        if not admission_latch["desired"]:
+            return _not_desired_observation(
+                "parakeet",
+                cast(ReasonCode, admission_latch["reason_code"]),
+                detail={"stt_admission_latch": admission_latch},
+            )
+
+        before_json, before_sha = _target_fingerprint_pair(
+            parakeet_install.target_fingerprint(journal_path=journal_path)
+        )
+        readiness = parakeet_install.inspect_readiness(journal_path)
+        blocked = _readiness_block_observation(
+            provider="parakeet",
+            readiness=readiness,
+            fingerprint_json=before_json,
+            fingerprint_sha256_value=before_sha,
+            boot_required=True,
+        )
+        if blocked is not None:
+            return blocked
+
+        config_device = _configured_parakeet_device()
+        effective_device = config_device
+        selected = None
+        if config_device == "auto":
+            devices = local_vulkan.detect_gpus()
+            selected = local_vulkan.select_device(devices)
+            selected_is_discrete = selected is not None and is_discrete(
+                selected, local_vulkan
+            )
+            if selected is not None and selected_is_discrete:
+                from solstone.think.providers import local_cuda
+                from solstone.think.providers.local_endpoint import (
+                    resolve_local_endpoint,
+                )
+
+                decision = decide_parakeet_auto_placement(
+                    vram_mib=selected.vram_mib,
+                    selected_device_is_discrete=selected_is_discrete,
+                    discrete_hardware_gpu_count=discrete_hardware_gpu_count(
+                        devices, local_vulkan
+                    ),
+                    unified_memory=(
+                        local_cuda.probe_nvidia_gpu().memory_source
+                        == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE
+                    ),
+                    brain_lane_active=(
+                        is_local_provider_needed()
+                        and resolve_local_endpoint().is_bundled
+                    ),
+                )
+                if decision.force_cpu:
+                    effective_device = "cpu"
+        backend, env_updates, gpu_index = _resolve_parakeet_backend(
+            effective_device, selected
+        )
+        binary_key = "binary_path_vulkan" if backend == "vulkan" else "binary_path_cpu"
+        threads = parakeet_physical_thread_count()
+        plan = ParakeetServerLaunchPlan(
+            binary_backend=backend,
+            env_updates=env_updates,
+            gpu_index=gpu_index,
+            binary_path=Path(str(readiness.artifacts[binary_key])),
+            model_path=Path(str(readiness.artifacts["model_path"])),
+            threads=threads,
+            library_dirs=tuple(_parakeet_runtime_library_dirs()),
+            desired_fingerprint_json=before_json,
+            desired_fingerprint_sha256=before_sha,
+            placement="gpu" if backend == "vulkan" else "cpu",
+        )
+        after_json, after_sha = _target_fingerprint_pair(
+            parakeet_install.target_fingerprint(journal_path=journal_path)
+        )
+        if before_sha != after_sha:
+            return _observation_raced(
+                "parakeet", before_sha, after_sha, boot_required=True
+            )
+        return ProviderTruthObservation(
+            provider="parakeet",
+            phase="starting",
+            reason_code="launch-requested",
+            desired_fingerprint_json=after_json,
+            desired_fingerprint_sha256=after_sha,
+            plan=plan,
+            boot_required=True,
+            detail={
+                "backend": backend,
+                "placement": plan.placement,
+                "stt_admission_latch": admission_latch,
+            },
+        )
+    except InstallStatusMalformedError as exc:
+        return ProviderTruthObservation(
+            provider="parakeet",
+            phase="state-corrupt",
+            reason_code="record-malformed",
+            detail={"error": str(exc)},
+            boot_required=True,
+        )
+    except OSError as exc:
+        return ProviderTruthObservation(
+            provider="parakeet",
+            phase="state-unavailable",
+            reason_code="record-unavailable",
+            detail={"error": str(exc)},
+            boot_required=True,
+        )
+    except Exception as exc:
+        logger.exception("parakeet provider truth observation failed")
+        return ProviderTruthObservation(
+            provider="parakeet",
+            phase="state-unavailable",
+            reason_code="truth-observation-failed",
+            detail={"error": str(exc)},
+            boot_required=True,
+        )
+
+
+def _resolve_parakeet_backend(
     config_device: str, selected_gpu: Any
-) -> ParakeetServerLaunchPlan:
+) -> tuple[str, dict[str, str], int | None]:
     if config_device not in {"auto", "cpu"}:
         raise ValueError(
             f"parakeet device must be 'auto' or 'cpu', got {config_device!r}"
         )
     if config_device == "cpu":
-        return ParakeetServerLaunchPlan("cpu", {}, None)
+        return "cpu", {}, None
     if selected_gpu is not None:
-        return ParakeetServerLaunchPlan(
+        return (
             "vulkan",
             {"GGML_VK_VISIBLE_DEVICES": str(selected_gpu.index)},
             selected_gpu.index,
         )
-    return ParakeetServerLaunchPlan("cpu", {}, None)
+    return "cpu", {}, None
+
+
+def resolve_parakeet_server_launch_plan(
+    config_device: str,
+    selected_gpu: Any,
+    *,
+    binary_path: Path,
+    model_path: Path,
+    threads: int,
+    library_dirs: Iterable[Path] = (),
+    desired_fingerprint_json: str = "",
+    desired_fingerprint_sha256: str = "",
+) -> ParakeetServerLaunchPlan:
+    backend, env_updates, gpu_index = _resolve_parakeet_backend(
+        config_device, selected_gpu
+    )
+    return ParakeetServerLaunchPlan(
+        binary_backend=backend,
+        env_updates=env_updates,
+        gpu_index=gpu_index,
+        binary_path=binary_path,
+        model_path=model_path,
+        threads=threads,
+        library_dirs=tuple(library_dirs),
+        desired_fingerprint_json=desired_fingerprint_json,
+        desired_fingerprint_sha256=desired_fingerprint_sha256,
+        placement="gpu" if backend == "vulkan" else "cpu",
+    )
 
 
 def _request_parakeet_server_start() -> None:
@@ -2119,46 +2981,242 @@ def _with_library_path(env: dict[str, str], dirs: Iterable[Path]) -> dict[str, s
     return env | {"LD_LIBRARY_PATH": ":".join(paths)}
 
 
-def _launch_and_warm_parakeet(
-    backend: str,
-    binary_path: Path,
-    gguf_path: Path,
-    port: int,
-    threads: int,
-    env: dict[str, str],
-) -> tuple[str, RunnerManagedProcess]:
-    """Launch one parakeet-server backend and warm it.
+def _build_local_llama_cmd(plan: LocalServerLaunchPlan, port: int) -> list[str]:
+    binary_path = _required_plan_path(plan.binary_path, "binary_path")
+    model_path = _required_plan_path(plan.model_path, "model_path")
+    context_tokens = _required_plan_int(plan.context_tokens, "context_tokens")
+    parallel_slots = _required_plan_int(plan.parallel_slots, "parallel_slots")
+    prompt_cache_mib = _required_plan_int(plan.prompt_cache_mib, "prompt_cache_mib")
+    device_flag = "CUDA0" if plan.backend == "cuda" else "Vulkan0"
+    cmd = [
+        str(binary_path),
+        "-m",
+        str(model_path),
+        "--alias",
+        plan.model_id,
+        "--host",
+        "127.0.0.1",
+        "--port",
+        str(port),
+        "--jinja",
+        "--n-gpu-layers",
+        "999",
+        "-c",
+        str(context_tokens),
+        "--parallel",
+        str(parallel_slots),
+        "--kv-unified",
+        "--cache-ram",
+        str(prompt_cache_mib),
+        "--no-context-shift",
+        "--device",
+        device_flag,
+    ]
+    if plan.mmproj_path is not None:
+        cmd.extend(["--mmproj", str(plan.mmproj_path)])
+    if "0.0.0.0" in cmd:
+        raise RuntimeError("Local server may not bind 0.0.0.0.")
+    return cmd
 
-    Returns (status, managed), where status is "ready", "crashed", or
-    "timeout". Does not clean up on failure; the caller owns termination.
-    """
+
+def _start_llama_local_server(
+    plan: LocalServerLaunchPlan,
+    reservation: ReservedPort | None = None,
+) -> ProviderLaunchOutcome:
+    """Launch a CUDA/Vulkan llama-server from a captured plan."""
+    from solstone.think.providers import local_server, local_vulkan
+
+    if plan.backend not in {"cuda", "vulkan"}:
+        raise ValueError(
+            f"llama-server launch requires CUDA/Vulkan plan, got {plan.backend!r}"
+        )
+    owned_reservation = (
+        reservation if reservation is not None else ReservedPort.reserve()
+    )
+    port = owned_reservation.port
+    try:
+        cmd = _build_local_llama_cmd(plan, port)
+        local_server.write_local_context_window(
+            _required_plan_int(plan.context_tokens, "context_tokens")
+        )
+        logging.info(
+            "local server backend=%s context=%d parallel=%d cache=%d MiB",
+            plan.backend,
+            _required_plan_int(plan.context_tokens, "context_tokens"),
+            _required_plan_int(plan.parallel_slots, "parallel_slots"),
+            _required_plan_int(plan.prompt_cache_mib, "prompt_cache_mib"),
+        )
+        owned_reservation.release_for_spawn()
+        managed = _launch_process(
+            LOCAL_SERVER_PROCESS_NAME,
+            cmd,
+            restart=True,
+            env=os.environ | plan.env_updates,
+        )
+    except Exception as exc:
+        owned_reservation.close()
+        logging.exception("%s local server launch failed", plan.backend.upper())
+        return _outcome(
+            "launch-failed",
+            "launch-failed",
+            {"backend": plan.backend, "error": str(exc)},
+        )
+    print(f"  {LOCAL_MODEL_WARMING_UP_COPY}", flush=True)
+
+    deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
+    while time.monotonic() < deadline:
+        if managed.process.poll() is not None:
+            logging.warning(
+                "%s local server exited during warmup with code %s",
+                plan.backend.upper(),
+                managed.process.returncode,
+            )
+            return _outcome(
+                "exited",
+                "process-exited",
+                {
+                    "backend": plan.backend,
+                    "returncode": managed.process.returncode,
+                    "port": port,
+                },
+                managed,
+            )
+        state, error = local_server._probe_health(port)
+        if state == local_server.STATE_READY:
+            if plan.backend == "vulkan" and plan.gpu_index is not None:
+                vram_after_mib = local_vulkan.device_local_used_mib(plan.gpu_index)
+                if plan.vram_before_mib is not None and vram_after_mib is not None:
+                    logging.info(
+                        "local GPU: %s — VRAM used %+d MiB after model load (%d -> %d MiB)",
+                        plan.gpu_name,
+                        vram_after_mib - plan.vram_before_mib,
+                        plan.vram_before_mib,
+                        vram_after_mib,
+                    )
+            props = local_server.fetch_props(port)
+            n_ctx = local_server._extract_n_ctx(props) if props is not None else None
+            total_slots = props.get("total_slots") if isinstance(props, dict) else None
+            _log_context_assertion(plan, n_ctx, total_slots)
+            logging.info("llama-server ready on port %s", port)
+            return _outcome(
+                "ready",
+                "probe-ready",
+                {"backend": plan.backend, "port": port},
+                managed,
+            )
+        if state == local_server.STATE_FAILED and error:
+            logging.debug("llama-server health probe failed during warmup: %s", error)
+        time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
+
+    logging.warning(
+        "llama-server did not become ready within %.0fs",
+        LOCAL_SERVER_READY_TIMEOUT_S,
+    )
+    return _outcome(
+        "warmup-timeout",
+        "warmup-timeout",
+        {
+            "backend": plan.backend,
+            "port": port,
+            "timeout_s": LOCAL_SERVER_READY_TIMEOUT_S,
+        },
+        managed,
+    )
+
+
+def _start_cuda_local_server(
+    plan: LocalServerLaunchPlan,
+    reservation: ReservedPort | None = None,
+) -> ProviderLaunchOutcome:
+    """Launch the CUDA llama-server path from a captured plan."""
+    if plan.backend != "cuda":
+        raise ValueError(f"CUDA launch requires cuda plan, got {plan.backend!r}")
+    return _start_llama_local_server(plan, reservation)
+
+
+def start_local_server(
+    plan: LocalServerLaunchPlan,
+    reservation: ReservedPort | None = None,
+) -> ProviderLaunchOutcome:
+    """Launch the supervisor-owned bundled local runtime from a captured plan."""
+    if plan.backend == "mlx":
+        return _start_mlx_local_server(plan, reservation)
+    if plan.backend == "cuda":
+        return _start_cuda_local_server(plan, reservation)
+    if plan.backend == "vulkan":
+        return _start_llama_local_server(plan, reservation)
+    raise ValueError(f"unknown local launch backend {plan.backend!r}")
+
+
+def _launch_and_warm_parakeet(
+    plan: ParakeetServerLaunchPlan,
+    reservation: ReservedPort | None = None,
+) -> ProviderLaunchOutcome:
+    """Launch one parakeet-server backend from a captured plan and warm it."""
     from solstone.think.providers import parakeet_server
     from solstone.think.providers.parakeet_placement import (
         PARAKEET_ATT_CONTEXT_ENV,
         PARAKEET_ATT_CONTEXT_FRAMES,
     )
 
+    owned_reservation = (
+        reservation if reservation is not None else ReservedPort.reserve()
+    )
+    port = owned_reservation.port
+    env = _with_library_path(os.environ | plan.env_updates, plan.library_dirs)
     env = env | {PARAKEET_ATT_CONTEXT_ENV: str(PARAKEET_ATT_CONTEXT_FRAMES)}
     logging.info(
         "parakeet-server launch backend=%s attention=local att_context_frames=%d",
-        backend,
+        plan.binary_backend,
         PARAKEET_ATT_CONTEXT_FRAMES,
     )
-    cmd = _build_parakeet_cmd(binary_path, gguf_path, port, threads)
-    managed = _launch_process(PARAKEET_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
+    try:
+        cmd = _build_parakeet_cmd(plan.binary_path, plan.model_path, port, plan.threads)
+        owned_reservation.release_for_spawn()
+        managed = _launch_process(
+            PARAKEET_SERVER_PROCESS_NAME, cmd, restart=True, env=env
+        )
+    except Exception as exc:
+        owned_reservation.close()
+        logging.exception("parakeet-server launch failed")
+        return _outcome(
+            "launch-failed",
+            "launch-failed",
+            {"backend": plan.binary_backend, "error": str(exc)},
+        )
+
     deadline = time.monotonic() + PARAKEET_SERVER_READY_TIMEOUT_S
     while time.monotonic() < deadline:
         if managed.process.poll() is not None:
             logging.warning(
                 "parakeet-server %s exited during warmup with code %s",
-                backend,
+                plan.binary_backend,
                 managed.process.returncode,
             )
-            return "crashed", managed
-        state, error = parakeet_server.probe_state()
+            return _outcome(
+                "exited",
+                "process-exited",
+                {
+                    "backend": plan.binary_backend,
+                    "returncode": managed.process.returncode,
+                    "port": port,
+                },
+                managed,
+            )
+        state, error = parakeet_server._probe_health(port)
         if state == parakeet_server.STATE_READY:
             logging.info("parakeet-server ready on port %s", port)
-            return "ready", managed
+            parakeet_server.write_parakeet_placement(plan.placement)
+            return _outcome(
+                "ready",
+                "probe-ready",
+                {
+                    "backend": plan.binary_backend,
+                    "placement": plan.placement,
+                    "port": port,
+                },
+                managed,
+            )
         if state == parakeet_server.STATE_FAILED and error:
             logging.debug(
                 "parakeet-server health probe failed during warmup: %s", error
@@ -2166,449 +3224,32 @@ def _launch_and_warm_parakeet(
         time.sleep(PARAKEET_SERVER_HEALTH_POLL_INTERVAL_S)
     logging.warning(
         "parakeet-server %s did not become ready within %.0fs",
-        backend,
+        plan.binary_backend,
         PARAKEET_SERVER_READY_TIMEOUT_S,
     )
-    return "timeout", managed
+    return _outcome(
+        "warmup-timeout",
+        "warmup-timeout",
+        {
+            "backend": plan.binary_backend,
+            "placement": plan.placement,
+            "port": port,
+            "timeout_s": PARAKEET_SERVER_READY_TIMEOUT_S,
+        },
+        managed,
+    )
 
 
 def _cleanup_parakeet_launch(managed: RunnerManagedProcess, reason: str) -> None:
-    timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
-    _SERVICE_STATE.pop(managed.name, None)
-    _terminate_managed(managed, timeout, reason=reason)
-    managed.cleanup()
+    _terminate_cleanup_handle(managed, reason=reason)
 
 
-def _start_cuda_local_server(
-    artifacts: Any,
-    binary_path: Path,
-    gguf_path: Path,
-    mmproj_path: Path | None,
-) -> RunnerManagedProcess | None:
-    """Launch the CUDA llama-server path after backend selection chose CUDA."""
-    from solstone.think.providers import local_cuda, local_install, local_server
-
-    pin = local_install.CUDA_SERVER_PIN
-    probe = local_cuda.probe_nvidia_gpu()
-    gpu_index = probe.index if probe.index is not None else 0
-    port = find_available_port()
-    write_service_port("local", port)
-    if probe.tiering_memory_mib is None:
-        tier = local_server.select_server_tier(0)
-        logging.info(
-            "local server CUDA tiering memory unavailable (source=%s); "
-            "using floor tier",
-            probe.memory_source,
-        )
-    else:
-        tier = local_server.select_server_tier(probe.tiering_memory_mib)
-    local_server.write_local_context_window(tier.context_tokens)
-    logging.info(
-        "local server backend=cuda tier=%s context=%d parallel=%d cache=%d MiB "
-        "(tiering_memory=%s MiB source=%s discrete_vram=%s)",
-        tier.name,
-        tier.context_tokens,
-        tier.parallel_slots,
-        tier.prompt_cache_mib,
-        (
-            str(probe.tiering_memory_mib)
-            if probe.tiering_memory_mib is not None
-            else "unavailable"
-        ),
-        probe.memory_source,
-        probe.vram_mib if probe.vram_mib is not None else "unavailable",
-    )
-    cmd = [
-        str(binary_path),
-        "-m",
-        str(gguf_path),
-        "--alias",
-        LOCAL_MODEL,
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(port),
-        "--jinja",
-        "--n-gpu-layers",
-        "999",
-        "-c",
-        str(tier.context_tokens),
-        "--parallel",
-        str(tier.parallel_slots),
-        "--kv-unified",
-        "--cache-ram",
-        str(tier.prompt_cache_mib),
-        "--no-context-shift",
-        "--device",
-        # TODO(AC10): confirm --device CUDA0 spelling on the CUDA build.
-        pin.device_flag_value,
-    ]
-    if mmproj_path is not None:
-        cmd.extend(["--mmproj", str(mmproj_path)])
-    if "0.0.0.0" in cmd:
-        raise RuntimeError("Local server may not bind 0.0.0.0.")
-
-    lib_dir = str(artifacts.lib_dir)
-    existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
-    ld_library_path = f"{lib_dir}:{existing_ld}" if existing_ld else lib_dir
-    env = os.environ | {
-        # TODO(AC10): confirm CUDA_VISIBLE_DEVICES env name on the CUDA build.
-        pin.visible_devices_env: str(gpu_index),
-        "LD_LIBRARY_PATH": ld_library_path,
-    }
-    managed = _launch_process(LOCAL_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
-    print(f"  {LOCAL_MODEL_WARMING_UP_COPY}", flush=True)
-
-    def fail_cuda_server_launch(reason: str) -> None:
-        logging.error("CUDA local server launch failed: %s", reason)
-        timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
-        _SERVICE_STATE.pop(managed.name, None)
-        _terminate_managed(
-            managed,
-            timeout,
-            reason="CUDA local server launch failed",
-        )
-        managed.cleanup()
-
-    deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
-    while time.monotonic() < deadline:
-        if managed.process.poll() is not None:
-            fail_cuda_server_launch(
-                f"llama-server exited during warmup with code "
-                f"{managed.process.returncode}"
-            )
-            return None
-        state, error = local_server._probe_health(port)
-        if state == local_server.STATE_READY:
-            props = local_server.fetch_props(port)
-            n_ctx = local_server._extract_n_ctx(props) if props is not None else None
-            total_slots = props.get("total_slots") if isinstance(props, dict) else None
-            _log_context_assertion(tier, n_ctx, total_slots)
-            logging.info("llama-server ready on port %s", port)
-            return managed
-        if state == local_server.STATE_FAILED and error:
-            logging.debug("llama-server health probe failed during warmup: %s", error)
-        time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
-
-    fail_cuda_server_launch(
-        "CUDA llama-server did not become ready within "
-        f"{LOCAL_SERVER_READY_TIMEOUT_S:.0f}s; the covered-arch CUDA build may be "
-        "crashing on this GPU"
-    )
-    return None
-
-
-def start_local_server() -> RunnerManagedProcess | None:
-    """Launch the supervisor-owned local llama-server when artifacts are present."""
-    from solstone.think.providers.local_endpoint import resolve_local_endpoint
-
-    if not resolve_local_endpoint().is_bundled:
-        return None
-
-    if sys.platform == "darwin":
-        return _start_mlx_local_server()
-
-    from solstone.think.providers import (
-        local_install,
-        local_server,
-        local_vulkan,
-    )
-
-    try:
-        artifacts = local_install.ensure_artifacts_installed(LOCAL_MODEL)
-        binary_path = artifacts.binary_path
-        gguf_path = artifacts.gguf_path
-        mmproj_path = artifacts.mmproj_path
-        # Defense in depth: refuse to launch a gguf/mmproj pair that does not
-        # belong to the selected model, even if readiness ever regresses. A
-        # mixed pair (e.g. a stale gguf from a prior model + the current mmproj)
-        # aborts llama-server with an n_embd mismatch, so skip startup instead.
-        expected_dir = local_install.model_dir(LOCAL_MODEL)
-        if gguf_path.parent != expected_dir or (
-            mmproj_path is not None and mmproj_path.parent != expected_dir
-        ):
-            raise RuntimeError(
-                f"local model artifacts are not under {expected_dir} "
-                f"(gguf={gguf_path}, mmproj={mmproj_path}); refusing to launch "
-                "a mismatched gguf/mmproj pair"
-            )
-    except Exception as exc:
-        logging.info("Local model not ready; skipping llama-server startup: %s", exc)
-        return None
-
-    logging.info(
-        "local backend selected: backend=%s reason=%s",
-        artifacts.backend,
-        artifacts.backend_reason,
-    )
-    if artifacts.backend == "cuda":
-        return _start_cuda_local_server(artifacts, binary_path, gguf_path, mmproj_path)
-
-    devices = local_vulkan.detect_gpus()
-    override = local_install.gpu_device_override()
-    selected = local_vulkan.select_device(devices, override_index=override)
-    logging.info(
-        "Vulkan GPU probe: devices=%s; selected=%s",
-        _format_vulkan_devices(devices, local_vulkan),
-        (
-            f"raw_index={selected.index} name={selected.name!r} "
-            f"type={local_vulkan.classify(selected)}"
-            if selected is not None
-            else "none"
-        ),
-    )
-    if selected is None:
-        reason = _gpu_unavailable_reason(devices, override)
-        logging.info("gpu_unavailable: skipping llama-server startup: %s", reason)
-        return None
-
-    port = find_available_port()
-    write_service_port("local", port)
-    tier = local_server.select_server_tier(selected.vram_mib)
-    local_server.write_local_context_window(tier.context_tokens)
-    logging.info(
-        "local server tier=%s context=%d parallel=%d cache=%d MiB (vram=%d MiB)",
-        tier.name,
-        tier.context_tokens,
-        tier.parallel_slots,
-        tier.prompt_cache_mib,
-        selected.vram_mib,
-    )
-    cmd = [
-        str(binary_path),
-        "-m",
-        str(gguf_path),
-        "--alias",
-        LOCAL_MODEL,
-        "--host",
-        "127.0.0.1",
-        "--port",
-        str(port),
-        "--jinja",
-        "--n-gpu-layers",
-        "999",
-        "-c",
-        str(tier.context_tokens),
-        "--parallel",
-        str(tier.parallel_slots),
-        "--kv-unified",
-        "--cache-ram",
-        str(tier.prompt_cache_mib),
-        "--no-context-shift",
-        "--device",
-        "Vulkan0",
-    ]
-    if mmproj_path is not None:
-        cmd.extend(["--mmproj", str(mmproj_path)])
-    if "0.0.0.0" in cmd:
-        raise RuntimeError("Local server may not bind 0.0.0.0.")
-
-    env = os.environ | {"GGML_VK_VISIBLE_DEVICES": str(selected.index)}
-    vram_before_mib = local_vulkan.device_local_used_mib(selected.index)
-    managed = _launch_process(LOCAL_SERVER_PROCESS_NAME, cmd, restart=True, env=env)
-    print(f"  {LOCAL_MODEL_WARMING_UP_COPY}", flush=True)
-
-    def fail_local_server_launch(reason: str) -> None:
-        logging.warning("local server launch failed: %s", reason)
-        timeout = _SERVICE_STATE.get(managed.name, {}).get("shutdown_timeout", 15)
-        _SERVICE_STATE.pop(managed.name, None)
-        _terminate_managed(
-            managed,
-            timeout,
-            reason="local server launch failed",
-        )
-        managed.cleanup()
-
-    deadline = time.monotonic() + LOCAL_SERVER_READY_TIMEOUT_S
-    while time.monotonic() < deadline:
-        if managed.process.poll() is not None:
-            fail_local_server_launch(
-                f"llama-server exited during warmup with code "
-                f"{managed.process.returncode}"
-            )
-            return None
-        state, error = local_server._probe_health(port)
-        if state == local_server.STATE_READY:
-            vram_after_mib = local_vulkan.device_local_used_mib(selected.index)
-            if vram_before_mib is not None and vram_after_mib is not None:
-                logging.info(
-                    "local GPU: %s — VRAM used %+d MiB after model load (%d -> %d MiB)",
-                    selected.name,
-                    vram_after_mib - vram_before_mib,
-                    vram_before_mib,
-                    vram_after_mib,
-                )
-            else:
-                logging.info(
-                    "local GPU: %s — VRAM-usage delta unavailable "
-                    "(VK_EXT_memory_budget not reported)",
-                    selected.name,
-                )
-            props = local_server.fetch_props(port)
-            n_ctx = local_server._extract_n_ctx(props) if props is not None else None
-            total_slots = props.get("total_slots") if isinstance(props, dict) else None
-            _log_context_assertion(tier, n_ctx, total_slots)
-            logging.info("llama-server ready on port %s", port)
-            return managed
-        if state == local_server.STATE_FAILED and error:
-            logging.debug("llama-server health probe failed during warmup: %s", error)
-        time.sleep(LOCAL_SERVER_HEALTH_POLL_INTERVAL_S)
-
-    logging.warning(
-        "llama-server did not become ready within %.0fs; continuing startup",
-        LOCAL_SERVER_READY_TIMEOUT_S,
-    )
-    return managed
-
-
-def start_parakeet_server() -> RunnerManagedProcess | None:
-    """Launch the supervisor-owned parakeet-server when STT opts into it."""
-    parakeet_server.clear_parakeet_placement()
-    if not linux_stt_uses_parakeet_cpp():
-        return None
-
-    from solstone.think.providers import local_vulkan, parakeet_install
-    from solstone.think.providers.parakeet_placement import (
-        decide_parakeet_auto_placement,
-        discrete_hardware_gpu_count,
-        is_discrete,
-    )
-
-    config_device = _configured_parakeet_device()
-    effective_device = config_device
-    selected = None
-    if config_device == "auto":
-        devices = local_vulkan.detect_gpus()
-        selected = local_vulkan.select_device(devices)
-        logging.info(
-            "Vulkan GPU probe: devices=%s; selected=%s",
-            _format_vulkan_devices(devices, local_vulkan),
-            (
-                f"raw_index={selected.index} name={selected.name!r} "
-                f"type={local_vulkan.classify(selected)}"
-                if selected is not None
-                else "none"
-            ),
-        )
-        selected_is_discrete = selected is not None and is_discrete(
-            selected, local_vulkan
-        )
-        if selected is not None and selected_is_discrete:
-            from solstone.think.providers import local_cuda
-            from solstone.think.providers.local_endpoint import resolve_local_endpoint
-
-            discrete_count = discrete_hardware_gpu_count(devices, local_vulkan)
-            probe = local_cuda.probe_nvidia_gpu()
-            decision = decide_parakeet_auto_placement(
-                vram_mib=selected.vram_mib,
-                selected_device_is_discrete=selected_is_discrete,
-                discrete_hardware_gpu_count=discrete_count,
-                unified_memory=(
-                    probe.memory_source == local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE
-                ),
-                brain_lane_active=(
-                    is_local_provider_needed() and resolve_local_endpoint().is_bundled
-                ),
-            )
-            if decision.force_cpu:
-                logging.info(
-                    "parakeet-server auto placement resolved to CPU: "
-                    "tier=%s tier_resident_mib=%s "
-                    "parakeet_worst_case_mib=%d margin_mib=%d "
-                    "required_mib=%s gpu_vram_mib=%s placement=cpu",
-                    decision.tier_name,
-                    decision.tier_resident_mib,
-                    decision.parakeet_worst_case_mib,
-                    decision.margin_mib,
-                    decision.required_mib,
-                    decision.vram_mib,
-                )
-                effective_device = "cpu"
-
-    plan = resolve_parakeet_server_launch_plan(effective_device, selected)
-    try:
-        binary_path, gguf_path = parakeet_install.ensure_artifacts_installed(
-            plan.binary_backend
-        )
-    except Exception as exc:
-        _start_parakeet_bootstrap_if_needed(str(exc))
-        return None
-
-    port = find_available_port()
-    write_service_port("parakeet-cpp", port)
-    threads = parakeet_physical_thread_count()
-    logging.info("parakeet-server threads=%d", threads)
-    library_dirs = _parakeet_runtime_library_dirs()
-    env = _with_library_path(os.environ | plan.env_updates, library_dirs)
-    status, managed = _launch_and_warm_parakeet(
-        plan.binary_backend,
-        binary_path,
-        gguf_path,
-        port,
-        threads,
-        env,
-    )
-    if status == "ready":
-        parakeet_server.write_parakeet_placement(
-            "gpu" if plan.binary_backend == "vulkan" else "cpu"
-        )
-        return managed
-
-    if plan.binary_backend == "vulkan" and status in {"crashed", "timeout"}:
-        logging.warning("parakeet-server vulkan warmup %s; falling back to CPU", status)
-        _cleanup_parakeet_launch(
-            managed, reason=f"parakeet-server vulkan warmup {status}"
-        )
-        try:
-            cpu_binary, _ = parakeet_install.ensure_artifacts_installed("cpu")
-        except Exception as exc:
-            logging.info(
-                "Parakeet CPU artifacts not ready; skipping fallback startup: %s", exc
-            )
-            return None
-        cpu_status, cpu_managed = _launch_and_warm_parakeet(
-            "cpu",
-            cpu_binary,
-            gguf_path,
-            port,
-            threads,
-            _with_library_path(os.environ | {}, library_dirs),
-        )
-        if cpu_status == "crashed":
-            logging.warning("parakeet-server cpu exited during warmup")
-            _cleanup_parakeet_launch(
-                cpu_managed, reason="parakeet-server cpu warmup crashed"
-            )
-            return None
-        if cpu_status == "timeout":
-            logging.warning(
-                "parakeet-server cpu did not become ready within %.0fs; "
-                "continuing startup",
-                PARAKEET_SERVER_READY_TIMEOUT_S,
-            )
-        parakeet_server.write_parakeet_placement("cpu")
-        return cpu_managed
-
-    if plan.binary_backend == "cpu":
-        if status == "crashed":
-            logging.warning("parakeet-server cpu exited during warmup")
-            _cleanup_parakeet_launch(
-                managed, reason="parakeet-server cpu warmup crashed"
-            )
-            return None
-        if status == "timeout":
-            logging.warning(
-                "parakeet-server cpu did not become ready within %.0fs; "
-                "continuing startup",
-                PARAKEET_SERVER_READY_TIMEOUT_S,
-            )
-            parakeet_server.write_parakeet_placement("cpu")
-            return managed
-
-    parakeet_server.write_parakeet_placement(
-        "gpu" if plan.binary_backend == "vulkan" else "cpu"
-    )
-    return managed
+def start_parakeet_server(
+    plan: ParakeetServerLaunchPlan,
+    reservation: ReservedPort | None = None,
+) -> ProviderLaunchOutcome:
+    """Launch supervisor-owned parakeet-server from a captured plan."""
+    return _launch_and_warm_parakeet(plan, reservation)
 
 
 def start_callosum_in_process() -> CallosumServer:
@@ -2861,6 +3502,630 @@ async def _check_local_server_recovery() -> None:
 
     _recovery_state["local_server_down"] = False
     _nudge_catchup_drain()
+
+
+_PROVIDER_STARTUP_TERMINAL_PHASES: frozenset[RuntimePhase] = frozenset(
+    {
+        "ready",
+        "ready-proof-unavailable",
+        "not-desired",
+        "artifact-not-ready",
+        "host-blocked",
+        "failed",
+        "state-corrupt",
+        "state-unavailable",
+    }
+)
+_PROVIDER_PROCESS_NAMES: dict[ProviderName, frozenset[str]] = {
+    "local": frozenset({LOCAL_SERVER_PROCESS_NAME, MLX_SERVER_PROCESS_NAME}),
+    "parakeet": frozenset({PARAKEET_SERVER_PROCESS_NAME}),
+}
+_PROVIDER_PORT_SERVICES: dict[ProviderName, str] = {
+    "local": "local",
+    "parakeet": "parakeet-cpp",
+}
+
+
+def _runtime_updated_at() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _display_deadline_at(delay_s: float | None) -> str | None:
+    if delay_s is None:
+        return None
+    deadline = time.time() + max(0.0, delay_s)
+    return datetime.fromtimestamp(deadline, timezone.utc).isoformat()
+
+
+def _provider_executor() -> concurrent.futures.ThreadPoolExecutor:
+    global _provider_runtime_executor
+    if _provider_runtime_executor is None:
+        _provider_runtime_executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4,
+            thread_name_prefix="provider-runtime",
+        )
+    return _provider_runtime_executor
+
+
+def _provider_fence(state: ProviderRuntimeState, attempt: int) -> ProviderFence:
+    return ProviderFence(
+        incarnation=_PROVIDER_INCARNATION,
+        generation=state.generation,
+        fingerprint=state.desired_fingerprint,
+        attempt=attempt,
+    )
+
+
+def _provider_fence_matches(state: ProviderRuntimeState, fence: ProviderFence) -> bool:
+    return (
+        fence.incarnation == _PROVIDER_INCARNATION
+        and fence.generation == state.generation
+        and fence.fingerprint == state.desired_fingerprint
+        and fence.attempt == state.retry.attempt_count
+    )
+
+
+def _provider_running_process(
+    provider: ProviderName, procs: list[RunnerManagedProcess]
+) -> RunnerManagedProcess | None:
+    names = _PROVIDER_PROCESS_NAMES[provider]
+    for managed in procs:
+        if managed.name in names and managed.is_running():
+            return managed
+    return None
+
+
+def _provider_process_record(
+    managed: RunnerManagedProcess | None,
+    *,
+    port: int | None = None,
+) -> dict[str, Any] | None:
+    if managed is None:
+        return None
+    return {
+        "name": managed.name,
+        "pid": managed.process.pid,
+        "ref": managed.ref,
+        "port": port,
+    }
+
+
+def _provider_port_path(provider: ProviderName) -> Path:
+    service = _PROVIDER_PORT_SERVICES[provider]
+    return Path(get_journal()) / "health" / f"{service}.port"
+
+
+def _publish_provider_port(
+    provider: ProviderName,
+    *,
+    port: int,
+) -> None:
+    write_service_port(_PROVIDER_PORT_SERVICES[provider], port)
+
+
+def _clear_provider_port_if_owner_matches(
+    state: ProviderRuntimeState,
+    fence: ProviderFence | None,
+    outcome: ProviderLaunchOutcome,
+) -> None:
+    if fence is None:
+        return
+    port = outcome.detail.get("port")
+    if not isinstance(port, int):
+        return
+    try:
+        current = read_runtime_health(state.provider)
+    except (RuntimeHealthMalformedError, RuntimeHealthUnavailableError):
+        return
+    process = current["process"]
+    if not isinstance(process, dict):
+        return
+    if (
+        current["incarnation"] != fence.incarnation
+        or current["generation"] != fence.generation
+        or current["attempt"] != fence.attempt
+        or process.get("port") != port
+    ):
+        return
+    path = _provider_port_path(state.provider)
+    try:
+        if read_service_port(_PROVIDER_PORT_SERVICES[state.provider]) == port:
+            path.unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning(
+            "could not clear %s provider port file for generation %s attempt %s: %s",
+            state.provider,
+            fence.generation,
+            fence.attempt,
+            exc,
+        )
+
+
+def _write_provider_runtime(
+    state: ProviderRuntimeState,
+    *,
+    phase: RuntimePhase,
+    reason_code: ReasonCode | None,
+    detail: dict[str, Any],
+    attempt: int | None = None,
+    process: dict[str, Any] | None = None,
+    display_deadline_delay_s: float | None = None,
+) -> RuntimeHealthRecord | None:
+    try:
+        current = read_runtime_health(state.provider)
+        record: RuntimeHealthRecord = {
+            **current,
+            "phase": phase,
+            "reason_code": reason_code,
+            "detail": detail,
+            "desired_fingerprint_sha256": state.desired_fingerprint,
+            "incarnation": _PROVIDER_INCARNATION,
+            "generation": state.generation,
+            "attempt": state.retry.attempt_count if attempt is None else attempt,
+            "process": process,
+            "updated_at": _runtime_updated_at(),
+            "display_deadline_at": _display_deadline_at(display_deadline_delay_s),
+            "owner": {"module": "solstone.think.supervisor"},
+        }
+        return write_runtime_health(record)
+    except RuntimeHealthMalformedError as exc:
+        state.latest_phase = "state-corrupt"
+        logger.error("%s runtime health record is corrupt: %s", state.provider, exc)
+    except RuntimeHealthUnavailableError as exc:
+        state.latest_phase = "state-unavailable"
+        logger.error("%s runtime health record is unavailable: %s", state.provider, exc)
+    except RuntimeHealthConflictError as exc:
+        logger.info("%s runtime health write lost race: %s", state.provider, exc)
+    return None
+
+
+def _cleanup_late_provider_result(outcome: ProviderLaunchOutcome) -> None:
+    if outcome.managed is None:
+        return
+    _terminate_cleanup_handle(
+        outcome.managed,
+        reason="provider launch result superseded",
+    )
+
+
+def _cleanup_provider_outcome_handle(
+    state: ProviderRuntimeState,
+    fence: ProviderFence | None,
+    outcome: ProviderLaunchOutcome,
+    *,
+    reason: str,
+) -> None:
+    if outcome.managed is None:
+        return
+    _clear_provider_port_if_owner_matches(state, fence, outcome)
+    _terminate_cleanup_handle(outcome.managed, reason=reason)
+
+
+def _finish_provider_startup_condition(
+    state: ProviderRuntimeState, phase: RuntimePhase
+) -> None:
+    if phase in _PROVIDER_STARTUP_TERMINAL_PHASES:
+        state.startup_terminal = True
+        gate = _provider_startup_gate
+        if gate is not None and state.provider in gate.required:
+            gate.terminal.add(state.provider)
+
+
+def _release_provider_startup_gate_if_ready() -> None:
+    gate = _provider_startup_gate
+    if gate is None or gate.released or _task_queue is None:
+        return
+    if gate.required.issubset(gate.terminal):
+        gate.released = True
+        _task_queue.set_ready()
+        logging.info("provider startup gate released after terminal provider state")
+        return
+    elapsed = time.monotonic() - gate.started_at
+    if elapsed >= PROVIDER_STARTUP_GATE_WINDOW_SECONDS:
+        gate.released = True
+        _task_queue.set_ready()
+        logging.warning(
+            "provider startup gate released after %.1fs window with pending providers: %s",
+            PROVIDER_STARTUP_GATE_WINDOW_SECONDS,
+            sorted(gate.required - gate.terminal),
+        )
+
+
+def _initialize_provider_startup_gate() -> None:
+    global _provider_startup_gate
+    required: set[ProviderName] = set()
+    if not _is_remote_mode:
+        try:
+            config = read_journal_config()
+            from solstone.think.providers.local_endpoint import resolve_local_endpoint
+
+            if is_local_provider_needed(config) and resolve_local_endpoint().is_bundled:
+                required.add("local")
+        except Exception:
+            logger.exception("could not determine local provider startup gate intent")
+            required.add("local")
+        if sys.platform.startswith("linux"):
+            required.add("parakeet")
+    _provider_startup_gate = ProviderStartupGate(
+        started_at=time.monotonic(),
+        required=required,
+    )
+    if not required:
+        _release_provider_startup_gate_if_ready()
+
+
+def _observe_provider_truth(provider: ProviderName) -> ProviderTruthObservation:
+    if provider == "local":
+        return _observe_local_provider_truth()
+    return _observe_parakeet_provider_truth()
+
+
+def _submit_provider_truth_if_needed(state: ProviderRuntimeState) -> None:
+    if state.truth_future is not None:
+        return
+    now = time.monotonic()
+    if now < state.next_truth_at:
+        return
+    if (
+        state.latest_phase in {"backoff", "retry-requested", "starting"}
+        and state.latest_plan is not None
+        and state.retry.attempt_count < len(PROVIDER_RETRY_SCHEDULE_SECONDS)
+        and now >= state.retry.next_at
+    ):
+        return
+    state.next_truth_at = now + PROVIDER_TRUTH_OBSERVATION_INTERVAL_SECONDS
+    fence = _provider_fence(state, state.retry.attempt_count)
+    state.truth_fence = fence
+    state.latest_phase = "observing"
+    _write_provider_runtime(
+        state,
+        phase="observing",
+        reason_code="truth-observation-started",
+        detail={"fence": fence.__dict__},
+    )
+    state.truth_future = _provider_executor().submit(
+        _observe_provider_truth,
+        state.provider,
+    )
+
+
+def _handle_provider_truth_result(state: ProviderRuntimeState) -> bool:
+    future = state.truth_future
+    if future is None or not future.done():
+        return False
+    fence = state.truth_fence
+    state.truth_future = None
+    state.truth_fence = None
+    try:
+        observation = future.result()
+    except Exception as exc:
+        logger.exception("%s provider truth worker failed", state.provider)
+        observation = ProviderTruthObservation(
+            provider=state.provider,
+            phase="state-unavailable",
+            reason_code="truth-observation-failed",
+            detail={"error": str(exc)},
+        )
+    if fence is not None and not _provider_fence_matches(state, fence):
+        _write_provider_runtime(
+            state,
+            phase=state.latest_phase,
+            reason_code="stale-result-ignored",
+            detail={"slot": "truth", "fence": fence.__dict__},
+        )
+        return True
+    if observation.provider != state.provider:
+        logger.error(
+            "provider truth worker returned %s for %s",
+            observation.provider,
+            state.provider,
+        )
+        return True
+    if observation.desired_fingerprint_sha256 != state.desired_fingerprint:
+        state.generation += 1
+        state.desired_fingerprint = observation.desired_fingerprint_sha256
+        state.retry = ProviderRetryState(
+            desired_fingerprint=observation.desired_fingerprint_sha256
+        )
+    state.latest_plan = observation.plan
+    state.latest_phase = observation.phase
+    state.boot_required = observation.boot_required
+    _write_provider_runtime(
+        state,
+        phase=observation.phase,
+        reason_code=observation.reason_code,
+        detail=observation.detail,
+    )
+    if (
+        observation.phase == "observing"
+        and observation.reason_code == "observation-raced"
+    ):
+        state.next_truth_at = 0.0
+    _finish_provider_startup_condition(state, observation.phase)
+    return True
+
+
+def _provider_start_worker(
+    provider: ProviderName,
+    plan: LocalServerLaunchPlan | ParakeetServerLaunchPlan,
+    fence: ProviderFence,
+) -> ProviderLaunchOutcome:
+    reservation = ReservedPort.reserve()
+    logger.debug(
+        "provider start worker reserved port %s for %s generation=%s attempt=%s",
+        reservation.port,
+        provider,
+        fence.generation,
+        fence.attempt,
+    )
+    if provider == "local":
+        return start_local_server(cast(LocalServerLaunchPlan, plan), reservation)
+    return start_parakeet_server(cast(ParakeetServerLaunchPlan, plan), reservation)
+
+
+def _submit_provider_start_if_needed(
+    state: ProviderRuntimeState, procs: list[RunnerManagedProcess]
+) -> None:
+    if state.start_future is not None:
+        return
+    if state.latest_phase not in {"starting", "backoff", "retry-requested"}:
+        return
+    if state.latest_plan is None:
+        return
+    if _provider_running_process(state.provider, procs) is not None:
+        _write_provider_runtime(
+            state,
+            phase="ready",
+            reason_code="ready-existing-owned-process",
+            detail={"source": "process-list"},
+        )
+        state.latest_phase = "ready"
+        _finish_provider_startup_condition(state, "ready")
+        return
+    if state.retry.attempt_count >= len(PROVIDER_RETRY_SCHEDULE_SECONDS):
+        state.latest_phase = "failed"
+        _write_provider_runtime(
+            state,
+            phase="failed",
+            reason_code="launch-budget-exhausted",
+            detail={"attempts": state.retry.attempt_count},
+        )
+        _finish_provider_startup_condition(state, "failed")
+        return
+    now = time.monotonic()
+    if now < state.retry.next_at:
+        return
+    attempt = state.retry.attempt_count + 1
+    state.retry.attempt_count = attempt
+    fence = _provider_fence(state, attempt)
+    state.start_fence = fence
+    state.latest_phase = "starting"
+    _write_provider_runtime(
+        state,
+        phase="starting",
+        reason_code="launch-requested",
+        detail={"attempt": attempt, "fence": fence.__dict__},
+        attempt=attempt,
+    )
+    state.start_future = _provider_executor().submit(
+        _provider_start_worker,
+        state.provider,
+        state.latest_plan,
+        fence,
+    )
+
+
+def _handle_provider_start_result(
+    state: ProviderRuntimeState, procs: list[RunnerManagedProcess]
+) -> bool:
+    future = state.start_future
+    if future is None or not future.done():
+        return False
+    fence = state.start_fence
+    state.start_future = None
+    state.start_fence = None
+    try:
+        outcome = future.result()
+    except Exception as exc:
+        logger.exception("%s provider start worker failed", state.provider)
+        outcome = _outcome(
+            "launch-failed",
+            "launch-failed",
+            {"error": str(exc)},
+        )
+    if fence is not None and not _provider_fence_matches(state, fence):
+        _cleanup_late_provider_result(outcome)
+        _write_provider_runtime(
+            state,
+            phase=state.latest_phase,
+            reason_code="stale-result-ignored",
+            detail={"slot": "start", "fence": fence.__dict__},
+        )
+        return True
+
+    if outcome.status == "ready" and outcome.managed is not None:
+        port = outcome.detail.get("port")
+        if not isinstance(port, int):
+            _cleanup_provider_outcome_handle(
+                state,
+                fence,
+                outcome,
+                reason="provider ready outcome missing port",
+            )
+            outcome = _outcome(
+                "launch-failed",
+                "launch-failed",
+                {
+                    "last_outcome": outcome.status,
+                    "last_detail": outcome.detail,
+                    "error": "ready outcome missing port",
+                },
+            )
+        else:
+            try:
+                _publish_provider_port(state.provider, port=port)
+            except OSError as exc:
+                _cleanup_provider_outcome_handle(
+                    state,
+                    fence,
+                    outcome,
+                    reason="provider ready port publication failed",
+                )
+                state.latest_phase = "state-unavailable"
+                _write_provider_runtime(
+                    state,
+                    phase="state-unavailable",
+                    reason_code="record-unavailable",
+                    detail={"error": str(exc), "port": port},
+                )
+                _finish_provider_startup_condition(state, "state-unavailable")
+                return True
+            if outcome.managed not in procs:
+                procs.append(outcome.managed)
+            state.latest_phase = "ready"
+            process = _provider_process_record(outcome.managed, port=port)
+            _write_provider_runtime(
+                state,
+                phase="ready",
+                reason_code=outcome.reason_code,
+                detail=outcome.detail,
+                process=process,
+            )
+            _finish_provider_startup_condition(state, "ready")
+            return True
+
+    if outcome.managed is not None:
+        _cleanup_provider_outcome_handle(
+            state,
+            fence,
+            outcome,
+            reason=f"provider launch outcome {outcome.status}",
+        )
+
+    if state.retry.attempt_count >= len(PROVIDER_RETRY_SCHEDULE_SECONDS):
+        state.latest_phase = "failed"
+        _write_provider_runtime(
+            state,
+            phase="failed",
+            reason_code="launch-budget-exhausted",
+            detail={
+                "last_outcome": outcome.status,
+                "last_reason_code": outcome.reason_code,
+                "last_detail": outcome.detail,
+                "attempts": state.retry.attempt_count,
+            },
+            process=None,
+        )
+        _finish_provider_startup_condition(state, "failed")
+        return True
+
+    delay = PROVIDER_RETRY_SCHEDULE_SECONDS[state.retry.attempt_count]
+    state.retry.next_at = time.monotonic() + delay
+    state.latest_phase = "backoff"
+    _write_provider_runtime(
+        state,
+        phase="backoff",
+        reason_code="retry-scheduled",
+        detail={
+            "last_outcome": outcome.status,
+            "last_reason_code": outcome.reason_code,
+            "last_detail": outcome.detail,
+            "next_attempt": state.retry.attempt_count + 1,
+        },
+        process=None,
+        display_deadline_delay_s=delay,
+    )
+    return True
+
+
+def _handle_provider_retry_token(state: ProviderRuntimeState) -> None:
+    global _parakeet_admission_retry_epoch
+    try:
+        token = read_retry_token(state.provider)
+    except RuntimeHealthMalformedError:
+        state.latest_phase = "state-corrupt"
+        _finish_provider_startup_condition(state, "state-corrupt")
+        return
+    except RuntimeHealthUnavailableError:
+        state.latest_phase = "state-unavailable"
+        _finish_provider_startup_condition(state, "state-unavailable")
+        return
+    token_id = token["token_id"]
+    if token_id is None:
+        return
+    if token["desired_fingerprint_sha256"] not in {None, state.desired_fingerprint}:
+        return
+    try:
+        consume_retry_token(
+            state.provider,
+            token_id=token_id,
+            revision=token["revision"],
+            desired_fingerprint_sha256=token["desired_fingerprint_sha256"],
+        )
+    except RuntimeHealthConflictError:
+        return
+    except RuntimeHealthUnavailableError:
+        state.latest_phase = "state-unavailable"
+        _finish_provider_startup_condition(state, "state-unavailable")
+        return
+    if state.provider == "parakeet":
+        _parakeet_admission_retry_epoch += 1
+    state.retry = ProviderRetryState(desired_fingerprint=state.desired_fingerprint)
+    if state.latest_phase in {
+        "not-desired",
+        "artifact-not-ready",
+        "host-blocked",
+        "stopped",
+        "failed",
+        "backoff",
+        "observing",
+    }:
+        state.latest_phase = "observing"
+    else:
+        state.latest_phase = "retry-requested"
+    state.next_truth_at = 0.0
+    _write_provider_runtime(
+        state,
+        phase=state.latest_phase,
+        reason_code="retry-token-requested",
+        detail={"token_revision": token["revision"]},
+    )
+
+
+async def _reconcile_provider_runtime(
+    provider: ProviderName, procs: list[RunnerManagedProcess]
+) -> None:
+    state = _provider_runtime_states[provider]
+    _handle_provider_retry_token(state)
+    _handle_provider_truth_result(state)
+    _handle_provider_start_result(state, procs)
+    _submit_provider_start_if_needed(state, procs)
+    _submit_provider_truth_if_needed(state)
+    _release_provider_startup_gate_if_ready()
+
+
+async def _reconcile_local_provider_runtime(
+    procs: list[RunnerManagedProcess],
+) -> None:
+    await _reconcile_provider_runtime("local", procs)
+
+
+async def _reconcile_parakeet_provider_runtime(
+    procs: list[RunnerManagedProcess],
+) -> None:
+    await _reconcile_provider_runtime("parakeet", procs)
+
+
+def _request_provider_runtime_retry(provider: ProviderName) -> None:
+    state = _provider_runtime_states[provider]
+    state.retry = ProviderRetryState(desired_fingerprint=state.desired_fingerprint)
+    state.latest_phase = "retry-requested"
+    _write_provider_runtime(
+        state,
+        phase="retry-requested",
+        reason_code="retry-token-requested",
+        detail={"source": "supervisor-lifecycle"},
+    )
 
 
 def run_catchup_drain(
@@ -3427,6 +4692,14 @@ async def supervise(
                     "handle_runner_exits", lambda: handle_runner_exits(procs)
                 )
                 await _guarded_tick_step_async(
+                    "reconcile_local_provider_runtime",
+                    lambda: _reconcile_local_provider_runtime(procs),
+                )
+                await _guarded_tick_step_async(
+                    "reconcile_parakeet_provider_runtime",
+                    lambda: _reconcile_parakeet_provider_runtime(procs),
+                )
+                await _guarded_tick_step_async(
                     "check_local_server_recovery", _check_local_server_recovery
                 )
 
@@ -3816,16 +5089,6 @@ def main() -> None:
             procs.append(convey_proc)
             wait_for_convey_ready(convey_proc)
             print("  Convey ready", flush=True)
-        from solstone.think.providers.local_endpoint import resolve_local_endpoint
-
-        if is_local_provider_needed() and resolve_local_endpoint().is_bundled:
-            proc = start_local_server()
-            if proc is not None:
-                procs.append(proc)
-        if linux_stt_uses_parakeet_cpp():
-            parakeet_proc = start_parakeet_server()
-            if parakeet_proc is not None:
-                procs.append(parakeet_proc)
         # Sense handles file processing
         print("  Starting sense...", flush=True)
         procs.append(start_sense())
@@ -3840,6 +5103,7 @@ def main() -> None:
 
     # Make procs accessible to restart handler
     _managed_procs = procs
+    _initialize_provider_startup_gate()
 
     # Initialize daily state to today - think only triggers at midnight when day changes
     _daily_state["last_day"] = datetime.now().date()
@@ -3862,9 +5126,6 @@ def main() -> None:
                     cmd_name,
                     seconds,
                 )
-
-    if _task_queue:
-        _task_queue.set_ready()
 
     # Show Convey URL if running
     if convey_port:

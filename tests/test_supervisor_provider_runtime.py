@@ -1,0 +1,1533 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (c) 2026 sol pbc
+
+from __future__ import annotations
+
+import asyncio
+import concurrent.futures
+import threading
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
+
+from solstone.think import supervisor
+from solstone.think.providers.artifact_proof import ReadinessOutcome
+from solstone.think.providers.install_state import InstallState
+from solstone.think.providers.runtime_health import (
+    RUNTIME_PHASES,
+    ReasonCode,
+    RuntimeHealthRecord,
+    RuntimePhase,
+    read_runtime_health,
+    request_retry_token,
+    write_runtime_health,
+)
+
+
+@pytest.fixture
+def provider_cache_reset() -> Iterator[None]:
+    from solstone.think.providers import local_server, local_vulkan
+
+    local_vulkan.reset_detect_cache()
+    local_server.reset_parallel_slots_cache()
+    try:
+        yield
+    finally:
+        local_vulkan.reset_detect_cache()
+        local_server.reset_parallel_slots_cache()
+
+
+@pytest.fixture(autouse=True)
+def runtime_state_reset(
+    tmp_path, monkeypatch, provider_cache_reset, set_test_journal_path
+):
+    import solstone.think.utils as think_utils
+
+    monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
+    think_utils._journal_path_cache = None
+    states = {
+        "local": supervisor.ProviderRuntimeState("local"),
+        "parakeet": supervisor.ProviderRuntimeState("parakeet"),
+    }
+    monkeypatch.setattr(supervisor, "_provider_runtime_states", states)
+    monkeypatch.setattr(supervisor, "_provider_runtime_executor", None)
+    monkeypatch.setattr(supervisor, "_provider_startup_gate", None)
+    monkeypatch.setattr(supervisor, "_parakeet_admission_retry_epoch", 0)
+    supervisor._SERVICE_STATE.clear()
+    yield
+    executor = supervisor._provider_runtime_executor
+    if executor is not None:
+        executor.shutdown(wait=True, cancel_futures=True)
+    think_utils._journal_path_cache = None
+
+
+class _InlineExecutor:
+    def submit(self, fn, *args, **kwargs):
+        future: concurrent.futures.Future = concurrent.futures.Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as exc:
+            future.set_exception(exc)
+        return future
+
+
+def _future_with(result: Any) -> concurrent.futures.Future:
+    future: concurrent.futures.Future = concurrent.futures.Future()
+    future.set_result(result)
+    return future
+
+
+class _FakeTaskQueue:
+    def __init__(self) -> None:
+        self.ready_calls = 0
+
+    def set_ready(self) -> None:
+        self.ready_calls += 1
+
+
+class _FakeReservation:
+    def __init__(self, port: int = 45123):
+        self.port = port
+        self.closed = False
+
+    def release_for_spawn(self) -> int:
+        self.closed = True
+        return self.port
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _FakeProcess:
+    pid = 12345
+    returncode = None
+
+    def poll(self) -> None:
+        return None
+
+
+class _FakeManaged:
+    def __init__(self, name: str = supervisor.LOCAL_SERVER_PROCESS_NAME) -> None:
+        self.name = name
+        self.ref = f"ref-{name}"
+        self.process = _FakeProcess()
+        self.cleanup = MagicMock()
+        self.terminate = MagicMock()
+
+    def is_running(self) -> bool:
+        return True
+
+
+def _readiness(
+    status: str,
+    reason_code: str,
+    *,
+    install_state: InstallState = "idle",
+    host: dict[str, Any] | None = None,
+) -> ReadinessOutcome:
+    return ReadinessOutcome(
+        provider="parakeet",
+        status=status,
+        reason_code=reason_code,
+        target={},
+        install={"install_state": install_state},
+        host=host or {},
+        artifacts={},
+        proof={},
+    )
+
+
+def _local_readiness(
+    status: str = "ready",
+    reason_code: str = "ready",
+    *,
+    install_state: InstallState = "idle",
+    host_reason: str = "gpu_unavailable",
+) -> ReadinessOutcome:
+    return ReadinessOutcome(
+        provider="local",
+        status=status,
+        reason_code=reason_code,
+        target={"model_id": supervisor.LOCAL_MODEL},
+        install={"install_state": install_state},
+        host=(
+            {
+                "backend": "vulkan",
+                "backend_reason": "test",
+            }
+            if status == "ready"
+            else {"reason": host_reason}
+        ),
+        artifacts=(
+            {
+                "binary_path": "/tmp/llama-server",
+                "model_path": "/tmp/model.gguf",
+                "mmproj_path": None,
+            }
+            if status == "ready"
+            else {}
+        ),
+        proof={},
+    )
+
+
+def _local_plan() -> supervisor.LocalServerLaunchPlan:
+    return supervisor.LocalServerLaunchPlan(
+        backend="vulkan",
+        desired_fingerprint_json='{"provider":"local"}',
+        desired_fingerprint_sha256="fp-local",
+        binary_path=Path("/tmp/llama-server"),
+        model_path=Path("/tmp/model.gguf"),
+        context_tokens=16384,
+        parallel_slots=1,
+        prompt_cache_mib=0,
+        env_updates={"GGML_VK_VISIBLE_DEVICES": "0"},
+    )
+
+
+def _parakeet_plan() -> supervisor.ParakeetServerLaunchPlan:
+    return supervisor.ParakeetServerLaunchPlan(
+        binary_backend="cpu",
+        env_updates={},
+        gpu_index=None,
+        binary_path=Path("/tmp/parakeet-server"),
+        model_path=Path("/tmp/parakeet-model.bin"),
+        threads=4,
+        library_dirs=(),
+        desired_fingerprint_json='{"provider":"parakeet"}',
+        desired_fingerprint_sha256="fp-parakeet",
+        placement="cpu",
+    )
+
+
+def _runtime_record(
+    provider: str,
+    *,
+    phase: RuntimePhase,
+    fingerprint: str | None,
+    generation: int,
+    attempt: int,
+    process: dict[str, Any] | None = None,
+) -> RuntimeHealthRecord:
+    record = read_runtime_health(provider)
+    return {
+        **record,
+        "phase": phase,
+        "reason_code": None,
+        "detail": {},
+        "desired_fingerprint_sha256": fingerprint,
+        "incarnation": supervisor._PROVIDER_INCARNATION,
+        "generation": generation,
+        "attempt": attempt,
+        "process": process,
+        "updated_at": "2026-07-19T00:00:00+00:00",
+        "owner": {"test": "provider-runtime"},
+    }
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_phase", "expected_reason"),
+    [
+        ("missing-or-mismatched", "artifact-not-ready", "artifact-missing"),
+        (
+            "proof-unavailable",
+            "state-unavailable",
+            "proof-observation-unavailable",
+        ),
+    ],
+)
+def test_readiness_block_table_maps_artifact_and_proof_statuses(
+    status: str,
+    expected_phase: RuntimePhase,
+    expected_reason: ReasonCode,
+) -> None:
+    observation = supervisor._readiness_block_observation(
+        provider="parakeet",
+        readiness=_readiness(status, "manifest_missing"),
+        fingerprint_json='{"provider":"parakeet"}',
+        fingerprint_sha256_value="fp-parakeet",
+        boot_required=True,
+    )
+
+    assert observation is not None
+    assert observation.phase == expected_phase
+    assert observation.reason_code == expected_reason
+
+
+@pytest.mark.parametrize(
+    ("readiness_reason", "expected_reason"),
+    [
+        ("platform_unsupported", "platform-unsupported"),
+        ("package_unavailable", "package-unavailable"),
+        ("ram_insufficient", "ram-insufficient"),
+        ("gpu_probe_failed", "gpu-probe-failed"),
+        ("gpu_unavailable", "gpu-unavailable"),
+    ],
+)
+def test_host_ineligible_reason_table(readiness_reason: str, expected_reason: str):
+    observation = supervisor._readiness_block_observation(
+        provider="local",
+        readiness=_readiness(
+            "host-ineligible",
+            readiness_reason,
+            host={"reason": readiness_reason},
+        ),
+        fingerprint_json='{"provider":"local"}',
+        fingerprint_sha256_value="fp-local",
+        boot_required=True,
+    )
+
+    assert observation is not None
+    assert observation.phase == "host-blocked"
+    assert observation.reason_code == expected_reason
+
+
+@pytest.mark.parametrize(
+    "install_state",
+    [
+        "idle",
+        "resolving",
+        "downloading",
+        "verifying",
+        "installing",
+        "installed",
+        "failed",
+    ],
+)
+def test_parakeet_missing_artifact_table_permits_acquisition_only_when_idle(
+    install_state: InstallState,
+) -> None:
+    observation = supervisor._readiness_block_observation(
+        provider="parakeet",
+        readiness=_readiness(
+            "missing-or-mismatched",
+            "manifest_missing",
+            install_state=install_state,
+        ),
+        fingerprint_json='{"provider":"parakeet"}',
+        fingerprint_sha256_value="fp-parakeet",
+        boot_required=True,
+    )
+
+    assert observation is not None
+    assert observation.phase == "artifact-not-ready"
+    assert observation.detail["install_acquisition_allowed"] is (
+        install_state == "idle"
+    )
+
+
+@pytest.mark.parametrize("active_provider", ["local", "cloud", None])
+@pytest.mark.parametrize("endpoint_bundled", [True, False])
+@pytest.mark.parametrize(
+    ("readiness_status", "readiness_reason", "expected_phase"),
+    [
+        ("ready", "ready", "starting"),
+        ("missing-or-mismatched", "manifest_missing", "artifact-not-ready"),
+        (
+            "proof-unavailable",
+            "proof_cache_unavailable",
+            "state-unavailable",
+        ),
+        ("host-ineligible", "gpu_unavailable", "host-blocked"),
+    ],
+)
+def test_local_desired_state_table(
+    monkeypatch,
+    active_provider: str | None,
+    endpoint_bundled: bool,
+    readiness_status: str,
+    readiness_reason: str,
+    expected_phase: RuntimePhase,
+) -> None:
+    from solstone.think.providers import local_install, local_server, local_vulkan
+
+    config = {"providers": {"active": {"provider": active_provider}}}
+    inspect_calls = 0
+
+    def inspect_readiness(_model_id):
+        nonlocal inspect_calls
+        inspect_calls += 1
+        return _local_readiness(readiness_status, readiness_reason)
+
+    monkeypatch.setattr(supervisor, "_is_remote_mode", False)
+    monkeypatch.setattr(supervisor.sys, "platform", "linux")
+    monkeypatch.setattr(supervisor, "read_journal_config", lambda: config)
+    monkeypatch.setattr(
+        supervisor,
+        "is_local_provider_needed",
+        lambda config_arg=None: active_provider == "local",
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: type("Endpoint", (), {"is_bundled": endpoint_bundled})(),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "target_fingerprint",
+        lambda _model_id: {"provider": "local", "target": "one"},
+    )
+    monkeypatch.setattr(local_install, "inspect_readiness", inspect_readiness)
+    monkeypatch.setattr(local_install, "gpu_device_override", lambda: None)
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: [
+            local_vulkan.VulkanDevice(0, "GPU", local_vulkan.VK_TYPE_DISCRETE, 12288)
+        ],
+    )
+    monkeypatch.setattr(
+        local_vulkan, "select_device", lambda devices, **_kw: devices[0]
+    )
+    monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda _index: 0)
+    monkeypatch.setattr(local_server, "select_server_tier", lambda _vram: _FakeTier())
+
+    observation = supervisor._observe_local_provider_truth()
+
+    if active_provider != "local" or not endpoint_bundled:
+        assert observation.phase == "not-desired"
+        assert observation.reason_code == "provider-not-needed"
+        assert inspect_calls == 0
+    else:
+        assert observation.phase == expected_phase
+        assert inspect_calls == 1
+
+
+def test_local_desired_state_table_remote_mode_skips_bundled_observation(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import local_install
+
+    monkeypatch.setattr(supervisor, "_is_remote_mode", True)
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model_id: pytest.fail("remote mode must not inspect bundled local"),
+    )
+
+    observation = supervisor._observe_local_provider_truth()
+
+    assert observation.phase == "not-desired"
+    assert observation.reason_code == "provider-not-needed"
+    assert observation.detail["remote_mode"] is True
+
+
+def test_local_desired_state_table_darwin_uses_mlx_observation(monkeypatch) -> None:
+    from solstone.think.providers import local_install, mlx_install
+
+    monkeypatch.setattr(supervisor, "_is_remote_mode", False)
+    monkeypatch.setattr(supervisor.sys, "platform", "darwin")
+    monkeypatch.setattr(supervisor, "read_journal_config", lambda: {})
+    monkeypatch.setattr(
+        supervisor, "is_local_provider_needed", lambda _config=None: True
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: type("Endpoint", (), {"is_bundled": True})(),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model_id: pytest.fail("darwin local observation must use MLX"),
+    )
+    monkeypatch.setattr(
+        mlx_install,
+        "target_fingerprint",
+        lambda: {"provider": "local", "backend": "mlx"},
+    )
+    monkeypatch.setattr(
+        mlx_install,
+        "inspect_readiness",
+        lambda: ReadinessOutcome(
+            provider="local",
+            status="ready",
+            reason_code="ready",
+            target={"model_id": supervisor.LOCAL_MODEL},
+            install={"install_state": "idle"},
+            host={"backend": "mlx"},
+            artifacts={"runtime_dir": "/tmp/mlx-runtime"},
+            proof={},
+        ),
+    )
+
+    observation = supervisor._observe_local_provider_truth()
+
+    assert observation.phase == "starting"
+    assert observation.plan is not None
+    assert observation.plan.backend == "mlx"
+
+
+@pytest.mark.parametrize(
+    (
+        "remote_mode",
+        "platform_can_host",
+        "latch",
+        "expected_phase",
+        "expected_reason",
+        "readiness_calls",
+    ),
+    [
+        (
+            True,
+            True,
+            None,
+            "not-desired",
+            "provider-not-needed",
+            0,
+        ),
+        (
+            False,
+            False,
+            None,
+            "not-desired",
+            "provider-not-needed",
+            0,
+        ),
+        (
+            False,
+            True,
+            {
+                "desired": False,
+                "blocked": False,
+                "reason_code": "provider-not-needed",
+            },
+            "not-desired",
+            "provider-not-needed",
+            0,
+        ),
+        (
+            False,
+            True,
+            {
+                "desired": False,
+                "blocked": True,
+                "reason_code": "host-admission-blocked",
+            },
+            "host-blocked",
+            "host-admission-blocked",
+            0,
+        ),
+        (
+            False,
+            True,
+            {
+                "desired": True,
+                "blocked": False,
+                "reason_code": "provider-not-needed",
+            },
+            "starting",
+            "launch-requested",
+            1,
+        ),
+    ],
+)
+def test_parakeet_desired_state_table_remote_platform_and_stt(
+    monkeypatch,
+    remote_mode: bool,
+    platform_can_host: bool,
+    latch: dict[str, Any] | None,
+    expected_phase: RuntimePhase,
+    expected_reason: ReasonCode,
+    readiness_calls: int,
+) -> None:
+    from solstone.think.providers import parakeet_install
+
+    calls = 0
+    monkeypatch.setattr(supervisor, "_is_remote_mode", remote_mode)
+    monkeypatch.setattr(
+        supervisor, "_parakeet_platform_can_host", lambda: platform_can_host
+    )
+    monkeypatch.setattr(supervisor, "read_journal_config", lambda: {"transcribe": {}})
+    monkeypatch.setattr(
+        "solstone.think.services.spp.confidential_provenance",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_parakeet_stt_admission_latch",
+        lambda _transcribe, _confidential: latch,
+    )
+    monkeypatch.setattr(
+        parakeet_install,
+        "target_fingerprint",
+        lambda *, journal_path=None: {"provider": "parakeet", "target": "one"},
+    )
+
+    def inspect_readiness(_journal_path=None):
+        nonlocal calls
+        calls += 1
+        return ReadinessOutcome(
+            provider="parakeet",
+            status="ready",
+            reason_code="ready",
+            target={},
+            install={"install_state": "idle"},
+            host={},
+            artifacts={
+                "binary_path_cpu": "/tmp/parakeet-cpu",
+                "binary_path_vulkan": "/tmp/parakeet-vulkan",
+                "model_path": "/tmp/parakeet-model.bin",
+            },
+            proof={},
+        )
+
+    monkeypatch.setattr(parakeet_install, "inspect_readiness", inspect_readiness)
+    monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "cpu")
+    monkeypatch.setattr(
+        supervisor,
+        "_resolve_parakeet_backend",
+        lambda _device, _selected: ("cpu", {}, None),
+    )
+    monkeypatch.setattr(supervisor, "parakeet_physical_thread_count", lambda: 4)
+    monkeypatch.setattr(supervisor, "_parakeet_runtime_library_dirs", lambda: [])
+
+    observation = supervisor._observe_parakeet_provider_truth()
+
+    assert observation.phase == expected_phase
+    assert observation.reason_code == expected_reason
+    assert calls == readiness_calls
+
+
+class _FakeTier:
+    name = "floor"
+    context_tokens = 16384
+    parallel_slots = 1
+    prompt_cache_mib = 0
+
+
+def test_inactive_local_projection_publishes_not_desired_without_attempt(
+    monkeypatch,
+) -> None:
+    observation = supervisor.ProviderTruthObservation(
+        provider="local",
+        phase="not-desired",
+        reason_code="provider-not-needed",
+        detail={"projection": {"status": "reconciling"}},
+    )
+    starts: list[int] = []
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(
+        supervisor, "_observe_local_provider_truth", lambda: observation
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_start_worker",
+        lambda provider, plan_arg, fence: starts.append(fence.attempt),
+    )
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    state = supervisor._provider_runtime_states["local"]
+    record = read_runtime_health("local")
+    assert state.latest_phase == "not-desired"
+    assert state.retry.attempt_count == 0
+    assert starts == []
+    assert record["phase"] == "not-desired"
+    assert record["detail"]["projection"]["status"] == "reconciling"
+
+
+def test_byo_local_performs_no_bundled_observation(monkeypatch):
+    from solstone.think.providers import local_install
+
+    monkeypatch.setattr(supervisor, "_is_remote_mode", False)
+    monkeypatch.setattr(supervisor, "read_journal_config", lambda: {})
+    monkeypatch.setattr(
+        supervisor, "is_local_provider_needed", lambda _config=None: True
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: type("Endpoint", (), {"is_bundled": False})(),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model_id: pytest.fail(
+            "BYO endpoint must not inspect bundled readiness"
+        ),
+    )
+
+    observation = supervisor._observe_local_provider_truth()
+
+    assert observation.phase == "not-desired"
+    assert observation.detail["projection"]["status"] == "reconciling"
+
+
+def test_truth_observation_runs_off_tick_and_single_flight(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def slow_observer():
+        nonlocal calls
+        calls += 1
+        started.set()
+        release.wait(timeout=5)
+        return supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="not-desired",
+            reason_code="provider-not-needed",
+            detail={},
+        )
+
+    monkeypatch.setattr(supervisor, "_observe_local_provider_truth", slow_observer)
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert started.wait(timeout=1)
+    state = supervisor._provider_runtime_states["local"]
+    assert state.truth_future is not None
+    assert not state.truth_future.done()
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert calls == 1
+    release.set()
+    state.truth_future.result(timeout=1)
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert state.latest_phase == "not-desired"
+    assert read_runtime_health("local")["phase"] == "not-desired"
+
+
+def test_no_op_tick_waits_for_truth_cadence_and_backoff_deadline(monkeypatch) -> None:
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "backoff"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry = supervisor.ProviderRetryState(
+        attempt_count=1,
+        next_at=200.0,
+        desired_fingerprint=plan.desired_fingerprint_sha256,
+    )
+    state.next_truth_at = 160.0
+
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_start_worker",
+        lambda *_args: pytest.fail("backoff deadline has not arrived"),
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_observe_local_provider_truth",
+        lambda: pytest.fail("truth cadence has not arrived"),
+    )
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert state.start_future is None
+    assert state.truth_future is None
+    assert state.latest_phase == "backoff"
+
+
+def test_start_worker_is_single_flight(monkeypatch) -> None:
+    plan = _local_plan()
+    pending: concurrent.futures.Future = concurrent.futures.Future()
+    submitted = 0
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "starting"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.next_truth_at = 9999.0
+
+    class _PendingExecutor:
+        def submit(self, *_args, **_kwargs):
+            nonlocal submitted
+            submitted += 1
+            return pending
+
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _PendingExecutor())
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert submitted == 1
+    assert state.start_future is pending
+    assert state.retry.attempt_count == 1
+
+
+def test_ready_episode_reobserves_on_sixty_second_cadence(monkeypatch) -> None:
+    now = 100.0
+    observations = 0
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "ready"
+    state.desired_fingerprint = "fp-local"
+    state.next_truth_at = now + supervisor.PROVIDER_STABLE_READY_REFRESH_SECONDS
+
+    def monotonic() -> float:
+        return now
+
+    def observe():
+        nonlocal observations
+        observations += 1
+        return supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="ready",
+            reason_code="ready-existing-owned-process",
+            detail={},
+            desired_fingerprint_sha256="fp-local",
+            boot_required=True,
+        )
+
+    monkeypatch.setattr(supervisor.time, "monotonic", monotonic)
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(supervisor, "_observe_local_provider_truth", observe)
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert observations == 0
+
+    now = 160.0
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert observations == 1
+    assert state.latest_phase == "ready"
+
+
+def test_retry_token_resets_live_target_without_launching(monkeypatch) -> None:
+    plan = _local_plan()
+    observations = 0
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "ready"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry = supervisor.ProviderRetryState(
+        attempt_count=4,
+        next_at=9999.0,
+        desired_fingerprint=plan.desired_fingerprint_sha256,
+    )
+    state.next_truth_at = 9999.0
+    managed = _FakeManaged()
+    request_retry_token(
+        "local",
+        desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+        owner={"test": "retry"},
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_start_worker",
+        lambda *_args: pytest.fail("live retry token must not duplicate launch"),
+    )
+
+    def observe():
+        nonlocal observations
+        observations += 1
+        return supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="ready",
+            reason_code="ready-existing-owned-process",
+            detail={},
+            desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+            boot_required=True,
+        )
+
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(supervisor, "_observe_local_provider_truth", observe)
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([managed]))
+    asyncio.run(supervisor._reconcile_local_provider_runtime([managed]))
+
+    assert state.retry.attempt_count == 0
+    assert state.latest_phase == "ready"
+    assert observations == 1
+
+
+def test_observation_raced_when_target_fingerprint_changes_between_reads(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import local_install, local_server, local_vulkan
+
+    fingerprints = iter(
+        [
+            {"provider": "local", "target": "one"},
+            {"provider": "local", "target": "two"},
+        ]
+    )
+    monkeypatch.setattr(supervisor, "_is_remote_mode", False)
+    monkeypatch.setattr(supervisor.sys, "platform", "linux")
+    monkeypatch.setattr(supervisor, "read_journal_config", lambda: {})
+    monkeypatch.setattr(
+        supervisor, "is_local_provider_needed", lambda _config=None: True
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: type("Endpoint", (), {"is_bundled": True})(),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "target_fingerprint",
+        lambda _model_id: next(fingerprints),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model_id: _local_readiness(),
+    )
+    monkeypatch.setattr(local_install, "gpu_device_override", lambda: None)
+    monkeypatch.setattr(
+        local_vulkan,
+        "detect_gpus",
+        lambda: [
+            local_vulkan.VulkanDevice(0, "GPU", local_vulkan.VK_TYPE_DISCRETE, 12288)
+        ],
+    )
+    monkeypatch.setattr(
+        local_vulkan, "select_device", lambda devices, **_kw: devices[0]
+    )
+    monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda _index: 0)
+    monkeypatch.setattr(local_server, "select_server_tier", lambda _vram: _FakeTier())
+    monkeypatch.setattr(
+        supervisor,
+        "_launch_process",
+        lambda *_args, **_kwargs: pytest.fail("observation race must not launch"),
+    )
+
+    observation = supervisor._observe_local_provider_truth()
+
+    assert observation.phase == "observing"
+    assert observation.reason_code == "observation-raced"
+
+
+def test_observation_raced_when_device_changes_during_plan_construction(
+    monkeypatch,
+) -> None:
+    from solstone.think.providers import local_install, local_server, local_vulkan
+
+    devices = [
+        local_vulkan.VulkanDevice(0, "GPU-A", local_vulkan.VK_TYPE_DISCRETE, 12288),
+        local_vulkan.VulkanDevice(1, "GPU-B", local_vulkan.VK_TYPE_DISCRETE, 16384),
+    ]
+    selections = iter([devices[0], devices[0], devices[1]])
+    monkeypatch.setattr(supervisor, "_is_remote_mode", False)
+    monkeypatch.setattr(supervisor.sys, "platform", "linux")
+    monkeypatch.setattr(supervisor, "read_journal_config", lambda: {})
+    monkeypatch.setattr(
+        supervisor, "is_local_provider_needed", lambda _config=None: True
+    )
+    monkeypatch.setattr(
+        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
+        lambda: type("Endpoint", (), {"is_bundled": True})(),
+    )
+    monkeypatch.setattr(
+        local_install,
+        "target_fingerprint",
+        lambda _model_id: {"provider": "local", "target": "one"},
+    )
+    monkeypatch.setattr(
+        local_install,
+        "inspect_readiness",
+        lambda _model_id: _local_readiness(),
+    )
+    monkeypatch.setattr(local_install, "gpu_device_override", lambda: None)
+    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: devices)
+    monkeypatch.setattr(
+        local_vulkan, "select_device", lambda _devices, **_kw: next(selections)
+    )
+    monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda _index: 0)
+    monkeypatch.setattr(local_server, "select_server_tier", lambda _vram: _FakeTier())
+
+    observation = supervisor._observe_local_provider_truth()
+
+    assert observation.phase == "observing"
+    assert observation.reason_code == "observation-raced"
+
+
+@pytest.mark.parametrize(
+    ("initial_phase", "observation", "expected_phase", "expected_fingerprint"),
+    [
+        (
+            "ready",
+            supervisor.ProviderTruthObservation(
+                provider="local",
+                phase="not-desired",
+                reason_code="provider-not-needed",
+                detail={"active_provider": "cloud"},
+            ),
+            "not-desired",
+            None,
+        ),
+        (
+            "backoff",
+            supervisor.ProviderTruthObservation(
+                provider="local",
+                phase="not-desired",
+                reason_code="provider-not-needed",
+                detail={"active_provider": "cloud"},
+            ),
+            "not-desired",
+            None,
+        ),
+        (
+            "ready",
+            supervisor.ProviderTruthObservation(
+                provider="local",
+                phase="starting",
+                reason_code="launch-requested",
+                detail={"target": "new"},
+                desired_fingerprint_json='{"provider":"local","target":"new"}',
+                desired_fingerprint_sha256="fp-new",
+                plan=_local_plan(),
+                boot_required=True,
+            ),
+            "starting",
+            "fp-new",
+        ),
+        (
+            "host-blocked",
+            supervisor.ProviderTruthObservation(
+                provider="local",
+                phase="starting",
+                reason_code="launch-requested",
+                detail={"target": "new"},
+                desired_fingerprint_json='{"provider":"local","target":"new"}',
+                desired_fingerprint_sha256="fp-new",
+                plan=_local_plan(),
+                boot_required=True,
+            ),
+            "starting",
+            "fp-new",
+        ),
+        (
+            "failed",
+            supervisor.ProviderTruthObservation(
+                provider="local",
+                phase="starting",
+                reason_code="launch-requested",
+                detail={"target": "new"},
+                desired_fingerprint_json='{"provider":"local","target":"new"}',
+                desired_fingerprint_sha256="fp-new",
+                plan=_local_plan(),
+                boot_required=True,
+            ),
+            "starting",
+            "fp-new",
+        ),
+        (
+            "artifact-not-ready",
+            supervisor.ProviderTruthObservation(
+                provider="local",
+                phase="starting",
+                reason_code="launch-requested",
+                detail={"target": "new"},
+                desired_fingerprint_json='{"provider":"local","target":"new"}',
+                desired_fingerprint_sha256="fp-new",
+                plan=_local_plan(),
+                boot_required=True,
+            ),
+            "starting",
+            "fp-new",
+        ),
+    ],
+)
+def test_continuous_reobservation_converges_from_steady_phases(
+    monkeypatch,
+    initial_phase: RuntimePhase,
+    observation: supervisor.ProviderTruthObservation,
+    expected_phase: RuntimePhase,
+    expected_fingerprint: str | None,
+) -> None:
+    state = supervisor._provider_runtime_states["local"]
+    old_plan = _local_plan()
+    state.latest_phase = initial_phase
+    state.latest_plan = old_plan
+    state.desired_fingerprint = old_plan.desired_fingerprint_sha256
+    state.retry = supervisor.ProviderRetryState(
+        attempt_count=1,
+        next_at=9999.0,
+        desired_fingerprint=old_plan.desired_fingerprint_sha256,
+    )
+    state.next_truth_at = 0.0
+    starts: list[int] = []
+
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(
+        supervisor,
+        "_observe_local_provider_truth",
+        lambda: observation,
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_start_worker",
+        lambda provider, plan_arg, fence: (
+            starts.append(fence.attempt)
+            or supervisor.ProviderLaunchOutcome(
+                status="launch-failed",
+                reason_code="launch-failed",
+                detail={},
+            )
+        ),
+    )
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert state.latest_phase == expected_phase
+    assert state.desired_fingerprint == expected_fingerprint
+    assert state.truth_future is None
+
+
+def test_retry_cadence_exhausts_after_six_attempts(monkeypatch):
+    now = 1000.0
+    launches: list[int] = []
+    plan = _local_plan()
+
+    def monotonic() -> float:
+        return now
+
+    def observe():
+        return supervisor.ProviderTruthObservation(
+            provider="local",
+            phase="starting",
+            reason_code="launch-requested",
+            detail={},
+            desired_fingerprint_json=plan.desired_fingerprint_json,
+            desired_fingerprint_sha256=plan.desired_fingerprint_sha256,
+            plan=plan,
+            boot_required=True,
+        )
+
+    def start_worker(provider, plan_arg, fence):
+        assert provider == "local"
+        assert plan_arg is plan
+        launches.append(fence.attempt)
+        return supervisor.ProviderLaunchOutcome(
+            status="launch-failed",
+            reason_code="launch-failed",
+            detail={"attempt": fence.attempt},
+        )
+
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(supervisor.time, "monotonic", monotonic)
+    monkeypatch.setattr(supervisor, "_observe_local_provider_truth", observe)
+    monkeypatch.setattr(supervisor, "_provider_start_worker", start_worker)
+
+    state = supervisor._provider_runtime_states["local"]
+    delays: list[float] = []
+
+    for _ in range(40):
+        asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+        if state.latest_phase == "backoff":
+            delays.append(state.retry.next_at - now)
+            now = state.retry.next_at
+        if state.latest_phase == "failed":
+            break
+
+    assert launches == [1, 2, 3, 4, 5, 6]
+    assert delays == [2.0, 4.0, 8.0, 16.0, 30.0]
+    assert state.latest_phase == "failed"
+
+
+def test_startup_gate_releases_on_window_and_reconciler_keeps_retrying(monkeypatch):
+    now = supervisor.PROVIDER_STARTUP_GATE_WINDOW_SECONDS + 1.0
+    queue = _FakeTaskQueue()
+    plan = _local_plan()
+    launches: list[int] = []
+
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "backoff"
+    state.latest_plan = plan
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.retry.next_at = now
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(started_at=0.0, required={"local"}),
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: now)
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_start_worker",
+        lambda provider, plan_arg, fence: (
+            launches.append(fence.attempt)
+            or supervisor.ProviderLaunchOutcome(
+                status="launch-failed",
+                reason_code="launch-failed",
+                detail={},
+            )
+        ),
+    )
+
+    supervisor._release_provider_startup_gate_if_ready()
+
+    assert queue.ready_calls == 1
+    assert supervisor._provider_startup_gate.released is True
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+
+    assert launches == [2]
+    assert queue.ready_calls == 1
+
+
+@pytest.mark.parametrize("terminal_phase", ["ready", "host-blocked"])
+def test_startup_gate_releases_on_terminal_provider_state(
+    monkeypatch,
+    terminal_phase: RuntimePhase,
+) -> None:
+    queue = _FakeTaskQueue()
+    state = supervisor._provider_runtime_states["local"]
+    monkeypatch.setattr(supervisor, "_task_queue", queue)
+    monkeypatch.setattr(
+        supervisor,
+        "_provider_startup_gate",
+        supervisor.ProviderStartupGate(started_at=0.0, required={"local"}),
+    )
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 1.0)
+
+    supervisor._finish_provider_startup_condition(state, terminal_phase)
+    supervisor._release_provider_startup_gate_if_ready()
+    supervisor._release_provider_startup_gate_if_ready()
+
+    assert queue.ready_calls == 1
+    assert supervisor._provider_startup_gate.released is True
+
+
+def test_fenced_ready_result_publishes_port(monkeypatch):
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_plan = plan
+    state.latest_phase = "starting"
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 3
+    fence = supervisor._provider_fence(state, 1)
+    managed = _FakeManaged()
+    ports: list[tuple[str, int]] = []
+    state.start_fence = fence
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={"port": 45678},
+            managed=managed,
+        )
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "write_service_port",
+        lambda service, port: ports.append((service, port)),
+    )
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert ports == [("local", 45678)]
+    record = read_runtime_health("local")
+    assert record["phase"] == "ready"
+    assert record["generation"] == 3
+    assert record["attempt"] == 1
+    assert record["process"]["port"] == 45678
+
+
+def test_boot_incarnation_invalidates_late_start_result(monkeypatch):
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_plan = plan
+    state.latest_phase = "starting"
+    state.desired_fingerprint = plan.desired_fingerprint_sha256
+    state.retry.attempt_count = 1
+    state.generation = 1
+    stale_fence = supervisor.ProviderFence(
+        incarnation="old-boot",
+        generation=1,
+        fingerprint=plan.desired_fingerprint_sha256,
+        attempt=1,
+    )
+    managed = _FakeManaged()
+    state.start_fence = stale_fence
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={"port": 45678},
+            managed=managed,
+        )
+    )
+    published: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        supervisor,
+        "write_service_port",
+        lambda service, port: published.append((service, port)),
+    )
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert published == []
+    managed.terminate.assert_called_once()
+    managed.cleanup.assert_called_once_with()
+    assert read_runtime_health("local")["reason_code"] == "stale-result-ignored"
+
+
+def test_superseded_attempt_cannot_publish_or_clear_newer_port(monkeypatch):
+    plan = _local_plan()
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_plan = plan
+    state.latest_phase = "ready"
+    state.desired_fingerprint = "fp-new"
+    state.retry.attempt_count = 2
+    state.generation = 2
+    supervisor.write_service_port("local", 22222)
+    write_runtime_health(
+        _runtime_record(
+            "local",
+            phase="ready",
+            fingerprint="fp-new",
+            generation=2,
+            attempt=2,
+            process={
+                "name": supervisor.LOCAL_SERVER_PROCESS_NAME,
+                "pid": 12345,
+                "ref": "ref-new",
+                "port": 22222,
+            },
+        )
+    )
+    old_fence = supervisor.ProviderFence(
+        incarnation=supervisor._PROVIDER_INCARNATION,
+        generation=1,
+        fingerprint="fp-old",
+        attempt=1,
+    )
+    old_managed = _FakeManaged()
+    state.start_fence = old_fence
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="ready",
+            reason_code="probe-ready",
+            detail={"port": 11111},
+            managed=old_managed,
+        )
+    )
+    published: list[tuple[str, int]] = []
+    monkeypatch.setattr(
+        supervisor,
+        "write_service_port",
+        lambda service, port: published.append((service, port)),
+    )
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert published == []
+    assert supervisor.read_service_port("local") == 22222
+    old_managed.terminate.assert_called_once()
+    old_managed.cleanup.assert_called_once_with()
+
+
+def test_provider_reconcilers_keep_local_and_parakeet_state_independent(
+    monkeypatch,
+) -> None:
+    local_plan = _local_plan()
+    parakeet_plan = _parakeet_plan()
+    launches: list[tuple[str, int]] = []
+    local = supervisor._provider_runtime_states["local"]
+    parakeet = supervisor._provider_runtime_states["parakeet"]
+    local.latest_phase = "starting"
+    local.latest_plan = local_plan
+    local.desired_fingerprint = local_plan.desired_fingerprint_sha256
+    local.retry.desired_fingerprint = local_plan.desired_fingerprint_sha256
+    local.next_truth_at = 9999.0
+    parakeet.latest_phase = "starting"
+    parakeet.latest_plan = parakeet_plan
+    parakeet.desired_fingerprint = parakeet_plan.desired_fingerprint_sha256
+    parakeet.retry.desired_fingerprint = parakeet_plan.desired_fingerprint_sha256
+    parakeet.next_truth_at = 9999.0
+
+    def start_worker(provider, _plan_arg, fence):
+        launches.append((provider, fence.attempt))
+        return supervisor.ProviderLaunchOutcome(
+            status="launch-failed",
+            reason_code="launch-failed",
+            detail={"provider": provider},
+        )
+
+    monkeypatch.setattr(supervisor, "_provider_executor", lambda: _InlineExecutor())
+    monkeypatch.setattr(supervisor.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(supervisor, "_provider_start_worker", start_worker)
+
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+    asyncio.run(supervisor._reconcile_local_provider_runtime([]))
+    asyncio.run(supervisor._reconcile_parakeet_provider_runtime([]))
+    asyncio.run(supervisor._reconcile_parakeet_provider_runtime([]))
+
+    assert launches == [("local", 1), ("parakeet", 1)]
+    assert local.latest_phase == "backoff"
+    assert parakeet.latest_phase == "backoff"
+    assert local.retry.desired_fingerprint == local_plan.desired_fingerprint_sha256
+    assert parakeet.retry.desired_fingerprint == (
+        parakeet_plan.desired_fingerprint_sha256
+    )
+
+
+def test_spawn_failure_leaves_no_port_file(monkeypatch):
+    from solstone.think.providers import local_server
+
+    plan = _local_plan()
+    monkeypatch.setattr(
+        local_server, "write_local_context_window", lambda _tokens: None
+    )
+    monkeypatch.setattr(
+        supervisor,
+        "_launch_process",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("spawn failed")),
+    )
+
+    outcome = supervisor.start_local_server(plan, _FakeReservation(port=34567))
+
+    assert outcome.status == "launch-failed"
+    assert supervisor.read_service_port("local") is None
+
+
+@pytest.mark.parametrize(
+    "backend",
+    ["vulkan", "cuda", "mlx", "parakeet-vulkan", "parakeet-cpu"],
+)
+@pytest.mark.parametrize("status", ["warmup-timeout", "exited", "launch-failed"])
+def test_non_ready_outcome_cleanup_runs_before_backoff_record(
+    monkeypatch,
+    backend: str,
+    status: supervisor.LaunchOutcomeStatus,
+) -> None:
+    provider = "parakeet" if backend.startswith("parakeet") else "local"
+    state = supervisor._provider_runtime_states[provider]
+    state.latest_phase = "starting"
+    state.desired_fingerprint = f"fp-{backend}"
+    state.retry.attempt_count = 1
+    state.retry.desired_fingerprint = state.desired_fingerprint
+    state.generation = 1
+    fence = supervisor._provider_fence(state, 1)
+    managed_name = (
+        supervisor.PARAKEET_SERVER_PROCESS_NAME
+        if provider == "parakeet"
+        else (
+            supervisor.MLX_SERVER_PROCESS_NAME
+            if backend == "mlx"
+            else supervisor.LOCAL_SERVER_PROCESS_NAME
+        )
+    )
+    managed = _FakeManaged(managed_name)
+    state.start_fence = fence
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status=status,
+            reason_code=(
+                "warmup-timeout"
+                if status == "warmup-timeout"
+                else ("process-exited" if status == "exited" else "launch-failed")
+            ),
+            detail={"backend": backend, "port": 45678},
+            managed=managed,
+        )
+    )
+    order: list[str] = []
+
+    monkeypatch.setattr(
+        supervisor,
+        "_terminate_cleanup_handle",
+        lambda managed_arg, *, reason, state_name=None: order.append(
+            f"cleanup:{managed_arg.name}:{reason}"
+        ),
+    )
+    original_write = supervisor._write_provider_runtime
+
+    def write_with_order(*args, **kwargs):
+        order.append(f"write:{kwargs['phase']}")
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_write_provider_runtime", write_with_order)
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert order[0].startswith(f"cleanup:{managed_name}:")
+    assert order[1] == "write:backoff"
+    assert state.latest_phase == "backoff"
+
+
+def test_non_ready_cleanup_runs_before_failed_record(monkeypatch):
+    state = supervisor._provider_runtime_states["local"]
+    state.latest_phase = "starting"
+    state.desired_fingerprint = "fp-local"
+    state.retry.attempt_count = len(supervisor.PROVIDER_RETRY_SCHEDULE_SECONDS)
+    state.generation = 1
+    fence = supervisor._provider_fence(
+        state, len(supervisor.PROVIDER_RETRY_SCHEDULE_SECONDS)
+    )
+    managed = _FakeManaged()
+    state.start_fence = fence
+    state.start_future = _future_with(
+        supervisor.ProviderLaunchOutcome(
+            status="warmup-timeout",
+            reason_code="warmup-timeout",
+            detail={"port": 45678},
+            managed=managed,
+        )
+    )
+    order: list[str] = []
+    monkeypatch.setattr(
+        supervisor,
+        "_terminate_cleanup_handle",
+        lambda managed_arg, *, reason, state_name=None: order.append("cleanup"),
+    )
+    original_write = supervisor._write_provider_runtime
+
+    def write_with_order(*args, **kwargs):
+        order.append(f"write:{kwargs['phase']}")
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(supervisor, "_write_provider_runtime", write_with_order)
+
+    assert supervisor._handle_provider_start_result(state, []) is True
+
+    assert order[:2] == ["cleanup", "write:failed"]
+    assert state.latest_phase == "failed"
+
+
+def test_launch_helper_returns_reserved_port_without_publishing(monkeypatch):
+    from solstone.think.providers import local_server, local_vulkan
+
+    plan = _local_plan()
+    managed = _FakeManaged()
+    ports: list[tuple[str, int]] = []
+    spawned: list[list[str]] = []
+
+    monkeypatch.setattr(
+        supervisor,
+        "write_service_port",
+        lambda service, port: ports.append((service, port)),
+    )
+    monkeypatch.setattr(
+        local_server,
+        "write_local_context_window",
+        lambda _tokens: None,
+    )
+    monkeypatch.setattr(
+        local_server,
+        "_probe_health",
+        lambda _port: (local_server.STATE_READY, None),
+    )
+    monkeypatch.setattr(local_server, "fetch_props", lambda _port: None)
+    monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda _index: None)
+    monkeypatch.setattr(
+        supervisor,
+        "_launch_process",
+        lambda name, cmd, **_kwargs: spawned.append(cmd) or managed,
+    )
+
+    assert not hasattr(plan, "port")
+
+    outcome = supervisor.start_local_server(plan, _FakeReservation(port=45678))
+
+    assert outcome.status == "ready"
+    assert outcome.managed is managed
+    assert ports == []
+    assert spawned[0][spawned[0].index("--port") + 1] == "45678"
+    assert RUNTIME_PHASES >= {"starting", "backoff", "ready"}

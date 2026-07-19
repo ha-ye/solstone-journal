@@ -98,10 +98,47 @@ class _FakeManaged:
     def __init__(self, poll_value: int | None, returncode: int | None = None):
         self.name = supervisor.PARAKEET_SERVER_PROCESS_NAME
         self.process = _FakeProcess(poll_value, returncode)
+        self.ref = "ref-parakeet"
         self.cleanup_called = False
 
     def cleanup(self) -> None:
         self.cleanup_called = True
+
+
+class _FakeReservation:
+    def __init__(self, port: int = 45123):
+        self.port = port
+        self.closed = False
+        self.released = False
+
+    def release_for_spawn(self) -> int:
+        self.closed = True
+        self.released = True
+        return self.port
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _parakeet_plan(
+    backend: str = "cpu",
+    *,
+    env_updates: dict[str, str] | None = None,
+    gpu_index: int | None = None,
+    library_dirs: tuple[Path, ...] = (Path("/parakeet/lib"),),
+) -> supervisor.ParakeetServerLaunchPlan:
+    return supervisor.ParakeetServerLaunchPlan(
+        binary_backend=backend,
+        env_updates=env_updates or {},
+        gpu_index=gpu_index,
+        binary_path=Path(f"/tmp/{backend}/parakeet-server"),
+        model_path=Path("/tmp/model.gguf"),
+        threads=6,
+        library_dirs=library_dirs,
+        desired_fingerprint_json='{"provider":"parakeet"}',
+        desired_fingerprint_sha256="fp-parakeet",
+        placement="gpu" if backend == "vulkan" else "cpu",
+    )
 
 
 def _nvidia_probe(
@@ -126,23 +163,16 @@ def _patch_ready_parakeet_launch(
     *,
     poll_sequence: list[tuple[int | None, int | None]] | None = None,
 ) -> list[tuple[str, int]]:
-    def fake_ensure(backend: str):
-        return Path(f"/tmp/{backend}/parakeet-server"), Path("/tmp/model.gguf")
-
-    monkeypatch.setattr(parakeet_install, "ensure_artifacts_installed", fake_ensure)
-    monkeypatch.setattr(supervisor, "find_available_port", lambda: 45123)
     ports: list[tuple[str, int]] = []
     monkeypatch.setattr(
         supervisor,
         "write_service_port",
         lambda service, port: ports.append((service, port)),
     )
-    monkeypatch.setattr(supervisor, "parakeet_physical_thread_count", lambda: 6)
     monkeypatch.setattr(
-        supervisor, "_parakeet_runtime_library_dirs", lambda: [Path("/parakeet/lib")]
-    )
-    monkeypatch.setattr(
-        parakeet_server, "probe_state", lambda: (parakeet_server.STATE_READY, None)
+        parakeet_server,
+        "_probe_health",
+        lambda _port: (parakeet_server.STATE_READY, None),
     )
 
     sequence = poll_sequence or [(None, None)]
@@ -178,30 +208,61 @@ def test_parakeet_server_is_sweepable_orphan_name() -> None:
 def test_resolve_launch_plan_cpu_ignores_gpu() -> None:
     gpu = SimpleNamespace(index=2)
 
-    plan = supervisor.resolve_parakeet_server_launch_plan("cpu", gpu)
+    plan = supervisor.resolve_parakeet_server_launch_plan(
+        "cpu",
+        gpu,
+        binary_path=Path("/tmp/cpu/parakeet-server"),
+        model_path=Path("/tmp/model.gguf"),
+        threads=6,
+    )
 
-    assert plan == supervisor.ParakeetServerLaunchPlan("cpu", {}, None)
+    assert plan.binary_backend == "cpu"
+    assert plan.env_updates == {}
+    assert plan.gpu_index is None
+    assert plan.placement == "cpu"
 
 
 def test_resolve_launch_plan_auto_uses_selected_gpu() -> None:
     gpu = SimpleNamespace(index=2)
 
-    plan = supervisor.resolve_parakeet_server_launch_plan("auto", gpu)
-
-    assert plan == supervisor.ParakeetServerLaunchPlan(
-        "vulkan", {"GGML_VK_VISIBLE_DEVICES": "2"}, 2
+    plan = supervisor.resolve_parakeet_server_launch_plan(
+        "auto",
+        gpu,
+        binary_path=Path("/tmp/vulkan/parakeet-server"),
+        model_path=Path("/tmp/model.gguf"),
+        threads=6,
     )
+
+    assert plan.binary_backend == "vulkan"
+    assert plan.env_updates == {"GGML_VK_VISIBLE_DEVICES": "2"}
+    assert plan.gpu_index == 2
+    assert plan.placement == "gpu"
 
 
 def test_resolve_launch_plan_auto_without_gpu_uses_cpu() -> None:
-    plan = supervisor.resolve_parakeet_server_launch_plan("auto", None)
+    plan = supervisor.resolve_parakeet_server_launch_plan(
+        "auto",
+        None,
+        binary_path=Path("/tmp/cpu/parakeet-server"),
+        model_path=Path("/tmp/model.gguf"),
+        threads=6,
+    )
 
-    assert plan == supervisor.ParakeetServerLaunchPlan("cpu", {}, None)
+    assert plan.binary_backend == "cpu"
+    assert plan.env_updates == {}
+    assert plan.gpu_index is None
+    assert plan.placement == "cpu"
 
 
 def test_resolve_launch_plan_rejects_invalid_device() -> None:
     with pytest.raises(ValueError, match="auto"):
-        supervisor.resolve_parakeet_server_launch_plan("bogus", None)
+        supervisor.resolve_parakeet_server_launch_plan(
+            "bogus",
+            None,
+            binary_path=Path("/tmp/cpu/parakeet-server"),
+            model_path=Path("/tmp/model.gguf"),
+            threads=6,
+        )
 
 
 def test_parakeet_physical_thread_count_uses_physical(monkeypatch) -> None:
@@ -275,7 +336,7 @@ def test_with_library_path_prepends_dirs() -> None:
     assert env["LD_LIBRARY_PATH"] == "/existing"
 
 
-def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
+def test_start_parakeet_server_vulkan_crash_returns_exited_cleanup_handle(
     monkeypatch,
     tmp_path,
     caplog,
@@ -283,45 +344,6 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
     monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES", raising=False)
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
-    monkeypatch.setattr(supervisor.sys, "platform", "linux")
-    monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
-    monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "auto")
-    monkeypatch.setattr(supervisor, "is_local_provider_needed", lambda: True)
-    monkeypatch.setattr(
-        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
-        lambda: SimpleNamespace(is_bundled=True),
-    )
-    gpu = local_vulkan.VulkanDevice(
-        2,
-        "NVIDIA Test GPU",
-        local_vulkan.VK_TYPE_DISCRETE,
-        12288,
-    )
-    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [gpu])
-    monkeypatch.setattr(local_vulkan, "select_device", lambda devices: devices[0])
-    monkeypatch.setattr(local_vulkan, "classify", lambda _device: "discrete")
-    monkeypatch.setattr(
-        local_cuda, "probe_nvidia_gpu", lambda: _nvidia_probe(vram_mib=12288)
-    )
-
-    def fake_ensure(backend: str):
-        return Path(f"/tmp/{backend}/parakeet-server"), Path("/tmp/model.gguf")
-
-    monkeypatch.setattr(parakeet_install, "ensure_artifacts_installed", fake_ensure)
-    monkeypatch.setattr(supervisor, "find_available_port", lambda: 45123)
-    ports: list[tuple[str, int]] = []
-    monkeypatch.setattr(
-        supervisor,
-        "write_service_port",
-        lambda service, port: ports.append((service, port)),
-    )
-    monkeypatch.setattr(supervisor, "parakeet_physical_thread_count", lambda: 6)
-    monkeypatch.setattr(
-        supervisor, "_parakeet_runtime_library_dirs", lambda: [Path("/parakeet/lib")]
-    )
-    monkeypatch.setattr(
-        parakeet_server, "probe_state", lambda: (parakeet_server.STATE_READY, None)
-    )
     terminated = []
     monkeypatch.setattr(
         supervisor,
@@ -332,45 +354,35 @@ def test_start_parakeet_server_vulkan_crash_falls_back_to_cpu(
     )
 
     launches: list[_LaunchRecord] = []
-
-    def fake_launch_process(
-        name, cmd, *, restart=False, shutdown_timeout=15, ref=None, env=None
-    ):
-        managed = _FakeManaged(9, 9) if not launches else _FakeManaged(None, None)
-        launches.append(
-            {
-                "name": name,
-                "cmd": cmd,
-                "restart": restart,
-                "env": env,
-                "managed": managed,
-            }
-        )
-        return managed
-
-    monkeypatch.setattr(supervisor, "_launch_process", fake_launch_process)
+    ports = _patch_ready_parakeet_launch(
+        monkeypatch,
+        launches,
+        poll_sequence=[(9, 9)],
+    )
+    plan = _parakeet_plan(
+        "vulkan",
+        env_updates={"GGML_VK_VISIBLE_DEVICES": "2"},
+        gpu_index=2,
+    )
 
     caplog.set_level(logging.INFO)
-    result = supervisor.start_parakeet_server()
+    result = supervisor.start_parakeet_server(plan, _FakeReservation())
 
-    assert result is launches[1]["managed"]
-    assert len(launches) == 2
+    assert result.status == "exited"
+    assert result.reason_code == "process-exited"
+    assert result.managed is launches[0]["managed"]
+    assert len(launches) == 1
     assert launches[0]["name"] == supervisor.PARAKEET_SERVER_PROCESS_NAME
     assert launches[0]["restart"] is True
     assert launches[0]["cmd"][0] == "/tmp/vulkan/parakeet-server"
     assert launches[0]["env"]["GGML_VK_VISIBLE_DEVICES"] == "2"
     assert launches[0]["env"]["LD_LIBRARY_PATH"] == "/parakeet/lib"
     _assert_att_context(launches[0])
-    assert launches[1]["cmd"][0] == "/tmp/cpu/parakeet-server"
-    assert "GGML_VK_VISIBLE_DEVICES" not in launches[1]["env"]
-    assert launches[1]["env"]["LD_LIBRARY_PATH"] == "/parakeet/lib"
-    _assert_att_context(launches[1])
-    assert launches[0]["managed"].cleanup_called is True
-    assert terminated[0][0] is launches[0]["managed"]
-    assert ports == [("parakeet-cpp", 45123)]
-    assert parakeet_server.read_parakeet_placement() == "cpu"
+    assert ports == []
+    assert terminated == []
+    assert launches[0]["managed"].cleanup_called is False
+    assert parakeet_server.read_parakeet_placement() is None
     assert _launch_log("vulkan") in caplog.text
-    assert _launch_log("cpu") in caplog.text
 
 
 def test_start_parakeet_server_forces_cpu_on_small_single_discrete_bundled_brain(
@@ -380,44 +392,21 @@ def test_start_parakeet_server_forces_cpu_on_small_single_discrete_bundled_brain
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
     monkeypatch.delenv("GGML_VK_VISIBLE_DEVICES", raising=False)
-    monkeypatch.setattr(supervisor.sys, "platform", "linux")
-    monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
-    monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "auto")
-    monkeypatch.setattr(supervisor, "is_local_provider_needed", lambda: True)
-    monkeypatch.setattr(
-        "solstone.think.providers.local_endpoint.resolve_local_endpoint",
-        lambda: SimpleNamespace(is_bundled=True),
-    )
-    gpu = local_vulkan.VulkanDevice(
-        2,
-        "NVIDIA Test GPU",
-        local_vulkan.VK_TYPE_DISCRETE,
-        6144,
-    )
-    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [gpu])
-    monkeypatch.setattr(local_vulkan, "select_device", lambda devices: devices[0])
-    monkeypatch.setattr(local_vulkan, "classify", lambda _device: "discrete")
-    monkeypatch.setattr(
-        local_cuda, "probe_nvidia_gpu", lambda: _nvidia_probe(vram_mib=6144)
-    )
     launches: list[_LaunchRecord] = []
     ports = _patch_ready_parakeet_launch(monkeypatch, launches)
+    plan = _parakeet_plan("cpu")
 
     caplog.set_level(logging.INFO)
-    result = supervisor.start_parakeet_server()
+    result = supervisor.start_parakeet_server(plan, _FakeReservation())
 
-    assert result is launches[0]["managed"]
+    assert result.status == "ready"
+    assert result.managed is launches[0]["managed"]
     assert len(launches) == 1
     assert launches[0]["cmd"][0] == "/tmp/cpu/parakeet-server"
     assert "GGML_VK_VISIBLE_DEVICES" not in launches[0]["env"]
     _assert_att_context(launches[0])
-    assert ports == [("parakeet-cpp", 45123)]
+    assert ports == []
     assert parakeet_server.read_parakeet_placement() == "cpu"
-    assert (
-        "parakeet-server auto placement resolved to CPU: tier=floor "
-        "tier_resident_mib=4147 parakeet_worst_case_mib=2947 margin_mib=1024 "
-        "required_mib=8118 gpu_vram_mib=6144 placement=cpu"
-    ) in caplog.text
     assert _launch_log("cpu") in caplog.text
 
 
@@ -426,28 +415,18 @@ def test_start_parakeet_server_brain_lane_inactive_keeps_auto_vulkan(
     tmp_path,
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
-    monkeypatch.setattr(supervisor.sys, "platform", "linux")
-    monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
-    monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "auto")
-    monkeypatch.setattr(supervisor, "is_local_provider_needed", lambda: False)
-    gpu = local_vulkan.VulkanDevice(
-        2,
-        "NVIDIA Test GPU",
-        local_vulkan.VK_TYPE_DISCRETE,
-        6144,
-    )
-    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [gpu])
-    monkeypatch.setattr(local_vulkan, "select_device", lambda devices: devices[0])
-    monkeypatch.setattr(local_vulkan, "classify", lambda _device: "discrete")
-    monkeypatch.setattr(
-        local_cuda, "probe_nvidia_gpu", lambda: _nvidia_probe(vram_mib=6144)
-    )
     launches: list[_LaunchRecord] = []
     _patch_ready_parakeet_launch(monkeypatch, launches)
+    plan = _parakeet_plan(
+        "vulkan",
+        env_updates={"GGML_VK_VISIBLE_DEVICES": "2"},
+        gpu_index=2,
+    )
 
-    result = supervisor.start_parakeet_server()
+    result = supervisor.start_parakeet_server(plan, _FakeReservation())
 
-    assert result is launches[0]["managed"]
+    assert result.status == "ready"
+    assert result.managed is launches[0]["managed"]
     assert len(launches) == 1
     assert launches[0]["cmd"][0] == "/tmp/vulkan/parakeet-server"
     assert launches[0]["env"]["GGML_VK_VISIBLE_DEVICES"] == "2"
@@ -460,9 +439,6 @@ def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
     tmp_path,
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
-    monkeypatch.setattr(supervisor.sys, "platform", "linux")
-    monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
-    monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "cpu")
     monkeypatch.setattr(
         local_vulkan,
         "detect_gpus",
@@ -475,10 +451,12 @@ def test_start_parakeet_server_explicit_cpu_skips_auto_placement(
     )
     launches: list[_LaunchRecord] = []
     _patch_ready_parakeet_launch(monkeypatch, launches)
+    plan = _parakeet_plan("cpu")
 
-    result = supervisor.start_parakeet_server()
+    result = supervisor.start_parakeet_server(plan, _FakeReservation())
 
-    assert result is launches[0]["managed"]
+    assert result.status == "ready"
+    assert result.managed is launches[0]["managed"]
     assert launches[0]["cmd"][0] == "/tmp/cpu/parakeet-server"
     _assert_att_context(launches[0])
     assert parakeet_server.read_parakeet_placement() == "cpu"
@@ -490,9 +468,6 @@ def test_parakeet_attention_context_overrides_ambient_env(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
     monkeypatch.setenv(PARAKEET_ATT_CONTEXT_ENV, "0")
-    monkeypatch.setattr(supervisor.sys, "platform", "linux")
-    monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
-    monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "cpu")
     monkeypatch.setattr(
         local_vulkan,
         "detect_gpus",
@@ -505,10 +480,12 @@ def test_parakeet_attention_context_overrides_ambient_env(
     )
     launches: list[_LaunchRecord] = []
     _patch_ready_parakeet_launch(monkeypatch, launches)
+    plan = _parakeet_plan("cpu")
 
-    result = supervisor.start_parakeet_server()
+    result = supervisor.start_parakeet_server(plan, _FakeReservation())
 
-    assert result is launches[0]["managed"]
+    assert result.status == "ready"
+    assert result.managed is launches[0]["managed"]
     assert launches[0]["cmd"][0] == "/tmp/cpu/parakeet-server"
     _assert_att_context(launches[0])
     assert parakeet_server.read_parakeet_placement() == "cpu"
@@ -620,8 +597,11 @@ def test_start_parakeet_server_early_returns_for_non_linux(
         lambda: pytest.fail("config should not be read off-linux"),
     )
 
-    assert supervisor.start_parakeet_server() is None
-    assert parakeet_server.read_parakeet_placement() is None
+    observation = supervisor._observe_parakeet_provider_truth()
+
+    assert observation.phase == "not-desired"
+    assert observation.reason_code == "provider-not-needed"
+    assert parakeet_server.read_parakeet_placement() == "gpu"
 
 
 def test_start_parakeet_server_early_returns_for_other_backend(
@@ -629,8 +609,7 @@ def test_start_parakeet_server_early_returns_for_other_backend(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
     parakeet_server.write_parakeet_placement("gpu")
-    monkeypatch.setattr(supervisor.sys, "platform", "linux")
-    monkeypatch.setattr(supervisor.platform, "machine", lambda: "x86_64")
+    monkeypatch.setattr(supervisor, "_parakeet_platform_can_host", lambda: True)
     monkeypatch.setattr(
         supervisor,
         "read_journal_config",
@@ -641,59 +620,46 @@ def test_start_parakeet_server_early_returns_for_other_backend(
         lambda: {"enabled_at": "2026-05-24T00:00:00Z"},
     )
 
-    assert supervisor.start_parakeet_server() is None
-    assert parakeet_server.read_parakeet_placement() is None
+    observation = supervisor._observe_parakeet_provider_truth()
+
+    assert observation.phase == "not-desired"
+    assert observation.reason_code == "confidential-backend-selected"
+    assert parakeet_server.read_parakeet_placement() == "gpu"
 
 
-def test_start_parakeet_server_starts_background_install_when_missing(
+def test_parakeet_truth_reports_artifact_not_ready_when_missing(
     monkeypatch,
     tmp_path,
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path / "journal"))
     parakeet_server.write_parakeet_placement("gpu")
-    monkeypatch.setattr(supervisor, "linux_stt_uses_parakeet_cpp", lambda: True)
-    monkeypatch.setattr(supervisor, "_configured_parakeet_device", lambda: "cpu")
-    started: list[str] = []
-
-    class _Thread:
-        def __init__(self, *, target, name, daemon):
-            self.target = target
-            self.name = name
-            self.daemon = daemon
-
-        def is_alive(self):
-            return False
-
-        def start(self):
-            started.append(self.name)
-
-    class _Event:
-        def set(self):
-            return None
-
-        def wait(self, timeout=None):
-            return True
-
-    monkeypatch.setattr(supervisor.threading, "Thread", _Thread)
-    monkeypatch.setattr(supervisor.threading, "Event", _Event)
+    monkeypatch.setattr(supervisor, "_parakeet_platform_can_host", lambda: True)
+    monkeypatch.setattr(
+        supervisor,
+        "read_journal_config",
+        lambda: {"transcribe": {"backend": "parakeet"}},
+    )
     monkeypatch.setattr(
         parakeet_install,
-        "ensure_artifacts_installed",
-        lambda _backend: (_ for _ in ()).throw(
-            parakeet_install.ParakeetProviderError(
-                "model_missing", "Parakeet model is not installed."
-            )
-        ),
+        "target_fingerprint",
+        lambda *, journal_path=None: {"provider": "parakeet"},
     )
     monkeypatch.setattr(
         parakeet_install,
         "inspect_readiness",
-        lambda: _parakeet_readiness(),
+        lambda journal_path=None: _parakeet_readiness(),
+    )
+    monkeypatch.setattr(
+        "solstone.think.services.spp.confidential_provenance",
+        lambda: None,
     )
 
-    assert supervisor.start_parakeet_server() is None
-    assert started == ["parakeet-cpp-provider-bootstrap"]
-    assert parakeet_server.read_parakeet_placement() is None
+    observation = supervisor._observe_parakeet_provider_truth()
+
+    assert observation.phase == "artifact-not-ready"
+    assert observation.reason_code == "artifact-missing"
+    assert observation.plan is None
+    assert parakeet_server.read_parakeet_placement() == "gpu"
 
 
 def test_parakeet_bootstrap_ack_timeout_cancels_late_worker(

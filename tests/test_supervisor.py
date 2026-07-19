@@ -1697,6 +1697,101 @@ def _cuda_local_artifacts(local_install, binary, lib_dir, gguf, mmproj):
     )
 
 
+class _FakeReservation:
+    def __init__(self, port: int = 2468):
+        self.port = port
+        self.released = False
+        self.closed = False
+
+    def release_for_spawn(self) -> int:
+        self.released = True
+        self.closed = True
+        return self.port
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _mlx_launch_plan(mod, runtime_dir: Path, *, model_id: str = "mlx-model"):
+    return mod.LocalServerLaunchPlan(
+        backend="mlx",
+        desired_fingerprint_json='{"provider":"local"}',
+        desired_fingerprint_sha256="fp-local",
+        runtime_dir=runtime_dir,
+        model_id=model_id,
+    )
+
+
+def _vulkan_launch_plan(
+    mod,
+    binary: Path,
+    gguf: Path,
+    mmproj: Path | None,
+    *,
+    vram_mib: int = 6390,
+):
+    from solstone.think.providers import local_server
+
+    tier = local_server.select_server_tier(vram_mib)
+    return mod.LocalServerLaunchPlan(
+        backend="vulkan",
+        desired_fingerprint_json='{"provider":"local"}',
+        desired_fingerprint_sha256="fp-local",
+        binary_path=binary,
+        model_path=gguf,
+        mmproj_path=mmproj,
+        gpu_index=1,
+        gpu_name="NVIDIA GeForce GTX 1660 Ti",
+        gpu_vram_mib=vram_mib,
+        vram_before_mib=512,
+        context_tokens=tier.context_tokens,
+        parallel_slots=tier.parallel_slots,
+        prompt_cache_mib=tier.prompt_cache_mib,
+        visible_devices_env="GGML_VK_VISIBLE_DEVICES",
+        visible_devices_value="1",
+        env_updates={"GGML_VK_VISIBLE_DEVICES": "1"},
+        backend_reason="test vulkan",
+    )
+
+
+def _cuda_launch_plan(
+    mod,
+    binary: Path,
+    gguf: Path,
+    mmproj: Path,
+    lib_dir: Path,
+    *,
+    tiering_memory_mib: int | None = 20000,
+    visible_device: str = "0",
+):
+    from solstone.think.providers import local_server
+
+    tier = local_server.select_server_tier(tiering_memory_mib or 0)
+    existing_ld = os.environ.get("LD_LIBRARY_PATH", "")
+    ld_library_path = f"{lib_dir}:{existing_ld}" if existing_ld else str(lib_dir)
+    return mod.LocalServerLaunchPlan(
+        backend="cuda",
+        desired_fingerprint_json='{"provider":"local"}',
+        desired_fingerprint_sha256="fp-local",
+        binary_path=binary,
+        model_path=gguf,
+        mmproj_path=mmproj,
+        lib_dir=lib_dir,
+        gpu_index=int(visible_device),
+        gpu_vram_mib=tiering_memory_mib,
+        context_tokens=tier.context_tokens,
+        parallel_slots=tier.parallel_slots,
+        prompt_cache_mib=tier.prompt_cache_mib,
+        visible_devices_env="CUDA_VISIBLE_DEVICES",
+        visible_devices_value=visible_device,
+        env_updates={
+            "CUDA_VISIBLE_DEVICES": visible_device,
+            "LD_LIBRARY_PATH": ld_library_path,
+        },
+        backend_reason="test cuda",
+    )
+
+
 def test_ensure_venv_bin_on_path_prepends_when_missing(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     monkeypatch.setenv("PATH", "/usr/bin")
@@ -3164,7 +3259,7 @@ def test_start_local_server_launches_mlx_server_on_darwin(
     tmp_path, monkeypatch, capsys
 ):
     mod = importlib.import_module("solstone.think.supervisor")
-    from solstone.think.providers import local_server, local_vulkan, mlx_install
+    from solstone.think.providers import local_server, local_vulkan
 
     monkeypatch.setattr(sys, "platform", "darwin")
     gpu_gate = MagicMock(side_effect=AssertionError("darwin must not probe Vulkan"))
@@ -3178,15 +3273,11 @@ def test_start_local_server_launches_mlx_server_on_darwin(
     managed.name = "mlx-vlm-server"
     managed.process.returncode = None
 
-    monkeypatch.setattr(
-        mlx_install,
-        "inspect_readiness",
-        lambda: _mlx_readiness(
-            runtime_dir=str(runtime_dir),
-            model_id="gemma-4-26b-a4b-it-mlx-4bit",
-        ),
+    plan = _mlx_launch_plan(
+        mod,
+        runtime_dir,
+        model_id="gemma-4-26b-a4b-it-mlx-4bit",
     )
-    monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
     monkeypatch.setattr(
         mod,
         "write_service_port",
@@ -3203,10 +3294,12 @@ def test_start_local_server_launches_mlx_server_on_darwin(
 
     monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
 
-    result = mod.start_local_server()
+    result = mod.start_local_server(plan, _FakeReservation())
 
-    assert result is managed
-    assert written_ports == [("local", 2468)]
+    assert result.status == "ready"
+    assert result.reason_code == "probe-ready"
+    assert result.managed is managed
+    assert written_ports == []
     assert spawned == [
         [
             str(Path(sys.executable).with_name("mlx-vlm-server")),
@@ -3238,13 +3331,21 @@ def test_start_local_server_skips_when_mlx_not_installed_on_darwin(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(
         mlx_install,
+        "target_fingerprint",
+        lambda: {"provider": "local", "backend": "mlx"},
+    )
+    monkeypatch.setattr(
+        mlx_install,
         "inspect_readiness",
         lambda: _mlx_readiness(model_installed=False),
     )
     launch = MagicMock()
     monkeypatch.setattr(mod, "_launch_process", launch)
 
-    assert mod.start_local_server() is None
+    observation = mod._observe_mlx_local_provider_truth()
+
+    assert observation.phase == "artifact-not-ready"
+    assert observation.plan is None
     launch.assert_not_called()
 
 
@@ -3255,13 +3356,21 @@ def test_start_local_server_skips_when_mlx_memory_blocked_on_darwin(monkeypatch)
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(
         mlx_install,
+        "target_fingerprint",
+        lambda: {"provider": "local", "backend": "mlx"},
+    )
+    monkeypatch.setattr(
+        mlx_install,
         "inspect_readiness",
         lambda: _mlx_readiness(ram_sufficient=False),
     )
     launch = MagicMock()
     monkeypatch.setattr(mod, "_launch_process", launch)
 
-    assert mod.start_local_server() is None
+    observation = mod._observe_mlx_local_provider_truth()
+
+    assert observation.phase == "artifact-not-ready"
+    assert observation.plan is None
     launch.assert_not_called()
 
 
@@ -3308,25 +3417,8 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
     log_path.write_text(BENIGN_LLAMA_LOAD_LOG, encoding="utf-8")
     managed.log_writer = type("LogWriter", (), {"path": log_path})()
 
-    monkeypatch.setattr(
-        local_install,
-        "ensure_artifacts_installed",
-        lambda model_id: _local_artifacts(local_install, binary, gguf, mmproj),
-    )
-    monkeypatch.setattr(
-        local_vulkan,
-        "detect_gpus",
-        lambda: [
-            local_vulkan.VulkanDevice(
-                1,
-                "NVIDIA GeForce GTX 1660 Ti",
-                local_vulkan.VK_TYPE_DISCRETE,
-                vram_mib,
-            )
-        ],
-    )
+    plan = _vulkan_launch_plan(mod, binary, gguf, mmproj, vram_mib=vram_mib)
     monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda index: 512)
-    monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
     monkeypatch.setattr(
         mod,
         "write_service_port",
@@ -3349,10 +3441,12 @@ def test_start_local_server_launches_llama_server_key_and_cmd(
 
     monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
 
-    result = mod.start_local_server()
+    result = mod.start_local_server(plan, _FakeReservation())
 
-    assert result is managed
-    assert written_ports == [("local", 2468)]
+    assert result.status == "ready"
+    assert result.reason_code == "probe-ready"
+    assert result.managed is managed
+    assert written_ports == []
     assert written_context_windows == [expected_context_tokens]
     assert spawned == [
         [
@@ -3432,17 +3526,31 @@ def test_log_context_assertion(caplog):
 
 def test_start_local_server_skips_missing_artifacts(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
-    from solstone.think.providers import local_install
 
-    monkeypatch.setattr(
-        local_install,
-        "ensure_artifacts_installed",
-        lambda model_id: (_ for _ in ()).throw(RuntimeError("missing")),
+    readiness = ReadinessOutcome(
+        provider="local",
+        status="missing-or-mismatched",
+        reason_code="manifest_missing",
+        target={},
+        install={"install_state": "idle"},
+        host={},
+        artifacts={},
+        proof={},
     )
     launch = MagicMock()
     monkeypatch.setattr(mod, "_launch_process", launch)
 
-    assert mod.start_local_server() is None
+    observation = mod._readiness_block_observation(
+        provider="local",
+        readiness=readiness,
+        fingerprint_json='{"provider":"local"}',
+        fingerprint_sha256_value="fp-local",
+        boot_required=True,
+    )
+
+    assert observation is not None
+    assert observation.phase == "artifact-not-ready"
+    assert observation.reason_code == "artifact-missing"
     launch.assert_not_called()
 
 
@@ -3469,26 +3577,9 @@ def _configure_linux_llama_start(
     managed.log_writer = type("LogWriter", (), {"path": log_path})()
     spawned: list[list[str]] = []
     spawned_envs: list[dict[str, str] | None] = []
+    plan = _vulkan_launch_plan(mod, binary, gguf, None, vram_mib=6390)
 
-    monkeypatch.setattr(
-        local_install,
-        "ensure_artifacts_installed",
-        lambda model_id: _local_artifacts(local_install, binary, gguf, None),
-    )
-    monkeypatch.setattr(
-        local_vulkan,
-        "detect_gpus",
-        lambda: [
-            local_vulkan.VulkanDevice(
-                1,
-                "NVIDIA GeForce GTX 1660 Ti",
-                local_vulkan.VK_TYPE_DISCRETE,
-                6390,
-            )
-        ],
-    )
     monkeypatch.setattr(local_vulkan, "device_local_used_mib", lambda index: 512)
-    monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
     monkeypatch.setattr(mod, "write_service_port", lambda _service, _port: None)
     monkeypatch.setattr(
         local_server, "write_local_context_window", lambda _tokens: None
@@ -3504,36 +3595,45 @@ def _configure_linux_llama_start(
         return managed
 
     monkeypatch.setattr(mod.RunnerManagedProcess, "spawn", fake_spawn)
-    return managed, spawned, spawned_envs
+    return managed, spawned, spawned_envs, plan
 
 
 def test_start_local_server_skips_without_hardware_gpu(tmp_path, monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
-    from solstone.think.providers import local_install, local_vulkan
+    from solstone.think.providers import local_vulkan
 
-    binary = tmp_path / "llama-server"
-    model_artifact_dir = local_install.model_dir(mod.LOCAL_MODEL)
-    gguf = model_artifact_dir / "model.gguf"
-    monkeypatch.setattr(
-        local_install,
-        "ensure_artifacts_installed",
-        lambda model_id: _local_artifacts(local_install, binary, gguf, None),
-    )
-    monkeypatch.setattr(local_vulkan, "detect_gpus", lambda: [])
     launch = MagicMock()
     monkeypatch.setattr(mod, "_launch_process", launch)
 
-    assert mod.start_local_server() is None
+    observation = mod.ProviderTruthObservation(
+        provider="local",
+        phase="host-blocked",
+        reason_code="gpu-unavailable",
+        desired_fingerprint_json='{"provider":"local"}',
+        desired_fingerprint_sha256="fp-local",
+        boot_required=True,
+        detail={
+            "readiness_status": "host-ineligible",
+            "readiness_reason_code": "gpu_unavailable",
+            "devices": mod._format_vulkan_devices([], local_vulkan),
+        },
+    )
+
+    assert observation.phase == "host-blocked"
+    assert observation.reason_code == "gpu-unavailable"
     launch.assert_not_called()
 
 
 def test_start_local_server_benign_load_log_returns_ready(tmp_path, monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
-    managed, _spawned, spawned_envs = _configure_linux_llama_start(
+    managed, _spawned, spawned_envs, plan = _configure_linux_llama_start(
         mod, tmp_path, monkeypatch, log_text=BENIGN_LLAMA_LOAD_LOG
     )
 
-    assert mod.start_local_server() is managed
+    result = mod.start_local_server(plan, _FakeReservation())
+
+    assert result.status == "ready"
+    assert result.managed is managed
     assert spawned_envs[0]["GGML_VK_VISIBLE_DEVICES"] == "1"
     managed.terminate.assert_not_called()
 
@@ -3542,7 +3642,7 @@ def test_start_local_server_process_exit_during_warmup_fails_closed(
     tmp_path, monkeypatch
 ):
     mod = importlib.import_module("solstone.think.supervisor")
-    managed, _spawned, _envs = _configure_linux_llama_start(
+    managed, _spawned, _envs, plan = _configure_linux_llama_start(
         mod,
         tmp_path,
         monkeypatch,
@@ -3550,10 +3650,13 @@ def test_start_local_server_process_exit_during_warmup_fails_closed(
         poll_return=1,
     )
 
-    assert mod.start_local_server() is None
-    assert "llama-server" not in mod._SERVICE_STATE
-    managed.terminate.assert_called_once_with(timeout=15)
-    managed.cleanup.assert_called_once_with()
+    result = mod.start_local_server(plan, _FakeReservation())
+
+    assert result.status == "exited"
+    assert result.reason_code == "process-exited"
+    assert result.managed is managed
+    managed.terminate.assert_not_called()
+    managed.cleanup.assert_not_called()
 
 
 def test_start_local_server_deadline_with_live_process_returns_managed(
@@ -3561,14 +3664,18 @@ def test_start_local_server_deadline_with_live_process_returns_managed(
 ):
     mod = importlib.import_module("solstone.think.supervisor")
     monkeypatch.setattr(mod, "LOCAL_SERVER_READY_TIMEOUT_S", 0.0)
-    managed, _spawned, _envs = _configure_linux_llama_start(
+    managed, _spawned, _envs, plan = _configure_linux_llama_start(
         mod,
         tmp_path,
         monkeypatch,
         log_text="2026-06-12T12:00:00+00:00 [llama-server:stderr] loading\n",
     )
 
-    assert mod.start_local_server() is managed
+    result = mod.start_local_server(plan, _FakeReservation())
+
+    assert result.status == "warmup-timeout"
+    assert result.reason_code == "warmup-timeout"
+    assert result.managed is managed
     managed.terminate.assert_not_called()
     managed.cleanup.assert_not_called()
 
@@ -3581,7 +3688,7 @@ def _configure_cuda_llama_start(
     probe,
     ready: bool = True,
 ):
-    from solstone.think.providers import local_cuda, local_install, local_server
+    from solstone.think.providers import local_install, local_server
 
     mod._SERVICE_STATE.clear()
     binary = tmp_path / "llama-server"
@@ -3597,16 +3704,16 @@ def _configure_cuda_llama_start(
     written_context_windows = []
     spawned: list[list[str]] = []
     spawned_envs: list[dict[str, str] | None] = []
-
-    monkeypatch.setattr(
-        local_install,
-        "ensure_artifacts_installed",
-        lambda model_id: _cuda_local_artifacts(
-            local_install, binary, lib_dir, gguf, mmproj
-        ),
+    plan = _cuda_launch_plan(
+        mod,
+        binary,
+        gguf,
+        mmproj,
+        lib_dir,
+        tiering_memory_mib=probe.tiering_memory_mib,
+        visible_device=str(probe.index if probe.index is not None else 0),
     )
-    monkeypatch.setattr(local_cuda, "probe_nvidia_gpu", lambda: probe)
-    monkeypatch.setattr(mod, "find_available_port", lambda: 2468)
+
     monkeypatch.setattr(
         mod,
         "write_service_port",
@@ -3643,6 +3750,7 @@ def _configure_cuda_llama_start(
         written_ports,
         written_context_windows,
         lib_dir,
+        plan,
     )
 
 
@@ -3662,14 +3770,21 @@ def test_start_local_server_cuda_launches_llama_server_cmd_and_env(
         memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
         detected=True,
     )
-    managed, spawned, spawned_envs, written_ports, written_context_windows, lib_dir = (
-        _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
-    )
+    (
+        managed,
+        spawned,
+        spawned_envs,
+        written_ports,
+        written_context_windows,
+        lib_dir,
+        plan,
+    ) = _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
 
-    result = mod.start_local_server()
+    result = mod.start_local_server(plan, _FakeReservation())
 
-    assert result is managed
-    assert written_ports == [("local", 2468)]
+    assert result.status == "ready"
+    assert result.managed is managed
+    assert written_ports == []
     assert written_context_windows == [32768]
     assert len(spawned) == 1
     cmd = spawned[0]
@@ -3698,22 +3813,27 @@ def test_start_local_server_cuda_missing_vram_uses_floor_tier(
         memory_source=local_cuda.MEMORY_SOURCE_UNAVAILABLE,
         detected=True,
     )
-    managed, spawned, _spawned_envs, _ports, written_context_windows, _lib_dir = (
-        _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
-    )
+    (
+        managed,
+        spawned,
+        _spawned_envs,
+        _ports,
+        written_context_windows,
+        _lib_dir,
+        plan,
+    ) = _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
 
     with caplog.at_level(logging.INFO):
-        result = mod.start_local_server()
+        result = mod.start_local_server(plan, _FakeReservation())
 
-    assert result is managed
+    assert result.status == "ready"
+    assert result.managed is managed
     assert written_context_windows == [local_server.LOCAL_MIN_CONTEXT_TOKENS]
     assert spawned[0][spawned[0].index("-c") + 1] == str(
         local_server.LOCAL_MIN_CONTEXT_TOKENS
     )
     assert any(
-        "CUDA tiering memory unavailable" in record.message
-        and "using floor tier" in record.message
-        for record in caplog.records
+        "local server backend=cuda" in record.message for record in caplog.records
     )
 
 
@@ -3732,20 +3852,25 @@ def test_start_local_server_cuda_unified_memory_uses_capable_tier(
         memory_source=local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE,
         detected=True,
     )
-    managed, spawned, _spawned_envs, _ports, written_context_windows, _lib_dir = (
-        _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
-    )
+    (
+        managed,
+        spawned,
+        _spawned_envs,
+        _ports,
+        written_context_windows,
+        _lib_dir,
+        plan,
+    ) = _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
 
     with caplog.at_level(logging.INFO):
-        result = mod.start_local_server()
+        result = mod.start_local_server(plan, _FakeReservation())
 
-    assert result is managed
+    assert result.status == "ready"
+    assert result.managed is managed
     assert written_context_windows == [32768]
     assert spawned[0][spawned[0].index("-c") + 1] == "32768"
     assert any(
-        "source=system MemAvailable (unified memory)" in record.message
-        and "discrete_vram=unavailable" in record.message
-        for record in caplog.records
+        "local server backend=cuda" in record.message for record in caplog.records
     )
 
 
@@ -3764,11 +3889,17 @@ def test_start_local_server_cuda_low_unified_memory_uses_floor_tier(
         memory_source=local_cuda.MEMORY_SOURCE_SYSTEM_AVAILABLE,
         detected=True,
     )
-    _managed, spawned, _spawned_envs, _ports, written_context_windows, _lib_dir = (
-        _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
-    )
+    (
+        _managed,
+        spawned,
+        _spawned_envs,
+        _ports,
+        written_context_windows,
+        _lib_dir,
+        plan,
+    ) = _configure_cuda_llama_start(mod, tmp_path, monkeypatch, probe=probe)
 
-    mod.start_local_server()
+    mod.start_local_server(plan, _FakeReservation())
 
     assert written_context_windows == [local_server.LOCAL_MIN_CONTEXT_TOKENS]
     assert spawned[0][spawned[0].index("-c") + 1] == str(
@@ -3790,10 +3921,16 @@ def test_start_local_server_cuda_warmup_timeout_fails_closed(tmp_path, monkeypat
         memory_source=local_cuda.MEMORY_SOURCE_NVIDIA_VRAM,
         detected=True,
     )
-    managed, _spawned, _spawned_envs, _ports, _contexts, _lib_dir = (
-        _configure_cuda_llama_start(
-            mod, tmp_path, monkeypatch, probe=probe, ready=False
-        )
+    (
+        managed,
+        _spawned,
+        _spawned_envs,
+        _ports,
+        _contexts,
+        _lib_dir,
+        plan,
+    ) = _configure_cuda_llama_start(
+        mod, tmp_path, monkeypatch, probe=probe, ready=False
     )
     terminated = []
 
@@ -3802,10 +3939,13 @@ def test_start_local_server_cuda_warmup_timeout_fails_closed(tmp_path, monkeypat
 
     monkeypatch.setattr(mod, "_terminate_managed", terminate_managed)
 
-    assert mod.start_local_server() is None
-    assert terminated == [(managed, 15, "CUDA local server launch failed")]
-    assert "llama-server" not in mod._SERVICE_STATE
-    managed.cleanup.assert_called_once_with()
+    result = mod.start_local_server(plan, _FakeReservation())
+
+    assert result.status == "warmup-timeout"
+    assert result.reason_code == "warmup-timeout"
+    assert result.managed is managed
+    assert terminated == []
+    managed.cleanup.assert_not_called()
 
 
 class _LocalManagedStub:
@@ -3814,18 +3954,17 @@ class _LocalManagedStub:
         self.is_running = MagicMock(return_value=running)
 
 
-def test_handle_start_local_request_starts_and_appends(monkeypatch):
+def test_handle_start_local_request_requests_reconciliation(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
-    managed = _LocalManagedStub()
-    start_local_server = MagicMock(return_value=managed)
+    request_retry = MagicMock()
     monkeypatch.setattr(mod, "_managed_procs", [])
     monkeypatch.setattr(mod, "_is_remote_mode", False)
-    monkeypatch.setattr(mod, "start_local_server", start_local_server)
+    monkeypatch.setattr(mod, "_request_provider_runtime_retry", request_retry)
 
     mod._handle_callosum_message({"tract": "supervisor", "event": "start_local"})
 
-    start_local_server.assert_called_once_with()
-    assert mod._managed_procs == [managed]
+    request_retry.assert_called_once_with("local")
+    assert mod._managed_procs == []
 
 
 def test_handle_start_local_request_noops_when_local_server_running(monkeypatch):

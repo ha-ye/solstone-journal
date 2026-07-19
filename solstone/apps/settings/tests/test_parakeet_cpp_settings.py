@@ -107,7 +107,13 @@ def test_parakeet_cpp_device_round_trips_through_settings_config(settings_env) -
     payload = client.get("/app/settings/api/config").get_json()
     assert payload["transcribe"]["parakeet-cpp"]["device"] == "cpu"
     assert supervisor._configured_parakeet_device() == "cpu"
-    plan = supervisor.resolve_parakeet_server_launch_plan("cpu", None)
+    plan = supervisor.resolve_parakeet_server_launch_plan(
+        "cpu",
+        None,
+        binary_path=Path("/tmp/parakeet-server"),
+        model_path=Path("/tmp/model.gguf"),
+        threads=6,
+    )
     assert plan.binary_backend == "cpu"
     assert plan.env_updates == {}
 

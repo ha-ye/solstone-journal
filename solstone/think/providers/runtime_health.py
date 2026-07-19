@@ -44,6 +44,7 @@ ReasonCode = Literal[
     "provider-not-needed",
     "truth-observation-started",
     "truth-observation-failed",
+    "observation-raced",
     "proof-observation-unavailable",
     "install-idle",
     "install-in-progress",
@@ -52,6 +53,10 @@ ReasonCode = Literal[
     "artifact-proof-failed",
     "host-admission-blocked",
     "platform-unsupported",
+    "package-unavailable",
+    "ram-insufficient",
+    "gpu-probe-failed",
+    "gpu-unavailable",
     "confidential-backend-selected",
     "launch-requested",
     "launch-spawned",
@@ -154,6 +159,7 @@ REASON_CODE_GROUPS: dict[str, frozenset[str]] = {
         {
             "truth-observation-started",
             "truth-observation-failed",
+            "observation-raced",
             "proof-observation-unavailable",
         }
     ),
@@ -170,6 +176,10 @@ REASON_CODE_GROUPS: dict[str, frozenset[str]] = {
         {
             "host-admission-blocked",
             "platform-unsupported",
+            "package-unavailable",
+            "ram-insufficient",
+            "gpu-probe-failed",
+            "gpu-unavailable",
             "confidential-backend-selected",
         }
     ),

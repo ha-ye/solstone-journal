@@ -2320,10 +2320,15 @@ def test_local_context_window_split_floor_vs_tier():
     assert local_server.LOCAL_MIN_CONTEXT_TOKENS == 16384
     removed_name = "_".join(("LOCAL", "SERVER", "CONTEXT", "TOKENS"))
     assert not hasattr(local_server, removed_name)
-    src = inspect.getsource(supervisor.start_local_server)
-    assert "select_server_tier" in src
-    assert "tier.context_tokens" in src
-    assert '"16384"' not in src
+    truth_src = inspect.getsource(supervisor._observe_linux_local_provider_truth)
+    assert "select_server_tier" in truth_src
+    assert "tier.context_tokens" in truth_src
+    launcher_src = inspect.getsource(supervisor.start_local_server)
+    assert "select_server_tier" not in launcher_src
+    assert "plan.context_tokens" in inspect.getsource(
+        supervisor._start_llama_local_server
+    )
+    assert '"16384"' not in launcher_src
     llm_src = inspect.getsource(openhands._build_llm)
     assert "LOCAL_MIN_CONTEXT_TOKENS" in llm_src
 
