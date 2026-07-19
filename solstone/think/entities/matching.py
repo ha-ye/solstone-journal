@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import unicodedata
+from contextlib import nullcontext
 from dataclasses import dataclass
 from enum import IntEnum
 from typing import Any
@@ -807,17 +808,18 @@ def record_entity_resolution(
     scope: ResolutionScope,
     origin: ResolutionOrigin,
     fuzzy_threshold: int = 90,
-    record_ambiguities: bool = True,
+    read_only: bool = False,
 ) -> EntityResolution:
     """Resolve an entity name on a mutation-safe boundary.
 
-    Low-confidence matches record an ambiguity row before returning unless the
-    caller explicitly suppresses that side channel for report-only work.
+    Low-confidence matches record an ambiguity row before returning unless this
+    is a read-only report path.
     """
     if not query or not query.strip():
         return EntityResolution(outcome=EntityResolutionOutcome.NO_MATCH)
 
-    with trust_operation_lock():
+    lock_context = nullcontext() if read_only else trust_operation_lock()
+    with lock_context:
         normalized_query = normalize_resolution_query(query)
         match_query = _matchable_resolution_query(query)
         resolved_row = load_resolved_ambiguity_choice(scope, normalized_query)
@@ -857,7 +859,7 @@ def record_entity_resolution(
         )
         if tier is not None and candidates:
             ambiguity_id = ""
-            if record_ambiguities:
+            if not read_only:
                 row = record_ambiguity_observation(
                     scope=scope,
                     query=query,

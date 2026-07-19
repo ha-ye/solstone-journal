@@ -2317,6 +2317,7 @@ def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
             }
         ],
     )
+    env.create_speakers_json("20240101", "143022_300", ["Alice Test"])
 
     env.create_segment(
         "20240101",
@@ -2362,6 +2363,8 @@ def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
     user_labels_path = _segment_labels_path(env, "20240101", "145000_300")
     other_corrections_path = _segment_corrections_path(env, "20240101", "144000_300")
     user_corrections_path = _segment_corrections_path(env, "20240101", "145000_300")
+    trust_lock = env.journal / "health" / "locks" / "entity-trust.lock"
+    assert not trust_lock.exists()
 
     with app.test_client() as client:
         correction = client.post(
@@ -2381,6 +2384,7 @@ def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
         assert offer["available"] is True
         assert offer["statement_count"] == 1
         assert offer["segment_count"] == 1
+        assert not trust_lock.exists()
 
         other_after_correction = json.loads(other_labels_path.read_text())
         assert other_after_correction["labels"][0]["speaker"] == "alice_test"
@@ -2406,6 +2410,7 @@ def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
             "new_speaker": "alice_test",
             "bounded_to": "segments where these two appear",
         }
+        assert not trust_lock.exists()
         assert other_labels_path.read_bytes() == other_before_preview
         assert not other_corrections_path.exists()
 
@@ -2461,6 +2466,75 @@ def test_correction_offer_and_explicit_propagation_are_scoped_and_idempotent(
         assert bob_voiceprints.read_bytes() == bob_after_commit
         assert not other_corrections_path.exists()
         assert not user_corrections_path.exists()
+
+
+def test_propagation_commit_lock_timeout_returns_busy_response(
+    speakers_env,
+    monkeypatch,
+):
+    from solstone.apps.speakers import attribution
+    from solstone.apps.speakers.routes import speakers_bp
+    from solstone.think.journal_io.errors import LockTimeout
+
+    env = speakers_env()
+    _write_confirmed_owner_centroid(env)
+    env.create_entity("Alice Test")
+    env.create_entity("Bob Test")
+
+    speaker_embedding = _normalized([0.0, 1.0])
+    _write_voiceprints(
+        env,
+        "bob_test",
+        [
+            (
+                speaker_embedding,
+                "20240101",
+                "143022_300",
+                "mic_audio",
+                1,
+            )
+        ],
+    )
+    env.create_segment(
+        "20240101",
+        "144000_300",
+        ["mic_audio"],
+        embeddings=np.vstack([speaker_embedding]),
+    )
+    env.create_speaker_labels(
+        "20240101",
+        "144000_300",
+        [
+            {
+                "sentence_id": 1,
+                "speaker": "alice_test",
+                "confidence": "high",
+                "method": "acoustic",
+            }
+        ],
+    )
+    labels_path = _segment_labels_path(env, "20240101", "144000_300")
+
+    def busy_save_speaker_labels(*args, **kwargs):
+        raise LockTimeout(path=labels_path, timeout=0.0)
+
+    monkeypatch.setattr(attribution, "save_speaker_labels", busy_save_speaker_labels)
+
+    app = Flask(__name__)
+    app.register_blueprint(speakers_bp)
+
+    with app.test_client() as client:
+        response = client.post(
+            "/app/speakers/api/propagate-correction",
+            json={
+                "old_speaker": "alice_test",
+                "new_speaker": "bob_test",
+                "commit": True,
+            },
+        )
+
+    assert response.status_code == 503
+    assert response.get_json()["reason_code"] == "speaker_labels_busy"
 
 
 def test_correcting_back_restores_original_entity_voiceprint(speakers_env):

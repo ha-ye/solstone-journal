@@ -146,17 +146,18 @@ def test_tier_five_multi_candidate_legacy_none_becomes_ambiguous(
     assert len(row["ranked_candidates"]) == 2
 
 
-def test_record_entity_resolution_can_suppress_ambiguity_observation(
+def test_record_entity_resolution_read_only_skips_trust_lock_and_ambiguity_observation(
     journal: Path,
 ) -> None:
     entities = [_entity("Sarah Connor"), _entity("Sarah Lee")]
+    trust_lock = journal / "health" / "locks" / "entity-trust.lock"
 
     resolution = record_entity_resolution(
         "Sarah",
         entities,
         scope=ResolutionScope.journal(),
         origin=_origin(),
-        record_ambiguities=False,
+        read_only=True,
     )
 
     assert resolution.outcome == EntityResolutionOutcome.AMBIGUOUS
@@ -166,6 +167,7 @@ def test_record_entity_resolution_can_suppress_ambiguity_observation(
         "sarah_lee",
     }
     assert not _ambiguity_file(journal).exists()
+    assert not trust_lock.exists()
 
 
 def test_tier_six_multi_candidate_legacy_none_becomes_ambiguous(

@@ -54,6 +54,7 @@ from solstone.think.entities.journal import (
     load_all_journal_entities,
 )
 from solstone.think.journal_io import (
+    LockTimeout,
     MalformedPolicy,
     atomic_replace,
     contained_path,
@@ -300,7 +301,7 @@ def attribute_segment(
     stream: str,
     segment_key: str,
     *,
-    record_ambiguities: bool = True,
+    read_only: bool = False,
 ) -> dict[str, Any]:
     """Run Layers 1-3 of speaker attribution for a segment.
 
@@ -322,7 +323,16 @@ def attribute_segment(
         load_entity_voiceprints_file,
     ) = _routes_helpers()
 
-    seg_dir = segment_path(day, segment_key, stream)
+    seg_dir = segment_path(day, segment_key, stream, create=not read_only)
+    if read_only and not seg_dir.is_dir():
+        return {
+            "status": "skipped",
+            "skip_reason": "segment_missing",
+            "labels": [],
+            "unmatched": [],
+            "source": None,
+            "metadata": {},
+        }
 
     # --- prerequisite: owner centroid ---
     centroid_data = load_owner_centroid()
@@ -504,7 +514,7 @@ def attribute_segment(
             entities_list,
             scope=resolution_scope,
             origin=resolution_origin,
-            record_ambiguities=record_ambiguities,
+            read_only=read_only,
         )
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             candidate_entities[resolution.entity["id"]] = resolution.entity
@@ -521,7 +531,7 @@ def attribute_segment(
                 segment_id=segment_key,
                 field="structural_single_speaker",
             ),
-            record_ambiguities=record_ambiguities,
+            read_only=read_only,
         )
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             for sid in non_owner_sids:
@@ -546,7 +556,7 @@ def attribute_segment(
                 segment_id=segment_key,
                 field="structural_setting",
             ),
-            record_ambiguities=record_ambiguities,
+            read_only=read_only,
         )
         if resolution.outcome == EntityResolutionOutcome.RESOLVED and resolution.entity:
             for sid in non_owner_sids:
@@ -1189,14 +1199,27 @@ def process_attributed_segment(
     segment_key: str,
     *,
     commit: bool,
-    record_ambiguities: bool,
+    read_only: bool,
 ) -> dict[str, Any]:
     result = attribute_segment(
         day,
         stream,
         segment_key,
-        record_ambiguities=record_ambiguities,
+        read_only=read_only,
     )
+    if result.get("status") == "skipped":
+        return {
+            "status": "skipped",
+            "day": day,
+            "stream": stream,
+            "segment_key": segment_key,
+            "source": result.get("source"),
+            "changes": [],
+            "changed_count": 0,
+            "accumulated": {},
+            "error": None,
+            "skip_reason": result.get("skip_reason"),
+        }
     if result.get("error"):
         return {
             "status": "error",
@@ -1303,8 +1326,10 @@ def propagate_speaker_correction(
                 stream_name,
                 seg_key,
                 commit=commit,
-                record_ambiguities=False,
+                read_only=not commit,
             )
+        except LockTimeout:
+            raise
         except Exception as exc:
             errors.append(f"{day_name}/{stream_name}/{seg_key}: {exc}")
             continue
@@ -1644,7 +1669,7 @@ def backfill_segments(
                 stream_name,
                 seg_key,
                 commit=True,
-                record_ambiguities=True,
+                read_only=False,
             )
 
             if result.get("error"):
