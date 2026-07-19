@@ -38,6 +38,7 @@ EXPECTED_MODEL_SHA256 = {
     ),
 }
 MAX_BASE_WHEEL_BYTES = 4 * 1024 * 1024
+MAX_BASE_PLATFORM_WHEEL_BYTES = 6 * 1024 * 1024
 MAX_CORE_WHEEL_BYTES = 30 * 1024 * 1024
 CORE_REQUIRED_SDIST_MEMBERS = {
     "core/Cargo.lock",
@@ -100,6 +101,9 @@ def _onnx_members(path: Path) -> list[str]:
 
 def check_base_wheel(path: Path, max_bytes: int) -> list[str]:
     errors: list[str] = []
+    if not path.name.endswith("-any.whl"):
+        # platform base wheels bundle the notarized parakeet helper binary
+        max_bytes = max(max_bytes, MAX_BASE_PLATFORM_WHEEL_BYTES)
     size = path.stat().st_size
     if size > max_bytes:
         errors.append(f"{path.name}: base wheel is {size} bytes; max is {max_bytes}")

@@ -136,6 +136,28 @@ def test_base_wheel_validator_rejects_tests_path_segment(tmp_path: Path) -> None
     )
 
 
+def test_base_wheel_platform_cap_allows_bundled_helper(tmp_path: Path) -> None:
+    within = tmp_path / "solstone-1.2.3-py3-none-macosx_14_0_arm64.whl"
+    with zipfile.ZipFile(within, "w") as wheel:
+        _write_member(
+            wheel,
+            "solstone-1.2.3.data/scripts/helper",
+            b"x" * (5 * 1024 * 1024),
+        )
+    within_errors = checker.check_base_wheel(within, checker.MAX_BASE_WHEEL_BYTES)
+    assert not [error for error in within_errors if "base wheel is" in error]
+
+    oversized = tmp_path / "solstone_big-1.2.3-py3-none-macosx_14_0_arm64.whl"
+    with zipfile.ZipFile(oversized, "w") as wheel:
+        _write_member(
+            wheel,
+            "solstone_big-1.2.3.data/scripts/helper",
+            b"x" * (7 * 1024 * 1024),
+        )
+    oversized_errors = checker.check_base_wheel(oversized, checker.MAX_BASE_WHEEL_BYTES)
+    assert any("base wheel is" in error for error in oversized_errors)
+
+
 def _add_tar_member(archive: tarfile.TarFile, name: str) -> None:
     content = b"x"
     info = tarfile.TarInfo(name)
