@@ -15,11 +15,6 @@ from typing import Any
 import pytest
 
 from solstone.convey import create_app
-from solstone.think.providers.install_state import (
-    bump_progress,
-    make_idle_status,
-    transition_state,
-)
 from tests.helpers.journal_config import seed_journal_config
 
 
@@ -591,24 +586,14 @@ def test_provider_install_mutation_paths_report_changed_and_noop(
 ) -> None:
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
     cases: list[tuple[Any, Callable[[], None]]] = []
-    install_state = importlib.import_module("solstone.think.providers.install_state")
     parakeet_install = importlib.import_module(
         "solstone.think.providers.parakeet_install"
     )
     local_install = importlib.import_module("solstone.think.providers.local_install")
     mlx_install = importlib.import_module("solstone.think.providers.mlx_install")
-    status = bump_progress(
-        transition_state(make_idle_status("local"), new_state="downloading"),
-        received=1,
-        total=2,
-    )
     spec = mlx_install.MLXModelSpec("mlx-model", "repo", "rev", 1)
     cases.extend(
         [
-            (
-                install_state,
-                lambda: install_state.write_install_status(status, scope="bundled"),
-            ),
             (
                 parakeet_install,
                 lambda: parakeet_install._write_parakeet_metadata(

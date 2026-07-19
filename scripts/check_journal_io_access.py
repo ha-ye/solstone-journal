@@ -129,6 +129,9 @@ OWNER_FILES: frozenset[str] = frozenset(
         "solstone/think/offload_ledger.py",
         # Sole writer of content-free bundled-local inference telemetry.
         "solstone/think/providers/local_admission.py",
+        # Provider install status, proof cache, and artifact manifests.
+        "solstone/think/providers/artifact_proof.py",
+        "solstone/think/providers/install_state.py",
         "solstone/think/schedule_config.py",
         "solstone/think/push/devices.py",
         # Backup hosted-tier binding (0600 broker-token cache).

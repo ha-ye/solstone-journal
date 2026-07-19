@@ -207,7 +207,6 @@ def test_install_local_mlx_writes_canonical_sequence(
     ]
     assert result["install_state"] == "installed"
     slot = _local_slot()
-    assert slot["install_state"] == "installed"
     assert slot["mlx_model_id"] == GEMMA4_26B_A4B_4BIT
     assert slot["mlx_revision"] == spec.revision
     assert slot["mlx_snapshot_dir"] == str(snapshot_dir)

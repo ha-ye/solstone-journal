@@ -13,7 +13,6 @@ from unittest.mock import Mock
 import pytest
 
 from solstone.apps.thinking import local_bootstrap
-from solstone.apps.thinking.install_copy import INSTALL_FAILED_NO_PROGRESS
 from solstone.convey import create_app
 from solstone.think.models import LOCAL_MODEL, QWEN_35_9B
 from solstone.think.providers import fit_report, memory
@@ -55,7 +54,6 @@ def _write_config(journal_path, config: dict) -> None:
 def _reset_local_state():
     with local_bootstrap._INSTALL_LOCK:
         local_bootstrap._INSTALL_THREADS.clear()
-        local_bootstrap._INSTALL_PROGRESS.clear()
 
 
 class _FakeThread:
@@ -81,13 +79,14 @@ def _write_local_status(
     error: str | None = None,
     last_progress_at: str | None = None,
 ) -> InstallStatus:
-    status = make_idle_status(local_bootstrap.local_install.LOCAL_PROVIDER_NAME)
-    status["install_state"] = state
+    status = transition_state(
+        make_idle_status(local_bootstrap.local_install.LOCAL_PROVIDER_NAME),
+        new_state=state,
+        error=error,
+    )
     status["last_transition_at"] = "2026-05-23T00:00:00+00:00"
     status["last_progress_at"] = last_progress_at
-    status["install_error"] = error if state == "failed" else None
-    write_install_status(status, scope="bundled")
-    return status
+    return write_install_status(status, scope="bundled")
 
 
 def _old_progress_iso() -> str:
@@ -533,8 +532,10 @@ def test_start_bootstrap_insufficient_disk_blocks_before_worker(
 def test_local_bootstrap_status_returns_canonical_shape(settings_env):
     journal_path, _config = settings_env(_settings_config())
     _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
-    with local_bootstrap._INSTALL_LOCK:
-        local_bootstrap._INSTALL_PROGRESS[LOCAL_MODEL] = (12, 24)
+    status = read_install_status(scope="bundled", name="local")
+    status["progress_bytes_received"] = 12
+    status["progress_bytes_total"] = 24
+    write_install_status(status, scope="bundled")
     client = _client(journal_path)
 
     response = client.get("/app/thinking/api/local/bootstrap/status")
@@ -555,17 +556,17 @@ def test_local_bootstrap_status_returns_canonical_shape(settings_env):
     assert payload["progress_bytes_total"] == 24
 
 
-def test_local_bootstrap_lazy_stall_without_live_thread_fails(settings_env):
+def test_local_bootstrap_lazy_stall_without_live_thread_stays_read_only(settings_env):
     settings_env(_settings_config())
     _write_local_status("downloading", last_progress_at=_old_progress_iso())
 
     payload = local_bootstrap.get_state(LOCAL_MODEL)
 
-    assert payload["install_state"] == "failed"
-    assert payload["install_error"] == INSTALL_FAILED_NO_PROGRESS
+    assert payload["install_state"] == "downloading"
+    assert payload["install_error"] is None
     persisted = read_install_status(scope="bundled", name="local")
-    assert persisted["install_state"] == "failed"
-    assert persisted["install_error"] == INSTALL_FAILED_NO_PROGRESS
+    assert persisted["install_state"] == "downloading"
+    assert persisted["install_error"] is None
 
 
 def test_local_bootstrap_lazy_stall_with_live_thread_stays_in_flight(settings_env):
@@ -623,15 +624,17 @@ def test_mlx_bootstrap_lazy_stall_with_live_thread_stays_in_flight(
     assert payload["install_error"] is None
 
 
-def test_mlx_bootstrap_lazy_stall_without_live_thread_fails(settings_env, monkeypatch):
+def test_mlx_bootstrap_lazy_stall_without_live_thread_stays_read_only(
+    settings_env, monkeypatch
+):
     settings_env(_settings_config())
     _write_local_status("downloading", last_progress_at=_old_progress_iso())
     monkeypatch.setattr(local_bootstrap, "_is_mlx_backend", lambda: True)
 
     payload = local_bootstrap.get_state(QWEN_35_9B)
 
-    assert payload["install_state"] == "failed"
-    assert payload["install_error"] == INSTALL_FAILED_NO_PROGRESS
+    assert payload["install_state"] == "downloading"
+    assert payload["install_error"] is None
 
 
 @pytest.mark.parametrize("state", ["installed", "failed"])
@@ -738,7 +741,11 @@ def test_local_worker_resets_progress_between_binary_and_model(
     _write_local_status("downloading", last_progress_at=_fresh_progress_iso())
 
     def fake_llama_server():
-        _write_local_status("installed")
+        status = read_install_status(scope="bundled", name="local")
+        write_install_status(
+            transition_state(status, new_state="installed"),
+            scope="bundled",
+        )
 
     def fake_install_model(model):
         observed.update(local_bootstrap.get_state(model))

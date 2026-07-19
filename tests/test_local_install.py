@@ -464,7 +464,6 @@ def test_install_llama_server_writes_canonical_sequence(tmp_path, monkeypatch):
     assert observed[1][1] == "verifying"
     assert result["install_state"] == "installed"
     slot = _local_slot()
-    assert slot["install_state"] == "installed"
     assert slot["binary_artifact"] == "llama.tar.gz"
     assert slot["binary_sha256"] == "abc123"
     assert slot["binary_path"] == str(final_path)
@@ -667,7 +666,6 @@ def test_install_model_writes_canonical_sequence(tmp_path, monkeypatch):
     assert observed[2][1] == "verifying"
     assert result["install_state"] == "installed"
     slot = _local_slot()
-    assert slot["install_state"] == "installed"
     assert slot["model_id"] == LOCAL_MODEL
     assert slot["model_path"] == str(local_install.model_path(spec.model_id))
     assert slot["model_sha256"] == spec.sha256
@@ -1255,6 +1253,4 @@ def test_install_llama_server_failure_writes_canonical_failed(tmp_path, monkeypa
     assert status["install_state"] == "failed"
     assert status["install_error"] == "network broke"
     slot = _local_slot()
-    assert slot["install_state"] == "failed"
-    assert slot["install_error"] == "network broke"
     assert "state" not in slot

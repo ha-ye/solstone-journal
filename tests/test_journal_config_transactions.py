@@ -246,7 +246,10 @@ def test_onboarding_finalize_interleaves_with_provider_progress(
         "provider": "google",
         "model": "gemini-flash-latest",
     }
-    assert data["providers"]["bundled"]["parakeet"]["install_state"] == "downloading"
+    from solstone.think.providers.install_state import read_install_status
+
+    status = read_install_status(name="parakeet", journal_path=journal)
+    assert status["install_state"] == "downloading"
 
 
 @pytest.mark.parametrize(

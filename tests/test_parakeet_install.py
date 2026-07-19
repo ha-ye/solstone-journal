@@ -203,9 +203,6 @@ def test_sha256_mismatch_fails_closed_and_records_failed_state(
     assert status["install_state"] == "failed"
     assert status["install_error"] is not None
     assert "sha256 mismatch" in status["install_error"]
-    slot = _parakeet_slot()
-    assert slot["install_state"] == "failed"
-    assert "sha256 mismatch" in slot["install_error"]
 
 
 def test_install_parakeet_writes_distinct_binary_and_model_metadata(

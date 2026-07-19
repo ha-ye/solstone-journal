@@ -10,7 +10,6 @@ import sys
 import threading
 
 from solstone.apps.thinking.install_copy import (
-    INSTALL_FAILED_NO_PROGRESS,
     LOCAL_MEMORY_WARNING_LOW_TEMPLATE,
     LOCAL_MEMORY_WARNING_UNKNOWN,
     LOCAL_MLX_MEMORY_WARNING_UNKNOWN,
@@ -22,7 +21,6 @@ from solstone.think.providers.fit_report import FitReport
 from solstone.think.providers.install_state import (
     IN_FLIGHT_STATES,
     InstallStatus,
-    is_stalled,
     make_idle_status,
     read_install_status,
     transition_state,
@@ -46,7 +44,6 @@ from solstone.think.providers.memory import (
 logger = logging.getLogger(__name__)
 
 _INSTALL_THREADS: dict[str, threading.Thread] = {}
-_INSTALL_PROGRESS: dict[str, tuple[int | None, int | None]] = {}
 _INSTALL_LOCK = threading.Lock()
 _MLX_MODEL_LABEL = f"qwen 3.5 9B VLM — {gb_label(MLX_AVAILABLE_FLOOR_BYTES)} GB"
 
@@ -244,50 +241,29 @@ def _has_live_thread(model: str) -> bool:
     return thread is not None and thread.is_alive()
 
 
-def _set_progress(model: str, received: int | None, total: int | None) -> None:
-    received = None if received is None else max(0, int(received))
-    total = None if total is None else max(0, int(total))
-    with _INSTALL_LOCK:
-        _INSTALL_PROGRESS[model] = (received, total)
-
-
-def _clear_progress(model: str) -> None:
-    with _INSTALL_LOCK:
-        _INSTALL_PROGRESS.pop(model, None)
-
-
 def _payload_for_status(
-    model: str, status: InstallStatus
+    _model: str, status: InstallStatus
 ) -> dict[str, int | str | None]:
     if status["install_state"] in IN_FLIGHT_STATES:
-        with _INSTALL_LOCK:
-            received, total = _INSTALL_PROGRESS.get(
-                model,
-                (
-                    status["progress_bytes_received"],
-                    status["progress_bytes_total"],
-                ),
-            )
+        received, total = (
+            status["progress_bytes_received"],
+            status["progress_bytes_total"],
+        )
     else:
         received, total = None, None
 
     return {
-        **status,
+        "name": status["provider"],
+        "install_state": status["install_state"],
+        "last_transition_at": status["last_transition_at"],
+        "last_progress_at": status["last_progress_at"],
         "progress_bytes_received": received,
         "progress_bytes_total": total,
+        "install_error": status["install_error"],
     }
 
 
-def _normalize_stalled_status(model: str, status: InstallStatus) -> InstallStatus:
-    # Local downloads refresh progress per chunk, so stale status fails only without a live worker.
-    if is_stalled(status) and not _has_live_thread(model):
-        status = transition_state(
-            status,
-            new_state="failed",
-            error=INSTALL_FAILED_NO_PROGRESS,
-        )
-        _write_status(status)
-        _clear_progress(model)
+def _normalize_stalled_status(_model: str, status: InstallStatus) -> InstallStatus:
     return status
 
 
@@ -324,7 +300,6 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
                     new_state="installed",
                 )
             )
-            _INSTALL_PROGRESS.pop(model_id, None)
             return {"install_state": "installed"}, 200
 
         if status["install_state"] in IN_FLIGHT_STATES:
@@ -354,7 +329,6 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
             )
         except Exception as exc:
             _write_status(transition_state(status, new_state="failed", error=str(exc)))
-            _INSTALL_PROGRESS.pop(model_id, None)
             raise LocalBootstrapStartError(str(exc)) from exc
 
         _write_status(transition_state(status, new_state="downloading"))
@@ -369,7 +343,6 @@ def start_bootstrap(model: str) -> tuple[dict[str, str], int]:
         _write_status(
             transition_state(_read_status(), new_state="failed", error=str(exc))
         )
-        _clear_progress(model_id)
         raise LocalBootstrapStartError(str(exc)) from exc
     return {"install_state": "downloading"}, 202
 
@@ -404,7 +377,6 @@ def _mlx_bootstrap_worker(model: str) -> None:
         mlx_install.install_local_mlx(model)
     except Exception:
         logger.exception("local MLX provider bootstrap failed")
-        _clear_progress(model)
     finally:
         with _INSTALL_LOCK:
             if _INSTALL_THREADS.get(model) is current_thread:
@@ -431,7 +403,6 @@ def _run_bootstrap_worker(model: str) -> None:
         _write_status(
             transition_state(_read_status(), new_state="failed", error=str(exc))
         )
-        _clear_progress(model)
     else:
         logger.info("local provider bootstrap complete; requesting local server start")
         _request_local_server_start()
