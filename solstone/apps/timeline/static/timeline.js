@@ -576,17 +576,6 @@ function renderOriginChip(origin) {
   return `<a class="timeline-origin-chip" href="/app/activities/${parts.day}">→ ${parts.hh}:${parts.mm}</a>`;
 }
 
-function renderDayProvenance(generatedAt, model) {
-  if (!generatedAt || !model) return "";
-  const date = new Date(generatedAt * 1000);
-  const hh = String(date.getHours()).padStart(2, "0");
-  const mm = String(date.getMinutes()).padStart(2, "0");
-  const y = date.getFullYear();
-  const mo = String(date.getMonth() + 1).padStart(2, "0");
-  const da = String(date.getDate()).padStart(2, "0");
-  return `<p class="timeline-day-provenance">rolled up at ${hh}:${mm} on ${y}-${mo}-${da} · ${escapeHtml(model)}</p>`;
-}
-
 function renderEmptyState(headline, body, opts = {}) {
   const classes = ["timeline-empty-state", opts.modifierClass || ""].filter(Boolean).join(" ");
   const icon = opts.icon
@@ -979,7 +968,7 @@ async function renderDay(monthIndex, day) {
           <button class="day-focus-node" type="button" data-month="${monthIndex}" data-return-month="true" aria-label="return to ${month.name} ${month.year || ""}">
             ${dayLabel}
           </button>
-          ${renderDayProvenance(data.generated_at, data.model)}
+          ${window.TimelineProvenance.renderDayProvenance(data.generated_at, data.model)}
         </div>
 
         <div class="hour-lane timeline-top" aria-label="${month.name} ${day} highlighted events above the hourly timeline">

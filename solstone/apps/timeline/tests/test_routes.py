@@ -147,6 +147,7 @@ def test_timeline_static_literal_paths_resolve(client):
 
     for path in (
         "/app/timeline/static/timeline.css",
+        "/app/timeline/static/timeline_provenance.js",
         "/app/timeline/static/timeline.js",
     ):
         endpoint, _args = adapter.match(path, method="GET")
