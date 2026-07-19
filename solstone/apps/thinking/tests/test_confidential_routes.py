@@ -16,19 +16,7 @@ from solstone.convey import create_app
 from solstone.think.services import operations, spp, spp_handoff, spp_transport
 from solstone.think.services.spp_attest.cadence import AttestationSession
 from tests.helpers.journal_config import seed_journal_config
-
-
-class _InlineThread:
-    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-        self._target = target
-        self._args = args
-        self._kwargs = kwargs or {}
-
-    def start(self):
-        self._target(*self._args, **self._kwargs)
-
-    def join(self, timeout=None):
-        return None
+from tests.helpers.module_mocks import inline_thread_constructor, module_mock
 
 
 class _FakeChannel:
@@ -128,7 +116,14 @@ def test_enable_confidential_returns_operation_and_lands_not_verified(
         )
 
     monkeypatch.setattr(spp_handoff, "run_confidential_handoff", runner)
-    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(
+        operations,
+        "threading",
+        module_mock(
+            operations.threading,
+            Thread=inline_thread_constructor(),
+        ),
+    )
 
     response = thinking_client.post("/app/thinking/api/confidential/enable")
 
@@ -160,7 +155,14 @@ def test_enable_confidential_early_access_stays_off(
         return operations.HandoffResult("early_access", None, False)
 
     monkeypatch.setattr(spp_handoff, "run_confidential_handoff", runner)
-    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(
+        operations,
+        "threading",
+        module_mock(
+            operations.threading,
+            Thread=inline_thread_constructor(),
+        ),
+    )
 
     response = thinking_client.post("/app/thinking/api/confidential/enable")
 
@@ -319,7 +321,14 @@ def test_confidential_routes_and_provider_payload_are_secret_free(
         return operations.HandoffResult("enabled", "not yet verified", False)
 
     monkeypatch.setattr(spp_handoff, "run_confidential_handoff", runner)
-    monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
+    monkeypatch.setattr(
+        operations,
+        "threading",
+        module_mock(
+            operations.threading,
+            Thread=inline_thread_constructor(),
+        ),
+    )
 
     start = thinking_client.post("/app/thinking/api/confidential/enable")
     assert start.status_code == 202

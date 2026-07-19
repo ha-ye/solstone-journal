@@ -7,9 +7,11 @@ import fcntl
 import json
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
+
+from tests.helpers.module_mocks import module_mock
 
 
 def _patch_health_journal(monkeypatch, providers_cli, tmp_path):
@@ -375,18 +377,27 @@ def test_check_cogitate_local_endpoint_unreachable_uses_endpoint_reason(monkeypa
     assert "journal install-provider local" not in msg
 
 
-def test_cortex_start_emits_providers_check(tmp_path):
-    from solstone.think.cortex import CortexService
+def test_cortex_start_emits_providers_check(tmp_path, monkeypatch):
+    from solstone.think import cortex as cortex_module
 
-    cortex = CortexService(journal_path=str(tmp_path))
+    thread_constructor = MagicMock(return_value=MagicMock())
+    monkeypatch.setattr(
+        cortex_module,
+        "threading",
+        module_mock(cortex_module.threading, Thread=thread_constructor),
+    )
+    monkeypatch.setattr(
+        cortex_module,
+        "time",
+        module_mock(cortex_module.time, sleep=MagicMock()),
+    )
+
+    cortex = cortex_module.CortexService(journal_path=str(tmp_path))
     cortex.callosum = MagicMock()
     cortex.callosum.start.return_value = None
     cortex.shutdown_requested.set()
 
-    with patch("solstone.think.cortex.threading.Thread") as mock_thread:
-        mock_thread.return_value = MagicMock()
-        with patch("solstone.think.cortex.time.sleep", return_value=None):
-            cortex.start()
+    cortex.start()
 
     cortex.callosum.emit.assert_any_call(
         "supervisor", "request", cmd=["journal", "providers", "check"]

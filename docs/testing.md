@@ -4,9 +4,15 @@
 
 - **Framework**: pytest; coverage reporting comes from `make test-cov`, `make verify`, or `make coverage`, not `make test` or `make ci`
 - **Unit Tests**: live under `tests/` (and each app's `tests/` dir)
-  - Fast, no external API calls, no real browser
-  - Use `tests/fixtures/journal/` mock data
+  - Fast, with mocked process/thread/clock/network/repository boundaries
+  - No external API calls, real browser, heavyweight build, or shared fixture writes
+  - Read `tests/fixtures/journal/` mock data; use `journal_copy` or `tmp_path`
+    for any scan, index rebuild, or mutation
   - Test individual functions and modules
+- **Integration Tests**: marked `@pytest.mark.integration`
+  - Opt-in via `make test-integration`; excluded from `make test` and `make ci`
+  - Real local processes/builds and persisted-index contracts
+  - Still use disposable `tmp_path` state and never the owner's journal
 - **Naming**: Files `test_*.py`, functions `test_*`
 - **Fixtures**: Shared fixtures in `tests/conftest.py`
 
@@ -19,12 +25,16 @@ os.environ["SOLSTONE_JOURNAL"] = "tests/fixtures/journal"
 # Now all journal operations work with test data
 ```
 
-The `tests/fixtures/journal/` directory contains a complete mock journal structure with sample facets, agents, transcripts, and indexed data for testing.
+The `tests/fixtures/journal/` directory contains immutable mock input with sample
+facets, agents, transcripts, and indexed data. Tests may read it directly. Any
+test that writes, scans, or rebuilds journal/index state must use the
+`journal_copy` fixture or a smaller journal under `tmp_path`.
 
 ## Running Tests
 
 - `make test` runs all unit tests — `tests/` + every `solstone/apps/*/tests/`, in one parallel run
 - `make test-cov` — the same suite with coverage reporting
+- `make test-integration` — opt-in real local build/process and persisted-index contracts
 - `make test-app APP=<name>` and `make test-only TEST=path` are the focused development loop
 - `make coverage` to generate a coverage report
 - `make ci` once on the settled final tree before merge or release (install checks plus the full unit suite)

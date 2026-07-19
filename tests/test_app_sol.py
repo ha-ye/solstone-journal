@@ -250,7 +250,7 @@ class TestResolveOutputPath:
 
 
 @pytest.fixture
-def agents_client(tmp_path):
+def agents_client(tmp_path, monkeypatch):
     """Create a Flask test client with agents blueprint and tmp journal."""
     from flask import Flask
 
@@ -261,7 +261,7 @@ def agents_client(tmp_path):
     app.register_blueprint(sol_bp)
 
     # Point state at our tmp journal
-    state.journal_root = str(tmp_path)
+    monkeypatch.setattr(state, "journal_root", str(tmp_path))
 
     # Create test files
     day_dir = tmp_path / "chronicle" / "20260214"

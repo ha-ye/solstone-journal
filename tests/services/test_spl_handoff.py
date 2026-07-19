@@ -24,24 +24,12 @@ from solstone.think.services import (
 )
 from solstone.think.spl import relay_client
 from tests.helpers.journal_config import seed_journal_config
+from tests.helpers.module_mocks import inline_thread_constructor, module_mock
 
 TEST_INSTANCE_ID = "00000000-0000-4000-8000-000000000000"
 TEST_NONCE = "TESTNONCE"
 TEST_BASE_URL = "https://services.test"
 TEST_SUBSCRIBE_URL = "https://services.test/account/subscription"
-
-
-class _InlineThread:
-    def __init__(self, target=None, args=(), kwargs=None, daemon=None):
-        self._target = target
-        self._args = args
-        self._kwargs = kwargs or {}
-
-    def start(self):
-        self._target(*self._args, **self._kwargs)
-
-    def join(self, timeout=None):
-        return None
 
 
 class FakeResponse:
@@ -654,7 +642,14 @@ def test_run_spl_handoff_maps_needs_subscription_to_operation(
 
     operations.clear_registry()
     try:
-        monkeypatch.setattr(operations.threading, "Thread", _InlineThread)
+        monkeypatch.setattr(
+            operations,
+            "threading",
+            module_mock(
+                operations.threading,
+                Thread=inline_thread_constructor(),
+            ),
+        )
         operations.start_operation(
             "spl",
             "spl_enable",

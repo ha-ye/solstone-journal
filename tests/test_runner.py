@@ -22,6 +22,7 @@ from solstone.think.runner import (
     run_task,
     snapshot_descendants,
 )
+from tests.helpers.module_mocks import module_mock
 
 
 @pytest.fixture
@@ -171,15 +172,17 @@ def test_terminate_raises_for_surviving_descendant(monkeypatch):
 def test_descendant_poll_uses_bounded_deadline(monkeypatch):
     descendant = DescendantRef(222, 333)
     sleeps = []
-    times = iter([10.0, 10.05])
+    monotonic = Mock(side_effect=[10.0, 10.05])
+    sleep = Mock(side_effect=lambda amount: sleeps.append(amount))
 
     monkeypatch.setattr(
         "solstone.think.runner._alive_descendants",
         lambda descendants: list(descendants),
     )
-    monkeypatch.setattr("solstone.think.runner.time.monotonic", lambda: next(times))
     monkeypatch.setattr(
-        "solstone.think.runner.time.sleep", lambda amount: sleeps.append(amount)
+        runner,
+        "time",
+        module_mock(runner.time, monotonic=monotonic, sleep=sleep),
     )
 
     survivors = runner._poll_descendants_until_gone([descendant], 10.05)

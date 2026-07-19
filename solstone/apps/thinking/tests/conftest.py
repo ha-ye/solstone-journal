@@ -10,7 +10,7 @@ import os
 
 import pytest
 
-from solstone.think.services import operations, spp
+from solstone.think.services import operations, spp, spp_transport
 
 
 @pytest.fixture(scope="module")
@@ -60,6 +60,13 @@ def _clear_spp_attestation_state():
     spp.delete_attestation_state()
     yield
     spp.delete_attestation_state()
+
+
+@pytest.fixture(autouse=True)
+def _clear_spp_transport_state():
+    spp_transport.teardown_confidential_transport()
+    yield
+    spp_transport.teardown_confidential_transport()
 
 
 @pytest.fixture

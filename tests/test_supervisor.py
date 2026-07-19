@@ -30,6 +30,10 @@ from solstone.think.processing import (
     TimeWindowSettings,
 )
 from solstone.think.providers.artifact_proof import ReadinessOutcome
+from tests.helpers.module_mocks import (
+    capturing_thread_constructor,
+    module_mock,
+)
 
 
 def _mlx_readiness(
@@ -660,11 +664,17 @@ def _fresh_task_queue(mod, *, on_queue_change=None):
 
 def _capture_thread_starts(monkeypatch, mod):
     spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._args)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    monkeypatch.setattr(
+        mod,
+        "threading",
+        module_mock(
+            mod.threading,
+            Thread=capturing_thread_constructor(
+                spawned,
+                capture=lambda thread: thread._args,
+            ),
+        ),
+    )
     return spawned
 
 
@@ -1277,12 +1287,7 @@ def test_task_queue_same_command_queued(monkeypatch):
     # Create fresh task queue (no callback to avoid callosum events)
     mod._task_queue = mod.TaskQueue(on_queue_change=None)
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._target.__name__)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    spawned = _capture_thread_starts(monkeypatch, mod)
 
     # First request - should run immediately
     msg1 = {
@@ -1322,12 +1327,7 @@ def test_task_queue_dedupe_exact_match(monkeypatch):
     # Create fresh task queue (no callback to avoid callosum events)
     mod._task_queue = mod.TaskQueue(on_queue_change=None)
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._target.__name__)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    _capture_thread_starts(monkeypatch, mod)
 
     # First request - runs
     msg1 = {
@@ -1365,12 +1365,7 @@ def test_task_queue_different_commands_independent(monkeypatch):
     # Create fresh task queue (no callback to avoid callosum events)
     mod._task_queue = mod.TaskQueue(on_queue_change=None)
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._target.__name__)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    spawned = _capture_thread_starts(monkeypatch, mod)
 
     # Indexer request - runs
     msg1 = {
@@ -1406,12 +1401,7 @@ def test_process_queue_spawns_next(monkeypatch):
         ]
     }
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._args)  # Capture args (refs, cmd, cmd_name, callosum)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    spawned = _capture_thread_starts(monkeypatch, mod)
 
     # Process queue
     mod._task_queue._process_next("indexer")
@@ -1435,12 +1425,7 @@ def test_process_queue_clears_running_when_empty(monkeypatch):
     mod._task_queue._running = {"indexer": {"ref": "ref123", "thread": None}}
     mod._task_queue._queues = {"indexer": []}
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(True)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    spawned = _capture_thread_starts(monkeypatch, mod)
 
     # Process queue
     mod._task_queue._process_next("indexer")
@@ -1459,12 +1444,7 @@ def test_task_request_uses_caller_provided_ref(monkeypatch):
     # Create fresh task queue (no callback to avoid callosum events)
     mod._task_queue = mod.TaskQueue(on_queue_change=None)
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._args)  # Capture args (refs, cmd, cmd_name, callosum)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    spawned = _capture_thread_starts(monkeypatch, mod)
 
     # Request with caller-provided ref
     msg = {
@@ -1487,12 +1467,7 @@ def test_task_queue_preserves_caller_ref(monkeypatch):
     # Create fresh task queue (no callback to avoid callosum events)
     mod._task_queue = mod.TaskQueue(on_queue_change=None)
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._args)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    _capture_thread_starts(monkeypatch, mod)
 
     # First request runs immediately
     msg1 = {
@@ -1529,12 +1504,7 @@ def test_task_queue_coalesces_refs_on_dedupe(monkeypatch):
     # Create fresh task queue (no callback to avoid callosum events)
     mod._task_queue = mod.TaskQueue(on_queue_change=None)
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._args)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    _capture_thread_starts(monkeypatch, mod)
 
     # First request runs immediately
     msg1 = {
@@ -1588,12 +1558,7 @@ def test_process_queue_spawns_with_multiple_refs(monkeypatch):
         ]
     }
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._args)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    spawned = _capture_thread_starts(monkeypatch, mod)
 
     # Process queue
     mod._task_queue._process_next("indexer")
@@ -1618,12 +1583,7 @@ def test_stale_queue_detected_on_submit(monkeypatch):
     dead_thread.join()
     assert not dead_thread.is_alive()
 
-    spawned = []
-
-    def fake_thread_start(self):
-        spawned.append(self._target.__name__)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    spawned = _capture_thread_starts(monkeypatch, mod)
 
     mod._task_queue._running = {"indexer": {"ref": "stale-ref", "thread": dead_thread}}
     mod._task_queue._queues = {

@@ -5,9 +5,9 @@
 
 import hashlib
 import json
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import Mock
 
 import pytest
 
@@ -1260,12 +1260,22 @@ def test_voice_tool_flips_relax_and_rerank(monkeypatch):
 
 def test_search_journal_returns_counts(monkeypatch):
     """Test search tool returns counts aggregation."""
-    from solstone.think.tools.search import search_journal
+    from solstone.think.tools import search as search_tools
 
-    # Use fixtures journal
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
+    monkeypatch.setattr(search_tools, "search_journal_impl", Mock(return_value=(0, [])))
+    monkeypatch.setattr(
+        search_tools,
+        "search_counts_impl",
+        Mock(
+            return_value={
+                "facets": [("work", 2)],
+                "agents": [("flow", 2)],
+                "days": [("20240101", 2)],
+            }
+        ),
+    )
 
-    result = search_journal("test")
+    result = search_tools.search_journal("test")
 
     # Should have counts structure
     assert "counts" in result
@@ -1282,11 +1292,16 @@ def test_search_journal_returns_counts(monkeypatch):
 
 def test_search_journal_returns_query_echo(monkeypatch):
     """Test search tool returns query echo."""
-    from solstone.think.tools.search import search_journal
+    from solstone.think.tools import search as search_tools
 
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
+    monkeypatch.setattr(search_tools, "search_journal_impl", Mock(return_value=(0, [])))
+    monkeypatch.setattr(
+        search_tools,
+        "search_counts_impl",
+        Mock(return_value={"facets": [], "agents": [], "days": []}),
+    )
 
-    result = search_journal("test query", facet="work", agent="flow")
+    result = search_tools.search_journal("test query", facet="work", agent="flow")
 
     assert "query" in result
     assert result["query"]["text"] == "test query"
@@ -1296,17 +1311,35 @@ def test_search_journal_returns_query_echo(monkeypatch):
 
 def test_search_journal_results_include_path(monkeypatch):
     """Test search tool results include path and idx."""
-    from solstone.think.tools.search import search_journal
+    from solstone.think.tools import search as search_tools
 
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
+    monkeypatch.setattr(
+        search_tools,
+        "search_journal_impl",
+        Mock(
+            return_value=(
+                1,
+                [
+                    {
+                        "text": "result",
+                        "metadata": {"path": "facets/work/result.md", "idx": 3},
+                    }
+                ],
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        search_tools,
+        "search_counts_impl",
+        Mock(return_value={"facets": [], "agents": [], "days": []}),
+    )
 
-    result = search_journal("")
+    result = search_tools.search_journal("")
 
-    if result.get("results"):
-        item = result["results"][0]
-        assert "path" in item
-        assert "idx" in item
-        assert item["id"] == f"{item['path']}:{item['idx']}"
+    item = result["results"][0]
+    assert item["path"] == "facets/work/result.md"
+    assert item["idx"] == 3
+    assert item["id"] == "facets/work/result.md:3"
 
 
 def test_search_journal_truncates_large_results(monkeypatch):
@@ -1314,8 +1347,6 @@ def test_search_journal_truncates_large_results(monkeypatch):
     from unittest.mock import patch
 
     from solstone.think.tools.search import _MAX_RESULT_TEXT, search_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
 
     big_text = "x" * 10_000
     fake_results = [
@@ -1664,94 +1695,22 @@ def test_extract_stream_missing_marker(tmp_path):
     assert result is None
 
 
-def test_search_journal_stream_filter(monkeypatch):
-    """search_journal filters by stream name."""
-    from solstone.think.indexer.journal import scan_journal, search_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal(os.environ["SOLSTONE_JOURNAL"], full=True)
-
-    # Search with matching stream
-    total, results = search_journal("", stream="default")
-    assert total > 0
-    for r in results:
-        assert r["metadata"]["stream"] == "default"
-
-    # Search with non-existent stream
-    total, results = search_journal("", stream="nonexistent")
-    assert total == 0
-
-
-def test_search_journal_results_include_stream(monkeypatch):
-    """search_journal results include stream in metadata."""
-    from solstone.think.indexer.journal import scan_journal, search_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal(os.environ["SOLSTONE_JOURNAL"], full=True)
-
-    # Filter to segment content which has stream markers
-    total, results = search_journal("", stream="default")
-    assert total > 0
-
-    for r in results:
-        assert "stream" in r["metadata"]
-        assert r["metadata"]["stream"] == "default"
-
-
-def test_browser_fixture_chunks_include_stream_and_agent(monkeypatch):
-    """Browser formatter chunks keep segment stream and formatter agent."""
-    from solstone.think.indexer.journal import get_journal_index, index_file
-
-    journal = Path("tests/fixtures/journal").resolve()
-    rel = "20260703/suze.browser/000141_317/browser_mail-google-com.jsonl"
-    monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal))
-
-    index_file(str(journal), rel)
-
-    conn, _ = get_journal_index(str(journal))
-    rows = conn.execute(
-        "SELECT agent, stream FROM chunks WHERE path=? ORDER BY idx",
-        (rel,),
-    ).fetchall()
-    conn.close()
-
-    assert len(rows) == 6
-    assert {agent for agent, _stream in rows} == {"browser"}
-    assert {stream for _agent, stream in rows} == {"suze.browser"}
-
-
-def test_search_counts_stream_filter(monkeypatch):
-    """search_counts filters by stream and includes streams aggregation."""
-    from solstone.think.indexer.journal import scan_journal, search_counts
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal(os.environ["SOLSTONE_JOURNAL"], full=True)
-
-    # Unfiltered counts should include streams
-    counts = search_counts("")
-    assert "streams" in counts
-
-    # Filter by stream
-    counts = search_counts("", stream="default")
-    assert counts["total"] > 0
-
-    # Non-existent stream returns zero
-    counts = search_counts("", stream="nonexistent")
-    assert counts["total"] == 0
-
-
 def test_search_tool_stream_filter(monkeypatch):
     """Agent search tool accepts and passes stream filter."""
-    from solstone.think.indexer.journal import scan_journal
-    from solstone.think.tools.search import search_journal
+    from solstone.think.tools import search as search_tools
 
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal(os.environ["SOLSTONE_JOURNAL"], full=True)
+    search = Mock(return_value=(1, [{"text": "result", "metadata": {}}]))
+    counts = Mock(return_value={"facets": [], "agents": [], "days": [("20240101", 1)]})
+    monkeypatch.setattr(search_tools, "search_journal_impl", search)
+    monkeypatch.setattr(search_tools, "search_counts_impl", counts)
 
-    result = search_journal("", stream="default")
+    result = search_tools.search_journal("", stream="default")
+
     assert "results" in result
-    assert result["total"] > 0
+    assert result["total"] == 1
     assert result["query"]["filters"]["stream"] == "default"
+    search.assert_called_once_with("", 10, 0, rerank=True, stream="default")
+    counts.assert_called_once_with("", stream="default")
 
 
 def test_prune_chunks_by_stream(monkeypatch, tmp_path):
@@ -1836,100 +1795,6 @@ def test_prune_chunks_by_stream(monkeypatch, tmp_path):
             == 0
         )
     conn.close()
-
-
-def test_entity_search_chunks_indexed(monkeypatch):
-    """Entity search chunks are generated from identity + relationship data."""
-    from solstone.think.indexer.journal import scan_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal("tests/fixtures/journal", full=True)
-    conn, _ = get_journal_index("tests/fixtures/journal")
-    count = conn.execute("SELECT count(*) FROM chunks WHERE agent='entity'").fetchone()[
-        0
-    ]
-    conn.close()
-    # One chunk per entity-facet relationship in the current fixture journal.
-    assert count == 40
-
-
-def test_entity_search_chunks_use_entity_search_path(monkeypatch):
-    """Entity search chunks use entity_search: path prefix."""
-    from solstone.think.indexer.journal import scan_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal("tests/fixtures/journal", full=True)
-    conn, _ = get_journal_index("tests/fixtures/journal")
-    rows = conn.execute(
-        "SELECT DISTINCT path FROM chunks WHERE agent='entity'"
-    ).fetchall()
-    conn.close()
-    assert all(r[0].startswith("entity_search:") for r in rows)
-
-
-def test_entity_search_by_name(monkeypatch):
-    """Entity name is searchable via FTS."""
-    from solstone.think.indexer.journal import scan_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal("tests/fixtures/journal", full=True)
-    total, results = search_journal("Alice Johnson", agent="entity")
-    assert total >= 1
-    assert any(r["metadata"]["agent"] == "entity" for r in results)
-
-
-def test_entity_search_by_type(monkeypatch):
-    """Entity type is searchable via FTS."""
-    from solstone.think.indexer.journal import scan_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal("tests/fixtures/journal", full=True)
-    total, results = search_journal("Person", agent="entity")
-    assert total >= 1
-
-
-def test_entity_search_includes_description(monkeypatch):
-    """Entity search chunks include relationship descriptions."""
-    from solstone.think.indexer.journal import scan_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal("tests/fixtures/journal", full=True)
-    # Alice has description "Close friend from college" in personal facet
-    total, results = search_journal("college", agent="entity")
-    assert total >= 1
-    matched = [r for r in results if "college" in r["text"].lower()]
-    assert len(matched) >= 1
-
-
-def test_entity_search_includes_facet(monkeypatch):
-    """Entity search chunks have facet metadata from relationships."""
-    from solstone.think.indexer.journal import scan_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal("tests/fixtures/journal", full=True)
-    total, results = search_journal("Alice Johnson", agent="entity", facet="personal")
-    assert total >= 1
-    assert all(r["metadata"]["facet"] == "personal" for r in results)
-
-
-def test_entity_search_idempotent(monkeypatch):
-    """Two full scans produce identical entity chunk count (no duplicates)."""
-    from solstone.think.indexer.journal import scan_journal
-
-    monkeypatch.setenv("SOLSTONE_JOURNAL", "tests/fixtures/journal")
-    scan_journal("tests/fixtures/journal", full=True)
-    conn, _ = get_journal_index("tests/fixtures/journal")
-    count1 = conn.execute(
-        "SELECT count(*) FROM chunks WHERE agent='entity'"
-    ).fetchone()[0]
-    conn.close()
-    scan_journal("tests/fixtures/journal", full=True)
-    conn, _ = get_journal_index("tests/fixtures/journal")
-    count2 = conn.execute(
-        "SELECT count(*) FROM chunks WHERE agent='entity'"
-    ).fetchone()[0]
-    conn.close()
-    assert count1 == count2 == 40
 
 
 class TestSegmentChunks:

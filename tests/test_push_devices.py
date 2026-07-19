@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import Mock
 
 from solstone.think.push import devices
+from tests.helpers.module_mocks import module_mock
 
 
 def _devices_path(tmp_path: Path) -> Path:
@@ -38,7 +40,11 @@ def test_load_devices_returns_empty_for_missing_store(monkeypatch, tmp_path):
 
 def test_register_one_device_stores_fingerprint_row(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    monkeypatch.setattr(devices.time, "time", lambda: 1000)
+    monkeypatch.setattr(
+        devices,
+        "time",
+        module_mock(devices.time, time=Mock(return_value=1000)),
+    )
 
     count = _register("fp-1", "a" * 64)
 
@@ -58,8 +64,11 @@ def test_register_one_device_stores_fingerprint_row(monkeypatch, tmp_path):
 
 def test_register_same_fingerprint_replaces_row(monkeypatch, tmp_path):
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(tmp_path))
-    times = iter([1000, 2000])
-    monkeypatch.setattr(devices.time, "time", lambda: next(times))
+    monkeypatch.setattr(
+        devices,
+        "time",
+        module_mock(devices.time, time=Mock(side_effect=[1000, 2000])),
+    )
 
     first = _register("fp-1", "a" * 64)
     second = _register("fp-1", "b" * 64, environment="production")

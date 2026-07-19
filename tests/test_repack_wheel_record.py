@@ -72,7 +72,10 @@ def test_repack_preserves_original_executable_mode_and_rewrites_record(
         wheel.extractall(unpacked)
 
     binary = unpacked / "solstone_core-1.2.3.data" / "scripts" / "solstone-core"
-    assert (binary.stat().st_mode & 0o777) == 0o644
+    # zipfile extraction applies the caller's umask, so the write bits may be
+    # 0644 or 0664. The contract only needs to prove that extraction dropped
+    # the archived executable bits before repack restores the original attrs.
+    assert (binary.stat().st_mode & 0o111) == 0
     signed_content = b"#!/bin/sh\necho signed\n"
     binary.write_bytes(signed_content)
 

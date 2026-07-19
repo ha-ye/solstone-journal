@@ -23,8 +23,18 @@ from solstone.think.providers.parakeet_placement import (
     PARAKEET_ATT_CONTEXT_ENV,
     PARAKEET_ATT_CONTEXT_FRAMES,
 )
+from tests.helpers.module_mocks import module_mock
 
 _LaunchRecord = dict[str, Any]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_supervisor_threading(monkeypatch):
+    monkeypatch.setattr(
+        supervisor,
+        "threading",
+        module_mock(supervisor.threading),
+    )
 
 
 class _InlineExecutor:

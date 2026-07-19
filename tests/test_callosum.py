@@ -18,7 +18,9 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from solstone.think import callosum as callosum_module
 from solstone.think.callosum import CallosumConnection, CallosumServer
+from tests.helpers.module_mocks import module_mock
 
 
 @pytest.fixture
@@ -275,7 +277,7 @@ def test_client_disconnected_idle_blocks_and_drops_emit(tmp_path, monkeypatch):
     assert 1 <= wait_calls <= 20
 
 
-def test_client_does_not_join_partial_json_across_reconnect():
+def test_client_does_not_join_partial_json_across_reconnect(monkeypatch):
     client = CallosumConnection()
     delivered = []
 
@@ -307,15 +309,22 @@ def test_client_does_not_join_partial_json_across_reconnect():
     sock1.recv.side_effect = recv_first
     sock2.recv.side_effect = recv_second
 
-    times = iter([2.0, 4.0, 6.0, 8.0, 10.0])
+    socket_constructor = Mock(side_effect=[sock1, sock2])
+    clock = Mock(side_effect=[2.0, 4.0, 6.0, 8.0, 10.0])
+    monkeypatch.setattr(
+        callosum_module,
+        "socket",
+        module_mock(callosum_module.socket, socket=socket_constructor),
+    )
+    monkeypatch.setattr(
+        callosum_module,
+        "time",
+        module_mock(callosum_module.time, time=clock),
+    )
     try:
-        with (
-            patch("solstone.think.callosum.socket.socket", side_effect=[sock1, sock2]),
-            patch("solstone.think.callosum.time.time", side_effect=lambda: next(times)),
-        ):
-            client.start(callback=delivered.append)
-            if client.thread is not None:
-                client.thread.join(timeout=1.0)
+        client.start(callback=delivered.append)
+        if client.thread is not None:
+            client.thread.join(timeout=1.0)
         assert delivered == []
     finally:
         for handle in (read1, write1, read2, write2):
@@ -370,15 +379,19 @@ def test_server_broadcast_validates_event_field():
     assert server.broadcast_queue.qsize() == 0
 
 
-def test_server_broadcast_adds_timestamp():
+def test_server_broadcast_adds_timestamp(monkeypatch):
     """Test that server adds timestamp if not present."""
     server = CallosumServer()
 
     # Valid message without timestamp
     msg = {"tract": "test", "event": "hello"}
 
-    with patch("solstone.think.callosum.time.time", return_value=1234567.890):
-        result = server.broadcast(msg)
+    monkeypatch.setattr(
+        callosum_module,
+        "now_ms",
+        Mock(return_value=1234567890),
+    )
+    result = server.broadcast(msg)
 
     assert result is True
     # Message should be queued with timestamp added
@@ -503,7 +516,7 @@ def test_client_emit_returns_false_when_queue_full():
         assert "Queue full" in mock_logger.warning.call_args[0][0]
 
 
-def test_client_run_loop_warns_on_utf8_split(caplog):
+def test_client_run_loop_warns_on_utf8_split(caplog, monkeypatch):
     client = CallosumConnection()
     mock_sock = Mock()
     read_sock, write_sock = socket.socketpair()
@@ -515,12 +528,21 @@ def test_client_run_loop_warns_on_utf8_split(caplog):
         return "⚠️".encode("utf-8")[:1]
 
     mock_sock.recv.side_effect = fake_recv
+    monkeypatch.setattr(
+        callosum_module,
+        "socket",
+        module_mock(
+            callosum_module.socket,
+            socket=Mock(return_value=mock_sock),
+        ),
+    )
+    monkeypatch.setattr(
+        callosum_module,
+        "time",
+        module_mock(callosum_module.time, time=Mock(return_value=2.0)),
+    )
     try:
-        with (
-            patch("solstone.think.callosum.socket.socket", return_value=mock_sock),
-            patch("solstone.think.callosum.time.time", return_value=2.0),
-            caplog.at_level(logging.WARNING, logger="solstone.think.callosum"),
-        ):
+        with caplog.at_level(logging.WARNING, logger="solstone.think.callosum"):
             client._run_loop()
     finally:
         read_sock.close()

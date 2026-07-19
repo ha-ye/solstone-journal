@@ -30,6 +30,7 @@ from solstone.think.providers.install_state import (
     write_install_status,
 )
 from solstone.think.providers.local import LOCAL_MODEL_SPECS
+from tests.helpers.module_mocks import module_mock
 
 
 def _client(journal_path):
@@ -59,6 +60,15 @@ def _write_config(journal_path, config: dict) -> None:
 def _reset_local_state():
     with local_bootstrap._INSTALL_LOCK:
         local_bootstrap._INSTALL_THREADS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_local_bootstrap_threading(monkeypatch):
+    monkeypatch.setattr(
+        local_bootstrap,
+        "threading",
+        module_mock(local_bootstrap.threading),
+    )
 
 
 class _FakeThread:

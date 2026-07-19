@@ -39,6 +39,7 @@ from solstone.observe.processing_record import (
 )
 from solstone.think.data_state import ANALYZING_STALE_SECONDS
 from solstone.think.importers import health_schema
+from tests.helpers.module_mocks import module_mock
 
 # 20260304 is the canonical fully-analyzed reference day; see
 # tests/fixtures/journal/chronicle/20260304/README.md and
@@ -50,6 +51,12 @@ _requires_ffmpeg = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg/ffprobe not installed",
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_routes_stdlib_modules(monkeypatch):
+    monkeypatch.setattr(routes, "subprocess", module_mock(routes.subprocess))
+    monkeypatch.setattr(routes, "threading", module_mock(routes.threading))
 
 
 def _apple_health_card_stream() -> str:

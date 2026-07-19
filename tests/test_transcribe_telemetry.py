@@ -24,6 +24,7 @@ from solstone.observe.transcribe.overlap import (
 from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
 from solstone.think.providers.parakeet_server import ParakeetServerNotReady
+from tests.helpers.module_mocks import module_mock
 
 # A string that exists nowhere but in the (mocked) transcript. If it shows up in a
 # serialized event, transcript content leaked into telemetry.
@@ -399,8 +400,14 @@ def test_stage_timings_accumulate_repeated_stages(
 
     # Drive perf_counter so the two blocks have distinct, known durations.
     # Values are binary-exact so the int() truncation is not off by a millisecond.
-    ticks = iter([0.0, 0.25, 1.0, 1.5])
-    monkeypatch.setattr(transcribe_main.time, "perf_counter", lambda: next(ticks))
+    monkeypatch.setattr(
+        transcribe_main,
+        "time",
+        module_mock(
+            transcribe_main.time,
+            perf_counter=MagicMock(side_effect=[0.0, 0.25, 1.0, 1.5]),
+        ),
+    )
 
     timings = transcribe_main._StageTimings()
     assert timings.as_dict() == {}

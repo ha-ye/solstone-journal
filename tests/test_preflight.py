@@ -8,8 +8,11 @@ import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+
+from tests.helpers.module_mocks import module_mock
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -22,9 +25,19 @@ def preflight():
 
 
 @pytest.fixture
-def probe():
+def probe(monkeypatch):
     from solstone.think import probe as probe_module
 
+    monkeypatch.setattr(
+        probe_module,
+        "subprocess",
+        module_mock(probe_module.subprocess),
+    )
+    monkeypatch.setattr(
+        probe_module,
+        "shutil",
+        module_mock(probe_module.shutil),
+    )
     yield probe_module
 
 
@@ -75,12 +88,12 @@ def patch_green_environment(probe, monkeypatch, home_root, repo: Path) -> None:
     monkeypatch.setattr(
         probe,
         "run_probe",
-        fake_probe_dispatcher(probe, repo),
+        Mock(side_effect=fake_probe_dispatcher(probe, repo)),
     )
     monkeypatch.setattr(
         probe.shutil,
         "disk_usage",
-        lambda _root: SimpleNamespace(total=100, used=80, free=20 * 1024**3),
+        Mock(return_value=SimpleNamespace(total=100, used=80, free=20 * 1024**3)),
     )
     config_dir = home_root / ".config"
     config_dir.mkdir()
@@ -186,7 +199,7 @@ def test_solstone_core_rust_toolchain_failure_names_rust_toolchain(
         "current_solstone_core_platform",
         lambda: ("linux", "x86_64"),
     )
-    monkeypatch.setattr(probe.subprocess, "run", raise_missing)
+    monkeypatch.setattr(probe.subprocess, "run", Mock(side_effect=raise_missing))
 
     result = preflight.solstone_core_rust_toolchain_check(args(preflight))
 
@@ -237,7 +250,7 @@ def test_local_bin_sol_reachable_ok(preflight, probe, monkeypatch, home_root):
     local = home_root / ".local" / "bin" / "sol"
     local.parent.mkdir(parents=True)
     local.write_text("#!/bin/sh\n", encoding="utf-8")
-    monkeypatch.setattr(probe.shutil, "which", lambda name: str(local))
+    monkeypatch.setattr(probe.shutil, "which", Mock(return_value=str(local)))
 
     result = preflight.local_bin_sol_reachable_check(args(preflight))
 
@@ -249,7 +262,7 @@ def test_uv_missing_fails(preflight, probe, monkeypatch):
         raise FileNotFoundError
 
     monkeypatch.setattr(probe, "_is_source_checkout", lambda: True)
-    monkeypatch.setattr(probe.subprocess, "run", raise_missing)
+    monkeypatch.setattr(probe.subprocess, "run", Mock(side_effect=raise_missing))
 
     result = preflight.uv_installed_check(args(preflight))
 
@@ -265,11 +278,11 @@ def test_main_returns_one_when_uv_missing(
 
     repo = make_repo(tmp_path)
     monkeypatch.setattr(probe, "ROOT", repo)
-    monkeypatch.setattr(probe.subprocess, "run", raise_missing)
+    monkeypatch.setattr(probe.subprocess, "run", Mock(side_effect=raise_missing))
     monkeypatch.setattr(
         probe.shutil,
         "disk_usage",
-        lambda _root: SimpleNamespace(total=100, used=80, free=20 * 1024**3),
+        Mock(return_value=SimpleNamespace(total=100, used=80, free=20 * 1024**3)),
     )
     (home_root / ".config").mkdir()
 

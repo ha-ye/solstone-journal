@@ -251,7 +251,7 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 markers = [
-    "integration: uses real external processes and belongs in operator validation, not unit CI",
+    "integration: exercises real local processes, builds, or persisted index contracts outside unit CI",
     "performance: asserts a wall-clock performance floor and is opt-in on an idle host",
     "xdist_group: marks tests to run in the same xdist worker group",
 ]

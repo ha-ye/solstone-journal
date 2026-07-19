@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from solstone.think.link import browser_pairing
 from solstone.think.spl import relay_client
+from tests.helpers.module_mocks import module_mock
 from tests.spl.test_relay_client_blob_dispatch import (
     FakeTcpReader,
     FakeTcpWriter,
@@ -23,9 +25,12 @@ async def test_pairing_tunnel_tls_writes_peeked_bytes_first(
     ws = FakeWs([b"\x16\x03\x01pairing"])
     writer = FakeTcpWriter()
     monkeypatch.setattr(
-        relay_client.asyncio,
-        "open_connection",
-        lambda *_a, **_k: _open_connection(writer),
+        relay_client,
+        "asyncio",
+        module_mock(
+            relay_client.asyncio,
+            open_connection=AsyncMock(return_value=(FakeTcpReader(), writer)),
+        ),
     )
 
     await relay_client._bridge_pairing_tunnel(
@@ -56,8 +61,17 @@ async def test_pairing_tunnel_sbp_branch_does_not_open_loopback(
         assert await reader.read_exactly(5) == b"SBP1\x01"
         called = True
 
-    monkeypatch.setattr(relay_client.asyncio, "open_connection", fail_open_connection)
-    monkeypatch.setattr(browser_pairing, "register_browser", fake_register)
+    open_connection = AsyncMock(side_effect=fail_open_connection)
+    monkeypatch.setattr(
+        relay_client,
+        "asyncio",
+        module_mock(relay_client.asyncio, open_connection=open_connection),
+    )
+    monkeypatch.setattr(
+        browser_pairing,
+        "register_browser",
+        AsyncMock(side_effect=fake_register),
+    )
 
     await relay_client._bridge_pairing_tunnel(
         "wss://relay.test",
@@ -68,9 +82,4 @@ async def test_pairing_tunnel_sbp_branch_does_not_open_loopback(
     )
 
     assert called is True
-
-
-async def _open_connection(
-    writer: FakeTcpWriter,
-) -> tuple[FakeTcpReader, FakeTcpWriter]:
-    return FakeTcpReader(), writer
+    open_connection.assert_not_awaited()

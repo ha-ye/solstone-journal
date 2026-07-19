@@ -7,17 +7,33 @@ import json
 from types import SimpleNamespace
 from unittest import mock
 
+from tests.helpers.module_mocks import (
+    capturing_thread_constructor,
+    module_mock,
+)
+
+
+def _capture_thread_starts(monkeypatch, mod):
+    started = []
+    monkeypatch.setattr(
+        mod,
+        "threading",
+        module_mock(
+            mod.threading,
+            Thread=capturing_thread_constructor(
+                started,
+                capture=lambda thread: thread._args,
+            ),
+        ),
+    )
+    return started
+
 
 def test_task_queue_defers_submit_when_not_ready(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None, ready=False)
 
-    started = []
-
-    def fake_thread_start(self):
-        started.append(self._args)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    started = _capture_thread_starts(monkeypatch, mod)
 
     ref = queue.submit(
         ["journal", "indexer", "--rescan"], ref="pending-ref", day="20260418"
@@ -41,12 +57,7 @@ def test_task_queue_set_ready_drains_in_submission_order(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None, ready=False)
 
-    started = []
-
-    def fake_thread_start(self):
-        started.append(self._args)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    started = _capture_thread_starts(monkeypatch, mod)
 
     queue.submit(["journal", "indexer", "--rescan"], ref="ref-1")
     queue.submit(["sol", "insight", "20260418"], ref="ref-2")
@@ -67,12 +78,7 @@ def test_task_queue_set_ready_dedupes_same_cmd_in_pending(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None, ready=False)
 
-    started = []
-
-    def fake_thread_start(self):
-        started.append(self._args)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    started = _capture_thread_starts(monkeypatch, mod)
 
     queue.submit(["journal", "indexer", "--rescan"], ref="ref-1")
     queue.submit(["journal", "indexer", "--rescan"], ref="ref-2")
@@ -96,12 +102,7 @@ def test_task_queue_ready_true_default_dispatches_immediately(monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     queue = mod.TaskQueue(on_queue_change=None)
 
-    started = []
-
-    def fake_thread_start(self):
-        started.append(self._args)
-
-    monkeypatch.setattr(mod.threading.Thread, "start", fake_thread_start)
+    started = _capture_thread_starts(monkeypatch, mod)
 
     ref = queue.submit(["journal", "indexer", "--rescan"], ref="ready-ref")
 
@@ -126,29 +127,33 @@ def test_wait_for_convey_ready_success(caplog):
     assert "Convey ready after" in caplog.text
 
 
-def test_wait_for_convey_ready_timeout(caplog):
+def test_wait_for_convey_ready_timeout(caplog, monkeypatch):
     mod = importlib.import_module("solstone.think.supervisor")
     caplog.set_level("ERROR")
     convey_mp = SimpleNamespace(process=SimpleNamespace(poll=lambda: None))
     ticks = itertools.chain([0.0, 0.0, 0.1, 0.2, 0.3], itertools.repeat(0.35))
+    monkeypatch.setattr(
+        mod,
+        "time",
+        module_mock(
+            mod.time,
+            sleep=mock.Mock(),
+            monotonic=mock.Mock(side_effect=lambda: next(ticks)),
+        ),
+    )
 
     with mock.patch("solstone.think.supervisor.is_solstone_up", return_value=False):
         with mock.patch(
             "solstone.think.supervisor.read_service_port", return_value=5015
         ):
-            with mock.patch("solstone.think.supervisor.time.sleep", return_value=None):
-                with mock.patch(
-                    "solstone.think.supervisor.time.monotonic",
-                    side_effect=lambda: next(ticks),
-                ):
-                    assert (
-                        mod.wait_for_convey_ready(
-                            convey_mp,
-                            timeout=0.3,
-                            interval=0.05,
-                        )
-                        is False
-                    )
+            assert (
+                mod.wait_for_convey_ready(
+                    convey_mp,
+                    timeout=0.3,
+                    interval=0.05,
+                )
+                is False
+            )
 
     assert "Convey not ready after" in caplog.text
 

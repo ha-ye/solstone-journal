@@ -75,7 +75,7 @@ def _reset_runtime_recovery(monkeypatch) -> dict[str, mod.ProviderRuntimeState]:
 def test_rising_edge_fires_once_per_local_generation(monkeypatch):
     states = _reset_runtime_recovery(monkeypatch)
     callosum = Mock()
-    mod._supervisor_callosum = callosum
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
     states["local"].generation = 7
     mod._mark_provider_recovery_down("local")
 
@@ -90,7 +90,7 @@ def test_rising_edge_fires_once_per_local_generation(monkeypatch):
 def test_startup_ready_does_not_nudge(monkeypatch):
     states = _reset_runtime_recovery(monkeypatch)
     callosum = Mock()
-    mod._supervisor_callosum = callosum
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
     states["local"].generation = 1
 
     mod._finish_provider_startup_condition(states["local"], "ready")
@@ -102,7 +102,7 @@ def test_startup_ready_does_not_nudge(monkeypatch):
 def test_parakeet_ready_never_nudges_local_recovery(monkeypatch):
     states = _reset_runtime_recovery(monkeypatch)
     callosum = Mock()
-    mod._supervisor_callosum = callosum
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
     states["parakeet"].generation = 4
     mod._mark_provider_recovery_down("parakeet")
 
@@ -116,7 +116,7 @@ def test_parakeet_ready_never_nudges_local_recovery(monkeypatch):
 def test_flap_two_local_generations_nudge_twice(monkeypatch):
     states = _reset_runtime_recovery(monkeypatch)
     callosum = Mock()
-    mod._supervisor_callosum = callosum
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
 
     states["local"].generation = 1
     mod._mark_provider_recovery_down("local")
@@ -136,7 +136,7 @@ def test_flap_two_local_generations_nudge_twice(monkeypatch):
 
 def test_undeliverable_callosum_none(monkeypatch, caplog):
     states = _reset_runtime_recovery(monkeypatch)
-    mod._supervisor_callosum = None
+    monkeypatch.setattr(mod, "_supervisor_callosum", None)
     states["local"].generation = 3
     mod._mark_provider_recovery_down("local")
     caplog.set_level(logging.WARNING)
@@ -151,7 +151,7 @@ def test_undeliverable_emit_raises(monkeypatch, caplog):
     states = _reset_runtime_recovery(monkeypatch)
     callosum = Mock()
     callosum.emit.side_effect = RuntimeError("boom")
-    mod._supervisor_callosum = callosum
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
     states["local"].generation = 5
     mod._mark_provider_recovery_down("local")
     caplog.set_level(logging.WARNING)
@@ -164,9 +164,9 @@ def test_undeliverable_emit_raises(monkeypatch, caplog):
     assert "Cannot nudge catchup drain: boom" in caplog.text
 
 
-def test_nudge_no_targeting():
+def test_nudge_no_targeting(monkeypatch):
     callosum = Mock()
-    mod._supervisor_callosum = callosum
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
 
     mod._nudge_catchup_drain()
 
@@ -176,7 +176,7 @@ def test_nudge_no_targeting():
 def test_remote_mode_inert(monkeypatch, mock_callosum):
     states = _reset_runtime_recovery(monkeypatch)
     callosum = Mock()
-    mod._supervisor_callosum = callosum
+    monkeypatch.setattr(mod, "_supervisor_callosum", callosum)
     monkeypatch.setattr(mod, "_is_remote_mode", True)
     states["local"].generation = 9
     mod._mark_provider_recovery_down("local")

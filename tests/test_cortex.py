@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from solstone.think.models import GPT_5
+from tests.helpers.module_mocks import module_mock
 
 
 class MockPipe:
@@ -77,6 +78,15 @@ def mock_journal(tmp_path, monkeypatch):
 
     monkeypatch.setenv("SOLSTONE_JOURNAL", str(journal_path))
     return journal_path
+
+
+@pytest.fixture(autouse=True)
+def _isolate_cortex_stdlib_modules(monkeypatch):
+    from solstone.think import cortex
+
+    monkeypatch.setattr(cortex, "threading", module_mock(cortex.threading))
+    monkeypatch.setattr(cortex, "subprocess", module_mock(cortex.subprocess))
+    monkeypatch.setattr(cortex, "time", module_mock(cortex.time))
 
 
 @pytest.fixture

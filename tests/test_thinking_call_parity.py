@@ -17,6 +17,7 @@ from solstone.apps.thinking import copy as thinking_copy
 from solstone.think.convey_client import ConveyClient
 from solstone.think.services import operations, scout, scout_handoff
 from tests._baseline_harness import make_test_client
+from tests.helpers.module_mocks import inline_thread_constructor, module_mock
 
 runner = CliRunner()
 
@@ -199,6 +200,14 @@ def test_scout_enable_polls_terminal_success(
         return operations.HandoffResult("enabled", None, False)
 
     monkeypatch.setattr(scout_handoff, "run_scout_handoff", runner_result)
+    monkeypatch.setattr(
+        operations,
+        "threading",
+        module_mock(
+            operations.threading,
+            Thread=inline_thread_constructor(),
+        ),
+    )
 
     result = runner.invoke(
         thinking_call.app,

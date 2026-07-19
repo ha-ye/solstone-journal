@@ -22,7 +22,7 @@ def fixture_journal(monkeypatch):
 
 
 @pytest.fixture
-def activities_client(fixture_journal):
+def activities_client(fixture_journal, monkeypatch):
     """Create a Flask test client with the activities blueprint."""
     from flask import Flask
 
@@ -30,7 +30,7 @@ def activities_client(fixture_journal):
 
     app = Flask(__name__)
     app.register_blueprint(activities_bp)
-    state.journal_root = "tests/fixtures/journal"
+    monkeypatch.setattr(state, "journal_root", "tests/fixtures/journal")
     return app.test_client()
 
 

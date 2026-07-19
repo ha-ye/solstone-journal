@@ -16,6 +16,7 @@ from solstone.convey.chat_stream import (
     read_chat_events,
     reduce_chat_state,
 )
+from tests.helpers.module_mocks import module_mock
 
 
 def _reset_chat_state(chat_module) -> None:
@@ -45,6 +46,8 @@ def _ms(year: int, month: int, day: int, hour: int, minute: int, second: int) ->
 
 
 def _install_fake_timers(monkeypatch):
+    import solstone.convey.chat as chat
+
     timers: list[FakeTimer] = []
 
     class FakeTimer:
@@ -69,7 +72,11 @@ def _install_fake_timers(monkeypatch):
                 return
             self.function(*self.args, **self.kwargs)
 
-    monkeypatch.setattr("solstone.convey.chat.threading.Timer", FakeTimer)
+    monkeypatch.setattr(
+        chat,
+        "threading",
+        module_mock(chat.threading, Timer=FakeTimer),
+    )
     return timers
 
 

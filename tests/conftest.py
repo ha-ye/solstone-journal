@@ -350,6 +350,7 @@ def reset_supervisor_state():
             "parakeet": mod.ProviderRecoveryState(),
         }
         mod._is_remote_mode = False
+        mod._supervisor_callosum = None
         # Create fresh task queue
         mod._task_queue = mod.TaskQueue(on_queue_change=None)
     except ImportError:
@@ -365,6 +366,7 @@ def reset_supervisor_state():
             "parakeet": mod.ProviderRecoveryState(),
         }
         mod._is_remote_mode = False
+        mod._supervisor_callosum = None
         mod._observer_health = {}
         mod._enabled_observers = set()
         # Create fresh task queue
