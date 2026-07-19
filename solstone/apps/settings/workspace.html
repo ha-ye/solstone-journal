@@ -1122,48 +1122,6 @@ input:checked + .slider:before {
   color: var(--surface-muted, #666);
 }
 
-/* Context overrides collapsible section */
-.context-overrides {
-  margin-top: 2em;
-  border: 1px solid var(--facet-border, #e5e0db);
-  border-radius: 8px;
-  overflow: hidden;
-}
-
-.context-overrides-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.75em 1em;
-  background: #f8f8f8;
-  border-bottom: 1px solid var(--facet-border, #e5e0db);
-}
-
-.context-overrides-title {
-  font-weight: 600;
-  font-size: 0.95em;
-  color: #333;
-}
-
-.context-overrides-toggle {
-  font-size: 0.8em;
-  color: #666;
-  transition: transform 0.2s;
-}
-
-.context-overrides.expanded .context-overrides-toggle {
-  transform: rotate(180deg);
-}
-
-.context-overrides-body {
-  display: none;
-  padding: 1em;
-}
-
-.context-overrides.expanded .context-overrides-body {
-  display: block;
-}
-
 .redact-list {
   padding: 0.5em 0;
 }
@@ -2537,12 +2495,15 @@ button:focus:not(:focus-visible) {
       </div>
 
       <!-- Redaction Rules -->
-      <div class="context-overrides expanded" id="visionRedaction">
-        <div class="context-overrides-header" id="visionRedactionHeader">
-          <span class="context-overrides-title">redaction rules</span>
-          <span class="context-overrides-toggle">&#9660;</span>
-        </div>
-        <div class="context-overrides-body">
+      <details class="drawer" id="visionRedaction" open>
+        <summary>
+          <span class="drawer-chev"></span>
+          <span class="drawer-summary-text">
+            <span class="drawer-label">redaction rules</span>
+            <span class="drawer-line" id="visionRedactionLine" hidden></span>
+          </span>
+        </summary>
+        <div class="drawer-body">
           <p style="color:#666;font-size:0.9em;margin:0 0 1em 0">instructions the ai follows to redact sensitive content from screen analysis. double-click a rule to edit it.</p>
           <div class="redact-list" id="redactRulesList"></div>
           <div class="redact-add-row">
@@ -2551,19 +2512,22 @@ button:focus:not(:focus-visible) {
           </div>
           <div class="redact-validation" id="redactValidation" style="display:none"></div>
         </div>
-      </div>
+      </details>
 
       <!-- Categories -->
-      <div class="context-overrides expanded" id="visionCategories">
-        <div class="context-overrides-header" id="visionCategoriesHeader">
-          <span class="context-overrides-title">categories</span>
-          <span class="context-overrides-toggle">&#9660;</span>
-        </div>
-        <div class="context-overrides-body" id="visionCategoriesBody">
+      <details class="drawer" id="visionCategories" open>
+        <summary>
+          <span class="drawer-chev"></span>
+          <span class="drawer-summary-text">
+            <span class="drawer-label">categories</span>
+            <span class="drawer-line" id="visionCategoriesLine" hidden></span>
+          </span>
+        </summary>
+        <div class="drawer-body" id="visionCategoriesBody">
           <p style="color:#666;font-size:0.9em;margin:0 0 1em 0">set importance and extraction rules for each screen category. double-click guidance text to edit.</p>
           <div id="visionCategoryGroups">loading…</div>
         </div>
-      </div>
+      </details>
       </form>
     </section>
 
@@ -2787,16 +2751,19 @@ button:focus:not(:focus-visible) {
         <div id="retentionStatus" style="margin-top: 0.75em; color: #666; font-size: 0.9em;">currently: always retain — no expiration</div>
       </div>
 
-      <div class="context-overrides" id="streamOverridesContainer" style="display: none;">
-        <div class="context-overrides-header" id="streamOverridesToggle" style="cursor: pointer;">
-          <span class="context-overrides-title">per-stream overrides</span>
-          <span class="context-overrides-toggle">&#9660;</span>
-        </div>
-        <div class="context-overrides-body" id="streamOverridesBody">
+      <details class="drawer" id="streamOverridesContainer" style="display: none;">
+        <summary>
+          <span class="drawer-chev"></span>
+          <span class="drawer-summary-text">
+            <span class="drawer-label">per-stream overrides</span>
+            <span class="drawer-line" id="streamOverridesLine" hidden></span>
+          </span>
+        </summary>
+        <div class="drawer-body" id="streamOverridesBody">
           <p style="color: #666; font-size: 0.85em; margin: 0 0 1em 0;">override the global retention mode for individual streams.</p>
           <div id="streamOverridesList"></div>
         </div>
-      </div>
+      </details>
 
       <div class="settings-field" id="logRetentionField">
         <label>operational logs</label>
@@ -5387,8 +5354,17 @@ async function loadVision() {
     populateVision(visionData);
   } catch (err) {
     console.error('Error loading vision:', err);
+    setDrawerLine('visionCategoriesLine', '');
     document.getElementById('visionCategoryGroups').textContent = 'error loading categories';
   }
+}
+
+function setDrawerLine(id, line) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const value = String(line || '');
+  el.innerHTML = window.Drawer.formatLine(value);
+  el.hidden = !value;
 }
 
 function populateVision(data) {
@@ -5423,6 +5399,8 @@ function renderVisionCategories(data) {
     const importance = override.importance || defaultImportance;
     groups[importance].push({ name, ...cat, currentImportance: importance });
   }
+  const categoryCount = Object.values(groups).reduce((total, items) => total + items.length, 0);
+  setDrawerLine('visionCategoriesLine', window.SettingsRender.visionCategoriesLine(categoryCount));
 
   // Render importance sections in order
   let html = '';
@@ -5676,6 +5654,7 @@ async function saveMaxExtractions() {
 function renderRedactRules(data) {
   const container = document.getElementById('redactRulesList');
   const rules = data.redact || [];
+  setDrawerLine('visionRedactionLine', window.SettingsRender.redactionRulesLine(rules.length));
 
   if (rules.length === 0) {
     container.innerHTML = '<div class="redact-empty">no redaction rules configured</div>';
@@ -5828,15 +5807,6 @@ function addRedactRule() {
   input.value = '';
   saveRedactRules(rules);
 }
-
-document.getElementById('visionRedactionHeader').addEventListener('click', () => {
-  document.getElementById('visionRedaction').classList.toggle('expanded');
-});
-
-// Toggle vision categories expansion
-document.getElementById('visionCategoriesHeader').addEventListener('click', () => {
-  document.getElementById('visionCategories').classList.toggle('expanded');
-});
 
 // ========== ACTIVITIES ==========
 let activitiesData = null;
@@ -6287,6 +6257,7 @@ function populateStreamOverrides(streams, perStream) {
 
   if (!streams || streams.length === 0) {
     container.style.display = 'none';
+    setDrawerLine('streamOverridesLine', '');
     return;
   }
 
@@ -6332,9 +6303,19 @@ function populateStreamOverrides(streams, perStream) {
     row.appendChild(daysInput);
     list.appendChild(row);
   });
+  updateStreamOverridesLine();
 }
 
-function saveStreamOverrides() {
+function configuredStreamOverrideCount() {
+  const rows = document.querySelectorAll('#streamOverridesList .stream-override-row');
+  return Array.from(rows).filter((row) => row.querySelector('.stream-override-select')?.value).length;
+}
+
+function updateStreamOverridesLine() {
+  setDrawerLine('streamOverridesLine', window.SettingsRender.streamOverridesLine(configuredStreamOverrideCount()));
+}
+
+async function saveStreamOverrides() {
   const rows = document.querySelectorAll('#streamOverridesList .stream-override-row');
   const perStream = {};
   rows.forEach(row => {
@@ -6351,7 +6332,8 @@ function saveStreamOverrides() {
       perStream[name] = entry;
     }
   });
-  saveRetentionConfig({ per_stream: perStream });
+  const saved = await saveRetentionConfig({ per_stream: perStream });
+  if (saved) updateStreamOverridesLine();
 }
 
 function populateLogRetention(config) {
@@ -6461,7 +6443,9 @@ async function saveRetentionConfig(data) {
         if (el) showFieldStatus(el, 'saved');
       },
     });
+    return true;
   } catch (_) {
+    return false;
   }
 }
 
@@ -6496,11 +6480,6 @@ function setupStorageListeners() {
   document.getElementById('logRetentionEnabled').addEventListener('change', () => {
     updateLogRetentionUI();
     saveLogRetentionConfig();
-  });
-
-  // Stream overrides toggle
-  document.getElementById('streamOverridesToggle').addEventListener('click', () => {
-    document.getElementById('streamOverridesContainer').classList.toggle('expanded');
   });
 
   // Cleanup button

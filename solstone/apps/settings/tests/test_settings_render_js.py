@@ -139,6 +139,16 @@ def test_settings_render_helpers() -> None:
         assert(primary);
         assert.strictEqual(primary.href, '/app/entities/');
         assert.strictEqual(primary.dataset.facetSlug, 'work');
+
+        assert.strictEqual(render.redactionRulesLine(0), '0 rules');
+        assert.strictEqual(render.redactionRulesLine(1), '1 rule');
+        assert.strictEqual(render.redactionRulesLine(3), '3 rules');
+        assert.strictEqual(render.visionCategoriesLine(0), '0 categories');
+        assert.strictEqual(render.visionCategoriesLine(1), '1 category');
+        assert.strictEqual(render.visionCategoriesLine(7), '7 categories');
+        assert.strictEqual(render.streamOverridesLine(0), '0 overrides');
+        assert.strictEqual(render.streamOverridesLine(1), '1 override');
+        assert.strictEqual(render.streamOverridesLine(4), '4 overrides');
       """
     )
     result = subprocess.run(

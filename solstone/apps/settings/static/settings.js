@@ -2,6 +2,32 @@
 // Copyright (c) 2026 sol pbc
 
 (function (global) {
+  // --- owner-facing strings ---
+  const REDACTION_RULE_SINGULAR = 'rule';
+  const REDACTION_RULE_PLURAL = 'rules';
+  const VISION_CATEGORY_SINGULAR = 'category';
+  const VISION_CATEGORY_PLURAL = 'categories';
+  const STREAM_OVERRIDE_SINGULAR = 'override';
+  const STREAM_OVERRIDE_PLURAL = 'overrides';
+  // --- end owner-facing strings ---
+
+  function countLine(count, singular, plural) {
+    const number = Math.max(0, Math.trunc(Number(count) || 0));
+    return `${number} ${number === 1 ? singular : plural}`;
+  }
+
+  function redactionRulesLine(count) {
+    return countLine(count, REDACTION_RULE_SINGULAR, REDACTION_RULE_PLURAL);
+  }
+
+  function visionCategoriesLine(count) {
+    return countLine(count, VISION_CATEGORY_SINGULAR, VISION_CATEGORY_PLURAL);
+  }
+
+  function streamOverridesLine(count) {
+    return countLine(count, STREAM_OVERRIDE_SINGULAR, STREAM_OVERRIDE_PLURAL);
+  }
+
   function resolve(copy, key) {
     if (!copy || typeof key !== 'string' || !key) return '';
     const value = key.split('.').reduce((current, part) => {
@@ -172,8 +198,11 @@
     applyCopyAttr,
     applyThinkingSurfaces,
     formatTitle,
+    redactionRulesLine,
     renderFacetDetail,
     resolve,
+    streamOverridesLine,
+    visionCategoriesLine,
   };
   global.SettingsRender = SettingsRender;
   if (typeof module !== 'undefined' && module.exports) {
